@@ -72,6 +72,8 @@ func TestInvalidPayloadsRejected(t *testing.T) {
 		`{"title":""}`,
 		`{"title":"x","unknownField":1}`,
 		`not json`,
+		`{"title":"x"} {"smuggled":true}`,
+		`{"title":"x"} trailing-bytes`,
 	}
 	for _, b := range bodies {
 		rec := httptest.NewRecorder()

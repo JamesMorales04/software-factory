@@ -21,18 +21,16 @@ func otlpEndpoint() string {
 	return v
 }
 
-// sanitizeEndpoint reduces an OTLP endpoint to scheme://host/path for log
-// lines, stripping any userinfo credentials and query parameters. When the
-// value does not parse, a fixed placeholder is returned so the raw secret
-// can never reach the logs through this path.
+// sanitizeEndpoint reduces an OTLP endpoint to scheme://host for log
+// lines, stripping userinfo credentials, paths and query parameters —
+// any of which may carry secrets. When the value does not parse, a fixed
+// placeholder is returned so the raw secret can never reach the logs
+// through this path. The host alone identifies the exporter for
+// diagnostics; nothing more is needed.
 func sanitizeEndpoint(v string) string {
 	u, err := url.Parse(v)
 	if err != nil || u.Host == "" {
 		return "unparseable-otlp-endpoint"
 	}
-	p := u.EscapedPath()
-	if p == "" || p == "/" {
-		return u.Scheme + "://" + u.Host
-	}
-	return u.Scheme + "://" + u.Host + p
+	return u.Scheme + "://" + u.Host
 }

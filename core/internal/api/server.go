@@ -135,7 +135,9 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // decodeBody parses at most 1 MiB of JSON and rejects unknown fields so
-// contract drift is caught instead of silently ignored.
+// contract drift is caught instead of silently ignored. Exactly one JSON
+// value must be present: trailing data after the first value is rejected,
+// otherwise `{"title":"x"} {"smuggled":true}` would parse as valid.
 func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	dec := json.NewDecoder(r.Body)
@@ -153,6 +155,11 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v any) bool {
 		default:
 			writeError(w, http.StatusBadRequest, "invalid", "unreadable JSON body")
 		}
+		return false
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid", "unexpected trailing data after JSON body")
 		return false
 	}
 	return true

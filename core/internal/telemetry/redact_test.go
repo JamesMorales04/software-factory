@@ -24,8 +24,9 @@ func TestRedactMasksSecretShapes(t *testing.T) {
 
 func TestSanitizeEndpointStripsCredentials(t *testing.T) {
 	cases := map[string]string{
-		"http://user:s3cret@collector:4318/v1/traces?token=abc": "http://collector:4318/v1/traces",
+		"http://user:s3cret@collector:4318/v1/traces?token=abc": "http://collector:4318",
 		"https://collector:4318":                                "https://collector:4318",
+		"https://collector.example/v1/traces/secret-token":      "https://collector.example",
 		"not a url at all":                                      "unparseable-otlp-endpoint",
 		"":                                                      "unparseable-otlp-endpoint",
 	}
