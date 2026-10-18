@@ -1,0 +1,7 @@
+# ADR-0004 — Verificación externa independiente de recorridos de usuario
+
+- **Estado:** Propuesto para ratificación; refleja la decisión discutida con el Owner.
+- **Contexto:** Pruebas ejecutadas solo por el autor no demuestran que el candidato funcione fuera de su workspace ni que el oráculo sea independiente.
+- **Decisión:** Implementer debe reproducir, ejecutar y reparar pruebas propias, pero la aceptación requiere un Independent Verifier en etapa de review que arranque el **commit exacto** en un entorno limpio, ejecute recorridos observables (CLI/API/Playwright/Paseo según superficie) y produzca artefactos independientes. Reviewer evalúa calidad, seguridad y evidencias. Quality Gate determinista emite la decisión. Un mismo Reviewer puede asumir la función de Verifier en cambios pequeños, sin perder separación del autor.
+- **Controles:** El Verifier no podrá modificar el candidato ni relajar tests; la revisión ocurre sobre artefacto/commit inmutable. Correcciones devuelven trabajo a Implementer o Repairer y originan revisión del candidato y revalidación. El entorno y oráculo son independientes del autor, incluso si se utiliza el mismo proveedor de LLM; validar identidad de participante y permisos.
+- **Consecuencias:** Aumenta ligeramente el costo de verificación, reduce falsos PASS y encuentra fallas de integración/UX. Requiere harness de pruebas negras reutilizable y evidencias por Run.
