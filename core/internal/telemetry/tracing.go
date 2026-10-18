@@ -29,6 +29,11 @@ func InitTracing(ctx context.Context, serviceVersion string) (trace.Tracer, func
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		return otel.Tracer("factory-core"), func(context.Context) {}
 	}
+	if !validOTLPEndpoint(endpoint) {
+		Logger().Warn("otel exporter endpoint invalid, continuing without export")
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		return otel.Tracer("factory-core"), func(context.Context) {}
+	}
 
 	exp, err := otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(endpoint),

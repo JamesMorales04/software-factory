@@ -22,6 +22,31 @@ func TestRedactMasksSecretShapes(t *testing.T) {
 	}
 }
 
+func TestValidOTLPEndpoint(t *testing.T) {
+	valid := []string{
+		"http://127.0.0.1:4318",
+		"https://collector:4318/v1/traces",
+		"http://user:s3cret@collector:4318", // well-formed; SDK strips userinfo itself
+	}
+	for _, v := range valid {
+		if !validOTLPEndpoint(v) {
+			t.Fatalf("validOTLPEndpoint(%q) = false, want true", v)
+		}
+	}
+	invalid := []string{
+		"",
+		"http://[::1:broken",
+		"ftp://collector/x",
+		"://no-scheme",
+		"just-a-host:4318",
+	}
+	for _, v := range invalid {
+		if validOTLPEndpoint(v) {
+			t.Fatalf("validOTLPEndpoint(%q) = true, want false", v)
+		}
+	}
+}
+
 func TestSanitizeEndpointStripsCredentials(t *testing.T) {
 	cases := map[string]string{
 		"http://user:s3cret@collector:4318/v1/traces?token=abc": "http://collector:4318",

@@ -34,3 +34,20 @@ func sanitizeEndpoint(v string) string {
 	}
 	return u.Scheme + "://" + u.Host
 }
+
+// validOTLPEndpoint reports whether an endpoint is well-formed enough to
+// hand to the OTLP SDK. The SDK's internal logger can echo malformed
+// endpoint values verbatim, bypassing sanitizeEndpoint (which only runs on
+// the exporter's own error path). Malformed values are therefore rejected
+// before the SDK ever sees them, and tracing stays local-only. The raw
+// value is never logged here.
+func validOTLPEndpoint(v string) bool {
+	u, err := url.Parse(v)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return u.Host != ""
+}
