@@ -1,28 +1,29 @@
-# Factory Office — interfaz propia mínima de F1
+# Factory Office — required minimum F1 UI
 
-> **Estado:** UI mínima acordada; representación visual animada posterior.
+**Status:** The own web UI is agreed for F1; animated/pixel office is a later view, not an F1 gate.
 
-## Vistas F1
+## Required views
 
-| Vista | Función |
+| View | Responsibilities |
 |---|---|
-| Dashboard | Core/Worker/salud, colas, campañas, estado de mantenimiento |
-| Actions | Crear, consultar, filtrar Actions; mostrar spec y estado |
-| Agents | Participantes reales con rol, runtime/modelo, estado y sesión Paseo |
-| Action Detail | Timeline, Runs, herramientas observadas, pruebas, Review, PR/merge y bloqueos |
+| Dashboard | Core/Worker health, queues, campaigns and maintenance |
+| Actions | Create/query/filter Actions; show their specs, risk and status |
+| Agents | Actual role, runtime/model, state and Paseo session for each participant |
+| Action Detail | Events, Runs, tool activity, quality evidence, review and PR/merge status |
 
-La UI recibe snapshots y eventos desde Core; no usa direct writes a DB ni controla directamente Workers. Reconecta por cursor/secuencia y recupera eventos faltantes. Estados desconocidos deben mostrarse `UNKNOWN/DISCONNECTED`; no deducir pensamientos internos del modelo. Poder inspeccionar no equivale a poder controlar. Renderizar contenido de agentes como datos no confiables, no comandos/UI con privilegios.
+The browser consumes Core snapshots plus persisted event projections. It cannot write Core storage or control Workers directly. Reconnect must use cursor/sequence and fetch missing data; stale/lost provider status must be displayed as `UNKNOWN`/`DISCONNECTED`, never as fabricated activity. Observed tool calls are not access to hidden reasoning. Read permissions do not imply control permissions.
 
-## Integración Paseo
+## Paseo integration
 
-Mantener asociación persistida de `runId`, `agentId`, `paseoSessionId`, `workerId`. Visualizar estado real y abrir detalle de inspección a través de ruta autenticada. Validar si el SDK permite timeline/replay y aislamiento de acceso; no asumir enlaces externos o capacidades inexistentes.
+Persist stable correlation of `runId`, `agentId`, `paseoSessionId` and `workerId`. Expose an authenticated inspector link/route only if tested. Validate SDK timeline/replay and redaction rather than assuming capabilities.
 
-## Aceptación F1
+## F1 verification
 
-- El navegador real crea una Action, ve cambios tras recargar y observa un Run activo real.
-- El usuario navega Agents → Action Detail → evidencia, sin perder correlación.
-- Desconectar y reconectar UI no pierde transiciones ni crea duplicados visibles.
-- Acciones de gestión respetan autorización; vista read-only no eleva permisos.
-- Playwright aporta evidencias de interacción real (trazas, capturas, consola y red) según políticas de redacción.
+- Real browser creates an Action, reloads and finds the same persisted record.
+- Agents view shows a real active Run and its session without fake data.
+- Independent Playwright verifier navigates Actions → Agent → evidence/PR.
+- Disconnect/reconnect does not lose or duplicate visible transitions.
+- Read-only roles cannot initiate management effects.
+- Browser traces/screenshots are attached to candidate evidence with redaction and retention controls.
 
-La oficina estilo pixel-art futura comparte los mismos eventos y no crea autoridad o estado paralelo.
+Animated Factory Office must eventually reuse the same authoritative events and not establish separate agent state.

@@ -1,34 +1,48 @@
-# Quality Baseline global obligatorio
+# Mandatory global Quality Baseline
 
-> **Decisión:** acordada. **Estado de implementación:** no iniciado.
+**Decision:** accepted. **Implementation:** not started / not certified.
 
-## Invariantes de aceptación
+## Universal acceptance invariants
 
-Todo cambio debe demostrar, mediante pruebas apropiadas a su naturaleza: identidad del proyecto, Action, spec y candidato; ejecución dentro de límites autorizados; alcance respetado; criterio funcional verificable; regresión pertinente; seguridad; revisión independiente cuando la política la exige; procedencia de evidencias; y correspondencia exacta entre lo revisado y lo entregado.
+For every change, enforce appropriate evidence of: exact Project/Action/frozen spec/candidate/policy identity; authorized sandbox and scope; functional behavior; relevant regression protection; security; maintainable implementation; required independent verification; trustworthy provenance; and exact correspondence between verified and delivered commit.
 
-Project Quality Profile **añade** verificaciones según lenguaje, framework, dependencias, arquitectura y riesgo. No puede desactivar el baseline ni falsificar `NOT_APPLICABLE`. Calidad universal no significa que todos los proyectos ejecuten todas las herramientas.
+A Project Quality Profile adds stack- and risk-specific checks; it never weakens this baseline. Universal guarantees **do not** require running every tool for every change.
 
-## Estados
+## Quality states
 
-`ACCEPTED`: controles obligatorios satisfechos con evidencia; `REPAIR_REQUIRED`: defectos comprobados y reparables; `BLOCKED`: falta capacidad, entorno o evidencia; `HUMAN_REQUIRED`: frontera de autoridad/resolución de producto; `NOT_TESTED`: sin prueba suficiente. `PASS`, `FAIL`, `NOT_APPLICABLE` y `SKIPPED` se conservan por chequeo; `SKIPPED` y `NOT_TESTED` no equivalen a PASS.
+- `ACCEPTED`: every required check is satisfied with current evidence.
+- `REPAIR_REQUIRED`: verified fixable defects exist.
+- `BLOCKED`: required evidence, capability or environment is missing.
+- `HUMAN_REQUIRED`: explicit policy or product-owner authority boundary.
+- `NOT_TESTED`: insufficient evidence to decide.
 
-## Riesgo y merge
+Individual checks distinguish `PASS`, `FAIL`, `SKIPPED`, `NOT_APPLICABLE` and `NOT_TESTED`; no unchecked status means PASS.
 
-- **R0:** cambio final acotado, bajo riesgo, elegible para merge autónomo **solo** tras verificación, revisión y CI requeridos.
-- **R1:** modificación ordinaria/moderada; control adicional según política.
-- **R2:** seguridad, migraciones o interfaces públicas; vía protegida.
-- **R3:** autoridad, credenciales, sandbox, policy/Quality Gate, merge o actualización del Core; vía protegida estricta.
+## Coding quality and static gates
 
-El riesgo **final** se recalcula sobre el diff real. No aceptar una clasificación inicial R0 como autorización definitiva. Comprobar candidate SHA/commit, política, estado de CI y reglas GitHub inmediatamente antes del efecto; revalidar si cambian. Tokens de merge solo en Delivery Engine, fuera de sesiones agentic.
+Apply [code-quality standards](../engineering/code-quality.md) and the active [formatter/lint/static-analysis toolchain](../engineering/linting.md). Review for duplicate policy knowledge, wrong abstraction, excessive coupling, obscured error handling, unreachable/deprecated code and missing tests. A linter pass does not imply maintainability or behavioral correctness.
 
-## Verificación como usuario real
+While internal APIs are experimental, remove superseded code instead of preserving backward-compatibility shims. Respect actual stable external contracts and persisted user data; see [ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md).
 
-Por incremento: unit/contract/integration según alcance + ejecución externa del artefacto real + prueba del trayecto usuario (CLI, HTTP, Playwright, Paseo real) + pruebas negativas + recopilación de evidencia + Reviewer independiente. Si falla, el Implementer repara dentro del presupuesto y se repiten pruebas afectadas. El implementador no tiene autoridad de aceptación ni puede modificar el oráculo de forma oportunista.
+## Risk and delivery
 
-## Pruebas de base F1
+- **R0:** bounded low-risk change, potentially eligible for autonomous merge **only** after all required independent verification and CI.
+- **R1:** moderate ordinary change; additional policy-gated checks.
+- **R2:** security, data/schema migrations or published contracts; protected approval.
+- **R3:** authority, secrets, sandbox, policy/Quality Gate, merge logic or live Core upgrades; strictly protected process.
 
-- Fallo real del test obligatorio bloquea el merge.
-- Reporte de Reviewer independiente queda vinculado a candidato/política.
-- CI pendiente o SHA divergente bloquea la entrega.
-- Acción que toca archivos R2/R3 no usa ruta R0 aunque comenzara como trivial.
-- El recorrido de navegador/CLI encuentra y corrige al menos un defecto reproducible durante el desarrollo del producto.
+Recalculate risk from the **final diff**. A proposal labeled R0 does not grant merge authority. Immediately before delivery, recheck candidate SHA, policy, CI, review, GitHub branch protections and authorization. Only the Core Delivery Engine owns merge credentials; coding agents do not.
+
+## Independent real-user verification
+
+For each accepted slice: relevant unit/contract/integration tests → Implementer runs the actual built product and repairs issues → freeze exact candidate → **Independent Verifier** starts it on clean resources, checks CLI/HTTP/Playwright/Paseo user journeys and negative paths, and records separate evidence → Reviewer checks design/security/results → deterministic Quality Gate accepts or blocks.
+
+Author-written mocks and only-author-run tests cannot substitute for independent end-to-end acceptance. Verifier must not edit candidate or protected test oracles. Repairs require a new candidate and revalidation.
+
+## F1 negative acceptance examples
+
+- Failing/missing mandatory check prevents acceptance and merge.
+- Reviewer/Verifier evidence belongs to exact candidate/policy.
+- Pending CI, mismatched SHA or changed branch protection blocks delivery.
+- Actual R2/R3 diff cannot travel through R0 auto-merge.
+- At least one reproducible UI/CLI integration defect is detected and repaired during development, evidenced independently.

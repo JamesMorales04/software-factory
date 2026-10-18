@@ -1,8 +1,8 @@
-# ADR-0005 — Selección de lenguaje del Core (Go frente a Rust)
+# ADR-0005: Core implementation language — Go versus Rust
 
-- **Estado:** Propuesto / PENDIENTE DE RATIFICACIÓN.
-- **Contexto:** Core/Worker coordinan APIs, concurrencia, estado y procesos; Paseo SDK oficial está en TypeScript. El riesgo crítico es aislamiento del runtime y credenciales, no gestión de memoria dentro del Core.
-- **Alternativas:** Go (ergonomía concurrencia, API y menor tiempo esperado de integración) y Rust (ownership, control de memoria y garantías contra errores de memoria en compilación a cambio de mayor complejidad inicial).
-- **Propuesta:** Go para Core/Worker; TypeScript para adapter Paseo. No suponer que Go es intrínsecamente seguro para sandbox ni que Rust resuelve exposición de secretos por un proceso externo.
-- **Prueba previa:** comparar una integración vertical pequeña: API + job durable + subprocess + persistencia y recuperación; tiempo/costo real, complejidad, latencia/CPU/RAM, calidad. Decidir antes del primer commit de implementación del Core.
-- **Consecuencias:** Si se ratifica Go, documentar límites de concurrencia y race detection. Si gana Rust, adaptar stacks sin cambiar contratos de alto nivel.
+- **Status:** Proposed / decision pending; do not treat Go as ratified.
+- **Context:** Core and Worker orchestrate HTTP APIs, concurrent jobs, durable state and subprocesses. Paseo's client SDK is TypeScript; the most significant risk is isolation of provider credentials from untrusted agent tools, not raw CPU throughput.
+- **Alternatives:** Go (simple server/concurrency ergonomics, likely faster F1 delivery) and Rust (ownership guarantees and tighter memory control at increased initial implementation complexity).
+- **Preferred hypothesis:** Go for Core/Worker, TypeScript for the Paseo adapter. Neither language automatically guarantees OS sandboxing or secret separation.
+- **Required experiment:** Compare a small vertical slice: API, durable job, subprocess launch, persistence/recovery and measurable engineering effort, CPU/RAM, latency, defect risk and integration complexity. Decide before the first actual Core implementation commit.
+- **Consequences:** For Go, use race detection and explicit concurrency ownership. For Rust, adapt toolchain/CI without changing domain contracts. Do not maintain both production stacks for speculative compatibility.

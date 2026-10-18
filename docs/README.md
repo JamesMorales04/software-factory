@@ -1,43 +1,40 @@
-# Índice de documentación — Software Factory
+# Documentation and governance
 
-## Qué leer
+All normative software architecture and engineering guidance is maintained **in this repository, in English**. Documentation must track real project state; prose is never sufficient evidence that a feature is implemented.
 
-1. [Arquitectura maestra](architecture/MASTER.md) — visión, límites, decisiones, riesgos y fases.
-2. [Contratos](contracts/README.md) — interfaces y garantías entre componentes (por completar en F0).
-3. [Quality Baseline](quality/baseline.md) — condiciones universales de aceptación.
-4. [Seguridad y aislamiento](security/isolation.md) — límites de autoridad, credenciales y sandbox.
-5. [Telemetría](observability/telemetry.md) — estado, eventos, trazas, logs, métricas.
-6. [Factory Office](product/factory-office.md) — UX mínima y proyecciones.
-7. [F0/F1](implementation/f0-f1-plan.md) — hitos y evaluación real de cada incremento.
-8. [ADRs](architecture/decisions/README.md) — decisiones arquitectónicas, motivos y sustituciones.
+## Reading order
 
-## Jerarquía de referencias
+1. [Master architecture](architecture/MASTER.md) — scope, decisions, boundaries and stage gates.
+2. [Engineering standards](engineering/code-quality.md) and [linting](engineering/linting.md) — clean design and objective static checks.
+3. [Contracts](contracts/README.md) — authoritative interfaces to finish during F0.
+4. [Quality baseline](quality/baseline.md) — global acceptance and independent verification.
+5. [Security](security/isolation.md) and [SEC-01 spike](security/paseo-sandbox-spike.md).
+6. [Observability](observability/telemetry.md) — durable events, traces, metrics, logging.
+7. [Factory Office](product/factory-office.md) — F1 UI and event projections.
+8. [F0/F1 plan](implementation/f0-f1-plan.md) and [campaign brief](implementation/campaign-prompt.md).
+9. [Decision records](architecture/decisions/README.md) — decisions, trade-offs, and supersession.
 
-- **Propietario del producto:** aprueba decisiones y excepciones reservadas.
-- **ADR aceptado:** razón y alcance de una decisión arquitectónica acordada; si se sustituye, registrar un ADR nuevo.
-- **MASTER:** resumen normativo, acuerdos, límites y mapa de módulos; debe sincronizarse con ADR y contratos.
-- **Contratos y políticas versionadas:** comportamiento y verificación concretos. Una autorización operacional solo proviene de la política exigible del Core, nunca del texto de un agente ni de un documento ambiguo.
-- **AGENTS.md:** instrucciones operativas, no duplicación de toda la arquitectura.
-- **Planes y notas:** propuestas o guías, no pruebas de integración ni concesiones de autoridad.
+## Authority hierarchy
 
-Ante contradicción documental: **detener afirmaciones de conformidad**, registrar problema y resolverlo mediante Action/ADR según riesgo. No elegir silenciosamente la alternativa menos restrictiva.
+1. Explicit product-owner approvals and enforced Core authorization/security policies control permitted actions.
+2. Accepted ADRs record significant decisions; applicable versioned contracts and policies define testable behavior.
+3. [MASTER](architecture/MASTER.md) summarizes the agreed product design; it must remain consistent with ADRs and contracts.
+4. `AGENTS.md` is a **short operational entry point**, not a second complete architecture specification.
+5. Roadmaps, prompts, generated diagrams, skill text and agent recommendations are advisory unless incorporated through governed changes.
 
-## Política de mantenimiento documental
+For contradictory normative text, stop claiming compliance, open an Action/ADR and reconcile; do not silently select the permissive interpretation.
 
-- Cada cambio funcional debe revisar qué documentación, pruebas, diagramas y telemetría afecta; si no cambia la arquitectura, registrar explícitamente “sin impacto arquitectónico” en el PR.
-- Cada decisión arquitectónica relevante sigue: Action → ADR propuesto → evaluación/riesgo → decisión autorizada → actualización conjunta de MASTER, contratos, tests y diagramas → revisión y PR.
-- ADR aceptado se mantiene como historial: para reemplazarlo, crear nuevo ADR y marcar el anterior `Superseded`.
-- Cambios de políticas de seguridad, aislamiento, merge, Quality Baseline o upgrade requieren vía protegida.
-- La documentación debe indicar: `Acordado`, `Propuesto`, `No verificado`, `Implementado` o `Verificado`; no promocionar estados por existir un checkbox o prueba unitaria aislada.
-- Documentos y contratos deben estar enlazados en el índice; comprobar enlaces y referencias en CI cuando comience la implementación.
+## Documentation update rules
 
-## Documentación operativa generada
+- **Every code PR** assesses docs, tests, examples, instrumentation and compatibility impact. If no architecture impact exists, state so in the PR.
+- **Material design decisions:** Action → proposed ADR with alternatives and consequences → risk/authority approval → update MASTER/contracts/quality/tests/diagrams together → independent review.
+- **Accepted ADRs are append-only in meaning:** supersede them explicitly with a new ADR and mark old records `Superseded` without rewriting their original rationale.
+- Security, credential boundaries, merge policies, Quality Gate, evidence acceptance and Core updates have protected approval paths.
+- Clearly label statuses `Agreed`, `Proposed`, `Unverified`, `Implemented` or `Verified`. `Implemented` alone does not mean integrated and certified.
+- **Early-stage internal breaking changes are expected.** See [ADR-0006](architecture/decisions/ADR-0006-early-development-compatibility.md); remove obsolete shims and update all internal references in one change. Public/stable contracts and persisted data require separately reviewed migration decisions.
+- New contributors and agents must start with `AGENTS.md` and this index, then retrieve focused documents; avoid duplicate rules across files.
+- CI should check Markdown style, links, formatting, and referenced files as soon as practical. See [lint policy](engineering/linting.md).
 
-Las trazas, resultados de tests, capturas, logs y evidencias de Runs son **artefactos**, no fuente normativa de arquitectura. Deben tener identidad, retención y acceso controlados; no añadirse masivamente a `docs/` ni al historial Git. El repositorio conserva referencias y fixtures pequeños, nunca credenciales ni volúmenes completos de telemetría.
+## What does not belong in Git
 
-## Nuevos documentos de F0
-
-- [`security/paseo-sandbox-spike.md`](security/paseo-sandbox-spike.md): prueba bloqueante de Paseo/sandbox/credenciales.
-- [`architecture/decisions/ADR-0004-independent-user-journey-verification.md`](architecture/decisions/ADR-0004-independent-user-journey-verification.md): verificador independiente en la etapa Review.
-- [`architecture/decisions/ADR-0005-go-vs-rust-pending.md`](architecture/decisions/ADR-0005-go-vs-rust-pending.md): comparación de lenguajes pendiente.
-- [`implementation/campaign-prompt.md`](implementation/campaign-prompt.md): prompt de campaña inicial.
+Runtime telemetry, raw session transcripts, large traces, recordings, screenshots, build outputs, credentials and confidential payloads are artifacts governed by storage/retention policy, **not** architecture docs. Commit only small sanitized test fixtures and immutable references/digests where necessary.

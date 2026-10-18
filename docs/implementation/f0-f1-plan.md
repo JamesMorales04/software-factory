@@ -1,60 +1,48 @@
-# Plan de inicio: F0 y F1 — validación continua con uso real
+# F0 and F1 — implementation and independent validation plan
 
-> **Estado:** propuesta para ratificación antes de implementar. Ningún repo o código de producto fue creado mediante este paquete.
+**Status:** implementation planning; source repository is permanently `JamesMorales04/software-factory`. This documentation does **not** certify a working product or authorize unbounded campaigns.
 
-## F0 — Documentation first
+## F0 — specification and blocked-risk experiments
 
-**Entrada:** decisiones de producto ya acordadas. **Salida:** primer commit documental del repositorio *después de autorización explícita*, con README, AGENTS, MASTER, ADR, contratos F0, calidad, seguridad, telemetría y plan de pruebas. Nombre definitivo y licencias por decidir.
+- **F0-01:** review the MASTER, enforce English documentation, label agreed/proposed/unverified facts, and reconcile ADR and contract contradictions.
+- **F0-02:** specify six minimal contracts: Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery and Factory Events. Each needs owners, identity, schema, lifecycle, idempotency, error rules, authority, evidence and positive/negative tests.
+- **F0-03:** execute the blocking [SEC-01](../security/paseo-sandbox-spike.md) Paseo/Podman/credential feasibility experiment on disposable fixtures and fake canaries. Avoid writing the full Worker until the boundary is demonstrated.
+- **F0-04:** evaluate Go versus Rust (TECH-01) using an actual bounded API/job/persistence/recovery sample. Approve the implementation stack and select matching lint/type toolchain.
+- **F0-05:** implement or configure a lightweight documentation-quality CI path when authorized and test it against this repo; ensure links, secret scanning and formatting checks are real rather than decorative.
+- **F0 exit:** approved contracts, SEC-01 outcome, stack decision and objective F1 acceptance criteria. If an isolation blocker remains, document `BLOCKED` rather than weakening policy.
 
-F0-01. Revisar MASTER, marcar `Acordado / Propuesto / No verificado`; resolver inconsistencias.
+## F1 — verified vertical slices
 
-F0-02. Especificar seis contratos: Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery y Factory Events; cada uno con estados, idempotencia, permisos, errores y tests.
-
-F0-03. Diseñar prueba de viabilidad bloqueante para Paseo + sandbox + tokens de proveedor + inspección de sesiones. Ejecutarla **después** de autorizar el trabajo técnico en un entorno descartable, antes de desarrollar dependencias extensas.
-
-F0-04. Establecer comandos reales de build/test solo cuando exista código. Configurar comprobación de docs/enlaces y secret scanning en CI del futuro repo.
-
-## F1 — vertical slices; no avance sin evidencia
-
-| Slice | Entrega | Prueba negra de usuario | Prueba negativa o de fallo |
+| Slice | Deliverable | Independent real-user journey | Required negative path |
 |---|---|---|---|
-| S1 | Core persistente + API + UI mínima + eventos/OTel | Arrancar servidor, abrir UI, crear/ver Action, reiniciar y ver persistencia | Denegar operaciones inválidas, evitar evento duplicado, OTel caído no bloquea |
-| S2 | Worker local y contrato Core–Worker | Crear Run, ver Worker real y resultado | Crash/reconnect/lease, reenvío, no doble ejecución |
-| S3 | Paseo real + aislamiento viable | Crear sesión, ejecutar tarea y observarla por UI | Host/otro proyecto/secretos/sockets no accesibles, red acotada |
-| S4 | Implementer, Reviewer y Quality Baseline | Producir un diff real, tests y revisión independiente | Falla obligatoria bloquea; reviewer no modifica candidato |
-| S5 | GitHub Delivery | PR real, CI y evaluación sobre commit exacto | PR R0 no elegible bloqueado; no doble merge, SHA modificado revalida |
-| S6 | Campaña de autodesarrollo | Core estable A desarrolla mejora real de UI en candidato B y entrega por PR | B no altera A; estados correctos en UI; rollback de candidatos sin afectar Core |
+| S1 | Durable Core, API, domain events, telemetry and minimal Factory UI | Start the server, create/view Action in browser, restart Core and observe persisted state | Unauthorized/invalid operation rejected; duplicate event ignored; OTel outage nonblocking |
+| S2 | Local Worker and Core–Worker dispatch/lease/recovery | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
+| S3 | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
+| S4 | Implementer, Independent Verifier, Reviewer, baseline | Produce a real diff; independent tester starts and exercises exact commit | Mandatory failure blocks; Reviewer cannot mutate candidate |
+| S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |
+| S6 | First self-development campaign | Stable Core A supervises a functional Factory UI improvement in candidate B | B cannot modify or replace A; incorrect evidence blocks delivery |
 
-Las características R0 de merge automático deben probarse con un PR real elegible; el PR de autodesarrollo solo se fusionará cuando su riesgo final y permisos lo permitan.
+Real autonomous R0 merge requires a separate eligible case and rechecked protection rules; the first self-development PR must not be force-merged if its final risk disallows it.
 
-## Algoritmo de trabajo para cada slice
+## Mandatory slice loop
 
-1. Preparar un criterio de aceptación *observable desde fuera* antes de programar; congelar los tests de aceptación requeridos.
-2. El agente implementa el cambio más pequeño dentro de su workspace.
-3. Ejecuta unit/contract/integration pertinentes y arranca **el producto construido** en un entorno desechable.
-4. Implementer realiza comprobaciones propias como usuario para localizar fallos y repararlos. Captura salida y trazas pertinentes.
-5. **Independent Verifier** (etapa Review, distinto del autor) toma el commit exacto en un checkout limpio y realiza los recorridos negros de usuario con oráculos no editables por el Implementer: CLI, HTTP, UI Playwright y/o Paseo real según el slice.
-6. Si falla: reproducir, diagnosticar con eventos/traces, abrir/fijar Repair subtask, corregir, revalidar pruebas impactadas (y la integración afectada). Iteración acotada por progreso y presupuesto.
-7. Reviewer independiente inspecciona candidato, seguridad y evidencia; Quality Gate verifica contratos sin aceptar autoafirmaciones del Implementer.
-8. PR/merge según autoridad. No fusionar `NOT_TESTED`, PASS parcial, evidencias de SHA obsoleto o scripts que no se ejecutaron.
-9. Solo después de aceptación pasar al siguiente slice. Fallos encontrados posteriormente se convierten en Incidents/Actions y casos de regresión.
+1. Define scope, exact acceptance criteria, independent oracles and negative cases **before** implementation.
+2. Implementer makes the smallest coherent change in the assigned workspace, removing obsolete internal interfaces and updating all callers atomically when needed.
+3. Run formatter/linter/static checks, compilation, targeted unit/contract/integration tests and applicable security checks. Never disable quality tooling to pass.
+4. Implementer **uses the built product** via real executable, HTTP, Playwright browser UI or real Paseo session as applicable. Diagnose from actual logs/traces, repair boundedly, and rerun affected checks.
+5. Freeze candidate commit and artifact digests. An **Independent Verifier** (not its author) uses a clean immutable checkout and protected oracle to rerun the journeys and negative paths.
+6. Independent Reviewer assesses architecture boundaries, maintainability, DRY, security, test adequacy and evidence. Deterministic Quality Gate decides acceptance.
+7. Record failures as repair Tasks with bounded budget; repairs create new candidates and invalidate affected evidence. Never use a mock-only PASS as final acceptance.
+8. Only after acceptance advance the slice or authorize governed delivery. Regressions discovered later become Incident/Action and eval fixtures.
 
-## Evidencia mínima por slice
+## Evidence per slice
 
-`sliceId`, `actionId`, `commit`, `candidateDigest`, `policyRevision`, `runId`, `workerId`, `paseoSessionId` (si aplica), comando/recorrido de usuario, resultados de checks, logs redactados, trazas/capturas si corresponden, errores y reparaciones, reviewer, dictamen Gate, URL/recibo de PR si aplica. La evidencia se guarda con retención y accesos, no se vuelca íntegramente al repo.
+Attach exact candidate SHA, Action/spec/policy revision, Run/Worker/Paseo session identities where applicable, actual commands and browser journeys, formatter/linter/build/test results, redacted logs and OTel traces, user-journey evidence, Reviewer verdict, repairs and PR/merge receipts. Artifact storage follows retention/security policy, not indiscriminate Git commits.
 
-## Riesgos bloqueantes y salida
+## Non-negotiable F1 blockers
 
-F1 no se declara completa con mocks de Paseo, credenciales expuestas, sandbox degradado, UI simulada, inexistencia de prueba real, CI saltado, merge no autorizado ni Run irreconciliable. Las pruebas de seguridad y recuperación son parte de la aceptación, no tareas pospuestas.
+No F1 PASS with fabricated Paseo agents, credential leakage, unsafe sandbox fallback, UI-only mock data, missing independent review, unaudited delivery, missing telemetry, unresolved duplicate effects or unrecoverable Runs. The verifier cannot be the candidate's sole author.
 
-## Próximos pasos concretos
+## Development hygiene
 
-1. Validar este paquete documental con el propietario; decidir nombre/repositorio/licencia y visibilidad.
-2. **Solo tras autorización:** crear repositorio, incorporar estos documentos en primer commit, abrir PR de ratificación de arquitectura/contratos.
-3. Ejecutar spike de seguridad Paseo antes de invertir en el Worker completo.
-4. Implementar S1 con telemetría desde el arranque; prueba de navegador real.
-5. Avanzar slice a slice sin permitir que el Implementer sea su propio oráculo.
-
-## Preparación técnica de F0
-
-Antes de fijar Go o Rust como lenguaje definitivo, estudiar `docs/architecture/decisions/ADR-0005-go-vs-rust-pending.md`. Para el bloqueo de Paseo+credenciales ejecutar `docs/security/paseo-sandbox-spike.md`. Prompt de coordinación: `docs/implementation/campaign-prompt.md`.
+Follow [engineering standards](../engineering/code-quality.md), [lint policy](../engineering/linting.md) and [ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md). Do not build a compatibility subsystem for pre-release internal schemas; simplify and update callers/tests/docs together. Project/quality boundaries remain protected.

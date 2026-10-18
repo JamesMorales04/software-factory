@@ -1,23 +1,23 @@
 ---
 id: ADR-0003
-status: Proposed
+status: Accepted
 date: 2026-10-18
 owner: product-owner
 ---
-# ADR-0003 — Telemetría desde el primer incremento funcional
+# ADR-0003: Telemetry from the first functional slice
 
-## Contexto
-La Factory necesita diagnosticar fallos, recuperar Runs, medir recursos, observar agentes y comparar modelos. Añadir telemetría después haría invisibles los primeros problemas de integración.
+## Context
+The Factory must diagnose failures, recover Runs, track actual resource usage, observe agent sessions and evaluate routing. Adding observability only after core integration would hide early failures.
 
-## Alternativas
-1. Integrarla al final de F1: menor trabajo inicial, poca trazabilidad de fallos tempranos.
-2. Instrumentación mínima desde el primer Core con persistencia, evolutiva: costo inicial moderado y evidencia temprana.
+## Alternatives
+1. Introduce telemetry at the end of F1 — easier startup, poor early forensics.
+2. Minimal instrumentation from the first Core slice — some upfront cost, reliable evidence from the outset.
 
-## Decisión propuesta
-Alternativa 2: eventos duraderos transaccionales para estado; logs estructurados con redacción de secretos; trazas y métricas OTel, export local inicial y OTLP opcional. Core opera aunque el exportador esté caído.
+## Decision
+Choose option 2: transactionally durable business events for authoritative history, structured redacted logs, OpenTelemetry traces/metrics and local-first export. OTLP remains optional. Exporter failure cannot change a business transition.
 
-## Consecuencias
-Necesidad de IDs y convenciones compartidas desde F1. Prohibido convertir telemetría mutable en autoridad o incluir secretos/prompts/código en atributos.
+## Consequences
+Shared identities and redaction policies are required from day one. Telemetry is diagnostic, not authorization or proof that model claims are true.
 
-## Verificación
-Una Action creada, consultada y recuperada tras reinicio debe contar con eventos y trazas correlacionables; apagar el exportador no altera la transición; los logs no filtran secretos de pruebas.
+## Verification
+Creation/recovery of an Action emits correlated events/traces; exporter downtime leaves state safe; secret canaries are absent from logs and spans.

@@ -1,23 +1,23 @@
 ---
 id: ADR-0001
-status: Proposed
+status: Accepted
 date: 2026-10-18
 owner: product-owner
 ---
-# ADR-0001 — Arquitectura y decisiones versionadas en Git
+# ADR-0001: Versioned architecture and decisions in Git
 
-## Contexto
-La experiencia de AEH evidenció el costo de decisiones duplicadas, documentación divergente y afirmaciones de capacidades no demostradas. Los agentes necesitan un punto de entrada breve y una fuente de verdad verificable.
+## Context
+Prior AEH work exposed the cost of duplicated architectural authority, stale descriptions and features declared ready without real verification. Coding agents need a concise starting point and an auditable design.
 
-## Alternativas
-1. Conversaciones/wiki como autoridad principal: difícil de vincular a commits y PR.
-2. Documentación versionada en el mismo repositorio: permite revisión, trazabilidad y pruebas de enlaces.
+## Alternatives
+1. Conversations/external wiki as primary authority: not reliably bound to commits and PRs.
+2. Documentation stored alongside the product: reviewable, versioned and linked to code and tests.
 
-## Decisión propuesta
-Mantener `docs/architecture/MASTER.md`, ADRs y contratos bajo control de versiones; `AGENTS.md` en raíz como índice operativo. Toda modificación arquitectónica relevante exige sincronización documental y revisión.
+## Decision
+Adopt option 2. Maintain `docs/architecture/MASTER.md`, ADRs, contracts and engineering standards in this repository, with root `AGENTS.md` as a compact entry point. Update architecture-related docs together with implementation changes.
 
-## Consecuencias y límites
-Fácil auditoría y onboarding de agentes; costo de mantener referencias. La documentación no sustituye políticas del Core ni evidencia de ejecución.
+## Consequences
+Easy audit and agent onboarding; documentation must be maintained and checked. It cannot supersede Core authorization or replace runtime evidence.
 
-## Verificación
-Cada PR relevante identifica la Action y el ADR si aplica, enlaces válidos y cambios documentales sincronizados. Ninguna capacidad se etiqueta `VERIFIED` sin recorrido real de aceptación.
+## Verification
+Every materially architectural PR carries its Action/ADR context, updated references and justified scope. Do not mark any capability `Verified` without a real acceptance trace.

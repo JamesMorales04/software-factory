@@ -4,21 +4,21 @@ status: Accepted
 date: 2026-10-18
 owner: product-owner
 ---
-# ADR-0002 — Quality Baseline global obligatorio
+# ADR-0002: Mandatory global quality baseline
 
-## Contexto
-Una Factory multiproyecto debe estandarizar garantías sin imponer exactamente las mismas herramientas a todos los lenguajes/frameworks.
+## Context
+The Factory serves different languages and products. We need universal guarantees without blindly running every tool in every project.
 
-## Alternativas
-1. Un conjunto fijo de herramientas para todos: gasto y fallos espurios.
-2. Solo perfiles por proyecto: posibilidad de debilitar requisitos comunes.
-3. Garantías globales con verificaciones pertinentes y perfiles aditivos por proyecto.
+## Alternatives
+1. One fixed tool suite for all projects — unnecessary cost and false failures.
+2. Only project-specific profiles — allows shared safety guarantees to erode.
+3. Global acceptance guarantees with additive project profiles.
 
-## Decisión
-Adoptar la alternativa 3: identidad, aislamiento, alcance, corrección, regresión, seguridad, revisión, evidencia y entrega verificables son requisitos globales; el perfil añade verificaciones propias. Ningún proyecto puede debilitarlos silenciosamente.
+## Decision
+Choose option 3. Candidate/spec/policy identity, isolation, permitted scope, functional correctness, relevant regression, security, independent verification, evidence provenance and exact delivery identity are mandatory. Project profiles add checks; they cannot weaken the baseline.
 
-## Consecuencias
-La ejecución de herramientas depende del riesgo y tipo de cambio. Un `NOT_TESTED` o `SKIPPED` no es PASS. Política de entrega y riesgo son autoridad del Core, no de los agentes.
+## Consequences
+Concrete tools vary with stack and risk. `SKIPPED`/`NOT_TESTED` never mean `PASS`. The Core owns risk and acceptance; agent judgment is advisory.
 
-## Verificación
-Demostrar en F1 que una prueba obligatoria ausente o fallida impide aceptación y que las validaciones guardan el SHA exacto del candidato.
+## Verification
+F1 must show that a missing/failing required check blocks acceptance, and that results are tied to the exact candidate SHA.

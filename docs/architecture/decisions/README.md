@@ -1,11 +1,14 @@
-# Architecture Decision Records
+# Architecture Decision Records (ADRs)
 
-El ADR explica **por qué** se eligió una dirección, con contexto y alternativas. `MASTER.md` resume el diseño vigente. Los contratos precisan el comportamiento exigible.
+An ADR records the **context, alternatives, decision, and consequences** of a significant design choice. The [MASTER](../MASTER.md) summarizes current architecture; [contracts](../../contracts/README.md) specify externally observable behavior.
 
-Estados: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Un ADR aprobado no se borra para cambiar la decisión; debe quedar enlazado con su sustituto.
+Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preserve accepted rationale; supersede with a new ADR and cross-link it. Routine code changes do not require an ADR. [Template](../../templates/adr.md).
 
-- [ADR-0001 — Arquitectura en Git y documentación como fuente de verdad](ADR-0001-documentation-in-git.md) — propuesta documental para ratificación inicial.
-- [ADR-0002 — Quality Baseline global obligatorio](ADR-0002-global-quality-baseline.md) — decisión acordada por el propietario.
-- [ADR-0003 — Telemetría desde el primer incremento](ADR-0003-telemetry-from-inception.md) — propuesta técnica de instrumentación temprana.
-
-Crear ADR solo ante decisión arquitectónica relevante, no por cada cambio rutinario. Plantilla: [docs/templates/adr.md](../../templates/adr.md).
+- [ADR-0001 — Architecture documentation in Git](ADR-0001-documentation-in-git.md) — documented source of truth.
+- [ADR-0002 — Global quality baseline](ADR-0002-global-quality-baseline.md) — agreed required acceptance guarantees.
+- [ADR-0003 — Telemetry from the first slice](ADR-0003-telemetry-from-inception.md) — early instrumentation.
+- [ADR-0004 — Independent real-user verification](ADR-0004-independent-user-journey-verification.md) — verification separate from the author.
+- [ADR-0005 — Go versus Rust](ADR-0005-go-vs-rust-pending.md) — proposed, awaiting empirical decision.
+- [ADR-0006 — Early-development compatibility](ADR-0006-early-development-compatibility.md) — no speculative compatibility shims.
+- [ADR-0007 — Maintainable, DRY code](ADR-0007-maintainable-code-and-dry.md) — code architecture quality principles.
+- [ADR-0008 — Static quality gates](ADR-0008-static-analysis-gates.md) — language-appropriate linting.

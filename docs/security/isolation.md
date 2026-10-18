@@ -1,34 +1,31 @@
-# Aislamiento, credenciales y límites de confianza
+# Isolation, credentials and trust boundaries
 
-> **Requisito acordado:** sandbox por defecto, host mediante excepción explícita. **Tecnología propuesta:** rootless OCI/Podman (no certificada aún). **Bloqueador F0/F1:** compatibilidad real con Paseo.
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception. **Technology proposed:** rootless Podman/OCI, not yet certified. **F0/F1 blocker:** real Paseo isolation and credential behavior.
 
-## Autoridad
+## Authority
 
-Core posee credenciales y permisos de entrega, políticas, estado y presupuesto. Worker recibe asignaciones con capacidades estrictamente necesarias. Paseo administra sesiones, no decide delivery. Los tests de repositorio, scripts de skills y comandos del agente se consideran **potencialmente no confiables**.
+The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. Paseo owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
 
-## Workspace
+## Per-Run workspaces
 
-Checkout autocontenido por Run en directorio aislado, commit fijado. No compartir worktrees mutables entre proyectos o Runs. Un worktree Git por sí solo no proporciona seguridad OS. Reviewer consume snapshot candidato sin derechos de escritura.
+Use a sealed source identity and an isolated checkout for each Run. Avoid shared mutable worktrees across projects or attempts. Git worktrees provide source management, **not OS security isolation**. The Reviewer/Verifier receive read-only candidate snapshots and independent oracles.
 
-## Restricciones mínimas
+## Required protections
 
-- No HOME, socket contenedor/daemon privilegiado, DB Core, tokens de GitHub u otros proyectos accesibles desde el contexto no confiable.
-- Namespace de filesystem/procesos/usuario y recursos limitados; aislamiento de red acorde a modelo/proveedores/dependencias.
-- Las capacidades expuestas al LLM son ergonomía; el límite efectivo debe venir del sandbox y de operaciones privilegiadas mediadas por Core.
-- Excepciones al host: recurso exacto, identidad, razón, expiración, autorización y auditoría; ninguna excepción `all-host-access` implícita.
-- Secretos del runtime: estar en el mismo sandbox que código no confiable **no** demuestra protección. Investigar separación en procesos/contendedores/mediación, autenticación mínima y rutas de shell/MCP no interceptables. Si falla, bloquear, no degradar.
+- No host HOME, privileged container sockets, Core DB, GitHub merge tokens, other-project folders or provider secrets visible to untrusted commands.
+- Bound filesystem, process, UID/user namespace, CPU/RAM/PIDs, networking and egress; no silent fallback to direct host shell.
+- Tool/LLM instructions can express intent but do not enforce privileges. Effective authorization belongs at the OS boundary and Core-mediated side effects.
+- Host exceptions require resource, actor, reason, expiry, narrow permissions and audit evidence; there is no implied `all-host-access` grant.
+- **Critical:** running provider CLI and untrusted shell in the same credential-bearing sandbox does not demonstrate secret protection. Evaluate process separation, mount namespaces and mediation; block unsupported topologies.
+- Any new executable external skill must undergo provenance, integrity, sandbox and capability checks before admission; skills never self-authorize.
 
-## Pruebas negativas obligatorias
+## Negative acceptance tests
 
-1. El Run no lee archivos de host, otras Actions o repositorios ajenos.
-2. El código ejecutado desde el repositorio no puede acceder a credenciales privilegiadas del Core ni al material de autenticación del runtime dentro del modelo de amenaza definido.
-3. No es posible ampliar permisos usando instrucciones de skill, shell alternativo o MCP.
-4. Paseo puede iniciar, operar, inspeccionarse y cerrarse sin traspasar la frontera.
-5. La política de red permite lo requerido y rechaza destinos prohibidos.
-6. Restart/cleanup no deja sesiones ni workspaces privilegiados huérfanos.
+1. Untrusted execution cannot read or mutate host/other-project files.
+2. Untrusted scripts cannot inspect Core secrets or provider authentication artifacts within the defined threat model.
+3. Alternative shell/MCP/skill invocation cannot bypass capabilities.
+4. A real Paseo agent can start, run, be inspected and end while the boundary holds.
+5. Required egress works and forbidden destinations fail.
+6. Crash/restart/cleanup do not leak privileged orphan sessions, processes or workspaces.
 
-Los resultados deben ser evidencias reales de una prueba técnica. No afirmar seguridad absoluta ni compatibilidad hasta ejecutarlas.
-
-## Spike obligatorio SEC-01
-
-El plan y criterio de aceptación están en [`paseo-sandbox-spike.md`](paseo-sandbox-spike.md). La capacidad del SDK no acredita por sí misma aislamiento de la ejecución ni inaccesibilidad de tokens en el proceso proveedor.
+These are actual test obligations, not proof of absolute security. Follow [SEC-01](paseo-sandbox-spike.md).

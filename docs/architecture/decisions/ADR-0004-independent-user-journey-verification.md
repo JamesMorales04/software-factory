@@ -1,7 +1,7 @@
-# ADR-0004 — Verificación externa independiente de recorridos de usuario
+# ADR-0004: Independent black-box user journey verification
 
-- **Estado:** Propuesto para ratificación; refleja la decisión discutida con el Owner.
-- **Contexto:** Pruebas ejecutadas solo por el autor no demuestran que el candidato funcione fuera de su workspace ni que el oráculo sea independiente.
-- **Decisión:** Implementer debe reproducir, ejecutar y reparar pruebas propias, pero la aceptación requiere un Independent Verifier en etapa de review que arranque el **commit exacto** en un entorno limpio, ejecute recorridos observables (CLI/API/Playwright/Paseo según superficie) y produzca artefactos independientes. Reviewer evalúa calidad, seguridad y evidencias. Quality Gate determinista emite la decisión. Un mismo Reviewer puede asumir la función de Verifier en cambios pequeños, sin perder separación del autor.
-- **Controles:** El Verifier no podrá modificar el candidato ni relajar tests; la revisión ocurre sobre artefacto/commit inmutable. Correcciones devuelven trabajo a Implementer o Repairer y originan revisión del candidato y revalidación. El entorno y oráculo son independientes del autor, incluso si se utiliza el mismo proveedor de LLM; validar identidad de participante y permisos.
-- **Consecuencias:** Aumenta ligeramente el costo de verificación, reduce falsos PASS y encuentra fallas de integración/UX. Requiere harness de pruebas negras reutilizable y evidencias por Run.
+- **Status:** Accepted (product-owner decision)
+- **Context:** Tests written and executed only by an implementer may inadvertently validate its own assumptions or rely on files from its workspace.
+- **Decision:** An Implementer must run real product checks and repair defects, but final acceptance requires an **Independent Verifier** during review to exercise the exact frozen candidate commit in a clean environment, without editing candidate or acceptance oracles. Use CLI/API/Playwright/real Paseo paths appropriate to the feature. A separate Reviewer assesses code, security and evidence; the deterministic Quality Gate records the decision. For small changes, an independent Reviewer may fulfill the Verifier function if the read-only boundary remains effective.
+- **Controls:** The author cannot modify independent oracles to pass. Identity, permissions, environment and evidence must be bound to the candidate. Repairs create a new candidate and trigger revalidation. Independence is about actual authority, process and evidence; using a different model alone is insufficient.
+- **Consequences:** Some added verification expense; fewer false positives, more reliable UX/integration evidence and repeatable acceptance workflows.

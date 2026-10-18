@@ -3,32 +3,34 @@ id: ADR-XXXX
 status: Proposed
 date: YYYY-MM-DD
 owner: product-owner
-scope: architecture
+supersedes: null
 ---
+# ADR-XXXX: Short decision title
 
-# ADR-XXXX — Título breve de la decisión
+## Context and problem
 
-## Contexto / problema
-¿Qué problema concreto resolvemos? ¿Qué evidencia y restricciones existen?
+State the actual observed constraint or problem, the relevant Action and affected contracts. Separate tested facts from assumptions.
 
-## Alternativas evaluadas
-- Alternativa A: ventajas, costos y riesgos.
-- Alternativa B: ventajas, costos y riesgos.
+## Decision drivers and invariants
 
-## Decisión
-Qué se adopta, por qué y con qué límites. Diferenciar decisión acordada de su implementación verificada.
+List required security, correctness, maintainability and resource properties.
 
-## Consecuencias
-Efectos positivos, negativos, deuda conocida y rutas de reversión.
+## Considered alternatives
 
-## Seguridad, calidad y autonomía
-Qué política/autoridad aplica; impacto sobre el Quality Baseline; escenarios de fallo.
+Describe at least the realistic options, including a simpler option, with relevant costs and risks.
 
-## Verificación
-Pruebas o evidencia necesarias para considerarla implementada y validada.
+## Decision
 
-## Documentación y contratos afectados
-Rutas que deberán actualizarse en el mismo PR.
+State the chosen option, scope, authorized approver, and exactly what it does **not** authorize. If proposed, keep it clearly nonbinding.
 
-## Sustitución / seguimiento
-ADR anterior sustituido o pendiente relacionado, si corresponde.
+## Consequences
+
+List positive/negative consequences, compatibility impact and follow-up work. During early pre-release development, do not introduce internal compatibility shims without a demonstrated need.
+
+## Verification
+
+Specify code/test/docs changes and a reproducible acceptance case or measurement. Record evidence/PR/commit links when they exist.
+
+## Supersession
+
+If replacing an accepted decision, cross-link the new ADR from the old one without erasing its historical rationale.

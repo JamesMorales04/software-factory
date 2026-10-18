@@ -1,14 +1,16 @@
-# Contratos de F0 — índice de trabajo
+# F0 contract inventory
 
-**Estado:** propuesto, pendiente de especificación y revisión. Esta lista no equivale a contratos completados.
+**Status: proposed, not yet specified or certified.** This index is a contract-development checklist, not a set of completed APIs.
 
-| Contrato | Entidades/operaciones | Fallos obligatorios que debe cubrir |
+| Contract | Scope | Required adversarial scenarios |
 |---|---|---|
-| Project–Action | identidad, spec, estado, riesgo | duplicación, drift, cancelación, cambio de spec |
-| Campaign–Run | dependencias, intento, presupuesto, ownership | reintentos, interrupción, leases, concurrencia |
-| Core–Worker | registro, asignación, heartbeat, resultado, cancel | pérdida de red, replay, fencing, muerte del worker |
-| Agent Session | modelo/runtime, workspace, eventos, permisos | no inicio, pérdida de sesión, timeout, incompatibilidad |
-| Quality–Delivery | candidato, verificaciones, revisión, PR/merge | CI pendiente, SHA cambiado, webhook repetido, riesgo elevado |
-| Factory Events | evento persistente, secuencia, stream/replay, RBAC | reconexión, duplicados, omisiones, filtrado de secretos |
+| Project–Action | identities, frozen specs, risk, lifecycle | duplicates, cancellation, spec drift |
+| Campaign–Run | task dependencies, attempts, ownership, budgets | retries, crashes, leases, contention |
+| Core–Worker | registration, dispatch, heartbeat, result, cancellation | disconnects, replay, fencing, worker loss |
+| Agent Session | Paseo provider/model, sandbox, capabilities, events | startup failure, session loss, timeouts, incompatibility |
+| Quality–Delivery | candidate, evidence, independent review, PR/merge | pending CI, changed SHA, duplicate webhook, reclassified risk |
+| Factory Events | persisted IDs, sequence, subscriptions, replay and RBAC | reconnects, duplicates, omissions, secret redaction |
 
-Cada contrato deberá definir: `version`, propietario, entradas, salidas, identificadores, invariantes, estados, idempotencia, límites de seguridad, errores estructurados, observabilidad, pruebas positivas y negativas, y compatibilidad. No inventar RPC concretos antes de la prueba técnica de F0.
+Each completed contract must specify owner, version and stability level; input/output schemas and identities; state machine; authorization; idempotency; error handling; liveness/resource limits; telemetry; positive/negative acceptance cases; and compatibility policy. Do not invent RPCs or provider capabilities before F0 viability tests.
+
+**Pre-release policy:** internal schemas can change incompatibly without shims; synchronize every caller, fixture and related test in one change. Any stable external or persisted-data contract requires explicit versioning and approval; see [ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md).

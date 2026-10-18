@@ -1,58 +1,55 @@
 # AGENTS.md — Software Factory
 
-> **Borrador para el futuro repositorio.** Este archivo es un punto de entrada breve para cualquier agente. El estado de las capacidades debe comprobarse en código y evidencias, nunca inferirse del roadmap. Nombre del proyecto provisional.
+> **Status:** F0 documentation-only repository. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
-## Misión
+## Mission and orientation
 
-Construir una Software Factory multiproyecto, local-first, capaz de desarrollar y reparar su propio software con agentes reales, aislamiento, calidad verificable, uso eficiente de recursos y control de autoridad por el Core.
+Build a reliable, maintainable, local-first, multi-project Software Factory capable of governed self-development. Favor **verified end-to-end working software** over speculative infrastructure.
 
-## Antes de trabajar
+**Read first:** [documentation index](docs/README.md), [architecture baseline](docs/architecture/MASTER.md), and only the contracts, ADRs, engineering rules and project docs relevant to your assignment. Do not load every document into context by default.
 
-1. Leer `docs/README.md` y `docs/architecture/MASTER.md`. Consultar los contratos y ADR pertinentes a la Action asignada; no cargar todo el repositorio innecesariamente.
-2. Identificar la Action, especificación **vigente/fijada**, alcance, commit inicial, política, permisos y criterios de aceptación. Si faltan, solicitar una aclaración por la vía autorizada; no inventar autoridad.
-3. Comprobar el estado real del código y las herramientas. No asumir que un componente documentado está implementado o integrado.
-4. Respetar el sandbox y el workspace asignados. No tocar el Core estable, otros proyectos, HOME del host, credenciales, sockets privilegiados ni datos fuera del alcance.
+## Before making changes
 
-## Principios invariantes
+1. Identify the authorized Action, frozen specification, repository/base commit, allowed paths, risk class, budget and acceptance criteria. Clarify missing authority rather than inventing it.
+2. Inspect actual code, environment and supported tools. A plan or mock is not evidence of an implemented capability.
+3. Respect the assigned sandbox and workspace. Never inspect host secrets, bypass isolation, edit another project or grant yourself new capabilities.
+4. Check [code quality](docs/engineering/code-quality.md), [lint policy](docs/engineering/linting.md), [quality baseline](docs/quality/baseline.md), and relevant architecture decisions.
 
-- El Core determinista posee estado, autorización, Quality Baseline, presupuesto y efectos externos. Las respuestas de LLM son propuestas/evaluaciones, no evidencia de autorización.
-- No sustituir pruebas reales por mocks en la aceptación final; los mocks sirven para unidades, no para acreditar recorridos de usuario.
-- No declarar PASS, ACCEPTED, MERGED o DEPLOYED sin su evidencia exacta. Distinguir NOT_TESTED, BLOCKED y NOT_APPLICABLE.
-- No ampliar un contrato, alterar una spec fijada, degradar pruebas obligatorias ni extender presupuestos para conseguir pasar una validación.
-- Reviewer independiente del Implementer. El autor ejecuta pruebas de desarrollo y repara; un Independent Verifier de la etapa Review ejecuta recorridos negros desde el commit exacto en un entorno limpio. Reviewer inspecciona evidencia y Quality Gate certifica. El Verifier/Reviewer no puede escribir sobre el candidato.
-- No introducir fallbacks no autorizados a procesos sin sandbox, modelos incompatibles o permisos más amplios.
-- Crear el cambio mínimo que cumple el objetivo. No ampliar scope ni añadir dependencias especulativas.
-- No registrar tokens, prompts completos, variables de entorno sensibles ni código fuente innecesario en telemetría.
-- Solo utilizar skills admitidas por el procedimiento y capacidades del Run. Una skill externa no concede derechos.
+## Mandatory engineering rules
 
-## Flujo de desarrollo obligatorio
+- **Early-development compatibility policy:** until an explicit stable/public contract is declared, prefer clean breaking changes over internal compatibility adapters, deprecated aliases, dual code paths, version shims or migration scaffolding. Update all in-repo callers, tests, documentation and fixtures **atomically**. Do not maintain obsolete interfaces solely for hypothetical consumers. This does **not** authorize data loss, silently breaking published interfaces, bypassing approvals, or discarding evidence. See [ADR-0006](docs/architecture/decisions/ADR-0006-early-development-compatibility.md).
+- **Clean, cohesive design:** separate domain decisions from HTTP/UI, databases, runtimes and SDK integrations; use explicit dependencies and narrow ports at genuine boundaries. Favor composition over inheritance, simple functions, high cohesion and low coupling. Apply SOLID and design patterns only where they demonstrably improve changeability. See [engineering standards](docs/engineering/code-quality.md).
+- **DRY with restraint:** eliminate duplicated knowledge, business rules and policies; do not create abstractions for incidental textual similarity. Avoid speculative frameworks, needless layers, magic constants, hidden global state and unused code.
+- Keep modules small enough to understand; use clear names, explicit errors, deterministic state transitions and bounded concurrency. Prefer simple implementations that satisfy real requirements.
+- Follow active language formatter, linter, type/static analyzer and tests. Do not blanket-disable rules or reduce thresholds to make CI pass; document specific, scoped exceptions.
+- The Core alone owns authoritative state, budgets, authorization, quality policy, and external delivery effects. Model outputs and external skills never confer authority.
+- Do not report `PASS`, `ACCEPTED`, `MERGED`, or `DEPLOYED` without exact evidence. Distinguish `NOT_TESTED`, `BLOCKED`, `SKIPPED`, and `NOT_APPLICABLE`.
+- Do not relax a frozen spec, required test, sandbox rule, budget ceiling or risk classification in order to pass acceptance.
+- Do not inject secrets, raw prompts, unredacted environment variables, source bodies or unnecessary personal data into telemetry.
 
-1. Reproducir la tarea/fallo cuando sea posible y registrar la condición inicial.
-2. Proponer el cambio mínimo; documentar decisiones arquitectónicas mediante ADR cuando corresponda.
-3. Implementar y ejecutar pruebas deterministas relevantes.
-4. **Usar el producto de forma real:** arrancar binarios/servicios, invocar CLI/API y/o navegar UI con Playwright según el incremento. No limitarse a probar funciones aisladas.
-5. Ante fallo: guardar evidencia, diagnosticar y reparar dentro del presupuesto. Repetir la prueba y la regresión pertinente.
-6. Actualizar código, pruebas, documentación y telemetría afectadas en el mismo PR.
-7. Congelar el candidato; un Independent Verifier distinto del autor ejecuta los recorridos reales de aceptación sobre un checkout limpio, sin editar el candidato ni sus oráculos.
-8. Reviewer independiente revisa calidad, seguridad y evidencias. El Core decide aceptación y delivery.
+## Change / verify / repair loop
 
-## Documentación y cambios de arquitectura
+1. Reproduce the problem or define observable acceptance conditions **before** writing code.
+2. Implement the smallest coherent change; update related callers and remove superseded code when making an authorized breaking change.
+3. Run formatting, lint/static analysis, targeted tests and relevant integration checks.
+4. **Implementer self-test:** actually start the product and exercise its CLI, API, browser UI (Playwright where relevant), or real Paseo workflow. Diagnose and repair failures within budget.
+5. Freeze the exact candidate commit. An **independent verifier**, separate from the author, exercises user journeys against a clean, read-only candidate and independent acceptance oracles; a Reviewer checks code, risks and evidence. The deterministic Quality Gate decides acceptance.
+6. After repair, produce a new candidate and rerun invalidated checks. Do not treat mocks as final end-to-end evidence.
+7. Update architecture docs, tests, ADRs, lint configuration and telemetry contracts in the same change when affected. Report what ran, what failed and what remains unverified.
 
-- `docs/architecture/MASTER.md`: objetivo, estructura y límites.
-- `docs/architecture/decisions/`: decisiones y alternativas; nunca reescribir una decisión aprobada para cambiarla: registrar ADR sustituto.
-- `docs/contracts/`: interfaces y protocolos normativos.
-- `docs/quality/baseline.md`: controles globales y aceptación.
-- `docs/observability/telemetry.md`: eventos, trazas, métricas y redacción de datos.
-- `docs/implementation/f0-f1-plan.md`: hitos, bloqueadores y pruebas.
-- `docs/security/paseo-sandbox-spike.md`: plan bloqueante SEC-01.
-- `docs/implementation/campaign-prompt.md`: prompt de bootstrap de campaña, sin nuevas autorizaciones.
+## Architecture and documentation governance
 
-Un cambio de arquitectura significativo exige Action/ADR, actualización de referencias y pruebas pertinentes. Un cambio a seguridad, política de merge, Quality Baseline o control de upgrades no es R0 ordinario.
+- [MASTER](docs/architecture/MASTER.md) — product scope, boundaries, agreed vs proposed decisions.
+- [ADRs](docs/architecture/decisions/README.md) — context and rationale; supersede accepted ADRs instead of rewriting history.
+- [Contracts](docs/contracts/README.md) — protocol and state invariants; completion is part of F0.
+- [Security](docs/security/isolation.md) and [SEC-01](docs/security/paseo-sandbox-spike.md) — isolation is fail-closed.
+- [Quality](docs/quality/baseline.md) / [telemetry](docs/observability/telemetry.md) — candidate-bound evidence, measured operation.
+- [F0/F1 plan](docs/implementation/f0-f1-plan.md) — slice boundaries and independent real-use acceptance.
 
-## Comandos
+A material architectural change requires an Action, relevant ADR, updated normative documents and acceptance tests. Authorization/merge/sandbox/quality-policy changes are protected, not ordinary R0 changes.
 
-**No hay comandos de build/test autorizados todavía: F0 es documental y la implementación no ha empezado.** Al comenzar F1, añadir únicamente comandos que realmente existan y estén certificados; no dejar instrucciones ficticias.
+## Commands and evidence
 
-## Informe de trabajo esperado
+**There is no certified build or application test command yet.** Once F1 establishes a stack, record real commands and pinned tool versions in the corresponding engineering and contributor docs; never invent commands or silently install dependencies in the host.
 
-Comunicar: qué se cambió; Action/commit; pruebas y recorrido real ejecutados; evidencia; discrepancias o fallos; seguridad/permisos; efecto en documentación; estado de entrega. No redactar conclusiones que excedan la evidencia.
+Every handoff reports: Action and candidate SHA; changed files; format/lint/typecheck/test and real-use results; independent verification evidence; security/authorization impact; documentation updates; PR/delivery state; unresolved risks.
