@@ -1,0 +1,9 @@
+# Local runtime artifacts (never commit DBs, tokens, or build outputs)
+/data/
+*.db
+*.db-wal
+*.db-shm
+factory-core
+dist/
+__pycache__/
+*.pyc

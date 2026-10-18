@@ -1,0 +1,50 @@
+# F1-S1 acceptance gates. Every job pins the same toolchain versions the
+# repo declares (core/go.mod + tool directive, office/package.json + lockfile).
+name: s1
+"on":
+  push:
+    branches: [main, "f1-*"]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: gofmt -l .
+        name: gofmt (must print nothing)
+      - run: go vet ./...
+      - run: go tool golangci-lint run ./...
+      - run: go test -race ./...
+
+  office:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: office
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: bash scripts/e2e-s1.sh
