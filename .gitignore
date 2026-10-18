@@ -1,9 +1,12 @@
-# Local runtime artifacts (never commit DBs, tokens, or build outputs)
+# Local runtime artifacts (never commit DBs, tokens, or build outputs).
+# Binary ignores are root-anchored: an unanchored `factory-core` pattern
+# would also match the `core/cmd/factory-core` SOURCE directory.
 /data/
 *.db
 *.db-wal
 *.db-shm
-factory-core
+/factory-core
+/core/factory-core
 dist/
 __pycache__/
 *.pyc

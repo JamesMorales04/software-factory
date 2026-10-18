@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -252,4 +255,147 @@ func TestStaticBundleIsPublicWhileAPIStaysGated(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("api without token: got %d, want 401", rec.Code)
 	}
+}
+
+// streamCollect reads SSE data frames from a live server until want events
+// arrive or the timeout fires. It uses a real HTTP server (not a
+// ResponseRecorder) so handler/recorder races cannot hide stream defects.
+func streamCollect(t *testing.T, streamURL string, want int, timeout time.Duration) []domain.Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream dial: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("stream status: %d", res.StatusCode)
+	}
+	var out []domain.Event
+	scanner := bufio.NewScanner(res.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var e domain.Event
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &e); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		out = append(out, e)
+		if len(out) >= want {
+			return out
+		}
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("stream ended early: %v", err)
+	}
+	return out
+}
+
+func contiguousGlobalSeqs(t *testing.T, events []domain.Event) {
+	t.Helper()
+	for i := 1; i < len(events); i++ {
+		if events[i].GlobalSeq != events[i-1].GlobalSeq+1 {
+			t.Fatalf("gap or reorder at index %d: %+v", i, events)
+		}
+	}
+}
+
+// TestEventStreamPagesBeyondTheOldCap proves the backlog has no size cap:
+// 550 committed events must all replay in commit order.
+func TestEventStreamPagesBeyondTheOldCap(t *testing.T) {
+	srv, db := newTestServer(t)
+	ctx := context.Background()
+	const n = 550
+	for i := 0; i < n; i++ {
+		p, _ := domain.NewActionParams{Title: "bulk"}.Validate()
+		if _, _, err := db.CreateAction(ctx, p, "bulk"); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	got := streamCollect(t, ts.URL+"/api/v1/events/stream?after=0", n, 30*time.Second)
+	if len(got) != n {
+		t.Fatalf("replayed %d of %d events", len(got), n)
+	}
+	contiguousGlobalSeqs(t, got)
+	if got[0].GlobalSeq != 1 {
+		t.Fatalf("replay did not start at 1: %+v", got[0])
+	}
+}
+
+// TestEventStreamLiveExactlyOnce subscribes, then commits 20 actions
+// through the HTTP API (which publishes to the hub) and requires each
+// event exactly once, in order — covering the old subscribe/replay race
+// and any dropped-wake-up gap.
+func TestEventStreamLiveExactlyOnce(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	const n = 20
+	collected := make(chan []domain.Event, 1)
+	go func() {
+		collected <- streamCollect(t, ts.URL+"/api/v1/events/stream?after=0", n, 30*time.Second)
+	}()
+	time.Sleep(200 * time.Millisecond) // let the subscription establish
+	for i := 0; i < n; i++ {
+		title := "live-" + itoa(i)
+		req, _ := http.NewRequest("POST", ts.URL+"/api/v1/actions",
+			strings.NewReader(`{"title":"`+title+`"}`))
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create %d: status %d", i, res.StatusCode)
+		}
+	}
+	got := <-collected
+	if len(got) != n {
+		t.Fatalf("live delivered %d of %d events", len(got), n)
+	}
+	contiguousGlobalSeqs(t, got)
+	for i, e := range got {
+		if e.EventType != domain.EventActionCreated {
+			t.Fatalf("event %d: %+v", i, e)
+		}
+		if e.Payload["title"] != "live-"+itoa(i) {
+			t.Fatalf("event %d out of order or wrong: %+v", i, e.Payload)
+		}
+	}
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }
+
+func TestHubPublishNeverBlocks(t *testing.T) {
+	hub := NewHub()
+	sub, unsub := hub.Subscribe()
+	defer unsub()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 2000; i++ {
+			hub.Publish(domain.Event{EventType: domain.EventCoreStarted})
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Publish blocked on a slow consumer")
+	}
+	_ = sub
 }

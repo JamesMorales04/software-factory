@@ -20,8 +20,11 @@ type Hub struct {
 // NewHub builds an empty broadcaster.
 func NewHub() *Hub { return &Hub{subs: map[chan domain.Event]struct{}{}} }
 
-// Publish delivers e to current subscribers without blocking the writer:
-// a slow consumer drops the live push and catches up via replay cursor.
+// Publish delivers e to current subscribers without blocking the writer.
+// A slow consumer may miss a wake-up when its buffer is full; this is
+// safe because stream handlers treat notifications as hints and always
+// re-read the durable ledger cursor (see handleEventStream). Replay
+// correctness never depends on the hub.
 func (h *Hub) Publish(e domain.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

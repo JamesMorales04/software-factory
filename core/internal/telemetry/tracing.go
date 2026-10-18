@@ -36,7 +36,7 @@ func InitTracing(ctx context.Context, serviceVersion string) (trace.Tracer, func
 	)
 	if err != nil {
 		Logger().Warn("otel exporter unavailable, continuing without export",
-			"endpoint", endpoint, "error", err.Error())
+			"endpoint", sanitizeEndpoint(endpoint), "error", err.Error())
 		otel.SetTracerProvider(noop.NewTracerProvider())
 		return otel.Tracer("factory-core"), func(context.Context) {}
 	}

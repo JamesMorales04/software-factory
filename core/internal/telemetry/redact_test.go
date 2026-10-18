@@ -22,6 +22,23 @@ func TestRedactMasksSecretShapes(t *testing.T) {
 	}
 }
 
+func TestSanitizeEndpointStripsCredentials(t *testing.T) {
+	cases := map[string]string{
+		"http://user:s3cret@collector:4318/v1/traces?token=abc": "http://collector:4318/v1/traces",
+		"https://collector:4318":                                "https://collector:4318",
+		"not a url at all":                                      "unparseable-otlp-endpoint",
+		"":                                                      "unparseable-otlp-endpoint",
+	}
+	for in, want := range cases {
+		if got := sanitizeEndpoint(in); got != want {
+			t.Fatalf("sanitizeEndpoint(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(sanitizeEndpoint(in), "s3cret") {
+			t.Fatalf("credential leaked through sanitizeEndpoint(%q)", in)
+		}
+	}
+}
+
 func TestLoggerRedactsAttributes(t *testing.T) {
 	var sb strings.Builder
 	inner := slog.NewJSONHandler(&sb, nil)

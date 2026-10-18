@@ -207,10 +207,20 @@ func parseReplayParams(w http.ResponseWriter, r *http.Request) (int64, int, bool
 	return after, limit, true
 }
 
-// handleEventStream implements the S1 replay transport: first the missed
-// suffix from the durable ledger (after cursor), then live pushes. A
-// reconnecting client resumes with its last globalSeq and observes
-// neither gaps nor duplicates.
+// handleEventStream implements the S1 replay transport. The durable ledger
+// is the source of truth; the hub subscription is only a wake-up signal.
+// This closes two races by construction:
+//
+//  1. Subscribe-before-replay: events committed between subscription and
+//     the backlog read are observed twice (once via the channel wake-up,
+//     once via the ledger) and deduplicated by the lastSent cursor —
+//     never missed.
+//  2. Dropped wake-ups: if the hub drops a notification for a slow
+//     consumer, the periodic ledger poll still advances the cursor, so a
+//     gap can lag at most one poll interval and is always recovered.
+//
+// The backlog is paged, so there is no cap on missed events. Reconnecting
+// with the last seen globalSeq yields exactly the missed suffix.
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	after, _, ok := parseReplayParams(w, r)
 	if !ok {
@@ -226,40 +236,58 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	missed, err := s.db.ListEvents(after, 500)
-	if err != nil {
-		s.log.Error("stream replay failed", "error", err.Error())
-		return
-	}
-	lastSent := after
-	for _, e := range missed {
-		if !writeSSE(w, flusher, e) {
-			return
-		}
-		lastSent = e.GlobalSeq
-	}
-
 	sub, unsub := s.hub.Subscribe()
 	defer unsub()
-	ticker := time.NewTicker(20 * time.Second)
+
+	lastSent := after
+	drain := func() bool {
+		for {
+			page, err := s.db.ListEvents(lastSent, 500)
+			if err != nil {
+				s.log.Error("stream replay failed", "error", err.Error())
+				return false
+			}
+			if len(page) == 0 {
+				return true
+			}
+			for _, e := range page {
+				if !writeSSE(w, flusher, e) {
+					return false
+				}
+				lastSent = e.GlobalSeq
+			}
+			if len(page) < 500 {
+				return true
+			}
+		}
+	}
+	if !drain() {
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	heartbeats := 0
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case e := <-sub:
-			if e.GlobalSeq <= lastSent {
-				continue
-			}
-			if !writeSSE(w, flusher, e) {
+		case <-sub:
+			if !drain() {
 				return
 			}
-			lastSent = e.GlobalSeq
 		case <-ticker.C:
-			if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+			if !drain() {
 				return
 			}
-			flusher.Flush()
+			heartbeats++
+			if heartbeats >= 20 {
+				heartbeats = 0
+				if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
 		}
 	}
 }
