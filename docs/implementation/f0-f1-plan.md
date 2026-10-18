@@ -7,7 +7,7 @@
 - **F0-01:** review the MASTER, enforce English documentation, label agreed/proposed/unverified facts, and reconcile ADR and contract contradictions.
 - **F0-02:** specify six minimal contracts: Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery and Factory Events. Each needs owners, identity, schema, lifecycle, idempotency, error rules, authority, evidence and positive/negative tests.
 - **F0-03:** execute the blocking [SEC-01](../security/paseo-sandbox-spike.md) Paseo/Podman/credential feasibility experiment on disposable fixtures and fake canaries. Avoid writing the full Worker until the boundary is demonstrated.
-- **F0-04:** evaluate Go versus Rust (TECH-01) using an actual bounded API/job/persistence/recovery sample. Approve the implementation stack and select matching lint/type toolchain.
+- **F0-04:** apply accepted [ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md): Go for Core/Workers, TypeScript for the Paseo adapter and Factory Office. Pin the Go formatter, analysis, build and test toolchain. TECH-01 is closed by product-owner decision; a comparative Rust prototype is not a prerequisite.
 - **F0-05:** implement or configure a lightweight documentation-quality CI path when authorized and test it against this repo; ensure links, secret scanning and formatting checks are real rather than decorative.
 - **F0 exit:** approved contracts, SEC-01 outcome, stack decision and objective F1 acceptance criteria. If an isolation blocker remains, document `BLOCKED` rather than weakening policy.
 

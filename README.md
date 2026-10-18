@@ -1,7 +1,8 @@
 # Software Factory
 
 **Permanent repository:** [`JamesMorales04/software-factory`](https://github.com/JamesMorales04/software-factory)  
-**Project phase:** F0 — architecture definition and technical feasibility. No production Core, Worker, or Factory Office has been certified or delivered.
+**Project phase:** F0 — architecture definition and technical feasibility.
+**Selected implementation language:** Go for Factory Core and Workers ([ADR-0005](docs/architecture/decisions/ADR-0005-go-core-worker-language.md)); SEC-01 isolation validation remains pending. No production Core, Worker, or Factory Office has been certified or delivered.
 
 Software Factory is a local-first, multi-project autonomous software engineering platform. It turns requirements and observed incidents into traceable Actions, composes scoped coding agents, executes changes in isolated workspaces, validates candidates independently, and delivers changes through governed GitHub workflows. Its first major milestone is a real self-development campaign controlled by a stable Factory instance.
 

@@ -46,7 +46,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 
 ### Proposed technology choices (not yet ratified)
 
-- **Core + local Worker:** Go modular monolith and separate Worker process, versus Rust subject to TECH-01.
+- **Core + local Worker:** **Go, ratified** for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). TypeScript remains the Paseo SDK adapter language. This selection does not certify provider credential isolation (SEC-01).
 - **Persistence:** Core-owned SQLite WAL with one logical writer initially; Postgres only when a real scale constraint warrants it.
 - **Paseo:** a TypeScript adapter around the actual supported `@getpaseo/client`/CLI behavior; keep SDK types out of Core domain contracts.
 - **Web UI:** React and TypeScript over authenticated HTTP + event stream (SSE/WebSocket to be empirically selected).
@@ -157,7 +157,7 @@ Keep three systems distinct: (1) transactionally durable domain events that are 
 
 ## 15. F0 and F1 gates
 
-**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), decide Go/Rust with measured evidence, prove or block SEC-01, and freeze explicit F1 acceptance criteria. Repo documentation and `AGENTS.md` are versioned now.
+**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, prove or block SEC-01, and freeze explicit F1 acceptance criteria. Repo documentation and `AGENTS.md` are versioned now.
 
 **F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo and certified sandbox; S4 implementer + independent user-journey verifier + Reviewer/Quality Gate; S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
 
@@ -181,7 +181,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 |---|---|---|
 | SEC-01 | Separation of Paseo's credentials from untrusted tool execution | Real sandbox/process and fake-canary negative tests |
 | EXEC-01 | Per-Run Paseo sandbox lifecycle and SDK capabilities | Real start/observe/cancel/cleanup/recovery |
-| TECH-01 | Go versus Rust for Core/Worker | Bounded API/job/recovery prototype and measured comparison |
+| TECH-01 | Core/Worker language selection | **Closed: Go ratified by product owner**; Go toolchain/integration checks remain implementation tasks, not a comparative Rust prerequisite |
 | DATA-01 | SQLite WAL, durability, single-writer semantics | Crash recovery, fencing, idempotency and replay tests |
 | UI-01 | Browser event transport choice | Authenticated reconnect and missed/duplicate-event recovery |
 | POLICY-01 | Initial quality/budget thresholds | Empirical baseline and policy tests |

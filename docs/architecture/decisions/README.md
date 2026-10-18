@@ -8,7 +8,7 @@ Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preser
 - [ADR-0002 — Global quality baseline](ADR-0002-global-quality-baseline.md) — agreed required acceptance guarantees.
 - [ADR-0003 — Telemetry from the first slice](ADR-0003-telemetry-from-inception.md) — early instrumentation.
 - [ADR-0004 — Independent real-user verification](ADR-0004-independent-user-journey-verification.md) — verification separate from the author.
-- [ADR-0005 — Go versus Rust](ADR-0005-go-vs-rust-pending.md) — proposed, awaiting empirical decision.
+- [ADR-0005 — Go for Core and Workers](ADR-0005-go-core-worker-language.md) — accepted; SEC-01 remains an independent security gate.
 - [ADR-0006 — Early-development compatibility](ADR-0006-early-development-compatibility.md) — no speculative compatibility shims.
 - [ADR-0007 — Maintainable, DRY code](ADR-0007-maintainable-code-and-dry.md) — code architecture quality principles.
 - [ADR-0008 — Static quality gates](ADR-0008-static-analysis-gates.md) — language-appropriate linting.

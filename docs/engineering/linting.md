@@ -6,8 +6,7 @@
 
 | Surface | Required default | Additional gate / conditions |
 |---|---|---|
-| Go (candidate Core/Worker) | `gofmt`, `go vet`, `go test` | `golangci-lint` with a pinned supported release and curated analyzers; `go test -race` for affected concurrency code |
-| Rust (alternative Core/Worker) | `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` | Select Rust **instead of** Go after TECH-01, not both by default; `cargo audit` for dependency review when chosen |
+| Go (ratified Core/Worker) | `gofmt`, `go vet`, `go test` | `golangci-lint` with a pinned supported release and curated analyzers; `go test -race` for affected concurrency code |
 | TypeScript / React / Paseo adapter | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | React-specific checks; use ESLint + `typescript-eslint` only if Biome lacks a required rule; avoid overlapping tools |
 | Markdown documentation | `markdownlint-cli2` | Automated relative-link and code-fence validation; check external links in a bounded, reliable lane |
 | Shell scripts (if introduced) | `shellcheck` and `shfmt` | Test important scripts in disposable environments |
@@ -19,9 +18,9 @@ Versions and configurations must be pinned in repository manifests/lockfiles or 
 
 Prefer Biome for fast formatting and general linting plus `tsc` for type checking. If semantic React hooks or security rules require ESLint, install only the missing focused plugin/rules, document why, and avoid duplicate formatters. Avoid unchecked `any`; provide explicit boundary types and schema validation for untrusted payloads.
 
-### Go / Rust decision
+### Selected Go toolchain
 
-ADR-0005 remains unresolved; establish baseline configurations for the selected language after the bounded Go-versus-Rust feasibility probe. Do not create or maintain two full build pipelines simply to preserve flexibility.
+[ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md) ratifies Go for Core and Workers. At the first Go implementation slice, pin the Go version and lint configuration, prove local and CI commands on actual source, and test concurrency using the race detector when applicable. No parallel Rust toolchain, CI lane or comparative TECH-01 benchmark is required. This language decision does not waive SEC-01.
 
 ## Gate rules
 
