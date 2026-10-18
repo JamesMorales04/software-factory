@@ -1,15 +1,22 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** implementation planning; source repository is permanently `JamesMorales04/software-factory`. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 is paused / BLOCKED for credential-bearing workloads. This documentation does **not** certify a working product or authorize unbounded campaigns.
+
+## Incremental implementation authorization (2026-10-18)
+
+- **May start:** F1-S1 actual Go Core, durable Action/API/event model, minimum authenticated Factory Office UI and local-first telemetry, after defining the small contracts and negative acceptance cases that S1 requires. Do not mark S1 PASS on documentation or mocks.
+- **May prototype:** F1-S2 disposable credential-free Worker protocol, lease/recovery and resource controls with rootless Podman and synthetic repositories, without attaching real agent accounts or untrusted host execution.
+- **Still blocked:** F1-S3 integration of autonomous real Paseo sessions with untrusted commands, full factory self-development and delivery privileges, until SEC-01 mandatory tool isolation is certified. Security findings remain valid despite successful MCP and SDK integration.
+- **Deferred security work:** the product owner paused D3-D2 and Stage E tests. Record their states as NOT TESTED/BLOCKED, not SKIPPED-as-PASS. See [SEC-01 results](../security/SEC-01-results-2026-10-18.md).
 
 ## F0 — specification and blocked-risk experiments
 
 - **F0-01:** review the MASTER, enforce English documentation, label agreed/proposed/unverified facts, and reconcile ADR and contract contradictions.
 - **F0-02:** specify six minimal contracts: Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery and Factory Events. Each needs owners, identity, schema, lifecycle, idempotency, error rules, authority, evidence and positive/negative tests.
-- **F0-03:** execute the blocking [SEC-01](../security/paseo-sandbox-spike.md) Paseo/Podman/credential feasibility experiment on disposable fixtures and fake canaries. Avoid writing the full Worker until the boundary is demonstrated.
+- **F0-03:** [SEC-01](../security/paseo-sandbox-spike.md) produced [partial evidence](../security/SEC-01-results-2026-10-18.md) on disposable fixtures: successful rootless Podman and MCP/SDK integration, but failed host read isolation and unproven credential confinement. Further experiments paused; F1-S3 remains blocked.
 - **F0-04:** apply accepted [ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md): Go for Core/Workers, TypeScript for the Paseo adapter and Factory Office. Pin the Go formatter, analysis, build and test toolchain. TECH-01 is closed by product-owner decision; a comparative Rust prototype is not a prerequisite.
 - **F0-05:** implement or configure a lightweight documentation-quality CI path when authorized and test it against this repo; ensure links, secret scanning and formatting checks are real rather than decorative.
-- **F0 exit:** approved contracts, SEC-01 outcome, stack decision and objective F1 acceptance criteria. If an isolation blocker remains, document `BLOCKED` rather than weakening policy.
+- **F0 exit:** approved slice-relevant contracts, recorded SEC-01 disposition, stack decision and objective F1 acceptance criteria. Security certification is **not** an all-development stop: S1 and noncredential S2 work are allowed, but no affected slice may be accepted or deployed by weakening isolation.
 
 ## F1 — verified vertical slices
 

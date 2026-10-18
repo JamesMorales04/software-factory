@@ -1,6 +1,6 @@
 # AGENTS.md — Software Factory
 
-> **Status:** F0 documentation-only repository. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
+> **Status:** F1-S1 development authorized; no Factory product component is certified as implemented. SEC-01 security work is paused, **not approved**. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
 ## Mission and orientation
 
@@ -42,7 +42,7 @@ Build a reliable, maintainable, local-first, multi-project Software Factory capa
 - [MASTER](docs/architecture/MASTER.md) — product scope, boundaries, agreed vs proposed decisions.
 - [ADRs](docs/architecture/decisions/README.md) — context and rationale; supersede accepted ADRs instead of rewriting history.
 - [Contracts](docs/contracts/README.md) — protocol and state invariants; completion is part of F0.
-- [Security](docs/security/isolation.md) and [SEC-01](docs/security/paseo-sandbox-spike.md) — isolation is fail-closed.
+- [Security](docs/security/isolation.md), [SEC-01](docs/security/paseo-sandbox-spike.md) and [2026-10-18 results](docs/security/SEC-01-results-2026-10-18.md) — isolation is fail-closed. S1 and credential-free S2 development may proceed; S3/unattended real agents remain blocked.
 - [Quality](docs/quality/baseline.md) / [telemetry](docs/observability/telemetry.md) — candidate-bound evidence, measured operation.
 - [F0/F1 plan](docs/implementation/f0-f1-plan.md) — slice boundaries and independent real-use acceptance.
 

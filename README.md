@@ -1,7 +1,7 @@
 # Software Factory
 
 **Permanent repository:** [`JamesMorales04/software-factory`](https://github.com/JamesMorales04/software-factory)  
-**Project phase:** F0 — architecture definition and technical feasibility.
+**Project phase:** F1-S1 implementation authorized; SEC-01 security certification paused / BLOCKED. Documentation and feasibility prototypes exist, but no Factory Core, Worker or Office implementation is certified.
 **Selected implementation language:** Go for Factory Core and Workers ([ADR-0005](docs/architecture/decisions/ADR-0005-go-core-worker-language.md)); SEC-01 isolation validation remains pending. No production Core, Worker, or Factory Office has been certified or delivered.
 
 Software Factory is a local-first, multi-project autonomous software engineering platform. It turns requirements and observed incidents into traceable Actions, composes scoped coding agents, executes changes in isolated workspaces, validates candidates independently, and delivers changes through governed GitHub workflows. Its first major milestone is a real self-development campaign controlled by a stable Factory instance.
@@ -13,6 +13,7 @@ Software Factory is a local-first, multi-project autonomous software engineering
 - [Documentation governance](docs/README.md) — authority hierarchy and architecture change process.
 - [F0/F1 execution plan](docs/implementation/f0-f1-plan.md) — slices and independently verified acceptance.
 - [SEC-01 feasibility spike](docs/security/paseo-sandbox-spike.md) — Paseo, sandboxes, credentials and real-provider validation.
+- [SEC-01 observed results (2026-10-18)](docs/security/SEC-01-results-2026-10-18.md) — partial functional passes, observed boundary failures and paused security gate.
 - [Quality baseline](docs/quality/baseline.md) — non-negotiable acceptance requirements.
 - [Engineering standards](docs/engineering/code-quality.md) — clean architecture, design, simplicity, and DRY.
 - [Lint and static analysis policy](docs/engineering/linting.md) — stack-conditional tools and CI gates.

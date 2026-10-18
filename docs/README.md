@@ -8,7 +8,7 @@ All normative software architecture and engineering guidance is maintained **in 
 2. [Engineering standards](engineering/code-quality.md) and [linting](engineering/linting.md) — clean design and objective static checks.
 3. [Contracts](contracts/README.md) — authoritative interfaces to finish during F0.
 4. [Quality baseline](quality/baseline.md) — global acceptance and independent verification.
-5. [Security](security/isolation.md) and [SEC-01 spike](security/paseo-sandbox-spike.md).
+5. [Security](security/isolation.md), [SEC-01 spike](security/paseo-sandbox-spike.md) and [2026-10-18 results](security/SEC-01-results-2026-10-18.md).
 6. [Observability](observability/telemetry.md) — durable events, traces, metrics, logging.
 7. [Factory Office](product/factory-office.md) — F1 UI and event projections.
 8. [F0/F1 plan](implementation/f0-f1-plan.md) and [campaign brief](implementation/campaign-prompt.md).

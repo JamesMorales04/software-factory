@@ -1,6 +1,6 @@
 # Software Factory — Master Architecture Specification
 
-> **Status:** F0 design baseline, revision 0.2 (2026-10-18). **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** documentation-only; neither Core, Worker nor Office is currently certified as implemented. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
+> **Status:** F1-S1 implementation authorized (2026-10-18); architecture baseline revision 0.2. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** no Core, Worker or Office product component is currently certified as implemented. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
 
 ## 1. Product mission and priorities
 
@@ -121,7 +121,7 @@ A per-Run isolated checkout bound to a commit is the recommended unit of coding 
 
 Core–Worker authentication, leases, fencing, heartbeat and reconciliation must prevent stale or repeated external effects. Remote Workers later use authenticated API boundaries rather than direct SQLite access.
 
-**SEC-01 is blocking:** Paseo and its provider CLI may place authenticated process state near untrusted tool execution. Demonstrate actual credential and shell boundary using fake canaries before certifying any topology. No fallback to a privileged host process merely to achieve passing tests. See [security](../security/isolation.md) and [spike plan](../security/paseo-sandbox-spike.md).
+**SEC-01 blocks affected autonomous execution, not all implementation:** a host Paseo agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Product owner paused further spike experiments and authorized S1 plus credential-free S2 prototypes; S3, credential-bearing untrusted execution and privileged autonomous effects remain blocked. Never fall back to a privileged host process. See [security](../security/isolation.md), [spike plan](../security/paseo-sandbox-spike.md) and [observed results](../security/SEC-01-results-2026-10-18.md).
 
 ## 9. Global quality, design quality and delivery
 
@@ -157,7 +157,7 @@ Keep three systems distinct: (1) transactionally durable domain events that are 
 
 ## 15. F0 and F1 gates
 
-**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, prove or block SEC-01, and freeze explicit F1 acceptance criteria. Repo documentation and `AGENTS.md` are versioned now.
+**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, record SEC-01 as **partially verified / security BLOCKED**, and freeze explicit F1 acceptance criteria. S1 may begin with its minimum applicable contracts while remaining F0 contracts are completed incrementally; this is not a waiver of S3 isolation. Repo documentation and `AGENTS.md` are versioned now.
 
 **F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo and certified sandbox; S4 implementer + independent user-journey verifier + Reviewer/Quality Gate; S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
 
@@ -179,7 +179,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 
 | ID | Open question | Required proof |
 |---|---|---|
-| SEC-01 | Separation of Paseo's credentials from untrusted tool execution | Real sandbox/process and fake-canary negative tests |
+| SEC-01 | Paused / BLOCKED: host read canary FAIL; partial Podman/SDK/MCP feasibility PASS | Mandatory tool/credential OS boundary, real isolated Paseo session, bypass-negative and restart tests; [results](../security/SEC-01-results-2026-10-18.md) |
 | EXEC-01 | Per-Run Paseo sandbox lifecycle and SDK capabilities | Real start/observe/cancel/cleanup/recovery |
 | TECH-01 | Core/Worker language selection | **Closed: Go ratified by product owner**; Go toolchain/integration checks remain implementation tasks, not a comparative Rust prerequisite |
 | DATA-01 | SQLite WAL, durability, single-writer semantics | Crash recovery, fencing, idempotency and replay tests |

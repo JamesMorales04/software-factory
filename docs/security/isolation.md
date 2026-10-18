@@ -1,6 +1,6 @@
 # Isolation, credentials and trust boundaries
 
-**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception. **Technology proposed:** rootless Podman/OCI, not yet certified. **F0/F1 blocker:** real Paseo isolation and credential behavior.
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception. **Technology demonstrated in disposable fixtures:** rootless Podman isolated checked host paths, but the actual authenticated provider/tool boundary is **not certified**. **F1-S3 blocker:** real Paseo isolation and credential behavior. See [SEC-01 results](SEC-01-results-2026-10-18.md); further tests paused by the product owner.
 
 ## Authority
 
