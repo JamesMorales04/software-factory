@@ -35,21 +35,31 @@ if [[ ! -x "$CHROMIUM_EXE" ]]; then
   exit 0
 fi
 
-echo "== build core + worker + office (outputs under $TMP) =="
+echo "== build core + worker + office (all outputs under $TMP) =="
 (cd "$ROOT/core" && go build -o "$BIN_CORE" ./cmd/factory-core)
 (cd "$ROOT/core" && go build -o "$BIN_WORKER" ./cmd/factory-worker)
-if [[ ! -d "$ROOT/office/node_modules" ]]; then
-  echo "office dependencies missing; installing from the lockfile"
-  if ! (cd "$ROOT/office" && npm ci --no-audit --no-fund); then
-    echo "[BLOCKED] npm ci failed (likely offline); browser journey NOT_TESTED"
-    exit 0
-  fi
+# The Office tree is copied to a disposable directory first: dependency
+# installs and bundling must never modify the repository working tree,
+# so a test run leaves `git status` clean by construction.
+WEB_SRC="$TMP/office-src"
+mkdir -p "$WEB_SRC"
+cp -r "$ROOT/office/." "$WEB_SRC/"
+rm -rf "$WEB_SRC/node_modules" "$WEB_SRC/e2e-browser/node_modules" \
+  "$WEB_SRC/dist" "$WEB_SRC/e2e-browser/.s2-evidence" \
+  "$WEB_SRC/e2e-browser/.journey-evidence" "$WEB_SRC/e2e-browser/.soak-evidence" \
+  "$WEB_SRC/e2e-browser/.sse.cjs"
+if ! (cd "$WEB_SRC" && npm ci --no-audit --no-fund >/dev/null 2>&1); then
+  echo "[BLOCKED] office npm ci failed (likely offline); browser journey NOT_TESTED"
+  exit 0
+fi
+if ! (cd "$WEB_SRC/e2e-browser" && npm ci --no-audit --no-fund >/dev/null 2>&1); then
+  echo "[BLOCKED] e2e-browser npm ci failed (likely offline); browser journey NOT_TESTED"
+  exit 0
 fi
 WEB_DIR="$TMP/s2b-dist"
-# Typecheck first (same gate as CI), then bundle to a disposable directory:
-# the repository working tree must not be modified by a test run.
-(cd "$ROOT/office" && npm run typecheck >/dev/null)
-(cd "$ROOT/office" && npx vite build --outDir "$WEB_DIR" >/dev/null)
+# Typecheck first (same gate as CI), then bundle to the disposable directory.
+(cd "$WEB_SRC" && npm run typecheck >/dev/null)
+(cd "$WEB_SRC" && npx vite build --outDir "$WEB_DIR" >/dev/null)
 
 echo "== start core (port $PORT) + worker =="
 env FACTORY_API_TOKEN="$TOKEN" FACTORY_WORKER_TOKEN="$WTOKEN" \
@@ -69,5 +79,5 @@ sleep 3
 echo "== real-browser S2 journey =="
 BASE_URL="$BASE" FACTORY_API_TOKEN="$TOKEN" CHROMIUM_EXE="$CHROMIUM_EXE" \
   S2_EVIDENCE_DIR="$TMP/s2-evidence" \
-  node "$ROOT/office/e2e-browser/s2-journey.mjs"
+  node "$WEB_SRC/e2e-browser/s2-journey.mjs"
 echo "[PASS] S2 browser journey completed (evidence in $TMP/s2-evidence)"
