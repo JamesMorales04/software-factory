@@ -1,14 +1,15 @@
-// Agents view: S1 ships no Worker or agent runtime, so this view reports
-// the honest empty state instead of fabricating sessions. F1-S2 introduces
-// real Worker dispatch and observable status here.
+// Agents view: S2 ships Worker dispatch with observable Run status under
+// Runs/Workers — real Core–Worker state, never placeholder activity.
+// Autonomous Paseo agent sessions remain blocked by SEC-01, so this view
+// keeps reporting the honest empty state instead of fabricating sessions.
 export function Agents() {
   return (
     <div>
       <h2>Agents</h2>
       <p className="muted">
-        No agents connected. Worker dispatch, leases and observable Run status
-        arrive with F1-S2; this view will render real Core–Worker state then —
-        never placeholder activity.
+        No autonomous agent sessions connected (SEC-01 blocked). Worker
+        execution and lease state live under Runs and Workers — rendered from
+        authoritative Core snapshots, never placeholder activity.
       </p>
     </div>
   );

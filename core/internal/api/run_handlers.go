@@ -123,6 +123,22 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"run": run})
 }
 
+func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.db.GetRun(r.PathValue("id")); err != nil {
+		mapDomainError(w, err, s.log, "run events lookup")
+		return
+	}
+	events, err := s.db.ListAggregateEvents(domain.AggregateRun, r.PathValue("id"))
+	if err != nil {
+		mapDomainError(w, err, s.log, "list run events")
+		return
+	}
+	if events == nil {
+		events = []domain.Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
 // --- Operator: Worker observations (read-only; never fabricated) ---
 
 func (s *Server) handleListWorkers(w http.ResponseWriter, r *http.Request) {

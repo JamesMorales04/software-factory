@@ -54,6 +54,49 @@ export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
 }
 
+export interface Run {
+  id: string;
+  projectId: string;
+  actionId?: string;
+  workloadKind: string;
+  workloadInput: Record<string, unknown>;
+  status: string;
+  attemptCount: number;
+  maxAttempts: number;
+  timeoutSecs: number;
+  leaseOwner?: string;
+  leaseGeneration: number;
+  leaseExpiresAt?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Attempt {
+  id: string;
+  runId: string;
+  seq: number;
+  workerId: string;
+  leaseGeneration: number;
+  status: string;
+  heartbeats: number;
+  result?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Worker {
+  id: string;
+  version?: string;
+  status: string;
+  lastHeartbeat?: string;
+  lastRunId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -157,6 +200,55 @@ export const api = {
     request<{ events: FactoryEvent[] }>(
       `/api/v1/actions/${encodeURIComponent(id)}/events`,
     ).then((r) => r.data.events),
+  createRun: (
+    input: { message: string; steps?: number; stepMs?: number },
+    idempotencyKey: string,
+  ) =>
+    request<{ run: Run }>("/api/v1/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        workloadKind: "synthetic-echo",
+        workloadInput: {
+          message: input.message,
+          ...(input.steps !== undefined ? { steps: input.steps } : {}),
+          ...(input.stepMs !== undefined ? { stepMs: input.stepMs } : {}),
+        },
+      }),
+      idempotencyKey,
+    }),
+  listRuns: (params: { status?: string } = {}) => {
+    const q = params.status
+      ? `?status=${encodeURIComponent(params.status)}`
+      : "";
+    return request<{ runs: Run[] }>(`/api/v1/runs${q}`).then(
+      (r) => r.data.runs,
+    );
+  },
+  getRun: (id: string) =>
+    request<{ run: Run }>(`/api/v1/runs/${encodeURIComponent(id)}`).then(
+      (r) => r.data.run,
+    ),
+  cancelRun: (id: string) =>
+    request<{ run: Run }>(`/api/v1/runs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    }).then((r) => r.data.run),
+  listAttempts: (id: string) =>
+    request<{ attempts: Attempt[] }>(
+      `/api/v1/runs/${encodeURIComponent(id)}/attempts`,
+    ).then((r) => r.data.attempts),
+  listRunEvents: (id: string) =>
+    request<{ events: FactoryEvent[] }>(
+      `/api/v1/runs/${encodeURIComponent(id)}/events`,
+    ).then((r) => r.data.events),
+  listWorkers: () =>
+    request<{ workers: Worker[] }>(`/api/v1/workers`).then(
+      (r) => r.data.workers,
+    ),
+  getWorker: (id: string) =>
+    request<{ worker: Worker }>(
+      `/api/v1/workers/${encodeURIComponent(id)}`,
+    ).then((r) => r.data.worker),
   listEvents: (after: number, limit = 100, signal?: AbortSignal) =>
     request<{ events: FactoryEvent[]; nextAfter: number }>(
       `/api/v1/events?after=${after}&limit=${limit}`,
