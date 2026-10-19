@@ -23,7 +23,8 @@ const workerColumns = `id, version, status, last_heartbeat, last_run_id,
 
 func scanRun(row interface {
 	Scan(dest ...any) error
-}) (domain.Run, error) {
+},
+) (domain.Run, error) {
 	var r domain.Run
 	var status, workloadInput, result, leaseExpires, created, updated string
 	var actionID sql.NullString
@@ -49,7 +50,8 @@ func scanRun(row interface {
 
 func scanAttempt(row interface {
 	Scan(dest ...any) error
-}) (domain.Attempt, error) {
+},
+) (domain.Attempt, error) {
 	var a domain.Attempt
 	var status, result, created, updated string
 	err := row.Scan(
@@ -68,7 +70,8 @@ func scanAttempt(row interface {
 
 func scanWorker(row interface {
 	Scan(dest ...any) error
-}) (domain.Worker, error) {
+},
+) (domain.Worker, error) {
 	var w domain.Worker
 	var status, lastHB, created, updated string
 	err := row.Scan(
@@ -95,13 +98,6 @@ func encodeMap(v map[string]any) string {
 		return "{}"
 	}
 	return string(raw)
-}
-
-func stampOpt(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return stamp(t)
 }
 
 // CreateRun persists a queued Run and its RunQueued event atomically.

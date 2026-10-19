@@ -31,16 +31,6 @@ import (
 
 const workerVersion = "0.2.0-s2"
 
-type config struct {
-	coreAddr          string
-	workerID          string
-	token             string
-	pollInterval      time.Duration
-	heartbeatInterval time.Duration
-	maxConcurrent     int
-	execMode          string
-}
-
 type client struct {
 	base   string
 	token  string

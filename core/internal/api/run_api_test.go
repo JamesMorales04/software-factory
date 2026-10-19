@@ -1,17 +1,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"context"
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
-	"path/filepath"
 )
 
 const testWorkerToken = "test-worker-token-xyz"

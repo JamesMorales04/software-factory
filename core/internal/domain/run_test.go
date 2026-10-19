@@ -46,8 +46,10 @@ func TestNewRunParamsDefaultsAndLimits(t *testing.T) {
 	if p.ProjectID != DefaultProjectID || p.MaxAttempts != DefaultMaxAttempts || p.TimeoutSecs != DefaultTimeoutSecs {
 		t.Fatalf("missing defaults: %+v", p)
 	}
-	if _, err := (NewRunParams{WorkloadKind: SyntheticEchoKind,
-		WorkloadInput: map[string]any{"message": "hi"}, MaxAttempts: MaxAttemptsLimit + 1}).Validate(); err == nil {
+	if _, err := (NewRunParams{
+		WorkloadKind:  SyntheticEchoKind,
+		WorkloadInput: map[string]any{"message": "hi"}, MaxAttempts: MaxAttemptsLimit + 1,
+	}).Validate(); err == nil {
 		t.Fatal("expected maxAttempts rejection")
 	}
 }
