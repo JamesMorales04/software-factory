@@ -4,3 +4,4 @@ node_modules/
 .sse.cjs
 .soak-evidence/
 .soak-action.json
+.s2-evidence/
