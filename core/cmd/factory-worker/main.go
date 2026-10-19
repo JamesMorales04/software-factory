@@ -246,6 +246,21 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 	}
 	defer func() { _ = os.RemoveAll(workDir) }()
 
+	// Synchronous start heartbeat: records execution start (leased→
+	// running, RunStarted) before the first renewal interval elapses, so
+	// even fast fixtures leave a complete lineage. A fencing rejection
+	// here is authoritative — abandon without executing or reporting.
+	if herr := c.heartbeat(execCtx, workerID, run.ID, attempt.ID, attempt.LeaseGeneration); herr != nil {
+		select {
+		case fenced <- herr:
+		default:
+		}
+		cancel() // stop the heartbeat loop before waiting for it
+		<-hbDone
+		log.Info("attempt fenced before execution; abandoning without report", "error", herr.Error())
+		return
+	}
+
 	result, err := exec.Run(execCtx, spec, workDir, podmanOK)
 	cancel() // execution finished: stop the heartbeat loop before joining it
 	<-hbDone
