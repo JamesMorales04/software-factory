@@ -9,19 +9,22 @@
 #
 # Usage:
 #   PROVIDER=codex ./scripts/paseo-trusted-local-smoke.sh
-#   PROVIDER=opencode MODEL=github-copilot/gpt-5-mini ./scripts/paseo-trusted-local-smoke.sh
+#   PROVIDER=opencode MODEL=opencode-go/muse-spark-1.3-contributor ./scripts/paseo-trusted-local-smoke.sh
 #
 # PROVIDER selects the Paseo provider route (no silent substitution: the
 # effective provider is asserted from session evidence below). MODEL, when
 # set, is passed as `--model` to pin the exact model (required for routes
 # whose default model is unsupported); the effective model is likewise
-# asserted from session evidence.
+# asserted from session evidence. MODE, when set, is passed as
+# `paseo run --mode` (provider-specific mode, e.g. build for OpenCode).
 #
-# Workspace note: `paseo run --cwd` is a launch hint, NOT an enforced
-# session working directory (observed: session Cwd stays the caller
-# workspace). Containment of this test therefore rests on absolute-path
-# prompt pinning PLUS post-hoc verification (diff confined to the
-# disposable repo; no file-write step outside it) — never on --cwd alone.
+# Workspace selection: the session runs in a real Paseo workspace rooted at
+# the disposable project (`paseo workspace create --isolation local
+# --path`), and the effective session Cwd is ASSERTED to equal the target
+# (hard FAIL otherwise). Prompt absolute paths are belt-and-braces only.
+# (`paseo run --cwd` alone does NOT set the session Cwd — verified:
+# agent-scoped runs inherit the caller workspace Cwd, which pushes target
+# files outside OpenCode's default agent into `external_directory = ask`.)
 #
 # Asserts: requested provider/model match session evidence (no silent
 # substitution), git diff non-empty and confined to the disposable repo,
@@ -37,6 +40,22 @@ if [[ "$PROVIDER" != "codex" && "$PROVIDER" != "opencode" ]]; then
 fi
 # Optional exact model pin, passed as `paseo run --model` when set.
 MODEL="${MODEL:-}"
+# Optional explicit provider mode, passed as `paseo run --mode` when set
+# (provider-specific; e.g. build for OpenCode, auto for Codex).
+# Default when unset is provider-appropriate for TRUSTED_LOCAL: codex runs
+# full-access (fresh disposable workspaces are untrusted, so mode auto
+# gates shell/edit behind approvals and the run stalls at status
+# "permission"; TRUSTED_LOCAL explicitly accepts broad access, and the
+# target stays disposable + post-hoc verified), opencode runs build
+# (default agent with default-allow workspace tools).
+MODE="${MODE:-}"
+if [[ -z "$MODE" ]]; then
+  if [[ "$PROVIDER" == "codex" ]]; then
+    MODE="full-access"
+  else
+    MODE="build"
+  fi
+fi
 
 # Cost-conscious bound for one real agent session.
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-300s}"
@@ -60,6 +79,10 @@ cleanup() {
     echo "-- cleanup: stop/archive agent $AGENT_ID (best effort) --"
     paseo stop "$AGENT_ID" >/dev/null 2>&1 || true
     paseo archive "$AGENT_ID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${WS_ID:-}" ]]; then
+    echo "-- cleanup: archive smoke workspace $WS_ID (best effort) --"
+    paseo workspace archive "$WS_ID" >/dev/null 2>&1 || true
   fi
   if [[ -d "$TMP" ]]; then
     rm -rf "$TMP"
@@ -137,10 +160,23 @@ git -C "$PROJ" -c user.email=smoke@example.local -c user.name="smoke" add .
 git -C "$PROJ" -c user.email=smoke@example.local -c user.name="smoke" commit -qm "initial disposable fixture"
 
 PROMPT="Your target directory is exactly: $PROJ. It holds a tiny Node project (add.js with pure function add, add.test.js, package.json). Do these steps IN THAT DIRECTORY ONLY (use its absolute path for every command; do not create, modify, or delete any file outside it): 1) Read $PROJ/add.js. 2) Append a pure function multiply(a, b) with a JSDoc comment and export it alongside add (keep add unchanged). 3) Run \`npm --prefix $PROJ run format\` and \`npm --prefix $PROJ test\` and fix any failure you caused. Keep your final reply under 10 lines listing files changed and test result. Do not access the network, secrets, or credentials."
-echo "-- starting ONE real Paseo agent session (provider=$PROVIDER, cwd=$PROJ) --"
+echo "-- disposable Paseo workspace rooted at $PROJ (real session Cwd, not a prompt hint) --"
+paseo workspace create --isolation local --path "$PROJ" \
+  --title "trusted-local-smoke" --json >"$TMP/workspace.json" 2>&1 || {
+  echo "FAIL: 'paseo workspace create' failed" >&2
+  exit 1
+}
+WS_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d=d[0] if isinstance(d,list) and d else d; print(d.get("workspaceId",d.get("id","")) or "")' "$TMP/workspace.json")"
+if [[ -z "$WS_ID" ]]; then
+  echo "FAIL: could not parse workspace id (top-level keys only, no values):" >&2
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d=d[0] if isinstance(d,list) and d else d; print(sorted(d.keys()) if isinstance(d,dict) else type(d).__name__)' "$TMP/workspace.json" >&2 || true
+  exit 1
+fi
+echo "workspace created: id=$WS_ID (path=$PROJ)"
+echo "-- starting ONE real Paseo agent session (provider=$PROVIDER, mode=$MODE, workspace=$WS_ID) --"
 echo "prompt bytes: ${#PROMPT} (kept small, cost-conscious)"
 
-RUN_ARGS=(--provider "$PROVIDER" --cwd "$PROJ"
+RUN_ARGS=(--provider "$PROVIDER" --workspace "$WS_ID" --mode "$MODE"
   --title "trusted-local-smoke"
   --wait-timeout "$WAIT_TIMEOUT")
 if [[ -n "$MODEL" ]]; then
@@ -285,7 +321,7 @@ observe_timeline() {
 observe_timeline
 
 echo "-- containment tripwire: no observed file-write step outside the disposable dir --"
-# --cwd is NOT enforced session containment (see header). This tripwire
+# Defense in depth behind the asserted session Cwd above. This tripwire
 # checks the observed evidence only: absolute paths in Edit/Write/Create/
 # Apply timeline lines. It does NOT cover shell-output paths, relative
 # paths, or writes invisible in the timeline — so it narrows, never proves,
@@ -294,10 +330,23 @@ if grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`
   echo "FAIL: file-write step references a path outside the disposable dir (count: $(grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | sort -u | wc -l); paths suppressed)" >&2
   exit 1
 fi
-echo "assert: no out-of-dir file-write steps observed in timeline headers — OK (Edit/Write lines only; shell-output/relative/invisible writes NOT covered, see limits above)"
-if [[ -n "${AGENT_CWD:-}" && "$AGENT_CWD" != "$PROJ" && "$AGENT_CWD" != "$PROJ/" ]]; then
-  echo "CWD-NOTE: --cwd did not set session Cwd (observed: $AGENT_CWD; target: $PROJ); the tripwire above narrows (never proves) containment, and the disposable-repo diff below is the primary evidence."
+echo "-- assert: session Cwd equals the disposable target (real workspace selection, hard FAIL otherwise) --"
+if [[ -z "${AGENT_CWD:-}" ]]; then
+  echo "FAIL: session Cwd missing from inspect output" >&2
+  exit 1
 fi
+# Normalize trailing slash and $HOME-relative display before comparing.
+NORM_CWD="${AGENT_CWD%/}"
+NORM_PROJ="${PROJ%/}"
+if [[ "$NORM_CWD" == "~"* ]]; then
+  NORM_CWD="$HOME${NORM_CWD#"~"}"
+fi
+echo "session Cwd observed: $AGENT_CWD (target: $PROJ)"
+if [[ "$NORM_CWD" != "$NORM_PROJ" ]]; then
+  echo "FAIL: session Cwd ($AGENT_CWD) != disposable target ($PROJ) — workspace selection not enforced" >&2
+  exit 1
+fi
+echo "assert: session Cwd is the disposable target — OK"
 
 echo "-- evidence: git diff (disposable repo) --"
 # Single bounded continuation: some provider routes return after a
@@ -352,12 +401,21 @@ echo "assert: tests pass — OK"
 echo "-- end session: stop then archive (real exit statuses asserted) --"
 STOP_RC=0
 ARCHIVE_RC=0
+WS_RC=0
 paseo stop "$AGENT_ID" >/dev/null 2>&1 || STOP_RC=$?
 echo "stop exit: $STOP_RC (no-op when already idle)"
 if [[ $STOP_RC -ne 0 ]]; then echo "FAIL: 'paseo stop' failed (rc=$STOP_RC)" >&2; exit 1; fi
 paseo archive "$AGENT_ID" >/dev/null 2>&1 || ARCHIVE_RC=$?
 echo "archive exit: $ARCHIVE_RC"
 if [[ $ARCHIVE_RC -ne 0 ]]; then echo "FAIL: 'paseo archive' failed (rc=$ARCHIVE_RC)" >&2; exit 1; fi
+paseo workspace archive "$WS_ID" >/dev/null 2>&1 || WS_RC=$?
+echo "workspace archive exit: $WS_RC"
+if [[ $WS_RC -ne 0 ]]; then echo "FAIL: 'paseo workspace archive' failed (rc=$WS_RC)" >&2; exit 1; fi
+if paseo workspace ls --json 2>/dev/null | grep -q "$WS_ID"; then
+  echo "FAIL: smoke workspace still listed after archive" >&2
+  exit 1
+fi
+echo "assert: session ended and smoke workspace deregistered — OK"
 
 RESULT=0
 echo "PASS: trusted-local smoke (provider ran: ${ACTUAL_PROVIDER:-$PROVIDER}, model ran: ${EFFECTIVE_MODEL:-unknown}, nudges: $NUDGE_USED, agent: $AGENT_ID)"
