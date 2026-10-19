@@ -271,3 +271,83 @@ func TestWorkerObservationEndpoints(t *testing.T) {
 		t.Fatalf("unknown worker: got %d, want 404", rec.Code)
 	}
 }
+
+func TestReportBeforeStartRejectedOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+	run := queueSyntheticRun(t, h, "")
+
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-1"}`, testWorkerToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register: got %d", rec.Code)
+	}
+	rec = serveRun(t, h, "POST", "/api/v1/workers/poll", `{"workerId":"early-1"}`, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("poll: got %d", rec.Code)
+	}
+	_, attempt := decodeRunBody(t, rec)
+
+	// No heartbeat was ever sent: the report must be rejected with
+	// not_started instead of skipping the running state.
+	rec = serveRun(t, h, "POST", "/api/v1/workers/report",
+		`{"workerId":"early-1","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1,"outcome":"completed"}`,
+		testWorkerToken)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not_started") {
+		t.Fatalf("early report: got %d (%s), want 409 not_started", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCancelledRunRejectsUnknownAttemptOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+	run := queueSyntheticRun(t, h, "")
+
+	rec := serveRun(t, h, "POST", "/api/v1/runs/"+run.ID+"/cancel", `{}`, testToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel: got %d", rec.Code)
+	}
+	// The Run never granted an Attempt, yet any message from a known
+	// Worker for the cancelled Run must be a cancellation rejection.
+	rec = serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-2"}`, testWorkerToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register: got %d", rec.Code)
+	}
+	// The Run never granted an Attempt, yet any message for the
+	// cancelled Run must be a cancellation rejection, not a 404.
+	rec = serveRun(t, h, "POST", "/api/v1/workers/heartbeat",
+		`{"workerId":"early-2","runId":"`+run.ID+`","attemptId":"00000000000000000000000000000000","generation":1}`,
+		testWorkerToken)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "run_cancelled") {
+		t.Fatalf("heartbeat on cancelled run: got %d (%s), want 409 run_cancelled", rec.Code, rec.Body.String())
+	}
+	rec = serveRun(t, h, "POST", "/api/v1/workers/report",
+		`{"workerId":"early-2","runId":"`+run.ID+`","attemptId":"00000000000000000000000000000000","generation":1,"outcome":"completed"}`,
+		testWorkerToken)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "run_cancelled") {
+		t.Fatalf("report on cancelled run: got %d (%s), want 409 run_cancelled", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTerminalRunClearsLeaseOwnerOverHTTP(t *testing.T) {
+	srv, db := newRunTestServer(t)
+	h := srv.Handler()
+	run := queueSyntheticRun(t, h, "")
+	leased, attempt := registerPoll(t, h, "owner-1")
+
+	hb := `{"workerId":"owner-1","runId":"` + run.ID + `","attemptId":"` + attempt.ID + `","generation":1}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/heartbeat", hb, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("heartbeat: got %d", rec.Code)
+	}
+	report := `{"workerId":"owner-1","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"outcome":"completed","output":{"receipt":"ok"}}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/report", report, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("report: got %d", rec.Code)
+	}
+	stored, err := db.GetRun(leased.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if stored.Status != domain.RunSucceeded || stored.LeaseOwner != "" {
+		t.Fatalf("terminal run keeps lease: %+v", stored)
+	}
+}

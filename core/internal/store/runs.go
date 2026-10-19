@@ -288,6 +288,16 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 		return nil
 	}()
 	if err == sql.ErrNoRows {
+		// No queued work — but the poll itself proves the Worker is
+		// alive, so record liveness without touching its assignment or
+		// emitting an event. Otherwise an idle Worker polling an empty
+		// queue would wrongly decay to offline.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE workers SET status=?, last_heartbeat=?, updated_at=? WHERE id=?`,
+			string(domain.WorkerOnline), stamp(now), stamp(now), workerID,
+		); err != nil {
+			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+		}
 		if cerr := tx.Commit(); cerr != nil {
 			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, cerr
 		}
@@ -366,9 +376,11 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 }
 
 // fence loads the Run and Attempt and enforces the fencing invariants
-// shared by heartbeat and report: known identities, current generation,
-// non-terminal and non-cancelled Run, non-terminal Attempt. It returns the
-// rows for the caller to transition.
+// shared by heartbeat and report. Cancellation is checked immediately
+// after the Run lookup so that any Worker message for a cancelled Run —
+// even one carrying an unknown Attempt identity — is rejected as
+// cancelled rather than mistaken for a missing resource. Unknown Runs
+// and Attempts are still 404; only a cancelled Run short-circuits.
 func fence(tx *sql.Tx, ctx context.Context, workerID, runID, attemptID string, generation int64) (domain.Run, domain.Attempt, error) {
 	run, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, runID))
 	if err == sql.ErrNoRows {
@@ -376,6 +388,9 @@ func fence(tx *sql.Tx, ctx context.Context, workerID, runID, attemptID string, g
 	}
 	if err != nil {
 		return domain.Run{}, domain.Attempt{}, err
+	}
+	if run.Status == domain.RunCancelled {
+		return domain.Run{}, domain.Attempt{}, domain.ErrRunCancelled
 	}
 	attempt, err := scanAttempt(tx.QueryRowContext(ctx,
 		`SELECT `+attemptColumns+` FROM attempts WHERE id=? AND run_id=?`, attemptID, runID))
@@ -385,7 +400,7 @@ func fence(tx *sql.Tx, ctx context.Context, workerID, runID, attemptID string, g
 	if err != nil {
 		return domain.Run{}, domain.Attempt{}, err
 	}
-	if run.Status == domain.RunCancelled || attempt.Status == domain.AttemptCancelled {
+	if attempt.Status == domain.AttemptCancelled {
 		return domain.Run{}, domain.Attempt{}, domain.ErrRunCancelled
 	}
 	if attempt.Status.Terminal() || run.Status.Terminal() {
@@ -545,6 +560,14 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 	if leaseExpired(run, now) {
 		return domain.Run{}, false, domain.Event{}, domain.ErrLeaseExpired
 	}
+	// A completion or failure report is only meaningful for an Attempt
+	// that actually started: the contract lifecycle is
+	// leased → running → succeeded/failed, and the first heartbeat is
+	// what moves leased → running. Reports for unstarted Attempts are
+	// rejected instead of silently skipping the running state.
+	if attempt.Status != domain.AttemptRunning {
+		return domain.Run{}, false, domain.Event{}, domain.ErrAttemptNotActive
+	}
 
 	switch outcome {
 	case domain.OutcomeCompleted:
@@ -555,7 +578,7 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 			return domain.Run{}, false, domain.Event{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE runs SET status=?, result=?, error=?, lease_expires_at='', updated_at=? WHERE id=?`,
+			`UPDATE runs SET status=?, result=?, error=?, lease_owner='', lease_expires_at='', updated_at=? WHERE id=?`,
 			string(domain.RunSucceeded), encodeMap(sanitized), "", stamp(now), run.ID,
 		); err != nil {
 			return domain.Run{}, false, domain.Event{}, err
@@ -599,7 +622,7 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE runs SET status=?, lease_expires_at='', error=?, updated_at=? WHERE id=?`,
+				`UPDATE runs SET status=?, lease_owner='', lease_expires_at='', error=?, updated_at=? WHERE id=?`,
 				string(domain.RunFailed), reason, stamp(now), run.ID,
 			); err != nil {
 				return domain.Run{}, false, domain.Event{}, err
@@ -840,7 +863,7 @@ func expireAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt do
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE runs SET status=?, lease_expires_at='', error=?, updated_at=? WHERE id=?`,
+			`UPDATE runs SET status=?, lease_owner='', lease_expires_at='', error=?, updated_at=? WHERE id=?`,
 			string(domain.RunFailed), "retry-exhausted: "+reason, stamp(now), run.ID,
 		); err != nil {
 			return domain.Event{}, err
@@ -877,7 +900,7 @@ func timeoutAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt d
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE runs SET status=?, lease_expires_at='', error=?, updated_at=? WHERE id=?`,
+			`UPDATE runs SET status=?, lease_owner='', lease_expires_at='', error=?, updated_at=? WHERE id=?`,
 			string(domain.RunFailed), "retry-exhausted: "+reason, stamp(now), run.ID,
 		); err != nil {
 			return domain.Event{}, err

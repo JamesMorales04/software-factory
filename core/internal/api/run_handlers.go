@@ -336,6 +336,8 @@ func mapWorkerError(w http.ResponseWriter, err error, log *slog.Logger, msg stri
 		writeError(w, http.StatusConflict, "lease_expired", "lease expired; abandon this attempt")
 	case isDomain(err, domain.ErrRunCancelled):
 		writeError(w, http.StatusConflict, "run_cancelled", "run was cancelled; abandon this attempt")
+	case isDomain(err, domain.ErrAttemptNotActive):
+		writeError(w, http.StatusConflict, "not_started", "attempt has not started; heartbeat before reporting")
 	default:
 		mapDomainError(w, err, log, msg)
 	}

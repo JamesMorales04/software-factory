@@ -78,6 +78,8 @@ running → failed (timeout or reported failure)
 `succeeded`, `failed` (after exhaustion) and `cancelled` are terminal.
 `failed → queued` exists only while `attemptCount < maxAttempts`.
 A finished Run never changes its associated Action's status.
+Terminal Runs carry no lease: `leaseOwner` is cleared on every terminal
+transition.
 
 - A Run is **queued** when Core accepts the operator request.
 - A Worker obtains a **lease** when Core grants an Attempt
@@ -110,7 +112,7 @@ reject the operator token. The worker token never grants operator access.
 | GET | `/api/v1/workers` | operator | Worker snapshots (liveness, no fabricated activity) |
 | GET | `/api/v1/workers/{id}` | operator | One Worker |
 | POST | `/api/v1/workers/register` | worker | `{workerId, version}`; idempotent by `workerId` |
-| POST | `/api/v1/workers/poll` | worker | `{workerId}`; grants one lease (`200`) or no work (`204`) |
+| POST | `/api/v1/workers/poll` | worker | `{workerId}`; grants one lease (`200`) or no work (`204`); an empty poll still records Worker liveness |
 | POST | `/api/v1/workers/heartbeat` | worker | `{workerId, runId, attemptId, generation}`; renews lease |
 | POST | `/api/v1/workers/report` | worker | `{workerId, runId, attemptId, generation, outcome, output?, error?}` |
 
@@ -123,6 +125,12 @@ Core rejects (no state change, no new event) and the Worker must treat as
 terminal for that Attempt:
 
 - unknown Worker (`404 not_found`), unknown Run/Attempt (`404 not_found`);
+  a cancelled Run is checked before Attempt existence, so any Worker
+  message for a cancelled Run is `409 run_cancelled` even when the
+  Attempt identity is unknown;
+- report for an Attempt that never started (`409 not_started` — the
+  lifecycle is `leased → running → succeeded/failed`; the first heartbeat
+  is what starts execution);
 - generation mismatch (`409 stale_generation`);
 - report/heartbeat after expiry (`409 lease_expired`);
 - any Worker message after cancellation (`409 run_cancelled`);

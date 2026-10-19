@@ -262,3 +262,111 @@ func TestWorkerLiveness(t *testing.T) {
 		t.Fatalf("reconnect: event=%v err=%v", reconnected, err)
 	}
 }
+
+func TestReportRequiresRunningAttempt(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queueRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	_, attempt, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-1")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	// No heartbeat yet: the Attempt never started, so a completion
+	// report must be rejected instead of skipping the running state.
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, nil, "", "corr-2"); err != domain.ErrAttemptNotActive {
+		t.Fatalf("report before start: err=%v, want ErrAttemptNotActive", err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, attempt.ID, 1, "corr-3"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	final, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, map[string]any{"output": "ok"}, "", "corr-4")
+	if err != nil || final.Status != domain.RunSucceeded {
+		t.Fatalf("report after start: %+v err=%v", final, err)
+	}
+	if final.LeaseOwner != "" {
+		t.Fatalf("terminal run retains lease owner %q", final.LeaseOwner)
+	}
+}
+
+func TestCancelledRunRejectsUnknownAttempt(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queueRun(t, db, 1)
+	registerWorker(t, db, "local-1")
+	if _, _, err := db.CancelRun(ctx, run.ID, "corr-1"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	// The Run was cancelled before any Attempt existed. Any message for
+	// it — even with an unknown Attempt identity — is a cancellation
+	// rejection, not a missing resource.
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, "bogus-attempt", 1, "corr-2"); err != domain.ErrRunCancelled {
+		t.Fatalf("heartbeat on cancelled run: err=%v, want ErrRunCancelled", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, "bogus-attempt", 1,
+		domain.OutcomeCompleted, nil, "", "corr-3"); err != domain.ErrRunCancelled {
+		t.Fatalf("report on cancelled run: err=%v, want ErrRunCancelled", err)
+	}
+}
+
+func TestEmptyPollRecordsLiveness(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	current := base
+	db.SetClock(func() time.Time { return current })
+	db.SetWorkerOfflineAfter(100 * time.Millisecond)
+
+	registerWorker(t, db, "idle-9")
+	// Advance past the offline threshold, then poll an empty queue: the
+	// poll itself must renew liveness so the sweeper keeps the Worker
+	// online instead of marking it offline.
+	current = base.Add(time.Second)
+	if _, _, found, _, err := db.ClaimNextRun(ctx, "idle-9", "corr-1"); err != nil || found {
+		t.Fatalf("empty poll: found=%v err=%v", found, err)
+	}
+	events, err := db.ExpireLeases(ctx)
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	for _, e := range events {
+		if e.EventType == domain.EventWorkerOffline {
+			t.Fatalf("idle polling worker marked offline: %+v", e)
+		}
+	}
+	w, err := db.GetWorker("idle-9")
+	if err != nil || w.Status != domain.WorkerOnline {
+		t.Fatalf("worker not online: %+v err=%v", w, err)
+	}
+	if w.LastHeartbeat.Before(base.Add(time.Second)) {
+		t.Fatalf("empty poll did not renew heartbeat: %v", w.LastHeartbeat)
+	}
+}
+
+func TestExhaustionClearsLeaseOwner(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	current := base
+	db.SetClock(func() time.Time { return current })
+	db.SetLeaseTTL(50 * time.Millisecond)
+
+	run := queueRun(t, db, 1)
+	registerWorker(t, db, "local-1")
+	if _, _, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-1"); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	current = base.Add(time.Second)
+	if _, err := db.ExpireLeases(ctx); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	exhausted, err := db.GetRun(run.ID)
+	if err != nil || exhausted.Status != domain.RunFailed {
+		t.Fatalf("run not failed: %+v err=%v", exhausted, err)
+	}
+	if exhausted.LeaseOwner != "" {
+		t.Fatalf("exhausted run retains lease owner %q", exhausted.LeaseOwner)
+	}
+}
