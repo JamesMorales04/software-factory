@@ -232,12 +232,14 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 
 	spec, err := fixtureSpec(run, attempt)
 	if err != nil {
+		cancel() // stop the heartbeat loop before waiting for it
 		<-hbDone
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "invalid-workload: "+err.Error(), log)
 		return
 	}
 	workDir, err := os.MkdirTemp("", "factory-s2-*")
 	if err != nil {
+		cancel() // stop the heartbeat loop before waiting for it
 		<-hbDone
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "workspace: "+err.Error(), log)
 		return
@@ -245,6 +247,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 	defer func() { _ = os.RemoveAll(workDir) }()
 
 	result, err := exec.Run(execCtx, spec, workDir, podmanOK)
+	cancel() // execution finished: stop the heartbeat loop before joining it
 	<-hbDone
 	select {
 	case ferr := <-fenced:
