@@ -13,13 +13,29 @@ const (
 	EventActionTransitioned = "ActionTransitioned"
 )
 
+// S2 event types for Runs, Attempts (recorded on the run aggregate) and
+// Worker observations.
+const (
+	EventRunQueued        = "RunQueued"
+	EventRunLeased        = "RunLeased"
+	EventRunStarted       = "RunStarted"
+	EventRunCompleted     = "RunCompleted"
+	EventRunFailed        = "RunFailed"
+	EventRunExpired       = "RunExpired"
+	EventRunCancelled     = "RunCancelled"
+	EventWorkerRegistered = "WorkerRegistered"
+	EventWorkerOffline    = "WorkerOffline"
+)
+
 // EventSchemaVersion is the S1 payload contract version.
 const EventSchemaVersion = "1"
 
-// Aggregate scopes for S1 events.
+// Aggregate scopes for S1 events, extended in S2 with run and worker.
 const (
 	AggregateCore   = "core"
 	AggregateAction = "action"
+	AggregateRun    = "run"
+	AggregateWorker = "worker"
 )
 
 // Event is a durable domain fact. Business state and its event are
@@ -46,9 +62,12 @@ func (e Event) Validate() error {
 		return errors.New("eventId is required")
 	}
 	switch e.EventType {
-	case EventCoreStarted, EventActionCreated, EventActionTransitioned:
+	case EventCoreStarted, EventActionCreated, EventActionTransitioned,
+		EventRunQueued, EventRunLeased, EventRunStarted, EventRunCompleted,
+		EventRunFailed, EventRunExpired, EventRunCancelled,
+		EventWorkerRegistered, EventWorkerOffline:
 	default:
-		return errors.New("unknown eventType for S1")
+		return errors.New("unknown eventType")
 	}
 	if e.SchemaVersion == "" {
 		return errors.New("schemaVersion is required")
