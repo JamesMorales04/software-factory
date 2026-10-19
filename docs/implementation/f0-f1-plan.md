@@ -25,7 +25,8 @@
 |---|---|---|---|
 | S1 | Durable Core, API, domain events, telemetry and minimal Factory UI | Start the server, create/view Action in browser, restart Core and observe persisted state | Unauthorized/invalid operation rejected; duplicate event ignored; OTel outage nonblocking |
 | S2 | Local Worker and Core–Worker dispatch/lease/recovery | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
-| S3 | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
+| S3-TRUSTED_LOCAL | Real Paseo session under owner-accepted local trust (ADR-0009) | Start/inspect a real coding session in a real workspace, verify effective cwd/provider/model, correlate its timeline | Unauthorized delivery/admin action blocked; session not labeled isolated/certified |
+| S3-ISOLATED | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
 | S4 | Implementer, Independent Verifier, Reviewer, baseline | Produce a real diff; independent tester starts and exercises exact commit | Mandatory failure blocks; Reviewer cannot mutate candidate |
 | S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |
 | S6 | First self-development campaign | Stable Core A supervises a functional Factory UI improvement in candidate B | B cannot modify or replace A; incorrect evidence blocks delivery |

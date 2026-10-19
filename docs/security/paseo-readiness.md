@@ -2,7 +2,7 @@
 
 **Disposition: SMOKE PASS (functional trusted-local workflow only). NOT CERTIFIED** for isolation, S3/unattended execution, or delivery. This record covers the owner-accepted TRUSTED_LOCAL topology: existing local Paseo daemon, supported SDK/CLI, native provider integrations, existing authentication, normal network. No proxies, brokers, or forks were used.
 
-**Evidence provenance:** `paseo --version`, `paseo status`, `paseo provider diagnostic <codex|opencode> --json` (names/presence only — no secret values read), plus one bounded real-use run of `scripts/paseo-trusted-local-smoke.sh` with `PROVIDER=codex` on 2026-10-19. A first attempt failed honestly (agent ran in the caller workspace, no diff); the script was fixed to pin the disposable absolute path in the prompt, and the rerun passed. Raw timelines and auth files are **not** committed; observations below are redacted summaries.
+**Evidence provenance:** `paseo --version`, `paseo status`, `paseo provider diagnostic <codex|opencode> --json` (names/presence only — no secret values read), `paseo provider models opencode` (model catalog), plus bounded real-use runs of `scripts/paseo-trusted-local-smoke.sh` on 2026-10-19: codex (initial PASS `7632c120`, post-repair re-passes incl. `7e397917`), OpenCode Go full-loop passes (`a6e54a0f`, `30c28243`), and honestly recorded Copilot session-start failures. Raw timelines and auth files are **not** committed; observations below are redacted summaries. Historical failures are preserved as diagnostic history, not as current status.
 
 ## Versions observed
 
@@ -12,14 +12,15 @@
 | codex CLI | `codex-cli 0.156.1`, diagnostic `Ready`, 6 models |
 | opencode CLI | 1.18.32, diagnostic `Ready`, 151 models, credentials present (count only) |
 | Node.js / npm | v22.23.2 / 12.1.0 |
-| Model that ran the smoke | `codex/gpt-6-astra` (reported by `paseo inspect` as model `gpt-6-astra`, thinking `low`) |
+| Model runs that passed | `codex/gpt-6-astra` and `codex/gpt-6-luna` (pinned runs asserted from session evidence); `opencode-go/muse-spark-1.3-contributor`; `opencode-go/deepseek-v4.1-flash` |
 
 ## Provider availability
 
 | Provider | Available | Notes |
 |---|---|---|
-| codex | **true** | Ran the smoke session (agent `7632c120-…`, status `idle` → stopped/archived) |
-| opencode | **true** (diagnostic) but **session start FAILS** — see below | Diagnostic Ready; two session attempts failed before any model turn (no substitution made) |
+| codex | **true** | Full-loop smoke PASS (multiple runs, latest `7e397917`; pinned-model runs asserted) |
+| opencode (OpenCode Go subscription) | **true** | Full-loop smoke PASS for `muse-spark-1.3-contributor` (`a6e54a0f`) and `deepseek-v4.1-flash` (`30c28243`); 0 nudges; identity asserted, no substitution |
+| opencode (GitHub-Copilot-backed models) | **true** (diagnostic) but **session start FAILS** — see below | Diagnostic Ready; `gemini-4-argon` → 400 `model_not_supported`, pinned `gpt-5-mini` → pre-turn error (`LastUsage: null`); entitlement-level, not installation |
 | claude / copilot / pi | false | Unavailable in this daemon; untouched |
 
 ## What the smoke test proved
@@ -45,37 +46,30 @@ Functional trusted-local workflow with the default provider (`codex`), all in a 
   each with effective provider/model asserted from session evidence, 0 nudges,
   full edit → format/tests → diff → stop/archive/workspace-deregister.
 
+- **Diagnosis history (superseded partial runs, preserved as evidence):**
+  before the workspace fix, sessions ran with Cwd in the caller workspace
+  (`paseo run --cwd` does not set session Cwd — verified), so target files
+  fell under OpenCode's `external_directory = ask` and the models
+  (`b8ff78c9`, `b663df06`, `4028ca17`, `0dcdeffb`) read but never completed
+  edits. Mode selection was ruled out (unset/default mode maps to OpenCode's
+  own default agent; the owner config sets no custom default) and tool
+  exposure was ruled out (a direct `opencode run` in the target dir edited
+  immediately: `ses_eaa138f3cffebmNl5eQ5B41N5m`). Related codex finding:
+  fresh disposable workspaces are untrusted, so codex mode `auto` gates
+  shell/edit behind a pending permission (observed `CodexBash` request, run
+  status `permission`); the smoke defaults codex to `full-access`
+  (TRUSTED_LOCAL-appropriate; target stays disposable and post-hoc verified).
+
 Two honest behavioral notes: (1) the agent-scoped `paseo run --cwd <tmp>` did **not** change the agent's `Cwd` (inspect showed the caller workspace); the script now creates a real workspace rooted at the target and asserts Cwd instead. (2) Attempt 1 (agent `ca05f95e-…`) correctly reported "Files changed: none" and the script failed as designed; no failure was masked.
 
 ## What it did NOT prove
 
-- **opencode routes: session launch works; full edit/test loop NOT completed.**
-  (a) GitHub-Copilot-backed models are session-start BLOCKED in this
-  environment: `github-copilot/gemini-4-argon` → 400 `model_not_supported`;
+- **GitHub-Copilot-backed models: session start BLOCKED (preserved as diagnostic history).**
+  `github-copilot/gemini-4-argon` → 400 `model_not_supported`;
   pinned `github-copilot/gpt-5-mini` → errored in <1s with `LastUsage: null`.
   Diagnostic still reports available:true — failure is at session/model
-  entitlement, not installation.
-  (b) OpenCode Go subscription models: FULL LOOP PASS after the workspace
-  fix. Root cause of the earlier read-only stalls: sessions ran with Cwd
-  in the caller workspace (`paseo run --cwd` does not set session Cwd —
-  verified), so target files fell under OpenCode's `external_directory =
-  ask` and the models read but never completed edits. Mode selection was
-  ruled out (unset/default mode maps to OpenCode's own default agent;
-  the owner config sets no custom default) and tool exposure was ruled
-  out (a direct `opencode run` in the target dir edited immediately).
-  The smoke script now creates a real Paseo workspace rooted at the
-  disposable target and asserts session Cwd equals it. Passing runs,
-  0 nudges, effective provider/model asserted from session evidence:
-  `opencode-go/muse-spark-1.3-contributor` (agent `a6e54a0f`),
-  `opencode-go/deepseek-v4.1-flash` (agent `30c28243`). Earlier partial
-  sessions (`b8ff78c9`, `b663df06`, `4028ca17`, `0dcdeffb`) are superseded
-  by these passes, retained here as diagnosis history.
-  Related codex finding fixed in the same repair: fresh disposable
-  workspaces are untrusted, so codex mode `auto` gates shell/edit behind
-  a pending permission (observed `CodexBash` request, run status
-  `permission`); the smoke defaults codex to `full-access`
-  (TRUSTED_LOCAL-appropriate; target stays disposable and post-hoc
-  verified). Codex re-passed (`871e2251`, 0 nudges).
+  entitlement, not installation. Do not substitute these routes for the
+  passing OpenCode Go routes above.
 
 - **Isolation:** no sandbox boundary, read boundary, or credential-confinement claim — SEC-01 remains paused, not approved.
 - **S3 adapter / unattended campaigns:** one short attended run only; no scheduling, long campaigns, or production actions.
