@@ -6,6 +6,8 @@ import { useEventStream } from "../useEventStream";
 export function Dashboard() {
   const [health, setHealth] = useState<{ version: string } | null>(null);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [runCounts, setRunCounts] = useState<Record<string, number>>({});
+  const [workerCounts, setWorkerCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const { events, state } = useEventStream(0);
 
@@ -13,9 +15,11 @@ export function Dashboard() {
     let live = true;
     (async () => {
       try {
-        const [h, actions] = await Promise.all([
+        const [h, actions, runs, workers] = await Promise.all([
           api.health(),
           api.listActions(),
+          api.listRuns().catch(() => []),
+          api.listWorkers().catch(() => []),
         ]);
         if (!live) {
           return;
@@ -26,6 +30,16 @@ export function Dashboard() {
           byStatus[a.status] = (byStatus[a.status] ?? 0) + 1;
         }
         setCounts(byStatus);
+        const byRun: Record<string, number> = { total: runs.length };
+        for (const r of runs) {
+          byRun[r.status] = (byRun[r.status] ?? 0) + 1;
+        }
+        setRunCounts(byRun);
+        const byWorker: Record<string, number> = { total: workers.length };
+        for (const w of workers) {
+          byWorker[w.status] = (byWorker[w.status] ?? 0) + 1;
+        }
+        setWorkerCounts(byWorker);
       } catch (e) {
         if (live) {
           setError(
@@ -58,6 +72,24 @@ export function Dashboard() {
             completed · {counts.cancelled ?? 0} cancelled
           </p>
           <Link to="/actions">Open Actions</Link>
+        </div>
+        <div className="card">
+          <h3>Runs</h3>
+          <p>
+            {runCounts.total ?? "…"} total · {runCounts.queued ?? 0} queued ·{" "}
+            {runCounts.leased ?? 0} leased · {runCounts.running ?? 0} running ·{" "}
+            {runCounts.succeeded ?? 0} succeeded · {runCounts.failed ?? 0}{" "}
+            failed · {runCounts.cancelled ?? 0} cancelled
+          </p>
+          <Link to="/runs">Open Runs</Link>
+        </div>
+        <div className="card">
+          <h3>Workers</h3>
+          <p>
+            {workerCounts.total ?? "…"} registered · {workerCounts.online ?? 0}{" "}
+            online · {workerCounts.offline ?? 0} offline
+          </p>
+          <Link to="/workers">Open Workers</Link>
         </div>
         <div className="card">
           <h3>Event stream</h3>

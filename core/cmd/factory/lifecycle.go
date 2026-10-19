@@ -57,6 +57,12 @@ func start(cfg config) error {
 	if err != nil {
 		return err
 	}
+	// The scoped worker credential is provisioned alongside the operator
+	// token so the Core can authenticate the Worker protocol from boot.
+	workerToken, err := loadOrCreateTokenEnv(filepath.Join(cfg.home, "worker.token"), "FACTORY_WORKER_TOKEN")
+	if err != nil {
+		return err
+	}
 	logPath := filepath.Join(cfg.home, "factory.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -70,7 +76,7 @@ func start(cfg config) error {
 	cmd := exec.Command(cfg.binary, "--addr", cfg.addr, "--db", filepath.Join(cfg.home, "factory.db"), "--web-dir", cfg.webDir)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = environmentWithToken(token)
+	cmd.Env = environmentWithTokens(token, workerToken)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -265,6 +271,7 @@ func printInfo(cfg config, pid int, state string) {
 	}
 	fmt.Printf("\nOffice URL: %s/\n", officeURL(cfg.addr))
 	fmt.Printf("Authentication: Bearer token in %s (permissions 0600; value not written to logs)\n", filepath.Join(cfg.home, "api.token"))
+	fmt.Printf("Worker credential: scoped token in %s (permissions 0600; never reuse the operator token)\n", filepath.Join(cfg.home, "worker.token"))
 	fmt.Printf("Database: %s\n", filepath.Join(cfg.home, "factory.db"))
 	fmt.Printf("Logs: %s\n", filepath.Join(cfg.home, "factory.log"))
 }
@@ -273,12 +280,12 @@ func officeURL(addr string) string {
 	return "http://" + net.JoinHostPort(hostForURL(addr), portForURL(addr))
 }
 
-func environmentWithToken(token string) []string {
-	env := make([]string, 0, len(os.Environ())+1)
+func environmentWithTokens(apiToken, workerToken string) []string {
+	env := make([]string, 0, len(os.Environ())+2)
 	for _, item := range os.Environ() {
-		if !strings.HasPrefix(item, "FACTORY_API_TOKEN=") {
+		if !strings.HasPrefix(item, "FACTORY_API_TOKEN=") && !strings.HasPrefix(item, "FACTORY_WORKER_TOKEN=") {
 			env = append(env, item)
 		}
 	}
-	return append(env, "FACTORY_API_TOKEN="+token)
+	return append(env, "FACTORY_API_TOKEN="+apiToken, "FACTORY_WORKER_TOKEN="+workerToken)
 }

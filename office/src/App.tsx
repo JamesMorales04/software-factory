@@ -5,6 +5,9 @@ import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
 import { Agents } from "./views/Agents";
 import { Dashboard } from "./views/Dashboard";
+import { RunDetail } from "./views/RunDetail";
+import { Runs } from "./views/Runs";
+import { Workers } from "./views/Workers";
 
 function TokenGate({ onUnlock }: { onUnlock: () => void }) {
   const [value, setValue] = useState("");
@@ -53,7 +56,7 @@ export function App() {
           <Link to="/" className="brand">
             Factory Office
           </Link>{" "}
-          <span className="muted">S1</span>
+          <span className="muted">S2</span>
         </h1>
         <nav>
           <NavLink
@@ -73,6 +76,24 @@ export function App() {
             }
           >
             Actions
+          </NavLink>
+          <NavLink
+            to="/runs"
+            end
+            className={({ isActive }) =>
+              isActive ? "navlink active" : "navlink"
+            }
+          >
+            Runs
+          </NavLink>
+          <NavLink
+            to="/workers"
+            end
+            className={({ isActive }) =>
+              isActive ? "navlink active" : "navlink"
+            }
+          >
+            Workers
           </NavLink>
           <NavLink
             to="/agents"
@@ -100,6 +121,9 @@ export function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/actions" element={<Actions />} />
           <Route path="/actions/:id" element={<ActionDetail />} />
+          <Route path="/runs" element={<Runs />} />
+          <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/workers" element={<Workers />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="*" element={<p className="error">Unknown route.</p>} />
         </Routes>

@@ -1,7 +1,9 @@
-# Factory Core (F1-S1)
+# Factory Core and Worker (F1-S1 + F1-S2)
 
 Go modular monolith: domain rules, SQLite WAL persistence, authenticated
-HTTP API, durable event ledger, best-effort OpenTelemetry.
+HTTP API, durable event ledger, best-effort OpenTelemetry — plus the S2
+local Worker, Core–Worker dispatch with leases and fencing, and crash
+recovery.
 
 ## Toolchain (pinned)
 
@@ -23,23 +25,39 @@ go run ./cmd/factory-core --addr 127.0.0.1:8471 --db ./data/factory.db
 
 Environment: `FACTORY_API_TOKEN` (optional for direct Core runs; when unset,
 a process-local token is generated but its value is not displayed),
+`FACTORY_WORKER_TOKEN` (scoped Worker-protocol credential; the lifecycle
+CLI provisions it, the Core accepts it only on Worker routes),
 `OTEL_EXPORTER_OTLP_ENDPOINT` (optional; business writes never depend on it),
 `LOG_LEVEL` (debug|info|warn|error).
 
 ## Layout
 
-- `cmd/factory-core` — entrypoint, flags, startup/shutdown.
-- `internal/domain` — Action lifecycle, event schema, validation (no deps).
-- `internal/store` — SQLite WAL: atomic action+event writes, idempotency,
-  replay cursors, restart retention.
-- `internal/api` — auth, correlation IDs, JSON errors, SSE stream, static UI.
+- `cmd/factory-core` — entrypoint, flags, startup/shutdown, boot
+  reconciliation and lease sweeper.
+- `cmd/factory-worker` — S2 local Worker: registration, lease poll,
+  heartbeats, synthetic fixture execution (rootless Podman by default,
+  `--exec-mode local` for explicit pure-Go test/dev use only), fencing.
+- `cmd/factory` — lifecycle CLI (`factory start|stop|status`,
+  `factory worker start|stop|status`, `factory logs [-n] [-f] [worker]`).
+- `internal/domain` — Action lifecycle, Run/Attempt/Worker rules, event
+  schema, validation (no deps).
+- `internal/store` — SQLite WAL: atomic action+event and run+event writes,
+  idempotency, leases, fencing, expiry, reconciliation, replay cursors,
+  restart retention.
+- `internal/exec` — credential-free synthetic fixture (Podman + local).
+- `internal/api` — auth (operator + scoped worker tokens), correlation IDs,
+  JSON errors, SSE stream, static UI.
 - `internal/telemetry` — redacted JSON logs, correlation IDs, OTel setup.
 
-Core acceptance: `scripts/e2e-s1.sh` from the repo root. The compiled
+Core acceptance: `scripts/e2e-s1.sh` from the repo root. S2 acceptance:
+`scripts/e2e-s2.sh` (API/CLI journeys, crash/restart/fencing, Podman
+probes, S1 regression) and `scripts/e2e-s2-browser.sh` (real-Chromium
+Runs/Workers journey). The compiled
 lifecycle experience is exercised by `scripts/e2e-factory-cli.sh`; it builds
 the distribution, runs `factory` from outside the source directory, and checks
 auth, readiness, logs, stop/restart, and SQLite retention.
-Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events-s1.md`.
+Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events-s1.md`,
+`docs/contracts/run-worker-s2.md`.
 
 ## Local lifecycle CLI
 
@@ -56,10 +74,23 @@ CLI works from any current directory and serves the Office bundle through Core:
 ```sh
 factory start
 factory status
+factory worker start
+factory worker status
 factory logs -n 50
-factory logs -f
+factory logs -n 50 worker
+factory worker stop
 factory stop
 ```
+
+The Worker child process receives a minimal explicit environment
+(`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `TMPDIR` plus its scoped
+`FACTORY_WORKER_TOKEN`); nothing else from the operator shell — no
+provider credentials, no GitHub tokens, no operator API token — is
+propagated. Its default execution mode is rootless Podman and fails
+closed when Podman is unavailable; `--exec-mode local` selects the
+explicit pure-Go fixture for tests/dev only. SEC-01 remains
+PAUSED/BLOCKED: this boundary is credential hygiene, not a certified
+sandbox.
 
 By default, its private state directory is `~/.local/share/software-factory`
 (or `$XDG_DATA_HOME/software-factory`); set `FACTORY_HOME` to choose another.

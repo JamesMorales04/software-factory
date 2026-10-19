@@ -2,8 +2,18 @@
 
 **Status: proposed, not yet specified or certified.** This index is a contract-development checklist, not a set of completed APIs.
 
+## Frozen for F1 (implemented, review-bound)
+
+| Contract | File | Slice | Covers |
+| --- | --- | --- | --- |
+| Project–Action | `project-action-s1.md` | S1 | identities, schema, lifecycle, auth, idempotency, errors |
+| Factory Events | `factory-events-s1.md` | S1 | event schema, durability, replay transport, redaction |
+| Run–Worker | `run-worker-s2.md` | S2 | Run/Attempt/Worker identities, lifecycles, dispatch, leases, fencing, recovery |
+
+The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery) are still proposed.
+
 | Contract | Scope | Required adversarial scenarios |
-|---|---|---|
+| --- | --- | --- |
 | Project–Action | identities, frozen specs, risk, lifecycle | duplicates, cancellation, spec drift |
 | Campaign–Run | task dependencies, attempts, ownership, budgets | retries, crashes, leases, contention |
 | Core–Worker | registration, dispatch, heartbeat, result, cancellation | disconnects, replay, fencing, worker loss |

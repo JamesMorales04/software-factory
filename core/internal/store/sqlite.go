@@ -55,12 +55,65 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_global ON events(global_seq);
 CREATE INDEX IF NOT EXISTS idx_actions_project ON actions(project_id, created_at);
+CREATE TABLE IF NOT EXISTS runs (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL DEFAULT '',
+	workload_kind TEXT NOT NULL,
+	workload_input TEXT NOT NULL DEFAULT '{}',
+	status TEXT NOT NULL,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	max_attempts INTEGER NOT NULL DEFAULT 3,
+	timeout_secs INTEGER NOT NULL DEFAULT 120,
+	lease_owner TEXT NOT NULL DEFAULT '',
+	lease_generation INTEGER NOT NULL DEFAULT 0,
+	lease_expires_at TEXT NOT NULL DEFAULT '',
+	result TEXT NOT NULL DEFAULT '{}',
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS attempts (
+	id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	seq INTEGER NOT NULL,
+	worker_id TEXT NOT NULL,
+	lease_generation INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	heartbeats INTEGER NOT NULL DEFAULT 0,
+	result TEXT NOT NULL DEFAULT '{}',
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS workers (
+	id TEXT PRIMARY KEY,
+	version TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	last_heartbeat TEXT NOT NULL DEFAULT '',
+	last_run_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_attempts_run ON attempts(run_id, seq);
 `
 
-// DB is the S1 persistence adapter. A single logical writer owns
-// transactions; readers observe WAL snapshots.
+// DB is the S2 persistence adapter (S1: actions/events; S2 adds
+// runs/attempts/workers). A single logical writer owns transactions;
+// readers observe WAL snapshots.
 type DB struct {
-	sql *sql.DB
+	sql   *sql.DB
+	hooks testHooks
+}
+
+// S2 test hooks. Production code always uses the defaults installed by
+// Open; tests override them for deterministic lease/expiry behavior.
+type testHooks struct {
+	clock        func() time.Time
+	leaseTTL     time.Duration
+	offlineAfter time.Duration
 }
 
 // Open creates the schema, enforces WAL mode and seeds the default project.
@@ -75,6 +128,9 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	db := &DB{sql: sqldb}
+	db.hooks.clock = utcNow
+	db.hooks.leaseTTL = domain.DefaultLeaseTTL
+	db.hooks.offlineAfter = domain.WorkerOfflineAfter
 	if err := db.assertWAL(); err != nil {
 		_ = sqldb.Close()
 		return nil, err
@@ -85,6 +141,27 @@ func Open(path string) (*DB, error) {
 	}
 	return db, nil
 }
+
+// now reports the store clock (overridable in tests for deterministic
+// lease/expiry behavior; production always uses UTC wall time).
+func (db *DB) now() time.Time {
+	if db.hooks.clock != nil {
+		return db.hooks.clock()
+	}
+	return utcNow()
+}
+
+// SetClock overrides the store clock. Test-only hook for deterministic
+// lease-expiry and reconciliation tests.
+func (db *DB) SetClock(clock func() time.Time) { db.hooks.clock = clock }
+
+// SetLeaseTTL overrides the granted lease duration. Test-only hook so
+// expiry tests run in milliseconds instead of seconds.
+func (db *DB) SetLeaseTTL(ttl time.Duration) { db.hooks.leaseTTL = ttl }
+
+// SetWorkerOfflineAfter overrides the heartbeat-overdue threshold.
+// Test-only hook for deterministic liveness tests.
+func (db *DB) SetWorkerOfflineAfter(d time.Duration) { db.hooks.offlineAfter = d }
 
 // Close releases the database handle.
 func (db *DB) Close() error { return db.sql.Close() }

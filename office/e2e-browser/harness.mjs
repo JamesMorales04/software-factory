@@ -143,6 +143,13 @@ export async function launchBrowser(
   ];
   const browserEnv = { ...process.env };
   if (forceX11) delete browserEnv.WAYLAND_DISPLAY;
+  // The browser child never needs Factory credentials: the Office token
+  // gate is filled over the automation protocol, not from the environment.
+  // Scrub token-shaped variables so a compromised renderer cannot read them
+  // from its own process environment.
+  for (const key of Object.keys(browserEnv)) {
+    if (/TOKEN/i.test(key)) delete browserEnv[key];
+  }
   const child = spawn(executablePath, args, {
     detached: true,
     stdio: "ignore",

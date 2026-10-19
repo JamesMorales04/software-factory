@@ -35,7 +35,8 @@ func run() error {
 	flag.Parse()
 
 	logger := telemetry.NewLogger()
-	token := resolveToken(logger)
+	token := resolveToken(logger, "FACTORY_API_TOKEN")
+	workerToken := resolveToken(logger, "FACTORY_WORKER_TOKEN")
 
 	if dir := filepath.Dir(*dbPath); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -55,13 +56,34 @@ func run() error {
 	defer shutdownTracing(context.Background())
 
 	hub := api.NewHub()
-	server := api.New(db, token, logger, tracer, hub).WithWebDir(*webDir)
+	server := api.New(db, token, logger, tracer, hub).WithWorkerToken(workerToken).WithWebDir(*webDir)
 
 	boot, err := db.RecordCoreStarted(ctx, api.Version)
 	if err != nil {
 		return fmt.Errorf("record CoreStarted: %w", err)
 	}
 	hub.Publish(boot)
+
+	// S2 crash recovery: reconcile leases orphaned by the previous
+	// process before accepting Worker traffic. History survives; nothing
+	// unfinished disappears silently.
+	reconciled, err := db.ReconcileOnBoot(ctx, telemetry.NewCorrelationID())
+	if err != nil {
+		return fmt.Errorf("reconcile runs on boot: %w", err)
+	}
+	for _, e := range reconciled {
+		hub.Publish(e)
+	}
+	if len(reconciled) > 0 {
+		logger.Info("reconciled runs on boot", "events", len(reconciled))
+	}
+
+	// S2 lease sweeper: expiry and Worker liveness are Core-owned. Sweeper
+	// failures are logged, never fatal: telemetry-style degradation must
+	// not stop business writes.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	go sweepLeases(sweepCtx, db, hub, logger)
 
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -96,11 +118,11 @@ func run() error {
 	return httpServer.Shutdown(shCtx)
 }
 
-// resolveToken loads FACTORY_API_TOKEN. When unset, a random process-local
+// resolveToken loads a named token. When unset, a random process-local
 // token is generated and registered for log redaction. Use the lifecycle
 // CLI when the token must persist across Core restarts.
-func resolveToken(logger *slog.Logger) string {
-	if v := os.Getenv("FACTORY_API_TOKEN"); v != "" {
+func resolveToken(logger *slog.Logger, env string) string {
+	if v := os.Getenv(env); v != "" {
 		telemetry.RegisterSecret(v)
 		return v
 	}
@@ -110,6 +132,28 @@ func resolveToken(logger *slog.Logger) string {
 	}
 	generated := hex.EncodeToString(b[:])
 	telemetry.RegisterSecret(generated)
-	logger.Info("FACTORY_API_TOKEN unset; generated an ephemeral token for this process")
+	logger.Info(env + " unset; generated an ephemeral token for this process")
 	return generated
+}
+
+// sweepLeases expires timed-out leases and marks overdue Workers offline
+// once per second until the Core shuts down.
+func sweepLeases(ctx context.Context, db *store.DB, hub *api.Hub, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			events, err := db.ExpireLeases(context.Background())
+			if err != nil {
+				logger.Error("lease sweep failed", "error", err.Error())
+				continue
+			}
+			for _, e := range events {
+				hub.Publish(e)
+			}
+		}
+	}
 }

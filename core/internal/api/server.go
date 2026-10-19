@@ -19,19 +19,41 @@ import (
 var Version = "0.1.0-s1"
 
 // Server wires persistence, auth and telemetry into one HTTP boundary.
+// Operator routes authenticate with the admin token; Worker protocol routes
+// authenticate with a separate scoped worker token that grants nothing else.
 type Server struct {
-	db     *store.DB
-	token  string
-	log    *slog.Logger
-	tracer trace.Tracer
-	hub    *Hub
-	webDir string
+	db          *store.DB
+	token       string
+	workerToken string
+	log         *slog.Logger
+	tracer      trace.Tracer
+	hub         *Hub
+	webDir      string
 }
 
 // New builds a Server. Token must be non-empty; startup refuses to run
 // an unauthenticated Core.
 func New(db *store.DB, token string, logger *slog.Logger, tracer trace.Tracer, hub *Hub) *Server {
 	return &Server{db: db, token: token, log: logger, tracer: tracer, hub: hub}
+}
+
+// WithWorkerToken scopes the Worker protocol to a dedicated credential.
+// Without it, Worker routes fail closed with 401.
+func (s *Server) WithWorkerToken(token string) *Server {
+	s.workerToken = token
+	return s
+}
+
+// workerRoute reports whether a path is part of the scoped Worker protocol.
+// Operator Worker observations (GET /api/v1/workers...) stay on the admin
+// token; only the protocol endpoints below accept the worker token.
+func workerRoute(path string) bool {
+	switch path {
+	case "/api/v1/workers/register", "/api/v1/workers/poll", "/api/v1/workers/heartbeat", "/api/v1/workers/report":
+		return true
+	default:
+		return false
+	}
 }
 
 // WithWebDir serves a static Factory Office build with SPA fallback for
@@ -55,6 +77,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/actions/{id}/events", s.handleActionEvents)
 	mux.HandleFunc("GET /api/v1/events", s.handleListEvents)
 	mux.HandleFunc("GET /api/v1/events/stream", s.handleEventStream)
+	mux.HandleFunc("POST /api/v1/runs", s.handleCreateRun)
+	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
+	mux.HandleFunc("GET /api/v1/runs/{id}", s.handleGetRun)
+	mux.HandleFunc("GET /api/v1/runs/{id}/attempts", s.handleListAttempts)
+	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEvents)
+	mux.HandleFunc("POST /api/v1/runs/{id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("GET /api/v1/workers", s.handleListWorkers)
+	mux.HandleFunc("GET /api/v1/workers/{id}", s.handleGetWorker)
+	mux.HandleFunc("POST /api/v1/workers/register", s.handleWorkerRegister)
+	mux.HandleFunc("POST /api/v1/workers/poll", s.handleWorkerPoll)
+	mux.HandleFunc("POST /api/v1/workers/heartbeat", s.handleWorkerHeartbeat)
+	mux.HandleFunc("POST /api/v1/workers/report", s.handleWorkerReport)
 
 	authed := s.withAuth(mux)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +108,18 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if workerRoute(r.URL.Path) {
+			s.withWorkerAuth(next).ServeHTTP(w, r)
+			return
+		}
+		s.withOperatorAuth(next).ServeHTTP(w, r)
+	})
+}
+
+// withOperatorAuth guards operator routes (Actions, Runs, observations)
+// with the admin token. The worker token is never accepted here.
+func (s *Server) withOperatorAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := "Bearer " + s.token
 		got := r.Header.Get("Authorization")
 		if got == "" && r.URL.Path == "/api/v1/events/stream" {
@@ -86,6 +132,22 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "valid Bearer token required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withWorkerAuth guards the Core–Worker protocol with the scoped worker
+// token. The admin token is never accepted here: a compromised Worker
+// credential must not become an operator credential and vice versa. An
+// empty worker token fails closed.
+func (s *Server) withWorkerAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want := "Bearer " + s.workerToken
+		got := r.Header.Get("Authorization")
+		if s.workerToken == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "valid worker Bearer token required")
 			return
 		}
 		next.ServeHTTP(w, r)

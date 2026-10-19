@@ -1,0 +1,62 @@
+# F1-S2 acceptance gates. Same toolchain pins as S1 (core/go.mod + tool
+# directive, office/package.json + lockfile), plus the S2 live journeys.
+#
+# Runner requirements are explicit, not assumed:
+# - s2-e2e runs on ubuntu-24.04 because the GitHub image preinstalls Podman
+#   4.9.3 there; the script fails (it never silently skips) when Podman or
+#   the fixture image is unavailable under FACTORY_S2_STRICT=1.
+# - s2-browser additionally installs Chrome for Testing via
+#   browser-actions/setup-chrome and drives it with playwright-core; under
+#   FACTORY_S2B_STRICT=1 a missing browser or failed install is a failure.
+# Deterministic unit/contract/recovery tests already run in s1.yml's core
+# job (`go test -race ./...`); these jobs add the live Core–Worker,
+# crash/restart, Podman and browser acceptance.
+name: s2
+"on":
+  push:
+    branches: [main, "f1-*"]
+  pull_request:
+
+jobs:
+  s2-e2e:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - name: podman preflight (explicit runner requirement)
+        run: |
+          podman --version
+          podman info --format '{{.Host.Security.Rootless}}'
+      - name: S2 Core–Worker, crash, fencing, restart, Podman, S1 regression
+        working-directory: .
+        env:
+          FACTORY_S2_STRICT: "1"
+        run: bash scripts/e2e-s2.sh
+
+  s2-browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - name: Install Chrome for Testing
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+      - name: S2 real-browser journey (Runs, Workers, detail lineage)
+        env:
+          FACTORY_S2B_STRICT: "1"
+          CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: bash scripts/e2e-s2-browser.sh

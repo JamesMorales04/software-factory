@@ -57,10 +57,24 @@ func run(args []string) error {
 			return usageError()
 		}
 		return status(cfg)
+	case "worker":
+		if len(args) != 2 {
+			return usageError()
+		}
+		switch args[1] {
+		case "start":
+			return startWorker(cfg)
+		case "stop":
+			return stopWorker(cfg)
+		case "status":
+			return statusWorker(cfg)
+		default:
+			return usageError()
+		}
 	case "logs":
 		return showLogs(cfg, args[1:])
 	case "help", "--help", "-h":
-		fmt.Print("Usage: factory {start|stop|status|logs [-n lines] [-f]}\n")
+		fmt.Print("Usage: factory {start|stop|status|worker {start|stop|status}|logs [-n lines] [-f] [worker]}\n")
 		return nil
 	default:
 		return usageError()
@@ -68,7 +82,7 @@ func run(args []string) error {
 }
 
 func usageError() error {
-	return errors.New("usage: factory {start|stop|status|logs [-n lines] [-f]}")
+	return errors.New("usage: factory {start|stop|status|worker {start|stop|status}|logs [-n lines] [-f] [worker]}")
 }
 
 func loadConfig() (config, error) {
