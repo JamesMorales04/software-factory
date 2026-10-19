@@ -35,8 +35,12 @@ PHASE=2 npm run journey   # same env as above
 
 `npm run test:parser` compiles the real `../src/sse.ts` with esbuild and
 runs `sse-parser.test.mjs` under `node --test` (stdlib only, no new deps).
-Covers heartbeat-only frames (the F1-S1 freeze regression), partial-frame
+Covers heartbeat-only frames (the F1 freeze regression), partial-frame
 carry, mixed heartbeat/event/malformed input, and unterminated garbage.
+
+`npm run test:close` unit-tests the shared shutdown helper
+(`harness.mjs`, also stdlib only): a hanging close times out, SIGKILLs
+and reports failure; a clean close returns fast with no lingering timer.
 
 ## Long-running soak (>=95s, real Chromium)
 

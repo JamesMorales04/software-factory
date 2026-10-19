@@ -10,6 +10,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "url";
+import { closeBrowser, withTimeout } from "./harness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE_URL;
@@ -78,8 +79,12 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-const browser = await chromium.launch({ executablePath: EXE });
-const page = await browser.newPage();
+const browser = await withTimeout(
+  chromium.launch({ executablePath: EXE }),
+  60000,
+  "browser launch timeout",
+);
+const page = await withTimeout(browser.newPage(), 30000, "new page timeout");
 page.on("pageerror", (e) => failures.push(`pageerror: ${String(e).slice(0, 200)}`));
 const shot = (n) =>
   page.screenshot({ path: join(HERE, ".soak-evidence", `soak-${n}.png`), timeout: 15000 });
@@ -175,11 +180,11 @@ try {
   // Phase C: background the tab across heartbeats (stream stays mounted), then return.
   const blank = await browser.newPage();
   await blank.goto("about:blank");
-  await blank.bringToFront();
+  await withTimeout(page.bringToFront(), 15000, "bringToFront timeout");
   note("app tab backgrounded");
   await page.waitForTimeout(25000);
-  await page.bringToFront();
-  await blank.close();
+  await withTimeout(page.bringToFront(), 15000, "bringToFront timeout");
+  await withTimeout(blank.close(), 15000, "background page close timeout");
   check("responsive after background/foreground", await responsive("post-background"));
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
@@ -194,7 +199,7 @@ try {
   await shot("end");
 
   // Ledger integrity from the server side (exactly-once, no gaps).
-    const { events } = await api("/api/v1/events?after=0&limit=500");
+  const { events } = await api("/api/v1/events?after=0&limit=500");
   check("ledger contiguous and duplicate-free", ledgerIsClean(events), `n=${events.length}`);
   const titles = events.map((e) => e.payload && e.payload.title).filter(Boolean);
   check(
@@ -215,29 +220,18 @@ try {
     connsAfterCycles >= 0 && connsAfterCycles <= connsBeforeCycles + 1,
     `chromium established median before=${connsBeforeCycles} after=${connsAfterCycles}`,
   );
-
+} catch (e) {
+  await shot("failure").catch(() => undefined);
+  failures.push(`harness error: ${String(e).slice(0, 200)}`);
+} finally {
+  // Bounded shutdown (see harness.mjs): a close timeout is a recorded
+  // failure, and the summary is written only after the browser is gone,
+  // so the verdict always reflects the shutdown outcome too.
+  if (await closeBrowser(browser)) {
+    failures.push("browser shutdown timed out; SIGKILL used");
+  }
   const summary = { ok: failures.length === 0, elapsedSec: elapsed(), failures };
   writeFileSync(join(HERE, ".soak-evidence", "summary.json"), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));
   if (failures.length > 0) process.exitCode = 1;
-} catch (e) {
-  await shot("failure").catch(() => undefined);
-  console.log(JSON.stringify({ ok: false, error: String(e).slice(0, 500), elapsedSec: elapsed() }));
-  process.exitCode = 1;
-} finally {
-  // A frozen renderer can stall browser shutdown exactly like it stalls
-  // the page: bound the close, then SIGKILL the browser process so a
-  // detected stall always exits nonzero instead of hanging the harness.
-  await Promise.race([
-    browser.close(),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("browser-close timeout")), 20000),
-    ),
-  ]).catch(() => {
-    try {
-      browser.process()?.kill("SIGKILL");
-    } catch {
-      // Already dead; nothing to kill.
-    }
-  });
 }

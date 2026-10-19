@@ -9,6 +9,7 @@ import { chromium } from "playwright-core";
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { closeBrowser, withTimeout } from "./harness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE_URL || "http://127.0.0.1:8471";
@@ -27,12 +28,17 @@ if (!EXE || !existsSync(EXE)) {
 }
 mkdirSync(join(HERE, ".journey-evidence"), { recursive: true });
 
-const browser = await chromium.launch({ executablePath: EXE });
-const page = await browser.newPage();
+const browser = await withTimeout(
+  chromium.launch({ executablePath: EXE }),
+  60000,
+  "browser launch timeout",
+);
+const page = await withTimeout(browser.newPage(), 30000, "new page timeout");
 const notes = [];
 const shot = (n) =>
   page.screenshot({ path: join(HERE, ".journey-evidence", `phase${PHASE}-${n}.png`), timeout: 15000 });
 
+let journeyResult;
 try {
   if (PHASE === "1") {
     await page.goto(BASE, { waitUntil: "networkidle" });
@@ -79,31 +85,31 @@ try {
     await page.goto(`${BASE}/#/actions/${id}`, { waitUntil: "networkidle" });
     await page.getByText("Browser journey action").first().waitFor({ timeout: 10000 });
     await page.getByText("in_progress").first().waitFor({ timeout: 10000 });
-    const body = await page.content();
+    const body = await withTimeout(page.content(), 15000, "page content timeout");
     for (const needle of ["ActionCreated", "ActionTransitioned"]) {
       if (!body.includes(needle)) throw new Error(`missing ledger evidence: ${needle}`);
     }
     notes.push(`post-restart: action ${id} + its ledger visible in fresh browser`);
     await shot("post-restart");
   }
-  console.log(JSON.stringify({ phase: PHASE, ok: true, notes }));
+  journeyResult = { phase: PHASE, ok: true, notes };
 } catch (e) {
   await shot("failure");
-  console.log(JSON.stringify({ phase: PHASE, ok: false, error: String(e).slice(0, 500) }));
-  process.exitCode = 1;
+  journeyResult = {
+    phase: PHASE,
+    ok: false,
+    error: String(e).slice(0, 500),
+  };
 } finally {
-  // Bounded shutdown: a frozen renderer stalls browser.close() exactly
-  // like it stalls the page, so cap it and SIGKILL to guarantee exit.
-  await Promise.race([
-    browser.close(),
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("browser-close timeout")), 20000),
-    ),
-  ]).catch(() => {
-    try {
-      browser.process()?.kill("SIGKILL");
-    } catch {
-      // Already dead; nothing to kill.
-    }
-  });
+  // Bounded shutdown with SIGKILL fallback (see harness.mjs); a close
+  // timeout is recorded as a failure so the verdict reflects it.
+  if (await closeBrowser(browser)) {
+    journeyResult = {
+      phase: journeyResult?.phase ?? PHASE,
+      ok: false,
+      error: "browser shutdown timed out; SIGKILL used",
+    };
+  }
+  console.log(JSON.stringify(journeyResult));
+  if (!journeyResult.ok) process.exitCode = 1;
 }
