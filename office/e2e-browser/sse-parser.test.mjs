@@ -4,8 +4,9 @@
 // The heartbeat-only cases are the direct regression for the F1-S1
 // main-thread freeze: the old inline parser never advanced past a
 // comment-only frame and looped synchronously forever.
-import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import { parseEventChunk } from "./.sse.cjs";
 
 const ev = (seq, title = "t") =>
@@ -31,7 +32,7 @@ describe("parseEventChunk", () => {
     const first = parseEventChunk(`${ev(1).slice(0, 40)}`);
     assert.equal(first.events.length, 0);
     assert.ok(first.carry.length > 0);
-    const second = parseEventChunk(first.carry + `${ev(1).slice(40)}\n\n`);
+    const second = parseEventChunk(`${first.carry}${ev(1).slice(40)}\n\n`);
     assert.equal(second.events.length, 1);
     assert.equal(second.events[0].globalSeq, 1);
     assert.equal(second.carry, "");

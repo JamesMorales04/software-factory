@@ -3,8 +3,9 @@
 // These pin the composition with a fake browser: a hanging close must
 // time out, SIGKILL, and report true; a clean close must return false
 // fast (no lingering timer); a rejecting close must fail safe.
-import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import { closeBrowser, withTimeout } from "./harness.mjs";
 
 const tracked = () => {
@@ -32,7 +33,10 @@ describe("closeBrowser", () => {
     const t = tracked();
     const start = Date.now();
     assert.equal(await closeBrowser(t.browser(), 20000), false);
-    assert.ok(Date.now() - start < 2000, "clean close must not wait out the timer");
+    assert.ok(
+      Date.now() - start < 2000,
+      "clean close must not wait out the timer",
+    );
     assert.deepEqual(t.calls, ["close"]);
   });
 
@@ -58,6 +62,9 @@ describe("withTimeout", () => {
   });
 
   it("rejects with the message on timeout", async () => {
-    await assert.rejects(withTimeout(new Promise(() => {}), 50, "too slow"), /too slow/);
+    await assert.rejects(
+      withTimeout(new Promise(() => {}), 50, "too slow"),
+      /too slow/,
+    );
   });
 });

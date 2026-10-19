@@ -12,10 +12,10 @@ function TokenGate({ onUnlock }: { onUnlock: () => void }) {
     <div className="gate">
       <h2>Factory Office</h2>
       <p className="muted">
-        The Core requires a Bearer token. Paste the{" "}
-        <code>FACTORY_API_TOKEN</code> the Core printed at startup (or
-        configured for this machine). It stays in this tab's session storage
-        only.
+        The Core requires a Bearer token. Paste the value from the private{" "}
+        <code>api.token</code> file reported by <code>factory start</code>, or
+        the token configured for a direct Core run. It stays in this tab's
+        session storage only.
       </p>
       <form
         onSubmit={(e) => {

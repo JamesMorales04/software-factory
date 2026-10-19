@@ -311,6 +311,32 @@ func contiguousGlobalSeqs(t *testing.T, events []domain.Event) {
 	}
 }
 
+func TestEventStreamFlushesHeadersBeforeAnyEvents(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events/stream?after=0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	started := time.Now()
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("empty stream did not return response headers: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("empty stream status = %d, want 200", res.StatusCode)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("empty stream headers took %s, want under 1s", elapsed)
+	}
+}
+
 // TestEventStreamPagesBeyondTheOldCap proves the backlog has no size cap:
 // 550 committed events must all replay in commit order.
 func TestEventStreamPagesBeyondTheOldCap(t *testing.T) {

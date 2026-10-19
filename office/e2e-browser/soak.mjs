@@ -3,25 +3,48 @@
 // cycles, and fails on ANY main-thread stall, page error, duplicate or
 // missing event, or connection accumulation.
 //
-// Env: BASE_URL, FACTORY_API_TOKEN, CHROMIUM_EXE.
+// Env: BASE_URL, FACTORY_API_TOKEN, CHROMIUM_EXE; set BROWSER_HEADLESS=false
+// when a desktop display is available to exercise real tab backgrounding.
 // Evidence: .soak-evidence/*.png + JSON summary on stdout (exit nonzero on failure).
-import { chromium } from "playwright-core";
-import { execSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { execSync, spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "url";
-import { closeBrowser, withTimeout } from "./harness.mjs";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { launchBrowser, withTimeout } from "./harness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE_URL;
 const TOKEN = process.env.FACTORY_API_TOKEN;
 const EXE = process.env.CHROMIUM_EXE;
-const PORT = new URL(BASE).port;
-if (!TOKEN || !EXE) {
-  console.log(JSON.stringify({ ok: false, error: "FACTORY_API_TOKEN and CHROMIUM_EXE required" }));
+const EVIDENCE_DIR =
+  process.env.SOAK_EVIDENCE_DIR || join(HERE, ".soak-evidence");
+const HEADLESS = process.env.BROWSER_HEADLESS !== "false";
+if (!BASE) {
+  console.log(JSON.stringify({ ok: false, error: "BASE_URL is required" }));
   process.exit(1);
 }
-mkdirSync(join(HERE, ".soak-evidence"), { recursive: true });
+if (!TOKEN || !EXE) {
+  console.log(
+    JSON.stringify({
+      ok: false,
+      error: "FACTORY_API_TOKEN and CHROMIUM_EXE required",
+    }),
+  );
+  process.exit(1);
+}
+if (HEADLESS) {
+  console.log(
+    JSON.stringify({
+      ok: false,
+      error:
+        "BROWSER_HEADLESS=false is required to exercise a real background tab",
+    }),
+  );
+  process.exit(1);
+}
+const PORT = new URL(BASE).port;
+mkdirSync(EVIDENCE_DIR, { recursive: true });
 
 const startedAt = Date.now();
 const RUN = startedAt.toString(36);
@@ -33,7 +56,9 @@ const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
 const failures = [];
 const note = (m) => console.log(`[t+${elapsed()}s] ${m}`);
 const check = (name, cond, detail = "") => {
-  console.log(`[${cond ? "PASS" : "FAIL"}] ${name}${cond ? "" : " — " + detail}`);
+  console.log(
+    `[${cond ? "PASS" : "FAIL"}] ${name}${cond ? "" : ` — ${detail}`}`,
+  );
   if (!cond) failures.push(name);
 };
 
@@ -42,13 +67,13 @@ function chromeEstablishedStreams() {
   // pool and generic idle keep-alive are not leaks. A leaked SSE stream
   // from an unmounted hook would show up here as steady growth.
   try {
-    const out = execSync(`ss -tnp state established '( dport = :${PORT} )' 2>/dev/null`, {
-      encoding: "utf8",
-    });
-    return out
-      .split("\n")
-      .filter((line) => /chrom/i.test(line))
-      .length;
+    const out = execSync(
+      `ss -tnp state established '( dport = :${PORT} )' 2>/dev/null`,
+      {
+        encoding: "utf8",
+      },
+    );
+    return out.split("\n").filter((line) => /chrom/i.test(line)).length;
   } catch {
     return -1;
   }
@@ -70,44 +95,48 @@ async function api(path, opts = {}) {
   // Bounded by default; a caller signal is composed with (not replaced
   // by) the timeout, so the override path can never go unbounded.
   const timeout = AbortSignal.timeout(15000);
-  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  const signal = opts.signal
+    ? AbortSignal.any([opts.signal, timeout])
+    : timeout;
   const init = { ...opts, signal };
   const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+    },
     ...init,
   });
-  if (!res.ok) throw new Error(`API ${opts.method || "GET"} ${path}: ${res.status}`);
+  if (!res.ok)
+    throw new Error(`API ${opts.method || "GET"} ${path}: ${res.status}`);
   return res.json();
 }
 
-let browser;
-{
-  // Launch failures must neither hang nor leak: bound the wait, and if a
-  // late launch resolves after the timeout, close it instead of orphaning it.
-  const pendingLaunch = chromium.launch({ executablePath: EXE });
-  try {
-    browser = await withTimeout(pendingLaunch, 60000, "browser launch timeout");
-  } catch (e) {
-    pendingLaunch.then(
-      (late) => late.close().catch(() => {}),
-      () => {},
-    );
-    console.log(JSON.stringify({ ok: false, error: `browser launch failed: ${e.message}` }));
-    process.exit(1);
-  }
+let app;
+let tabSwitcher;
+try {
+  // The harness owns the browser process from spawn, so a hung launch
+  // binary is SIGKILLed on timeout instead of orphaned. Any launch
+  // failure is a nonzero verdict (nothing to clean up beyond launchBrowser).
+  app = await launchBrowser(EXE, {
+    timeoutMs: 60000,
+    headless: HEADLESS,
+    forceX11: !HEADLESS,
+  });
+} catch (e) {
+  console.log(
+    JSON.stringify({ ok: false, error: `browser launch failed: ${e.message}` }),
+  );
+  process.exit(1);
 }
-const page = await withTimeout(browser.newPage(), 30000, "new page timeout").catch(
-  async (e) => {
-    // newPage failed after a successful launch: close the browser so it
-    // cannot leak, then fail nonzero.
-    await closeBrowser(browser);
-    console.log(JSON.stringify({ ok: false, error: `new page failed: ${e.message}` }));
-    process.exit(1);
-  },
+const { page, close, processGroupId } = app;
+page.on("pageerror", (e) =>
+  failures.push(`pageerror: ${String(e).slice(0, 200)}`),
 );
-page.on("pageerror", (e) => failures.push(`pageerror: ${String(e).slice(0, 200)}`));
 const shot = (n) =>
-  page.screenshot({ path: join(HERE, ".soak-evidence", `soak-${n}.png`), timeout: 15000 });
+  page.screenshot({
+    path: join(EVIDENCE_DIR, `soak-${n}.png`),
+    timeout: 15000,
+  });
 
 async function responsive(label) {
   // NOTE: page.evaluate's second argument is the function argument, NOT a
@@ -131,11 +160,112 @@ async function responsive(label) {
   }
 }
 
+function waitForVisibility(page, expected, timeoutMs = 10000) {
+  const change = page.evaluate(
+    (state) =>
+      new Promise((resolve) => {
+        if (document.visibilityState === state) {
+          resolve(document.visibilityState);
+          return;
+        }
+        const onChange = () => {
+          if (document.visibilityState === state) {
+            document.removeEventListener("visibilitychange", onChange);
+            resolve(document.visibilityState);
+          }
+        };
+        document.addEventListener("visibilitychange", onChange);
+      }),
+    expected,
+  );
+  return withTimeout(
+    change,
+    timeoutMs,
+    `Office tab did not become ${expected}`,
+  );
+}
+
+async function startTabSwitcher(processGroup) {
+  const child = spawn(
+    "python3",
+    [join(HERE, "native-tab-switcher.py"), String(processGroup)],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  const lines = createInterface({ input: child.stdout });
+  let closed = false;
+  const readLine = () =>
+    withTimeout(
+      new Promise((resolve, reject) => {
+        const onLine = (line) => {
+          cleanup();
+          resolve(line);
+        };
+        const onError = (error) => {
+          cleanup();
+          reject(error);
+        };
+        const onExit = (code) => {
+          cleanup();
+          reject(new Error(`native tab switcher exited with code ${code}`));
+        };
+        const cleanup = () => {
+          lines.off("line", onLine);
+          child.off("error", onError);
+          child.off("exit", onExit);
+        };
+        lines.once("line", onLine);
+        child.once("error", onError);
+        child.once("exit", onExit);
+      }),
+      5000,
+      "native tab switcher response timeout",
+    );
+  try {
+    const firstLine = await readLine();
+    const ready = JSON.parse(firstLine);
+    if (!ready.ready) {
+      throw new Error(`native tab switcher failed: ${ready.error}`);
+    }
+  } catch (error) {
+    child.kill("SIGKILL");
+    lines.close();
+    throw error;
+  }
+  return {
+    async switchTo(direction) {
+      child.stdin.write(`${direction}\n`);
+      const result = JSON.parse(await readLine());
+      if (!result.ok)
+        throw new Error(`native tab switch failed: ${result.error}`);
+    },
+    async close() {
+      if (closed) return;
+      child.stdin.end();
+      try {
+        await withTimeout(
+          new Promise((resolve) => child.once("exit", resolve)),
+          5000,
+          "native tab switcher close timeout",
+        );
+      } catch {
+        child.kill("SIGKILL");
+        throw new Error("native tab switcher close timeout");
+      } finally {
+        closed = true;
+        lines.close();
+      }
+    },
+  };
+}
+
 function ledgerIsClean(events) {
   const seqs = events.map((e) => e.globalSeq);
   const unique = new Set(seqs);
   return (
-    unique.size === seqs.length && seqs.every((s, i) => i === 0 || s === seqs[i - 1] + 1)
+    unique.size === seqs.length &&
+    seqs.every((s, i) => i === 0 || s === seqs[i - 1] + 1)
   );
 }
 
@@ -143,8 +273,13 @@ try {
   await page.goto(BASE, { waitUntil: "networkidle" });
   await page.getByPlaceholder("FACTORY_API_TOKEN").fill(TOKEN);
   await page.getByRole("button", { name: "Unlock" }).click();
-  await page.getByRole("heading", { name: "Dashboard" }).waitFor({ timeout: 15000 });
-  check("stream live on dashboard", await page.getByText("live").first().isVisible());
+  await page
+    .getByRole("heading", { name: "Dashboard" })
+    .waitFor({ timeout: 15000 });
+  check(
+    "stream live on dashboard",
+    await page.getByText("live").first().isVisible(),
+  );
   await shot("start");
 
   // Phase A: stay on the Dashboard with the stream mounted. Create through
@@ -193,7 +328,10 @@ try {
   await page.getByText("ActionCreated").first().waitFor({ timeout: 10000 });
   note("detail timeline rendered for filtered stream");
   await page.waitForTimeout(25000);
-  check("responsive on detail across heartbeat", await responsive("detail-heartbeat"));
+  check(
+    "responsive on detail across heartbeat",
+    await responsive("detail-heartbeat"),
+  );
   check(
     "detail timeline intact",
     (await page.getByText("ActionCreated").count()) >= 1,
@@ -202,17 +340,47 @@ try {
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
 
   // Phase C: background the tab across heartbeats (stream stays mounted), then return.
-  const blank = await withTimeout(browser.newPage(), 30000, "background page timeout");
-  await blank.goto("about:blank");
-  await withTimeout(page.bringToFront(), 15000, "bringToFront timeout");
-  note("app tab backgrounded");
+  // Extra pages come from the same owned browser context.
+  const background = await withTimeout(
+    page.context().newPage(),
+    30000,
+    "background page timeout",
+  );
+  await background.goto("about:blank");
+  await withTimeout(
+    page.bringToFront(),
+    15000,
+    "Office tab activation timeout",
+  );
+  check(
+    "Office is foreground before native tab switch",
+    (await page.evaluate(() => document.visibilityState)) === "visible",
+  );
+  tabSwitcher = await startTabSwitcher(processGroupId);
+  const hidden = waitForVisibility(page, "hidden");
+  await tabSwitcher.switchTo("next");
+  const hiddenState = await hidden;
+  check("Office tab actually backgrounded", hiddenState === "hidden");
+  note(
+    "native Ctrl+Tab selected another browser tab; Office document reports hidden",
+  );
   await page.waitForTimeout(25000);
-  await withTimeout(page.bringToFront(), 15000, "bringToFront timeout");
-  await withTimeout(blank.close(), 15000, "background page close timeout");
-  check("responsive after background/foreground", await responsive("post-background"));
+  const visible = waitForVisibility(page, "visible");
+  await tabSwitcher.switchTo("previous");
+  const visibleState = await visible;
+  check("Office tab foreground recovered", visibleState === "visible");
+  await tabSwitcher.close();
+  await withTimeout(background.close(), 15000, "background page close timeout");
+  check(
+    "responsive after background/foreground",
+    await responsive("post-background"),
+  );
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
-  check("stream live after foreground", await page.getByText("live").first().isVisible());
+  check(
+    "stream live after foreground",
+    await page.getByText("live").first().isVisible(),
+  );
 
   // Ride to >=95s total with probes.
   while (elapsed() < 95) {
@@ -224,8 +392,12 @@ try {
 
   // Ledger integrity from the server side (exactly-once, no gaps).
   const { events } = await api("/api/v1/events?after=0&limit=500");
-  check("ledger contiguous and duplicate-free", ledgerIsClean(events), `n=${events.length}`);
-  const titles = events.map((e) => e.payload && e.payload.title).filter(Boolean);
+  check(
+    "ledger contiguous and duplicate-free",
+    ledgerIsClean(events),
+    `n=${events.length}`,
+  );
+  const titles = events.map((e) => e.payload?.title).filter(Boolean);
   check(
     "both soak actions recorded exactly once",
     titles.filter((t) => t === TITLE_ONE).length === 1 &&
@@ -248,14 +420,28 @@ try {
   await shot("failure").catch(() => undefined);
   failures.push(`harness error: ${String(e).slice(0, 200)}`);
 } finally {
+  if (tabSwitcher) {
+    try {
+      await tabSwitcher.close();
+    } catch {
+      failures.push("native tab switcher shutdown failed");
+    }
+  }
   // Bounded shutdown (see harness.mjs): a close timeout is a recorded
   // failure, and the summary is written only after the browser is gone,
   // so the verdict always reflects the shutdown outcome too.
-  if (await closeBrowser(browser)) {
+  if (await close()) {
     failures.push("browser shutdown timed out; SIGKILL used");
   }
-  const summary = { ok: failures.length === 0, elapsedSec: elapsed(), failures };
-  writeFileSync(join(HERE, ".soak-evidence", "summary.json"), JSON.stringify(summary, null, 2));
+  const summary = {
+    ok: failures.length === 0,
+    elapsedSec: elapsed(),
+    failures,
+  };
+  writeFileSync(
+    join(EVIDENCE_DIR, "summary.json"),
+    JSON.stringify(summary, null, 2),
+  );
   console.log(JSON.stringify(summary));
   if (failures.length > 0) process.exitCode = 1;
 }

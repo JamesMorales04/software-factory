@@ -8,5 +8,6 @@
 /factory-core
 /core/factory-core
 dist/
+/build/
 __pycache__/
 *.pyc

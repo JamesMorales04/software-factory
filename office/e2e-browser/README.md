@@ -31,6 +31,22 @@ BASE_URL=http://127.0.0.1:8471 FACTORY_API_TOKEN=<token> \
 PHASE=2 npm run journey   # same env as above
 ```
 
+## Core outage recovery
+
+`npm run reconnect` keeps a real authenticated browser open while it stops
+and restarts Core through the compiled lifecycle CLI. It checks the visible
+reconnecting state, replay of the restart event, retained Action state, and a
+contiguous duplicate-free event ledger. Example after `scripts/build-factory.sh`:
+
+```sh
+FACTORY_HOME=/tmp/factory-reconnect \
+FACTORY_ADDR=127.0.0.1:8471 \
+FACTORY_BIN="$PWD/../../build/factory/factory" \
+BASE_URL=http://127.0.0.1:8471 \
+CHROMIUM_EXE="$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome" \
+npm run reconnect
+```
+
 ## Parser regression tests (no browser needed)
 
 `npm run test:parser` compiles the real `../src/sse.ts` with esbuild and
@@ -42,14 +58,31 @@ carry, mixed heartbeat/event/malformed input, and unterminated garbage.
 (`harness.mjs`, also stdlib only): a hanging close times out, SIGKILLs
 and reports failure; a clean close returns fast with no lingering timer.
 
+`npm run test:launch` fault-injects a hung browser executable with a child
+process and proves the harness returns on time and kills the entire owned
+process group. The shared harness bounds locator operations to 15 seconds
+and page navigation to 30 seconds.
+
 ## Long-running soak (>=95s, real Chromium)
 
-`npm run soak` (same env as journey) keeps the Office open across many
-~20s server heartbeats, background/foreground switches and stream
-mount/unmount cycles. It fails on any main-thread stall (>8s probe),
+`BROWSER_HEADLESS=false npm run soak` (same env as journey) keeps the Office
+open across many ~20s server heartbeats, a second tab selected with a native
+Ctrl+Tab key event, foreground recovery with Ctrl+Shift+Tab, and stream
+mount/unmount cycles. Headless mode exits early because it cannot establish
+that a real tab became hidden. On Linux, the soak launches Chromium through
+Xwayland and requires `python3-xlib` plus a display server. KDE may show a
+one-time input-control prompt for `python3`; approve it before the soak. The
+“always allow” option is not required. The soak asserts the Office document
+reports `hidden` during the background interval and `visible` after recovery.
+It fails on any main-thread stall (>8s probe),
 page error, duplicate or missing ledger event, or growth in established
 connections to the Core port (checked with `ss`). Evidence lands in
 `.soak-evidence/` (gitignored).
+
+The native tab switch helper uses the pinned dependency in `requirements.txt`;
+use an active Python 3 environment that has that requirement installed. The
+soak launches Chromium over Xwayland; KWin may show a one-time `python3`
+input prompt before tab switching works.
 
 Screenshots land in `.journey-evidence/` (gitignored). Phase 1 asserts:
 gate renders, unlock works, Dashboard is live, an Action is created

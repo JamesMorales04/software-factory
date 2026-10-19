@@ -234,10 +234,14 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 
 	sub, unsub := s.hub.Subscribe()
 	defer unsub()
+
+	w.WriteHeader(http.StatusOK)
+	// Make the streaming response visible to fetch() before the first event;
+	// otherwise empty ledgers look disconnected until the first heartbeat.
+	flusher.Flush()
 
 	lastSent := after
 	drain := func() bool {

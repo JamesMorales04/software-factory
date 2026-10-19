@@ -95,6 +95,7 @@ export function useEventStream(
       if (!res.ok || !res.body) {
         throw new Error(`stream HTTP ${res.status}`);
       }
+      setState("live");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let carry = "";
@@ -157,7 +158,6 @@ export function useEventStream(
       if (signal.aborted) {
         return;
       }
-      setState("live");
       backoff = 1000;
       while (!signal.aborted) {
         // Backoff resets only on progress (cursor advance): when the SSE

@@ -96,9 +96,9 @@ func run() error {
 	return httpServer.Shutdown(shCtx)
 }
 
-// resolveToken loads the API token from FACTORY_API_TOKEN. When unset, a
-// random token is generated for this process and printed once to stderr so
-// a Core never runs unauthenticated by accident.
+// resolveToken loads FACTORY_API_TOKEN. When unset, a random process-local
+// token is generated and registered for log redaction. Use the lifecycle
+// CLI when the token must persist across Core restarts.
 func resolveToken(logger *slog.Logger) string {
 	if v := os.Getenv("FACTORY_API_TOKEN"); v != "" {
 		telemetry.RegisterSecret(v)
