@@ -1,0 +1,6 @@
+node_modules/
+.journey-evidence/
+.journey-action.json
+.sse.cjs
+.soak-evidence/
+.soak-action.json
