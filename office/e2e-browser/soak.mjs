@@ -66,9 +66,13 @@ async function settledSocketCount() {
 }
 
 async function api(path, opts = {}) {
+  // Bounded like every other harness I/O: a wedged server must fail the
+  // run, never hang it. Callers may pass their own signal instead.
+  const signal = opts.signal ?? AbortSignal.timeout(15000);
   const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
     ...opts,
+    signal,
   });
   if (!res.ok) throw new Error(`API ${opts.method || "GET"} ${path}: ${res.status}`);
   return res.json();
@@ -190,7 +194,7 @@ try {
   await shot("end");
 
   // Ledger integrity from the server side (exactly-once, no gaps).
-  const { events } = await api("/api/v1/events?after=0&limit=500");
+    const { events } = await api("/api/v1/events?after=0&limit=500");
   check("ledger contiguous and duplicate-free", ledgerIsClean(events), `n=${events.length}`);
   const titles = events.map((e) => e.payload && e.payload.title).filter(Boolean);
   check(
@@ -221,5 +225,19 @@ try {
   console.log(JSON.stringify({ ok: false, error: String(e).slice(0, 500), elapsedSec: elapsed() }));
   process.exitCode = 1;
 } finally {
-  await browser.close().catch(() => undefined);
+  // A frozen renderer can stall browser shutdown exactly like it stalls
+  // the page: bound the close, then SIGKILL the browser process so a
+  // detected stall always exits nonzero instead of hanging the harness.
+  await Promise.race([
+    browser.close(),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("browser-close timeout")), 20000),
+    ),
+  ]).catch(() => {
+    try {
+      browser.process()?.kill("SIGKILL");
+    } catch {
+      // Already dead; nothing to kill.
+    }
+  });
 }

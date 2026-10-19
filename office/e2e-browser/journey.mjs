@@ -92,5 +92,18 @@ try {
   console.log(JSON.stringify({ phase: PHASE, ok: false, error: String(e).slice(0, 500) }));
   process.exitCode = 1;
 } finally {
-  await browser.close();
+  // Bounded shutdown: a frozen renderer stalls browser.close() exactly
+  // like it stalls the page, so cap it and SIGKILL to guarantee exit.
+  await Promise.race([
+    browser.close(),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("browser-close timeout")), 20000),
+    ),
+  ]).catch(() => {
+    try {
+      browser.process()?.kill("SIGKILL");
+    } catch {
+      // Already dead; nothing to kill.
+    }
+  });
 }
