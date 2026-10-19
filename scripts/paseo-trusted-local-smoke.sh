@@ -276,9 +276,15 @@ else:
 EOF
 )"
 echo "model actually ran: ${EFFECTIVE_MODEL:-unknown}${MODEL:+ (pinned: $MODEL)}"
-if [[ -n "$MODEL" && -n "${EFFECTIVE_MODEL:-}" && "$EFFECTIVE_MODEL" != "$MODEL" ]]; then
-  echo "FAIL: effective model '${EFFECTIVE_MODEL}' != pinned '${MODEL}'" >&2
-  exit 1
+if [[ -n "$MODEL" ]]; then
+  if [[ -z "${EFFECTIVE_MODEL:-}" ]]; then
+    echo "FAIL: model pinned to '${MODEL}' but effective model missing from session evidence — cannot prove no substitution" >&2
+    exit 1
+  fi
+  if [[ "$EFFECTIVE_MODEL" != "$MODEL" ]]; then
+    echo "FAIL: effective model '${EFFECTIVE_MODEL}' != pinned '${MODEL}'" >&2
+    exit 1
+  fi
 fi
 echo "agent cwd observed: ${AGENT_CWD:-unknown} (target disposable dir: $PROJ)"
 echo "agent status observed: ${AGENT_STATUS:-unknown}"
