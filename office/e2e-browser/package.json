@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "journey": "node journey.mjs"
+    "journey": "node journey.mjs",
+    "test:parser": "../node_modules/.bin/esbuild ../src/sse.ts --bundle --platform=node --format=cjs --outfile=.sse.cjs --log-level=error && node --test sse-parser.test.mjs",
+    "soak": "node soak.mjs"
   },
   "dependencies": {
     "playwright-core": "1.64.1"

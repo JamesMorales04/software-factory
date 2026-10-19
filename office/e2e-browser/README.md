@@ -31,6 +31,22 @@ BASE_URL=http://127.0.0.1:8471 FACTORY_API_TOKEN=<token> \
 PHASE=2 npm run journey   # same env as above
 ```
 
+## Parser regression tests (no browser needed)
+
+`npm run test:parser` compiles the real `../src/sse.ts` with esbuild and
+runs `sse-parser.test.mjs` under `node --test` (stdlib only, no new deps).
+Covers heartbeat-only frames (the F1-S1 freeze regression), partial-frame
+carry, mixed heartbeat/event/malformed input, and unterminated garbage.
+
+## Long-running soak (>=95s, real Chromium)
+
+`npm run soak` (same env as journey) keeps the Office open across many
+~20s server heartbeats, background/foreground switches and stream
+mount/unmount cycles. It fails on any main-thread stall (>8s probe),
+page error, duplicate or missing ledger event, or growth in established
+connections to the Core port (checked with `ss`). Evidence lands in
+`.soak-evidence/` (gitignored).
+
 Screenshots land in `.journey-evidence/` (gitignored). Phase 1 asserts:
 gate renders, unlock works, Dashboard is live, an Action is created
 through the form, appears in the list, its detail shows the

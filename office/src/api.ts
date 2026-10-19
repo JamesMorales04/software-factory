@@ -157,8 +157,9 @@ export const api = {
     request<{ events: FactoryEvent[] }>(
       `/api/v1/actions/${encodeURIComponent(id)}/events`,
     ).then((r) => r.data.events),
-  listEvents: (after: number, limit = 100) =>
+  listEvents: (after: number, limit = 100, signal?: AbortSignal) =>
     request<{ events: FactoryEvent[]; nextAfter: number }>(
       `/api/v1/events?after=${after}&limit=${limit}`,
+      { signal },
     ).then((r) => r.data),
 };

@@ -1,7 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type FactoryEvent } from "./api";
+import { parseEventChunk } from "./sse";
 
 export type StreamState = "connecting" | "live" | "reconnecting" | "error";
+
+/** Sleep that rejects promptly when the stream is torn down. */
+function sleepWithAbort(signal: AbortSignal, ms: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * useEventStream tails the durable ledger: it first loads the missed suffix
@@ -9,6 +29,11 @@ export type StreamState = "connecting" | "live" | "reconnecting" | "error";
  * resumes from the last observed globalSeq on every reconnect. The ledger
  * cursor — never wall-clock time — is the source of continuity, so a
  * reconnect yields neither gaps nor duplicates.
+ *
+ * Lifecycle: one AbortController owns the whole effect. Unmount (including
+ * React StrictMode remounts and in-app navigation) aborts the in-flight
+ * fetch, releases the reader, clears the retry timer, and stops the loop —
+ * no leaked connections, readers, or timers.
  */
 export function useEventStream(
   fromSeq = 0,
@@ -19,16 +44,19 @@ export function useEventStream(
   const cursorRef = useRef(fromSeq);
   const seenRef = useRef(new Set<number>());
   const filterRef = useRef(filter);
-  filterRef.current = filter;
 
   useEffect(() => {
-    let cancelled = false;
-    let backoff = 1000;
+    filterRef.current = filter;
+  });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
     cursorRef.current = fromSeq;
     seenRef.current = new Set();
     setEvents([]);
 
-    async function append(e: FactoryEvent) {
+    function append(e: FactoryEvent): void {
       if (seenRef.current.has(e.globalSeq)) {
         return;
       }
@@ -43,9 +71,9 @@ export function useEventStream(
     }
 
     async function loadMissed(after: number): Promise<number> {
-      const page = await api.listEvents(after);
+      const page = await api.listEvents(after, 100, signal);
       for (const e of page.events) {
-        await append(e);
+        append(e);
       }
       return page.nextAfter;
     }
@@ -53,10 +81,7 @@ export function useEventStream(
     // Parse one SSE text stream with the session token in the header.
     // (EventSource cannot set Authorization headers, and the token must
     // not travel in the URL query string.)
-    async function followStream(
-      signal: AbortSignal,
-      after: number,
-    ): Promise<number> {
+    async function followStream(after: number): Promise<number> {
       const token = sessionStorage.getItem("factory-api-token");
       const res = await fetch(`/api/v1/events/stream?after=${after}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -67,79 +92,86 @@ export function useEventStream(
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
+      let carry = "";
       let next = after;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary >= 0) {
-          const frame = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          const dataLine = frame
-            .split("\n")
-            .find((line) => line.startsWith("data:"));
-          if (!dataLine) {
-            continue; // comment / heartbeat
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
           }
-          try {
-            const event = JSON.parse(dataLine.slice(5).trim()) as FactoryEvent;
-            await append(event);
+          carry += decoder.decode(value, { stream: true });
+          const parsed = parseEventChunk(carry);
+          carry = parsed.carry;
+          for (const event of parsed.events) {
+            append(event);
             next = Math.max(next, event.globalSeq);
-          } catch {
-            // Ignore a malformed frame; the cursor still resumes cleanly.
           }
-          boundary = buffer.indexOf("\n\n");
         }
+      } finally {
+        // Release the lock even when aborted mid-frame so the connection
+        // and its server-side handler are reclaimed promptly.
+        try {
+          await reader.cancel();
+        } catch {
+          // Already closed by the remote end; nothing to cancel.
+        }
+        reader.releaseLock();
       }
       return next;
     }
 
-    async function loop() {
+    async function loop(): Promise<void> {
       let after = cursorRef.current;
       try {
         after = await loadMissed(after);
       } catch {
-        if (!cancelled) {
-          setState("error");
+        if (signal.aborted) {
+          return;
         }
+        setState("error");
         return;
       }
-      if (cancelled) {
+      if (signal.aborted) {
         return;
       }
       setState("live");
-      backoff = 1000;
-      while (!cancelled) {
-        const controller = new AbortController();
+      let backoff = 1000;
+      while (!signal.aborted) {
         try {
-          after = await followStream(controller.signal, after);
-          if (cancelled) {
+          after = await followStream(after);
+          backoff = 1000;
+          if (signal.aborted) {
             return;
           }
           setState("reconnecting");
         } catch {
-          if (cancelled) {
+          if (signal.aborted) {
             return;
           }
           setState("reconnecting");
           try {
             after = await loadMissed(after);
+            backoff = 1000;
           } catch {
+            if (signal.aborted) {
+              return;
+            }
             // Stay in reconnecting; retry below with backoff.
           }
         }
-        await new Promise((resolve) => setTimeout(resolve, backoff));
+        try {
+          await sleepWithAbort(signal, backoff);
+        } catch {
+          return;
+        }
         backoff = Math.min(backoff * 2, 10000);
       }
     }
 
     void loop();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [fromSeq]);
 
