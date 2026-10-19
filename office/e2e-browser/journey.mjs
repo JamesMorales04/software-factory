@@ -28,12 +28,35 @@ if (!EXE || !existsSync(EXE)) {
 }
 mkdirSync(join(HERE, ".journey-evidence"), { recursive: true });
 
-const browser = await withTimeout(
-  chromium.launch({ executablePath: EXE }),
-  60000,
-  "browser launch timeout",
+let browser;
+{
+  // Launch failures must neither hang nor leak: bound the wait, and if a
+  // late launch resolves after the timeout, close it instead of orphaning it.
+  const pendingLaunch = chromium.launch({ executablePath: EXE });
+  try {
+    browser = await withTimeout(pendingLaunch, 60000, "browser launch timeout");
+  } catch (e) {
+    pendingLaunch.then(
+      (late) => late.close().catch(() => {}),
+      () => {},
+    );
+    console.log(
+      JSON.stringify({ phase: PHASE, ok: false, error: `browser launch failed: ${e.message}` }),
+    );
+    process.exit(1);
+  }
+}
+const page = await withTimeout(browser.newPage(), 30000, "new page timeout").catch(
+  async (e) => {
+    // newPage failed after a successful launch: close the browser so it
+    // cannot leak, then fail nonzero.
+    await closeBrowser(browser);
+    console.log(
+      JSON.stringify({ phase: PHASE, ok: false, error: `new page failed: ${e.message}` }),
+    );
+    process.exit(1);
+  },
 );
-const page = await withTimeout(browser.newPage(), 30000, "new page timeout");
 const notes = [];
 const shot = (n) =>
   page.screenshot({ path: join(HERE, ".journey-evidence", `phase${PHASE}-${n}.png`), timeout: 15000 });

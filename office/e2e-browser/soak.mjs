@@ -67,24 +67,44 @@ async function settledSocketCount() {
 }
 
 async function api(path, opts = {}) {
-  // Bounded like every other harness I/O: a wedged server must fail the
-  // run, never hang it. Callers may pass their own signal instead.
-  const signal = opts.signal ?? AbortSignal.timeout(15000);
+  // Bounded by default; a caller signal is composed with (not replaced
+  // by) the timeout, so the override path can never go unbounded.
+  const timeout = AbortSignal.timeout(15000);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  const init = { ...opts, signal };
   const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
-    ...opts,
-    signal,
+    ...init,
   });
   if (!res.ok) throw new Error(`API ${opts.method || "GET"} ${path}: ${res.status}`);
   return res.json();
 }
 
-const browser = await withTimeout(
-  chromium.launch({ executablePath: EXE }),
-  60000,
-  "browser launch timeout",
+let browser;
+{
+  // Launch failures must neither hang nor leak: bound the wait, and if a
+  // late launch resolves after the timeout, close it instead of orphaning it.
+  const pendingLaunch = chromium.launch({ executablePath: EXE });
+  try {
+    browser = await withTimeout(pendingLaunch, 60000, "browser launch timeout");
+  } catch (e) {
+    pendingLaunch.then(
+      (late) => late.close().catch(() => {}),
+      () => {},
+    );
+    console.log(JSON.stringify({ ok: false, error: `browser launch failed: ${e.message}` }));
+    process.exit(1);
+  }
+}
+const page = await withTimeout(browser.newPage(), 30000, "new page timeout").catch(
+  async (e) => {
+    // newPage failed after a successful launch: close the browser so it
+    // cannot leak, then fail nonzero.
+    await closeBrowser(browser);
+    console.log(JSON.stringify({ ok: false, error: `new page failed: ${e.message}` }));
+    process.exit(1);
+  },
 );
-const page = await withTimeout(browser.newPage(), 30000, "new page timeout");
 page.on("pageerror", (e) => failures.push(`pageerror: ${String(e).slice(0, 200)}`));
 const shot = (n) =>
   page.screenshot({ path: join(HERE, ".soak-evidence", `soak-${n}.png`), timeout: 15000 });
@@ -92,18 +112,22 @@ const shot = (n) =>
 async function responsive(label) {
   // NOTE: page.evaluate's second argument is the function argument, NOT a
   // timeout option — an unwrapped evaluate would hang forever on a frozen
-  // renderer instead of failing. Race it against an explicit timer.
+  // renderer instead of failing. Race it against an explicit timer, and
+  // clear the timer on success so probes never linger process exit.
+  let timer;
   try {
     await Promise.race([
       page.evaluate(() => Date.now()),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("probe timeout")), 8000),
-      ),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("probe timeout")), 8000);
+      }),
     ]);
     return true;
   } catch {
     check(`responsive (${label})`, false, "main thread stalled >8s");
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -178,7 +202,7 @@ try {
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
 
   // Phase C: background the tab across heartbeats (stream stays mounted), then return.
-  const blank = await browser.newPage();
+  const blank = await withTimeout(browser.newPage(), 30000, "background page timeout");
   await blank.goto("about:blank");
   await withTimeout(page.bringToFront(), 15000, "bringToFront timeout");
   note("app tab backgrounded");
