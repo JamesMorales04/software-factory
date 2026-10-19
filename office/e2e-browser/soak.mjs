@@ -160,28 +160,19 @@ async function responsive(label) {
   }
 }
 
-function waitForVisibility(page, expected, timeoutMs = 10000) {
-  const change = page.evaluate(
-    (state) =>
-      new Promise((resolve) => {
-        if (document.visibilityState === state) {
-          resolve(document.visibilityState);
-          return;
-        }
-        const onChange = () => {
-          if (document.visibilityState === state) {
-            document.removeEventListener("visibilitychange", onChange);
-            resolve(document.visibilityState);
-          }
-        };
-        document.addEventListener("visibilitychange", onChange);
-      }),
-    expected,
-  );
-  return withTimeout(
-    change,
-    timeoutMs,
-    `Office tab did not become ${expected}`,
+async function waitForFocus(page, expected, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const focused = await withTimeout(
+      page.evaluate(() => document.hasFocus()),
+      Math.min(2000, timeoutMs),
+      "tab focus probe timeout",
+    );
+    if (focused === expected) return focused;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `tab focus did not become ${expected ? "focused" : "unfocused"}`,
   );
 }
 
@@ -228,6 +219,9 @@ async function startTabSwitcher(processGroup) {
     if (!ready.ready) {
       throw new Error(`native tab switcher failed: ${ready.error}`);
     }
+    note(
+      `native tab switcher attached to X11 window ${ready.windowId} (pid ${ready.windowPid})`,
+    );
   } catch (error) {
     child.kill("SIGKILL");
     lines.close();
@@ -239,6 +233,9 @@ async function startTabSwitcher(processGroup) {
       const result = JSON.parse(await readLine());
       if (!result.ok)
         throw new Error(`native tab switch failed: ${result.error}`);
+      note(
+        `native ${direction} tab key sent to window ${result.windowId}; input focus ${result.focusWindowId}; active window ${result.activeWindowId}`,
+      );
     },
     async close() {
       if (closed) return;
@@ -347,28 +344,57 @@ try {
     "background page timeout",
   );
   await background.goto("about:blank");
+
+  // Playwright enables focus emulation on attached CDP pages. Disable it so
+  // document.hasFocus() reflects actual browser-tab selection. Chromium 156
+  // kept visibilityState="visible" for a deselected CDP-attached tab, so
+  // visibilityState is not a valid background-tab oracle in this harness.
+  const officeFocusSession = await page.context().newCDPSession(page);
+  const backgroundFocusSession = await page.context().newCDPSession(background);
+  await Promise.all([
+    officeFocusSession.send("Emulation.setFocusEmulationEnabled", {
+      enabled: false,
+    }),
+    backgroundFocusSession.send("Emulation.setFocusEmulationEnabled", {
+      enabled: false,
+    }),
+  ]);
   await withTimeout(
     page.bringToFront(),
     15000,
     "Office tab activation timeout",
   );
   check(
-    "Office is foreground before native tab switch",
-    (await page.evaluate(() => document.visibilityState)) === "visible",
+    "Office tab has focus before native tab switch",
+    await page.evaluate(() => document.hasFocus()),
+  );
+  check(
+    "background tab starts without focus",
+    !(await background.evaluate(() => document.hasFocus())),
   );
   tabSwitcher = await startTabSwitcher(processGroupId);
-  const hidden = waitForVisibility(page, "hidden");
+  const officeUnfocused = waitForFocus(page, false);
+  const backgroundFocused = waitForFocus(background, true);
   await tabSwitcher.switchTo("next");
-  const hiddenState = await hidden;
-  check("Office tab actually backgrounded", hiddenState === "hidden");
+  const [officeUnfocusedState, backgroundFocusedState] = await Promise.all([
+    officeUnfocused,
+    backgroundFocused,
+  ]);
+  check("Office tab actually backgrounded", officeUnfocusedState === false);
+  check("background tab actually selected", backgroundFocusedState === true);
   note(
-    "native Ctrl+Tab selected another browser tab; Office document reports hidden",
+    "native Ctrl+Tab selected the background page and removed focus from Office",
   );
   await page.waitForTimeout(25000);
-  const visible = waitForVisibility(page, "visible");
+  const officeFocused = waitForFocus(page, true);
+  const backgroundUnfocused = waitForFocus(background, false);
   await tabSwitcher.switchTo("previous");
-  const visibleState = await visible;
-  check("Office tab foreground recovered", visibleState === "visible");
+  const [officeFocusedState, backgroundUnfocusedState] = await Promise.all([
+    officeFocused,
+    backgroundUnfocused,
+  ]);
+  check("Office tab foreground recovered", officeFocusedState === true);
+  check("background tab lost focus", backgroundUnfocusedState === false);
   await tabSwitcher.close();
   await withTimeout(background.close(), 15000, "background page close timeout");
   check(

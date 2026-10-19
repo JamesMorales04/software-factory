@@ -14,17 +14,6 @@ def emit(value):
     print(json.dumps(value), flush=True)
 
 
-def descendant_windows(root):
-    pending = list(root.query_tree().children)
-    while pending:
-        window = pending.pop()
-        yield window
-        try:
-            pending.extend(window.query_tree().children)
-        except Exception:
-            continue
-
-
 def window_process_group(window, connection):
     atom = connection.intern_atom("_NET_WM_PID")
     prop = window.get_full_property(atom, Xatom.CARDINAL)
@@ -37,7 +26,13 @@ def window_process_group(window, connection):
 
 
 def find_chromium_window(root, connection, process_group_id):
-    for window in descendant_windows(root):
+    clients = root.get_full_property(
+        connection.intern_atom("_NET_CLIENT_LIST"), Xatom.WINDOW
+    )
+    if clients is None:
+        return None
+    for window_id in clients.value:
+        window = connection.create_resource_object("window", int(window_id))
         try:
             classes = window.get_wm_class() or ()
             is_chromium = any("chrom" in item.lower() for item in classes)
@@ -46,6 +41,13 @@ def find_chromium_window(root, connection, process_group_id):
         except Exception:
             continue
     return None
+
+
+def active_window_id(root, connection):
+    active = root.get_full_property(
+        connection.intern_atom("_NET_ACTIVE_WINDOW"), Xatom.WINDOW
+    )
+    return None if active is None or len(active.value) == 0 else int(active.value[0])
 
 
 def press_tab(connection, reverse):
@@ -78,7 +80,18 @@ def main():
         raise RuntimeError(
             f"no X11 Chromium window found in process group {process_group_id}"
         )
-    emit({"ready": True})
+    prop = window.get_full_property(
+        connection.intern_atom("_NET_WM_PID"), Xatom.CARDINAL
+    )
+    window_pid = None if prop is None or len(prop.value) == 0 else int(prop.value[0])
+    emit(
+        {
+            "ready": True,
+            "windowId": window.id,
+            "windowPid": window_pid,
+            "processGroupId": process_group_id,
+        }
+    )
 
     for line in sys.stdin:
         direction = line.strip()
@@ -89,9 +102,18 @@ def main():
             window.configure(stack_mode=X.Above)
             window.set_input_focus(X.RevertToParent, X.CurrentTime)
             connection.sync()
+            focus = connection.get_input_focus().focus
             time.sleep(0.1)
             press_tab(connection, reverse=direction == "previous")
-            emit({"ok": True, "direction": direction})
+            emit(
+                {
+                    "ok": True,
+                    "direction": direction,
+                    "windowId": window.id,
+                    "focusWindowId": focus.id,
+                    "activeWindowId": active_window_id(root, connection),
+                }
+            )
         except Exception as error:
             emit({"ok": False, "error": str(error)})
 

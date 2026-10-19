@@ -69,12 +69,16 @@ and page navigation to 30 seconds.
 open across many ~20s server heartbeats, a second tab selected with a native
 Ctrl+Tab key event, foreground recovery with Ctrl+Shift+Tab, and stream
 mount/unmount cycles. Headless mode exits early because it cannot establish
-that a real tab became hidden. On Linux, the soak launches Chromium through
+that a real tab lost focus. On Linux, the soak launches Chromium through
 Xwayland and requires `python3-xlib` plus a display server. KDE may show a
 one-time input-control prompt for `python3`; approve it before the soak. The
-“always allow” option is not required. The soak asserts the Office document
-reports `hidden` during the background interval and `visible` after recovery.
-It fails on any main-thread stall (>8s probe),
+“always allow” option is not required. Playwright's default focus emulation
+must be disabled for both tabs so `document.hasFocus()` follows real browser
+selection; the soak requires Office to lose focus while the second tab gains
+it, then checks that both states reverse after Ctrl+Shift+Tab. In the headed
+Chromium 156 CDP run, `document.visibilityState` remained `visible` for an
+unselected tab, so it is not used as the tab-selection oracle. The soak fails
+on any main-thread stall (>8s probe),
 page error, duplicate or missing ledger event, or growth in established
 connections to the Core port (checked with `ss`). Evidence lands in
 `.soak-evidence/` (gitignored).
