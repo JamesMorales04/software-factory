@@ -25,8 +25,9 @@
 #
 # Asserts: requested provider/model match session evidence (no silent
 # substitution), git diff non-empty and confined to the disposable repo,
-# npm tests pass, stop/archive truly succeed, cleanup done.
-# Exits nonzero on first failure.
+# npm tests pass, stop/archive truly succeed, cleanup done. At most ONE
+# continuation message is ever sent (bounded second wait); a still-empty
+# diff afterwards is a FAIL. Exits nonzero on first failure.
 set -euo pipefail
 
 PROVIDER="${PROVIDER:-codex}"
@@ -271,14 +272,17 @@ EOF
 
 echo "-- observe session: timeline (redacted summary, no credential values) --"
 # NOTE: `paseo logs` emits human-readable timeline text, not JSON.
-paseo logs "$AGENT_ID" >"$TMP/agent-logs.txt" 2>&1 || {
-  echo "FAIL: 'paseo logs' failed" >&2
-  exit 1
+observe_timeline() {
+  paseo logs "$AGENT_ID" >"$TMP/agent-logs.txt" 2>&1 || {
+    echo "FAIL: 'paseo logs' failed" >&2
+    exit 1
+  }
+  redact "$TMP/agent-logs.txt" > "$LOGS_JSON"
+  echo "timeline lines observed: $(wc -l < "$LOGS_JSON")"
+  echo "timeline step-type counts (headers only — bodies suppressed, never printed):"
+  grep -oE '^\[[A-Za-z]+\]' "$LOGS_JSON" | sort | uniq -c || echo "  (no bracketed steps found)"
 }
-redact "$TMP/agent-logs.txt" > "$LOGS_JSON"
-echo "timeline lines observed: $(wc -l < "$LOGS_JSON")"
-echo "timeline step-type counts (headers only — bodies suppressed, never printed):"
-grep -oE '^\[[A-Za-z]+\]' "$LOGS_JSON" | sort | uniq -c || echo "  (no bracketed steps found)"
+observe_timeline
 
 echo "-- containment tripwire: no observed file-write step outside the disposable dir --"
 # --cwd is NOT enforced session containment (see header). This tripwire
@@ -296,6 +300,26 @@ if [[ -n "${AGENT_CWD:-}" && "$AGENT_CWD" != "$PROJ" && "$AGENT_CWD" != "$PROJ/"
 fi
 
 echo "-- evidence: git diff (disposable repo) --"
+# Single bounded continuation: some provider routes return after a
+# productive partial turn (e.g. reads only). If the diff is empty BUT the
+# timeline shows real tool activity in the target dir, send ONE follow-up
+# nudge in the same session (bounded second wait), then evaluate finally.
+# A second empty diff is a FAIL, never a second nudge.
+NUDGE_USED=0
+if [[ -z "$(git -C "$PROJ" diff --stat)" ]]; then
+  TOOL_STEPS=$(grep -cE '^\[(Read|Glob|Grep|List|Shell|Edit|Write|Create|Apply)' "$LOGS_JSON" || true)
+  if [[ "${TOOL_STEPS:-0}" -gt 0 ]]; then
+    echo "-- one bounded continuation nudge (partial productive turn: $TOOL_STEPS tool steps, empty diff) --"
+    if paseo send --no-wait "$AGENT_ID" "Continue exactly where you left off in $PROJ: finish the multiply() edit now, run format and tests, keep your reply under 10 lines." >/dev/null 2>&1 \
+      && paseo wait --timeout 180 "$AGENT_ID" >/dev/null 2>&1; then
+      NUDGE_USED=1
+      observe_timeline
+    else
+      echo "continuation nudge failed or timed out; evaluating partial evidence" >&2
+    fi
+  fi
+fi
+echo "continuation nudges used: $NUDGE_USED (max 1)"
 DIFF_STAT="$(git -C "$PROJ" diff --stat)"
 DIFF_BYTES="$(git -C "$PROJ" diff | wc -c)"
 echo "$DIFF_STAT"
@@ -336,4 +360,4 @@ echo "archive exit: $ARCHIVE_RC"
 if [[ $ARCHIVE_RC -ne 0 ]]; then echo "FAIL: 'paseo archive' failed (rc=$ARCHIVE_RC)" >&2; exit 1; fi
 
 RESULT=0
-echo "PASS: trusted-local smoke (provider ran: ${ACTUAL_PROVIDER:-$PROVIDER}, agent: $AGENT_ID)"
+echo "PASS: trusted-local smoke (provider ran: ${ACTUAL_PROVIDER:-$PROVIDER}, model ran: ${EFFECTIVE_MODEL:-unknown}, nudges: $NUDGE_USED, agent: $AGENT_ID)"

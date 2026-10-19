@@ -43,15 +43,22 @@ Two honest behavioral notes: (1) the agent-scoped `paseo run --cwd <tmp>` did **
 
 ## What it did NOT prove
 
-- **opencode route is BLOCKED in this environment (recorded, not substituted).**
-  Attempt 1 (default model): `model_not_supported` 400 for
-  `github-copilot/gemini-4-argon`. Attempt 2 (pinned
-  `MODEL=github-copilot/gpt-5-mini`, effective model confirmed in inspect):
-  session errored in <1s with `LastUsage: null` — no model turn ran.
-  Provider diagnostic still reports available:true, so the failure is at
-  session/model entitlement, not installation. Needs owner-environment
-  investigation (Copilot API/model entitlement); NOT a script defect.
-  Rerun when resolved:
+- **opencode routes: session launch works; full edit/test loop NOT completed.**
+  (a) GitHub-Copilot-backed models are session-start BLOCKED in this
+  environment: `github-copilot/gemini-4-argon` → 400 `model_not_supported`;
+  pinned `github-copilot/gpt-5-mini` → errored in <1s with `LastUsage: null`.
+  Diagnostic still reports available:true — failure is at session/model
+  entitlement, not installation.
+  (b) OpenCode Go subscription models launch and execute turns with exact
+  identity (no substitution): `opencode-go/muse-spark-1.3-contributor`
+  (sessions `b8ff78c9`, `b663df06`: reads confined to target) and
+  `opencode-go/deepseek-v4.1-flash` (sessions `4028ca17`, `0dcdeffb`:
+  6 reads + 1 in-target `ls`). Neither completed the edit/format/test
+  loop within the bounded turns (initial turn + one scripted continuation
+  nudge, max 1): no Edit step, empty diff, honest FAIL. No error, no
+  approval block, no outside-target writes. Compatibility is PARTIAL
+  (launch/identity/reads/subprocess proven; write-loop unproven) —
+  NOT a general block, NOT a pass. Rerun when behavior changes:
   `PROVIDER=opencode MODEL=<supported-model> ./scripts/paseo-trusted-local-smoke.sh`.
 
 - **Isolation:** no sandbox boundary, read boundary, or credential-confinement claim — SEC-01 remains paused, not approved.
