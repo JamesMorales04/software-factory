@@ -81,6 +81,11 @@ export function useEventStream(
     // Parse one SSE text stream with the session token in the header.
     // (EventSource cannot set Authorization headers, and the token must
     // not travel in the URL query string.)
+    //
+    // A malformed frame fails the stream instead of being skipped: the
+    // cursor must never cross an unprocessed sequence, so the hook
+    // reconnects and re-establishes continuity from the last good cursor
+    // through the validated replay endpoint.
     async function followStream(after: number): Promise<number> {
       const token = sessionStorage.getItem("factory-api-token");
       const res = await fetch(`/api/v1/events/stream?after=${after}`, {
@@ -103,6 +108,11 @@ export function useEventStream(
           carry += decoder.decode(value, { stream: true });
           const parsed = parseEventChunk(carry);
           carry = parsed.carry;
+          if (parsed.malformed > 0) {
+            throw new Error(
+              `malformed event frame (${parsed.malformed} skipped)`,
+            );
+          }
           for (const event of parsed.events) {
             append(event);
             next = Math.max(next, event.globalSeq);
@@ -123,24 +133,42 @@ export function useEventStream(
 
     async function loop(): Promise<void> {
       let after = cursorRef.current;
-      try {
-        after = await loadMissed(after);
-      } catch {
-        if (signal.aborted) {
-          return;
+      let backoff = 1000;
+      // Initial backlog: retry until the API answers instead of dying in
+      // `error` when the Core is briefly unreachable at mount. The error
+      // state stays visible while retrying.
+      for (;;) {
+        try {
+          after = await loadMissed(after);
+          break;
+        } catch {
+          if (signal.aborted) {
+            return;
+          }
+          setState("error");
+          try {
+            await sleepWithAbort(signal, backoff);
+          } catch {
+            return;
+          }
+          backoff = Math.min(backoff * 2, 10000);
         }
-        setState("error");
-        return;
       }
       if (signal.aborted) {
         return;
       }
       setState("live");
-      let backoff = 1000;
+      backoff = 1000;
       while (!signal.aborted) {
+        // Backoff resets only on progress (cursor advance): when the SSE
+        // endpoint is down but replay answers, retries settle at the cap
+        // instead of hammering every second forever.
+        const before = after;
         try {
           after = await followStream(after);
-          backoff = 1000;
+          if (after !== before) {
+            backoff = 1000;
+          }
           if (signal.aborted) {
             return;
           }
@@ -152,7 +180,9 @@ export function useEventStream(
           setState("reconnecting");
           try {
             after = await loadMissed(after);
-            backoff = 1000;
+            if (after !== before) {
+              backoff = 1000;
+            }
           } catch {
             if (signal.aborted) {
               return;

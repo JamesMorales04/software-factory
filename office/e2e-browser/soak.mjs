@@ -23,6 +23,11 @@ if (!TOKEN || !EXE) {
 mkdirSync(join(HERE, ".soak-evidence"), { recursive: true });
 
 const startedAt = Date.now();
+const RUN = startedAt.toString(36);
+// Unique titles per run so the exactly-once ledger check stays valid when
+// the same scratch DB is reused across runs.
+const TITLE_ONE = `Soak action one ${RUN}`;
+const TITLE_TWO = `Soak action two ${RUN}`;
 const elapsed = () => Math.round((Date.now() - startedAt) / 1000);
 const failures = [];
 const note = (m) => console.log(`[t+${elapsed()}s] ${m}`);
@@ -34,7 +39,7 @@ const check = (name, cond, detail = "") => {
 function chromeEstablishedStreams() {
   // Count only Chromium-owned connections: the harness's own Node fetch
   // pool and generic idle keep-alive are not leaks. A leaked SSE stream
-  // from an unmounted hook would show up here as growth.
+  // from an unmounted hook would show up here as steady growth.
   try {
     const out = execSync(`ss -tnp state established '( dport = :${PORT} )' 2>/dev/null`, {
       encoding: "utf8",
@@ -46,6 +51,18 @@ function chromeEstablishedStreams() {
   } catch {
     return -1;
   }
+}
+
+async function settledSocketCount() {
+  // Single samples of the idle pool are noisy (handshake transients,
+  // lingering keep-alive); the median of three spaced samples is stable.
+  const samples = [];
+  for (let i = 0; i < 3; i++) {
+    samples.push(chromeEstablishedStreams());
+    await page.waitForTimeout(2000);
+  }
+  samples.sort((a, b) => a - b);
+  return samples[1];
 }
 
 async function api(path, opts = {}) {
@@ -64,8 +81,16 @@ const shot = (n) =>
   page.screenshot({ path: join(HERE, ".soak-evidence", `soak-${n}.png`), timeout: 15000 });
 
 async function responsive(label) {
+  // NOTE: page.evaluate's second argument is the function argument, NOT a
+  // timeout option — an unwrapped evaluate would hang forever on a frozen
+  // renderer instead of failing. Race it against an explicit timer.
   try {
-    await page.evaluate(() => Date.now(), { timeout: 8000 });
+    await Promise.race([
+      page.evaluate(() => Date.now()),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("probe timeout")), 8000),
+      ),
+    ]);
     return true;
   } catch {
     check(`responsive (${label})`, false, "main thread stalled >8s");
@@ -93,7 +118,7 @@ try {
   // the API so the live push (not a poll) must deliver it mid-heartbeats.
   const created = await api("/api/v1/actions", {
     method: "POST",
-    body: JSON.stringify({ title: "Soak action one", description: "live-push probe" }),
+    body: JSON.stringify({ title: TITLE_ONE, description: "live-push probe" }),
   });
   note(`action one created via API (${created.action.id.slice(0, 8)})`);
   await page.getByText("ActionCreated").first().waitFor({ timeout: 15000 });
@@ -106,10 +131,11 @@ try {
   check("survived heartbeats to t+40s with mounted stream", elapsed() >= 40);
 
   // Phase B: mount/unmount cycles (navigation tears down and rebuilds streams).
-  // Measure on the Dashboard in both cases: same state, so any growth is a leak.
-  await page.waitForTimeout(3000);
-  const connsBeforeCycles = chromeEstablishedStreams();
-  for (let i = 0; i < 3; i++) {
+  // Measure medians on the Dashboard in both cases: identical page state,
+  // so only a real leak trends upward. Six cycles turn a +1/cycle leak
+  // into an unmistakable +6 against ±1 idle-pool noise.
+  const connsBeforeCycles = await settledSocketCount();
+  for (let i = 0; i < 6; i++) {
     await page.getByRole("link", { name: "Actions", exact: true }).click();
     await page.getByRole("heading", { name: "New Action" }).waitFor();
     await page.getByRole("link", { name: "Dashboard", exact: true }).click();
@@ -118,10 +144,27 @@ try {
   }
   await page.getByRole("link", { name: "Actions", exact: true }).click();
   await page.getByRole("heading", { name: "New Action" }).waitFor();
-  await page.getByPlaceholder("What should the Factory do?").fill("Soak action two");
+  await page.getByPlaceholder("What should the Factory do?").fill(TITLE_TWO);
   await page.getByRole("button", { name: "Create Action" }).click();
-  await page.getByText("Soak action two").first().waitFor({ timeout: 10000 });
+  await page.getByText(TITLE_TWO).first().waitFor({ timeout: 10000 });
   note("action two created via UI after mount cycles");
+  await page.getByRole("link", { name: "Dashboard", exact: true }).click();
+  await page.getByRole("heading", { name: "Dashboard" }).waitFor();
+
+  // Phase B2: filtered stream on Action Detail across a heartbeat.
+  const listed = await api("/api/v1/actions");
+  const two = listed.actions.find((a) => a.title === TITLE_TWO);
+  if (!two) throw new Error("action two missing from ledger");
+  await page.goto(`${BASE}/#/actions/${two.id}`, { waitUntil: "networkidle" });
+  await page.getByText("Event timeline").waitFor({ timeout: 10000 });
+  await page.getByText("ActionCreated").first().waitFor({ timeout: 10000 });
+  note("detail timeline rendered for filtered stream");
+  await page.waitForTimeout(25000);
+  check("responsive on detail across heartbeat", await responsive("detail-heartbeat"));
+  check(
+    "detail timeline intact",
+    (await page.getByText("ActionCreated").count()) >= 1,
+  );
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
 
@@ -152,22 +195,21 @@ try {
   const titles = events.map((e) => e.payload && e.payload.title).filter(Boolean);
   check(
     "both soak actions recorded exactly once",
-    titles.filter((t) => t === "Soak action one").length === 1 &&
-      titles.filter((t) => t === "Soak action two").length === 1,
+    titles.filter((t) => t === TITLE_ONE).length === 1 &&
+      titles.filter((t) => t === TITLE_TWO).length === 1,
     titles.join(","),
   );
 
   // Connection accumulation: an un-aborted stream per unmounted hook would
-  // grow Chromium-owned connections by one per cycle above. Settle back on
-  // the Dashboard (one live stream) and require no growth vs pre-cycles.
+  // grow Chromium-owned connections by one per cycle above. Compare
+  // medians on the settled Dashboard; allow +1 of idle-pool noise.
   await page.getByRole("link", { name: "Dashboard", exact: true }).click();
   await page.getByRole("heading", { name: "Dashboard" }).waitFor();
-  await page.waitForTimeout(3000);
-  const connsAfterCycles = chromeEstablishedStreams();
+  const connsAfterCycles = await settledSocketCount();
   check(
     "no connection accumulation across mount cycles",
-    connsAfterCycles >= 0 && connsAfterCycles <= Math.max(1, connsBeforeCycles),
-    `chromium established before=${connsBeforeCycles} after=${connsAfterCycles}`,
+    connsAfterCycles >= 0 && connsAfterCycles <= connsBeforeCycles + 1,
+    `chromium established median before=${connsBeforeCycles} after=${connsAfterCycles}`,
   );
 
   const summary = { ok: failures.length === 0, elapsedSec: elapsed(), failures };
