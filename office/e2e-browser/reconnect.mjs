@@ -125,6 +125,8 @@ try {
   await page.getByText("live", { exact: true }).waitFor({ timeout: TIMEOUT });
   check("real browser authenticated and recovered stream is live", true);
 
+  const baseline = await api("/api/v1/events?after=0&limit=500");
+  const baselineLastSeq = baseline.events.at(-1)?.globalSeq ?? 0;
   const title = `outage-reconnect-${Date.now()}`;
   const created = await api("/api/v1/actions", {
     method: "POST",
@@ -133,9 +135,11 @@ try {
       description: "real Core outage reconnect check",
     }),
   });
-  await page
-    .getByText("ActionCreated", { exact: true })
-    .waitFor({ timeout: TIMEOUT });
+  const createdRow = page
+    .locator(".events li")
+    .filter({ hasText: `action/${created.action.id.slice(0, 8)}` })
+    .filter({ hasText: "ActionCreated" });
+  await createdRow.waitFor({ timeout: TIMEOUT });
   check("live stream delivered the created event", Boolean(created.action?.id));
 
   await factory("stop");
@@ -165,7 +169,13 @@ try {
     (event) =>
       event.eventType === "ActionCreated" && event.payload?.title === title,
   );
-  const restarted = events.filter((event) => event.eventType === "CoreStarted");
+  const restarted = events.filter(
+    (event) =>
+      event.eventType === "CoreStarted" && event.globalSeq > baselineLastSeq,
+  );
+  const createdRowCount = await createdRow.count();
+  const createdEventSeq = createdEvents[0]?.globalSeq;
+  const restartEventSeq = restarted[0]?.globalSeq;
   check(
     "replay is contiguous and duplicate-free",
     seqs.every((seq, index) => seq === index + 1),
@@ -173,17 +183,21 @@ try {
   );
   check("SQLite action survived outage restart", createdEvents.length === 1);
   check(
-    "CoreStarted replayed exactly once for restart",
-    restarted.length === 2,
+    "restart appended one CoreStarted event",
+    restarted.length === 1,
     `count=${restarted.length}`,
   );
   check(
-    "Office rendered one created event",
-    (await page.getByText("ActionCreated", { exact: true }).count()) === 1,
+    "Office rendered the created event exactly once",
+    createdRowCount === 1 && createdEventSeq !== undefined,
   );
   check(
-    "Office rendered both boot events",
-    (await page.getByText("CoreStarted", { exact: true }).count()) === 2,
+    "Office rendered the restart event exactly once",
+    restartEventSeq !== undefined &&
+      (await page
+        .locator(".events li")
+        .filter({ hasText: `#${restartEventSeq} CoreStarted` })
+        .count()) === 1,
   );
   check(
     "browser had no page errors",
