@@ -117,7 +117,9 @@ func TestRunRejectsUnknownExecMode(t *testing.T) {
 
 // TestResolveExecModeLocalLogsExplicitMode proves the effective mode is
 // reported on the worker startup path: explicit local logs its identity
-// (synthetic fixture, not a Paseo TRUSTED_LOCAL path).
+// (synthetic fixture for tests/dev, explicitly NOT a Paseo TRUSTED_LOCAL
+// path). The full distinction phrase is asserted so a regression that
+// drops the warning fails the test.
 func TestResolveExecModeLocalLogsExplicitMode(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -126,8 +128,10 @@ func TestResolveExecModeLocalLogsExplicitMode(t *testing.T) {
 		t.Fatalf("local mode: podmanOK=%v err=%v", podmanOK, err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "local") {
-		t.Fatalf("startup log must report effective mode local, got: %q", out)
+	for _, want := range []string{"local mode", "synthetic", "NOT a Paseo TRUSTED_LOCAL path"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("startup log must report %q, got: %q", want, out)
+		}
 	}
 }
 

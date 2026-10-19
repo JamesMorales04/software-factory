@@ -27,6 +27,12 @@ Use a sealed source identity and an isolated checkout for each Run. Avoid shared
 
 ## Required protections
 
+The controls below state the requirements for ISOLATED and RESTRICTED
+execution. They do NOT apply to owner-authorized TRUSTED_LOCAL runs, where
+broad local access within the owner's user privileges is explicitly accepted
+(see [trusted-local policy](trusted-local.md) for the secret-handling,
+host-operation and transparency rules that DO apply there).
+
 - No host HOME, privileged container sockets, Core DB, GitHub merge tokens, other-project folders or provider secrets visible to untrusted commands.
 - Bound filesystem, process, UID/user namespace, CPU/RAM/PIDs, networking and egress; no silent fallback to direct host shell.
 - Tool/LLM instructions can express intent but do not enforce privileges. Effective authorization belongs at the OS boundary and Core-mediated side effects.
@@ -35,6 +41,12 @@ Use a sealed source identity and an isolated checkout for each Run. Avoid shared
 - Any new executable external skill must undergo provenance, integrity, sandbox and capability checks before admission; skills never self-authorize.
 
 ## Negative acceptance tests
+
+The tests below are the acceptance obligations for ISOLATED execution (and
+the applicable subset for RESTRICTED fixtures). TRUSTED_LOCAL has its own
+acceptance — the bounded readiness test in
+[paseo-readiness](paseo-readiness.md) — and is never subjected to, nor
+claimed to pass, these isolation tests.
 
 1. Untrusted execution cannot read or mutate host/other-project files.
 2. Untrusted scripts cannot inspect Core secrets or provider authentication artifacts within the defined threat model.

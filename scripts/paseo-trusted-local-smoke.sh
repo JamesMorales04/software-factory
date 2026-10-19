@@ -9,10 +9,24 @@
 #
 # Usage:
 #   PROVIDER=codex ./scripts/paseo-trusted-local-smoke.sh
-#   PROVIDER=opencode ./scripts/paseo-trusted-local-smoke.sh
+#   PROVIDER=opencode MODEL=github-copilot/gpt-5-mini ./scripts/paseo-trusted-local-smoke.sh
 #
-# Asserts: session created/observed/ended, git diff non-empty, npm tests pass,
-# cleanup done. Exits nonzero on first failure.
+# PROVIDER selects the Paseo provider route (no silent substitution: the
+# effective provider is asserted from session evidence below). MODEL, when
+# set, is passed as `--model` to pin the exact model (required for routes
+# whose default model is unsupported); the effective model is likewise
+# asserted from session evidence.
+#
+# Workspace note: `paseo run --cwd` is a launch hint, NOT an enforced
+# session working directory (observed: session Cwd stays the caller
+# workspace). Containment of this test therefore rests on absolute-path
+# prompt pinning PLUS post-hoc verification (diff confined to the
+# disposable repo; no file-write step outside it) — never on --cwd alone.
+#
+# Asserts: requested provider/model match session evidence (no silent
+# substitution), git diff non-empty and confined to the disposable repo,
+# npm tests pass, stop/archive truly succeed, cleanup done.
+# Exits nonzero on first failure.
 set -euo pipefail
 
 PROVIDER="${PROVIDER:-codex}"
@@ -20,6 +34,8 @@ if [[ "$PROVIDER" != "codex" && "$PROVIDER" != "opencode" ]]; then
   echo "FAIL: PROVIDER must be codex|opencode (got: $PROVIDER)" >&2
   exit 1
 fi
+# Optional exact model pin, passed as `paseo run --model` when set.
+MODEL="${MODEL:-}"
 
 # Cost-conscious bound for one real agent session.
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-300s}"
@@ -57,17 +73,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# redact <file>: mask secret-shaped values before anything reaches the
+# terminal. Covers API keys, bearer tokens, and KEY/TOKEN/SECRET-style
+# assignments. Raw provider/session/status output must never be printed.
+redact() {
+  sed -E -e 's/sk-[A-Za-z0-9_\-]+/sk-REDACTED/g' \
+         -e 's/([Bb]earer +)[A-Za-z0-9._\-~+/=]+/\1REDACTED/g' \
+         -e 's/([A-Za-z_]*?(TOKEN|SECRET|KEY|PASSWORD|COOKIE|AUTH)[A-Za-z_]*=)[^ "&,]+/\1REDACTED/g' "$1"
+}
+
 echo "-- provider availability (names/presence only, no secret values) --"
 paseo status --json >"$TMP/status.json" 2>&1 || {
   echo "FAIL: 'paseo status' failed" >&2
   exit 1
 }
+# Strict allowlist: provider id/label/availability only. Never dump raw
+# status output, which may carry secret-bearing fields.
 python3 - "$TMP/status.json" <<'EOF'
 import json,sys
 doc=json.load(open(sys.argv[1]))
 provs=doc.get("providers") or doc.get("status",{}).get("providers") or []
-# status --json shape varies; fall back to raw scan
-print(json.dumps(doc.get("providers", doc), indent=2)[:2000])
+rows=[]
+if isinstance(provs,dict):
+    provs=[{"id":k,**v} if isinstance(v,dict) else {"id":k,"value":v} for k,v in provs.items()]
+for p in provs if isinstance(provs,list) else []:
+    if not isinstance(p,dict):
+        continue
+    rows.append({k:p.get(k) for k in ("id","label","available","status","enabled") if isinstance(p.get(k),(str,bool)) or p.get(k) is None})
+print(json.dumps(rows,indent=2)[:1500])
 EOF
 
 echo "-- disposable project at $PROJ --"
@@ -106,12 +139,16 @@ PROMPT="Your target directory is exactly: $PROJ. It holds a tiny Node project (a
 echo "-- starting ONE real Paseo agent session (provider=$PROVIDER, cwd=$PROJ) --"
 echo "prompt bytes: ${#PROMPT} (kept small, cost-conscious)"
 
-if ! paseo run --provider "$PROVIDER" --cwd "$PROJ" \
-  --title "trusted-local-smoke" \
-  --wait-timeout "$WAIT_TIMEOUT" \
+RUN_ARGS=(--provider "$PROVIDER" --cwd "$PROJ"
+  --title "trusted-local-smoke"
+  --wait-timeout "$WAIT_TIMEOUT")
+if [[ -n "$MODEL" ]]; then
+  RUN_ARGS+=(--model "$MODEL")
+fi
+if ! paseo run "${RUN_ARGS[@]}" \
   --json "$PROMPT" >"$AGENT_JSON" 2>"$TMP/run.err"; then
-  echo "FAIL: 'paseo run' exited nonzero" >&2
-  cat "$TMP/run.err" >&2 || true
+  echo "FAIL: 'paseo run' exited nonzero (redacted first lines of stderr):" >&2
+  redact "$TMP/run.err" | head -n 5 >&2 || true
   exit 1
 fi
 
@@ -134,8 +171,8 @@ else:
 EOF
 )"
 if [[ -z "$AGENT_ID" ]]; then
-  echo "FAIL: could not parse agent id from run output" >&2
-  head -c 2000 "$AGENT_JSON" >&2 || true
+  echo "FAIL: could not parse agent id from run output (top-level keys only, no values):" >&2
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d=d[0] if isinstance(d,list) and d else d; print(sorted(d.keys()) if isinstance(d,dict) else type(d).__name__)' "$AGENT_JSON" >&2 || true
   exit 1
 fi
 echo "session created: agent=$AGENT_ID"
@@ -178,6 +215,30 @@ if isinstance(doc,dict):
 EOF
 )"
 echo "provider actually ran: ${ACTUAL_PROVIDER:-unknown} (requested: $PROVIDER)"
+# Normalize combined "provider/..." forms before comparing; the effective
+# route must still match the requested provider (no silent substitution).
+ACTUAL_PROVIDER="${ACTUAL_PROVIDER%%/*}"
+if [[ -n "$PROVIDER" && -n "${ACTUAL_PROVIDER:-}" && "$ACTUAL_PROVIDER" != "$PROVIDER" ]]; then
+  echo "FAIL: effective provider '${ACTUAL_PROVIDER}' != requested '${PROVIDER}' (no silent substitution)" >&2
+  exit 1
+fi
+EFFECTIVE_MODEL="$(python3 - "$INSPECT_JSON" <<'EOF'
+import json,sys
+doc=json.load(open(sys.argv[1]))
+if isinstance(doc,list) and doc:
+    doc=doc[0]
+if isinstance(doc,dict):
+    lowered={str(k).lower():v for k,v in doc.items()}
+    print(lowered.get("model","") or "")
+else:
+    print("")
+EOF
+)"
+echo "model actually ran: ${EFFECTIVE_MODEL:-unknown}${MODEL:+ (pinned: $MODEL)}"
+if [[ -n "$MODEL" && -n "${EFFECTIVE_MODEL:-}" && "$EFFECTIVE_MODEL" != "$MODEL" ]]; then
+  echo "FAIL: effective model '${EFFECTIVE_MODEL}' != pinned '${MODEL}'" >&2
+  exit 1
+fi
 echo "agent cwd observed: ${AGENT_CWD:-unknown} (target disposable dir: $PROJ)"
 echo "agent status observed: ${AGENT_STATUS:-unknown}"
 echo "inspect summary (redacted, scalar fields only):"
@@ -190,26 +251,40 @@ keep={}
 if isinstance(doc,dict):
     for k,v in doc.items():
         if isinstance(v,(str,int,float,bool)) or v is None:
-            if 'token' in k.lower() or 'secret' in k.lower() or 'key' in k.lower():
+            kl=k.lower()
+            if 'token' in kl or 'secret' in kl or 'key' in kl or 'auth' in kl or 'credential' in kl or 'cookie' in kl or 'password' in kl:
                 continue
             keep[k]=v
 print(json.dumps(keep,indent=2)[:1500])
 EOF
 
 echo "-- observe session: timeline (redacted summary, no credential values) --"
-# NOTE: `paseo logs --json` emits human-readable timeline text, not JSON.
+# NOTE: `paseo logs` emits human-readable timeline text, not JSON.
 paseo logs "$AGENT_ID" >"$TMP/agent-logs.txt" 2>&1 || {
   echo "FAIL: 'paseo logs' failed" >&2
   exit 1
 }
-sed -E -e 's/sk-[A-Za-z0-9_\-]+/sk-REDACTED/g' \
-       -e 's/([Bb]earer +)[A-Za-z0-9._\-~+/=]+/\1REDACTED/g' \
-  "$TMP/agent-logs.txt" > "$LOGS_JSON"
+redact "$TMP/agent-logs.txt" > "$LOGS_JSON"
 echo "timeline lines observed: $(wc -l < "$LOGS_JSON")"
 echo "timeline step-type counts:"
 grep -oE '^\[[A-Za-z]+\]' "$LOGS_JSON" | sort | uniq -c || echo "  (no bracketed steps found)"
-echo "timeline tail (last 8 lines, redacted):"
-tail -n 8 "$LOGS_JSON"
+echo "timeline tail (bracketed step lines only, truncated, redacted):"
+grep -E '^\[[A-Za-z]+\]' "$LOGS_JSON" | cut -c1-200 | tail -n 8
+
+echo "-- containment check: no file-write step outside the disposable dir --"
+# --cwd is NOT enforced session containment (see header); this tripwire
+# verifies the actual mechanism (absolute-path prompt + post-hoc diff).
+# Only Edit/Write/Create/Apply file steps count; shell-output paths are
+# too noisy to fail on (reported in the step counts above).
+if grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | grep -q .; then
+  echo "FAIL: file-write step references a path outside $TMP:" >&2
+  grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | sort -u | head -n 10 >&2
+  exit 1
+fi
+echo "assert: file-write steps confined to disposable dir — OK"
+if [[ -n "${AGENT_CWD:-}" && "$AGENT_CWD" != "$PROJ" && "$AGENT_CWD" != "$PROJ/" ]]; then
+  echo "CWD-NOTE: --cwd did not set session Cwd (observed: $AGENT_CWD; target: $PROJ); containment verified post-hoc above, not via --cwd."
+fi
 
 echo "-- evidence: git diff (disposable repo) --"
 DIFF_STAT="$(git -C "$PROJ" diff --stat)"
@@ -241,11 +316,15 @@ if [[ $FORMAT_RC -ne 0 ]]; then echo "FAIL: formatter failed" >&2; exit 1; fi
 if [[ $TEST_RC -ne 0 ]]; then echo "FAIL: tests failed" >&2; exit 1; fi
 echo "assert: tests pass — OK"
 
-echo "-- end session: stop (cancel) --"
-paseo stop "$AGENT_ID" >/dev/null 2>&1 || true
-echo "stop exit: $? (no-op if already idle)"
-paseo archive "$AGENT_ID" >/dev/null 2>&1 || true
-echo "archive exit: $? (session ended/archived)"
+echo "-- end session: stop then archive (real exit statuses asserted) --"
+STOP_RC=0
+ARCHIVE_RC=0
+paseo stop "$AGENT_ID" >/dev/null 2>&1 || STOP_RC=$?
+echo "stop exit: $STOP_RC (no-op when already idle)"
+if [[ $STOP_RC -ne 0 ]]; then echo "FAIL: 'paseo stop' failed (rc=$STOP_RC)" >&2; exit 1; fi
+paseo archive "$AGENT_ID" >/dev/null 2>&1 || ARCHIVE_RC=$?
+echo "archive exit: $ARCHIVE_RC"
+if [[ $ARCHIVE_RC -ne 0 ]]; then echo "FAIL: 'paseo archive' failed (rc=$ARCHIVE_RC)" >&2; exit 1; fi
 
 RESULT=0
 echo "PASS: trusted-local smoke (provider ran: ${ACTUAL_PROVIDER:-$PROVIDER}, agent: $AGENT_ID)"
