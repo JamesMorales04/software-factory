@@ -90,7 +90,25 @@ NEEDS-AUTH-PLAN, OpenCode BLOCKED), not in topology.
 - VM-gated plans held by investigator records (Codex plan in findings
   tail; OpenCode plan §"Exact isolated authenticated test plan").
 
-## Next concrete action
+## Follow-up (2026-10-19, post-checkpoint)
+
+- Surface report collected: `docs/security/SEC-01-streamA-paseo-surface.md`
+  (provider launch = plain `child_process.spawn`, no isolation; plugins
+  trusted-side; relay = transport; ACP file/terminal callbacks need
+  redirect-or-disable).
+- Validation spec: `docs/security/SEC-01-validation.md` (§3 scope
+  correction, §4 STANDARD profile, §5 custody comparison + M4 deputy
+  requirement, §6 repaired decision rule, §7 PR #4 plan, §8 auth plan).
+- PR #4 retargeted to `main` (OPEN, MERGEABLE, head `7139c9b`; diff vs
+  main = 9 files / +526 −35). No merge.
+- Fresh Luna challenge: **CHALLENGE-FAIL**
+  (`docs/security/SEC-01-luna-challenge.md`) — M4 deputy undesigned,
+  §6 misuse-class gap, Codex inconsistency, Paseo prerequisite
+  understated. Repairs integrated; auth test must target repaired design.
+- Branch published: `origin/f1-s2-sec01-redesign-campaign`.
+- SEC-01 BLOCKED. No authenticated tests. S3 not authorized.
+
+## Original action list (superseded — all items completed above)
 
 1. Collect `/tmp/sec01-paseo-surface.md` from `4140142a`.
 2. Finalize §§3–4, write benchmark + acceptance spec.

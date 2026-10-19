@@ -33,10 +33,10 @@ default**:
   audited host exception. Never silent, never the default, never presented
   as sandbox-equivalent.
 
-Why D/A wins: it is the ONLY option that passes the engineering benchmark
-(§E: node tests, loopback, git, writable workspace — all PASS in container)
-AND the isolation probes (canary invisible, ro-root, no egress, no orphans)
-simultaneously on one substrate for all providers. B (provider-native) is
+Why D/A wins: it is the only evaluated option that passes the container-level
+engineering probes (§E: node tests, loopback, git, writable workspace —
+all PASS in container) AND the isolation probes (canary invisible, ro-root,
+no egress, no orphans) simultaneously on one substrate for all providers. B (provider-native) is
 kept as defense-in-depth (Codex allowlist profile) but is version-fragile
 and absent for OpenCode. C (broker-only) as universal default fails the
 owner's capability test by construction.
@@ -45,12 +45,12 @@ owner's capability test by construction.
 
 | | A isolated dev env | B provider-native | C broker-only | D hybrid (recommended) |
 |---|---|---|---|---|
-| Agent capability | FULL (proven §E) | Good shell; MCP/resume gaps; OpenCode none | Fixed ops only — normal dev impossible | Full where needed |
+| Agent capability | Container ops FULL (§E); session/toolchains/proxy/auth NOT tested | Good shell; MCP/resume gaps; OpenCode none | Fixed ops only — normal dev impossible | Full where needed |
 | OS enforcement | mount/net/UID ns, ro-root, caps, seccomp, no-new-privs (measured) | Codex bwrap real but partial (gaps §F); OpenCode none | Container for fixed op; bypass routes unproven | Boundary per profile, one substrate |
-| Paseo compat | External; no Paseo change needed (SDK has no sandbox opts — §C) | Depends on Paseo forwarding flags (unverified) | Needs Paseo mediation exclusivity (does not exist — §C) | Minimal: session→container binding + resume policy freeze |
+| Paseo compat | External; no Paseo change needed (SDK has no sandbox opts — §C) | Depends on Paseo forwarding flags (unverified) | Needs Paseo mediation exclusivity (does not exist — §C) | PREREQUISITE: trusted launcher owning provider processes + resume freeze; without it, prototype only (challenge finding 4) |
 | Multi-provider | Common topology; per-provider capability certification only | Per-provider sandbox engineering (fragile) | Per-provider route audit (large) | Common topology + per-provider cert matrix (§H) |
 | Credential protection | Creds outside container (design; auth test pending) | Codex: filtered env + hidden paths (partial, pending); OpenCode: impossible stock | Broker holds no creds; but native routes bypass it | Per-profile custody; STANDARD = outside-container |
-| Perf/ops cost | 140 ms startup; one dev image to maintain | ~0 infra; high upgrade-churn | PoC exists; high capability cost | 140 ms; 1 image + 1 proxy + 3 profiles |
+| Perf/ops cost | ~140 ms trivial-spawn; excludes pull/session (see validation §3) | ~0 infra; high upgrade-churn | PoC exists; high capability cost | spawn only; +1 image +1 proxy +3 profiles |
 | Maintenance | Image + proxy + argv audit (extends PR #4) | Track every provider release's sandbox drift | Custom tool framework (owner rejected this direction) | Smallest capability/complexity ratio |
 
 ## C. Real process topology (measured 2026-10-19)
@@ -212,11 +212,18 @@ OpenCode ("Exact isolated authenticated test plan").
 
 ## J. Independent review and decision
 
-- Blockers: (a) credential-delivery mechanism unproven (needs §H test);
-  (b) egress proxy undesigned; (c) OpenCode STANDARD has no viable stock
-  path (BLOCKED stands); (d) Paseo resume/policy-freeze cooperation
-  unconfirmed (surface agent pending — does not block D/A, only its
-  hardening).
+- Blockers: (a) credential-delivery mechanism unproven (needs §8 test,
+  now with M4 deputy requirements); (b) egress proxy undesigned (domain
+  allowlist alone insufficient — operation scoping required);
+  (c) OpenCode STANDARD has no viable stock path (BLOCKED stands; M4
+  needs full bypass-surface disables at the Core boundary);
+  (d) Paseo session binding + resume freeze are PREREQUISITES for any
+  Paseo-path claim (trusted launcher owning provider processes; without
+  it, prototype only); (e) Luna independent challenge returned
+  CHALLENGE-FAIL (`docs/security/SEC-01-luna-challenge.md`): M4 without
+  deputy semantics, §6 insufficiency for misuse-class, Codex topology
+  inconsistency — repairs integrated into `SEC-01-validation.md`;
+  auth test must target the repaired design.
 - PR #4: REVISE (ADAPT per §G) then merge AFTER PR #3 — do NOT merge
   as-is as universal-broker architecture; do NOT discard (KEEP items are
   the foundation). Retarget to main after #3 (already merged — rebase

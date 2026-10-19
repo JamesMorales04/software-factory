@@ -73,6 +73,7 @@ provider (not separate product architectures).
 | M3 separate UID/HOME per attempt | Compatible with M2; does not fix same-process routes | Tools are same-process: no effect |
 | M4 credential proxy (keys held server-side; provider uses custom endpoint; container sees endpoint, never key material) | Supported via config endpoint override (to verify in §8) | NATIVELY supported (custom providers/endpoints); strongest OpenCode path, no fork |
 | M5 short-lived scoped tokens (expiry + spend cap + least privilege) | Complements M2/M4; bounds deputy | Complements M4; bounds deputy |
+| M5 short-lived scoped tokens (expiry + spend cap + least privilege) | Complements M2/M4; bounds deputy | Complements M4; bounds deputy |
 | M6 control-plane/execution split (creds on host, tools only via broker) | Kills native shell unless Codex delegates (it does not) → RESTRICTED only | Same verdict → RESTRICTED only |
 | M7 hardened adapter/fork removing native routes | Unnecessary (M2 exists) | Fallback if M4 proves insufficient |
 
@@ -80,6 +81,19 @@ Provisional topology (to be decided by §6 test, NOT asserted as proven):
 STANDARD = container boundary (primary) + M2+M5 for Codex; M4+M5 for
 OpenCode (OpenCode STANDARD stays disabled until §8 passes for it).
 M6 stays RESTRICTED-only. No mechanism is certified today.
+
+M4 HARD REQUIREMENT (Luna challenge finding 1 — a transparent forwarding
+proxy is a confused deputy: endpoint reachability = authority, and
+short-lived/scope-blind tokens bound cost, not operations or disclosure).
+A proxy counts as custody ONLY with ALL of: allowlisted model-inference
+operations (no credential-disclosure/admin ops); bounded payloads;
+caller binding to the provider-process identity (untrusted tool UIDs
+cannot mint calls); replay protection + append-only audit of every call;
+watermarked-canary egress inspection on responses/egress. This deputy
+design is itself a §8 test target; until specified and tested, M4 is
+UNPROVEN, not "strongest". Same rule binds the egress proxy (§4): domain
+allowlisting alone does not constrain API operations or stop permitted
+endpoints being used as exfil channels (challenge finding 8).
 
 ## 6. Minimal distinguishing test (whole-runtime vs split) — runs under §8
 
@@ -94,13 +108,25 @@ provider/execution split required — per provider?
 - Forced probes (deterministic harness calls, NOT model volition — no
   adversarial prompting): read canary file, dump env (names), list
   mounts/processes, egress to sinkhole, resume-with-weaker-policy,
-  subagent repeat — each driven through EVERY native route (shell, patch,
-  MCP-local, subagent, background).
-- Decision rule per provider: if ANY route yields canary CONTENT to tool
+  subagent repeat — each driven through EVERY native route. Route
+  universe is FIXED and includes: shell, patch/edit, local MCP, remote
+  MCP, subagents, background tasks, ACP host callbacks, Paseo
+  plugins/transforms, provider registration/custom providers, and
+  config/API mutation (challenge findings 2, 6). A route outside this
+  list is DISABLED for the tested profile, not assumed absent.
+- Decision rule per provider (necessary, NOT sufficient for misuse —
+  challenge finding 2): (a) if ANY route yields canary CONTENT to tool
   output while the legitimate task succeeds → whole-runtime INSUFFICIENT
-  for that provider → split (M6/RESTRICTED topology) or proxy (M4)
-  required. If ALL routes show OS denials (EACCES/ENOENT/EPERM) and the
-  task succeeds → whole-runtime SUFFICIENT for that route set.
+  → split (M6/RESTRICTED) or policy-deputy proxy (M4) required;
+  (b) exfil oracle is a separate PASS condition: a WATERMARKED canary
+  embedded in workspace data must not egress via proxy logs, sinkhole,
+  or allowed endpoints (proxy responses inspected) — a tool can exfiltrate
+  through legitimate API/egress without any canary appearing in tool
+  output, and the sinkhole alone cannot model provider-API semantics;
+  (c) whole-runtime is "sufficient for the tested route set" ONLY if (a)
+  denies everywhere AND (b) holds AND the task succeeds. Misuse-class
+  residual is addressed by deputy policy + M5 scoping + audit, never by
+  this test alone.
 - Expected (hypothesis, not verdict): Codex may pass shell routes via M2
   and fail local-MCP; OpenCode expected to fail broadly → M4 required.
   The test exists to FALSIFY this, not confirm it.
@@ -127,6 +153,13 @@ Retargeted diff (origin/main...7139c9b): 9 files, +526 −35.
   this campaign — shared-branch rule); then independent verifier on exact
   SHA + Luna review + owner approval → merge. This campaign makes no
   PR-branch commits.
+- GATE (challenge finding 8): PR #4 stays INFRASTRUCTURE-ONLY with
+  STANDARD disabled by default until Core enforces per-row certification
+  (§H/§8 PASS per enabled row). `--exec-mode local` is KEEP only as the
+  TRUSTED-LOCAL path: authorized per invocation with scope + expiry +
+  audit, never selectable by agent-controlled flags. Proxy-env/endpoint
+  additions are ADAPT only with the M4 deputy requirements above — domain
+  allowlisting alone is not an exfil control.
 
 ## 8. Authenticated validation plan (AWAITING owner authorization — DO NOT RUN)
 
