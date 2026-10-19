@@ -1,6 +1,21 @@
 # Isolation, credentials and trust boundaries
 
-**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception. **Technology demonstrated in disposable fixtures:** rootless Podman isolated checked host paths, but the actual authenticated provider/tool boundary is **not certified**. **F1-S3 blocker:** real Paseo isolation and credential behavior. See [SEC-01 results](SEC-01-results-2026-10-18.md); further tests paused by the product owner.
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Technology demonstrated in disposable fixtures:** rootless Podman isolated checked host paths, but the actual authenticated provider/tool boundary is **not certified**. **F1-S3-ISOLATED blocker:** real Paseo isolation and credential behavior. S3-TRUSTED_LOCAL proceeds under its own entry conditions per ADR-0009. See [SEC-01 results](SEC-01-results-2026-10-18.md); further strict-isolation tests paused by the product owner.
+
+## Execution modes
+
+| Mode | Meaning | SEC-01 disposition |
+|---|---|---|
+| TRUSTED_LOCAL | Owner-authorized local execution with broad host access within user privileges. Accepted risk, not a boundary. | SEC-01-STRICT not required; historical FAIL/NOT TESTED findings remain valid observations but do not block this mode. |
+| ISOLATED | Execution claiming an OS-enforced boundary between credentials and untrusted tools. | SEC-01-ISOLATED available-only-where-verified against actually tested paths; never inferred from a single fixture PASS. |
+| RESTRICTED | Credential-free synthetic or disposable-fixture execution (current F1-S2 scope). | Broker-certification obligations (mandatory mediation of all native paths) apply here and to ISOLATED; they do not gate TRUSTED_LOCAL. |
+
+Rules:
+
+- Never call TRUSTED_LOCAL isolated, sandboxed, certified, or proof of credential confinement.
+- Never present historical FAIL/NOT TESTED results as PASS in any mode.
+- ISOLATED guarantees are narrow and evidence-bound: state exactly which topology, provider/runtime, image digest, and boundary checks were tested.
+- Silent mode downgrade is forbidden: moving a Run or session from ISOLATED to LOCAL (including TRUSTED_LOCAL) requires explicit owner authorization recorded with actor, reason, and scope. A Podman or broker failure fails closed; it never silently becomes TRUSTED_LOCAL.
 
 ## Authority
 

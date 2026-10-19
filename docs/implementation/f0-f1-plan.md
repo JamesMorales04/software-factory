@@ -1,12 +1,13 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 is paused / BLOCKED for credential-bearing workloads. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
 
 ## Incremental implementation authorization (2026-10-18)
 
 - **May start:** F1-S1 actual Go Core, durable Action/API/event model, minimum authenticated Factory Office UI and local-first telemetry, after defining the small contracts and negative acceptance cases that S1 requires. Do not mark S1 PASS on documentation or mocks.
 - **May prototype:** F1-S2 disposable credential-free Worker protocol, lease/recovery and resource controls with rootless Podman and synthetic repositories, without attaching real agent accounts or untrusted host execution.
-- **Still blocked:** F1-S3 integration of autonomous real Paseo sessions with untrusted commands, full factory self-development and delivery privileges, until SEC-01 mandatory tool isolation is certified. Security findings remain valid despite successful MCP and SDK integration.
+- **Still blocked:** F1-S3-ISOLATED integration of autonomous real Paseo sessions with untrusted commands, full factory self-development and delivery privileges, until SEC-01-ISOLATED mandatory tool isolation is certified. Security findings remain valid despite successful MCP and SDK integration.
+- **S3-TRUSTED_LOCAL entry conditions (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md), replacing the absolute gate for that mode only):** implemented local-trust policy ([trusted-local](../security/trusted-local.md)); S2 green on its frozen synthetic scope; provider operational (diagnostic Ready); a bounded readiness test proving a real local session can start, act, and be observed/ended; observable mode labeling (every run labeled TRUSTED_LOCAL, never isolated/certified); no unauthorized delivery or privileged autonomous effects; explicit owner authorization recorded.
 - **Deferred security work:** the product owner paused D3-D2 and Stage E tests. Record their states as NOT TESTED/BLOCKED, not SKIPPED-as-PASS. See [SEC-01 results](../security/SEC-01-results-2026-10-18.md).
 
 ## F0 — specification and blocked-risk experiments
@@ -46,9 +47,16 @@ Real autonomous R0 merge requires a separate eligible case and rechecked protect
 
 Attach exact candidate SHA, Action/spec/policy revision, Run/Worker/Paseo session identities where applicable, actual commands and browser journeys, formatter/linter/build/test results, redacted logs and OTel traces, user-journey evidence, Reviewer verdict, repairs and PR/merge receipts. Artifact storage follows retention/security policy, not indiscriminate Git commits.
 
+## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))
+
+- S2 rows keep their evidence: Podman fixture checks, SDK smoke/reconnect, Worker boundary, and broker functional integration stand as observed; D1/D2-C FAILs and D3-D2/E NOT TESTED remain valid and are never rewritten to PASS.
+- S2-C/S2-D class broker-certification rows (mandatory mediation of every native shell, file-edit, code mode, plugin, subprocess, and agent path) are re-scoped to ISOLATED/RESTRICTED only. They explicitly do **not** gate TRUSTED_LOCAL.
+- S3-TRUSTED_LOCAL entry conditions: implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization (see authorization section above).
+- S3-ISOLATED keeps the full SEC-01 resumption criteria: OS-enforced credential/tool separation per provider/runtime, canary denials, egress/restart/fencing/replay tests, pinned digests, independent review.
+
 ## Non-negotiable F1 blockers
 
-No F1 PASS with fabricated Paseo agents, credential leakage, unsafe sandbox fallback, UI-only mock data, missing independent review, unaudited delivery, missing telemetry, unresolved duplicate effects or unrecoverable Runs. The verifier cannot be the candidate's sole author.
+No F1 PASS with fabricated Paseo agents, credential leakage, unsafe sandbox fallback, UI-only mock data, missing independent review, unaudited delivery, missing telemetry, unresolved duplicate effects or unrecoverable Runs. The verifier cannot be the candidate's sole author. TRUSTED_LOCAL runs must be labeled as such and never claimed isolated or certified; any silent ISOLATED-to-LOCAL downgrade blocks acceptance.
 
 ## Development hygiene
 
