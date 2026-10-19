@@ -145,9 +145,14 @@ RUN_ARGS=(--provider "$PROVIDER" --cwd "$PROJ"
 if [[ -n "$MODEL" ]]; then
   RUN_ARGS+=(--model "$MODEL")
 fi
-if ! paseo run "${RUN_ARGS[@]}" \
-  --json "$PROMPT" >"$AGENT_JSON" 2>"$TMP/run.err"; then
-  echo "FAIL: 'paseo run' exited nonzero (exit=$?; provider output suppressed — rerun manually to debug)" >&2
+RUN_RC=0
+set +e
+paseo run "${RUN_ARGS[@]}" \
+  --json "$PROMPT" >"$AGENT_JSON" 2>"$TMP/run.err"
+RUN_RC=$?
+set -e
+if [[ $RUN_RC -ne 0 ]]; then
+  echo "FAIL: 'paseo run' exited nonzero (exit=$RUN_RC; provider output suppressed — rerun manually to debug)" >&2
   exit 1
 fi
 
@@ -272,10 +277,8 @@ paseo logs "$AGENT_ID" >"$TMP/agent-logs.txt" 2>&1 || {
 }
 redact "$TMP/agent-logs.txt" > "$LOGS_JSON"
 echo "timeline lines observed: $(wc -l < "$LOGS_JSON")"
-echo "timeline step-type counts:"
+echo "timeline step-type counts (headers only — bodies suppressed, never printed):"
 grep -oE '^\[[A-Za-z]+\]' "$LOGS_JSON" | sort | uniq -c || echo "  (no bracketed steps found)"
-echo "timeline tail (bracketed step lines only, truncated, redacted):"
-grep -E '^\[[A-Za-z]+\]' "$LOGS_JSON" | cut -c1-200 | tail -n 8
 
 echo "-- containment tripwire: no observed file-write step outside the disposable dir --"
 # --cwd is NOT enforced session containment (see header). This tripwire
@@ -284,13 +287,12 @@ echo "-- containment tripwire: no observed file-write step outside the disposabl
 # paths, or writes invisible in the timeline — so it narrows, never proves,
 # containment. The disposable-repo diff below is the primary evidence.
 if grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | grep -q .; then
-  echo "FAIL: file-write step references a path outside $TMP:" >&2
-  grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | sort -u | head -n 10 >&2
+  echo "FAIL: file-write step references a path outside the disposable dir (count: $(grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | sort -u | wc -l); paths suppressed)" >&2
   exit 1
 fi
-echo "assert: no out-of-dir file-write steps observed in timeline — OK (Edit/Write lines only; see limits above)"
+echo "assert: no out-of-dir file-write steps observed in timeline headers — OK (Edit/Write lines only; shell-output/relative/invisible writes NOT covered, see limits above)"
 if [[ -n "${AGENT_CWD:-}" && "$AGENT_CWD" != "$PROJ" && "$AGENT_CWD" != "$PROJ/" ]]; then
-  echo "CWD-NOTE: --cwd did not set session Cwd (observed: $AGENT_CWD; target: $PROJ); containment verified post-hoc above, not via --cwd."
+  echo "CWD-NOTE: --cwd did not set session Cwd (observed: $AGENT_CWD; target: $PROJ); the tripwire above narrows (never proves) containment, and the disposable-repo diff below is the primary evidence."
 fi
 
 echo "-- evidence: git diff (disposable repo) --"
