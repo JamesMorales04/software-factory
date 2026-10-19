@@ -16,6 +16,18 @@ BIN_WORKER="$TMP/factory-worker"
 DB="$TMP/factory.db"
 CORE_PID=""
 WORKER_PID=""
+# Strict mode (CI) turns a skipped browser gate into a failure: a mandatory
+# browser check that was not executed must never read as green.
+STRICT="${FACTORY_S2B_STRICT:-0}"
+
+blocked() { # $1 = reason
+  echo "[BLOCKED] $1"
+  if [[ "$STRICT" == "1" ]]; then
+    echo "[FAIL] strict mode: blocked gate is a failure"
+    exit 1
+  fi
+  exit 0
+}
 
 cleanup() {
   if [[ -n "${WORKER_PID:-}" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
@@ -31,8 +43,7 @@ trap cleanup EXIT
 
 CHROMIUM_EXE="${CHROMIUM_EXE:-$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome}"
 if [[ ! -x "$CHROMIUM_EXE" ]]; then
-  echo "[BLOCKED] Chromium binary not found at $CHROMIUM_EXE (set CHROMIUM_EXE); browser journey NOT_TESTED"
-  exit 0
+  blocked "Chromium binary not found at $CHROMIUM_EXE (set CHROMIUM_EXE); browser journey NOT_TESTED"
 fi
 
 echo "== build core + worker + office (all outputs under $TMP) =="
@@ -49,12 +60,10 @@ rm -rf "$WEB_SRC/node_modules" "$WEB_SRC/e2e-browser/node_modules" \
   "$WEB_SRC/e2e-browser/.journey-evidence" "$WEB_SRC/e2e-browser/.soak-evidence" \
   "$WEB_SRC/e2e-browser/.sse.cjs"
 if ! (cd "$WEB_SRC" && npm ci --no-audit --no-fund >/dev/null 2>&1); then
-  echo "[BLOCKED] office npm ci failed (likely offline); browser journey NOT_TESTED"
-  exit 0
+  blocked "office npm ci failed (likely offline); browser journey NOT_TESTED"
 fi
 if ! (cd "$WEB_SRC/e2e-browser" && npm ci --no-audit --no-fund >/dev/null 2>&1); then
-  echo "[BLOCKED] e2e-browser npm ci failed (likely offline); browser journey NOT_TESTED"
-  exit 0
+  blocked "e2e-browser npm ci failed (likely offline); browser journey NOT_TESTED"
 fi
 WEB_DIR="$TMP/s2b-dist"
 # Typecheck first (same gate as CI), then bundle to the disposable directory.

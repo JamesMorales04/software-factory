@@ -74,3 +74,28 @@ func TestHandleAttemptCompletesPromptly(t *testing.T) {
 		t.Fatalf("run status = %s, want succeeded", final.Status)
 	}
 }
+
+func TestResolveExecModeLocalIsExplicit(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	podmanOK, err := resolveExecMode(context.Background(), "local", logger)
+	if err != nil || podmanOK {
+		t.Fatalf("local mode: podmanOK=%v err=%v", podmanOK, err)
+	}
+}
+
+func TestResolveExecModePodmanFailsClosedWithoutPodman(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	// An empty PATH hides the podman CLI however it is installed.
+	t.Setenv("PATH", t.TempDir())
+	podmanOK, err := resolveExecMode(context.Background(), "podman", logger)
+	if err == nil || podmanOK {
+		t.Fatalf("podman mode without podman: podmanOK=%v err=%v", podmanOK, err)
+	}
+}
+
+func TestResolveExecModeRejectsUnknown(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	if _, err := resolveExecMode(context.Background(), "auto", logger); err == nil {
+		t.Fatal("expected unknown exec-mode to be rejected")
+	}
+}

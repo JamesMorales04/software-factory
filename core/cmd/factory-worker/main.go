@@ -52,7 +52,7 @@ func run(args []string) error {
 	pollInterval := flags.Duration("poll-interval", time.Second, "delay between empty polls")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 2*time.Second, "lease renewal period")
 	maxConcurrent := flags.Int("max-concurrent", 1, "simultaneous Attempts (bounded)")
-	execMode := flags.String("exec-mode", "auto", "fixture execution: auto, podman or local")
+	execMode := flags.String("exec-mode", "podman", "fixture execution: podman (fail-closed default) or local (explicit pure-Go mode for tests/dev only)")
 	showVersion := flags.Bool("version", false, "print worker version and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -72,9 +72,9 @@ func run(args []string) error {
 		return errors.New("max-concurrent must be 1..4")
 	}
 	switch *execMode {
-	case "auto", "podman", "local":
+	case "podman", "local":
 	default:
-		return errors.New(`exec-mode must be "auto", "podman" or "local"`)
+		return errors.New(`exec-mode must be "podman" or "local"`)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -118,8 +118,10 @@ func run(args []string) error {
 }
 
 // resolveExecMode probes the execution boundary once at startup and fails
-// closed: explicit podman mode without a working Podman refuses to start
-// rather than silently downgrading; auto mode downgrades loudly in logs.
+// closed: podman mode without a working Podman or fixture image refuses to
+// start rather than silently downgrading. The explicit local mode (pure-Go,
+// no subprocess, no container) exists for appropriate tests and development
+// only; it is never selected implicitly.
 func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (bool, error) {
 	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -134,18 +136,10 @@ func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (boo
 		}
 		return true, nil
 	case "local":
-		logger.Info("fixture execution forced to local mode (no subprocess, no container)")
+		logger.Info("fixture execution using explicit local mode (no subprocess, no container)")
 		return false, nil
-	default: // auto
-		if !available {
-			logger.Info("podman unavailable; fixture execution downgraded to local mode")
-			return false, nil
-		}
-		if err := exec.PullImage(probe); err != nil {
-			logger.Info("fixture image unavailable; fixture execution downgraded to local mode", "error", err.Error())
-			return false, nil
-		}
-		return true, nil
+	default:
+		return false, fmt.Errorf("unknown exec-mode %q", mode)
 	}
 }
 

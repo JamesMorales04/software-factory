@@ -88,12 +88,32 @@ func startWorker(cfg config) error {
 }
 
 func workerEnvironment(workerToken string) []string {
-	env := make([]string, 0, len(os.Environ())+1)
-	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "FACTORY_WORKER_TOKEN=") {
-			continue
+	return workerEnvironmentFrom(os.Environ(), workerToken)
+}
+
+// workerAllowedEnv is the minimal explicit environment inherited by the
+// Worker child process. Rootless Podman needs PATH (podman lookup), HOME
+// (containers/storage configuration), XDG_RUNTIME_DIR (rootless runtime
+// directory) and TMPDIR (disposable workspace allocation). Everything else
+// present in the operator's shell — provider credentials, GitHub tokens,
+// the operator API token — is dropped and never propagated.
+var workerAllowedEnv = []string{"PATH", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"}
+
+func workerEnvironmentFrom(parent []string, workerToken string) []string {
+	keep := make(map[string]string, len(workerAllowedEnv))
+	for _, item := range parent {
+		key, value, _ := strings.Cut(item, "=")
+		for _, allowed := range workerAllowedEnv {
+			if key == allowed && value != "" {
+				keep[key] = value
+			}
 		}
-		env = append(env, item)
+	}
+	env := make([]string, 0, len(keep)+1)
+	for _, allowed := range workerAllowedEnv {
+		if value, ok := keep[allowed]; ok {
+			env = append(env, allowed+"="+value)
+		}
 	}
 	return append(env, "FACTORY_WORKER_TOKEN="+workerToken)
 }

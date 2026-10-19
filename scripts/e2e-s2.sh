@@ -18,6 +18,29 @@ CORE_LOG="$TMP/core.log"
 WORKER_LOG="$TMP/worker.log"
 CORE_PID=""
 WORKER_PID=""
+# Strict mode (CI) turns every BLOCKED gate into a failure: a mandatory
+# isolation check that was not executed must never read as green.
+STRICT="${FACTORY_S2_STRICT:-0}"
+BLOCKED_COUNT=0
+
+blocked() { # $1 = reason
+  echo "[BLOCKED] $1"
+  if [[ "$STRICT" == "1" ]]; then
+    echo "[FAIL] strict mode: blocked gate is a failure"
+    exit 1
+  fi
+  BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
+}
+
+final_verdict() {
+  if [[ "$BLOCKED_COUNT" -gt 0 ]]; then
+    echo
+    echo "S2 end-to-end acceptance: COMPLETED WITH $BLOCKED_COUNT BLOCKED GATE(S) — NOT FULL PASS"
+    return 0
+  fi
+  echo
+  echo "S2 end-to-end acceptance: ALL PHASES DONE"
+}
 
 cleanup() {
   if [[ -n "${WORKER_PID:-}" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
@@ -143,7 +166,7 @@ echo "[PASS] post-restart run completed; history grew $RUNS_BEFORE -> $RUNS_AFTE
 
 echo "== phase 5: podman fixture restriction probes =="
 if ! command -v podman >/dev/null 2>&1; then
-  echo "[BLOCKED] podman CLI unavailable: container restriction probes NOT_TESTED"
+  blocked "podman CLI unavailable: container restriction probes NOT_TESTED"
 else
   PROBE_WORK="$TMP/probe-work"
   mkdir -p "$PROBE_WORK"
@@ -173,10 +196,25 @@ else
     grep -q "ENFORCED" "$OUT" || { echo "[FAIL] no-new-privileges not enforced"; exit 1; }
     echo "[PASS] podman fixture restrictions verified"
   else
-    echo "[BLOCKED] fixture image unavailable: container restriction probes NOT_TESTED"
+    blocked "fixture image unavailable: container restriction probes NOT_TESTED"
     tail -5 "$OUT" || true
   fi
 fi
+
+# A shell canary proves the container boundary in the same way the Worker
+# boundary must hold: host-side secrets never enter the fixture environment.
+export FACTORY_S2_PROBE_CANARY="canary-$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+if command -v podman >/dev/null 2>&1 && podman image exists docker.io/library/alpine:3.20 >/dev/null 2>&1; then
+  if podman run --rm --network=none --read-only --cap-drop=ALL \
+      --security-opt=no-new-privileges --userns=keep-id \
+      --env MESSAGE=canary-check \
+      docker.io/library/alpine:3.20 sh -c 'printenv' 2>/dev/null | grep -q "FACTORY_S2_PROBE_CANARY"; then
+    echo "[FAIL] host canary visible inside the fixture container"
+    exit 1
+  fi
+  echo "[PASS] host canary absent from the fixture container environment"
+fi
+unset FACTORY_S2_PROBE_CANARY
 
 stop_worker
 stop_core
@@ -184,5 +222,4 @@ stop_core
 echo "== phase 6: S1 regression (unmodified suite) =="
 FACTORY_E2E_PORT=8471 bash "$ROOT/scripts/e2e-s1.sh" 2>&1 | tail -5
 
-echo
-echo "S2 end-to-end acceptance: ALL PHASES DONE"
+final_verdict
