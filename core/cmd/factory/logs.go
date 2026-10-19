@@ -18,10 +18,17 @@ func showLogs(cfg config, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *lines < 0 || *lines > 10000 {
-		return errors.New("usage: factory logs [-n lines] [-f]")
+	service := "core"
+	rest := flags.Args()
+	if len(rest) == 1 && rest[0] == "worker" {
+		service = "worker"
+	} else if len(rest) != 0 {
+		return errors.New("usage: factory logs [-n lines] [-f] [worker]")
 	}
-	path := filepath.Join(cfg.home, "factory.log")
+	if *lines < 0 || *lines > 10000 {
+		return errors.New("usage: factory logs [-n lines] [-f] [worker]")
+	}
+	path := filepath.Join(cfg.home, logFileFor(service))
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("factory log does not exist yet: %s", path)
@@ -54,6 +61,15 @@ func showLogs(cfg config, args []string) error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// logFileFor selects the Core or Worker log file. Only these two names
+// exist; anything else is rejected by the caller.
+func logFileFor(service string) string {
+	if service == "worker" {
+		return "worker.log"
+	}
+	return "factory.log"
 }
 
 func tail(file *os.File, lines int, out io.Writer) error {

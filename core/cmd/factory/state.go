@@ -50,9 +50,13 @@ func releaseLock(file *os.File) {
 }
 
 func loadOrCreateToken(path string) (string, error) {
-	if token := os.Getenv("FACTORY_API_TOKEN"); token != "" {
+	return loadOrCreateTokenEnv(path, "FACTORY_API_TOKEN")
+}
+
+func loadOrCreateTokenEnv(path, envVar string) (string, error) {
+	if token := os.Getenv(envVar); token != "" {
 		if err := writePrivateFile(path, []byte(token+"\n")); err != nil {
-			return "", fmt.Errorf("secure API token file: %w", err)
+			return "", fmt.Errorf("secure token file: %w", err)
 		}
 		return token, nil
 	}
