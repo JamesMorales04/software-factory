@@ -147,8 +147,7 @@ if [[ -n "$MODEL" ]]; then
 fi
 if ! paseo run "${RUN_ARGS[@]}" \
   --json "$PROMPT" >"$AGENT_JSON" 2>"$TMP/run.err"; then
-  echo "FAIL: 'paseo run' exited nonzero (redacted first lines of stderr):" >&2
-  redact "$TMP/run.err" | head -n 5 >&2 || true
+  echo "FAIL: 'paseo run' exited nonzero (exit=$?; provider output suppressed — rerun manually to debug)" >&2
   exit 1
 fi
 
@@ -241,19 +240,26 @@ if [[ -n "$MODEL" && -n "${EFFECTIVE_MODEL:-}" && "$EFFECTIVE_MODEL" != "$MODEL"
 fi
 echo "agent cwd observed: ${AGENT_CWD:-unknown} (target disposable dir: $PROJ)"
 echo "agent status observed: ${AGENT_STATUS:-unknown}"
-echo "inspect summary (redacted, scalar fields only):"
+echo "inspect summary (strict allowlist of safe scalar fields only):"
 python3 - "$INSPECT_JSON" <<'EOF'
 import json,sys
 doc=json.load(open(sys.argv[1]))
 if isinstance(doc,list) and doc:
     doc=doc[0]
+# Allowlist: identity/routing/observation fields only. Anything else
+# (credentials, tokens, usage, raw provider payloads) is never printed.
+SAFE=("Id","Name","Provider","Model","Thinking","Status","Archived",
+      "ArchivedAt","Mode","Cwd","CreatedAt","UpdatedAt","Worktree",
+      "ParentAgentId")
 keep={}
 if isinstance(doc,dict):
-    for k,v in doc.items():
+    lowered={str(k).lower():k for k in doc.keys()}
+    for name in SAFE:
+        k=lowered.get(name.lower())
+        if k is None:
+            continue
+        v=doc[k]
         if isinstance(v,(str,int,float,bool)) or v is None:
-            kl=k.lower()
-            if 'token' in kl or 'secret' in kl or 'key' in kl or 'auth' in kl or 'credential' in kl or 'cookie' in kl or 'password' in kl:
-                continue
             keep[k]=v
 print(json.dumps(keep,indent=2)[:1500])
 EOF
@@ -271,17 +277,18 @@ grep -oE '^\[[A-Za-z]+\]' "$LOGS_JSON" | sort | uniq -c || echo "  (no bracketed
 echo "timeline tail (bracketed step lines only, truncated, redacted):"
 grep -E '^\[[A-Za-z]+\]' "$LOGS_JSON" | cut -c1-200 | tail -n 8
 
-echo "-- containment check: no file-write step outside the disposable dir --"
-# --cwd is NOT enforced session containment (see header); this tripwire
-# verifies the actual mechanism (absolute-path prompt + post-hoc diff).
-# Only Edit/Write/Create/Apply file steps count; shell-output paths are
-# too noisy to fail on (reported in the step counts above).
+echo "-- containment tripwire: no observed file-write step outside the disposable dir --"
+# --cwd is NOT enforced session containment (see header). This tripwire
+# checks the observed evidence only: absolute paths in Edit/Write/Create/
+# Apply timeline lines. It does NOT cover shell-output paths, relative
+# paths, or writes invisible in the timeline — so it narrows, never proves,
+# containment. The disposable-repo diff below is the primary evidence.
 if grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | grep -q .; then
   echo "FAIL: file-write step references a path outside $TMP:" >&2
   grep -E '^\[(Edit|Write|Create|Apply)' "$LOGS_JSON" | grep -oE '/[^ "\"'"'"'`,;]*' | grep -v -F "$TMP" | sort -u | head -n 10 >&2
   exit 1
 fi
-echo "assert: file-write steps confined to disposable dir — OK"
+echo "assert: no out-of-dir file-write steps observed in timeline — OK (Edit/Write lines only; see limits above)"
 if [[ -n "${AGENT_CWD:-}" && "$AGENT_CWD" != "$PROJ" && "$AGENT_CWD" != "$PROJ/" ]]; then
   echo "CWD-NOTE: --cwd did not set session Cwd (observed: $AGENT_CWD; target: $PROJ); containment verified post-hoc above, not via --cwd."
 fi

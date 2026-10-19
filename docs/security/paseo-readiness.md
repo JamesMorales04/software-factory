@@ -31,7 +31,13 @@ Functional trusted-local workflow with the default provider (`codex`), all in a 
 - **Source change made by the agent:** `git diff --stat` → `add.js | 8 +++++++-` (289 bytes), containing the expected `multiply` addition; `add` left unchanged.
 - **Formatter + tests pass:** `npm run format` exit 0; `npm test` exit 0 (`# pass 1 # fail 0`).
 - **Session ended:** `paseo stop` exit 0, `paseo archive` exit 0; trap cleanup removed the TMP dir (verified absent).
-- **Containment of the test target:** all agent edits/commands used the disposable absolute path; no files outside `/tmp/...` were created, modified, or deleted by the test.
+- **Containment evidence (narrowed — not a proof of no-outside-writes):**
+  the agent's file-write timeline steps referenced only paths under the
+  disposable dir, and `git diff`/`status` showed the change confined to
+  the disposable repo. Shell-output paths, relative paths, and
+  timeline-invisible writes are NOT covered by these checks. The
+  mechanism is absolute-path prompt pinning plus these post-hoc checks;
+  `--cwd` does not enforce the session working directory (observed).
 
 Two honest behavioral notes: (1) the agent-scoped `paseo run --cwd <tmp>` did **not** change the agent's `Cwd` (inspect showed the caller workspace); the absolute-path prompt wording carried containment instead. (2) Attempt 1 (agent `ca05f95e-…`) correctly reported "Files changed: none" and the script failed as designed; no failure was masked.
 
