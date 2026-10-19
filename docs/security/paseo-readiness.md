@@ -71,8 +71,11 @@ Two honest behavioral notes: (1) the agent-scoped `paseo run --cwd <tmp>` did **
 PROVIDER=codex ./scripts/paseo-trusted-local-smoke.sh
 # with explicit model pin (asserted against session evidence, no substitution):
 PROVIDER=codex MODEL=gpt-6-luna ./scripts/paseo-trusted-local-smoke.sh
-# opencode, once its session-start failure is resolved in the environment:
-PROVIDER=opencode MODEL=<supported-model> ./scripts/paseo-trusted-local-smoke.sh
+# OpenCode Go subscription routes (launch OK; write-loop unproven — see above):
+PROVIDER=opencode MODEL=opencode-go/muse-spark-1.3-contributor ./scripts/paseo-trusted-local-smoke.sh
+PROVIDER=opencode MODEL=opencode-go/deepseek-v4.1-flash ./scripts/paseo-trusted-local-smoke.sh
+# GitHub-Copilot-backed models are NOT runnable here (session-start failure,
+# see above); do not substitute them for the commands above.
 ```
 
 Script: `scripts/paseo-trusted-local-smoke.sh` (`bash`, `set -euo pipefail`, disposable `mktemp -d` + `trap` cleanup, `PROVIDER` override `codex|opencode`). Test target is always a fresh disposable repo under `/tmp`; the factory repo itself is only read for the script path. No secret values are inspected or logged.
