@@ -111,26 +111,43 @@ func TestPodmanArgsAuditLocksRestrictionSet(t *testing.T) {
 	}
 }
 
-func TestReapStaleRunRootsOnlyOwnPattern(t *testing.T) {
-	stale, err := os.MkdirTemp("", "factory-worker-runs-stale-*")
+func TestReapSkipsLiveRoots(t *testing.T) {
+	// A live Worker holds its root lock: simulate one by taking the lock
+	// in this test process, then prove the reaper skips it while it can
+	// still collect a released (dead-owner) root.
+	live, err := RunsRoot()
+	if err != nil {
+		t.Fatalf("runs root: %v", err)
+	}
+	defer func() { _ = live.Close() }()
+	deadDir, err := os.MkdirTemp("", "factory-worker-runs-dead-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// A harness-style directory sharing only a loose prefix must survive.
 	decoy, err := os.MkdirTemp("", "factory-s2-harness-*")
 	if err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(decoy) }()
 	n := ReapStaleRunRoots()
-	if n < 1 {
-		t.Fatal("expected at least one reaped run root")
+	if n != 1 {
+		t.Fatalf("reaped %d roots, want exactly the dead one", n)
 	}
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Fatalf("stale run root survived: %s", stale)
+	if _, err := os.Stat(live.Dir()); err != nil {
+		t.Fatalf("live root reaped: %v", err)
+	}
+	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
+		t.Fatalf("dead root survived: %s", deadDir)
 	}
 	if _, err := os.Stat(decoy); err != nil {
 		t.Fatalf("unrelated dir removed: %v", err)
+	}
+	// After the owner exits (lock released), the same root is collectable.
+	if err := live.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if n := ReapStaleRunRoots(); n != 0 {
+		t.Fatalf("closed root should already be gone, reaped %d", n)
 	}
 }
 
@@ -139,8 +156,13 @@ func TestRunsRootCreatesOwnedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runs root: %v", err)
 	}
-	defer func() { _ = os.RemoveAll(root) }()
-	if base := filepath.Base(root); len(base) < len("factory-worker-runs-") || base[:len("factory-worker-runs-")] != "factory-worker-runs-" {
-		t.Fatalf("unexpected runs root pattern: %s", root)
+	if base := filepath.Base(root.Dir()); len(base) < len("factory-worker-runs-") || base[:len("factory-worker-runs-")] != "factory-worker-runs-" {
+		t.Fatalf("unexpected runs root pattern: %s", root.Dir())
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, serr := os.Stat(root.Dir()); !os.IsNotExist(serr) {
+		t.Fatalf("closed root survived: %s", root.Dir())
 	}
 }

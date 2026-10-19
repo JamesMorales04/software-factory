@@ -101,6 +101,13 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create fixture runs root: %w", err)
 	}
+	// Graceful-shutdown cleanup: only killed Workers leave run roots
+	// behind, so the reaper has something unambiguous to collect.
+	defer func() {
+		if cerr := runsRoot.Close(); cerr != nil {
+			logger.Warn("runs root cleanup failed", "error", cerr.Error())
+		}
+	}()
 
 	// Evidence binding: record the resolved fixture image digest so
 	// content drift between runs is detectable in attempt results.
@@ -124,7 +131,7 @@ func run(args []string) error {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK, imageDigest, runsRoot)
+			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK, imageDigest, runsRoot.Dir())
 		}(i)
 	}
 	<-ctx.Done()

@@ -221,18 +221,53 @@ func ImageDigest(ctx context.Context) (string, error) {
 }
 
 // RunsRoot creates the Worker-owned parent directory for per-Attempt
-// disposable workspaces. Crash recovery keys off this exact pattern, so
-// harness or operator directories merely sharing a prefix are never
-// touched — the overly broad sweep that motivated this design deleted an
-// unrelated TMP dir in testing and is explicitly rejected here.
-func RunsRoot() (string, error) {
-	return os.MkdirTemp("", "factory-worker-runs-*")
+// disposable workspaces and takes an exclusive advisory lock on it that
+// is held for the Worker's lifetime. Crash recovery keys off this exact
+// pattern, so harness or operator directories merely sharing a prefix are
+// never touched — a broad sweep that once deleted a harness TMP dir in
+// testing is explicitly rejected here. The lock is the liveness signal:
+// the kernel releases it even on SIGKILL, so a concurrent Worker can
+// always distinguish this live root from a stale one.
+func RunsRoot() (*RunRoot, error) {
+	dir, err := os.MkdirTemp("", "factory-worker-runs-*")
+	if err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	if err := flockNonblock(lock); err != nil {
+		_ = lock.Close()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return &RunRoot{dir: dir, lock: lock}, nil
 }
 
-// ReapStaleRunRoots removes Worker-owned run roots left behind by killed
-// Workers (kill -9 bypasses in-process cleanup). Only the exact
-// factory-worker-runs-* directory pattern is touched; per-Attempt
-// workspaces live inside a root and vanish with it.
+// RunRoot is a Worker-owned disposable workspace parent. Close releases
+// the ownership lock and removes the directory; it runs on graceful
+// shutdown so only killed Workers leave roots behind for the reaper.
+type RunRoot struct {
+	dir  string
+	lock *os.File
+}
+
+// Dir reports the workspace parent path.
+func (r *RunRoot) Dir() string { return r.dir }
+
+// Close releases ownership and removes the root and its workspaces.
+func (r *RunRoot) Close() error {
+	_ = r.lock.Close()
+	return os.RemoveAll(r.dir)
+}
+
+// ReapStaleRunRoots removes Worker-owned run roots whose owner is gone.
+// A root whose ownership lock is still held — a live Worker, including a
+// concurrent one starting or running — is always skipped; only roots with
+// a released lock (dead owner, even via SIGKILL) or no lock file at all
+// from an interrupted creation are removed. Returns the number removed.
 func ReapStaleRunRoots() int {
 	entries, err := os.ReadDir(os.TempDir())
 	if err != nil {
@@ -243,11 +278,32 @@ func ReapStaleRunRoots() int {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), "factory-worker-runs-") {
 			continue
 		}
+		if live, lerr := rootLive(filepath.Join(os.TempDir(), e.Name())); lerr != nil || live {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(os.TempDir(), e.Name())); err == nil {
 			reaped++
 		}
 	}
 	return reaped
+}
+
+// rootLive reports whether a run root is owned by a living Worker: the
+// ownership lock file exists and is currently held. Missing lock files
+// (interrupted creation) count as not live.
+func rootLive(dir string) (bool, error) {
+	f, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0o600)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	if err := flockNonblock(f); err != nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 func containerName(attemptID string) string {
