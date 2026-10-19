@@ -35,14 +35,25 @@ if [[ ! -x "$CHROMIUM_EXE" ]]; then
   exit 0
 fi
 
-echo "== build core + worker + office =="
+echo "== build core + worker + office (outputs under $TMP) =="
 (cd "$ROOT/core" && go build -o "$BIN_CORE" ./cmd/factory-core)
 (cd "$ROOT/core" && go build -o "$BIN_WORKER" ./cmd/factory-worker)
-(cd "$ROOT/office" && npm run build >/dev/null)
+if [[ ! -d "$ROOT/office/node_modules" ]]; then
+  echo "office dependencies missing; installing from the lockfile"
+  if ! (cd "$ROOT/office" && npm ci --no-audit --no-fund); then
+    echo "[BLOCKED] npm ci failed (likely offline); browser journey NOT_TESTED"
+    exit 0
+  fi
+fi
+WEB_DIR="$TMP/s2b-dist"
+# Typecheck first (same gate as CI), then bundle to a disposable directory:
+# the repository working tree must not be modified by a test run.
+(cd "$ROOT/office" && npm run typecheck >/dev/null)
+(cd "$ROOT/office" && npx vite build --outDir "$WEB_DIR" >/dev/null)
 
 echo "== start core (port $PORT) + worker =="
 env FACTORY_API_TOKEN="$TOKEN" FACTORY_WORKER_TOKEN="$WTOKEN" \
-  "$BIN_CORE" --addr "127.0.0.1:${PORT}" --db "$DB" --web-dir "$ROOT/office/dist" >"$TMP/core.log" 2>&1 &
+  "$BIN_CORE" --addr "127.0.0.1:${PORT}" --db "$DB" --web-dir "$WEB_DIR" >"$TMP/core.log" 2>&1 &
 CORE_PID=$!
 for _ in $(seq 1 50); do
   if curl -sf -o /dev/null -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/health"; then
