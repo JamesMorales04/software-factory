@@ -58,7 +58,7 @@ func TestHandleAttemptCompletesPromptly(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		c.handleAttempt(ctx, "reg-1", claimed, attempt, 100*time.Millisecond, false)
+		c.handleAttempt(ctx, "reg-1", claimed, attempt, 100*time.Millisecond, false, "", t.TempDir())
 	}()
 	select {
 	case <-done:

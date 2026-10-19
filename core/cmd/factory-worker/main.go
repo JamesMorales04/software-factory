@@ -92,6 +92,28 @@ func run(args []string) error {
 		return err
 	}
 
+	// Orphan cleanup: a previous Worker killed with SIGKILL bypasses
+	// in-process workdir removal; sweep only our own run-root pattern.
+	if reaped := exec.ReapStaleRunRoots(); reaped > 0 {
+		logger.Info("reaped stale fixture workspaces", "count", reaped)
+	}
+	runsRoot, err := exec.RunsRoot()
+	if err != nil {
+		return fmt.Errorf("create fixture runs root: %w", err)
+	}
+
+	// Evidence binding: record the resolved fixture image digest so
+	// content drift between runs is detectable in attempt results.
+	imageDigest := ""
+	if podmanOK {
+		imageDigest, err = exec.ImageDigest(ctx)
+		if err != nil {
+			logger.Warn("fixture image digest unavailable; continuing with pinned tag", "error", err.Error())
+		} else {
+			logger.Info("fixture image digest resolved", "digest", imageDigest)
+		}
+	}
+
 	if err := c.register(ctx, *workerID); err != nil {
 		return fmt.Errorf("register worker: %w", err)
 	}
@@ -102,7 +124,7 @@ func run(args []string) error {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK)
+			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK, imageDigest, runsRoot)
 		}(i)
 	}
 	<-ctx.Done()
@@ -144,7 +166,7 @@ func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (boo
 }
 
 // slotLoop polls for work and handles one Attempt at a time.
-func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, heartbeat time.Duration, podmanOK bool) {
+func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, heartbeat time.Duration, podmanOK bool, imageDigest, runsRoot string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -173,7 +195,7 @@ func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, 
 			}
 			continue
 		}
-		c.handleAttempt(ctx, workerID, run, attempt, heartbeat, podmanOK)
+		c.handleAttempt(ctx, workerID, run, attempt, heartbeat, podmanOK, imageDigest, runsRoot)
 	}
 }
 
@@ -182,7 +204,7 @@ func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, 
 // the correct recovery, not an error loop.
 var errWorkerUnknown = errors.New("worker unknown")
 
-func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.Run, attempt domain.Attempt, heartbeat time.Duration, podmanOK bool) {
+func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.Run, attempt domain.Attempt, heartbeat time.Duration, podmanOK bool, imageDigest, runsRoot string) {
 	log := c.logger.With("workerId", workerID, "runId", run.ID, "attemptId", attempt.ID, "generation", attempt.LeaseGeneration)
 	execTimeout := runTimeout(run.TimeoutSecs)
 	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
@@ -221,7 +243,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "invalid-workload: "+err.Error(), log)
 		return
 	}
-	workDir, err := os.MkdirTemp("", "factory-s2-*")
+	workDir, err := os.MkdirTemp(runsRoot, "attempt-*")
 	if err != nil {
 		cancel() // stop the heartbeat loop before waiting for it
 		<-hbDone
@@ -276,6 +298,9 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		"receipt":       result.Receipt,
 		"messageDigest": result.MessageDigest,
 		"elapsedMs":     result.ElapsedMs,
+	}
+	if imageDigest != "" {
+		output["imageDigest"] = imageDigest
 	}
 	c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeCompleted, output, "", log)
 }

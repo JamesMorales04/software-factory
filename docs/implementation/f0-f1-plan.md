@@ -1,11 +1,13 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 is paused / BLOCKED for credential-bearing workloads. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 is paused / BLOCKED for credential-bearing workloads. Documentation and feasibility prototypes exist, but no Factory Core, Worker or Office implementation is certified. **Owner decision (S2 completion):** SEC-01 isolation certification is part of F1-S2 completion criteria (S2-B research, S2-C mandatory isolation architecture, S2-D provider-specific certification). F1-S3 begins only when its required provider execution boundary is independently certified and the owner authorizes progression.
 
 ## Incremental implementation authorization (2026-10-18)
 
 - **May start:** F1-S1 actual Go Core, durable Action/API/event model, minimum authenticated Factory Office UI and local-first telemetry, after defining the small contracts and negative acceptance cases that S1 requires. Do not mark S1 PASS on documentation or mocks.
 - **May prototype:** F1-S2 disposable credential-free Worker protocol, lease/recovery and resource controls with rootless Podman and synthetic repositories, without attaching real agent accounts or untrusted host execution.
+- **May research (S2-B, owner-authorized S2 completion):** bounded security investigation with synthetic credentials and canaries only — provider sandbox mechanisms, process topology, tool-mediation exclusivity, adversarial OS-denial oracles. No privileged execution, no real host credentials, no uncontrolled authenticated-provider experiments; any real-auth test plan requires explicit owner approval before running.
+- **May implement (S2-C, proven infrastructure only):** the smallest mandatory isolation controls validated by S2-B proof-of-concept evidence (per-Attempt disposable workspaces, scoped broker capabilities, fail-closed policy, orphan cleanup). No S3 Paseo adapter, autonomous campaigns, arbitrary command execution or delivery workflows.
 - **Still blocked:** F1-S3 integration of autonomous real Paseo sessions with untrusted commands, full factory self-development and delivery privileges, until SEC-01 mandatory tool isolation is certified. Security findings remain valid despite successful MCP and SDK integration.
 - **Deferred security work:** the product owner paused D3-D2 and Stage E tests. Record their states as NOT TESTED/BLOCKED, not SKIPPED-as-PASS. See [SEC-01 results](../security/SEC-01-results-2026-10-18.md).
 
@@ -21,9 +23,12 @@
 ## F1 — verified vertical slices
 
 | Slice | Deliverable | Independent real-user journey | Required negative path |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | S1 | Durable Core, API, domain events, telemetry and minimal Factory UI | Start the server, create/view Action in browser, restart Core and observe persisted state | Unauthorized/invalid operation rejected; duplicate event ignored; OTel outage nonblocking |
-| S2 | Local Worker and Core–Worker dispatch/lease/recovery | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
+| S2 | Local Worker and Core–Worker dispatch/lease/recovery **plus SEC-01 isolation foundation** | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
+| S2-B | Threat model, provider architecture investigation, executable acceptance criteria | Adversarial oracles defined per provider route | Unverifiable route stays BLOCKED, never PASS |
+| S2-C | Mandatory isolation architecture for untrusted execution | OS-denied canary probes; broker-only mediation; fail-closed policy | Model refusal or missing tool is not an OS boundary |
+| S2-D | Independent security validation + provider certification decision | Per-provider verdicts with evidence | Uncertified provider stays disabled for S3 |
 | S3 | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
 | S4 | Implementer, Independent Verifier, Reviewer, baseline | Produce a real diff; independent tester starts and exercises exact commit | Mandatory failure blocks; Reviewer cannot mutate candidate |
 | S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |

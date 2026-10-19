@@ -124,32 +124,7 @@ func runLocal(ctx context.Context, steps, stepMs int, workDir, receipt string) e
 // container. The argv is fixed; only scalar env values vary. No HOME, no
 // credential paths, no sockets and no host networking are ever mounted.
 func runPodman(ctx context.Context, spec Spec, steps int, workDir string) error {
-	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
-		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
-		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
-	// BusyBox sleep accepts fractional seconds; stepMs is domain-bounded
-	// to 0..200 so "0.NNN" is always a valid short sleep.
-	stepMsS := "0." + fmt.Sprintf("%03d", spec.StepMs)
-	args := []string{
-		"run", "--rm",
-		"--network=none",
-		"--read-only",
-		"--cap-drop=ALL",
-		"--security-opt=no-new-privileges",
-		"--pids-limit=32",
-		"--memory=128m",
-		"--cpus=0.5",
-		"--userns=keep-id",
-		"-v", workDir + ":/workspace:rw",
-		"--workdir", "/workspace",
-		"--env", "MESSAGE=" + spec.Message,
-		"--env", "STEPS=" + strconv.Itoa(steps),
-		"--env", "STEPMS=" + stepMsS,
-		"--env", "RECEIPT=" + spec.RunID + "/" + spec.AttemptID + "/" + strconv.FormatInt(spec.Generation, 10),
-		"--name", containerName(spec.AttemptID),
-		PodmanImage,
-		"sh", "-c", script,
-	}
+	args := podmanArgs(spec, steps, workDir)
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout = &stdout
@@ -191,6 +166,89 @@ func pullImage(ctx context.Context) error {
 // PullImage is the exported fixture-image fetch used by the Worker startup
 // probe and acceptance tooling.
 func PullImage(ctx context.Context) error { return pullImage(ctx) }
+
+// podmanArgs builds the exact disposable-container invocation. It is a
+// pure function so the restriction set is unit-auditable: any future flag
+// drift (privileged mode, host mounts, network, sockets) fails the audit
+// test instead of silently widening the boundary.
+func podmanArgs(spec Spec, steps int, workDir string) []string {
+	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
+		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
+		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
+	// BusyBox sleep accepts fractional seconds; stepMs is domain-bounded
+	// to 0..200 so "0.NNN" is always a valid short sleep.
+	stepMsS := "0." + fmt.Sprintf("%03d", spec.StepMs)
+	return []string{
+		"run", "--rm",
+		"--network=none",
+		"--read-only",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"--pids-limit=32",
+		"--memory=128m",
+		"--cpus=0.5",
+		"--userns=keep-id",
+		"-v", workDir + ":/workspace:rw",
+		"--workdir", "/workspace",
+		"--env", "MESSAGE=" + spec.Message,
+		"--env", "STEPS=" + strconv.Itoa(steps),
+		"--env", "STEPMS=" + stepMsS,
+		"--env", "RECEIPT=" + spec.RunID + "/" + spec.AttemptID + "/" + strconv.FormatInt(spec.Generation, 10),
+		"--name", containerName(spec.AttemptID),
+		PodmanImage,
+		"sh", "-c", script,
+	}
+}
+
+// ImageDigest resolves the fixture image to its content digest for
+// evidence binding. The tag stays the select mechanism; the digest is
+// recorded in startup logs and attempt results so drift is detectable.
+func ImageDigest(ctx context.Context) (string, error) {
+	c, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(c, "podman", "image", "inspect", "--format", "{{.Digest}}", PodmanImage)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("inspect fixture image: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	digest := strings.TrimSpace(stdout.String())
+	if digest == "" {
+		return "", errors.New("fixture image has no digest")
+	}
+	return digest, nil
+}
+
+// RunsRoot creates the Worker-owned parent directory for per-Attempt
+// disposable workspaces. Crash recovery keys off this exact pattern, so
+// harness or operator directories merely sharing a prefix are never
+// touched — the overly broad sweep that motivated this design deleted an
+// unrelated TMP dir in testing and is explicitly rejected here.
+func RunsRoot() (string, error) {
+	return os.MkdirTemp("", "factory-worker-runs-*")
+}
+
+// ReapStaleRunRoots removes Worker-owned run roots left behind by killed
+// Workers (kill -9 bypasses in-process cleanup). Only the exact
+// factory-worker-runs-* directory pattern is touched; per-Attempt
+// workspaces live inside a root and vanish with it.
+func ReapStaleRunRoots() int {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return 0
+	}
+	reaped := 0
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "factory-worker-runs-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(os.TempDir(), e.Name())); err == nil {
+			reaped++
+		}
+	}
+	return reaped
+}
 
 func containerName(attemptID string) string {
 	if len(attemptID) > 12 {
