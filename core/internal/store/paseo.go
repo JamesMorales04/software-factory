@@ -357,6 +357,23 @@ func (db *DB) ClosePaseoSession(ctx context.Context, workerID, runID, attemptID 
 		// Any terminal outcome is valid for a running session.
 	case binding.Status == domain.PaseoIntended && target == domain.PaseoCancelled:
 		// Cancel before any Paseo call completed: record the intent.
+		// Only the owning Worker may take this path — it knows no
+		// external call was made.
+		event, err := cancelBindingTx(ctx, tx, binding, reason, workerID, correlationID, now)
+		if err != nil {
+			return domain.PaseoBinding{}, false, domain.Event{}, err
+		}
+		if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
+			return domain.PaseoBinding{}, false, domain.Event{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.PaseoBinding{}, false, domain.Event{}, err
+		}
+		stored, err := db.GetPaseoBinding(attemptID)
+		if err != nil {
+			return domain.PaseoBinding{}, false, domain.Event{}, err
+		}
+		return stored, false, event, nil
 	case binding.Status == domain.PaseoIntended && target == domain.PaseoFailed:
 		// Startup failure before binding (e.g. provider unavailable):
 		// record the failure honestly with its reason.
@@ -513,12 +530,14 @@ func orphanBindingTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBindin
 	return appendWorkerRunEvent(ctx, tx, domain.EventPaseoSessionOrphaned, binding.RunID, payload, now)
 }
 
-// cancelBindingTx cancels a non-terminal binding for a cancelled Run inside
-// the caller's transaction.
-func cancelBindingTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, actor, correlationID string, now time.Time) (domain.Event, error) {
+// cancelBindingTx cancels a never-acted-on intent inside the caller's
+// transaction. Only the owning Worker may use it, via an explicit session
+// close for an intent it never acted on; Core-side paths (CancelRun,
+// failed reports) orphan instead, because Core cannot prove external state.
+func cancelBindingTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, reason, actor, correlationID string, now time.Time) (domain.Event, error) {
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE paseo_bindings SET status=?, updated_at=? WHERE attempt_id=?`,
-		string(domain.PaseoCancelled), stamp(now), binding.AttemptID,
+		`UPDATE paseo_bindings SET status=?, error=?, updated_at=? WHERE attempt_id=?`,
+		string(domain.PaseoCancelled), reason, stamp(now), binding.AttemptID,
 	); err != nil {
 		return domain.Event{}, err
 	}
@@ -528,6 +547,8 @@ func cancelBindingTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBindin
 		"generation": binding.LeaseGeneration,
 		"workerId":   binding.WorkerID,
 		"sessionId":  binding.SessionID,
+		"outcome":    string(domain.PaseoCancelled),
+		"error":      reason,
 	})
 	event := domain.Event{
 		EventID:       newID(),

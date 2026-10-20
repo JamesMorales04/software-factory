@@ -218,6 +218,39 @@ func TestPaseoDuplicateSessionRejectedOverHTTP(t *testing.T) {
 	}
 }
 
+func TestPaseoOrphanQueueExposedToOperators(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+
+	// Empty queue reads as an empty list, never null.
+	rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sessions":[]`) {
+		t.Fatalf("empty orphan queue: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned?limit=0", "", testToken); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad limit: got %d, want 400", rec.Code)
+	}
+
+	run := queuePaseoRun(t, h, "")
+	attempt := startPaseoAttempt(t, h, run, "s3a-queue")
+	serveRun(t, h, "POST", "/api/v1/workers/session/intend",
+		`{"workerId":"s3a-queue","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1}`, testWorkerToken)
+	serveRun(t, h, "POST", "/api/v1/workers/session/bind",
+		`{"workerId":"s3a-queue","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1,"workspaceId":"ws_q","sessionId":"55555555-5555-4555-8555-555555555555"}`,
+		testWorkerToken)
+	if rec := serveRun(t, h, "POST", "/api/v1/runs/"+run.ID+"/cancel", `{}`, testToken); rec.Code != http.StatusOK {
+		t.Fatalf("cancel: got %d", rec.Code)
+	}
+	rec = serveRun(t, h, "GET", "/api/v1/sessions/orphaned", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "55555555-5555-4555-8555-555555555555") {
+		t.Fatalf("orphaned session missing from operator queue: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	// Worker token never grants operator observations.
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned", "", testWorkerToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("orphan queue with worker token: got %d, want 401", rec.Code)
+	}
+}
+
 func TestPaseoRunValidationOverHTTP(t *testing.T) {
 	srv, _ := newRunTestServer(t)
 	h := srv.Handler()

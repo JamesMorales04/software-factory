@@ -688,10 +688,14 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 // settleBindingForReportTx enforces the S3-A session/report coherence for
 // one paseo-task Attempt inside the caller's transaction. Success requires
 // a successfully closed binding — anything else is a Worker ordering
-// violation and the report is rejected. Failure settles a live binding so
-// the terminal Attempt keeps no actionable session: intended (no session
-// proven) is cancelled, active (session may exist) is orphaned. Synthetic
-// runs never reach here and keep their frozen behavior.
+// violation and the report is rejected. Failure orphans a live binding so
+// the terminal Attempt keeps no actionable session: the report alone never
+// proves external state (the intend-then-crash window may have created a
+// session Core never saw), so even an unbound intent is orphaned for
+// label-based reconciliation rather than cancelled away. Only the owning
+// Worker, via an explicit session close for an intent it never acted on,
+// may mark cancelled. Synthetic runs never reach here and keep their frozen
+// behavior.
 func settleBindingForReportTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, outcome domain.ReportOutcome, workerID, correlationID string, now time.Time) ([]domain.Event, error) {
 	binding, err := scanPaseoBinding(tx.QueryRowContext(ctx,
 		`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, attempt.ID))
@@ -716,29 +720,22 @@ func settleBindingForReportTx(ctx context.Context, tx *sql.Tx, attempt domain.At
 		return nil, fmt.Errorf("%w: paseo-task completion requires a successfully closed session binding (binding is %s); close before reporting",
 			domain.ErrInvalidInput, binding.Status)
 	}
-	// Failed report with a live binding: settle it in the same
-	// transaction. The actor is the reporting Worker and the correlation
-	// carries the report's chain.
-	switch binding.Status {
-	case domain.PaseoIntended:
-		cancelled, err := cancelBindingTx(ctx, tx, binding, workerID, correlationID, now)
-		if err != nil {
-			return nil, err
-		}
-		return []domain.Event{cancelled}, nil
-	default:
-		orphaned, err := orphanBindingTx(ctx, tx, binding, workerID, "attempt-failed: session outcome unconfirmed", now)
-		if err != nil {
-			return nil, err
-		}
-		orphaned.CorrelationID = correlationID
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE events SET correlation_id=? WHERE event_id=?`, correlationID, orphaned.EventID,
-		); err != nil {
-			return nil, err
-		}
-		return []domain.Event{orphaned}, nil
+	// Failed report with a live binding: orphan it in the same
+	// transaction. The report alone never proves external state, so even
+	// an unbound intent is orphaned for label-based reconciliation. The
+	// actor is the reporting Worker and the correlation carries the
+	// report's chain.
+	orphaned, err := orphanBindingTx(ctx, tx, binding, workerID, "attempt-failed: session outcome unconfirmed", now)
+	if err != nil {
+		return nil, err
 	}
+	orphaned.CorrelationID = correlationID
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE events SET correlation_id=? WHERE event_id=?`, correlationID, orphaned.EventID,
+	); err != nil {
+		return nil, err
+	}
+	return []domain.Event{orphaned}, nil
 }
 
 // replayIfRecorded reports whether the exact outcome for an Attempt

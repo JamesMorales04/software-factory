@@ -197,11 +197,16 @@ if grep -q 'PaseoSessionCancelled' <<<"$(auth "$BASE/api/v1/runs/$RUN2/events")"
   echo "[FAIL] Core cancellation must not claim the session cancelled/stopped"
   exit 1
 fi
+ORPHANS="$(auth "$BASE/api/v1/sessions/orphaned?limit=50")"
+if ! grep -q 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaa2' <<<"$ORPHANS"; then
+  echo "[FAIL] cancelled session missing from operator orphan queue"
+  exit 1
+fi
 LATE_CODE="$(curl -s -o /tmp/factory-s3a-late.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/session/close" \
   -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
   -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUN2\",\"attemptId\":\"$ATT2_ID\",\"generation\":$GEN2,\"outcome\":\"succeeded\"}")"
 if [[ "$LATE_CODE" != "409" ]]; then echo "[FAIL] late close after cancel not fenced: $LATE_CODE"; exit 1; fi
-echo "[PASS] run cancel propagated to the binding; late close fenced with 409"
+echo "[PASS] run cancel orphaned the binding (stop unconfirmed, operator queue lists it); late close fenced with 409"
 
 echo "== phase 5: core restart retains bindings and history =="
 RUNS_BEFORE="$(auth "$BASE/api/v1/runs?limit=200" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['runs']))")"

@@ -116,9 +116,11 @@ immutable. `orphaned` means a Paseo session may still exist externally but
 its generation is superseded or its outcome unconfirmed: it is recorded
 honestly for cleanup and can never become authoritative. Cancellation of
 the Run, expiry, timeout and Core-restart reconciliation orphan a
-non-terminal binding in the same transaction. A failed Attempt report
-settles its live binding in the same transaction: intended is cancelled
-(no session proven), active is orphaned.
+non-terminal binding in the same transaction — Core never marks a binding
+cancelled, because Core cannot prove the external session's state. A
+failed Attempt report orphans a live binding in the same transaction. Only
+the owning Worker, via an explicit session close for an intent it never
+acted on, may mark cancelled.
 
 Binding requires the Attempt to have started (`leased → running` via
 heartbeat, the S2 rule); intend is valid in `leased` or `running`. Reports
@@ -175,6 +177,7 @@ reject the operator token.
 | --- | --- | --- | --- |
 | POST | `/api/v1/runs` | operator | Extended: accepts `executionMode`, `provider`, `model`, `paseoMode` |
 | GET | `/api/v1/runs/{id}/sessions` | operator | Session bindings for one Run, `seq` order (`404` unknown Run) |
+| GET | `/api/v1/sessions/orphaned?limit=` | operator | Cross-run orphan queue for later stop/cleanup (`limit` 1..200, default 100) |
 | POST | `/api/v1/workers/session/intend` | worker | `{workerId, runId, attemptId, generation}` → `201` or idempotent replay |
 | POST | `/api/v1/workers/session/bind` | worker | `{…, workspaceId, sessionId}` → `200` or idempotent replay |
 | POST | `/api/v1/workers/session/close` | worker | `{…, outcome: succeeded\|failed\|cancelled, error?}` → `200` or replay |
@@ -223,7 +226,10 @@ only transitions do.
   orphaned session stays discoverable via the orphan listing for later
   stop/cleanup. Core cancellation never claims the session stopped.
 - A `completed` report without a successfully closed binding is rejected;
-  a `sessionId` bound elsewhere is rejected on re-bind.
+  a `failed` report orphans the live binding; a `sessionId` bound elsewhere
+  is rejected on re-bind. The orphan queue (`GET /api/v1/sessions/orphaned`)
+  and the per-run sessions/events views keep every unconfirmed session
+  discoverable; Core never claims an external stop it did not perform.
 - Restart retains Runs, Attempts, bindings, Workers, and full event
   history including the new event types.
 - S1 journeys and the S2 suite (unit, fencing, e2e, browser) still pass

@@ -528,9 +528,11 @@ func TestPaseoFailedReportSettlesLiveBinding(t *testing.T) {
 		t.Fatalf("binding not orphaned: %+v err=%v", binding, err)
 	}
 
-	// Intended-only binding + failed report: no session proven, so the
-	// intent is cancelled, not orphaned. The queue holds the requeued run
-	// above, so drive whichever run is leased.
+	// Intended-only binding + failed report: the report alone never proves
+	// external state (the intend-then-crash window may have created a
+	// session Core never saw), so the intent is orphaned for label-based
+	// reconciliation rather than cancelled away. The queue holds the
+	// requeued run above, so drive whichever run is leased.
 	_ = queuePaseoRun(t, db, 3)
 	leased2, attempt2, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-4")
 	if err != nil {
@@ -545,8 +547,12 @@ func TestPaseoFailedReportSettlesLiveBinding(t *testing.T) {
 	if _, _, events, err := db.ReportAttempt(ctx, "local-1", leased2.ID, attempt2.ID, attempt2.LeaseGeneration,
 		domain.OutcomeFailed, nil, "worker gave up", "corr-7"); err != nil {
 		t.Fatalf("failed report: %v", err)
-	} else if len(events) != 2 || events[0].EventType != domain.EventPaseoSessionCancelled {
-		t.Fatalf("expected cancel + failure events, got %+v", events)
+	} else if len(events) != 2 || events[0].EventType != domain.EventPaseoSessionOrphaned {
+		t.Fatalf("expected orphan + failure events, got %+v", events)
+	}
+	intended, err := db.GetPaseoBinding(attempt2.ID)
+	if err != nil || intended.Status != domain.PaseoOrphaned {
+		t.Fatalf("intended binding not orphaned: %+v err=%v", intended, err)
 	}
 
 	// No binding at all (S3-A Worker rejection, startup failure): failure
@@ -640,6 +646,41 @@ func TestPaseoSessionIdCannotSpanAttempts(t *testing.T) {
 	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", runB.ID, attemptB.ID, attemptB.LeaseGeneration,
 		"ws_dup", "session-dup-1", "corr-11"); err != domain.ErrStaleGeneration {
 		t.Fatalf("cross-run duplicate session bind: err=%v, want stale", err)
+	}
+}
+
+func TestPaseoWorkerCloseCancelledOnUnactedIntent(t *testing.T) {
+	// The owning Worker may mark an intent it never acted on cancelled:
+	// unlike Core-side cancellation or failure reports, the actor knows
+	// no external call was made. This is the only path that records
+	// cancelled for a session binding.
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queuePaseoRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	_, attempt, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-1")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1, "corr-2"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	closed, _, event, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
+		"cancelled", "operator aborted before start", "corr-3")
+	if err != nil || closed.Status != domain.PaseoCancelled {
+		t.Fatalf("worker close-cancelled: %+v err=%v", closed, err)
+	}
+	if event.EventType != domain.EventPaseoSessionCancelled {
+		t.Fatalf("event = %s, want PaseoSessionCancelled", event.EventType)
+	}
+	orphans, err := db.ListOrphanedBindings(10)
+	if err != nil {
+		t.Fatalf("orphan list: %v", err)
+	}
+	for _, o := range orphans {
+		if o.AttemptID == attempt.ID {
+			t.Fatalf("cleanly cancelled intent must not enter the cleanup queue")
+		}
 	}
 }
 

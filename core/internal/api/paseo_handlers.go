@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
@@ -15,6 +16,31 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.db.ListPaseoBindings(r.PathValue("id"))
 	if err != nil {
 		mapDomainError(w, err, s.log, "list sessions")
+		return
+	}
+	if sessions == nil {
+		sessions = []domain.PaseoBinding{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+// handleListOrphanedSessions exposes the cross-run orphan queue: sessions
+// that may still exist externally while their generation is superseded or
+// their outcome unconfirmed. S3-B/D cleanup stops them by sessionId (or by
+// run/attempt/generation labels when no session was ever bound).
+func (s *Server) handleListOrphanedSessions(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid", "limit must be a positive integer")
+			return
+		}
+		limit = n
+	}
+	sessions, err := s.db.ListOrphanedBindings(limit)
+	if err != nil {
+		mapDomainError(w, err, s.log, "list orphaned sessions")
 		return
 	}
 	if sessions == nil {
