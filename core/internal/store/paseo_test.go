@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,9 +224,13 @@ func TestPaseoStaleGenerationFenced(t *testing.T) {
 	}
 }
 
-func TestPaseoCancelRunCancelsBinding(t *testing.T) {
+func TestPaseoCancelRunOrphansBinding(t *testing.T) {
 	db := openRunTestDB(t)
 	ctx := context.Background()
+
+	// Active binding (session proven to exist): Core cancellation must not
+	// claim the session stopped. The binding is orphaned — discoverable
+	// for later stop/cleanup — while the Run outcome stays authoritative.
 	run := queuePaseoRun(t, db, 3)
 	registerWorker(t, db, "local-1")
 	attempt := claimAndStart(t, db, run, "local-1")
@@ -241,18 +246,52 @@ func TestPaseoCancelRunCancelsBinding(t *testing.T) {
 		t.Fatalf("cancel: %+v err=%v", cancelled, err)
 	}
 	if len(events) != 2 {
-		t.Fatalf("expected RunCancelled + PaseoSessionCancelled, got %d events", len(events))
+		t.Fatalf("expected RunCancelled + PaseoSessionOrphaned, got %d events", len(events))
 	}
 	types := map[string]bool{}
 	for _, e := range events {
 		types[e.EventType] = true
 	}
-	if !types[domain.EventRunCancelled] || !types[domain.EventPaseoSessionCancelled] {
+	if !types[domain.EventRunCancelled] || !types[domain.EventPaseoSessionOrphaned] {
 		t.Fatalf("missing cancel events: %v", types)
 	}
+	if types[domain.EventPaseoSessionCancelled] {
+		t.Fatalf("Core cancellation must never claim the session cancelled/stopped")
+	}
 	binding, err := db.GetPaseoBinding(attempt.ID)
-	if err != nil || binding.Status != domain.PaseoCancelled {
-		t.Fatalf("binding not cancelled: %+v err=%v", binding, err)
+	if err != nil || binding.Status != domain.PaseoOrphaned {
+		t.Fatalf("binding not orphaned: %+v err=%v", binding, err)
+	}
+	if !strings.Contains(binding.Error, "unconfirmed") {
+		t.Fatalf("orphan reason must record the unconfirmed stop: %q", binding.Error)
+	}
+	orphans, err := db.ListOrphanedBindings(10)
+	if err != nil || len(orphans) != 1 || orphans[0].SessionID != "session-1" {
+		t.Fatalf("cancelled session not discoverable for cleanup: %+v err=%v", orphans, err)
+	}
+}
+
+func TestPaseoCancelRunOrphansIntendedBinding(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queuePaseoRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	_, attempt, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-1")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1, "corr-2"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, err := db.CancelRun(ctx, run.ID, "corr-cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	binding, err := db.GetPaseoBinding(attempt.ID)
+	if err != nil || binding.Status != domain.PaseoOrphaned {
+		t.Fatalf("intended binding not orphaned: %+v err=%v", binding, err)
+	}
+	if !strings.Contains(binding.Error, "before session bind") {
+		t.Fatalf("orphan reason must record that no session was bound: %q", binding.Error)
 	}
 	// Any late Worker message for the cancelled Run is a cancellation
 	// rejection, even with an unknown Attempt identity.
@@ -378,9 +417,88 @@ func TestPaseoTimeoutOrphansBinding(t *testing.T) {
 	}
 }
 
-func TestPaseoCloseAfterTerminalRunIsStale(t *testing.T) {
+func TestPaseoCompletedRequiresClosedBinding(t *testing.T) {
 	db := openRunTestDB(t)
 	ctx := context.Background()
+	run := queuePaseoRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	attempt := claimAndStart(t, db, run, "local-1")
+
+	// No binding at all: success without a session is rejected, and the
+	// Run stays non-terminal so the Worker can still do the work.
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, map[string]any{"receipt": "forged"}, "", "corr-1"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("success without session: err=%v, want ErrInvalidInput", err)
+	}
+	stored, _ := db.GetRun(run.ID)
+	if stored.Status != domain.RunRunning {
+		t.Fatalf("run must stay running after rejected success: %s", stored.Status)
+	}
+
+	// Intended/active bindings are not success evidence either.
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1, "corr-2"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, nil, "", "corr-3"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("success with intended binding: err=%v, want ErrInvalidInput", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
+		"ws_x", "session-x-1", "corr-4"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, nil, "", "corr-5"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("success with active binding: err=%v, want ErrInvalidInput", err)
+	}
+
+	// A failed (non-succeeded terminal) binding is not success evidence.
+	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
+		"failed", "model blew up", "corr-6"); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeCompleted, nil, "", "corr-7"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("success with failed binding: err=%v, want ErrInvalidInput", err)
+	}
+
+	// The full honest path — intend → bind → close(succeeded) → report —
+	// is accepted and stays accepted exactly once.
+	run2 := queuePaseoRun(t, db, 3)
+	_, attempt2, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-8")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run2.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-9"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run2.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-10"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run2.ID, attempt2.ID, attempt2.LeaseGeneration,
+		"ws_ok", "session-ok-1", "corr-11"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run2.ID, attempt2.ID, attempt2.LeaseGeneration,
+		"succeeded", "", "corr-12"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	final, replayed, events, err := db.ReportAttempt(ctx, "local-1", run2.ID, attempt2.ID, attempt2.LeaseGeneration,
+		domain.OutcomeCompleted, map[string]any{"receipt": "ok"}, "", "corr-13")
+	if err != nil || replayed || final.Status != domain.RunSucceeded {
+		t.Fatalf("honest success rejected: %+v replayed=%v err=%v", final, replayed, err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected exactly the completion event, got %d", len(events))
+	}
+}
+
+func TestPaseoFailedReportSettlesLiveBinding(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+
+	// Active binding + failed report: the session may still exist, so it
+	// is orphaned for cleanup in the same transaction as the failure.
 	run := queuePaseoRun(t, db, 3)
 	registerWorker(t, db, "local-1")
 	attempt := claimAndStart(t, db, run, "local-1")
@@ -388,23 +506,140 @@ func TestPaseoCloseAfterTerminalRunIsStale(t *testing.T) {
 		t.Fatalf("intend: %v", err)
 	}
 	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
-		"ws_x", "session-x-1", "corr-2"); err != nil {
+		"ws_f", "session-f-1", "corr-2"); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	// The S3-B Worker must close the session before reporting the Attempt.
-	// A report that lands first makes the Run terminal; the forgotten
-	// active binding is then fenced, never closed retroactively.
-	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
-		domain.OutcomeCompleted, map[string]any{"receipt": "ok"}, "", "corr-3"); err != nil {
-		t.Fatalf("report: %v", err)
+	final, _, events, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeFailed, nil, "agent errored", "corr-3")
+	if err != nil {
+		t.Fatalf("failed report: %v", err)
 	}
-	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
-		"succeeded", "", "corr-4"); err != domain.ErrStaleGeneration {
-		t.Fatalf("close after terminal run: err=%v, want stale", err)
+	if final.Status != domain.RunQueued {
+		t.Fatalf("run must requeue for retry, got %s", final.Status)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected orphan + failure events, got %d", len(events))
+	}
+	if events[0].EventType != domain.EventPaseoSessionOrphaned || events[1].EventType != domain.EventRunFailed {
+		t.Fatalf("wrong event order: %s, %s", events[0].EventType, events[1].EventType)
 	}
 	binding, err := db.GetPaseoBinding(attempt.ID)
-	if err != nil || binding.Status != domain.PaseoActive {
-		t.Fatalf("binding must stay active as evidence of the ordering violation: %+v err=%v", binding, err)
+	if err != nil || binding.Status != domain.PaseoOrphaned {
+		t.Fatalf("binding not orphaned: %+v err=%v", binding, err)
+	}
+
+	// Intended-only binding + failed report: no session proven, so the
+	// intent is cancelled, not orphaned. The queue holds the requeued run
+	// above, so drive whichever run is leased.
+	_ = queuePaseoRun(t, db, 3)
+	leased2, attempt2, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-4")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", leased2.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-5"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", leased2.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-6"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, events, err := db.ReportAttempt(ctx, "local-1", leased2.ID, attempt2.ID, attempt2.LeaseGeneration,
+		domain.OutcomeFailed, nil, "worker gave up", "corr-7"); err != nil {
+		t.Fatalf("failed report: %v", err)
+	} else if len(events) != 2 || events[0].EventType != domain.EventPaseoSessionCancelled {
+		t.Fatalf("expected cancel + failure events, got %+v", events)
+	}
+
+	// No binding at all (S3-A Worker rejection, startup failure): failure
+	// records normally with exactly one event. The queue may hold requeued
+	// runs from the scenarios above, so drive whichever run is leased.
+	_ = queuePaseoRun(t, db, 1)
+	leased, attempt3, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-8")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", leased.ID, attempt3.ID, attempt3.LeaseGeneration, "corr-9"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	final3, _, events3, err := db.ReportAttempt(ctx, "local-1", leased.ID, attempt3.ID, attempt3.LeaseGeneration,
+		domain.OutcomeFailed, nil, "unsupported workload", "corr-10")
+	if err != nil {
+		t.Fatalf("bindingless failure: err=%v", err)
+	}
+	_ = final3
+	if len(events3) != 1 {
+		t.Fatalf("expected exactly the failure event, got %d", len(events3))
+	}
+}
+
+func TestPaseoSessionIdCannotSpanAttempts(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	current := base
+	db.SetClock(func() time.Time { return current })
+	db.SetLeaseTTL(50 * time.Millisecond)
+
+	run := queuePaseoRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	attempt1 := claimAndStart(t, db, run, "local-1")
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt1.ID, 1, "corr-1"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt1.ID, 1,
+		"ws_dup", "session-dup-1", "corr-2"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	// Expire the first generation (its binding orphans), then retry: the
+	// new generation must create a new session, never re-adopt the old id.
+	current = base.Add(time.Second)
+	if _, err := db.ExpireLeases(ctx); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	_, attempt2, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-3")
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-4"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt2.ID, attempt2.LeaseGeneration, "corr-5"); err != nil {
+		t.Fatalf("intend gen2: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt2.ID, attempt2.LeaseGeneration,
+		"ws_dup", "session-dup-1", "corr-6"); err != domain.ErrStaleGeneration {
+		t.Fatalf("duplicate session bind: err=%v, want stale", err)
+	}
+	// The first generation's binding is untouched by the rejected bind.
+	first, err := db.GetPaseoBinding(attempt1.ID)
+	if err != nil || first.SessionID != "session-dup-1" || first.Status != domain.PaseoOrphaned {
+		t.Fatalf("first binding disturbed: %+v err=%v", first, err)
+	}
+	// A fresh session id binds fine on the new generation.
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt2.ID, attempt2.LeaseGeneration,
+		"ws_dup", "session-dup-2", "corr-7"); err != nil {
+		t.Fatalf("fresh bind on gen2: %v", err)
+	}
+
+	// Cross-run adoption is rejected the same way. (The requeued first
+	// run already holds its gen-2 lease above, so the poll grants runB.)
+	runB := queuePaseoRun(t, db, 3)
+	_, attemptB, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-8")
+	if err != nil {
+		t.Fatalf("claim B: %v", err)
+	}
+	if attemptB.RunID != runB.ID {
+		t.Fatalf("expected runB lease, got run %s", attemptB.RunID)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", runB.ID, attemptB.ID, attemptB.LeaseGeneration, "corr-9"); err != nil {
+		t.Fatalf("heartbeat B: %v", err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", runB.ID, attemptB.ID, attemptB.LeaseGeneration, "corr-10"); err != nil {
+		t.Fatalf("intend B: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", runB.ID, attemptB.ID, attemptB.LeaseGeneration,
+		"ws_dup", "session-dup-1", "corr-11"); err != domain.ErrStaleGeneration {
+		t.Fatalf("cross-run duplicate session bind: err=%v, want stale", err)
 	}
 }
 

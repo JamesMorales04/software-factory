@@ -309,7 +309,7 @@ func (s *Server) handleWorkerReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	run, replayed, event, err := s.db.ReportAttempt(ctx,
+	run, replayed, events, err := s.db.ReportAttempt(ctx,
 		req.WorkerID, req.RunID, req.AttemptID, req.Generation,
 		outcome, req.Output, req.Error, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
@@ -327,7 +327,9 @@ func (s *Server) handleWorkerReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"run": run})
 		return
 	}
-	s.hub.Publish(event)
+	for _, event := range events {
+		s.hub.Publish(event)
+	}
 	s.log.Info("worker report recorded",
 		"workerId", req.WorkerID,
 		"runId", run.ID,

@@ -132,11 +132,57 @@ for want in PaseoSessionIntended PaseoSessionActive PaseoSessionSucceeded; do
 done
 echo "[PASS] close recorded; operator sessions read + run events carry the lifecycle"
 
-echo "== phase 4: cancel during an active session =="
-POLL2="$(worker -X POST "$BASE/api/v1/workers/poll" -H 'Content-Type: application/json' \
+echo "== phase 3b: completed reports require a successfully closed session =="
+POLLB="$(worker -X POST "$BASE/api/v1/workers/poll" -H 'Content-Type: application/json' \
   -d '{"workerId":"s3a-e2e"}')"
-RUN2="$(python3 -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" <<<"$POLL2")"
-ATT2="$(python3 -c "import json,sys; a=json.load(sys.stdin)['attempt']; print(a['id'], a['leaseGeneration'])" <<<"$POLL2")"
+RUNB="$(python3 -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" <<<"$POLLB")"
+ATTB="$(python3 -c "import json,sys; a=json.load(sys.stdin)['attempt']; print(a['id'], a['leaseGeneration'])" <<<"$POLLB")"
+ATTB_ID="$(echo "$ATTB" | cut -d' ' -f1)"; GENB="$(echo "$ATTB" | cut -d' ' -f2)"
+worker -X POST "$BASE/api/v1/workers/heartbeat" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB}" >/dev/null
+NOSESS_CODE="$(curl -s -o /tmp/factory-s3a-nosess.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/report" \
+  -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB,\"outcome\":\"completed\",\"output\":{\"receipt\":\"forged\"}}")"
+if [[ "$NOSESS_CODE" != "400" ]]; then echo "[FAIL] success without session not rejected: $NOSESS_CODE"; exit 1; fi
+STILL="$(auth "$BASE/api/v1/runs/$RUNB" | python3 -c "import json,sys; print(json.load(sys.stdin)['run']['status'])")"
+if [[ "$STILL" != "running" ]]; then echo "[FAIL] run must stay running after rejected success: $STILL"; exit 1; fi
+worker -X POST "$BASE/api/v1/workers/session/intend" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB}" >/dev/null
+worker -X POST "$BASE/api/v1/workers/session/bind" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB,\"workspaceId\":\"ws_e2e_3\",\"sessionId\":\"aaaaaaaa-1111-4111-8111-aaaaaaaaaaa3\"}" >/dev/null
+worker -X POST "$BASE/api/v1/workers/session/close" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB,\"outcome\":\"succeeded\"}" >/dev/null
+HONEST_CODE="$(curl -s -o /tmp/factory-s3a-honest.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/report" \
+  -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNB\",\"attemptId\":\"$ATTB_ID\",\"generation\":$GENB,\"outcome\":\"completed\",\"output\":{\"receipt\":\"ok\"}}")"
+if [[ "$HONEST_CODE" != "200" ]]; then echo "[FAIL] honest success rejected: $HONEST_CODE"; exit 1; fi
+DONE_STATUS="$(auth "$BASE/api/v1/runs/$RUNB" | python3 -c "import json,sys; print(json.load(sys.stdin)['run']['status'])")"
+if [[ "$DONE_STATUS" != "succeeded" ]]; then echo "[FAIL] run must succeed after closed session: $DONE_STATUS"; exit 1; fi
+# A second run proves duplicate session ownership is fenced.
+POLLC="$(worker -X POST "$BASE/api/v1/workers/poll" -H 'Content-Type: application/json' \
+  -d '{"workerId":"s3a-e2e"}')"
+RUNC="$(python3 -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" <<<"$POLLC")"
+ATTC="$(python3 -c "import json,sys; a=json.load(sys.stdin)['attempt']; print(a['id'], a['leaseGeneration'])" <<<"$POLLC")"
+ATTC_ID="$(echo "$ATTC" | cut -d' ' -f1)"; GENC="$(echo "$ATTC" | cut -d' ' -f2)"
+worker -X POST "$BASE/api/v1/workers/heartbeat" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNC\",\"attemptId\":\"$ATTC_ID\",\"generation\":$GENC}" >/dev/null
+worker -X POST "$BASE/api/v1/workers/session/intend" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNC\",\"attemptId\":\"$ATTC_ID\",\"generation\":$GENC}" >/dev/null
+DUP_CODE="$(curl -s -o /tmp/factory-s3a-dup.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/session/bind" \
+  -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
+  -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUNC\",\"attemptId\":\"$ATTC_ID\",\"generation\":$GENC,\"workspaceId\":\"ws_e2e_dup\",\"sessionId\":\"aaaaaaaa-1111-4111-8111-aaaaaaaaaaa1\"}")"
+if [[ "$DUP_CODE" != "409" ]]; then echo "[FAIL] duplicate session bind not fenced: $DUP_CODE"; exit 1; fi
+echo "[PASS] success requires a closed session; duplicate session ownership fenced with 409"
+
+echo "== phase 4: cancel during an active session orphans it (stop unconfirmed) =="
+RUN2_JSON="$(auth -X POST "$BASE/api/v1/runs" -H 'Content-Type: application/json' \
+  -d '{"workloadKind":"paseo-task","workloadInput":{"task":"cancel me"},"executionMode":"trusted-local","provider":"codex","model":"gpt-6-luna","paseoMode":"full-access"}')"
+RUN2="$(python3 -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" <<<"$RUN2_JSON")"
+REC2="$TMP/rec2.json"
+curl -sf -o "$REC2" -X POST "$BASE/api/v1/workers/poll" \
+  -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
+  -d '{"workerId":"s3a-e2e"}'
+ATT2="$(python3 -c "import json,sys; a=json.load(open('$TMP/rec2.json'))['attempt']; print(a['id'], a['leaseGeneration'])")"
 ATT2_ID="$(echo "$ATT2" | cut -d' ' -f1)"; GEN2="$(echo "$ATT2" | cut -d' ' -f2)"
 worker -X POST "$BASE/api/v1/workers/heartbeat" -H 'Content-Type: application/json' \
   -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUN2\",\"attemptId\":\"$ATT2_ID\",\"generation\":$GEN2}" >/dev/null
@@ -146,7 +192,11 @@ worker -X POST "$BASE/api/v1/workers/session/bind" -H 'Content-Type: application
   -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUN2\",\"attemptId\":\"$ATT2_ID\",\"generation\":$GEN2,\"workspaceId\":\"ws_e2e_2\",\"sessionId\":\"aaaaaaaa-1111-4111-8111-aaaaaaaaaaa2\"}" >/dev/null
 auth -X POST "$BASE/api/v1/runs/$RUN2/cancel" -H 'Content-Type: application/json' -d '{}' >/dev/null
 SESS2="$(auth "$BASE/api/v1/runs/$RUN2/sessions")"
-if ! grep -q '"status":"cancelled"' <<<"$SESS2"; then echo "[FAIL] binding not cancelled with run: $SESS2"; exit 1; fi
+if ! grep -q '"status":"orphaned"' <<<"$SESS2"; then echo "[FAIL] binding must be orphaned, not cancelled: $SESS2"; exit 1; fi
+if grep -q 'PaseoSessionCancelled' <<<"$(auth "$BASE/api/v1/runs/$RUN2/events")"; then
+  echo "[FAIL] Core cancellation must not claim the session cancelled/stopped"
+  exit 1
+fi
 LATE_CODE="$(curl -s -o /tmp/factory-s3a-late.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/session/close" \
   -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' \
   -d "{\"workerId\":\"s3a-e2e\",\"runId\":\"$RUN2\",\"attemptId\":\"$ATT2_ID\",\"generation\":$GEN2,\"outcome\":\"succeeded\"}")"

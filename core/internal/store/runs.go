@@ -533,21 +533,29 @@ func (db *DB) HeartbeatLease(ctx context.Context, workerID, runID, attemptID str
 // replay (replayed=true, no new event, no state change). Anything else for
 // a superseded generation is rejected as stale so an old Attempt can never
 // overwrite the authoritative result of a newer one.
-func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID string, generation int64, outcome domain.ReportOutcome, output map[string]any, errMsg, correlationID string) (domain.Run, bool, domain.Event, error) {
+//
+// S3-A session/report coherence (paseo-task only; S2 synthetic runs never
+// carry bindings and keep their frozen behavior): success must be backed by
+// a successfully closed session binding, so a completed report without one
+// is rejected as invalid instead of recorded. A failed report settles a
+// live binding in the same transaction — intended (no session proven) is
+// cancelled, active (session may exist) is orphaned for cleanup — so no
+// terminal Attempt keeps a non-terminal binding.
+func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID string, generation int64, outcome domain.ReportOutcome, output map[string]any, errMsg, correlationID string) (domain.Run, bool, []domain.Event, error) {
 	sanitized, err := domain.SanitizeResult(output)
 	if err != nil {
-		return domain.Run{}, false, domain.Event{}, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
+		return domain.Run{}, false, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
 	}
 	reason := domain.SanitizeReason(errMsg)
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Run{}, false, domain.Event{}, err
+		return domain.Run{}, false, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if err := ensureWorkerTx(ctx, tx, workerID, now); err != nil {
-		return domain.Run{}, false, domain.Event{}, err
+		return domain.Run{}, false, nil, err
 	}
 	run, attempt, ferr := fence(tx, ctx, workerID, runID, attemptID, generation)
 	if ferr != nil {
@@ -556,21 +564,21 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 			// already recorded and must not create a second event/effect.
 			if replay, rerr := replayIfRecorded(ctx, tx, runID, attemptID, generation, outcome); rerr == nil && replay {
 				if cerr := tx.Commit(); cerr != nil {
-					return domain.Run{}, false, domain.Event{}, cerr
+					return domain.Run{}, false, nil, cerr
 				}
 				updated, gerr := db.GetRun(runID)
 				if gerr != nil {
-					return domain.Run{}, false, domain.Event{}, gerr
+					return domain.Run{}, false, nil, gerr
 				}
-				return updated, true, domain.Event{}, nil
+				return updated, true, nil, nil
 			} else if rerr != nil {
-				return domain.Run{}, false, domain.Event{}, rerr
+				return domain.Run{}, false, nil, rerr
 			}
 		}
-		return domain.Run{}, false, domain.Event{}, ferr
+		return domain.Run{}, false, nil, ferr
 	}
 	if leaseExpired(run, now) {
-		return domain.Run{}, false, domain.Event{}, domain.ErrLeaseExpired
+		return domain.Run{}, false, nil, domain.ErrLeaseExpired
 	}
 	// A completion or failure report is only meaningful for an Attempt
 	// that actually started: the contract lifecycle is
@@ -578,7 +586,16 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 	// what moves leased → running. Reports for unstarted Attempts are
 	// rejected instead of silently skipping the running state.
 	if attempt.Status != domain.AttemptRunning {
-		return domain.Run{}, false, domain.Event{}, domain.ErrAttemptNotActive
+		return domain.Run{}, false, nil, domain.ErrAttemptNotActive
+	}
+
+	var bindingEvents []domain.Event
+	if run.WorkloadKind == domain.PaseoTaskKind {
+		settled, serr := settleBindingForReportTx(ctx, tx, attempt, outcome, workerID, correlationID, now)
+		if serr != nil {
+			return domain.Run{}, false, nil, serr
+		}
+		bindingEvents = settled
 	}
 
 	switch outcome {
@@ -587,13 +604,13 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 			`UPDATE attempts SET status=?, result=?, error=?, updated_at=? WHERE id=?`,
 			string(domain.AttemptSucceeded), encodeMap(sanitized), "", stamp(now), attempt.ID,
 		); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE runs SET status=?, result=?, error=?, lease_owner='', lease_expires_at='', updated_at=? WHERE id=?`,
 			string(domain.RunSucceeded), encodeMap(sanitized), "", stamp(now), run.ID,
 		); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		payload, _ := json.Marshal(map[string]any{
 			"attemptId":  attempt.ID,
@@ -604,25 +621,25 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		})
 		reported, err := appendRunEvent(ctx, tx, domain.EventRunCompleted, run.ID, workerID, correlationID, now, mustDecode(payload))
 		if err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		if err := tx.Commit(); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		updated, err := db.GetRun(run.ID)
 		if err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
-		return updated, false, reported, nil
+		return updated, false, append(bindingEvents, reported), nil
 	case domain.OutcomeFailed:
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE attempts SET status=?, error=?, updated_at=? WHERE id=?`,
 			string(domain.AttemptFailed), reason, stamp(now), attempt.ID,
 		); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		willRetry := run.AttemptCount < run.MaxAttempts
 		if willRetry {
@@ -630,14 +647,14 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 				`UPDATE runs SET status=?, lease_owner='', lease_expires_at='', error=?, updated_at=? WHERE id=?`,
 				string(domain.RunQueued), reason, stamp(now), run.ID,
 			); err != nil {
-				return domain.Run{}, false, domain.Event{}, err
+				return domain.Run{}, false, nil, err
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE runs SET status=?, lease_owner='', lease_expires_at='', error=?, updated_at=? WHERE id=?`,
 				string(domain.RunFailed), reason, stamp(now), run.ID,
 			); err != nil {
-				return domain.Run{}, false, domain.Event{}, err
+				return domain.Run{}, false, nil, err
 			}
 		}
 		payload, _ := json.Marshal(map[string]any{
@@ -650,21 +667,77 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		})
 		failedEvent, err := appendRunEvent(ctx, tx, domain.EventRunFailed, run.ID, workerID, correlationID, now, mustDecode(payload))
 		if err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		if err := tx.Commit(); err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
 		updated, err := db.GetRun(run.ID)
 		if err != nil {
-			return domain.Run{}, false, domain.Event{}, err
+			return domain.Run{}, false, nil, err
 		}
-		return updated, false, failedEvent, nil
+		return updated, false, append(bindingEvents, failedEvent), nil
 	default:
-		return domain.Run{}, false, domain.Event{}, fmt.Errorf("%w: unknown outcome %q", domain.ErrInvalidInput, outcome)
+		return domain.Run{}, false, nil, fmt.Errorf("%w: unknown outcome %q", domain.ErrInvalidInput, outcome)
+	}
+}
+
+// settleBindingForReportTx enforces the S3-A session/report coherence for
+// one paseo-task Attempt inside the caller's transaction. Success requires
+// a successfully closed binding — anything else is a Worker ordering
+// violation and the report is rejected. Failure settles a live binding so
+// the terminal Attempt keeps no actionable session: intended (no session
+// proven) is cancelled, active (session may exist) is orphaned. Synthetic
+// runs never reach here and keep their frozen behavior.
+func settleBindingForReportTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, outcome domain.ReportOutcome, workerID, correlationID string, now time.Time) ([]domain.Event, error) {
+	binding, err := scanPaseoBinding(tx.QueryRowContext(ctx,
+		`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, attempt.ID))
+	if err == sql.ErrNoRows {
+		if outcome == domain.OutcomeCompleted {
+			return nil, fmt.Errorf("%w: paseo-task completion requires a successfully closed session binding; close before reporting",
+				domain.ErrInvalidInput)
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if binding.Status.Terminal() {
+		if outcome == domain.OutcomeCompleted && binding.Status != domain.PaseoSucceeded {
+			return nil, fmt.Errorf("%w: paseo-task completion requires a successfully closed session binding (binding is %s)",
+				domain.ErrInvalidInput, binding.Status)
+		}
+		return nil, nil
+	}
+	if outcome == domain.OutcomeCompleted {
+		return nil, fmt.Errorf("%w: paseo-task completion requires a successfully closed session binding (binding is %s); close before reporting",
+			domain.ErrInvalidInput, binding.Status)
+	}
+	// Failed report with a live binding: settle it in the same
+	// transaction. The actor is the reporting Worker and the correlation
+	// carries the report's chain.
+	switch binding.Status {
+	case domain.PaseoIntended:
+		cancelled, err := cancelBindingTx(ctx, tx, binding, workerID, correlationID, now)
+		if err != nil {
+			return nil, err
+		}
+		return []domain.Event{cancelled}, nil
+	default:
+		orphaned, err := orphanBindingTx(ctx, tx, binding, workerID, "attempt-failed: session outcome unconfirmed", now)
+		if err != nil {
+			return nil, err
+		}
+		orphaned.CorrelationID = correlationID
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE events SET correlation_id=? WHERE event_id=?`, correlationID, orphaned.EventID,
+		); err != nil {
+			return nil, err
+		}
+		return []domain.Event{orphaned}, nil
 	}
 }
 
@@ -695,8 +768,13 @@ func replayIfRecorded(ctx context.Context, tx *sql.Tx, runID, attemptID string, 
 
 // CancelRun moves a non-terminal Run (and its live Attempt, if any) to
 // cancelled. A non-terminal Paseo session binding for the live Attempt is
-// cancelled in the same transaction so no session stays actionable after
-// the Run is gone. Terminal Runs reject cancellation as a conflict.
+// orphaned — never cancelled — in the same transaction: Core cannot prove
+// the external session's state, so authoritative Run cancellation must not
+// claim the session stopped. An orphaned binding stays discoverable for
+// later stop/cleanup (empty sessionId: label-based discovery; bound
+// sessionId: direct stop by id). Only the owning Worker, which knows its
+// own external calls, may mark an intent it never acted on cancelled.
+// Terminal Runs reject cancellation as a conflict.
 func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domain.Run, []domain.Event, error) {
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -733,16 +811,29 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 			); err != nil {
 				return domain.Run{}, nil, err
 			}
-			// A live session binding must not survive its Run: cancel it
-			// here, in the same transaction as the Run cancellation.
+			// A live session binding must not be misreported by Core-side
+			// cancellation: orphan it here, in the same transaction as the
+			// Run cancellation, with a reason that records whether a
+			// session was ever bound. Cleanup (S3-B/D) stops the session
+			// by id or discovers it by labels; Core claims no stop.
 			if binding, berr := scanPaseoBinding(tx.QueryRowContext(ctx,
 				`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, a.ID)); berr == nil {
 				if !binding.Status.Terminal() {
-					cancelled, cerr := cancelBindingTx(ctx, tx, binding, ActorLocalOperator, correlationID, now)
+					reason := "run-cancelled: session stop unconfirmed"
+					if binding.SessionID == "" {
+						reason = "run-cancelled before session bind"
+					}
+					orphaned, cerr := orphanBindingTx(ctx, tx, binding, ActorLocalOperator, reason, now)
 					if cerr != nil {
 						return domain.Run{}, nil, cerr
 					}
-					emitted = append(emitted, cancelled)
+					orphaned.CorrelationID = correlationID
+					if _, err := tx.ExecContext(ctx,
+						`UPDATE events SET correlation_id=? WHERE event_id=?`, correlationID, orphaned.EventID,
+					); err != nil {
+						return domain.Run{}, nil, err
+					}
+					emitted = append(emitted, orphaned)
 				}
 			} else if berr != sql.ErrNoRows {
 				return domain.Run{}, nil, berr

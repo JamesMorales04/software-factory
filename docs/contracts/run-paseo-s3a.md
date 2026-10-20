@@ -105,29 +105,39 @@ for the Run's lifetime (no update path exists).
 ```text
 intended → active → succeeded
 intended → active → failed
-intended → active → cancelled
-intended → failed        (startup failure before any session existed)
-intended → cancelled     (cancel before any Paseo call completed)
-intended|active → orphaned   (generation superseded while a session may exist)
+intended → active → orphaned   (generation superseded / attempt failed or timed out / Core cancelled the Run with a live session)
+intended → failed              (startup failure before any session existed)
+intended → cancelled           (Worker closed an intent it never acted on)
+intended → orphaned            (Core cancellation or attempt failure with unconfirmed external state)
 ```
 
 `succeeded`, `failed`, `cancelled` and `orphaned` are terminal and
 immutable. `orphaned` means a Paseo session may still exist externally but
-its generation is superseded: it is recorded honestly for cleanup and can
-never become authoritative. Cancellation of the Run cancels a non-terminal
-binding in the same transaction. Expiry, timeout, and Core-restart
-reconciliation orphan a non-terminal binding in the same transaction.
+its generation is superseded or its outcome unconfirmed: it is recorded
+honestly for cleanup and can never become authoritative. Cancellation of
+the Run, expiry, timeout and Core-restart reconciliation orphan a
+non-terminal binding in the same transaction. A failed Attempt report
+settles its live binding in the same transaction: intended is cancelled
+(no session proven), active is orphaned.
 
 Binding requires the Attempt to have started (`leased → running` via
 heartbeat, the S2 rule); intend is valid in `leased` or `running`. Reports
-for the Attempt lifecycle are unchanged from S2.
+for the Attempt lifecycle are unchanged from S2, with one Paseo-only
+addition: a `completed` report for a `paseo-task` Run requires a
+successfully closed (`succeeded`) binding for that generation, otherwise it
+is rejected (`400 invalid`) and the Run stays non-terminal. Success without
+a proven session can never be recorded; failure without a binding records
+normally (startup failure, S3-A Worker rejection).
+
+One session belongs to exactly one Attempt generation: binding a `sessionId`
+already bound to another Attempt — even a terminal one — is rejected
+(`409 stale_generation`), so S3-B reconnect can never re-attach the wrong
+generation to a live session. Retries always create new sessions.
 
 Ordering rule for S3-B: the Worker closes the session binding **before**
-reporting the Attempt. A report that lands first makes the Run terminal;
-a forgotten `active` binding on a terminal Run is then fenced (`409
-stale_generation`) and stays `active` as evidence of the ordering
-violation — it is never closed retroactively and never becomes
-authoritative.
+reporting the Attempt. A report that lands first is rejected for
+`completed` (gate above); a `failed` report settles the live binding as
+described, so no terminal Attempt keeps an actionable session.
 
 ## 6. Intend-before-create and crash semantics
 
@@ -179,6 +189,10 @@ reporting — same narrow codes as S2 §6):
 - intend/bind/close/orphan after expiry → `409 lease_expired`;
 - bind before the first heartbeat → `409 not_started`;
 - bind without intend, succeed-without-bind → `400 invalid`;
+- `completed` report for `paseo-task` without a `succeeded` binding for
+  that generation → `400 invalid` (no state change; the Run stays running);
+- bind of a `sessionId` already bound to another Attempt → `409
+  stale_generation` (abandon this Attempt; retries create new sessions);
 - duplicate delivery with identical identity/outcome → `200 OK`,
   `Idempotent-Replayed: true`, no new event;
 - conflicting re-bind or conflicting close on a terminal row →
@@ -203,11 +217,15 @@ only transitions do.
 - Intend → bind (fake opaque IDs, no Paseo) → close succeeds over real
   HTTP; duplicate deliveries replay with no new events; stale generations,
   expired leases, cancel races, and unknown identities are fenced per §7.
-- Expiry, timeout, Core restart, and Run cancellation orphan or cancel the
-  live binding in the same transaction; the orphaned generation can never
-  report authoritatively.
+- Expiry, timeout, Core restart, failed Attempt reports, and Run
+  cancellation orphan or settle the live binding in the same transaction;
+  the orphaned generation can never report authoritatively, and the
+  orphaned session stays discoverable via the orphan listing for later
+  stop/cleanup. Core cancellation never claims the session stopped.
+- A `completed` report without a successfully closed binding is rejected;
+  a `sessionId` bound elsewhere is rejected on re-bind.
 - Restart retains Runs, Attempts, bindings, Workers, and full event
-  history including the six new event types.
+  history including the new event types.
 - S1 journeys and the S2 suite (unit, fencing, e2e, browser) still pass
   unmodified in behavior: synthetic runs carry `restricted` with empty
   routing, and no synthetic row gains a binding.

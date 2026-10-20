@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -122,6 +123,98 @@ func TestPaseoSessionLifecycleOverHTTP(t *testing.T) {
 	rec = serveRun(t, h, "POST", "/api/v1/workers/session/close", closeOK, testWorkerToken)
 	if rec.Code != http.StatusOK || rec.Header().Get("Idempotent-Replayed") != "true" {
 		t.Fatalf("close replay: got %d replay=%q (%s)", rec.Code, rec.Header().Get("Idempotent-Replayed"), rec.Body.String())
+	}
+}
+
+func TestPaseoReportGatingOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+
+	run := queuePaseoRun(t, h, "")
+	attempt := startPaseoAttempt(t, h, run, "s3a-rep")
+
+	// Success with no session is rejected, not recorded.
+	report := `{"workerId":"s3a-rep","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"outcome":"completed","output":{"receipt":"forged"}}`
+	rec := serveRun(t, h, "POST", "/api/v1/workers/report", report, testWorkerToken)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "successfully closed session binding") {
+		t.Fatalf("success without session: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// The honest path — intend → bind → close(succeeded) → report — works.
+	intend := `{"workerId":"s3a-rep","runId":"` + run.ID + `","attemptId":"` + attempt.ID + `","generation":1}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/intend", intend, testWorkerToken); rec.Code != http.StatusCreated {
+		t.Fatalf("intend: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	bind := `{"workerId":"s3a-rep","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"workspaceId":"ws_rep","sessionId":"22222222-2222-4222-8222-222222222222"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/bind", bind, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("bind: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	closeOK := `{"workerId":"s3a-rep","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"outcome":"succeeded"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/close", closeOK, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("close: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = serveRun(t, h, "POST", "/api/v1/workers/report", report, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("honest success: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Run domain.Run `json:"run"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Run.Status != domain.RunSucceeded {
+		t.Fatalf("run not succeeded: %+v (%s)", out, rec.Body.String())
+	}
+}
+
+func TestPaseoFailedReportOrphansSessionOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+
+	run := queuePaseoRun(t, h, "")
+	attempt := startPaseoAttempt(t, h, run, "s3a-orf")
+	intend := `{"workerId":"s3a-orf","runId":"` + run.ID + `","attemptId":"` + attempt.ID + `","generation":1}`
+	serveRun(t, h, "POST", "/api/v1/workers/session/intend", intend, testWorkerToken)
+	bind := `{"workerId":"s3a-orf","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"workspaceId":"ws_orf","sessionId":"33333333-3333-4333-8333-333333333333"}`
+	serveRun(t, h, "POST", "/api/v1/workers/session/bind", bind, testWorkerToken)
+
+	report := `{"workerId":"s3a-orf","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"outcome":"failed","error":"agent errored"}`
+	rec := serveRun(t, h, "POST", "/api/v1/workers/report", report, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("failed report: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = serveRun(t, h, "GET", "/api/v1/runs/"+run.ID+"/sessions", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"orphaned"`) {
+		t.Fatalf("failed attempt must orphan its session: got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaseoDuplicateSessionRejectedOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+
+	runA := queuePaseoRun(t, h, "")
+	attemptA := startPaseoAttempt(t, h, runA, "s3a-dup")
+	serveRun(t, h, "POST", "/api/v1/workers/session/intend",
+		`{"workerId":"s3a-dup","runId":"`+runA.ID+`","attemptId":"`+attemptA.ID+`","generation":1}`, testWorkerToken)
+	bindA := `{"workerId":"s3a-dup","runId":"` + runA.ID + `","attemptId":"` + attemptA.ID +
+		`","generation":1,"workspaceId":"ws_dup","sessionId":"44444444-4444-4444-8444-444444444444"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/bind", bindA, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("bind A: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	runB := queuePaseoRun(t, h, "")
+	attemptB := startPaseoAttempt(t, h, runB, "s3a-dup")
+	serveRun(t, h, "POST", "/api/v1/workers/session/intend",
+		`{"workerId":"s3a-dup","runId":"`+runB.ID+`","attemptId":"`+attemptB.ID+`","generation":`+fmt.Sprint(attemptB.LeaseGeneration)+`}`, testWorkerToken)
+	bindB := `{"workerId":"s3a-dup","runId":"` + runB.ID + `","attemptId":"` + attemptB.ID +
+		`","generation":` + fmt.Sprint(attemptB.LeaseGeneration) + `,"workspaceId":"ws_dup","sessionId":"44444444-4444-4444-8444-444444444444"}`
+	rec := serveRun(t, h, "POST", "/api/v1/workers/session/bind", bindB, testWorkerToken)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "stale_generation") {
+		t.Fatalf("duplicate session bind: got %d (%s), want 409 stale_generation", rec.Code, rec.Body.String())
 	}
 }
 

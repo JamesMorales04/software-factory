@@ -217,6 +217,19 @@ func (db *DB) BindPaseoSession(ctx context.Context, workerID, runID, attemptID s
 		}
 		return domain.PaseoBinding{}, false, domain.Event{}, domain.ErrStaleGeneration
 	}
+	// One session belongs to exactly one Attempt generation: a sessionId
+	// already bound elsewhere — even to a terminal binding — must never be
+	// adopted by this generation, or S3-B reconnect could re-attach the
+	// wrong generation to a live session. The single-writer store checks
+	// inside this transaction, so the check and the bind are atomic.
+	var owner string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT attempt_id FROM paseo_bindings WHERE session_id=? AND attempt_id<>?`,
+		sessionID, attempt.ID).Scan(&owner); err != nil && err != sql.ErrNoRows {
+		return domain.PaseoBinding{}, false, domain.Event{}, err
+	} else if err == nil {
+		return domain.PaseoBinding{}, false, domain.Event{}, domain.ErrStaleGeneration
+	}
 	if attempt.Status != domain.AttemptRunning {
 		return domain.PaseoBinding{}, false, domain.Event{}, domain.ErrAttemptNotActive
 	}
