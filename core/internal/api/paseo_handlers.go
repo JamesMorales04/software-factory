@@ -32,8 +32,8 @@ func (s *Server) handleListOrphanedSessions(w http.ResponseWriter, r *http.Reque
 	limit := 100
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			writeError(w, http.StatusBadRequest, "invalid", "limit must be a positive integer")
+		if err != nil || n <= 0 || n > 200 {
+			writeError(w, http.StatusBadRequest, "invalid", "limit must be an integer 1..200")
 			return
 		}
 		limit = n

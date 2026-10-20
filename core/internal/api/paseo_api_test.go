@@ -230,6 +230,12 @@ func TestPaseoOrphanQueueExposedToOperators(t *testing.T) {
 	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned?limit=0", "", testToken); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad limit: got %d, want 400", rec.Code)
 	}
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned?limit=201", "", testToken); rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-range limit: got %d, want 400", rec.Code)
+	}
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned?limit=abc", "", testToken); rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-integer limit: got %d, want 400", rec.Code)
+	}
 
 	run := queuePaseoRun(t, h, "")
 	attempt := startPaseoAttempt(t, h, run, "s3a-queue")
