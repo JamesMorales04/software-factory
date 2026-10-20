@@ -49,6 +49,7 @@ const (
 	EventActionSpecFrozen     = "ActionSpecFrozen"
 	EventCandidateFrozen      = "CandidateFrozen"
 	EventCandidateSuperseded  = "CandidateSuperseded"
+	EventCandidateRejected    = "CandidateRejected"
 	EventVerificationRecorded = "VerificationRecorded"
 	EventReviewRecorded       = "ReviewRecorded"
 	EventQualityGateDecided   = "QualityGateDecided"
@@ -99,7 +100,7 @@ func (e Event) Validate() error {
 		EventPaseoSessionSucceeded, EventPaseoSessionFailed,
 		EventPaseoSessionCancelled, EventPaseoSessionOrphaned,
 		EventPaseoSessionRecoveryRecorded,
-		EventActionSpecFrozen, EventCandidateFrozen, EventCandidateSuperseded,
+		EventActionSpecFrozen, EventCandidateFrozen, EventCandidateSuperseded, EventCandidateRejected,
 		EventVerificationRecorded, EventReviewRecorded, EventQualityGateDecided:
 	default:
 		return errors.New("unknown eventType")

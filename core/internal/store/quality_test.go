@@ -220,7 +220,7 @@ func TestNewCandidateSupersedesPriorFrozenCandidate(t *testing.T) {
 	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "c"); err != nil {
 		t.Fatal(err)
 	}
-	second, events, err := db.CreateCandidate(ctx, domain.CandidateRevision{
+	second, _, err := db.CreateCandidate(ctx, domain.CandidateRevision{
 		ProjectID: spec.ProjectID, ActionID: spec.ActionID, SpecID: spec.ID,
 		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
 		BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("1", 40),
@@ -237,20 +237,159 @@ func TestNewCandidateSupersedesPriorFrozenCandidate(t *testing.T) {
 	if second.ParentCandidateID != first.ID {
 		t.Fatalf("parent = %q, want %q", second.ParentCandidateID, first.ID)
 	}
+	// Freezing a new candidate does not displace the prior candidate until
+	// the new Implementer Run completes successfully.
+	old, err := db.GetCandidate(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.State != domain.CandidateFrozen {
+		t.Fatalf("prior candidate displaced before successful report: %+v", old)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "ws-2", "sess-2", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "c"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, reportEvents, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration,
+		domain.OutcomeCompleted, map[string]any{}, "", "c")
+	if err != nil {
+		t.Fatalf("report second candidate: %v", err)
+	}
 	var sawSupersede bool
-	for _, event := range events {
+	for _, event := range reportEvents {
 		if event.EventType == domain.EventCandidateSuperseded {
 			sawSupersede = true
 		}
 	}
 	if !sawSupersede {
-		t.Fatal("missing CandidateSuperseded event")
+		t.Fatal("missing CandidateSuperseded event after successful completion")
 	}
-	old, err := db.GetCandidate(first.ID)
+	old, err = db.GetCandidate(first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if old.State != domain.CandidateSuperseded || old.SupersededAt.IsZero() {
-		t.Fatalf("prior candidate not superseded: %+v", old)
+		t.Fatalf("prior candidate not superseded after success: %+v", old)
+	}
+}
+
+func TestFailedCandidateReportRejectsFrozenCandidate(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, run, attempt, candidate := createQualityFixture(t, db)
+	// A new frozen candidate for an active attempt must be rejected when the
+	// Attempt fails instead of displacing the prior accepted candidate.
+	runParams, err := domain.NewRunParams{
+		ProjectID: spec.ProjectID, ActionID: spec.ActionID, SpecID: spec.ID,
+		WorkloadKind:  domain.PaseoTaskKind,
+		WorkloadInput: map[string]any{"task": spec.Goal},
+		MaxAttempts:   1, TimeoutSecs: 120, ExecutionMode: "trusted-local",
+		Provider: spec.Provider, Model: spec.Model, PaseoMode: spec.PaseoMode,
+	}.Validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextRun, _, err := db.CreateRun(ctx, runParams, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextRun, nextAttempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "c")
+	if err != nil || !found {
+		t.Fatalf("claim: %v %v", found, err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", nextRun.ID, nextAttempt.ID, nextAttempt.LeaseGeneration, "c"); err != nil {
+		t.Fatal(err)
+	}
+	nextCandidate, _, err := db.CreateCandidate(ctx, domain.CandidateRevision{
+		ProjectID: spec.ProjectID, ActionID: spec.ActionID, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("4", 40),
+		TreeSHA: strings.Repeat("5", 40), ContentDigest: strings.Repeat("6", 64),
+		CandidateRef: "refs/factory/candidates/run-fail", Repository: spec.Repository,
+		ImplementerRunID: nextRun.ID, ImplementerAttemptID: nextAttempt.ID,
+		ImplementerGeneration: nextAttempt.LeaseGeneration, ImplementerWorkerID: "local-1",
+		ExecutionMode: nextRun.ExecutionMode, Provider: nextRun.Provider, Model: nextRun.Model,
+		PaseoMode: nextRun.PaseoMode, ChangedPaths: []string{"add.js"}, RiskClass: domain.RiskR0,
+	}, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = db.ReportAttempt(ctx, "local-1", nextRun.ID, nextAttempt.ID,
+		nextAttempt.LeaseGeneration, domain.OutcomeFailed, nil, "deliberate", "c")
+	if err != nil {
+		t.Fatalf("failed report: %v", err)
+	}
+	rejected, err := db.GetCandidate(nextCandidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.State != domain.CandidateRejected {
+		t.Fatalf("candidate state = %s, want rejected", rejected.State)
+	}
+	prior, err := db.GetCandidate(candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prior.State != domain.CandidateFrozen {
+		t.Fatalf("prior candidate displaced by failed attempt: %s", prior.State)
+	}
+	_ = run
+	_ = attempt
+}
+
+func TestEvidenceRejectedAfterFinalDecision(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, run, attempt, candidate := createQualityFixture(t, db)
+	verification := domain.VerificationEvidence{
+		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		Authority: "verifier", Actor: "verifier-1", Independent: true,
+		CleanResource: "git-clone:cccccccccccc", OracleDigest: spec.OracleDigest(),
+		IdempotencyKey: "verify-final",
+	}
+	for _, check := range spec.AllChecks() {
+		verification.Checks = append(verification.Checks, domain.CheckResult{
+			ID: check.ID, Kind: check.Kind, Status: domain.CheckPass, ExitCode: check.ExpectExit,
+		})
+	}
+	if _, _, _, err := db.RecordVerification(ctx, verification, "c"); err != nil {
+		t.Fatal(err)
+	}
+	review := domain.ReviewEvidence{
+		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		Authority: "reviewer", Actor: "reviewer-1", Verdict: domain.ReviewApprove,
+		IdempotencyKey: "review-final",
+	}
+	if _, _, _, err := db.RecordReview(ctx, review, "c"); err != nil {
+		t.Fatal(err)
+	}
+	evaluation := quality.Evaluate(quality.Input{
+		Candidate: candidate, Spec: spec, Run: run, Attempt: attempt,
+		Verifications: []domain.VerificationEvidence{verification},
+		Reviews:       []domain.ReviewEvidence{review},
+	})
+	if _, _, _, err := db.SaveGateDecision(ctx, evaluation.Decision, "c"); err != nil {
+		t.Fatal(err)
+	}
+	extra := verification
+	extra.IdempotencyKey = "verify-after-decision"
+	if _, _, _, err := db.RecordVerification(ctx, extra, "c"); err == nil {
+		t.Fatal("new verification evidence after a final decision must be rejected")
+	}
+	extraReview := review
+	extraReview.IdempotencyKey = "review-after-decision"
+	if _, _, _, err := db.RecordReview(ctx, extraReview, "c"); err == nil {
+		t.Fatal("new review evidence after a final decision must be rejected")
+	}
+	// Exact replay remains idempotent.
+	if _, replayed, _, err := db.RecordVerification(ctx, verification, "c"); err != nil || !replayed {
+		t.Fatalf("exact replay: err=%v replayed=%v", err, replayed)
 	}
 }

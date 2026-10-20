@@ -92,12 +92,16 @@ The Worker may only claim a commit id and a `refs/factory/candidates/…` ref.
 The Core independently resolves the commit in the authorized repository,
 requires exactly the frozen base as its single parent, recomputes tree/content
 digests, rejects empty diffs and any path outside `allowedPaths`, reclassifies
-risk from the actual diff, and only then freezes the row. Freezing supersedes
-previous frozen candidates for the same Action (parent link retained) and emits
-`CandidateFrozen`/`CandidateSuperseded` events.
+risk from the actual diff, and only then freezes the row. Freezing records the
+candidate and its lineage; it does **not** yet supersede prior candidates.
 
 A spec-bound Run cannot report `completed` until a frozen candidate exists for
-its exact Attempt generation. A failed Attempt never becomes a candidate.
+its exact Attempt generation. Prior frozen candidates are superseded in the
+same transaction as the successful `RunCompleted`; a candidate whose Attempt
+fails, expires, times out or is cancelled is marked `rejected`, emits
+`CandidateRejected`, and can never acquire verifier/reviewer evidence. A failed
+Attempt therefore never becomes an accepted/frozen candidate or displaces a
+prior valid candidate.
 
 ## 4. Evidence
 
@@ -118,7 +122,9 @@ The Core overwrites `authority`, independence, command argv and oracle digest
 from the frozen spec/credential; unknown check IDs/kinds, identity mismatches,
 pre-candidate timestamps and implementer actor identity are rejected. Browser
 check details retain only bounded tool/provenance metadata (browser version,
-console/request counts, isolated profile), never page content or tokens.
+console/request counts, isolated profile), never page content or tokens. Once a
+final gate decision exists, new evidence for that candidate is rejected; exact
+idempotent replay remains a no-op. New evidence requires a new candidate.
 
 ### Reviewer evidence
 
@@ -133,7 +139,12 @@ console/request counts, isolated profile), never page content or tokens.
 ```
 
 The reviewer route is read-only; there is no candidate/oracle mutation route.
-The reviewer actor cannot equal the implementer worker.
+The reviewer actor cannot equal the implementer worker. The shipped reviewer is
+a deterministic bounded static reviewer: it revalidates identity/scope and
+checks protected paths, secrets, dangerous primitives and diff bounds. It does
+not claim semantic correctness; executable verifier checks remain the functional
+oracle. Reviewer `BLOCKED` maps to gate `BLOCKED`; `REQUEST_CHANGES` maps to
+`REPAIR_REQUIRED`.
 
 ## 5. Deterministic Quality Gate
 
@@ -145,9 +156,9 @@ Rules:
 
 - Any identity/scope/freshness/independence failure → `BLOCKED`.
 - Actual R2/R3 or an under-classified spec → `HUMAN_REQUIRED`.
-- Any mandatory check `FAIL` or reviewer `REQUEST_CHANGES`/`BLOCKED` →
-  `REPAIR_REQUIRED` (reviewer `BLOCKED` is `BLOCKED` when no fix is implied by
-  the finding; the gate fails closed).
+- Any mandatory check `FAIL` or reviewer `REQUEST_CHANGES` →
+  `REPAIR_REQUIRED`; reviewer `BLOCKED` → `BLOCKED` (the reviewer could not
+  establish a bounded verdict).
 - Missing/`NOT_TESTED` required evidence → `NOT_TESTED`/`BLOCKED`; never PASS.
 - All required evidence `PASS` and reviewer `APPROVE` → `ACCEPTED`.
 - A decision is persisted only when verifier and reviewer evidence exist. It is

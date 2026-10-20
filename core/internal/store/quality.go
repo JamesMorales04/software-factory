@@ -285,8 +285,8 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 
 	var priorID string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM candidates WHERE action_id=? AND state=? ORDER BY frozen_at DESC, id DESC LIMIT 1`,
-		candidate.ActionID, string(domain.CandidateFrozen)).Scan(&priorID)
+		`SELECT id FROM candidates WHERE action_id=? AND state IN (?,?) ORDER BY frozen_at DESC, id DESC LIMIT 1`,
+		candidate.ActionID, string(domain.CandidateFrozen), string(domain.CandidateSuperseded)).Scan(&priorID)
 	if err != nil && err != sql.ErrNoRows {
 		return domain.CandidateRevision{}, nil, err
 	}
@@ -319,24 +319,6 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		return domain.CandidateRevision{}, nil, fmt.Errorf("insert candidate: %w", err)
 	}
 
-	var events []domain.Event
-	if priorID != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE candidates SET state=?, superseded_at=? WHERE id=?`,
-			string(domain.CandidateSuperseded), stamp(now), priorID,
-		); err != nil {
-			return domain.CandidateRevision{}, nil, err
-		}
-		payload, _ := json.Marshal(map[string]any{
-			"candidateId": priorID, "supersededBy": candidate.ID, "reason": "newer-candidate",
-		})
-		e, err := appendCandidateEvent(ctx, tx, domain.EventCandidateSuperseded, priorID, candidate.ImplementerWorkerID, correlationID, now, mustDecode(payload))
-		if err != nil {
-			return domain.CandidateRevision{}, nil, err
-		}
-		events = append(events, e)
-	}
-
 	payload, _ := json.Marshal(map[string]any{
 		"candidateId":       candidate.ID,
 		"actionId":          candidate.ActionID,
@@ -358,7 +340,7 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 	if err != nil {
 		return domain.CandidateRevision{}, nil, err
 	}
-	events = append(events, frozenEvent)
+	events := []domain.Event{frozenEvent}
 	if err := tx.Commit(); err != nil {
 		return domain.CandidateRevision{}, nil, err
 	}
@@ -559,6 +541,12 @@ func (db *DB) RecordVerification(ctx context.Context, evidence domain.Verificati
 		return domain.VerificationEvidence{}, false, domain.Event{}, rerr
 	}
 
+	if hasDecision, derr := hasGateDecisionTx(ctx, tx, evidence.CandidateID); derr != nil {
+		return domain.VerificationEvidence{}, false, domain.Event{}, derr
+	} else if hasDecision {
+		return domain.VerificationEvidence{}, false, domain.Event{}, fmt.Errorf("%w: candidate already has a final Quality Gate decision; create a new candidate",
+			domain.ErrInvalidTransition)
+	}
 	normalized, err := normalizeVerifierChecks(evidence.Checks, spec)
 	if err != nil {
 		return domain.VerificationEvidence{}, false, domain.Event{}, err
@@ -750,6 +738,12 @@ func (db *DB) RecordReview(ctx context.Context, review domain.ReviewEvidence, co
 		return existing, true, domain.Event{}, nil
 	} else if rerr != sql.ErrNoRows {
 		return domain.ReviewEvidence{}, false, domain.Event{}, rerr
+	}
+	if hasDecision, derr := hasGateDecisionTx(ctx, tx, review.CandidateID); derr != nil {
+		return domain.ReviewEvidence{}, false, domain.Event{}, derr
+	} else if hasDecision {
+		return domain.ReviewEvidence{}, false, domain.Event{}, fmt.Errorf("%w: candidate already has a final Quality Gate decision; create a new candidate",
+			domain.ErrInvalidTransition)
 	}
 	review.ID = newID()
 	findings, err := json.Marshal(review.Findings)
@@ -1085,6 +1079,16 @@ func scanDecision(row interface {
 	d.Status = domain.GateStatus(status)
 	d.CreatedAt = parseStamp(created)
 	return d, nil
+}
+
+func hasGateDecisionTx(ctx context.Context, tx *sql.Tx, candidateID string) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT TRUE FROM gate_decisions WHERE candidate_id=?`, candidateID).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func boolInt(value bool) int {

@@ -133,3 +133,28 @@ func TestEvaluateRejectsIdentityMismatchAndProtectedRisk(t *testing.T) {
 		t.Fatalf("protected path: %s, want HUMAN_REQUIRED", got.Decision.Status)
 	}
 }
+
+func TestClassifyChangeProtectsCredentialAndAuthorityProcessCode(t *testing.T) {
+	for _, path := range []string{
+		"core/cmd/factory/lifecycle.go",
+		"core/cmd/factory-worker/main.go",
+		"core/cmd/factory-verifier/main.go",
+		"core/cmd/factory-reviewer/main.go",
+		"core/internal/candidate/git.go",
+	} {
+		if got := ClassifyChange([]string{path}); got.RiskClass != "R3" {
+			t.Fatalf("%s classified %s, want R3", path, got.RiskClass)
+		}
+	}
+}
+
+func TestReviewerBlockedIsBLOCKEDNotRepair(t *testing.T) {
+	fixture := gateFixture(t)
+	fixture.Reviews[0].Verdict = domain.ReviewBlocked
+	fixture.Reviews[0].Findings = []domain.ReviewFinding{{
+		ID: "r1", Severity: "blocking", Message: "cannot review",
+	}}
+	if got := Evaluate(fixture); got.Decision.Status != domain.GateBlocked {
+		t.Fatalf("reviewer BLOCKED: %s, want BLOCKED", got.Decision.Status)
+	}
+}

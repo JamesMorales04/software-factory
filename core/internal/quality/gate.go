@@ -342,7 +342,13 @@ func aggregateStatus(checks []domain.CheckResult, finalRisk int) domain.GateStat
 				}
 			case domain.CheckIdentity, domain.CheckScope, domain.CheckIndependence, domain.CheckFreshness:
 				blocked = true
-			case domain.CheckReview, domain.CheckFormat, domain.CheckLint, domain.CheckBuild,
+			case domain.CheckReview:
+				if strings.Contains(check.Detail, "reviewer BLOCKED") {
+					blocked = true
+				} else {
+					repair = true
+				}
+			case domain.CheckFormat, domain.CheckLint, domain.CheckBuild,
 				domain.CheckTest, domain.CheckFunctional, domain.CheckNegative, domain.CheckBrowser:
 				repair = true
 			default:
