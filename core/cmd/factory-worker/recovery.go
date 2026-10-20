@@ -102,79 +102,9 @@ func reconcilePaseoResources(ctx context.Context, adapter paseo.Adapter, claim d
 		return result
 	}
 
-	labels := domain.PaseoCorrelationLabels(binding.RunID, binding.AttemptID,
-		binding.LeaseGeneration, binding.WorkspaceID)
-	var listed []paseo.SessionRef
-	var lerr error
-	if legacy {
-		listed, lerr = adapter.ListSessions(ctx)
-	} else {
-		listed, lerr = adapter.ListSessionsByLabels(ctx, labels)
-	}
-	if lerr != nil {
-		result.Outcome = domain.RecoveryOutcomeUnconfirmed
-		result.Reason = "session listing unavailable: " + shortErr(lerr)
-		return result
-	}
-
-	var observed *paseo.Identity
-	switch {
-	case binding.SessionID != "":
-		insp, err := adapter.InspectSession(ctx, binding.SessionID)
-		if err == nil {
-			observed = &insp
-			if !legacy {
-				if len(listed) != 1 || listed[0].ID != binding.SessionID {
-					return blocked("recorded session does not match the exact correlation labels")
-				}
-			}
-			break
-		}
-		// Inspect can fail because the agent is gone or because the daemon
-		// is unavailable. The successful global listing distinguishes the
-		// two: archived agents remain listed.
-		if findSession(listed, binding.SessionID) != nil {
-			result.Outcome = domain.RecoveryOutcomeUnconfirmed
-			result.Reason = "session inspect failed: " + shortErr(err)
-			return result
-		}
-		result.SessionObserved = domain.PaseoObservedAbsent
-	case legacy:
-		// A legacy intended binding with no session ID has no positive
-		// ownership evidence. A short title is not enough.
-		return blocked("legacy session ownership unproven: no durable session identity or labels")
-	default:
-		if len(listed) > 1 {
-			return blocked("ambiguous session correlation: multiple exact label matches")
-		}
-		if len(listed) == 0 {
-			result.SessionObserved = domain.PaseoObservedAbsent
-			break
-		}
-		insp, err := adapter.InspectSession(ctx, listed[0].ID)
-		if err != nil {
-			result.Outcome = domain.RecoveryOutcomeUnconfirmed
-			result.Reason = "discovered session inspect failed: " + shortErr(err)
-			return result
-		}
-		observed = &insp
-	}
-
-	if observed != nil {
-		result.SessionID = observed.SessionID
-		if observed.Title != title {
-			result.SessionObserved = sessionObservation(observed)
-			return blocked("session title does not match the durable correlation key")
-		}
-		if err := paseo.AssertRoute(binding.Provider, binding.Model, binding.Mode, "", *observed); err != nil {
-			result.SessionObserved = sessionObservation(observed)
-			return blocked("session identity mismatch: " + shortErr(err))
-		}
-		result.SessionObserved = sessionObservation(observed)
-	}
-
-	// Workspace discovery/validation. A bound workspace ID is the strongest
-	// ownership proof; unbound discovery requires exactly one exact title.
+	// Workspace discovery first: for an unbound session the durable
+	// workspace ID is not known yet, so the exact title must establish it
+	// before the full label set can be used for session matching.
 	workspaces, werr := adapter.ListWorkspaces(ctx)
 	if werr != nil {
 		result.Outcome = domain.RecoveryOutcomeUnconfirmed
@@ -205,6 +135,92 @@ func reconcilePaseoResources(ctx context.Context, adapter paseo.Adapter, claim d
 		result.WorkspaceObserved = domain.PaseoObservedPresent
 		result.WorkspaceID = workspace.ID
 	}
+
+	workspaceIDForLabels := binding.WorkspaceID
+	if workspaceIDForLabels == "" && workspace != nil {
+		workspaceIDForLabels = workspace.ID
+	}
+	labels := domain.PaseoCorrelationLabels(binding.RunID, binding.AttemptID,
+		binding.LeaseGeneration, workspaceIDForLabels)
+	var listed []paseo.SessionRef
+	var lerr error
+	if legacy {
+		listed, lerr = adapter.ListSessions(ctx)
+	} else {
+		listed, lerr = adapter.ListSessionsByLabels(ctx, labels)
+	}
+	if lerr != nil {
+		result.Outcome = domain.RecoveryOutcomeUnconfirmed
+		result.Reason = "session listing unavailable: " + shortErr(lerr)
+		return result
+	}
+
+	var observed *paseo.Identity
+	switch {
+	case binding.SessionID != "":
+		insp, err := adapter.InspectSession(ctx, binding.SessionID)
+		if err == nil {
+			observed = &insp
+			if !legacy && workspace != nil {
+				if len(listed) != 1 || listed[0].ID != binding.SessionID {
+					return blocked("recorded session does not match the exact correlation labels")
+				}
+			}
+			break
+		}
+		// Inspect can fail because the agent is gone or because the daemon
+		// is unavailable. The successful global listing distinguishes the
+		// two: archived agents remain listed.
+		if findSession(listed, binding.SessionID) != nil {
+			result.Outcome = domain.RecoveryOutcomeUnconfirmed
+			result.Reason = "session inspect failed: " + shortErr(err)
+			return result
+		}
+		result.SessionObserved = domain.PaseoObservedAbsent
+	case legacy:
+		// A legacy intended binding with no session ID has no positive
+		// ownership evidence. A short title is not enough.
+		return blocked("legacy session ownership unproven: no durable session identity or labels")
+	default:
+		if workspace == nil {
+			// Without the owned workspace there is no way to verify the
+			// full five-label identity for an unbound session. Only an
+			// authoritative empty four-label listing proves absence.
+			if len(listed) > 0 {
+				return blocked("workspace identity unavailable for full label verification")
+			}
+			result.SessionObserved = domain.PaseoObservedAbsent
+			break
+		}
+		if len(listed) > 1 {
+			return blocked("ambiguous session correlation: multiple exact label matches")
+		}
+		if len(listed) == 0 {
+			result.SessionObserved = domain.PaseoObservedAbsent
+			break
+		}
+		insp, err := adapter.InspectSession(ctx, listed[0].ID)
+		if err != nil {
+			result.Outcome = domain.RecoveryOutcomeUnconfirmed
+			result.Reason = "discovered session inspect failed: " + shortErr(err)
+			return result
+		}
+		observed = &insp
+	}
+
+	if observed != nil {
+		result.SessionID = observed.SessionID
+		if observed.Title != title {
+			result.SessionObserved = sessionObservation(observed)
+			return blocked("session title does not match the durable correlation key")
+		}
+		if err := paseo.AssertRoute(binding.Provider, binding.Model, binding.Mode, "", *observed); err != nil {
+			result.SessionObserved = sessionObservation(observed)
+			return blocked("session identity mismatch: " + shortErr(err))
+		}
+		result.SessionObserved = sessionObservation(observed)
+	}
+
 	if observed != nil && workspace != nil && observed.Cwd != "" && workspace.Cwd != "" &&
 		filepath.Clean(observed.Cwd) != filepath.Clean(workspace.Cwd) {
 		return blocked("session cwd does not match the owned workspace")

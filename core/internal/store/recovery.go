@@ -180,6 +180,18 @@ func (db *DB) ClaimPaseoRecovery(ctx context.Context, workerID string) (domain.P
 		}
 		return domain.PaseoRecoveryClaim{}, false, nil
 	}
+	// A Worker that dies before completing must not create an unbounded
+	// sequence of cleanup claims. The retry budget is enforced here as well
+	// as on unconfirmed completion.
+	if recovery.Attempts >= RecoveryMaxAttempts {
+		if err := blockExhaustedRecoveryTx(ctx, tx, binding, recovery, now); err != nil {
+			return domain.PaseoRecoveryClaim{}, false, err
+		}
+		if cerr := tx.Commit(); cerr != nil {
+			return domain.PaseoRecoveryClaim{}, false, cerr
+		}
+		return domain.PaseoRecoveryClaim{}, false, nil
+	}
 
 	token := newID()
 	expires := now.Add(RecoveryClaimTTL)
@@ -348,6 +360,40 @@ func (db *DB) CompletePaseoRecovery(ctx context.Context, input RecoveryCompletio
 		return domain.PaseoRecovery{}, false, domain.Event{}, err
 	}
 	return stored, false, event, nil
+}
+
+// blockExhaustedRecoveryTx records the terminal retry-exhausted receipt when
+// a cleanup claim budget is used up by Workers that never completed.
+func blockExhaustedRecoveryTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, recovery domain.PaseoRecovery, now time.Time) error {
+	const reason = "retry-exhausted: cleanup claim budget exhausted before a verified completion"
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE paseo_recovery SET status=?, claim_owner='', claim_token='',
+		 claim_expires_at='', next_attempt_at='', last_outcome=?, reason=?, updated_at=?
+		 WHERE attempt_id=?`,
+		string(domain.RecoveryBlocked), string(domain.RecoveryOutcomeBlocked), reason,
+		stamp(now), binding.AttemptID,
+	); err != nil {
+		return err
+	}
+	retryCount := recovery.Attempts - 1
+	if retryCount < 0 {
+		retryCount = 0
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"attemptId":         binding.AttemptID,
+		"seq":               binding.Seq,
+		"generation":        binding.LeaseGeneration,
+		"workerId":          "",
+		"outcome":           string(domain.RecoveryOutcomeBlocked),
+		"sessionId":         firstNonEmpty(recovery.SessionID, binding.SessionID),
+		"workspaceId":       firstNonEmpty(recovery.WorkspaceID, binding.WorkspaceID),
+		"sessionObserved":   string(recovery.SessionObserved),
+		"workspaceObserved": string(recovery.WorkspaceObserved),
+		"retryCount":        retryCount,
+		"reason":            reason,
+	})
+	_, err := appendWorkerRunEvent(ctx, tx, domain.EventPaseoSessionRecoveryRecorded, binding.RunID, payload, now)
+	return err
 }
 
 func bindingOwnsTx(ctx context.Context, tx *sql.Tx, column, value, attemptID string) (bool, error) {

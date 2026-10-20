@@ -170,3 +170,39 @@ func TestReconcilePaseoResourcesBlocksCwdMismatch(t *testing.T) {
 		t.Fatal("cwd mismatch must not issue destructive calls")
 	}
 }
+
+func TestReconcilePaseoResourcesDiscoversUnboundSessionWithFullLabels(t *testing.T) {
+	claim := recoveryClaimForTest()
+	claim.Session.SessionID = ""
+	claim.Session.WorkspaceID = ""
+	workspaceID := "ws_discovered"
+	discoveredSession := "55555555-5555-4555-8555-555555555555"
+	f := paseo.NewFakeAdapter()
+	f.Session = paseo.Identity{
+		WorkspaceID: workspaceID,
+		SessionID:   discoveredSession,
+		Provider:    claim.Session.Provider,
+		Model:       claim.Session.Model,
+		Mode:        claim.Session.Mode,
+		Cwd:         "/tmp/recovery",
+		Status:      "idle",
+		Title:       claim.Session.CorrelationKey,
+	}
+	f.Sessions = []paseo.SessionRef{{
+		ID: discoveredSession, Title: claim.Session.CorrelationKey,
+		Provider: "codex", Status: "idle",
+		Labels: domain.PaseoCorrelationLabels(claim.Session.RunID, claim.Session.AttemptID,
+			claim.Session.LeaseGeneration, workspaceID),
+	}}
+	f.Workspaces = []paseo.WorkspaceRef{{
+		ID: workspaceID, Title: claim.Session.CorrelationKey, Cwd: "/tmp/recovery",
+	}}
+	f.Listed[workspaceID] = true
+	result := reconcilePaseoResources(t.Context(), f, claim)
+	if result.Outcome != domain.RecoveryOutcomeConfirmed {
+		t.Fatalf("outcome = %s (%s), want confirmed", result.Outcome, result.Reason)
+	}
+	if result.SessionID != discoveredSession || result.WorkspaceID != workspaceID {
+		t.Fatalf("discovered identities = %s/%s", result.SessionID, result.WorkspaceID)
+	}
+}

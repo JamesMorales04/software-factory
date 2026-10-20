@@ -324,7 +324,10 @@ SID5="$(wait_active "$RUN5" 60)" || { echo "[FAIL] D5 binding never active"; exi
 set_daemon down
 auth -X POST "$BASE/api/v1/runs/$RUN5/cancel" -H 'Content-Type: application/json' -d '{}' >/dev/null
 [[ "$(wait_terminal "$RUN5" 20)" == "cancelled" ]] || { echo "[FAIL] D5 cancel"; exit 1; }
+# Kill the execution Worker so only the two recovery Workers can act.
+kill_exec_worker
 set_daemon up
+set_mode slow-cleanup
 start_recovery_worker REC_A_PID recover-d5a
 start_recovery_worker REC_B_PID recover-d5b
 [[ "$(wait_recovery "$RUN5" confirmed 90)" == "confirmed" ]] || { echo "[FAIL] D5 no confirmed receipt"; exit 1; }
@@ -332,11 +335,12 @@ sleep 3
 CONFIRMED5="$(count_events "$RUN5" PaseoSessionRecoveryRecorded confirmed)"
 [[ "$CONFIRMED5" == "1" ]] || { echo "[FAIL] D5 duplicate authoritative receipt: $CONFIRMED5"; exit 1; }
 STOPS5="$(grep -Fc "stop $SID5" "$CALLS" || true)"
-[[ "$STOPS5" -ge 1 ]] || { echo "[FAIL] D5 no stop call"; exit 1; }
+[[ "$STOPS5" == "1" ]] || { echo "[FAIL] D5 stop calls = $STOPS5, want exactly 1"; exit 1; }
 [[ "$(session_field "$RUN5" status)" == "orphaned" ]] || { echo "[FAIL] D5 binding mutated"; exit 1; }
-echo "[PASS] D5: two recovery Workers produced exactly one terminal receipt"
+echo "[PASS] D5: overlapping recovery Workers produced exactly one terminal receipt and one stop"
 stop_recovery_workers
 stop_exec_worker
+set_mode ok
 
 echo
 echo "== D6: repeated recovery after Core restart -> idempotent =="

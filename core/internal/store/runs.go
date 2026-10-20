@@ -18,6 +18,14 @@ const runColumns = `id, project_id, action_id, workload_kind, workload_input,
 	lease_generation, lease_expires_at, result, error, execution_mode,
 	provider, model, paseo_mode, created_at, updated_at`
 
+// runColumnsR is the alias-qualified form used by dispatch eligibility
+// queries with correlated subqueries.
+const runColumnsR = `r.id, r.project_id, r.action_id, r.workload_kind,
+	r.workload_input, r.status, r.attempt_count, r.max_attempts,
+	r.timeout_secs, r.lease_owner, r.lease_generation, r.lease_expires_at,
+	r.result, r.error, r.execution_mode, r.provider, r.model, r.paseo_mode,
+	r.created_at, r.updated_at`
+
 const attemptColumns = `id, run_id, seq, worker_id, lease_generation,
 	status, heartbeats, result, error, created_at, updated_at`
 
@@ -290,45 +298,38 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 
+	// Dispatch eligibility is filtered in SQL so gated paseo Runs can never
+	// hide later eligible Runs behind a fixed scan cutoff. The gate mirrors
+	// paseoRetryGateTx: a prior orphaned/intended/active generation blocks a
+	// replacement until its recovery is confirmed or absent.
 	var run domain.Run
-	foundRun := false
-	rows, err := tx.QueryContext(ctx,
-		`SELECT `+runColumns+` FROM runs WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 200`,
-		string(domain.RunQueued))
-	if err != nil {
-		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
-	}
-	var candidates []domain.Run
-	for rows.Next() {
-		r, serr := scanRun(rows)
-		if serr != nil {
-			_ = rows.Close()
-			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, serr
+	err = func() error {
+		r, qerr := scanRun(tx.QueryRowContext(ctx,
+			`SELECT `+runColumnsR+` FROM runs r
+			 WHERE r.status=?
+			   AND (r.workload_kind<>?
+			        OR r.attempt_count=0
+			        OR NOT EXISTS (
+			          SELECT 1 FROM paseo_bindings b
+			          WHERE b.run_id=r.id
+			            AND b.seq=(SELECT MAX(b2.seq) FROM paseo_bindings b2 WHERE b2.run_id=r.id)
+			            AND b.status IN (?,?,?)
+			            AND NOT EXISTS (
+			              SELECT 1 FROM paseo_recovery rec
+			              WHERE rec.attempt_id=b.attempt_id AND rec.status IN (?,?)
+			            )
+			        ))
+			 ORDER BY r.created_at ASC, r.id ASC LIMIT 1`,
+			string(domain.RunQueued), domain.PaseoTaskKind,
+			string(domain.PaseoOrphaned), string(domain.PaseoIntended), string(domain.PaseoActive),
+			string(domain.RecoveryConfirmed), string(domain.RecoveryAbsent)))
+		if qerr != nil {
+			return qerr
 		}
-		candidates = append(candidates, r)
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
-		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
-	}
-	for _, candidate := range candidates {
-		if candidate.WorkloadKind == domain.PaseoTaskKind && candidate.AttemptCount > 0 {
-			// S3-D retry gate: a replacement Attempt must not run while a
-			// prior external session is still uncertain. Blocked recovery is
-			// failed closed by the Core sweeper; this skips it meanwhile.
-			allow, _, gerr := paseoRetryGateTx(ctx, tx, candidate.ID)
-			if gerr != nil {
-				return domain.Run{}, domain.Attempt{}, false, domain.Event{}, gerr
-			}
-			if !allow {
-				continue
-			}
-		}
-		run = candidate
-		foundRun = true
-		break
-	}
-	if !foundRun {
+		run = r
+		return nil
+	}()
+	if err == sql.ErrNoRows {
 		// No queued work — but the poll itself proves the Worker is
 		// alive, so record liveness without touching its assignment or
 		// emitting an event. Otherwise an idle Worker polling an empty
@@ -343,6 +344,9 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, cerr
 		}
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, nil
+	}
+	if err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 
 	generation := run.LeaseGeneration + 1

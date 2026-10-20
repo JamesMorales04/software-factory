@@ -47,6 +47,26 @@ repaired on the new candidate; the browser lane now proves pending,
 confirmed and blocked recovery states. The verifier's functional findings
 (fencing, concurrency, exact identity, cleanup confirmation) were PASS.
 
+## Luna review repairs
+
+Luna (Codex GPT-6 Luna, read-only) found three material gaps on the second
+candidate, all repaired here:
+
+- dispatch filtered only the oldest 200 queued Runs, so 200 unresolved
+  paseo Runs could starve later synthetic/eligible work. Dispatch eligibility
+  is now a SQL predicate, with a 205-gated-run regression test;
+- unbound-session discovery did not include the workspace label when the
+  workspace ID was not yet bound. Recovery now discovers the exact-title
+  workspace first and uses the full five-label session set; without an owned
+  workspace, unbound cleanup is blocked;
+- the D5 concurrent journey was not overlapped. The simulator now has a
+  slow-cleanup mode, both recovery Workers are launched before the claim
+  completes, and a store-level concurrent-claim test proves one winner.
+
+Luna also flagged unbounded claims when a Worker dies before completion.
+Claim grant now enforces the 8-attempt budget and records a
+`retry-exhausted` blocked receipt.
+
 ## Limitations
 
 - Real Paseo daemon restart is BLOCKED unless an isolated daemon is

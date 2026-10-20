@@ -391,3 +391,107 @@ func TestPaseoRecoveryCompletionWithoutReceiptIsNotFound(t *testing.T) {
 		t.Fatalf("completion without receipt err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestPaseoRecoveryClaimBudgetIsBounded(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	_, attempt, _, base := orphanedPaseoBinding(t, db, "local-1")
+	for i := 0; i < RecoveryMaxAttempts; i++ {
+		db.SetClock(func() time.Time { return base.Add(time.Duration(i) * (RecoveryClaimTTL + time.Second)) })
+		claim, found, err := db.ClaimPaseoRecovery(ctx, "local-1")
+		if err != nil || !found {
+			t.Fatalf("claim %d: found=%v err=%v", i+1, found, err)
+		}
+		if claim.Recovery.Attempts != i+1 {
+			t.Fatalf("claim %d attempts = %d", i+1, claim.Recovery.Attempts)
+		}
+	}
+	db.SetClock(func() time.Time {
+		return base.Add(time.Duration(RecoveryMaxAttempts) * (RecoveryClaimTTL + time.Second))
+	})
+	if _, found, err := db.ClaimPaseoRecovery(ctx, "local-1"); err != nil || found {
+		t.Fatalf("claim beyond budget: found=%v err=%v", found, err)
+	}
+	blocked, err := db.GetPaseoRecovery(attempt.ID)
+	if err != nil || blocked.Status != domain.RecoveryBlocked {
+		t.Fatalf("exhausted receipt: %+v err=%v", blocked, err)
+	}
+	if blocked.Attempts != RecoveryMaxAttempts || !strings.HasPrefix(blocked.Reason, "retry-exhausted") {
+		t.Fatalf("exhausted receipt attempts/reason = %d/%q", blocked.Attempts, blocked.Reason)
+	}
+}
+
+func TestPaseoRetryGateDoesNotStarveLaterRuns(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	current := base
+	db.SetClock(func() time.Time { return current })
+	db.SetLeaseTTL(50 * time.Millisecond)
+	registerWorker(t, db, "local-1")
+	// More gated paseo Runs than the old fixed scan window.
+	for i := 0; i < 205; i++ {
+		run := queuePaseoRun(t, db, 2)
+		attempt := claimAndStart(t, db, run, "local-1")
+		if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "corr-intend"); err != nil {
+			t.Fatalf("intend %d: %v", i, err)
+		}
+	}
+	current = base.Add(time.Second)
+	if _, err := db.ExpireLeases(ctx); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	var queuedPaseo int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM runs WHERE status=?`, string(domain.RunQueued)).Scan(&queuedPaseo); err != nil {
+		t.Fatalf("count queued: %v", err)
+	}
+	if queuedPaseo != 205 {
+		t.Fatalf("queued paseo runs = %d, want 205", queuedPaseo)
+	}
+	synthetic := queueRun(t, db, 1)
+	claimed, _, found, _, err := db.ClaimNextRun(ctx, "local-1", "corr-synthetic")
+	if err != nil || !found {
+		t.Fatalf("claim synthetic: found=%v err=%v", found, err)
+	}
+	if claimed.ID != synthetic.ID || claimed.WorkloadKind != domain.SyntheticEchoKind {
+		t.Fatalf("gated paseo runs starved the synthetic run: got %s/%s", claimed.ID, claimed.WorkloadKind)
+	}
+}
+
+func TestPaseoRecoveryConcurrentClaimsHaveOneWinner(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	_, attempt, _, _ := orphanedPaseoBinding(t, db, "local-1")
+	registerWorker(t, db, "local-2")
+	type result struct {
+		claim domain.PaseoRecoveryClaim
+		found bool
+		err   error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for _, worker := range []string{"local-1", "local-2"} {
+		go func(workerID string) {
+			<-start
+			claim, found, err := db.ClaimPaseoRecovery(ctx, workerID)
+			results <- result{claim: claim, found: found, err: err}
+		}(worker)
+	}
+	close(start)
+	winners := 0
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("claim error: %v", r.err)
+		}
+		if r.found {
+			winners++
+			if r.claim.Session.AttemptID != attempt.ID || r.claim.ClaimToken == "" {
+				t.Fatalf("bad winning claim: %+v", r.claim)
+			}
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent claims found=%d, want exactly 1", winners)
+	}
+}

@@ -156,6 +156,8 @@ def cmd_workspace(args):
         return
     if sub == "archive":
         wid = args[1] if len(args) > 1 else ""
+        if mode() == "slow-cleanup":
+            time.sleep(3)
         record_call(["workspace-archive", wid])
         ws = state.data["workspaces"].get(wid)
         if not ws:
@@ -308,6 +310,8 @@ def cmd_session_op(op, args):
         state.save()
         print("agent not found", file=sys.stderr)
         sys.exit(1)
+    if mode() == "slow-cleanup":
+        time.sleep(3)
     record_call([op, sid])
     if op == "stop":
         session["status"] = "idle"

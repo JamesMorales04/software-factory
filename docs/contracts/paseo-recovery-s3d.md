@@ -127,7 +127,11 @@ Claim:
 - one transaction sets `status=claimed`, `claimOwner`, a fresh random
   `claimToken`, `claimExpiresAt = now + 5 minutes` and `attempts = attempts + 1`;
 - terminal `confirmed`/`absent`/`blocked` records are never claimed again;
-- concurrent Workers cannot receive the same live claim.
+- concurrent Workers cannot receive the same live claim;
+- the claim budget is at most 8. A Worker that dies before completing still
+  consumes its claim; the next claim attempt at the budget marks the record
+  `blocked` with a `retry-exhausted` reason instead of granting an unbounded
+  sequence of cleanup leases.
 
 Completion fencing (no state change, no new event):
 
@@ -149,15 +153,18 @@ Attempt, binding status, generation or `leaseExpiresAt`.
 
 1. Claim one orphaned binding.
 2. Compute the exact correlation key, labels and expected legacy title.
-3. If a session ID is recorded, inspect it. If no ID is recorded and a
-   correlation key exists, find sessions by the exact label set. More than
-   one match is `blocked`.
-4. Validate observed provider/model/mode against the frozen binding route and
-   validate the exact title/legacy marker. A mismatch is `blocked`; never
-   stop or archive it.
-5. If a workspace ID is recorded, verify that workspace's listing. If no ID
-   is recorded and a correlation key exists, find the workspace by the exact
-   title. More than one match is `blocked`.
+3. Discover the owned workspace first: by the recorded ID, or by the exact
+   generation title when the ID was never durably bound. More than one exact
+   title match is `blocked`.
+4. If a session ID is recorded, inspect it. If no ID is recorded and a
+   correlation key exists, find sessions by the full exact label set,
+   including `factory.workspace` from the discovered workspace ID. More than
+   one match is `blocked`. Without an owned workspace, an unbound session is
+   never cleaned: an authoritative empty four-label listing may prove
+   absence, otherwise the case is `blocked`.
+5. Validate observed provider/model/mode and session cwd against the frozen
+   binding route and the owned workspace, and validate the exact title/legacy
+   marker. A mismatch is `blocked`; never stop or archive it.
 6. For an owned active session: `stop`, `archive`, then inspect and require
    archived/absent. For an owned active workspace: `archive`, then require
    it is no longer listed. Re-check the exact session labels so a session
@@ -179,6 +186,8 @@ delete`, or a title with a short/derived Run ID for ownership.
 - A queued `paseo-task` Run with a prior binding that is not safely settled
   (`orphaned`/unresolved) is **not leased** to a replacement Attempt. It
   waits while recovery is `pending`/`claimed`/retryable `unconfirmed`.
+- Dispatch eligibility is filtered in SQL, not by a fixed prefix of the
+  queue: gated Runs can never hide later eligible Runs from a Worker poll.
 - If the prior recovery becomes `blocked` (including retry exhaustion), the
   Run fails closed with a bounded `recovery-unresolved` reason instead of
   starting concurrent coding work. Other Runs and projects continue.
