@@ -86,21 +86,23 @@ export function Agents() {
     [],
   );
 
-  const { events: live, state } = useEventStream(
+  const { state, lastMatchedSeq } = useEventStream(
     cursor ?? 0,
     (event) => relevantEvent(event.eventType),
-    { enabled: cursor !== null },
+    { enabled: cursor !== null, maxEvents: 200 },
   );
 
   // Refresh the snapshot after relevant committed events. The durable
-  // ledger is authoritative; this fetch only re-projects it.
+  // ledger is authoritative; this fetch only re-projects it. The cursor,
+  // not the retained-event array length, is the wake-up signal so capping
+  // client memory never suppresses a refresh.
   useEffect(() => {
-    if (live.length === 0) {
+    if (lastMatchedSeq <= (cursor ?? 0)) {
       return;
     }
     const timer = setTimeout(() => void load(), 200);
     return () => clearTimeout(timer);
-  }, [live.length, load]);
+  }, [lastMatchedSeq, cursor, load]);
 
   // Poll only while the live stream is not connected; a connected stream
   // already wakes the snapshot above on every relevant event.
@@ -126,7 +128,8 @@ export function Agents() {
   // hook is idle. Surface an explicit unavailable state instead of leaving
   // the badge at "Connecting" forever when the snapshot API is failing.
   const displayState = cursor === null && error ? "error" : state;
-  const active = sessions?.filter((s) => isLiveSession(s.status)) ?? [];
+  const pending = sessions?.filter((s) => s.status === "intended") ?? [];
+  const active = sessions?.filter((s) => s.status === "active") ?? [];
   const history = sessions?.filter((s) => !isLiveSession(s.status)) ?? [];
   const orphaned = history.filter((s) => isOrphanedSession(s.status)).length;
   const filtered = Boolean(status || provider);
@@ -218,6 +221,17 @@ export function Agents() {
           Showing the first 200 bindings (live first, then newest). Narrow the
           filters or open a Run for older history.
         </p>
+      )}
+
+      {pending.length > 0 && (
+        <>
+          <h3>Pending intent ({pending.length})</h3>
+          <p className="muted">
+            Intent recorded before any Paseo session identity was proven. This
+            is starting, not running.
+          </p>
+          <SessionGrid sessions={pending} />
+        </>
       )}
 
       {active.length > 0 && (

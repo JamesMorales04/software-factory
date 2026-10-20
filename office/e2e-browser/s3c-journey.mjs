@@ -21,6 +21,7 @@ const EVIDENCE_DIR =
   process.env.S3C_EVIDENCE_DIR || join(HERE, ".s3c-evidence");
 const ORPHAN_RUN_ID = process.env.S3C_ORPHAN_RUN_ID || "";
 const ORPHAN_SESSION_ID = process.env.S3C_ORPHAN_SESSION_ID || "";
+const MULTI_RUN_ID = process.env.S3C_MULTI_RUN_ID || "";
 
 if (!TOKEN) {
   console.log(
@@ -93,6 +94,24 @@ const shot = (name) =>
     20000,
     `screenshot ${name}`,
   );
+
+async function assertTimeline(ledger, label) {
+  const rendered = await page.locator(".events li").evaluateAll((items) =>
+    items.map((item) => ({
+      type: item.getAttribute("data-event-type"),
+      seq: Number(item.getAttribute("data-global-seq")),
+    })),
+  );
+  const expected = ledger.map((event) => ({
+    type: event.eventType,
+    seq: event.globalSeq,
+  }));
+  check(
+    label,
+    JSON.stringify(rendered) === JSON.stringify(expected),
+    `rendered=${JSON.stringify(rendered)}`,
+  );
+}
 
 async function openAgents() {
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
@@ -257,10 +276,9 @@ async function successPhase() {
     15000,
     "ledger event count",
   );
-  check(
-    "lifecycle timeline matches the durable ledger",
-    (await eventItems.count()) === ledger.length,
-    `${await eventItems.count()} != ${ledger.length}`,
+  await assertTimeline(
+    ledger,
+    "lifecycle timeline equals the durable ledger in order",
   );
   const html = await page.content();
   check("task prompt is not rendered", !html.includes("multiply(a, b)"));
@@ -302,9 +320,9 @@ async function successPhase() {
     20000,
     "reloaded ledger event count",
   );
-  check(
+  await assertTimeline(
+    ledger,
     "reload reconstructs the same durable timeline without duplicates",
-    (await eventItems.count()) === ledger.length,
   );
   check(
     "malformed SSE frame triggers a visible reconnect",
@@ -322,14 +340,155 @@ async function successPhase() {
   };
 }
 
+async function multiPhase() {
+  check("multi-attempt run id provided", Boolean(MULTI_RUN_ID));
+  await openAgents();
+  await page.goto(`${BASE}/#/runs/${MULTI_RUN_ID}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page
+    .getByRole("heading", {
+      name: new RegExp(`Run ${MULTI_RUN_ID.slice(0, 8)}`),
+    })
+    .waitFor({ timeout: 15000 });
+  await page
+    .getByText("Paseo session (2)", { exact: true })
+    .waitFor({ timeout: 15000 });
+  const details = page.locator(".session-detail");
+  await waitFor(
+    async () => (await details.count()) === 2,
+    15000,
+    "two session details",
+  );
+  const text = (await page.locator("body").textContent()) || "";
+  for (const expected of [
+    "Attempt 1",
+    "Attempt 2",
+    "generation 1",
+    "generation 2",
+    "No final session summary",
+  ]) {
+    check(`multi-Attempt detail shows ${expected}`, text.includes(expected));
+  }
+  check(
+    "each Attempt keeps exactly one binding outcome",
+    (await details.locator(".session-card-head .pill.failed").count()) === 1 &&
+      (await details.locator(".session-card-head .pill.succeeded").count()) ===
+        1,
+  );
+  check(
+    "only the successful Attempt has final evidence",
+    (await page
+      .getByText("Session evidence (final summary)", { exact: true })
+      .count()) === 1,
+  );
+  const ledger = (await api(`/api/v1/runs/${MULTI_RUN_ID}/events`)).events;
+  const eventItems = page.locator(".events li");
+  await waitFor(
+    async () => (await eventItems.count()) === ledger.length,
+    15000,
+    "multi ledger event count",
+  );
+  await assertTimeline(
+    ledger,
+    "multi-Attempt timeline equals the durable ledger in order",
+  );
+  await shot("multi-attempt");
+  return { multiRunId: MULTI_RUN_ID, eventCount: ledger.length };
+}
+
+async function livePhase() {
+  const runId = process.env.S3C_LIVE_RUN_ID || "";
+  const sessionId = process.env.S3C_LIVE_SESSION_ID || "";
+  check("live run id provided", Boolean(runId));
+  check("live session id provided", Boolean(sessionId));
+
+  await openAgents();
+  await page.getByLabel("Filter sessions by status").selectOption("active");
+  const card = page.locator(".session-card").first();
+  await card.waitFor({ timeout: 20000 });
+  await card
+    .locator(".session-card-head .pill.active")
+    .waitFor({ timeout: 15000 });
+  const cardText = (await card.textContent()) || "";
+  for (const expected of [
+    "codex",
+    "gpt-6-luna",
+    "full-access",
+    "TRUSTED_LOCAL",
+    "active",
+    "running",
+    "local-1",
+    runId.slice(0, 8),
+    sessionId.slice(0, 18),
+  ]) {
+    check(`live Agents card shows ${expected}`, cardText.includes(expected));
+  }
+  await shot("live-active-session");
+
+  await card
+    .getByRole("link", { name: runId.slice(0, 8), exact: true })
+    .click();
+  await page
+    .getByRole("heading", { name: new RegExp(`Run ${runId.slice(0, 8)}`) })
+    .waitFor({ timeout: 15000 });
+  await page
+    .getByText("Paseo session (1)", { exact: true })
+    .waitFor({ timeout: 15000 });
+  await page
+    .getByText("Session bound and non-terminal", { exact: false })
+    .waitFor({ timeout: 15000 });
+  const body = (await page.locator("body").textContent()) || "";
+  for (const expected of [
+    "active",
+    "Not recorded in final evidence",
+    "Paseo session intended",
+    "Paseo session active",
+  ]) {
+    check(`live Run detail shows ${expected}`, body.includes(expected));
+  }
+  check(
+    "live Run detail has no fabricated final summary",
+    !body.includes("Session evidence (final summary)"),
+  );
+  check(
+    "live Run detail has no fabricated success",
+    !body.includes("Paseo session succeeded"),
+  );
+  check(
+    "live Run detail has no fabricated cleanup confirmation",
+    !body.includes("Confirmed by the Worker"),
+  );
+  await shot("live-active-run");
+
+  const ledger = (await api(`/api/v1/runs/${runId}/events`)).events;
+  const eventItems = page.locator(".events li");
+  await waitFor(
+    async () => (await eventItems.count()) === ledger.length,
+    15000,
+    "live ledger event count",
+  );
+  await assertTimeline(
+    ledger,
+    "live lifecycle timeline equals the durable ledger in order",
+  );
+
+  return {
+    liveRunId: runId,
+    liveSessionId: sessionId,
+    eventCount: ledger.length,
+  };
+}
+
 async function orphanPhase() {
   check("orphan run id provided", Boolean(ORPHAN_RUN_ID));
   check("orphan session id provided", Boolean(ORPHAN_SESSION_ID));
   await openAgents();
-  await page
-    .getByText("2 bindings", { exact: false })
-    .waitFor({ timeout: 15000 });
-  check("history survived the Core restart", true);
+  await page.locator(".session-card").first().waitFor({ timeout: 15000 });
+  check(
+    "history survived the Core restart",
+    (await page.locator(".session-card").count()) === 4,
+  );
 
   await page.getByLabel("Filter sessions by status").selectOption("orphaned");
   const card = page.locator(".session-card").first();
@@ -404,7 +563,13 @@ try {
   app = await launchBrowser(EXE, { timeoutMs: 60000 });
   page = app.page;
   const result =
-    PHASE === "orphan" ? await orphanPhase() : await successPhase();
+    PHASE === "orphan"
+      ? await orphanPhase()
+      : PHASE === "live"
+        ? await livePhase()
+        : PHASE === "multi"
+          ? await multiPhase()
+          : await successPhase();
   console.log(
     JSON.stringify({
       ok: true,

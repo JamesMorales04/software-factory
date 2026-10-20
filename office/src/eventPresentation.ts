@@ -47,7 +47,10 @@ export function presentEvent(event: FactoryEvent): {
 } {
   const p = event.payload ?? {};
   const parts: string[] = [];
-  const label = EVENT_LABELS[event.eventType] ?? event.eventType;
+  let label = EVENT_LABELS[event.eventType] ?? event.eventType;
+  if (event.eventType === "RunFailed" && p.willRetry === true) {
+    label = "Attempt failed — retry queued";
+  }
 
   switch (event.eventType) {
     case "RunQueued":

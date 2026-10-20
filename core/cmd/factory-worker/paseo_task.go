@@ -302,12 +302,16 @@ func runPaseoLifecycle(
 		log.Warn("paseo cleanup unconfirmed after successful close", "note", cleanupNote)
 	}
 
+	// Report the final observed identity, not the frozen requested binding.
+	// AssertRoute above proved these values equal the requested route; the
+	// values themselves come from the last Paseo inspect evidence so the
+	// projection's "observed route" has real provenance.
 	out := map[string]any{
 		"sessionId":     closed.SessionID,
 		"workspaceId":   closed.WorkspaceID,
-		"provider":      closed.Provider,
-		"model":         closed.Model,
-		"paseoMode":     closed.Mode,
+		"provider":      final.Provider,
+		"model":         final.Model,
+		"paseoMode":     final.Mode,
 		"cwd":           final.Cwd,
 		"timelineLines": evidence.timelineLines,
 		"timelineSteps": evidence.stepsSummary,

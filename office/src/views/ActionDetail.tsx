@@ -15,7 +15,9 @@ export function ActionDetail() {
   const [action, setAction] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { events: live } = useEventStream(0, (e) => e.aggregateId === id);
+  const { events: live } = useEventStream(0, (e) => e.aggregateId === id, {
+    maxEvents: 200,
+  });
 
   const load = useCallback(async () => {
     if (!id) {

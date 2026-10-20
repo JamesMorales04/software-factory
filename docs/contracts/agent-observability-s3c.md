@@ -73,8 +73,8 @@ that the session is running.
 
 ### Agents
 
-The Agents view renders real recorded bindings, grouped into live and
-historical sections. Each card shows provider/model/mode, the exact
+The Agents view renders real recorded bindings, grouped into pending intent
+(intended, no proven session), active, and historical sections. Each card shows provider/model/mode, the exact
 `TRUSTED_LOCAL` label, binding status, Run link and status, Attempt sequence
 and ID, lease generation, Worker, session/workspace identity and timestamps.
 Status/provider filters are server-backed. Loading, empty, error and
@@ -84,8 +84,10 @@ snapshot and never implies that an agent stopped.
 ### Run detail
 
 For `paseo-task` Runs, Run detail renders every Attempt's session binding
-separately; generations are never collapsed. It shows requested versus
-observed route when final evidence recorded one, session/workspace IDs,
+separately; generations are never collapsed. The observed route is the final
+Paseo `inspect` identity reported by the Worker, not the frozen requested
+binding. It shows requested versus observed route when final evidence
+recorded one, session/workspace IDs,
 Worker, execution mode, timestamps, binding reason, bounded evidence and
 orphan warnings. A Core-cancelled Run with an unconfirmed external session
 is described as orphaned, never as externally stopped. Runs with no binding
@@ -136,8 +138,9 @@ revision.
 
 Per ADR-0006 this is an additive read-only projection with no compatibility
 shims or dual state. Acceptance covers: the real Core/Worker lifecycle
-through a deterministic Paseo CLI stub; live Agents appearance; provider/
-model/mode/Worker/Attempt/generation identity; Run-detail evidence; reload
-and malformed-SSE reconnect without duplicates; cancellation/orphan
+through a deterministic Paseo CLI stub; pending/active live Agents
+appearance; multi-Attempt/generation separation; provider/model/mode/
+Worker/Attempt identity; Run-detail evidence; ordered timeline equality;
+reload and malformed-SSE reconnect without duplicates; cancellation/orphan
 wording; Core-restart durability; scoped authorization; invalid filters; and
 the existing S1/S2/S3-A/S3-B suites.

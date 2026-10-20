@@ -5,8 +5,9 @@ Renders server-authoritative state only: Dashboard, Actions, Runs (queue a
 safe synthetic Run, watch its lifecycle, cancel), Run detail (Attempts,
 per-Attempt Paseo session bindings, bounded evidence and lifecycle
 lineage), Workers (observed liveness only — never fabricated activity),
-and Agents (real recorded Paseo sessions, live and historical, with
-`TRUSTED_LOCAL` labels and explicit disconnected/orphaned states).
+and Agents (real recorded Paseo sessions, grouped as pending intent,
+active and historical, with `TRUSTED_LOCAL` labels and explicit
+disconnected/orphaned states).
 
 Browser journeys: `office/e2e-browser/journey.mjs` (S1),
 `office/e2e-browser/s2-journey.mjs` (S2 Runs/Workers), and

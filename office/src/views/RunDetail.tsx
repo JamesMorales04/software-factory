@@ -86,21 +86,25 @@ export function RunDetail() {
     void load();
   }, [load]);
 
-  const { events: live, state } = useEventStream(
+  const {
+    events: live,
+    state,
+    lastMatchedSeq,
+  } = useEventStream(
     cursor ?? 0,
     (event) => event.aggregateType === "run" && event.aggregateId === id,
-    { enabled: cursor !== null && Boolean(id) },
+    { enabled: cursor !== null && Boolean(id), maxEvents: 500 },
   );
 
   // Re-read the Core snapshot after committed Run/Paseo lifecycle events.
   // The ledger is the continuity source; this fetch only re-projects it.
   useEffect(() => {
-    if (live.length === 0) {
+    if (lastMatchedSeq <= (cursor ?? 0)) {
       return;
     }
     const timer = setTimeout(() => void load(), 200);
     return () => clearTimeout(timer);
-  }, [live.length, load]);
+  }, [lastMatchedSeq, cursor, load]);
 
   // The initial snapshot and the ledger head are separate reads. Refresh
   // once when the stream first becomes live (and after each reconnect) so
@@ -273,6 +277,8 @@ export function RunDetail() {
 
       <PaseoSessionPanel run={run} attempts={attempts} sessions={sessions} />
 
+      {run.workloadKind !== "paseo-task" && <RunResult run={run} />}
+
       <h3>Event timeline ({timeline.length})</h3>
       <p className="muted">
         Authoritative lifecycle events from the durable Core ledger, ordered by
@@ -286,7 +292,11 @@ export function RunDetail() {
           {timeline.map((event) => {
             const presented = presentEvent(event);
             return (
-              <li key={event.globalSeq}>
+              <li
+                key={event.globalSeq}
+                data-event-type={event.eventType}
+                data-global-seq={event.globalSeq}
+              >
                 <div className="event-head">
                   <strong>{presented.label}</strong>{" "}
                   <span className="muted">
@@ -309,6 +319,73 @@ export function RunDetail() {
         </ol>
       )}
     </div>
+  );
+}
+
+function RunResult({ run }: { run: Run }) {
+  const result = run.result;
+  const mode = stringField(result, "mode");
+  const steps = numberField(result, "steps");
+  const elapsedMs = numberField(result, "elapsedMs");
+  const receipt = stringField(result, "receipt");
+  const messageDigest = stringField(result, "messageDigest");
+  const imageDigest = stringField(result, "imageDigest");
+  const hasResult = result && Object.keys(result).length > 0;
+
+  return (
+    <section>
+      <h3>Result</h3>
+      {!hasResult ? (
+        <p className="muted">No result recorded.</p>
+      ) : (
+        <dl className="detail">
+          {mode && (
+            <>
+              <dt>Mode</dt>
+              <dd>
+                <code>{mode}</code>
+              </dd>
+            </>
+          )}
+          {steps !== null && (
+            <>
+              <dt>Steps</dt>
+              <dd>{steps}</dd>
+            </>
+          )}
+          {elapsedMs !== null && (
+            <>
+              <dt>Elapsed</dt>
+              <dd>{elapsedMs} ms</dd>
+            </>
+          )}
+          {receipt && (
+            <>
+              <dt>Receipt</dt>
+              <dd>
+                <code>{receipt}</code>
+              </dd>
+            </>
+          )}
+          {messageDigest && (
+            <>
+              <dt>Message digest</dt>
+              <dd>
+                <code>{messageDigest}</code>
+              </dd>
+            </>
+          )}
+          {imageDigest && (
+            <>
+              <dt>Image digest</dt>
+              <dd>
+                <code>{imageDigest}</code>
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
+    </section>
   );
 }
 

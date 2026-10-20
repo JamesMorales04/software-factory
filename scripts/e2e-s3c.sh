@@ -5,10 +5,12 @@
 #
 # Proves the S3-C observability slice:
 #   - empty Agents state, then a real durable session binding appears live;
+#   - a pending/active binding is observable while the Run still executes;
+#   - a failed Attempt and a successful retry keep separate generations;
 #   - provider/model/mode/Worker/Attempt/generation/Run identity are rendered
 #     from Core snapshots, never fabricated;
-#   - RunDetail shows the session, bounded final evidence and lifecycle
-#     events from the durable ledger;
+#   - RunDetail shows the session, bounded final evidence and an ordered
+#     lifecycle ledger;
 #   - browser reload and malformed-SSE reconnect preserve exactly the same
 #     duplicate-free timeline;
 #   - a cancelled Run with an unconfirmed external session is shown as
@@ -155,9 +157,14 @@ case "\$1" in
       archive) exit 0 ;;
     esac ;;
   run)
+    if [[ "\$MODE" == "fail-once" && ! -f "\$CONF.failedonce" ]]; then
+      touch "\$CONF.failedonce"
+      echo "stub: transient provider failure" >&2
+      exit 1
+    fi
     ws=""; while (( \$# > 0 )); do case "\$1" in --workspace) ws="\$2"; shift 2;; *) shift;; esac; done
     sid="\$(next_id STUBAGENT)"; record "sess \$sid \$ws"
-    if [[ "\$MODE" == "ok" ]]; then
+    if [[ "\$MODE" == "ok" || "\$MODE" == "fail-once" ]]; then
       proj="\$(lookup "\$ws")"
       if [[ -f "\$proj/add.js" ]] && ! grep -q multiply "\$proj/add.js"; then
         cat >> "\$proj/add.js" <<'JS_EOF'
@@ -188,9 +195,9 @@ auth() { curl -sf -H "Authorization: Bearer $TOKEN" "$@"; }
 worker() { curl -sf -H "Authorization: Bearer $WTOKEN" "$@"; }
 
 queue_paseo() {
-  local resp
+  local timeout="$1" attempts="${2:-1}" resp
   resp="$(auth -X POST "$BASE/api/v1/runs" -H 'Content-Type: application/json' \
-    -d "{\"workloadKind\":\"paseo-task\",\"workloadInput\":{\"task\":\"$TASK_TEXT\"},\"executionMode\":\"trusted-local\",\"provider\":\"codex\",\"model\":\"gpt-6-luna\",\"paseoMode\":\"full-access\",\"timeoutSecs\":$1,\"maxAttempts\":1}")"
+    -d "{\"workloadKind\":\"paseo-task\",\"workloadInput\":{\"task\":\"$TASK_TEXT\"},\"executionMode\":\"trusted-local\",\"provider\":\"codex\",\"model\":\"gpt-6-luna\",\"paseoMode\":\"full-access\",\"timeoutSecs\":$timeout,\"maxAttempts\":$attempts}")"
   python3 -c "import json,sys; print(json.load(sys.stdin)['run']['id'])" <<<"$resp"
 }
 
@@ -276,12 +283,51 @@ for want in ("RunQueued", "RunLeased", "RunStarted", "PaseoSessionIntended",
 print("[PASS] success Run: real binding, verified evidence, complete lifecycle, no source excerpt")
 PY
 
+echo "-- multi-attempt: failed generation and successful retry stay distinct --"
+write_stub fail-once
+RUN_MULTI="$(queue_paseo 600 2)"
+ST_MULTI="$(wait_terminal "$RUN_MULTI" 240)"
+[[ "$ST_MULTI" == "succeeded" ]] || { echo "[FAIL] multi-attempt run: want succeeded, got $ST_MULTI"; tail -60 "$WORKER_LOG"; exit 1; }
+python3 - "$BASE" "$TOKEN" "$RUN_MULTI" <<'PY'
+import json, sys, urllib.request
+base, token, run_id = sys.argv[1:4]
+def get(path):
+    req = urllib.request.Request(base + path, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.load(response)
+run = get(f"/api/v1/runs/{run_id}")["run"]
+assert run["status"] == "succeeded", run["status"]
+assert run["attemptCount"] == 2, run["attemptCount"]
+sessions = get(f"/api/v1/runs/{run_id}/sessions")["sessions"]
+assert [s["seq"] for s in sessions] == [1, 2], sessions
+assert [s["status"] for s in sessions] == ["failed", "succeeded"], sessions
+assert [s["leaseGeneration"] for s in sessions] == [1, 2], sessions
+assert sessions[0]["attemptId"] != sessions[1]["attemptId"], sessions
+assert sessions[0].get("sessionId", "") == "", sessions[0]
+assert sessions[1].get("sessionId", ""), sessions[1]
+types = [event["eventType"] for event in get(f"/api/v1/runs/{run_id}/events")["events"]]
+for want in ("RunFailed", "PaseoSessionFailed", "PaseoSessionSucceeded", "RunCompleted"):
+    assert want in types, types
+print("[PASS] two Attempts keep separate generations and binding outcomes")
+PY
+MULTI_JSON="$TMP/s3c-multi.json"
+BASE_URL="$BASE" FACTORY_API_TOKEN="$TOKEN" CHROMIUM_EXE="$CHROMIUM_EXE" \
+  S3C_PHASE=multi S3C_EVIDENCE_DIR="$TMP/s3c-evidence" \
+  S3C_MULTI_RUN_ID="$RUN_MULTI" \
+  node "$WEB_SRC/e2e-browser/s3c-journey.mjs" | tee "$MULTI_JSON"
+
 echo "-- cancellation of a bound session becomes an honest orphan --"
 write_stub hang-logs
 RUN_ORPHAN="$(queue_paseo 600)"
 BOUND="$(wait_bound_active "$RUN_ORPHAN" 90)"
 [[ "$BOUND" == active\ * ]] || { echo "[FAIL] session never bound: $BOUND"; tail -40 "$WORKER_LOG"; exit 1; }
 SESSION_ORPHAN="${BOUND#active }"
+echo "-- browser: live active session while the run is still executing --"
+LIVE_JSON="$TMP/s3c-live.json"
+BASE_URL="$BASE" FACTORY_API_TOKEN="$TOKEN" CHROMIUM_EXE="$CHROMIUM_EXE" \
+  S3C_PHASE=live S3C_EVIDENCE_DIR="$TMP/s3c-evidence" \
+  S3C_LIVE_RUN_ID="$RUN_ORPHAN" S3C_LIVE_SESSION_ID="$SESSION_ORPHAN" \
+  node "$WEB_SRC/e2e-browser/s3c-journey.mjs" | tee "$LIVE_JSON"
 auth -X POST "$BASE/api/v1/runs/$RUN_ORPHAN/cancel" -H 'Content-Type: application/json' -d '{}' >/dev/null
 ST_ORPHAN="$(wait_terminal "$RUN_ORPHAN" 90)"
 [[ "$ST_ORPHAN" == "cancelled" ]] || { echo "[FAIL] want cancelled, got $ST_ORPHAN"; exit 1; }
@@ -312,23 +358,26 @@ stop_core
 start_core
 start_worker
 sleep 2
-python3 - "$BASE" "$TOKEN" "$RUN_SUCCESS" "$RUN_ORPHAN" "$EVENTS_SUCCESS" <<'PY'
+python3 - "$BASE" "$TOKEN" "$RUN_SUCCESS" "$RUN_ORPHAN" "$RUN_MULTI" "$EVENTS_SUCCESS" <<'PY'
 import json, sys, urllib.request
-base, token, success_run, orphan_run, event_count = sys.argv[1:6]
+base, token, success_run, orphan_run, multi_run, event_count = sys.argv[1:7]
 def get(path):
     req = urllib.request.Request(base + path, headers={"Authorization": "Bearer " + token})
     with urllib.request.urlopen(req, timeout=20) as response:
         return json.load(response)
 sessions = get("/api/v1/sessions")["sessions"]
-assert len(sessions) == 2, sessions
-by_run = {session["runId"]: session for session in sessions}
-assert by_run[success_run]["status"] == "succeeded", by_run[success_run]
-assert by_run[orphan_run]["status"] == "orphaned", by_run[orphan_run]
+assert len(sessions) == 4, sessions
+by_run = {}
+for session in sessions:
+    by_run.setdefault(session["runId"], []).append(session)
+assert by_run[success_run][0]["status"] == "succeeded", by_run[success_run]
+assert by_run[orphan_run][0]["status"] == "orphaned", by_run[orphan_run]
+assert [s["status"] for s in sorted(by_run[multi_run], key=lambda s: s["seq"])] == ["failed", "succeeded"], by_run[multi_run]
 assert len(get(f"/api/v1/runs/{success_run}/events")["events"]) == int(event_count)
 events = get("/api/v1/events?after=0&limit=500")["events"]
 seqs = [event["globalSeq"] for event in events]
 assert seqs == list(range(1, len(seqs) + 1)), "replay must be contiguous"
-print("[PASS] Core restart retains both bindings, history and a contiguous ledger")
+print("[PASS] Core restart retains all bindings, history and a contiguous ledger")
 PY
 
 echo "-- browser: historical orphan state after Core restart --"

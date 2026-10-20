@@ -11,14 +11,16 @@
 - Functional Agents view: live/history grouping, identity, Worker/Attempt/
   generation, `TRUSTED_LOCAL`, filters and explicit loading/empty/error/
   disconnected states.
-- Run-detail Paseo panel: per-Attempt bindings, requested vs observed route,
-  bounded S3-B evidence, cleanup confirmation and honest orphan warnings.
+- Run-detail Paseo panel: per-Attempt bindings, final-inspect observed
+  route, bounded S3-B evidence, cleanup confirmation and honest orphan
+  warnings.
 - Durable lifecycle timeline with whitelisted fields (no raw payload dump).
 - S3-C worker hardening: `diffExcerpt` is no longer persisted; legacy
   event/SSE read projections recursively drop that key.
 - Deterministic S3-C Core/Worker/Chromium acceptance lane using a stubbed
-  `paseo` CLI, including reload, malformed-SSE reconnect, orphan and
-  Core-restart durability phases.
+  `paseo` CLI, including pending/active live appearance, multi-Attempt
+  separation, ordered timeline equality, reload, malformed-SSE reconnect,
+  orphan and Core-restart durability phases.
 
 ## Local evidence commands
 

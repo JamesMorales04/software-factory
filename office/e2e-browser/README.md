@@ -35,12 +35,14 @@ PHASE=2 npm run journey   # same env as above
 
 `office/e2e-browser/s3c-journey.mjs` runs in two phases against a real Core
 and Worker with a deterministic `paseo` CLI stub (no daemon, no provider
-calls). Phase `success` asserts the empty Agents state, live appearance of a
-real binding, provider/model/mode/Worker/Attempt identity, Run-detail
-session evidence, a duplicate-free reload across a malformed SSE frame, and
-no source/prompt rendering. Phase `orphan` asserts historical state after a
-Core restart, an honest orphan warning, and cancellation wording that never
-claims an external stop. Run the whole deterministic lane from the repo root:
+calls). Phase `success` asserts the empty Agents state, provider/model/mode/Worker/
+Attempt identity, Run-detail session evidence, an ordered duplicate-free
+timeline, reload across a malformed SSE frame, and no source/prompt
+rendering. Phase `multi` asserts two Attempts/generations stay distinct.
+Phase `live` asserts a pending/active binding appears while the Run is still
+executing, with no fabricated final evidence. Phase `orphan` asserts
+historical state after a Core restart, an honest orphan warning, and
+cancellation wording that never claims an external stop. Run the whole deterministic lane from the repo root:
 
 ```sh
 bash scripts/e2e-s3c.sh

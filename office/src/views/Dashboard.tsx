@@ -10,7 +10,7 @@ export function Dashboard() {
   const [runCounts, setRunCounts] = useState<Record<string, number>>({});
   const [workerCounts, setWorkerCounts] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
-  const { events, state } = useEventStream(0);
+  const { events, state } = useEventStream(0, undefined, { maxEvents: 200 });
 
   useEffect(() => {
     let live = true;
