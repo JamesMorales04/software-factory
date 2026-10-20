@@ -37,6 +37,8 @@ func run() error {
 	logger := telemetry.NewLogger()
 	token := resolveToken(logger, "FACTORY_API_TOKEN")
 	workerToken := resolveToken(logger, "FACTORY_WORKER_TOKEN")
+	verifierToken := resolveToken(logger, "FACTORY_VERIFIER_TOKEN")
+	reviewerToken := resolveToken(logger, "FACTORY_REVIEWER_TOKEN")
 
 	if dir := filepath.Dir(*dbPath); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -56,7 +58,11 @@ func run() error {
 	defer shutdownTracing(context.Background())
 
 	hub := api.NewHub()
-	server := api.New(db, token, logger, tracer, hub).WithWorkerToken(workerToken).WithWebDir(*webDir)
+	server := api.New(db, token, logger, tracer, hub).
+		WithWorkerToken(workerToken).
+		WithVerifierToken(verifierToken).
+		WithReviewerToken(reviewerToken).
+		WithWebDir(*webDir)
 
 	boot, err := db.RecordCoreStarted(ctx, api.Version)
 	if err != nil {

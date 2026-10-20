@@ -29,7 +29,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.5.0-s3d"
+const workerVersion = "0.6.0-s4a"
 
 type client struct {
 	base   string
@@ -299,7 +299,41 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		return
 	}
 
+	var actionSpec *domain.ActionSpec
+	if run.SpecID != "" {
+		fetched, serr := c.getSpec(execCtx, run.SpecID)
+		if serr != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"spec: "+truncate(serr.Error()), log)
+			return
+		}
+		actionSpec = &fetched
+		if perr := prepareSpecWorkspace(execCtx, fetched, workDir); perr != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"spec-workspace: "+truncate(perr.Error()), log)
+			return
+		}
+	}
+
 	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, log)
+	if err == nil && run.SpecID != "" {
+		if actionSpec == nil {
+			err = errors.New("spec-bound run has no frozen specification")
+		} else {
+			candidate, cerr := c.finalizeCandidate(execCtx, workerID, run, attempt, workDir, *actionSpec, log)
+			if cerr != nil {
+				err = errors.New("candidate: " + cerr.Error())
+			} else {
+				result["candidateId"] = candidate.ID
+			}
+		}
+	}
 	cancel() // execution finished: stop the heartbeat loop before joining it
 	<-hbDone
 	select {

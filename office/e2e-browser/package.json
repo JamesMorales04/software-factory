@@ -10,9 +10,11 @@
     "test:close": "node --test --test-timeout=10000 browser-close.test.mjs",
     "test:launch": "node --test --test-timeout=30000 launch-timeout.test.mjs",
     "s3c": "node s3c-journey.mjs",
+    "s4a": "node s4a-journey.mjs",
     "soak": "node soak.mjs"
   },
   "dependencies": {
+    "@playwright/cli": "0.1.22",
     "playwright-core": "1.64.1"
   }
 }

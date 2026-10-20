@@ -1,4 +1,4 @@
-# Factory Office browser journeys (S1, S2, S3-C)
+# Factory Office browser journeys (S1, S2, S3-C, S4-A)
 
 Real-Chromium user journey against a running Core + Office build. This is
 the independent browser oracle for F1-S1 acceptance: it drives the actual
@@ -10,8 +10,9 @@ state survives a Core restart.
 - A Chromium binary. Locally this reuses the pre-existing Playwright
   browser cache via `CHROMIUM_EXE`; in CI install one with
   `npx playwright install chromium` (downloads the browser).
-- `npm ci` in this directory (installs only `playwright-core`, pinned;
-  no browser is downloaded by the package itself).
+- `npm ci` in this directory (installs pinned `playwright-core` and
+  `@playwright/cli`; set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` when an
+  explicit `CHROMIUM_EXE` is supplied).
 
 ## Run
 
@@ -50,6 +51,21 @@ bash scripts/e2e-s3c.sh
 
 Set `FACTORY_S3C_STRICT=1` in CI so a missing browser or install becomes a
 failure instead of `BLOCKED`.
+
+## S4-A candidate and quality-gate journey
+
+`s4a-journey.mjs` asserts an accepted frozen candidate and a
+`REPAIR_REQUIRED` candidate in the real Office: candidate SHA, spec identity,
+independent verification checks (including the browser check), reviewer
+verdict, Core gate decision, and persistence across reload. It is invoked by
+`scripts/e2e-s4a.sh` with real Chromium.
+
+## Agent-native Playwright CLI
+
+`@playwright/cli` is pinned in `package.json`. The agent workflow lives at
+`scripts/agent-browser-office.mjs` and drives the real Office, creates an
+Action through the form and verifies the authoritative Core state; see
+[docs/engineering/browser-automation.md](../../docs/engineering/browser-automation.md).
 
 ## Core outage recovery
 

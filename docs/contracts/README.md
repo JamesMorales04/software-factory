@@ -12,8 +12,9 @@
 | Run–Paseo session identity | `run-paseo-s3a.md` | S3-A | execution modes, pinned routing, session binding lifecycle, intend-before-create, fencing, recovery |
 | Agent observability projection | `agent-observability-s3c.md` | S3-C | cross-Run session listing, Agent/Run-detail projections, evidence levels, redaction |
 | Paseo recovery and cleanup | `paseo-recovery-s3d.md` | S3-D | external correlation, recovery receipts, claim/complete protocol, retry gate, events, bounded cleanup |
+| Frozen candidate quality pipeline | `quality-pipeline-s4a.md` | S4-A | ActionSpec, immutable candidate, independent verifier/reviewer, deterministic gate, browser checks |
 
-The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery) are still proposed.
+The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery beyond S4-A) are still proposed.
 
 | Contract | Scope | Required adversarial scenarios |
 | --- | --- | --- |

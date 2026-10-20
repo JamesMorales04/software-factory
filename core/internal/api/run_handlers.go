@@ -30,12 +30,26 @@ type createRunRequest struct {
 	Provider      string `json:"provider"`
 	Model         string `json:"model"`
 	PaseoMode     string `json:"paseoMode"`
+	// S4-A: the frozen engineering specification is authoritative for
+	// the Action, task, routing and execution budget.
+	SpecID string `json:"specId"`
 }
 
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var req createRunRequest
 	if !decodeBody(w, r, &req) {
 		return
+	}
+	if strings.TrimSpace(req.SpecID) != "" {
+		spec, err := s.db.GetActionSpec(strings.TrimSpace(req.SpecID))
+		if err != nil {
+			mapDomainError(w, err, s.log, "create run spec")
+			return
+		}
+		if err := applySpecToRunRequest(&req, spec); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
 	}
 	params, err := domain.NewRunParams{
 		ProjectID:     req.ProjectID,
@@ -48,6 +62,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		Provider:      strings.TrimSpace(req.Provider),
 		Model:         strings.TrimSpace(req.Model),
 		PaseoMode:     strings.TrimSpace(req.PaseoMode),
+		SpecID:        strings.TrimSpace(req.SpecID),
 	}.Validate()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", err.Error())
@@ -65,6 +80,44 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		"projectId", run.ProjectID,
 		"correlationId", telemetry.CorrelationIDFrom(ctx))
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
+}
+
+// applySpecToRunRequest binds a Run to the frozen spec. Conflicting caller
+// values are rejected rather than silently reinterpreted; derived values
+// come only from the spec and its immutable routing/budget.
+func applySpecToRunRequest(req *createRunRequest, spec domain.ActionSpec) error {
+	if req.ActionID != "" && req.ActionID != spec.ActionID {
+		return errors.New("actionId conflicts with the frozen specification")
+	}
+	if req.ProjectID != "" && req.ProjectID != spec.ProjectID {
+		return errors.New("projectId conflicts with the frozen specification")
+	}
+	if req.WorkloadKind != "" && req.WorkloadKind != domain.PaseoTaskKind {
+		return errors.New("spec-bound runs require workloadKind paseo-task")
+	}
+	if req.ExecutionMode != "" && req.ExecutionMode != spec.ExecutionMode {
+		return errors.New("executionMode conflicts with the frozen specification")
+	}
+	if req.Provider != "" && req.Provider != spec.Provider {
+		return errors.New("provider conflicts with the frozen specification")
+	}
+	if req.Model != "" && req.Model != spec.Model {
+		return errors.New("model conflicts with the frozen specification")
+	}
+	if req.PaseoMode != "" && req.PaseoMode != spec.PaseoMode {
+		return errors.New("paseoMode conflicts with the frozen specification")
+	}
+	req.ActionID = spec.ActionID
+	req.ProjectID = spec.ProjectID
+	req.WorkloadKind = domain.PaseoTaskKind
+	req.WorkloadInput = map[string]any{"task": spec.Goal}
+	req.ExecutionMode = spec.ExecutionMode
+	req.Provider = spec.Provider
+	req.Model = spec.Model
+	req.PaseoMode = spec.PaseoMode
+	req.MaxAttempts = spec.Budget.MaxAttempts
+	req.TimeoutSecs = spec.Budget.TimeoutSecs
+	return nil
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {

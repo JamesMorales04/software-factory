@@ -87,12 +87,15 @@ type Run struct {
 	// S3-A: requested execution mode and pinned Paseo routing. Empty for
 	// S2 synthetic runs (restricted). TRUSTED_LOCAL runs carry the exact
 	// provider/model/mode the Worker must assert from session evidence.
-	ExecutionMode string    `json:"executionMode"`
-	Provider      string    `json:"provider,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	PaseoMode     string    `json:"paseoMode,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ExecutionMode string `json:"executionMode"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	PaseoMode     string `json:"paseoMode,omitempty"`
+	// S4-A: frozen ActionSpec bound to this Run. Empty for legacy S2/S3
+	// runs without an engineering specification.
+	SpecID    string    `json:"specId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Attempt is one lease grant for a Run. History is append-only.
@@ -135,6 +138,10 @@ type NewRunParams struct {
 	Provider      string
 	Model         string
 	PaseoMode     string
+	// S4-A: when set, the Core derives the Action, project, task text,
+	// routing and execution budget from the frozen spec and ignores
+	// conflicting caller values.
+	SpecID string
 }
 
 // ValidateWorkloadInput enforces the authorized workload bounds so untrusted
@@ -221,11 +228,17 @@ func (p NewRunParams) Validate() (NewRunParams, error) {
 	if p.ActionID != "" && len(p.ActionID) != 32 {
 		return p, errors.New("actionId must be a 32-character hex id when present")
 	}
+	if p.SpecID != "" && (len(p.SpecID) != 32 || !isLowerHex(p.SpecID)) {
+		return p, errors.New("specId must be a 32-character lowercase hex id when present")
+	}
 	if p.ExecutionMode == "" {
 		p.ExecutionMode = string(ExecRestricted)
 	}
 	if err := ValidateExecutionMode(p.ExecutionMode); err != nil {
 		return p, err
+	}
+	if p.SpecID != "" && p.WorkloadKind != PaseoTaskKind {
+		return p, errors.New("specId requires workloadKind paseo-task")
 	}
 	switch p.WorkloadKind {
 	case SyntheticEchoKind:

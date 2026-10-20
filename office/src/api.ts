@@ -76,6 +76,7 @@ export interface Run {
   provider?: string;
   model?: string;
   paseoMode?: string;
+  specId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -130,6 +131,150 @@ export interface PaseoSessionList {
   sessions: PaseoSessionSummary[];
   /** Durable ledger head at snapshot time; used as the SSE start cursor. */
   eventCursor: number;
+}
+
+export type CheckStatus =
+  | "PASS"
+  | "FAIL"
+  | "SKIPPED"
+  | "NOT_APPLICABLE"
+  | "NOT_TESTED";
+
+export interface SpecCheck {
+  id: string;
+  kind: string;
+  description: string;
+  command: string[];
+  expectExit: number;
+  timeoutSecs: number;
+}
+
+export interface ActionSpec {
+  id: string;
+  projectId: string;
+  actionId: string;
+  version: number;
+  contentHash: string;
+  policyRevision: string;
+  goal: string;
+  repository: string;
+  baseRevision: string;
+  allowedPaths: string[];
+  acceptanceCriteria: SpecCheck[];
+  negativeCases: SpecCheck[];
+  riskClass: string;
+  qualityProfile: string;
+  budget: { maxAttempts: number; timeoutSecs: number };
+  executionMode: string;
+  provider: string;
+  model: string;
+  paseoMode: string;
+  createdAt: string;
+  frozenAt: string;
+}
+
+export interface Candidate {
+  id: string;
+  projectId: string;
+  actionId: string;
+  specId: string;
+  specHash: string;
+  policyRevision: string;
+  baseRevision: string;
+  commitSha: string;
+  treeSha: string;
+  contentDigest: string;
+  candidateRef: string;
+  parentCandidateId?: string;
+  repository: string;
+  implementerRunId: string;
+  implementerAttemptId: string;
+  implementerGeneration: number;
+  implementerWorkerId: string;
+  executionMode: string;
+  provider: string;
+  model: string;
+  paseoMode: string;
+  changedPaths: string[];
+  riskClass: string;
+  state: string;
+  createdAt: string;
+  frozenAt: string;
+  supersededAt?: string;
+}
+
+export interface CheckResult {
+  id: string;
+  kind: string;
+  status: CheckStatus;
+  command?: string[];
+  exitCode: number;
+  durationMs: number;
+  detail?: string;
+}
+
+export interface VerificationEvidence {
+  id: string;
+  candidateId: string;
+  candidateSha: string;
+  specId: string;
+  specHash: string;
+  policyRevision: string;
+  authority: string;
+  actor: string;
+  independent: boolean;
+  cleanResource: string;
+  oracleDigest: string;
+  status: string;
+  checks: CheckResult[];
+  findings: string[];
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export interface ReviewFinding {
+  id: string;
+  severity: string;
+  message: string;
+}
+
+export interface ReviewEvidence {
+  id: string;
+  candidateId: string;
+  candidateSha: string;
+  specId: string;
+  specHash: string;
+  policyRevision: string;
+  authority: string;
+  actor: string;
+  verdict: string;
+  findings: ReviewFinding[];
+  diffStat: string;
+  diffBytes: number;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export interface GateDecision {
+  id: string;
+  candidateId: string;
+  candidateSha: string;
+  specId: string;
+  specHash: string;
+  policyRevision: string;
+  status: string;
+  reasons: string[];
+  checks: CheckResult[];
+  actor: string;
+  createdAt: string;
+}
+
+export interface CandidateBundle {
+  candidate: Candidate;
+  spec: ActionSpec;
+  verifications: VerificationEvidence[];
+  reviews: ReviewEvidence[];
+  decision?: GateDecision;
 }
 
 export interface Attempt {
@@ -296,6 +441,31 @@ export const api = {
     request<{ attempts: Attempt[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/attempts`,
     ).then((r) => r.data.attempts),
+  listActionSpecs: (id: string) =>
+    request<{ specs: ActionSpec[] }>(
+      `/api/v1/actions/${encodeURIComponent(id)}/specs`,
+    ).then((r) => r.data.specs),
+  listCandidates: (
+    params: { actionId?: string; runId?: string; limit?: number } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.actionId) q.set("actionId", params.actionId);
+    if (params.runId) q.set("runId", params.runId);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<{ candidates: Candidate[] }>(
+      `/api/v1/candidates${suffix}`,
+    ).then((r) => r.data.candidates);
+  },
+  getCandidateEvidence: (id: string) =>
+    request<{ bundle: CandidateBundle }>(
+      `/api/v1/candidates/${encodeURIComponent(id)}/evidence`,
+    ).then((r) => r.data.bundle),
+  evaluateGate: (id: string) =>
+    request<{ decision: GateDecision; final: boolean }>(
+      `/api/v1/candidates/${encodeURIComponent(id)}/gate`,
+      { method: "POST", body: "{}" },
+    ).then((r) => r.data),
   listRunEvents: (id: string) =>
     request<{ events: FactoryEvent[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/events`,

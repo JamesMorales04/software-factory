@@ -1,6 +1,6 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** F1-S1 implementation authorized (2026-10-18); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 through F1-S3-D implementations merged; F1-S4-A implementation and independent verification in progress (2026-10-20); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
 
 ## Incremental implementation authorization (2026-10-18)
 
@@ -27,7 +27,7 @@
 | S2 | Local Worker and Core–Worker dispatch/lease/recovery | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
 | S3-TRUSTED_LOCAL | Real Paseo session under owner-accepted local trust (ADR-0009) | Start/inspect a real coding session in a real workspace, verify effective cwd/provider/model, correlate its timeline | Unauthorized delivery/admin action blocked; session not labeled isolated/certified |
 | S3-ISOLATED | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
-| S4 | Implementer, Independent Verifier, Reviewer, baseline | Produce a real diff; independent tester starts and exercises exact commit | Mandatory failure blocks; Reviewer cannot mutate candidate |
+| S4-A | Frozen ActionSpec, CandidateRevision, Implementer, Independent Verifier, read-only Reviewer, deterministic Quality Gate, agent-native browser checks | Produce a real diff; independent tester checks out the exact commit, exercises CLI/build/tests and a protected Chromium journey; reviewer returns a candidate-bound verdict; gate accepts or repairs | Mandatory failure, identity mismatch, forged evidence and out-of-scope diff block; Reviewer cannot mutate candidate; missing browser tooling is NOT_TESTED |
 | S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |
 | S6 | First self-development campaign | Stable Core A supervises a functional Factory UI improvement in candidate B | B cannot modify or replace A; incorrect evidence blocks delivery |
 
@@ -47,6 +47,18 @@ Real autonomous R0 merge requires a separate eligible case and rechecked protect
 ## Evidence per slice
 
 Attach exact candidate SHA, Action/spec/policy revision, Run/Worker/Paseo session identities where applicable, actual commands and browser journeys, formatter/linter/build/test results, redacted logs and OTel traces, user-journey evidence, Reviewer verdict, repairs and PR/merge receipts. Artifact storage follows retention/security policy, not indiscriminate Git commits.
+
+## F1-S4-A quality pipeline (implemented)
+
+S4-A adds the frozen engineering specification, immutable candidate revision,
+separate verifier/reviewer authorities and the Core-owned deterministic gate.
+It does not add delivery/merge, S5/S6, a full Project Registry or ISOLATED
+execution. Browser checks are mandatory spec checks when present and use the
+pinned Playwright CLI/`playwright-core` + real Chromium. Evidence and acceptance
+are bound to the exact candidate/spec/policy identity; a completed Run is not an
+accepted candidate. See [the contract](../contracts/quality-pipeline-s4a.md),
+[ADR-0010](../architecture/decisions/ADR-0010-frozen-candidate-quality-pipeline.md)
+and [acceptance matrix](f1-s4a-acceptance.md).
 
 ## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))
 
