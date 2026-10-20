@@ -386,6 +386,34 @@ func formatWaitTimeout(d time.Duration) string {
 	return fmt.Sprintf("%ds", secs)
 }
 
+// Output bounds for one CLI invocation. The daemon is trusted local
+// tooling, but a misbehaving output must not grow Worker memory through
+// the error path: writes past the bound fail the call instead.
+const (
+	maxCLIOutputBytes = 1 << 20
+	maxStderrBytes    = 1 << 16
+)
+
+// boundedWriter caps captured subprocess output. Grow-style hints do not
+// bound anything; this writer refuses writes past the limit so capture
+// itself is the bound, checked before any content is retained.
+type boundedWriter struct {
+	buf      bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (w *boundedWriter) Write(p []byte) (int, error) {
+	if w.exceeded {
+		return 0, errors.New("output exceeded bound")
+	}
+	if w.buf.Len()+len(p) > w.limit {
+		w.exceeded = true
+		return 0, errors.New("output exceeded bound")
+	}
+	return w.buf.Write(p)
+}
+
 // run executes one paseo invocation under ctx. Cancellation kills the
 // subprocess. Failures report only the operation, the exit status and a
 // redacted shape — never command output bodies.
@@ -403,13 +431,10 @@ func (a *CLIAdapter) run(ctx context.Context, args ...string) ([]byte, error) {
 		"HOME=" + os.Getenv("HOME"),
 		"TMPDIR=" + os.Getenv("TMPDIR"),
 	}
-	var stdout, stderr bytes.Buffer
-	stdout.Grow(64 * 1024)
-	cmd.Stdout = &stdout
-	// Bound stderr like stdout: large provider payloads must not grow
-	// memory through the error path.
-	stderr.Grow(16 * 1024)
-	cmd.Stderr = &stderr
+	stdout := &boundedWriter{limit: maxCLIOutputBytes}
+	stderr := &boundedWriter{limit: maxStderrBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		kind := KindCancelled
@@ -417,6 +442,9 @@ func (a *CLIAdapter) run(ctx context.Context, args ...string) ([]byte, error) {
 			kind = KindTimeout
 		}
 		return nil, &Error{Op: op, Kind: kind, Reason: "operation " + string(kind)}
+	}
+	if stdout.exceeded || stderr.exceeded {
+		return nil, &Error{Op: op, Kind: KindExternal, Reason: "output exceeded bound"}
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -426,11 +454,7 @@ func (a *CLIAdapter) run(ctx context.Context, args ...string) ([]byte, error) {
 		}
 		return nil, &Error{Op: op, Kind: KindStartup, Reason: telemetry.Redact(reason)}
 	}
-	out := stdout.Bytes()
-	if len(out) > 1<<20 {
-		return nil, &Error{Op: op, Kind: KindExternal, Reason: "output exceeded 1MiB bound"}
-	}
-	return out, nil
+	return stdout.buf.Bytes(), nil
 }
 
 // firstObject decodes CLI JSON that may be an object or a single-element

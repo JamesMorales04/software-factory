@@ -208,7 +208,7 @@ func runPaseoLifecycle(
 		if externalUncertain(err, ctx) {
 			return orphanExternal(backend, context.Background(), workerID, run, attempt, binding, adapter, identity0(workspaceID), "session-start", "session-start: "+shortErr(err))
 		}
-		return abandonExternal(backend, context.Background(), adapter, workerID, run, attempt, binding, workspaceID, "", "session-start: "+shortErr(err))
+		return abandonExternal(backend, context.Background(), adapter, workerID, run, attempt, binding, workspaceID, "session-start", "session-start: "+shortErr(err))
 	}
 	identity.WorkspaceID = workspaceID
 	if err := paseo.AssertRoute(route.Provider, route.Model, route.Mode, workDir, identity); err != nil {
@@ -238,7 +238,7 @@ func runPaseoLifecycle(
 	// 7-8. Observe the timeline and collect task evidence. One bounded
 	// nudge is allowed when the agent acted but left no diff.
 	nudges := 0
-	summary, evidence, err := collectPaseoEvidence(ctx, adapter, workDir, identity, route)
+	summary, evidence, err := collectPaseoEvidence(ctx, adapter, workDir, identity)
 	if err != nil {
 		if externalUncertain(err, ctx) {
 			return orphanExternal(backend, context.Background(), workerID, run, attempt, binding, adapter, identity, "observe", "observe cancelled; session state unconfirmed")
@@ -247,7 +247,7 @@ func runPaseoLifecycle(
 			log.Info("empty diff after productive turn; one bounded nudge", "toolSteps", summary.ToolSteps)
 			if nerr := adapter.SendNudge(ctx, identity.SessionID, paseoNudgePrompt(workDir), paseoNudgeWait); nerr == nil {
 				nudges = 1
-				summary, evidence, err = collectPaseoEvidence(ctx, adapter, workDir, identity, route)
+				summary, evidence, err = collectPaseoEvidence(ctx, adapter, workDir, identity)
 			} else {
 				log.Warn("nudge failed; evaluating partial evidence", "error", shortErr(nerr))
 			}
@@ -293,31 +293,40 @@ func runPaseoLifecycle(
 	}
 
 	// 10. Cleanup owned external resources only after the terminal close.
-	_ = cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID)
+	// The result stays truthful when cleanup is unconfirmed (the work
+	// completed and the close is recorded); the cleanup status is
+	// carried in the output so a live artifact never hides.
+	cleanupNote := "ok"
+	if cerr := cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID); cerr != nil {
+		cleanupNote = "unconfirmed: " + shortErr(cerr)
+		log.Warn("paseo cleanup unconfirmed after successful close", "note", cleanupNote)
+	}
 
 	out := map[string]any{
-		"mode":          "trusted-local-paseo",
 		"sessionId":     closed.SessionID,
 		"workspaceId":   closed.WorkspaceID,
 		"provider":      closed.Provider,
 		"model":         closed.Model,
 		"paseoMode":     closed.Mode,
 		"cwd":           final.Cwd,
-		"agentStatus":   final.Status,
 		"timelineLines": evidence.timelineLines,
 		"timelineSteps": evidence.stepsSummary,
 		"toolSteps":     evidence.toolSteps,
 		"diffStat":      evidence.diffStat,
 		"diffBytes":     evidence.diffBytes,
+		"diffExcerpt":   evidence.diffExcerpt,
 		"testExit":      evidence.testExit,
 		"formatExit":    evidence.formatExit,
 		"nudges":        nudges,
+		"cleanup":       cleanupNote,
 	}
 	return out, nil
 }
 
-// abandonExternal stops/archives best-effort, closes the binding failed,
-// and returns the failed output.
+// abandonExternal stops/archives best-effort and closes the binding
+// failed. When cleanup itself fails the workspace may still exist: the
+// binding is orphaned instead so the workspace identity stays
+// discoverable in the orphan reason rather than leaking silently.
 func abandonExternal(backend sessionBackend,
 	ctx context.Context,
 	adapter paseo.Adapter,
@@ -325,13 +334,16 @@ func abandonExternal(backend sessionBackend,
 	run domain.Run,
 	attempt domain.Attempt,
 	binding domain.PaseoBinding,
-	workspaceID, sessionID, reason string,
+	workspaceID, stage, reason string,
 ) (map[string]any, error) {
-	_ = cleanupPaseoExternal(ctx, adapter, sessionID, workspaceID)
+	if cerr := cleanupPaseoExternal(ctx, adapter, "", workspaceID); cerr != nil && workspaceID != "" {
+		return orphanExternal(backend, ctx, workerID, run, attempt, binding, adapter,
+			paseo.Identity{WorkspaceID: workspaceID}, stage,
+			reason+"; cleanup: "+shortErr(cerr))
+	}
 	_, _ = backend.closeSession(ctx, workerID, run.ID, attempt.ID, attempt.LeaseGeneration, string(domain.PaseoFailed), reason)
-	out := map[string]any{"stage": "session-start"}
+	out := map[string]any{"stage": stage}
 	if binding.AttemptID != "" {
-		out["sessionId"] = sessionID
 		out["workspaceId"] = workspaceID
 		out["provider"] = binding.Provider
 		out["model"] = binding.Model

@@ -434,6 +434,64 @@ func TestPaseoLifecycleBudgetGateFailsClosed(t *testing.T) {
 	}
 }
 
+func TestPaseoLifecycleSuccessCleanupUnconfirmed(t *testing.T) {
+	workDir := t.TempDir()
+	if err := seedPaseoFixture(context.Background(), workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(workDir, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	simulateAgentEdit(t, workDir)
+
+	backend := newFakeBackend()
+	adapter := paseo.NewFakeAdapter()
+	adapter.Session.Cwd = workDir
+	// Workspace archive fails after a fully proven session: the result
+	// stays truthful, but the output must say cleanup is unconfirmed.
+	adapter.Fail["workspace-archive"] = paseo.FailOp("workspace-archive", "daemon busy")
+
+	run, attempt := testRun(1)
+	ctx, cancel := budgetedCtx()
+	defer cancel()
+	out, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	if err != nil {
+		t.Fatalf("proven work stays successful: %v", err)
+	}
+	if !backend.saw("close:succeeded") {
+		t.Fatalf("close must stay succeeded: %v", backend.calls)
+	}
+	note, _ := out["cleanup"].(string)
+	if !strings.HasPrefix(note, "unconfirmed:") {
+		t.Fatalf("output must flag unconfirmed cleanup, got %q", note)
+	}
+	if len(out) > 16 {
+		t.Fatalf("result exceeds bound: %d keys", len(out))
+	}
+}
+
+func TestPaseoLifecycleAbandonCleanupFailureOrphans(t *testing.T) {
+	workDir := t.TempDir()
+	backend := newFakeBackend()
+	adapter := paseo.NewFakeAdapter()
+	adapter.Fail["run"] = paseo.FailOp("run", "daemon unreachable")
+	adapter.Fail["workspace-archive"] = paseo.FailOp("workspace-archive", "daemon busy")
+
+	run, attempt := testRun(1)
+	ctx, cancel := budgetedCtx()
+	defer cancel()
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	if err == nil {
+		t.Fatal("startup failure must fail")
+	}
+	if !backend.saw("orphan") {
+		t.Fatalf("workspace may leak; must stay discoverable via orphan: %v", backend.calls)
+	}
+	if backend.saw("close:failed") {
+		t.Fatal("must not claim a clean failed close when cleanup failed")
+	}
+}
+
 func TestSeedFixtureIdempotent(t *testing.T) {
 	workDir := t.TempDir()
 	ctx := context.Background()

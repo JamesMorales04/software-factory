@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/paseo"
 )
 
@@ -29,7 +28,6 @@ type paseoEvidence struct {
 	diffExcerpt   string
 	testExit      int
 	formatExit    int
-	testSkipped   bool
 }
 
 // paseoTaskPrompt wraps the operator task in the containment instructions
@@ -63,7 +61,6 @@ func collectPaseoEvidence(
 	adapter paseo.Adapter,
 	workDir string,
 	identity paseo.Identity,
-	route domain.PaseoRoute,
 ) (paseo.TimelineSummary, paseoEvidence, error) {
 	var ev paseoEvidence
 	ev.testExit = -1
@@ -92,7 +89,6 @@ func collectPaseoEvidence(
 		// Generic repository without a Node harness: the diff plus tool
 		// activity is the evidence. Acceptance fixtures always seed a
 		// package.json, so this path stays exceptional, never the norm.
-		ev.testSkipped = true
 		if summary.ToolSteps == 0 {
 			return summary, ev, errors.New("no-source-change: diff without tool activity")
 		}
@@ -116,7 +112,6 @@ func collectPaseoEvidence(
 	} else {
 		ev.testExit = -1
 	}
-	_ = route
 	return summary, ev, nil
 }
 
