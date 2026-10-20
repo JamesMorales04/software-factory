@@ -1,30 +1,30 @@
 {
   "campaign": "F1-S4-B",
   "recordedAt": "2026-10-20",
-  "sourceCommit": "9eba893ae00e7761d5a3c90174cfd951030b15b5",
+  "sourceCommit": "66d993d71c8192da0b60d34ac711fbac061d2b3f",
   "buildVersion": "0.1.0-s4b",
   "executionMode": "trusted-local",
   "isolationLabel": "TRUSTED_LOCAL broad local access; not isolated or SEC-01 certified",
   "provider": "opencode",
   "model": "opencode-go/deepseek-v4.1-flash",
   "paseoMode": "build",
-  "campaignId": "b42c284c1f0820d98b2e103668ad7b03",
-  "actionId": "b6795f72e417da13e2094a26fc3665ba",
-  "specId": "dc0831c52c0ec0bc568edccf0887c782",
-  "specHash": "add6b54474e57f0f83653d8028a86f308ea3e041235d9927268bece68daf7439",
+  "campaignId": "dbfae2d322794816075c7dcb0ead9de1",
+  "actionId": "2903519c5719c3c906b7e891156d7cc1",
+  "specId": "168b2e5f765e9f6e1573ded996e9f232",
+  "specHash": "bb316758a8bf42272ddb23489b0e9b9a81ea7bea5697a31d9607f1ec53079ec2",
   "planHash": "b6929a98e67819747852b38f6c90e13f05317fb799e429be585d2250c8e14cb6",
-  "runId": "7be0a50f62a6072f366863b8a24df407",
-  "attemptId": "61b48736edbe5c8eb934b5956faa143e",
+  "runId": "cf24582d32417be4a232367ed45270d9",
+  "attemptId": "90efbb194c9f8f425113ac4b20d7b487",
   "generation": 1,
   "workerId": "live-s4b",
-  "paseoSessionId": "f6c02708-c234-40d0-8430-3d5be4bbe655",
-  "paseoWorkspaceId": "wks_b001ab89593aca4b",
+  "paseoSessionId": "51e042a9-d64a-4575-aff4-23a209203ec0",
+  "paseoWorkspaceId": "wks_caed9d3b82ef9618",
   "bindingsStatus": "succeeded",
-  "candidateId": "a3b1c0f7fc4a877fc4e5c777ca837412",
-  "commitSha": "79b9195076ca21f65145f586ec099feb27f60a6b",
-  "treeSha": "5aa352e331bf2fb132041b383b02d59c7209da23",
-  "contentDigest": "e6197eaa6bb5675d4e29c071e9932b1521d7c4b265d37dd48c35a0d1d85f1257",
-  "baseRevision": "1c61d5ccc38ae3ebca9e0e35ab741401b8225862",
+  "candidateId": "d4bba669eebb510a5a76db10dcdce34f",
+  "commitSha": "3682161923fa65fb105070c9ebb3455aaaf362ac",
+  "treeSha": "48d7d5dc9553b994c66262966f37e094e1095a40",
+  "contentDigest": "cfc24b881062761ecc5ea8cd98ce5e0792d6708eba57138838e123f3de14d508",
+  "baseRevision": "7a99a44f88d2d8a77200125d71381ab265dc0d80",
   "changedPaths": [
     "add.js",
     "app.js"
@@ -36,20 +36,20 @@
       "role": "implementer",
       "status": "succeeded",
       "participantId": "",
-      "outcome": "79b9195076ca21f65145f586ec099feb27f60a6b"
+      "outcome": "3682161923fa65fb105070c9ebb3455aaaf362ac"
     },
     {
       "key": "verifier-0",
       "role": "verifier",
       "status": "succeeded",
-      "participantId": "verifier-b42c284c-0",
+      "participantId": "verifier-dbfae2d3-0",
       "outcome": "passed"
     },
     {
       "key": "reviewer-0",
       "role": "reviewer",
       "status": "succeeded",
-      "participantId": "reviewer-b42c284c-0",
+      "participantId": "reviewer-dbfae2d3-0",
       "outcome": "APPROVE"
     },
     {
@@ -61,10 +61,10 @@
     }
   ],
   "verifier": {
-    "actor": "verifier-b42c284c-0",
+    "actor": "verifier-dbfae2d3-0",
     "authority": "verifier",
     "independent": true,
-    "cleanResource": "git-clone:79b9195076ca",
+    "cleanResource": "git-clone:3682161923fa",
     "status": "passed",
     "checks": [
       {
@@ -76,7 +76,7 @@
           "browser-check.mjs"
         ],
         "exitCode": 0,
-        "durationMs": 740,
+        "durationMs": 713,
         "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
       },
       {
@@ -89,7 +89,7 @@
           "add.js"
         ],
         "exitCode": 0,
-        "durationMs": 33,
+        "durationMs": 20,
         "detail": "exit 0 as expected"
       },
       {
@@ -102,7 +102,7 @@
           "const {multiply}=require('./add.js');if(multiply(2,3)!==6)process.exit(1);"
         ],
         "exitCode": 0,
-        "durationMs": 20,
+        "durationMs": 23,
         "detail": "exit 0 as expected"
       },
       {
@@ -115,7 +115,7 @@
           "const {add}=require('./add.js');if(add(2,3)!==5)process.exit(1);"
         ],
         "exitCode": 0,
-        "durationMs": 19,
+        "durationMs": 20,
         "detail": "exit 0 as expected"
       },
       {
@@ -128,20 +128,20 @@
           "add.test.js"
         ],
         "exitCode": 0,
-        "durationMs": 97,
+        "durationMs": 75,
         "detail": "exit 0 as expected"
       }
     ]
   },
   "reviewer": {
-    "actor": "reviewer-b42c284c-0",
+    "actor": "reviewer-dbfae2d3-0",
     "authority": "reviewer",
     "verdict": "APPROVE",
     "findings": [],
-    "diffBytes": 668
+    "diffBytes": 625
   },
   "gate": {
-    "id": "e2af64a3b9d63df2d7217a79dcaf114a",
+    "id": "fb42449fec64785f365586e0a62d40bb",
     "status": "ACCEPTED",
     "actor": "core-quality-gate",
     "checks": [
