@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 )
 
 // bindingColumns lists paseo_bindings columns in scan order.
@@ -279,7 +280,12 @@ func (db *DB) ClosePaseoSession(ctx context.Context, workerID, runID, attemptID 
 	if err != nil {
 		return domain.PaseoBinding{}, false, domain.Event{}, err
 	}
-	reason := domain.SanitizeReason(errMsg)
+	// Reasons may carry Worker-observed text (in S3-B, Paseo output), so
+	// secret shapes are masked at this persistence boundary — the same
+	// shape redaction the log boundary applies — before the length bound.
+	// S2 report errors keep their frozen semantics; this rule covers only
+	// the new S3-A session paths.
+	reason := domain.SanitizeReason(telemetry.Redact(errMsg))
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -392,7 +398,7 @@ func (db *DB) ClosePaseoSession(ctx context.Context, workerID, runID, attemptID 
 // failed stop). The binding becomes orphaned: kept for cleanup, never
 // authoritative.
 func (db *DB) MarkWorkerSessionOrphaned(ctx context.Context, workerID, runID, attemptID string, generation int64, reason, correlationID string) (domain.PaseoBinding, bool, domain.Event, error) {
-	sanitized := domain.SanitizeReason(reason)
+	sanitized := domain.SanitizeReason(telemetry.Redact(reason))
 	if sanitized == "" {
 		sanitized = "session state unprovable"
 	}

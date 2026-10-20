@@ -191,7 +191,10 @@ reporting — same narrow codes as S2 §6):
 All on aggregate `run/<runId>` with the existing per-aggregate sequence and
 global replay transport — no second ledger. Payloads carry IDs, routing,
 and bounded `reason`/`error` only: never tokens, credentials, prompt bodies,
-or source. Heartbeat-style renewals emit no events; only transitions do.
+or source. Reason text is shape-redacted at persistence (secret patterns
+masked, same rule as the log boundary) before the length bound; S2 report
+errors keep their frozen semantics. Heartbeat-style renewals emit no events;
+only transitions do.
 
 ## 9. S3-A acceptance (binding)
 

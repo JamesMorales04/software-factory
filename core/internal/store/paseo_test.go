@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,6 +405,37 @@ func TestPaseoCloseAfterTerminalRunIsStale(t *testing.T) {
 	binding, err := db.GetPaseoBinding(attempt.ID)
 	if err != nil || binding.Status != domain.PaseoActive {
 		t.Fatalf("binding must stay active as evidence of the ordering violation: %+v err=%v", binding, err)
+	}
+}
+
+func TestPaseoReasonRedactedAtPersistence(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queuePaseoRun(t, db, 3)
+	registerWorker(t, db, "local-1")
+	attempt := claimAndStart(t, db, run, "local-1")
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1, "corr-1"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
+		"ws_r", "session-r-1", "corr-2"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	// A reason carrying secret shapes must be masked in the durable row
+	// and its event; an ordinary reason passes through unchanged.
+	closed, _, event, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, 1,
+		"failed", "provider said Bearer abc123 with token=xyz", "corr-3")
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	payloadRaw, _ := json.Marshal(event.Payload)
+	for _, s := range []string{closed.Error, string(payloadRaw)} {
+		if strings.Contains(s, "abc123") || strings.Contains(s, "token=xyz") {
+			t.Fatalf("secret shape persisted: %q", s)
+		}
+	}
+	if !strings.Contains(closed.Error, "provider said") {
+		t.Fatalf("ordinary reason text lost: %q", closed.Error)
 	}
 }
 
