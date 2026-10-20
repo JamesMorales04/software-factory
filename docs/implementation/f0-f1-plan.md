@@ -22,7 +22,7 @@
 ## F1 — verified vertical slices
 
 | Slice | Deliverable | Independent real-user journey | Required negative path |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | S1 | Durable Core, API, domain events, telemetry and minimal Factory UI | Start the server, create/view Action in browser, restart Core and observe persisted state | Unauthorized/invalid operation rejected; duplicate event ignored; OTel outage nonblocking |
 | S2 | Local Worker and Core–Worker dispatch/lease/recovery | Submit Run; see real Worker and result in UI | Worker crash/reconnect, stale lease and replay cannot duplicate execution |
 | S3-TRUSTED_LOCAL | Real Paseo session under owner-accepted local trust (ADR-0009) | Start/inspect a real coding session in a real workspace, verify effective cwd/provider/model, correlate its timeline | Unauthorized delivery/admin action blocked; session not labeled isolated/certified |

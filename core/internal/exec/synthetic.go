@@ -61,7 +61,10 @@ type Result struct {
 	StepsCompleted int
 	Receipt        string
 	MessageDigest  string
-	ElapsedMs      int64
+	// ImageDigest is the pinned fixture-image digest the container
+	// actually executed (podman mode only; empty for local mode).
+	ImageDigest string
+	ElapsedMs   int64
 }
 
 // PodmanAvailable reports whether the podman CLI runs in this environment.
@@ -75,6 +78,11 @@ func PodmanAvailable(ctx context.Context) bool {
 // the caller) and returns the bounded result. podmanOK selects the
 // container path; otherwise the pure-Go path runs. ctx carries the
 // Attempt timeout and the Worker's cancellation.
+//
+// In podman mode the image digest is resolved immediately before
+// execution and the container runs the pinned image@digest reference;
+// a resolution failure fails the Attempt closed instead of executing an
+// unproven image.
 func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result, error) {
 	start := time.Now()
 	digest := sha256.Sum256([]byte(spec.Message))
@@ -84,10 +92,14 @@ func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result,
 		steps = 1
 	}
 	var mode Mode
+	var imageDigest string
 	var err error
 	if podmanOK {
 		mode = ModePodman
-		err = runPodman(ctx, spec, steps, workDir)
+		if imageDigest, err = ImageDigest(ctx); err != nil {
+			return Result{}, fmt.Errorf("fixture image digest unavailable: %w", err)
+		}
+		err = runPodman(ctx, spec, steps, workDir, PodmanImage+"@"+imageDigest)
 	} else {
 		mode = ModeLocal
 		err = runLocal(ctx, steps, spec.StepMs, workDir, receipt)
@@ -100,6 +112,7 @@ func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result,
 		StepsCompleted: steps,
 		Receipt:        receipt,
 		MessageDigest:  "sha256:" + hex.EncodeToString(digest[:]),
+		ImageDigest:    imageDigest,
 		ElapsedMs:      time.Since(start).Milliseconds(),
 	}, nil
 }
@@ -128,33 +141,9 @@ func runLocal(ctx context.Context, steps, stepMs int, workDir, receipt string) e
 // runPodman executes the same fixed steps inside a disposable rootless
 // container. The argv is fixed; only scalar env values vary. No HOME, no
 // credential paths, no sockets and no host networking are ever mounted.
-func runPodman(ctx context.Context, spec Spec, steps int, workDir string) error {
-	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
-		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
-		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
-	// BusyBox sleep accepts fractional seconds; stepMs is domain-bounded
-	// to 0..200 so "0.NNN" is always a valid short sleep.
-	stepMsS := "0." + fmt.Sprintf("%03d", spec.StepMs)
-	args := []string{
-		"run", "--rm",
-		"--network=none",
-		"--read-only",
-		"--cap-drop=ALL",
-		"--security-opt=no-new-privileges",
-		"--pids-limit=32",
-		"--memory=128m",
-		"--cpus=0.5",
-		"--userns=keep-id",
-		"-v", workDir + ":/workspace:rw",
-		"--workdir", "/workspace",
-		"--env", "MESSAGE=" + spec.Message,
-		"--env", "STEPS=" + strconv.Itoa(steps),
-		"--env", "STEPMS=" + stepMsS,
-		"--env", "RECEIPT=" + spec.RunID + "/" + spec.AttemptID + "/" + strconv.FormatInt(spec.Generation, 10),
-		"--name", containerName(spec.AttemptID),
-		PodmanImage,
-		"sh", "-c", script,
-	}
+// imageRef is the digest-pinned image reference resolved for this Attempt.
+func runPodman(ctx context.Context, spec Spec, steps int, workDir, imageRef string) error {
+	args := podmanArgs(spec, steps, workDir, imageRef)
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout = &stdout
@@ -196,6 +185,148 @@ func pullImage(ctx context.Context) error {
 // PullImage is the exported fixture-image fetch used by the Worker startup
 // probe and acceptance tooling.
 func PullImage(ctx context.Context) error { return pullImage(ctx) }
+
+// podmanArgs builds the exact disposable-container invocation. It is a
+// pure function so the restriction set is unit-auditable: any future flag
+// drift (privileged mode, host mounts, network, sockets) fails the audit
+// test instead of silently widening the boundary. imageRef must be the
+// digest-pinned reference resolved for the Attempt, never a bare tag.
+func podmanArgs(spec Spec, steps int, workDir, imageRef string) []string {
+	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
+		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
+		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
+	// BusyBox sleep accepts fractional seconds; stepMs is domain-bounded
+	// to 0..200 so "0.NNN" is always a valid short sleep.
+	stepMsS := "0." + fmt.Sprintf("%03d", spec.StepMs)
+	return []string{
+		"run", "--rm",
+		"--network=none",
+		"--read-only",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"--pids-limit=32",
+		"--memory=128m",
+		"--cpus=0.5",
+		"--userns=keep-id",
+		"-v", workDir + ":/workspace:rw",
+		"--workdir", "/workspace",
+		"--env", "MESSAGE=" + spec.Message,
+		"--env", "STEPS=" + strconv.Itoa(steps),
+		"--env", "STEPMS=" + stepMsS,
+		"--env", "RECEIPT=" + spec.RunID + "/" + spec.AttemptID + "/" + strconv.FormatInt(spec.Generation, 10),
+		"--name", containerName(spec.AttemptID),
+		imageRef,
+		"sh", "-c", script,
+	}
+}
+
+// ImageDigest resolves the fixture image to its content digest. Callers
+// resolve it immediately before execution and run the pinned
+// image@digest reference; a resolution failure must fail the Attempt
+// closed, never execute an unproven image. The tag stays the select
+// mechanism for pulls; the digest is the execution evidence.
+func ImageDigest(ctx context.Context) (string, error) {
+	c, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(c, "podman", "image", "inspect", "--format", "{{.Digest}}", PodmanImage)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("inspect fixture image: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	digest := strings.TrimSpace(stdout.String())
+	if digest == "" {
+		return "", errors.New("fixture image has no digest")
+	}
+	return digest, nil
+}
+
+// RunsRoot creates the Worker-owned parent directory for per-Attempt
+// disposable workspaces and takes an exclusive advisory lock on it that
+// is held for the Worker's lifetime. Crash recovery keys off this exact
+// pattern, so harness or operator directories merely sharing a prefix are
+// never touched — a broad sweep that once deleted a harness TMP dir in
+// testing is explicitly rejected here. The lock is the liveness signal:
+// the kernel releases it even on SIGKILL, so a concurrent Worker can
+// always distinguish this live root from a stale one.
+func RunsRoot() (*RunRoot, error) {
+	dir, err := os.MkdirTemp("", "factory-worker-runs-*")
+	if err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	if err := flockNonblock(lock); err != nil {
+		_ = lock.Close()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return &RunRoot{dir: dir, lock: lock}, nil
+}
+
+// RunRoot is a Worker-owned disposable workspace parent. Close releases
+// the ownership lock and removes the directory; it runs on graceful
+// shutdown so only killed Workers leave roots behind for the reaper.
+type RunRoot struct {
+	dir  string
+	lock *os.File
+}
+
+// Dir reports the workspace parent path.
+func (r *RunRoot) Dir() string { return r.dir }
+
+// Close releases ownership and removes the root and its workspaces.
+func (r *RunRoot) Close() error {
+	_ = r.lock.Close()
+	return os.RemoveAll(r.dir)
+}
+
+// ReapStaleRunRoots removes Worker-owned run roots whose owner is gone.
+// A root whose ownership lock is still held — a live Worker, including a
+// concurrent one starting or running — is always skipped; only roots with
+// a released lock (dead owner, even via SIGKILL) or no lock file at all
+// from an interrupted creation are removed. Returns the number removed.
+func ReapStaleRunRoots() int {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return 0
+	}
+	reaped := 0
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "factory-worker-runs-") {
+			continue
+		}
+		if live, lerr := rootLive(filepath.Join(os.TempDir(), e.Name())); lerr != nil || live {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(os.TempDir(), e.Name())); err == nil {
+			reaped++
+		}
+	}
+	return reaped
+}
+
+// rootLive reports whether a run root is owned by a living Worker: the
+// ownership lock file exists and is currently held. Missing lock files
+// (interrupted creation) count as not live.
+func rootLive(dir string) (bool, error) {
+	f, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0o600)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	if err := flockNonblock(f); err != nil {
+		return true, nil
+	}
+	return false, nil
+}
 
 func containerName(attemptID string) string {
 	if len(attemptID) > 12 {
