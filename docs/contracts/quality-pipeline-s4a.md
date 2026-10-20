@@ -97,11 +97,12 @@ candidate and its lineage; it does **not** yet supersede prior candidates.
 
 A spec-bound Run cannot report `completed` until a frozen candidate exists for
 its exact Attempt generation. Prior frozen candidates are superseded in the
-same transaction as the successful `RunCompleted`; a candidate whose Attempt
-fails, expires, times out or is cancelled is marked `rejected`, emits
-`CandidateRejected`, and can never acquire verifier/reviewer evidence. A failed
-Attempt therefore never becomes an accepted/frozen candidate or displaces a
-prior valid candidate.
+same transaction as the successful `RunCompleted`, and only when their own Run
+has already succeeded; a concurrently running candidate is never displaced. A
+candidate whose Attempt fails, expires, times out or is cancelled is marked
+`rejected`, emits `CandidateRejected`, and can never acquire verifier/reviewer
+evidence. A failed Attempt therefore never becomes an accepted/frozen candidate
+or displaces a prior valid candidate.
 
 ## 4. Evidence
 
@@ -164,6 +165,11 @@ Rules:
 - A decision is persisted only when verifier and reviewer evidence exist. It is
   keyed uniquely by candidate, immutable across replay/restart, and repeated
   evidence delivery is idempotent. A new decision requires a new candidate.
+- A final decision records an evidence digest. The store verifies that the
+  committed evidence set still matches the evaluated set at save time; new
+  evidence committing during evaluation makes the save a conflict and the Core
+  re-evaluates instead of persisting a stale decision. New evidence after a
+  final decision is rejected.
 
 Individual checks retain `PASS`, `FAIL`, `SKIPPED`, `NOT_APPLICABLE`,
 `NOT_TESTED`; no unchecked status is PASS.

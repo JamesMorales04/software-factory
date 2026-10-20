@@ -141,6 +141,7 @@ func TestClassifyChangeProtectsCredentialAndAuthorityProcessCode(t *testing.T) {
 		"core/cmd/factory-verifier/main.go",
 		"core/cmd/factory-reviewer/main.go",
 		"core/internal/candidate/git.go",
+		"scripts/e2e_s4a_oracle.py",
 	} {
 		if got := ClassifyChange([]string{path}); got.RiskClass != "R3" {
 			t.Fatalf("%s classified %s, want R3", path, got.RiskClass)

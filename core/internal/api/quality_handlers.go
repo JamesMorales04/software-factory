@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -175,42 +176,51 @@ func (s *Server) handleEvaluateGate(w http.ResponseWriter, r *http.Request) {
 // decision. It is deterministic, idempotent and Core-owned. A provisional
 // NOT_TESTED evaluation is returned but never stored.
 func (s *Server) evaluateCandidate(ctx context.Context, candidateID, correlationID string) (domain.GateDecision, bool, bool, error) {
-	if existing, err := s.db.GetGateDecision(candidateID); err == nil {
-		return existing, true, true, nil
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return domain.GateDecision{}, false, false, err
+	for attempt := 0; attempt < 3; attempt++ {
+		if existing, err := s.db.GetGateDecision(candidateID); err == nil {
+			return existing, true, true, nil
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return domain.GateDecision{}, false, false, err
+		}
+		bundle, err := s.db.GetCandidateBundle(candidateID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, err
+		}
+		run, err := s.db.GetRun(bundle.Candidate.ImplementerRunID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, err
+		}
+		attemptRecord, err := s.db.GetAttempt(bundle.Candidate.ImplementerRunID, bundle.Candidate.ImplementerAttemptID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, err
+		}
+		evaluation := quality.Evaluate(quality.Input{
+			Candidate: bundle.Candidate, Spec: bundle.Spec, Run: run, Attempt: attemptRecord,
+			Verifications: bundle.Verifications, Reviews: bundle.Reviews,
+		})
+		if !evaluation.Final {
+			return evaluation.Decision, false, false, nil
+		}
+		decision, replayed, event, err := s.db.SaveGateDecision(ctx, evaluation.Decision, correlationID)
+		if errors.Is(err, domain.ErrConflict) {
+			// New evidence committed between read and save; re-evaluate the
+			// complete durable set instead of persisting a stale decision.
+			continue
+		}
+		if err != nil {
+			return domain.GateDecision{}, false, false, err
+		}
+		if !replayed {
+			s.hub.Publish(event)
+			s.log.Info("quality gate decided",
+				"candidateId", decision.CandidateID,
+				"status", string(decision.Status),
+				"correlationId", correlationID)
+		}
+		return decision, true, replayed, nil
 	}
-	bundle, err := s.db.GetCandidateBundle(candidateID)
-	if err != nil {
-		return domain.GateDecision{}, false, false, err
-	}
-	run, err := s.db.GetRun(bundle.Candidate.ImplementerRunID)
-	if err != nil {
-		return domain.GateDecision{}, false, false, err
-	}
-	attempt, err := s.db.GetAttempt(bundle.Candidate.ImplementerRunID, bundle.Candidate.ImplementerAttemptID)
-	if err != nil {
-		return domain.GateDecision{}, false, false, err
-	}
-	evaluation := quality.Evaluate(quality.Input{
-		Candidate: bundle.Candidate, Spec: bundle.Spec, Run: run, Attempt: attempt,
-		Verifications: bundle.Verifications, Reviews: bundle.Reviews,
-	})
-	if !evaluation.Final {
-		return evaluation.Decision, false, false, nil
-	}
-	decision, replayed, event, err := s.db.SaveGateDecision(ctx, evaluation.Decision, correlationID)
-	if err != nil {
-		return domain.GateDecision{}, false, false, err
-	}
-	if !replayed {
-		s.hub.Publish(event)
-		s.log.Info("quality gate decided",
-			"candidateId", decision.CandidateID,
-			"status", string(decision.Status),
-			"correlationId", correlationID)
-	}
-	return decision, true, replayed, nil
+	return domain.GateDecision{}, false, false, fmt.Errorf("%w: evidence kept changing during gate evaluation",
+		domain.ErrConflict)
 }
 
 // --- Worker: frozen spec retrieval and candidate registration ---

@@ -263,6 +263,7 @@ export interface GateDecision {
   specHash: string;
   policyRevision: string;
   status: string;
+  evidenceDigest?: string;
   reasons: string[];
   checks: CheckResult[];
   actor: string;

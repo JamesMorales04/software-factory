@@ -21,6 +21,7 @@ var criticalPathPrefixes = []string{
 	"core/cmd/factory-worker/",
 	"core/cmd/factory-verifier/",
 	"core/cmd/factory-reviewer/",
+	"scripts/",
 	".github/",
 	"AGENTS.md",
 	"docs/security/",

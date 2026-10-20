@@ -1,6 +1,8 @@
 package quality
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -95,6 +97,7 @@ func Evaluate(in Input) Evaluation {
 
 	decision.Checks = checks
 	decision.Reasons = boundedReasons(reasons)
+	decision.EvidenceDigest = EvidenceDigest(in.Verifications, in.Reviews)
 
 	final := len(in.Verifications) > 0 && len(in.Reviews) > 0
 	if !final {
@@ -104,6 +107,33 @@ func Evaluate(in Input) Evaluation {
 
 	decision.Status = aggregateStatus(checks, riskRank(string(riskClass)))
 	return Evaluation{Decision: decision, Final: true}
+}
+
+// EvidenceDigest binds one decision to the exact durable evidence set that
+// was evaluated. It prevents a stale evaluation from persisting after new
+// evidence committed concurrently.
+func EvidenceDigest(verifications []domain.VerificationEvidence, reviews []domain.ReviewEvidence) string {
+	verificationIDs := make([]string, 0, len(verifications))
+	for _, evidence := range verifications {
+		verificationIDs = append(verificationIDs, evidence.ID)
+	}
+	reviewIDs := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		reviewIDs = append(reviewIDs, review.ID)
+	}
+	return EvidenceIDDigest(verificationIDs, reviewIDs)
+}
+
+// EvidenceIDDigest is the identity-only form used by the store to verify
+// that the evaluated set is still the committed set at save time.
+func EvidenceIDDigest(verificationIDs, reviewIDs []string) string {
+	sortedVerifications := append([]string(nil), verificationIDs...)
+	sortedReviews := append([]string(nil), reviewIDs...)
+	sort.Strings(sortedVerifications)
+	sort.Strings(sortedReviews)
+	payload := "v:" + strings.Join(sortedVerifications, ",") + "|r:" + strings.Join(sortedReviews, ",")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
 }
 
 func identityCheck(in Input) (bool, string) {

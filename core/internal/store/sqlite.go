@@ -261,6 +261,7 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
 	spec_hash TEXT NOT NULL,
 	policy_revision TEXT NOT NULL,
 	status TEXT NOT NULL,
+	evidence_digest TEXT NOT NULL DEFAULT '',
 	reasons TEXT NOT NULL,
 	checks TEXT NOT NULL,
 	actor TEXT NOT NULL,
@@ -489,6 +490,30 @@ func (db *DB) migrateS4A() error {
 	if !present {
 		if _, err := db.sql.Exec(`ALTER TABLE runs ADD COLUMN spec_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add runs.spec_id: %w", err)
+		}
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('gate_decisions')`)
+	if err != nil {
+		return err
+	}
+	hasDigest := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "evidence_digest" {
+			hasDigest = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasDigest {
+		if _, err := db.sql.Exec(`ALTER TABLE gate_decisions ADD COLUMN evidence_digest TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add gate_decisions.evidence_digest: %w", err)
 		}
 	}
 	return nil

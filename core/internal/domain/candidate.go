@@ -231,6 +231,7 @@ type GateDecision struct {
 	SpecHash       string        `json:"specHash"`
 	PolicyRevision string        `json:"policyRevision"`
 	Status         GateStatus    `json:"status"`
+	EvidenceDigest string        `json:"evidenceDigest"`
 	Reasons        []string      `json:"reasons"`
 	Checks         []CheckResult `json:"checks"`
 	Actor          string        `json:"actor"`

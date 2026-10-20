@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	"github.com/JamesMorales04/software-factory/core/internal/quality"
 )
 
 // S4-A bounds for durable evidence lists.
@@ -40,7 +41,7 @@ const reviewColumns = `id, candidate_id, candidate_sha, spec_id, spec_hash,
 	idempotency_key, created_at`
 
 const decisionColumns = `id, candidate_id, candidate_sha, spec_id, spec_hash,
-	policy_revision, status, reasons, checks, actor, created_at`
+	policy_revision, status, evidence_digest, reasons, checks, actor, created_at`
 
 // CreateActionSpec freezes one ActionSpec. Repeated delivery of identical
 // normative content is an idempotent replay: no second row or event.
@@ -285,8 +286,11 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 
 	var priorID string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM candidates WHERE action_id=? AND state IN (?,?) ORDER BY frozen_at DESC, id DESC LIMIT 1`,
-		candidate.ActionID, string(domain.CandidateFrozen), string(domain.CandidateSuperseded)).Scan(&priorID)
+		`SELECT c.id FROM candidates c JOIN runs r ON r.id=c.implementer_run_id
+		 WHERE c.action_id=? AND c.state IN (?,?) AND r.status=?
+		 ORDER BY c.frozen_at DESC, c.id DESC LIMIT 1`,
+		candidate.ActionID, string(domain.CandidateFrozen), string(domain.CandidateSuperseded),
+		string(domain.RunSucceeded)).Scan(&priorID)
 	if err != nil && err != sql.ErrNoRows {
 		return domain.CandidateRevision{}, nil, err
 	}
@@ -834,6 +838,22 @@ func (db *DB) SaveGateDecision(ctx context.Context, decision domain.GateDecision
 	} else if rerr != sql.ErrNoRows {
 		return domain.GateDecision{}, false, domain.Event{}, rerr
 	}
+	verificationIDs, err := candidateEvidenceIDsTx(ctx, tx, "candidate_verifications", decision.CandidateID)
+	if err != nil {
+		return domain.GateDecision{}, false, domain.Event{}, err
+	}
+	reviewIDs, err := candidateEvidenceIDsTx(ctx, tx, "candidate_reviews", decision.CandidateID)
+	if err != nil {
+		return domain.GateDecision{}, false, domain.Event{}, err
+	}
+	if len(verificationIDs) == 0 || len(reviewIDs) == 0 {
+		return domain.GateDecision{}, false, domain.Event{}, fmt.Errorf("%w: a final decision requires verifier and reviewer evidence",
+			domain.ErrInvalidInput)
+	}
+	if got := quality.EvidenceIDDigest(verificationIDs, reviewIDs); got != decision.EvidenceDigest {
+		return domain.GateDecision{}, false, domain.Event{}, fmt.Errorf("%w: evidence changed during gate evaluation; re-evaluate",
+			domain.ErrConflict)
+	}
 	decision.ID = newID()
 	decision.CreatedAt = now
 	reasons, err := json.Marshal(decision.Reasons)
@@ -846,11 +866,12 @@ func (db *DB) SaveGateDecision(ctx context.Context, decision domain.GateDecision
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO gate_decisions(id, candidate_id, candidate_sha, spec_id,
-		 spec_hash, policy_revision, status, reasons, checks, actor, created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		 spec_hash, policy_revision, status, evidence_digest, reasons, checks,
+		 actor, created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		decision.ID, decision.CandidateID, decision.CandidateSHA, decision.SpecID,
 		decision.SpecHash, decision.PolicyRevision, string(decision.Status),
-		string(reasons), string(checks), decision.Actor, stamp(now),
+		decision.EvidenceDigest, string(reasons), string(checks), decision.Actor, stamp(now),
 	); err != nil {
 		return domain.GateDecision{}, false, domain.Event{}, fmt.Errorf("insert gate decision: %w", err)
 	}
@@ -1066,7 +1087,8 @@ func scanDecision(row interface {
 	var status, reasons, checks, created string
 	if err := row.Scan(
 		&d.ID, &d.CandidateID, &d.CandidateSHA, &d.SpecID, &d.SpecHash,
-		&d.PolicyRevision, &status, &reasons, &checks, &d.Actor, &created,
+		&d.PolicyRevision, &status, &d.EvidenceDigest, &reasons, &checks,
+		&d.Actor, &created,
 	); err != nil {
 		return domain.GateDecision{}, err
 	}
@@ -1079,6 +1101,26 @@ func scanDecision(row interface {
 	d.Status = domain.GateStatus(status)
 	d.CreatedAt = parseStamp(created)
 	return d, nil
+}
+
+// candidateEvidenceIDsTx lists durable evidence IDs for one candidate. The
+// table name is a private constant supplied by this file, never user input.
+func candidateEvidenceIDsTx(ctx context.Context, tx *sql.Tx, table, candidateID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id FROM `+table+` WHERE candidate_id=? ORDER BY id`, candidateID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func hasGateDecisionTx(ctx context.Context, tx *sql.Tx, candidateID string) (bool, error) {
