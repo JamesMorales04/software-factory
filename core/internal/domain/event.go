@@ -98,3 +98,42 @@ func (e Event) Validate() error {
 	}
 	return nil
 }
+
+// Projected returns a copy safe for UI/read projections. S3-B persisted a
+// truncated source diff excerpt inside some result/event payloads; S3-C no
+// longer collects it, and this projection stops legacy excerpts from
+// crossing the read boundary. The durable ledger is never rewritten or
+// deleted — only this returned copy is filtered.
+func (e Event) Projected() Event {
+	e.Payload = projectPayload(e.Payload)
+	return e
+}
+
+func projectPayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for key, value := range payload {
+		if key == "diffExcerpt" {
+			continue
+		}
+		out[key] = projectValue(value)
+	}
+	return out
+}
+
+func projectValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return projectPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = projectValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}

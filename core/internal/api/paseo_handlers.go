@@ -49,6 +49,55 @@ func (s *Server) handleListOrphanedSessions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 
+// handleListAllSessions is the read-only cross-Run projection behind the
+// Office Agents view. It returns bounded binding snapshots with the owning
+// Run status and the ledger head as an SSE start cursor. No prompt,
+// transcript, credential or source body is exposed: the projection is built
+// from the durable binding row, not from external Paseo output.
+func (s *Server) handleListAllSessions(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var status domain.PaseoSessionStatus
+	if raw := strings.TrimSpace(q.Get("status")); raw != "" {
+		parsed, err := domain.ParsePaseoSessionStatus(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", "status must be one of intended|active|succeeded|failed|cancelled|orphaned")
+			return
+		}
+		status = parsed
+	}
+	provider := strings.TrimSpace(q.Get("provider"))
+	if len(provider) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid", "provider filter exceeds 64 characters")
+		return
+	}
+	limit := 100
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > 200 {
+			writeError(w, http.StatusBadRequest, "invalid", "limit must be an integer 1..200")
+			return
+		}
+		limit = n
+	}
+	// Read the cursor before the snapshot. Any event committed after this
+	// point is delivered by the stream, so a session update cannot fall
+	// into the gap between "snapshot read" and "stream start".
+	cursor, err := s.db.LatestEventSeq()
+	if err != nil {
+		mapDomainError(w, err, s.log, "read event cursor")
+		return
+	}
+	sessions, err := s.db.ListPaseoSessionSummaries(status, provider, limit)
+	if err != nil {
+		mapDomainError(w, err, s.log, "list sessions")
+		return
+	}
+	if sessions == nil {
+		sessions = []domain.PaseoSessionSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions, "eventCursor": cursor})
+}
+
 // --- Worker protocol: durable Paseo session identity (scoped worker token) ---
 
 type sessionIdentityRequest struct {

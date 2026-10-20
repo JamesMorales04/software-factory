@@ -98,6 +98,17 @@ export interface PaseoSession {
   updatedAt: string;
 }
 
+export interface PaseoSessionSummary extends PaseoSession {
+  /** Current status of the Run that owns this binding. */
+  runStatus: string;
+}
+
+export interface PaseoSessionList {
+  sessions: PaseoSessionSummary[];
+  /** Durable ledger head at snapshot time; used as the SSE start cursor. */
+  eventCursor: number;
+}
+
 export interface Attempt {
   id: string;
   runId: string;
@@ -270,6 +281,18 @@ export const api = {
     request<{ sessions: PaseoSession[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/sessions`,
     ).then((r) => r.data.sessions),
+  listAllSessions: (
+    params: { status?: string; provider?: string; limit?: number } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.provider) q.set("provider", params.provider);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<PaseoSessionList>(`/api/v1/sessions${suffix}`).then(
+      (r) => r.data,
+    );
+  },
   listWorkers: () =>
     request<{ workers: Worker[] }>(`/api/v1/workers`).then(
       (r) => r.data.workers,

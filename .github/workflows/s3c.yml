@@ -1,0 +1,35 @@
+# F1-S3-C acceptance gates. Same toolchain pins as S1 (core/go.mod +
+# tool directive, office/package.json + lockfiles). Unit/contract/recovery
+# tests already run in s1.yml's core job (`go test -race ./...`); this job
+# adds the S3-C observability journey through real Core + Worker + Chromium
+# with a deterministic stubbed `paseo` CLI. No Paseo daemon, no provider
+# calls, no paid sessions.
+name: s3c
+"on":
+  push:
+    branches: [main, "f1-*"]
+  pull_request:
+
+jobs:
+  s3c-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - name: Install Chrome for Testing
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+      - name: S3-C observability, reload/reconnect, orphan, restart durability
+        env:
+          FACTORY_S3C_STRICT: "1"
+          CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: bash scripts/e2e-s3c.sh

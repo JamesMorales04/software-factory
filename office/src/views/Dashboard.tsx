@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../api";
+import { StreamStateBadge } from "../components/StreamStateBadge";
 import { useEventStream } from "../useEventStream";
 
 export function Dashboard() {
@@ -94,8 +95,8 @@ export function Dashboard() {
         <div className="card">
           <h3>Event stream</h3>
           <p>
-            state: <span className={`pill ${state}`}>{state}</span> ·{" "}
-            {events.length} events observed this session
+            state: <StreamStateBadge state={state} /> · {events.length} events
+            observed this session
           </p>
         </div>
       </section>

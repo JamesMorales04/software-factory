@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -254,6 +255,126 @@ func TestPaseoOrphanQueueExposedToOperators(t *testing.T) {
 	// Worker token never grants operator observations.
 	if rec := serveRun(t, h, "GET", "/api/v1/sessions/orphaned", "", testWorkerToken); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("orphan queue with worker token: got %d, want 401", rec.Code)
+	}
+}
+
+func decodeSessionList(t *testing.T, rec *httptest.ResponseRecorder) ([]domain.PaseoSessionSummary, int64) {
+	t.Helper()
+	var out struct {
+		Sessions    []domain.PaseoSessionSummary `json:"sessions"`
+		EventCursor int64                        `json:"eventCursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode session list: %v (%s)", err, rec.Body.String())
+	}
+	return out.Sessions, out.EventCursor
+}
+
+func bindSessionForTest(t *testing.T, h http.Handler, run domain.Run, attempt domain.Attempt, worker, workspaceID, sessionID string) {
+	t.Helper()
+	intend := `{"workerId":"` + worker + `","runId":"` + run.ID + `","attemptId":"` + attempt.ID + `","generation":1}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/intend", intend, testWorkerToken); rec.Code != http.StatusCreated {
+		t.Fatalf("intend: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	bind := `{"workerId":"` + worker + `","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"workspaceId":"` + workspaceID + `","sessionId":"` + sessionID + `"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/bind", bind, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("bind: got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPaseoSessionListingProjectionOverHTTP covers the S3-C read-only
+// cross-Run projection: live-first ordering, exact filters, bounded limits,
+// scoped authorization and the event cursor used to start the live stream.
+func TestPaseoSessionListingProjectionOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+
+	rec := serveRun(t, h, "GET", "/api/v1/sessions", "", testToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty session list: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	sessions, cursor := decodeSessionList(t, rec)
+	if len(sessions) != 0 {
+		t.Fatalf("want empty session list, got %+v", sessions)
+	}
+	if cursor < 0 {
+		t.Fatalf("event cursor must be non-negative, got %d", cursor)
+	}
+
+	// Terminal codex session.
+	runA := queuePaseoRun(t, h, "")
+	attemptA := startPaseoAttempt(t, h, runA, "s3c-a")
+	bindSessionForTest(t, h, runA, attemptA, "s3c-a", "ws_a", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaa1")
+	closeA := `{"workerId":"s3c-a","runId":"` + runA.ID + `","attemptId":"` + attemptA.ID +
+		`","generation":1,"outcome":"succeeded"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/close", closeA, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("close A: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	reportA := `{"workerId":"s3c-a","runId":"` + runA.ID + `","attemptId":"` + attemptA.ID +
+		`","generation":1,"outcome":"completed","output":{"diffBytes":12,"testExit":0,"formatExit":0}}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/report", reportA, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("report A: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Live OpenCode session for provider filtering and live-first ordering.
+	bodyB := `{"workloadKind":"paseo-task","workloadInput":{"task":"add multiply"},"executionMode":"trusted-local","provider":"opencode","model":"opencode-go/deepseek-v4.1-flash","paseoMode":"build"}`
+	rec = serveRun(t, h, "POST", "/api/v1/runs", bodyB, testToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("queue opencode run: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	runB, _ := decodeRunBody(t, rec)
+	attemptB := startPaseoAttempt(t, h, runB, "s3c-b")
+	bindSessionForTest(t, h, runB, attemptB, "s3c-b", "ws_b", "bbbbbbbb-2222-4222-8222-bbbbbbbbbbb2")
+
+	sessions, cursor = decodeSessionList(t, serveRun(t, h, "GET", "/api/v1/sessions", "", testToken))
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 sessions, got %d (%+v)", len(sessions), sessions)
+	}
+	if sessions[0].RunID != runB.ID || sessions[0].Status != domain.PaseoActive {
+		t.Fatalf("live session must sort first: %+v", sessions[0])
+	}
+	if sessions[0].RunStatus != domain.RunRunning {
+		t.Fatalf("live session runStatus = %s, want running", sessions[0].RunStatus)
+	}
+	if sessions[1].RunID != runA.ID || sessions[1].Status != domain.PaseoSucceeded ||
+		sessions[1].RunStatus != domain.RunSucceeded {
+		t.Fatalf("terminal session projection wrong: %+v", sessions[1])
+	}
+	if cursor < 1 {
+		t.Fatalf("event cursor must advance after committed events, got %d", cursor)
+	}
+
+	sessions, _ = decodeSessionList(t, serveRun(t, h, "GET", "/api/v1/sessions?provider=codex", "", testToken))
+	if len(sessions) != 1 || sessions[0].RunID != runA.ID {
+		t.Fatalf("provider filter wrong: %+v", sessions)
+	}
+	sessions, _ = decodeSessionList(t, serveRun(t, h, "GET", "/api/v1/sessions?provider=opencode", "", testToken))
+	if len(sessions) != 1 || sessions[0].RunID != runB.ID {
+		t.Fatalf("provider filter wrong: %+v", sessions)
+	}
+	sessions, _ = decodeSessionList(t, serveRun(t, h, "GET", "/api/v1/sessions?status=active", "", testToken))
+	if len(sessions) != 1 || sessions[0].RunID != runB.ID {
+		t.Fatalf("status filter wrong: %+v", sessions)
+	}
+	sessions, _ = decodeSessionList(t, serveRun(t, h, "GET", "/api/v1/sessions?status=succeeded&limit=1", "", testToken))
+	if len(sessions) != 1 || sessions[0].RunID != runA.ID {
+		t.Fatalf("status+limit filter wrong: %+v", sessions)
+	}
+
+	for _, url := range []string{
+		"/api/v1/sessions?status=bogus",
+		"/api/v1/sessions?limit=0",
+		"/api/v1/sessions?limit=201",
+		"/api/v1/sessions?limit=abc",
+		"/api/v1/sessions?provider=" + strings.Repeat("x", 65),
+	} {
+		if rec := serveRun(t, h, "GET", url, "", testToken); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: got %d, want 400", url, rec.Code)
+		}
+	}
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions", "", testWorkerToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("worker token must not read operator session projection: got %d", rec.Code)
 	}
 }
 

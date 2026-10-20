@@ -1,14 +1,17 @@
-# Factory Office (F1-S1 + F1-S2)
+# Factory Office (F1-S1 … F1-S3-C)
 
 React + TypeScript UI over the Core API and durable event ledger.
 Renders server-authoritative state only: Dashboard, Actions, Runs (queue a
-safe synthetic Run, watch its lifecycle, cancel), Run detail (Attempts +
-event lineage), Workers (observed liveness only — never fabricated
-activity), and the Agents view, which honestly reports no autonomous
-sessions while SEC-01 is blocked.
+safe synthetic Run, watch its lifecycle, cancel), Run detail (Attempts,
+per-Attempt Paseo session bindings, bounded evidence and lifecycle
+lineage), Workers (observed liveness only — never fabricated activity),
+and Agents (real recorded Paseo sessions, live and historical, with
+`TRUSTED_LOCAL` labels and explicit disconnected/orphaned states).
+
 Browser journeys: `office/e2e-browser/journey.mjs` (S1),
-`office/e2e-browser/s2-journey.mjs` (S2 Runs/Workers), runnable via
-`scripts/e2e-s2-browser.sh` from the repo root.
+`office/e2e-browser/s2-journey.mjs` (S2 Runs/Workers), and
+`office/e2e-browser/s3c-journey.mjs` (S3-C Agents/Run session
+observability), runnable via their scripts from the repo root.
 
 ## Toolchain (pinned in `package.json` + `package-lock.json`)
 

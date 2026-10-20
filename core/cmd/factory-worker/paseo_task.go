@@ -314,7 +314,6 @@ func runPaseoLifecycle(
 		"toolSteps":     evidence.toolSteps,
 		"diffStat":      evidence.diffStat,
 		"diffBytes":     evidence.diffBytes,
-		"diffExcerpt":   evidence.diffExcerpt,
 		"testExit":      evidence.testExit,
 		"formatExit":    evidence.formatExit,
 		"nudges":        nudges,

@@ -128,6 +128,14 @@ func (db *DB) ListAggregateEvents(aggType, aggID string) ([]domain.Event, error)
 	return out, rows.Err()
 }
 
+// LatestEventSeq reports the committed ledger head. Read-only projections
+// use it as an SSE start cursor so a client can follow live events without
+// replaying the entire history just to populate a snapshot.
+func (db *DB) LatestEventSeq() (int64, error) {
+	var seq int64
+	return seq, db.sql.QueryRow(`SELECT COALESCE(MAX(global_seq), 0) FROM events`).Scan(&seq)
+}
+
 // CountEvents reports the ledger size (acceptance oracle).
 func (db *DB) CountEvents() (int, error) {
 	var n int

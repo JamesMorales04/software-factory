@@ -169,6 +169,16 @@ type PaseoBinding struct {
 	UpdatedAt       time.Time          `json:"updatedAt"`
 }
 
+// PaseoSessionSummary is the read-only cross-Run projection the Office
+// Agents view renders. It embeds the authoritative binding row and adds the
+// owning Run's current status; it is a snapshot, never a second source of
+// truth. No prompt, transcript, credential or source body is part of this
+// projection.
+type PaseoSessionSummary struct {
+	PaseoBinding
+	RunStatus RunStatus `json:"runStatus"`
+}
+
 // ValidatePaseoIdentity checks a Paseo workspace/session identifier shape:
 // non-empty, bounded, opaque token charset. It does not interpret Paseo's
 // internal ID allocation.

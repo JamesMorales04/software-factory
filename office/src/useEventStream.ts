@@ -38,7 +38,9 @@ function sleepWithAbort(signal: AbortSignal, ms: number): Promise<void> {
 export function useEventStream(
   fromSeq = 0,
   filter?: (e: FactoryEvent) => boolean,
+  options: { enabled?: boolean } = {},
 ) {
+  const enabled = options.enabled ?? true;
   const [events, setEvents] = useState<FactoryEvent[]>([]);
   const [state, setState] = useState<StreamState>("connecting");
   const cursorRef = useRef(fromSeq);
@@ -50,6 +52,11 @@ export function useEventStream(
   });
 
   useEffect(() => {
+    if (!enabled) {
+      setEvents([]);
+      setState("connecting");
+      return;
+    }
     const controller = new AbortController();
     const { signal } = controller;
     cursorRef.current = fromSeq;
@@ -203,7 +210,7 @@ export function useEventStream(
     return () => {
       controller.abort();
     };
-  }, [fromSeq]);
+  }, [fromSeq, enabled]);
 
   return { events, state };
 }
