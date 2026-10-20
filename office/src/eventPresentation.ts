@@ -20,6 +20,13 @@ const EVENT_LABELS: Record<string, string> = {
   PaseoSessionRecoveryRecorded: "Paseo session recovery recorded",
   ActionCreated: "Action created",
   ActionTransitioned: "Action transitioned",
+  ActionSpecFrozen: "ActionSpec frozen",
+  CandidateFrozen: "Candidate frozen",
+  CandidateSuperseded: "Candidate superseded",
+  CandidateRejected: "Candidate rejected",
+  VerificationRecorded: "Independent verification recorded",
+  ReviewRecorded: "Independent review recorded",
+  QualityGateDecided: "Quality Gate decided",
 };
 
 function text(value: unknown, max = 160): string {
@@ -88,6 +95,27 @@ export function presentEvent(event: FactoryEvent): {
       break;
     case "ActionTransitioned":
       parts.push(text(p.from), text(p.to));
+      break;
+    case "ActionSpecFrozen":
+      parts.push(text(p.specId), text(p.contentHash), text(p.qualityProfile));
+      break;
+    case "CandidateFrozen":
+      parts.push(text(p.candidateId), text(p.commitSha), text(p.riskClass));
+      break;
+    case "CandidateSuperseded":
+      parts.push(text(p.candidateId), text(p.supersededBy), text(p.reason));
+      break;
+    case "CandidateRejected":
+      parts.push(text(p.candidateId), text(p.reason));
+      break;
+    case "VerificationRecorded":
+      parts.push(text(p.candidateId), text(p.actor), text(p.status));
+      break;
+    case "ReviewRecorded":
+      parts.push(text(p.candidateId), text(p.actor), text(p.verdict));
+      break;
+    case "QualityGateDecided":
+      parts.push(text(p.candidateId), text(p.status));
       break;
     case "PaseoSessionSucceeded":
     case "PaseoSessionFailed":

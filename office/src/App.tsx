@@ -56,7 +56,7 @@ export function App() {
           <Link to="/" className="brand">
             Factory Office
           </Link>{" "}
-          <span className="muted">S3-C</span>
+          <span className="muted">S4-A</span>
         </h1>
         <nav>
           <NavLink

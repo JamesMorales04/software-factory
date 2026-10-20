@@ -1,0 +1,133 @@
+{
+  "campaign": "F1-S4-A",
+  "recordedAt": "2026-10-20",
+  "executionMode": "trusted-local",
+  "isolationLabel": "TRUSTED_LOCAL broad local access; not isolated or SEC-01 certified",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "paseoMode": "build",
+  "actionId": "e175ab4882a9e4a0692c9ce0fb6d8745",
+  "specId": "0267424bf2e42ebe62893ed84ab1558b",
+  "specHash": "0d8ba37aad1095f1a7209df47e14e687dbb4093819bfbac32ee170b36019123c",
+  "runId": "24d2120d018d7176301ec8005e04b1f1",
+  "attemptId": "22ccfac8b47666c218489c25eaa66952",
+  "generation": 1,
+  "workerId": "live-s4a",
+  "paseoSessionId": "e5349124-64d7-43c6-aa96-ba878ebf9ef9",
+  "paseoWorkspaceId": "wks_36ac46a9875ab78e",
+  "candidateId": "f120900cb651e574925c78f4a26a093b",
+  "commitSha": "7d6d894bf0f561afc995e46018a94a2e84ca603b",
+  "treeSha": "d347bb34bf6c4b1653480cfc214c4bf76ab0de1d",
+  "contentDigest": "198c2187561cbbcf787c11bc45f98bf8ef407b0db81c9c7aacf7f1e5a93e4c84",
+  "baseRevision": "83b43a8398e70714dc0a3bcdca23cf137bf7c913",
+  "changedPaths": [
+    "add.js",
+    "app.js"
+  ],
+  "riskClass": "R0",
+  "verifier": {
+    "actor": "verifier-live",
+    "authority": "verifier",
+    "cleanResource": "git-clone:7d6d894bf0f5",
+    "checks": [
+      {
+        "id": "browser",
+        "kind": "browser",
+        "status": "PASS",
+        "exitCode": 0,
+        "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+      },
+      {
+        "id": "format",
+        "kind": "format",
+        "status": "PASS",
+        "exitCode": 0,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "functional",
+        "kind": "functional",
+        "status": "PASS",
+        "exitCode": 0,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "negative",
+        "kind": "negative",
+        "status": "PASS",
+        "exitCode": 0,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "test",
+        "kind": "test",
+        "status": "PASS",
+        "exitCode": 0,
+        "detail": "exit 0 as expected"
+      }
+    ]
+  },
+  "reviewer": {
+    "actor": "reviewer-live",
+    "authority": "reviewer",
+    "verdict": "APPROVE",
+    "findings": []
+  },
+  "gate": {
+    "id": "406b4551a63b2e2fb866fff19351bacb",
+    "status": "ACCEPTED",
+    "actor": "core-quality-gate",
+    "checks": [
+      {
+        "id": "gate-identity",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-scope",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-freshness",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-independence",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-security",
+        "status": "PASS"
+      },
+      {
+        "id": "format",
+        "status": "PASS"
+      },
+      {
+        "id": "test",
+        "status": "PASS"
+      },
+      {
+        "id": "functional",
+        "status": "PASS"
+      },
+      {
+        "id": "browser",
+        "status": "PASS"
+      },
+      {
+        "id": "negative",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-review",
+        "status": "PASS"
+      }
+    ]
+  },
+  "cleanup": {
+    "sessionArchived": true,
+    "workspaceAbsentFromActiveListing": true,
+    "note": "verified with paseo inspect and paseo workspace ls after the run"
+  },
+  "paidSessions": 1
+}

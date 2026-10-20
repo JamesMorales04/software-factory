@@ -1,6 +1,8 @@
 # Mandatory global Quality Baseline
 
-**Decision:** accepted. **Implementation:** not started / not certified.
+**Decision:** accepted. **Implementation:** F1-S4-A quality pipeline implemented
+and exercised by `scripts/e2e-s4a.sh`; final candidate-bound acceptance is
+recorded in the campaign PR. Not certified beyond the recorded evidence.
 
 ## Universal acceptance invariants
 
@@ -32,6 +34,14 @@ While internal APIs are experimental, remove superseded code instead of preservi
 - **R3:** authority, secrets, sandbox, policy/Quality Gate, merge logic or live Core upgrades; strictly protected process.
 
 Recalculate risk from the **final diff**. A proposal labeled R0 does not grant merge authority. Immediately before delivery, recheck candidate SHA, policy, CI, review, GitHub branch protections and authorization. Only the Core Delivery Engine owns merge credentials; coding agents do not.
+
+## Browser acceptance (additive)
+
+When a frozen spec includes a `browser` check, real Chromium is a mandatory
+independent check. Browser tooling absence is `NOT_TESTED`/`BLOCKED`; a saved
+screenshot or CLI exit alone is never PASS. The browser cannot override identity,
+scope, functional or reviewer requirements. See
+[browser automation](../engineering/browser-automation.md).
 
 ## Independent real-user verification
 

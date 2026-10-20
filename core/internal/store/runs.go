@@ -16,7 +16,7 @@ import (
 const runColumns = `id, project_id, action_id, workload_kind, workload_input,
 	status, attempt_count, max_attempts, timeout_secs, lease_owner,
 	lease_generation, lease_expires_at, result, error, execution_mode,
-	provider, model, paseo_mode, created_at, updated_at`
+	provider, model, paseo_mode, spec_id, created_at, updated_at`
 
 // runColumnsR is the alias-qualified form used by dispatch eligibility
 // queries with correlated subqueries.
@@ -24,7 +24,7 @@ const runColumnsR = `r.id, r.project_id, r.action_id, r.workload_kind,
 	r.workload_input, r.status, r.attempt_count, r.max_attempts,
 	r.timeout_secs, r.lease_owner, r.lease_generation, r.lease_expires_at,
 	r.result, r.error, r.execution_mode, r.provider, r.model, r.paseo_mode,
-	r.created_at, r.updated_at`
+	r.spec_id, r.created_at, r.updated_at`
 
 const attemptColumns = `id, run_id, seq, worker_id, lease_generation,
 	status, heartbeats, result, error, created_at, updated_at`
@@ -43,7 +43,7 @@ func scanRun(row interface {
 		&r.ID, &r.ProjectID, &actionID, &r.WorkloadKind, &workloadInput,
 		&status, &r.AttemptCount, &r.MaxAttempts, &r.TimeoutSecs, &r.LeaseOwner,
 		&r.LeaseGeneration, &leaseExpires, &result, &r.Error, &r.ExecutionMode,
-		&r.Provider, &r.Model, &r.PaseoMode, &created, &updated,
+		&r.Provider, &r.Model, &r.PaseoMode, &r.SpecID, &created, &updated,
 	)
 	if err != nil {
 		return domain.Run{}, err
@@ -137,6 +137,20 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 			return domain.Run{}, domain.Event{}, err
 		}
 	}
+	if params.SpecID != "" {
+		var specProject, specAction string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT project_id, action_id FROM action_specs WHERE id=?`, params.SpecID).Scan(&specProject, &specAction); err != nil {
+			if err == sql.ErrNoRows {
+				return domain.Run{}, domain.Event{}, fmt.Errorf("%w: unknown specId %q", domain.ErrInvalidInput, params.SpecID)
+			}
+			return domain.Run{}, domain.Event{}, err
+		}
+		if specProject != params.ProjectID || specAction != params.ActionID {
+			return domain.Run{}, domain.Event{}, fmt.Errorf("%w: spec does not authorize this project/action",
+				domain.ErrUnauthorized)
+		}
+	}
 
 	run := domain.Run{
 		ID:            newID(),
@@ -151,6 +165,7 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		Provider:      params.Provider,
 		Model:         params.Model,
 		PaseoMode:     params.PaseoMode,
+		SpecID:        params.SpecID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -164,12 +179,12 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		`INSERT INTO runs(id, project_id, action_id, workload_kind, workload_input,
 		 status, attempt_count, max_attempts, timeout_secs, lease_owner,
 		 lease_generation, lease_expires_at, result, error, execution_mode,
-		 provider, model, paseo_mode, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 provider, model, paseo_mode, spec_id, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.ProjectID, actionID, run.WorkloadKind, encodeMap(run.WorkloadInput),
 		string(run.Status), 0, run.MaxAttempts, run.TimeoutSecs, "", 0, "",
 		"{}", "", run.ExecutionMode, run.Provider, run.Model, run.PaseoMode,
-		stamp(now), stamp(now),
+		run.SpecID, stamp(now), stamp(now),
 	); err != nil {
 		return domain.Run{}, domain.Event{}, fmt.Errorf("insert run: %w", err)
 	}
@@ -183,6 +198,7 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		"provider":      run.Provider,
 		"model":         run.Model,
 		"paseoMode":     run.PaseoMode,
+		"specId":        run.SpecID,
 	})
 	event := domain.Event{
 		EventID:       newID(),
@@ -622,6 +638,30 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		return domain.Run{}, false, nil, domain.ErrAttemptNotActive
 	}
 
+	candidateID, err := requireFrozenCandidateTx(ctx, tx, run, attempt, outcome)
+	if err != nil {
+		return domain.Run{}, false, nil, err
+	}
+	if candidateID != "" {
+		sanitized["candidateId"] = candidateID
+	}
+
+	var candidateEvents []domain.Event
+	if outcome == domain.OutcomeCompleted {
+		candidateEvents, err = confirmCandidateForAttemptTx(ctx, tx, run, attempt, candidateID, workerID, correlationID, now)
+		if err != nil {
+			return domain.Run{}, false, nil, err
+		}
+	} else {
+		rejected, rerr := rejectCandidateForAttemptTx(ctx, tx, attempt.ID, workerID, correlationID, reason, now)
+		if rerr != nil {
+			return domain.Run{}, false, nil, rerr
+		}
+		if rejected != nil {
+			candidateEvents = append(candidateEvents, *rejected)
+		}
+	}
+
 	var bindingEvents []domain.Event
 	if run.WorkloadKind == domain.PaseoTaskKind {
 		settled, serr := settleBindingForReportTx(ctx, tx, attempt, outcome, workerID, correlationID, now)
@@ -676,7 +716,7 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		if err != nil {
 			return domain.Run{}, false, nil, err
 		}
-		return updated, false, append(bindingEvents, reported), nil
+		return updated, false, append(bindingEvents, append(candidateEvents, reported)...), nil
 	case domain.OutcomeFailed:
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE attempts SET status=?, error=?, updated_at=? WHERE id=?`,
@@ -722,10 +762,116 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		if err != nil {
 			return domain.Run{}, false, nil, err
 		}
-		return updated, false, append(bindingEvents, failedEvent), nil
+		return updated, false, append(bindingEvents, append(candidateEvents, failedEvent)...), nil
 	default:
 		return domain.Run{}, false, nil, fmt.Errorf("%w: unknown outcome %q", domain.ErrInvalidInput, outcome)
 	}
+}
+
+// requireFrozenCandidateTx enforces the S4-A invariant that a spec-bound
+// Implementer Run cannot complete without an already-frozen immutable
+// candidate for the exact Attempt generation. The candidate is registered
+// and independently validated by the Core before this report.
+func requireFrozenCandidateTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt domain.Attempt, outcome domain.ReportOutcome) (string, error) {
+	if run.SpecID == "" || outcome != domain.OutcomeCompleted {
+		return "", nil
+	}
+	candidate, err := scanCandidate(tx.QueryRowContext(ctx,
+		`SELECT `+candidateColumns+` FROM candidates WHERE implementer_attempt_id=?`, attempt.ID))
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("%w: spec-bound completion requires a frozen candidate revision for this attempt",
+			domain.ErrInvalidInput)
+	}
+	if err != nil {
+		return "", err
+	}
+	if candidate.State != domain.CandidateFrozen || candidate.SpecID != run.SpecID ||
+		candidate.ImplementerGeneration != attempt.LeaseGeneration ||
+		candidate.ImplementerWorkerID != attempt.WorkerID {
+		return "", fmt.Errorf("%w: frozen candidate does not match this attempt generation",
+			domain.ErrInvalidInput)
+	}
+	return candidate.ID, nil
+}
+
+// confirmCandidateForAttemptTx supersedes prior frozen candidates only when
+// the Implementer Run has actually completed successfully. A candidate that
+// was frozen before report but whose report never succeeds cannot displace a
+// prior valid candidate.
+func confirmCandidateForAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt domain.Attempt, candidateID, workerID, correlationID string, now time.Time) ([]domain.Event, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT c.id FROM candidates c JOIN runs r ON r.id=c.implementer_run_id
+		 WHERE c.action_id=? AND c.id<>? AND c.state=? AND r.status=?
+		 ORDER BY c.frozen_at ASC, c.id ASC`,
+		run.ActionID, candidateID, string(domain.CandidateFrozen), string(domain.RunSucceeded))
+	if err != nil {
+		return nil, err
+	}
+	var priorIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		priorIDs = append(priorIDs, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var events []domain.Event
+	for _, priorID := range priorIDs {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE candidates SET state=?, superseded_at=? WHERE id=?`,
+			string(domain.CandidateSuperseded), stamp(now), priorID,
+		); err != nil {
+			return nil, err
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"candidateId": priorID, "supersededBy": candidateID, "reason": "successful-newer-candidate",
+			"runId": run.ID, "attemptId": attempt.ID, "generation": attempt.LeaseGeneration,
+		})
+		event, err := appendCandidateEvent(ctx, tx, domain.EventCandidateSuperseded, priorID, workerID, correlationID, now, mustDecode(payload))
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+// rejectCandidateForAttemptTx marks a frozen candidate rejected when its
+// Attempt/Run fails, expires, times out or is cancelled. The durable row is
+// retained for audit but can never acquire verifier/reviewer evidence.
+func rejectCandidateForAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, actor, correlationID, reason string, now time.Time) (*domain.Event, error) {
+	candidate, err := scanCandidate(tx.QueryRowContext(ctx,
+		`SELECT `+candidateColumns+` FROM candidates WHERE implementer_attempt_id=?`, attemptID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if candidate.State != domain.CandidateFrozen {
+		return nil, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE candidates SET state=? WHERE id=?`,
+		string(domain.CandidateRejected), candidate.ID,
+	); err != nil {
+		return nil, err
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"candidateId": candidate.ID, "runId": candidate.ImplementerRunID,
+		"attemptId":  candidate.ImplementerAttemptID,
+		"generation": candidate.ImplementerGeneration, "reason": reason,
+	})
+	event, err := appendCandidateEvent(ctx, tx, domain.EventCandidateRejected, candidate.ID, actor, correlationID, now, mustDecode(payload))
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
 }
 
 // cleanupUnconfirmed reports whether a completed paseo-task result records
@@ -858,6 +1004,13 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 				string(domain.AttemptCancelled), stamp(now), a.ID,
 			); err != nil {
 				return domain.Run{}, nil, err
+			}
+			rejected, rerr := rejectCandidateForAttemptTx(ctx, tx, a.ID, ActorLocalOperator, correlationID, "run-cancelled", now)
+			if rerr != nil {
+				return domain.Run{}, nil, rerr
+			}
+			if rejected != nil {
+				emitted = append(emitted, *rejected)
 			}
 			// A live session binding must not be misreported by Core-side
 			// cancellation: orphan it here, in the same transaction as the
@@ -1054,6 +1207,13 @@ func expireAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt do
 		return nil, err
 	}
 	out := []domain.Event{expired}
+	rejected, err := rejectCandidateForAttemptTx(ctx, tx, attempt.ID, "core", "", reason, now)
+	if err != nil {
+		return nil, err
+	}
+	if rejected != nil {
+		out = append(out, *rejected)
+	}
 	if orphaned, err := orphanBindingForAttemptTx(ctx, tx, attempt, reason, now); err != nil {
 		return nil, err
 	} else if orphaned != nil {
@@ -1103,6 +1263,13 @@ func timeoutAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt d
 		return nil, err
 	}
 	out := []domain.Event{timedOut}
+	rejected, err := rejectCandidateForAttemptTx(ctx, tx, attempt.ID, "core", "", "timeout", now)
+	if err != nil {
+		return nil, err
+	}
+	if rejected != nil {
+		out = append(out, *rejected)
+	}
 	if orphaned, err := orphanBindingForAttemptTx(ctx, tx, attempt, reason, now); err != nil {
 		return nil, err
 	} else if orphaned != nil {

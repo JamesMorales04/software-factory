@@ -1,0 +1,10 @@
+{
+  "name": "factory-s4a-ui-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test add.test.js",
+    "format": "node --check add.js && node --check app.js && node --check browser-check.mjs"
+  }
+}

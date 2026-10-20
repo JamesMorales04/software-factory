@@ -42,15 +42,30 @@ const (
 	EventPaseoSessionRecoveryRecorded = "PaseoSessionRecoveryRecorded"
 )
 
+// S4-A event types for the frozen specification, immutable candidate,
+// independent evidence and the Core Quality Gate. Candidate events are
+// recorded on the candidate aggregate so replay preserves exact lineage.
+const (
+	EventActionSpecFrozen     = "ActionSpecFrozen"
+	EventCandidateFrozen      = "CandidateFrozen"
+	EventCandidateSuperseded  = "CandidateSuperseded"
+	EventCandidateRejected    = "CandidateRejected"
+	EventVerificationRecorded = "VerificationRecorded"
+	EventReviewRecorded       = "ReviewRecorded"
+	EventQualityGateDecided   = "QualityGateDecided"
+)
+
 // EventSchemaVersion is the S1 payload contract version.
 const EventSchemaVersion = "1"
 
 // Aggregate scopes for S1 events, extended in S2 with run and worker.
 const (
-	AggregateCore   = "core"
-	AggregateAction = "action"
-	AggregateRun    = "run"
-	AggregateWorker = "worker"
+	AggregateCore      = "core"
+	AggregateAction    = "action"
+	AggregateRun       = "run"
+	AggregateWorker    = "worker"
+	AggregateSpec      = "action_spec"
+	AggregateCandidate = "candidate"
 )
 
 // Event is a durable domain fact. Business state and its event are
@@ -84,7 +99,9 @@ func (e Event) Validate() error {
 		EventPaseoSessionIntended, EventPaseoSessionActive,
 		EventPaseoSessionSucceeded, EventPaseoSessionFailed,
 		EventPaseoSessionCancelled, EventPaseoSessionOrphaned,
-		EventPaseoSessionRecoveryRecorded:
+		EventPaseoSessionRecoveryRecorded,
+		EventActionSpecFrozen, EventCandidateFrozen, EventCandidateSuperseded, EventCandidateRejected,
+		EventVerificationRecorded, EventReviewRecorded, EventQualityGateDecided:
 	default:
 		return errors.New("unknown eventType")
 	}

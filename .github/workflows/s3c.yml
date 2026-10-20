@@ -31,5 +31,6 @@ jobs:
       - name: S3-C observability, reload/reconnect, orphan, restart durability
         env:
           FACTORY_S3C_STRICT: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: bash scripts/e2e-s3c.sh

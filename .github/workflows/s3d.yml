@@ -22,9 +22,13 @@ jobs:
           node-version-file: .nvmrc
       - name: Install Office dependencies
         working-directory: office
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: npm ci --no-audit --no-fund
       - name: Install browser test dependencies
         working-directory: office/e2e-browser
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         run: npm ci --no-audit --no-fund
       - name: Install Chrome for Testing
         id: setup-chrome

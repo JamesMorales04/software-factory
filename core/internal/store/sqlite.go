@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS runs (
 	provider TEXT NOT NULL DEFAULT '',
 	model TEXT NOT NULL DEFAULT '',
 	paseo_mode TEXT NOT NULL DEFAULT '',
+	spec_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -150,6 +151,122 @@ CREATE TABLE IF NOT EXISTS paseo_recovery (
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_paseo_recovery_status ON paseo_recovery(status, next_attempt_at);
+-- S4-A: frozen engineering specification bound to one Action.
+CREATE TABLE IF NOT EXISTS action_specs (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	version INTEGER NOT NULL DEFAULT 1,
+	content_hash TEXT NOT NULL UNIQUE,
+	policy_revision TEXT NOT NULL,
+	goal TEXT NOT NULL,
+	repository TEXT NOT NULL,
+	base_revision TEXT NOT NULL,
+	allowed_paths TEXT NOT NULL,
+	acceptance_criteria TEXT NOT NULL,
+	negative_cases TEXT NOT NULL,
+	risk_class TEXT NOT NULL,
+	quality_profile TEXT NOT NULL,
+	budget TEXT NOT NULL,
+	execution_mode TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	paseo_mode TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	frozen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_specs_action ON action_specs(action_id, version DESC);
+-- S4-A: immutable candidate identity. Frozen rows are never updated except
+-- the explicit superseded state/timestamp.
+CREATE TABLE IF NOT EXISTS candidates (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	spec_id TEXT NOT NULL REFERENCES action_specs(id),
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	base_revision TEXT NOT NULL,
+	commit_sha TEXT NOT NULL,
+	tree_sha TEXT NOT NULL,
+	content_digest TEXT NOT NULL,
+	candidate_ref TEXT NOT NULL,
+	parent_candidate_id TEXT NOT NULL DEFAULT '',
+	repository TEXT NOT NULL,
+	implementer_run_id TEXT NOT NULL REFERENCES runs(id),
+	implementer_attempt_id TEXT NOT NULL REFERENCES attempts(id),
+	implementer_generation INTEGER NOT NULL,
+	implementer_worker_id TEXT NOT NULL,
+	execution_mode TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	paseo_mode TEXT NOT NULL,
+	changed_paths TEXT NOT NULL,
+	risk_class TEXT NOT NULL,
+	state TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	frozen_at TEXT NOT NULL,
+	superseded_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (implementer_attempt_id),
+	UNIQUE (implementer_run_id, implementer_generation)
+);
+CREATE INDEX IF NOT EXISTS idx_candidates_action ON candidates(action_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_candidates_run ON candidates(implementer_run_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_state ON candidates(state, frozen_at);
+-- S4-A: append-only independent verifier evidence.
+CREATE TABLE IF NOT EXISTS candidate_verifications (
+	id TEXT PRIMARY KEY,
+	candidate_id TEXT NOT NULL REFERENCES candidates(id),
+	candidate_sha TEXT NOT NULL,
+	spec_id TEXT NOT NULL,
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	authority TEXT NOT NULL,
+	actor TEXT NOT NULL,
+	independent INTEGER NOT NULL,
+	clean_resource TEXT NOT NULL,
+	oracle_digest TEXT NOT NULL,
+	status TEXT NOT NULL,
+	checks TEXT NOT NULL,
+	findings TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	UNIQUE (candidate_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_verifications_candidate ON candidate_verifications(candidate_id, created_at);
+-- S4-A: append-only read-only reviewer verdicts.
+CREATE TABLE IF NOT EXISTS candidate_reviews (
+	id TEXT PRIMARY KEY,
+	candidate_id TEXT NOT NULL REFERENCES candidates(id),
+	candidate_sha TEXT NOT NULL,
+	spec_id TEXT NOT NULL,
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	authority TEXT NOT NULL,
+	actor TEXT NOT NULL,
+	verdict TEXT NOT NULL,
+	findings TEXT NOT NULL,
+	diff_stat TEXT NOT NULL,
+	diff_bytes INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	UNIQUE (candidate_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_reviews_candidate ON candidate_reviews(candidate_id, created_at);
+-- S4-A: exactly one authoritative Quality Gate decision per candidate.
+CREATE TABLE IF NOT EXISTS gate_decisions (
+	id TEXT PRIMARY KEY,
+	candidate_id TEXT NOT NULL UNIQUE REFERENCES candidates(id),
+	candidate_sha TEXT NOT NULL,
+	spec_id TEXT NOT NULL,
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	status TEXT NOT NULL,
+	evidence_digest TEXT NOT NULL DEFAULT '',
+	reasons TEXT NOT NULL,
+	checks TEXT NOT NULL,
+	actor TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -187,6 +304,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS3D(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s3-d migration: %w", err)
+	}
+	if err := db.migrateS4A(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-a migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -338,6 +459,61 @@ func (db *DB) migrateS3D() error {
 	if !hasOutcome {
 		if _, err := db.sql.Exec(`ALTER TABLE paseo_recovery ADD COLUMN last_outcome TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add paseo_recovery.last_outcome: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateS4A adds the S4-A runs.spec_id column to databases created before
+// the quality pipeline. The spec/candidate/evidence tables are created
+// idempotently by the schema block above.
+func (db *DB) migrateS4A() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('runs')`)
+	if err != nil {
+		return err
+	}
+	present := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "spec_id" {
+			present = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !present {
+		if _, err := db.sql.Exec(`ALTER TABLE runs ADD COLUMN spec_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add runs.spec_id: %w", err)
+		}
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('gate_decisions')`)
+	if err != nil {
+		return err
+	}
+	hasDigest := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "evidence_digest" {
+			hasDigest = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasDigest {
+		if _, err := db.sql.Exec(`ALTER TABLE gate_decisions ADD COLUMN evidence_digest TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add gate_decisions.evidence_digest: %w", err)
 		}
 	}
 	return nil

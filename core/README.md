@@ -36,14 +36,22 @@ CLI provisions it, the Core accepts it only on Worker routes),
   reconciliation and lease sweeper.
 - `cmd/factory-worker` — S2 local Worker: registration, lease poll,
   heartbeats, synthetic fixture execution (rootless Podman by default,
-  `--exec-mode local` for explicit pure-Go test/dev use only), fencing.
+  `--exec-mode local` for explicit pure-Go test/dev use only), fencing, and
+  S4-A implementer candidate commit/push/registration.
+- `cmd/factory-verifier` — independent verifier process (dedicated credential):
+  clean read-only candidate checkout, frozen acceptance/negative/browser checks.
+- `cmd/factory-reviewer` — read-only reviewer process (dedicated credential):
+  revalidates the exact candidate and submits a bounded verdict.
 - `cmd/factory` — lifecycle CLI (`factory start|stop|status`,
   `factory worker start|stop|status`, `factory logs [-n] [-f] [worker]`).
 - `internal/domain` — Action lifecycle, Run/Attempt/Worker rules, event
   schema, validation (no deps).
 - `internal/store` — SQLite WAL: atomic action+event and run+event writes,
   idempotency, leases, fencing, expiry, reconciliation, replay cursors,
-  restart retention.
+  restart retention, frozen specs/candidates/evidence and gate decisions.
+- `internal/candidate` — independent git candidate validation (parent, ref,
+  tree/content digest, scope) and clean checkout helpers.
+- `internal/quality` — deterministic final-diff risk and the Core Quality Gate.
 - `internal/exec` — credential-free synthetic fixture (Podman + local).
 - `internal/api` — auth (operator + scoped worker tokens), correlation IDs,
   JSON errors, SSE stream, read-only Agent-observability projection, static UI.
@@ -54,15 +62,20 @@ Core acceptance: `scripts/e2e-s1.sh` from the repo root. S2 acceptance:
 probes, S1 regression) and `scripts/e2e-s2-browser.sh` (real-Chromium
 Runs/Workers journey). S3-C acceptance: `scripts/e2e-s3c.sh`
 (deterministic Paseo CLI stub, session observability, reload/reconnect,
-orphan and Core-restart durability, real Chromium). The compiled
+orphan and Core-restart durability, real Chromium). S4-A acceptance:
+`scripts/e2e-s4a.sh` (real Core/Worker/verifier/reviewer + deterministic Paseo
+CLI + real Chromium candidate/Office journeys); `scripts/e2e-s4a-live.sh` runs
+one bounded real Paseo session when authorized. The compiled
 lifecycle experience is exercised by `scripts/e2e-factory-cli.sh`; it builds
 the distribution, runs `factory` from outside the source directory, and checks
 auth, readiness, logs, stop/restart, and SQLite retention.
 Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events-s1.md`,
 `docs/contracts/run-worker-s2.md`, `docs/contracts/run-paseo-s3a.md` (S3-A:
-execution modes, pinned routing, durable session identity), and
+execution modes, pinned routing, durable session identity),
 `docs/contracts/agent-observability-s3c.md` (S3-C: cross-Run session
-projection and evidence levels).
+projection and evidence levels), and `docs/contracts/quality-pipeline-s4a.md`
+(S4-A: frozen spec/candidate, independent evidence, deterministic gate, browser
+checks).
 
 ## Local lifecycle CLI
 

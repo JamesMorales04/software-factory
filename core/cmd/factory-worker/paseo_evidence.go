@@ -33,15 +33,23 @@ type paseoEvidence struct {
 // proven by the trusted-local smoke test: absolute target directory,
 // in-scope edits only, format/tests, short reply, no network or secrets.
 func paseoTaskPrompt(task, workDir string) string {
-	return "Your target directory is exactly: " + workDir + ". It holds a tiny " +
-		"Node project (add.js with pure function add, add.test.js, package.json). " +
-		"Task: " + task + " Do these steps IN THAT DIRECTORY ONLY (use its absolute " +
-		"path for every command; do not create, modify, or delete any file outside it): " +
-		"1) Read the sources. 2) Implement the task with a JSDoc comment and keep " +
-		"existing behavior. 3) Run `npm --prefix " + workDir + " run format` and " +
-		"`npm --prefix " + workDir + " test` and fix any failure you caused. Keep your " +
-		"final reply under 10 lines listing files changed and test result. Do not " +
-		"access the network, secrets, or credentials."
+	browserHint := ""
+	if cli := strings.TrimSpace(os.Getenv("FACTORY_BROWSER_CLI")); cli != "" {
+		browserHint = " An agent-native Playwright CLI is available at " + cli +
+			"; use it only for authorized local UI checks and never expose credentials."
+	}
+	return "Your target directory is exactly: " + workDir + ". It is an authorized " +
+		"repository checkout with its own package.json scripts. Task: " + task + " " +
+		"Read the existing files first. Modify ONLY files explicitly authorized by " +
+		"the task; never modify tests, protected verification scripts (including " +
+		"browser-check.mjs), package.json, or .git. Use absolute paths under " +
+		workDir + " and do not create, modify, or delete anything outside it. " +
+		"Run `npm --prefix " + workDir + " run format` and `npm --prefix " + workDir +
+		" test` when present and fix failures you caused. If a protected " +
+		"browser-check.mjs is present and browser tooling is available, you may run " +
+		"it as read-only evidence; never edit it. Keep your final reply under 10 " +
+		"lines listing files changed and test results. Do not access the network, " +
+		"secrets, or credentials." + browserHint
 }
 
 // paseoNudgePrompt is the single bounded continuation used when the agent

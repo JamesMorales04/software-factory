@@ -1,6 +1,6 @@
 # AGENTS.md — Software Factory
 
-> **Status:** F1-S1 development authorized; no Factory product component is certified as implemented. SEC-01 security work is paused, **not approved**. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
+> **Status:** F1-S1 through F1-S3-D merged; F1-S4-A frozen-candidate quality pipeline implementation/verification in progress. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
 ## Mission and orientation
 
@@ -50,6 +50,6 @@ A material architectural change requires an Action, relevant ADR, updated normat
 
 ## Commands and evidence
 
-**There is no certified build or application test command yet.** Once F1 establishes a stack, record real commands and pinned tool versions in the corresponding engineering and contributor docs; never invent commands or silently install dependencies in the host.
+**Real local commands exist and are documented;** they are evidence only for the exact environment and candidate that ran them. Follow [core/README.md](core/README.md), [quality acceptance](docs/implementation/f1-s4a-acceptance.md) and [browser automation](docs/engineering/browser-automation.md). Never invent commands, silently install host dependencies, or treat a green simulator as independent acceptance.
 
 Every handoff reports: Action and candidate SHA; changed files; format/lint/typecheck/test and real-use results; independent verification evidence; security/authorization impact; documentation updates; PR/delivery state; unresolved risks.

@@ -1,6 +1,6 @@
 # Software Factory — Master Architecture Specification
 
-> **Status:** F1-S1 implementation authorized (2026-10-18); architecture baseline revision 0.2. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** no Core, Worker or Office product component is currently certified as implemented. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
+> **Status:** F1-S1 through F1-S3-D merged; F1-S4-A implementation and independent verification in progress (2026-10-20); architecture baseline revision 0.3. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
 
 ## 1. Product mission and priorities
 
@@ -159,7 +159,7 @@ Keep three systems distinct: (1) transactionally durable domain events that are 
 
 **F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, record SEC-01 as **partially verified / security BLOCKED for ISOLATED** with mode-specific disposition per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md) (SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED available-only-where-verified), and freeze explicit F1 acceptance criteria. S1 may begin with its minimum applicable contracts while remaining F0 contracts are completed incrementally; this is not a waiver of S3-ISOLATED. Repo documentation and `AGENTS.md` are versioned now.
 
-**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + independent user-journey verifier + Reviewer/Quality Gate; S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
+**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + frozen ActionSpec/CandidateRevision + independent user-journey verifier + read-only Reviewer + deterministic Quality Gate (S4-A; browser checks included), with delivery deferred to S5; S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
 
 F1 excludes production remote workers, mature autonomous global skills, full adaptive router, animated Office and automatic live Core upgrade.
 
@@ -193,6 +193,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 - [Engineering/code quality](../engineering/code-quality.md)
 - [Lint and static analysis](../engineering/linting.md)
 - [Global quality baseline](../quality/baseline.md)
+- [F1-S4-A quality pipeline contract](../contracts/quality-pipeline-s4a.md) and [ADR-0010](decisions/ADR-0010-frozen-candidate-quality-pipeline.md)
 - [Isolation](../security/isolation.md)
 - [F0/F1 implementation plan](../implementation/f0-f1-plan.md)
 - Historical AEH for selective conceptual reuse: https://github.com/JamesMorales04/agentic-engineering-harness

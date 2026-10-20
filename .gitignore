@@ -11,3 +11,8 @@ dist/
 /build/
 __pycache__/
 *.pyc
+# Agent browser sessions/evidence are runtime artifacts.
+/.playwright-cli/
+/office/e2e-browser/.playwright-cli/
+/office/e2e-browser/.s4a-evidence/
+/tmp/

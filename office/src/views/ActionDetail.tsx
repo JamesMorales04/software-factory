@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { type Action, type ActionStatus, ApiError, api } from "../api";
+import { Link, useParams } from "react-router-dom";
+import {
+  type Action,
+  type ActionSpec,
+  type ActionStatus,
+  ApiError,
+  api,
+  type Candidate,
+} from "../api";
 import { presentEvent } from "../eventPresentation";
 import { useEventStream } from "../useEventStream";
 
@@ -14,6 +21,8 @@ const NEXT: Record<ActionStatus, ActionStatus[]> = {
 export function ActionDetail() {
   const { id } = useParams<{ id: string }>();
   const [action, setAction] = useState<Action | null>(null);
+  const [specs, setSpecs] = useState<ActionSpec[]>([]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { events: live } = useEventStream(0, (e) => e.aggregateId === id, {
@@ -25,7 +34,14 @@ export function ActionDetail() {
       return;
     }
     try {
-      setAction(await api.getAction(id));
+      const [nextAction, nextSpecs, nextCandidates] = await Promise.all([
+        api.getAction(id),
+        api.listActionSpecs(id),
+        api.listCandidates({ actionId: id }),
+      ]);
+      setAction(nextAction);
+      setSpecs(nextSpecs);
+      setCandidates(nextCandidates);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to load action.");
     }
@@ -129,6 +145,69 @@ export function ActionDetail() {
           <span className="muted">Terminal state: no further transitions.</span>
         )}
       </div>
+      <section className="candidate-panel" data-testid="action-quality">
+        <h3>Frozen specifications ({specs.length})</h3>
+        {specs.length === 0 ? (
+          <p className="muted">No frozen ActionSpec for this Action.</p>
+        ) : (
+          specs.map((spec) => (
+            <article key={spec.id} className="evidence">
+              <header className="session-card-head">
+                <code>{spec.id}</code>
+                <span className="pill">{spec.riskClass}</span>
+              </header>
+              <p>{spec.goal}</p>
+              <p className="muted">
+                content <code>{spec.contentHash}</code> · policy{" "}
+                <code>{spec.policyRevision}</code> · profile{" "}
+                <code>{spec.qualityProfile}</code>
+              </p>
+            </article>
+          ))
+        )}
+        <h3>Candidates ({candidates.length})</h3>
+        {candidates.length === 0 ? (
+          <p className="muted">No CandidateRevision frozen for this Action.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Commit</th>
+                <th>State</th>
+                <th>Risk</th>
+                <th>Implementer Run</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate) => (
+                <tr key={candidate.id}>
+                  <td>
+                    <code>{candidate.id}</code>
+                  </td>
+                  <td>
+                    <code data-testid="action-candidate-sha">
+                      {candidate.commitSha}
+                    </code>
+                  </td>
+                  <td>
+                    <span className={`pill candidate-${candidate.state}`}>
+                      {candidate.state}
+                    </span>
+                  </td>
+                  <td>{candidate.riskClass}</td>
+                  <td>
+                    <Link to={`/runs/${candidate.implementerRunId}`}>
+                      <code>{candidate.implementerRunId}</code>
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
       <h3>Event timeline ({timeline.length})</h3>
       {timeline.length === 0 ? (
         <p className="muted">No events recorded.</p>

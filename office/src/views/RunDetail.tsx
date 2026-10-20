@@ -4,6 +4,7 @@ import {
   ApiError,
   type Attempt,
   api,
+  type CandidateBundle,
   type FactoryEvent,
   type PaseoSession,
   type Run,
@@ -26,6 +27,9 @@ export function RunDetail() {
   const [run, setRun] = useState<Run | null>(null);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [sessions, setSessions] = useState<PaseoSession[]>([]);
+  const [candidateBundle, setCandidateBundle] =
+    useState<CandidateBundle | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
   const [ledger, setLedger] = useState<FactoryEvent[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +65,23 @@ export function RunDetail() {
       setAttempts(nextAttempts);
       setSessions(nextSessions);
       setLedger(nextLedger);
+      try {
+        const candidates = await api.listCandidates({ runId: id, limit: 1 });
+        const bundle =
+          candidates.length > 0
+            ? await api.getCandidateEvidence(candidates[0].id)
+            : null;
+        if (alive.current && request === requestId.current) {
+          setCandidateBundle(bundle);
+          setCandidateError(null);
+        }
+      } catch (e) {
+        if (alive.current && request === requestId.current) {
+          setCandidateError(
+            e instanceof ApiError ? e.message : "Failed to load candidate.",
+          );
+        }
+      }
       setError(null);
       setLastLoaded(new Date().toISOString());
       setCursor((previous) =>
@@ -81,6 +102,8 @@ export function RunDetail() {
     setRun(null);
     setAttempts([]);
     setSessions([]);
+    setCandidateBundle(null);
+    setCandidateError(null);
     setLedger([]);
     setCursor(null);
     setError(null);
@@ -97,6 +120,14 @@ export function RunDetail() {
     { enabled: cursor !== null && Boolean(id), maxEvents: 500 },
   );
 
+  const { lastMatchedSeq: lastCandidateSeq } = useEventStream(
+    0,
+    (event) =>
+      event.aggregateType === "candidate" &&
+      event.aggregateId === candidateBundle?.candidate.id,
+    { enabled: Boolean(candidateBundle), maxEvents: 100 },
+  );
+
   // Re-read the Core snapshot after committed Run/Paseo lifecycle events.
   // The ledger is the continuity source; this fetch only re-projects it.
   useEffect(() => {
@@ -106,6 +137,14 @@ export function RunDetail() {
     const timer = setTimeout(() => void load(), 200);
     return () => clearTimeout(timer);
   }, [lastMatchedSeq, cursor, load]);
+
+  useEffect(() => {
+    if (lastCandidateSeq <= 0) {
+      return;
+    }
+    const timer = setTimeout(() => void load(), 200);
+    return () => clearTimeout(timer);
+  }, [lastCandidateSeq, load]);
 
   // The initial snapshot and the ledger head are separate reads. Refresh
   // once when the stream first becomes live (and after each reconnect) so
@@ -278,6 +317,12 @@ export function RunDetail() {
 
       <PaseoSessionPanel run={run} attempts={attempts} sessions={sessions} />
 
+      <CandidatePanel
+        bundle={candidateBundle}
+        error={candidateError}
+        specBound={Boolean(run.specId)}
+      />
+
       {run.workloadKind !== "paseo-task" && <RunResult run={run} />}
 
       <h3>Event timeline ({timeline.length})</h3>
@@ -387,6 +432,273 @@ function RunResult({ run }: { run: Run }) {
         </dl>
       )}
     </section>
+  );
+}
+
+function CandidatePanel({
+  bundle,
+  error,
+  specBound,
+}: {
+  bundle: CandidateBundle | null;
+  error: string | null;
+  specBound: boolean;
+}) {
+  if (!specBound && !bundle && !error) {
+    return (
+      <section>
+        <h3>Quality pipeline</h3>
+        <p className="muted">
+          Not applicable: this Run has no frozen ActionSpec/CandidateRevision.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className="candidate-panel" data-testid="candidate-panel">
+      <h3>Quality pipeline</h3>
+      {error && <p className="error">{error}</p>}
+      {!bundle ? (
+        <p className="muted">
+          {specBound
+            ? "No CandidateRevision is frozen yet. A completed Paseo session alone is not an accepted candidate."
+            : "No candidate recorded for this Run."}
+        </p>
+      ) : (
+        <CandidateEvidence bundle={bundle} />
+      )}
+    </section>
+  );
+}
+
+function CandidateEvidence({ bundle }: { bundle: CandidateBundle }) {
+  const { candidate, spec, verifications, reviews, decision } = bundle;
+  return (
+    <>
+      <h4>Frozen specification</h4>
+      <dl className="detail" data-testid="spec-identity">
+        <dt>Spec</dt>
+        <dd>
+          <code>{spec.id}</code>
+        </dd>
+        <dt>Content hash</dt>
+        <dd>
+          <code>{spec.contentHash}</code>
+        </dd>
+        <dt>Policy</dt>
+        <dd>
+          <code>{spec.policyRevision}</code>
+        </dd>
+        <dt>Goal</dt>
+        <dd>{spec.goal}</dd>
+        <dt>Base revision</dt>
+        <dd>
+          <code>{spec.baseRevision}</code>
+        </dd>
+        <dt>Allowed scope</dt>
+        <dd>
+          {spec.allowedPaths.map((path) => (
+            <code key={path} className="scope-path">
+              {path}
+            </code>
+          ))}
+        </dd>
+        <dt>Risk / profile</dt>
+        <dd>
+          {spec.riskClass} · <code>{spec.qualityProfile}</code>
+        </dd>
+      </dl>
+
+      <h4>Candidate revision</h4>
+      <dl className="detail">
+        <dt>Candidate</dt>
+        <dd>
+          <code>{candidate.id}</code>{" "}
+          <span className={`pill candidate-${candidate.state}`}>
+            {candidate.state}
+          </span>
+        </dd>
+        <dt>Commit SHA</dt>
+        <dd>
+          <code data-testid="candidate-sha">{candidate.commitSha}</code>
+        </dd>
+        <dt>Tree SHA</dt>
+        <dd>
+          <code>{candidate.treeSha}</code>
+        </dd>
+        <dt>Content digest</dt>
+        <dd>
+          <code>{candidate.contentDigest}</code>
+        </dd>
+        <dt>Changed paths</dt>
+        <dd>
+          {candidate.changedPaths.map((path) => (
+            <code key={path} className="scope-path">
+              {path}
+            </code>
+          ))}
+        </dd>
+        <dt>Implementer</dt>
+        <dd>
+          Run <code>{candidate.implementerRunId}</code> · Attempt{" "}
+          <code>{candidate.implementerAttemptId}</code> · generation{" "}
+          {candidate.implementerGeneration} · Worker{" "}
+          <code>{candidate.implementerWorkerId}</code>
+        </dd>
+        <dt>Diff risk</dt>
+        <dd>{candidate.riskClass}</dd>
+        <dt>Mode</dt>
+        <dd>
+          <span className="pill trusted-local">TRUSTED_LOCAL</span>{" "}
+          <span className="muted">broad local access, not isolated</span>
+        </dd>
+      </dl>
+
+      <h4>Independent verification ({verifications.length})</h4>
+      {verifications.length === 0 ? (
+        <p className="muted" data-testid="verification-status">
+          No independent verifier evidence recorded.
+        </p>
+      ) : (
+        verifications.map((verification) => (
+          <article key={verification.id} className="evidence">
+            <header className="session-card-head">
+              <strong>{verification.actor}</strong>{" "}
+              <span className={`pill evidence-${verification.status}`}>
+                {verification.status}
+              </span>
+            </header>
+            <p className="muted">
+              Authority <code>{verification.authority}</code> · clean resource{" "}
+              <code>{verification.cleanResource}</code> · oracle{" "}
+              <code>{verification.oracleDigest.slice(0, 12)}</code>
+            </p>
+            <table data-testid="verification-checks">
+              <thead>
+                <tr>
+                  <th>Check</th>
+                  <th>Status</th>
+                  <th>Exit</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verification.checks.map((check) => (
+                  <tr key={check.id}>
+                    <td>
+                      <code>{check.id}</code>{" "}
+                      <span className="muted">{check.kind}</span>
+                    </td>
+                    <td>
+                      <span className={`pill check-${check.status}`}>
+                        {check.status}
+                      </span>
+                    </td>
+                    <td>{check.exitCode}</td>
+                    <td className="muted">{check.detail || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {verification.findings.length > 0 && (
+              <ul className="findings">
+                {verification.findings.map((finding) => (
+                  <li key={finding}>{finding}</li>
+                ))}
+              </ul>
+            )}
+          </article>
+        ))
+      )}
+
+      <h4>Independent review ({reviews.length})</h4>
+      {reviews.length === 0 ? (
+        <p className="muted" data-testid="reviewer-verdict">
+          No independent reviewer verdict recorded.
+        </p>
+      ) : (
+        reviews.map((review) => (
+          <article key={review.id} className="evidence">
+            <header className="session-card-head">
+              <strong>{review.actor}</strong>{" "}
+              <span
+                className={`pill review-${review.verdict.toLowerCase()}`}
+                data-testid="reviewer-verdict"
+              >
+                {review.verdict}
+              </span>
+            </header>
+            <p className="muted">
+              {review.diffBytes} diff bytes · <code>{review.diffStat}</code>
+            </p>
+            {review.findings.length > 0 && (
+              <ul className="findings">
+                {review.findings.map((finding) => (
+                  <li key={finding.id}>
+                    <strong>{finding.severity}</strong> {finding.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </article>
+        ))
+      )}
+
+      <h4>Quality Gate</h4>
+      {!decision ? (
+        <p className="muted" data-testid="gate-status">
+          NOT_EVALUATED — the Core records a decision only after independent
+          verifier and reviewer evidence exist.
+        </p>
+      ) : (
+        <div data-testid="gate-status">
+          <p>
+            <span className={`pill gate-${decision.status.toLowerCase()}`}>
+              {decision.status}
+            </span>{" "}
+            <span className="muted">
+              Core-owned · <code>{decision.actor}</code> ·{" "}
+              {formatTimestamp(decision.createdAt)}
+            </span>
+          </p>
+          {decision.reasons.length > 0 && (
+            <ul className="findings">
+              {decision.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          )}
+          <details>
+            <summary>Gate checks ({decision.checks.length})</summary>
+            <table>
+              <thead>
+                <tr>
+                  <th>Check</th>
+                  <th>Status</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {decision.checks.map((check) => (
+                  <tr key={check.id}>
+                    <td>
+                      <code>{check.id}</code>{" "}
+                      <span className="muted">{check.kind}</span>
+                    </td>
+                    <td>
+                      <span className={`pill check-${check.status}`}>
+                        {check.status}
+                      </span>
+                    </td>
+                    <td className="muted">{check.detail || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      )}
+    </>
   );
 }
 

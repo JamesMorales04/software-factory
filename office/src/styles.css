@@ -345,3 +345,52 @@ td {
   font-weight: 700;
   color: #b3261e;
 }
+
+.candidate-panel {
+  border-top: 2px solid currentColor;
+  margin-top: 2rem;
+  padding-top: 0.5rem;
+}
+
+.scope-path {
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+.pill.candidate-frozen {
+  font-weight: 700;
+}
+
+.pill.candidate-superseded,
+.pill.candidate-rejected,
+.pill.check-FAIL,
+.pill.check-NOT_TESTED,
+.pill.check-SKIPPED,
+.pill.check-NOT_APPLICABLE,
+.pill.evidence-failed,
+.pill.evidence-blocked,
+.pill.evidence-not_tested,
+.pill.review-request_changes,
+.pill.review-blocked,
+.pill.gate-repair_required,
+.pill.gate-blocked,
+.pill.gate-human_required,
+.pill.gate-not_tested {
+  border-style: dashed;
+  font-weight: 700;
+}
+
+.pill.check-PASS,
+.pill.evidence-passed,
+.pill.review-approve,
+.pill.gate-accepted {
+  font-weight: 700;
+}
+
+.findings {
+  margin: 0.5rem 0;
+}
+
+.candidate-panel table {
+  margin-top: 0.5rem;
+}
