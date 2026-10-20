@@ -450,6 +450,7 @@ func TestPaseoLifecycleSuccessCleanupUnconfirmed(t *testing.T) {
 	// Workspace archive fails after a fully proven session: the result
 	// stays truthful, but the output must say cleanup is unconfirmed.
 	adapter.Fail["workspace-archive"] = paseo.FailOp("workspace-archive", "daemon busy")
+	adapter.Fail["stop"] = paseo.FailOp("stop", "daemon busy")
 
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
@@ -464,6 +465,9 @@ func TestPaseoLifecycleSuccessCleanupUnconfirmed(t *testing.T) {
 	note, _ := out["cleanup"].(string)
 	if !strings.HasPrefix(note, "unconfirmed:") {
 		t.Fatalf("output must flag unconfirmed cleanup, got %q", note)
+	}
+	if !strings.Contains(note, "stop:") || !strings.Contains(note, "archive-workspace:") {
+		t.Fatalf("output must name each unconfirmed step, got %q", note)
 	}
 	if len(out) > 16 {
 		t.Fatalf("result exceeds bound: %d keys", len(out))

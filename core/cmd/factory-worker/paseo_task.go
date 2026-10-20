@@ -380,24 +380,35 @@ func orphanExternal(backend sessionBackend,
 
 // cleanupPaseoExternal stops, archives the session and archives the owned
 // workspace (best effort, bounded). A nil adapter or empty identities are
-// no-ops so failure paths stay total.
+// no-ops so failure paths stay total. Every failed step is reported in the
+// returned error: callers must never claim "ok" when a stop, archive or
+// verification step is unconfirmed.
 func cleanupPaseoExternal(ctx context.Context, adapter paseo.Adapter, sessionID, workspaceID string) error {
 	if adapter == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, paseoCleanupTimeout)
 	defer cancel()
+	var notes []string
 	if strings.TrimSpace(sessionID) != "" {
-		_ = adapter.StopSession(ctx, sessionID)
-		_ = adapter.ArchiveSession(ctx, sessionID)
+		if err := adapter.StopSession(ctx, sessionID); err != nil {
+			notes = append(notes, "stop: "+shortErr(err))
+		}
+		if err := adapter.ArchiveSession(ctx, sessionID); err != nil {
+			notes = append(notes, "archive-session: "+shortErr(err))
+		}
 	}
 	if strings.TrimSpace(workspaceID) != "" {
 		if err := adapter.ArchiveWorkspace(ctx, workspaceID); err != nil {
-			return err
+			notes = append(notes, "archive-workspace: "+shortErr(err))
+		} else if listed, err := adapter.WorkspaceListed(ctx, workspaceID); err != nil {
+			notes = append(notes, "verify-workspace: "+shortErr(err))
+		} else if listed {
+			notes = append(notes, "workspace still listed after archive")
 		}
-		if listed, err := adapter.WorkspaceListed(ctx, workspaceID); err == nil && listed {
-			return errors.New("workspace still listed after archive")
-		}
+	}
+	if len(notes) > 0 {
+		return errors.New(truncate(strings.Join(notes, "; ")))
 	}
 	return nil
 }
