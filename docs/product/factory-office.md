@@ -10,6 +10,7 @@
 | Actions | Create/query/filter Actions; show their specs, risk and status |
 | Agents | Actual role, runtime/model, state and Paseo session for each participant |
 | Action Detail | Events, Runs, tool activity, quality evidence, review and PR/merge status |
+| Campaigns / Campaign Detail | Start an authorized campaign, follow the Core-owned task graph, participant identities, candidate/evidence lineage, repair budget and Quality Gate outcome |
 
 The browser consumes Core snapshots plus persisted event projections. It cannot write Core storage or control Workers directly. Reconnect must use cursor/sequence and fetch missing data; stale/lost provider status must be displayed as `UNKNOWN`/`DISCONNECTED`, never as fabricated activity. Observed tool calls are not access to hidden reasoning. Read permissions do not imply control permissions.
 
@@ -17,6 +18,9 @@ The browser consumes Core snapshots plus persisted event projections. It cannot 
 
 Persist stable correlation of `runId`, `agentId`, `paseoSessionId` and `workerId`. Expose an authenticated inspector link/route only if tested. Validate SDK timeline/replay and redaction rather than assuming capabilities.
 
+S4-B implements Campaign list/detail views from Core projections and the
+existing SSE/replay ledger. The browser can create/start/cancel a campaign
+through authenticated operator intents; it never schedules tasks itself.
 S3-C implements the read-only Agents and Run-detail session projections from
 durable Core bindings. The contract is
 [`agent-observability-s3c.md`](../contracts/agent-observability-s3c.md).

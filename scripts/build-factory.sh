@@ -14,6 +14,8 @@ echo "== Factory binaries =="
 (cd "$ROOT/core" && go build -o "$OUT_DIR/factory-core" ./cmd/factory-core)
 (cd "$ROOT/core" && go build -o "$OUT_DIR/factory" ./cmd/factory)
 (cd "$ROOT/core" && go build -o "$OUT_DIR/factory-worker" ./cmd/factory-worker)
+(cd "$ROOT/core" && go build -o "$OUT_DIR/factory-verifier" ./cmd/factory-verifier)
+(cd "$ROOT/core" && go build -o "$OUT_DIR/factory-reviewer" ./cmd/factory-reviewer)
 
 echo "== Office distribution =="
 mkdir -p "$OUT_DIR/office"

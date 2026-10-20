@@ -267,6 +267,63 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
 	actor TEXT NOT NULL,
 	created_at TEXT NOT NULL
 );
+-- S4-B: one Core-owned campaign binds a frozen spec to an immutable task
+-- plan. Campaign state is authoritative; task rows carry scheduling state.
+CREATE TABLE IF NOT EXISTS campaigns (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	spec_id TEXT NOT NULL REFERENCES action_specs(id),
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	plan_hash TEXT NOT NULL,
+	plan TEXT NOT NULL,
+	status TEXT NOT NULL,
+	terminal_reason TEXT NOT NULL DEFAULT '',
+	max_repair_cycles INTEGER NOT NULL,
+	repair_cycles INTEGER NOT NULL DEFAULT 0,
+	max_attempts INTEGER NOT NULL DEFAULT 1,
+	max_wall_clock_secs INTEGER NOT NULL,
+	max_parallel INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	correlation_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	started_at TEXT NOT NULL DEFAULT '',
+	completed_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (action_id, spec_id),
+	UNIQUE (spec_id)
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_campaigns_action ON campaigns(action_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_idempotency ON campaigns(idempotency_key) WHERE idempotency_key<>'';
+CREATE TABLE IF NOT EXISTS campaign_tasks (
+	id TEXT PRIMARY KEY,
+	campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+	task_key TEXT NOT NULL,
+	role TEXT NOT NULL,
+	cycle INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	depends_on TEXT NOT NULL DEFAULT '[]',
+	participant_id TEXT NOT NULL DEFAULT '',
+	candidate_id TEXT NOT NULL DEFAULT '',
+	run_id TEXT NOT NULL DEFAULT '',
+	outcome TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	execution_count INTEGER NOT NULL DEFAULT 0,
+	max_executions INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	dispatch_owner TEXT NOT NULL DEFAULT '',
+	dispatch_token TEXT NOT NULL DEFAULT '',
+	dispatch_expires_at TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	started_at TEXT NOT NULL DEFAULT '',
+	completed_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (campaign_id, task_key)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_tasks_campaign ON campaign_tasks(campaign_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_campaign_tasks_status ON campaign_tasks(status, campaign_id);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds

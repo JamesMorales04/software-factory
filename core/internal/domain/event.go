@@ -55,6 +55,22 @@ const (
 	EventQualityGateDecided   = "QualityGateDecided"
 )
 
+// S4-B campaign orchestration events. They are recorded on the campaign
+// aggregate so the existing ledger and SSE replay carry native workflow
+// progress without a second event store.
+const (
+	EventCampaignCreated          = "CampaignCreated"
+	EventCampaignStarted          = "CampaignStarted"
+	EventCampaignTaskReady        = "CampaignTaskReady"
+	EventCampaignTaskDispatched   = "CampaignTaskDispatched"
+	EventCampaignTaskCompleted    = "CampaignTaskCompleted"
+	EventCampaignTaskFailed       = "CampaignTaskFailed"
+	EventCampaignTaskCancelled    = "CampaignTaskCancelled"
+	EventCampaignRepairAuthorized = "CampaignRepairAuthorized"
+	EventCampaignFinished         = "CampaignFinished"
+	EventCampaignCancelled        = "CampaignCancelled"
+)
+
 // EventSchemaVersion is the S1 payload contract version.
 const EventSchemaVersion = "1"
 
@@ -66,6 +82,7 @@ const (
 	AggregateWorker    = "worker"
 	AggregateSpec      = "action_spec"
 	AggregateCandidate = "candidate"
+	AggregateCampaign  = "campaign"
 )
 
 // Event is a durable domain fact. Business state and its event are
@@ -101,7 +118,11 @@ func (e Event) Validate() error {
 		EventPaseoSessionCancelled, EventPaseoSessionOrphaned,
 		EventPaseoSessionRecoveryRecorded,
 		EventActionSpecFrozen, EventCandidateFrozen, EventCandidateSuperseded, EventCandidateRejected,
-		EventVerificationRecorded, EventReviewRecorded, EventQualityGateDecided:
+		EventVerificationRecorded, EventReviewRecorded, EventQualityGateDecided,
+		EventCampaignCreated, EventCampaignStarted, EventCampaignTaskReady,
+		EventCampaignTaskDispatched, EventCampaignTaskCompleted, EventCampaignTaskFailed,
+		EventCampaignTaskCancelled, EventCampaignRepairAuthorized,
+		EventCampaignFinished, EventCampaignCancelled:
 	default:
 		return errors.New("unknown eventType")
 	}

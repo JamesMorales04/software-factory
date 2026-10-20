@@ -1,0 +1,81 @@
+{
+  "slice": "F1-S4-B",
+  "recordedAt": "2026-10-20",
+  "mode": "deterministic fixture lane; real Core/Worker/verifier/reviewer/Chromium; deterministic Paseo CLI",
+  "securityDisposition": "TRUSTED_LOCAL only; not isolated or SEC-01 certified",
+  "campaigns": {
+    "acceptedCampaign": "b672b8231279964acb2751c6a5efbc98",
+    "repairCampaign": "2996463a8b69c7ca91b6b8c5196eff12",
+    "humanCampaign": "d62e519e413667f6831b90d357091693",
+    "crashCampaign": "446739d02513db80fcf37344854c1132",
+    "browserCampaign": "fcc2856c7b6a453f94aec5276a67fb94"
+  },
+  "browserJourney": {
+    "ok": true,
+    "campaignId": "fcc2856c7b6a453f94aec5276a67fb94",
+    "actionId": "0a1788ac84b1d0d37b1efd3a6ebb56cd",
+    "specId": "617cb60623888ac46f1764ed0eb7e395",
+    "candidateId": "04f9c1881b16377fb1fe5fcb0f33b4b6",
+    "candidateSha": "d7c0820a472e24d133dd305ae17603014fbafdd2",
+    "verifier": "verifier-fcc2856c-0",
+    "reviewer": "reviewer-fcc2856c-0",
+    "decision": "ACCEPTED",
+    "taskCount": 4,
+    "accepted": true,
+    "checks": [
+      {
+        "name": "browser created and started a campaign",
+        "pass": true,
+        "detail": "fcc2856c7b6a453f94aec5276a67fb94"
+      },
+      {
+        "name": "campaign reaches ACCEPTED from the browser journey",
+        "pass": true,
+        "detail": "accepted"
+      },
+      {
+        "name": "campaign is bound to the authorized Action and frozen spec",
+        "pass": true
+      },
+      {
+        "name": "all four native role tasks completed",
+        "pass": true,
+        "detail": "[[\"implementer-0\",\"succeeded\"],[\"verifier-0\",\"succeeded\"],[\"reviewer-0\",\"succeeded\"],[\"gate-0\",\"succeeded\"]]"
+      },
+      {
+        "name": "browser shows distinct Factory-assigned participant identities",
+        "pass": true
+      },
+      {
+        "name": "Quality Gate accepted the exact frozen candidate",
+        "pass": true
+      },
+      {
+        "name": "browser renders the candidate SHA and ACCEPTED gate",
+        "pass": true
+      },
+      {
+        "name": "browser renders independent verifier/reviewer actors",
+        "pass": true,
+        "detail": "verifier verifier-fcc2856c-0 \u00b7 reviewer reviewer-fcc2856c-0:APPROVE"
+      },
+      {
+        "name": "browser renders the real task graph row",
+        "pass": true,
+        "detail": "implementer-0\timplementer\t0\tsucceeded\t\u2014 0e6ce68b\t04f9c188\td7c0820a472e24d133dd305ae17603014fbafdd2"
+      },
+      {
+        "name": "campaign state survives reload without invention",
+        "pass": true
+      },
+      {
+        "name": "browser journey produced no console errors",
+        "pass": true
+      }
+    ],
+    "consoleErrors": [],
+    "finishedAt": "2026-10-20T22:50:30.919Z"
+  },
+  "result": "PASS_B1_B12_DETERMINISTIC",
+  "b14": "PASS_LIVE_SEPARATE_EVIDENCE"
+}

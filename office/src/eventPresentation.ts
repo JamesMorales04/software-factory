@@ -27,6 +27,16 @@ const EVENT_LABELS: Record<string, string> = {
   VerificationRecorded: "Independent verification recorded",
   ReviewRecorded: "Independent review recorded",
   QualityGateDecided: "Quality Gate decided",
+  CampaignCreated: "Campaign created",
+  CampaignStarted: "Campaign started",
+  CampaignTaskReady: "Campaign task ready",
+  CampaignTaskDispatched: "Campaign task dispatched",
+  CampaignTaskCompleted: "Campaign task completed",
+  CampaignTaskFailed: "Campaign task failed",
+  CampaignTaskCancelled: "Campaign task cancelled",
+  CampaignRepairAuthorized: "Campaign repair authorized",
+  CampaignFinished: "Campaign finished",
+  CampaignCancelled: "Campaign cancelled",
 };
 
 function text(value: unknown, max = 160): string {
@@ -116,6 +126,32 @@ export function presentEvent(event: FactoryEvent): {
       break;
     case "QualityGateDecided":
       parts.push(text(p.candidateId), text(p.status));
+      break;
+    case "CampaignTaskReady":
+    case "CampaignTaskDispatched":
+    case "CampaignTaskCompleted":
+    case "CampaignTaskFailed":
+    case "CampaignTaskCancelled":
+      parts.push(
+        text(p.taskKey),
+        text(p.role),
+        text(p.candidateId),
+        text(p.runId),
+        text(p.outcome),
+        text(p.error),
+        text(p.reason),
+      );
+      break;
+    case "CampaignRepairAuthorized":
+      parts.push(
+        text(p.candidateId),
+        text(p.repairCycle),
+        text(p.maxRepairCycles),
+      );
+      break;
+    case "CampaignFinished":
+    case "CampaignCancelled":
+      parts.push(text(p.status), text(p.reason));
       break;
     case "PaseoSessionSucceeded":
     case "PaseoSessionFailed":

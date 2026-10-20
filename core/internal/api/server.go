@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the S1 Core version string, overridden at release time.
-var Version = "0.1.0-s4a"
+var Version = "0.1.0-s4b"
 
 // Server wires persistence, auth and telemetry into one HTTP boundary.
 // Operator routes authenticate with the admin token; Worker protocol routes
@@ -31,6 +31,7 @@ type Server struct {
 	tracer        trace.Tracer
 	hub           *Hub
 	webDir        string
+	campaigns     CampaignCoordinator
 }
 
 // New builds a Server. Token must be non-empty; startup refuses to run
@@ -103,6 +104,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/actions/{id}", s.handleGetAction)
 	mux.HandleFunc("POST /api/v1/actions/{id}/transition", s.handleTransitionAction)
 	mux.HandleFunc("GET /api/v1/actions/{id}/events", s.handleActionEvents)
+	mux.HandleFunc("POST /api/v1/campaigns", s.handleCreateCampaign)
+	mux.HandleFunc("GET /api/v1/campaigns", s.handleListCampaigns)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}", s.handleGetCampaign)
+	mux.HandleFunc("GET /api/v1/campaigns/{id}/events", s.handleCampaignEvents)
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/start", s.handleStartCampaign)
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/cancel", s.handleCancelCampaign)
 	mux.HandleFunc("POST /api/v1/action-specs", s.handleCreateActionSpec)
 	mux.HandleFunc("GET /api/v1/action-specs/{id}", s.handleGetActionSpec)
 	mux.HandleFunc("GET /api/v1/actions/{id}/specs", s.handleListActionSpecs)
@@ -286,6 +293,8 @@ func mapDomainError(w http.ResponseWriter, err error, log *slog.Logger, msg stri
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, domain.ErrConflict):
+		writeError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, domain.ErrInvalidInput):

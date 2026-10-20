@@ -1,0 +1,199 @@
+{
+  "campaign": "F1-S4-B",
+  "recordedAt": "2026-10-20",
+  "executionMode": "trusted-local",
+  "isolationLabel": "TRUSTED_LOCAL broad local access; not isolated or SEC-01 certified",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "paseoMode": "build",
+  "campaignId": "d52034edc38a8550a807d9ef6979a123",
+  "actionId": "79d2d58ac112ac2c46b35d36d2cd4ea1",
+  "specId": "3081f252b2753266980df8a435799f94",
+  "specHash": "9a56c8dc1b96391f75ab020750e7ede7ccc2055eab7de29eadf7178002844a7c",
+  "planHash": "b6929a98e67819747852b38f6c90e13f05317fb799e429be585d2250c8e14cb6",
+  "runId": "589266ce8dc54dc561863f9e5c606fdc",
+  "attemptId": "d0db2c7cfefa15f9106c78d5bcced575",
+  "generation": 1,
+  "workerId": "live-s4b",
+  "paseoSessionId": "3e038bcc-8111-494c-bfe3-88ce13909599",
+  "paseoWorkspaceId": "wks_bad9c6809553365e",
+  "bindingsStatus": "succeeded",
+  "candidateId": "81ae13b1b217532442457b3892511913",
+  "commitSha": "db2f3399c51a40e414c605b933d2fbb54e0487c5",
+  "treeSha": "e10c9a38ae5c5655f20bde6b6d610195d2becd52",
+  "contentDigest": "f919d6a18a0ab6c44ebd2cca65df5fc143ebfb194d28e5036116a201925c3866",
+  "baseRevision": "b7ba250197cf70ca8d1dbf47ebf873d042fa4a84",
+  "changedPaths": [
+    "add.js",
+    "app.js"
+  ],
+  "riskClass": "R0",
+  "tasks": [
+    {
+      "key": "implementer-0",
+      "role": "implementer",
+      "status": "succeeded",
+      "participantId": "",
+      "outcome": "db2f3399c51a40e414c605b933d2fbb54e0487c5"
+    },
+    {
+      "key": "verifier-0",
+      "role": "verifier",
+      "status": "succeeded",
+      "participantId": "verifier-d52034ed-0",
+      "outcome": "passed"
+    },
+    {
+      "key": "reviewer-0",
+      "role": "reviewer",
+      "status": "succeeded",
+      "participantId": "reviewer-d52034ed-0",
+      "outcome": "APPROVE"
+    },
+    {
+      "key": "gate-0",
+      "role": "quality_gate",
+      "status": "succeeded",
+      "participantId": "",
+      "outcome": "ACCEPTED"
+    }
+  ],
+  "verifier": {
+    "actor": "verifier-d52034ed-0",
+    "authority": "verifier",
+    "independent": true,
+    "cleanResource": "git-clone:db2f3399c51a",
+    "status": "passed",
+    "checks": [
+      {
+        "id": "browser",
+        "kind": "browser",
+        "status": "PASS",
+        "command": [
+          "node",
+          "browser-check.mjs"
+        ],
+        "exitCode": 0,
+        "durationMs": 836,
+        "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+      },
+      {
+        "id": "format",
+        "kind": "format",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--check",
+          "add.js"
+        ],
+        "exitCode": 0,
+        "durationMs": 21,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "functional",
+        "kind": "functional",
+        "status": "PASS",
+        "command": [
+          "node",
+          "-e",
+          "const {multiply}=require('./add.js');if(multiply(2,3)!==6)process.exit(1);"
+        ],
+        "exitCode": 0,
+        "durationMs": 24,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "negative",
+        "kind": "negative",
+        "status": "PASS",
+        "command": [
+          "node",
+          "-e",
+          "const {add}=require('./add.js');if(add(2,3)!==5)process.exit(1);"
+        ],
+        "exitCode": 0,
+        "durationMs": 20,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "test",
+        "kind": "test",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--test",
+          "add.test.js"
+        ],
+        "exitCode": 0,
+        "durationMs": 102,
+        "detail": "exit 0 as expected"
+      }
+    ]
+  },
+  "reviewer": {
+    "actor": "reviewer-d52034ed-0",
+    "authority": "reviewer",
+    "verdict": "APPROVE",
+    "findings": [],
+    "diffBytes": 728
+  },
+  "gate": {
+    "id": "be6c4ba0b8c7c59241df786e137a5894",
+    "status": "ACCEPTED",
+    "actor": "core-quality-gate",
+    "checks": [
+      {
+        "id": "gate-identity",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-scope",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-freshness",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-independence",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-security",
+        "status": "PASS"
+      },
+      {
+        "id": "format",
+        "status": "PASS"
+      },
+      {
+        "id": "test",
+        "status": "PASS"
+      },
+      {
+        "id": "functional",
+        "status": "PASS"
+      },
+      {
+        "id": "browser",
+        "status": "PASS"
+      },
+      {
+        "id": "negative",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-review",
+        "status": "PASS"
+      }
+    ]
+  },
+  "cleanup": {
+    "sessionClosed": "Status=closed",
+    "sessionArchived": "Archived=true",
+    "workspaceBinding": "succeeded"
+  },
+  "paidSessions": 1,
+  "manualRoleInvocations": 0
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -1138,4 +1139,50 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// EvaluateGate is the single Core-owned gate path used by both the operator
+// route and the campaign orchestrator. It re-reads the complete durable
+// evidence set, retries once on a concurrent evidence commit, and persists
+// exactly one final decision per candidate.
+func (db *DB) EvaluateGate(ctx context.Context, candidateID, correlationID string) (domain.GateDecision, bool, bool, *domain.Event, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if existing, err := db.GetGateDecision(candidateID); err == nil {
+			return existing, true, true, nil, nil
+		} else if err != domain.ErrNotFound {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		bundle, err := db.GetCandidateBundle(candidateID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		run, err := db.GetRun(bundle.Candidate.ImplementerRunID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		attemptRecord, err := db.GetAttempt(bundle.Candidate.ImplementerRunID, bundle.Candidate.ImplementerAttemptID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		evaluation := quality.Evaluate(quality.Input{
+			Candidate: bundle.Candidate, Spec: bundle.Spec, Run: run, Attempt: attemptRecord,
+			Verifications: bundle.Verifications, Reviews: bundle.Reviews,
+		})
+		if !evaluation.Final {
+			return evaluation.Decision, false, false, nil, nil
+		}
+		decision, replayed, event, err := db.SaveGateDecision(ctx, evaluation.Decision, correlationID)
+		if errors.Is(err, domain.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		if replayed {
+			return decision, true, true, nil, nil
+		}
+		return decision, true, false, &event, nil
+	}
+	return domain.GateDecision{}, false, false, nil,
+		fmt.Errorf("%w: evidence kept changing during gate evaluation", domain.ErrConflict)
 }

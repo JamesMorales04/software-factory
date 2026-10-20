@@ -22,7 +22,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/quality"
 )
 
-const reviewerVersion = "0.1.0-s4a"
+const reviewerVersion = "0.1.0-s4b"
 
 type reviewerClient struct {
 	base  string

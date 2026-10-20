@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/api"
+	"github.com/JamesMorales04/software-factory/core/internal/orchestrator"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 )
@@ -32,6 +34,10 @@ func run() error {
 	addr := flag.String("addr", "127.0.0.1:8471", "listen address (loopback by default)")
 	dbPath := flag.String("db", "./data/factory.db", "SQLite database path")
 	webDir := flag.String("web-dir", "", "static Factory Office build to serve (empty disables)")
+	verifierBin := flag.String("verifier-bin", "", "independent verifier executable (default: adjacent factory-verifier or PATH)")
+	reviewerBin := flag.String("reviewer-bin", "", "independent reviewer executable (default: adjacent factory-reviewer or PATH)")
+	campaignInterval := flag.Duration("campaign-interval", 500*time.Millisecond, "campaign scheduler reconcile interval")
+	campaignSlots := flag.Int("campaign-slots", 4, "maximum concurrent verifier/reviewer participants")
 	flag.Parse()
 
 	logger := telemetry.NewLogger()
@@ -58,11 +64,18 @@ func run() error {
 	defer shutdownTracing(context.Background())
 
 	hub := api.NewHub()
+	engine := orchestrator.New(db, hub, orchestrator.Config{
+		CoreURL:       "http://" + coreURL(*addr),
+		VerifierToken: verifierToken, ReviewerToken: reviewerToken,
+		VerifierBin: *verifierBin, ReviewerBin: *reviewerBin,
+		Interval: *campaignInterval, MaxSlots: *campaignSlots, Logger: logger,
+	})
 	server := api.New(db, token, logger, tracer, hub).
 		WithWorkerToken(workerToken).
 		WithVerifierToken(verifierToken).
 		WithReviewerToken(reviewerToken).
-		WithWebDir(*webDir)
+		WithWebDir(*webDir).
+		WithCampaignCoordinator(engine)
 
 	boot, err := db.RecordCoreStarted(ctx, api.Version)
 	if err != nil {
@@ -90,6 +103,7 @@ func run() error {
 	sweepCtx, stopSweep := context.WithCancel(context.Background())
 	defer stopSweep()
 	go sweepLeases(sweepCtx, db, hub, logger)
+	go engine.Run(sweepCtx)
 
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -140,6 +154,19 @@ func resolveToken(logger *slog.Logger, env string) string {
 	telemetry.RegisterSecret(generated)
 	logger.Info(env + " unset; generated an ephemeral token for this process")
 	return generated
+}
+
+// coreURL turns a loopback listen address into the base URL participants
+// use. A wildcard bind is mapped to loopback because the API is local-only.
+func coreURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // sweepLeases expires timed-out leases and marks overdue Workers offline

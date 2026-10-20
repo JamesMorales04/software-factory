@@ -4,6 +4,8 @@ import { clearToken, getToken, setToken } from "./api";
 import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
 import { Agents } from "./views/Agents";
+import { CampaignDetail } from "./views/CampaignDetail";
+import { Campaigns } from "./views/Campaigns";
 import { Dashboard } from "./views/Dashboard";
 import { RunDetail } from "./views/RunDetail";
 import { Runs } from "./views/Runs";
@@ -56,7 +58,7 @@ export function App() {
           <Link to="/" className="brand">
             Factory Office
           </Link>{" "}
-          <span className="muted">S4-A</span>
+          <span className="muted">S4-B</span>
         </h1>
         <nav>
           <NavLink
@@ -76,6 +78,15 @@ export function App() {
             }
           >
             Actions
+          </NavLink>
+          <NavLink
+            to="/campaigns"
+            end
+            className={({ isActive }) =>
+              isActive ? "navlink active" : "navlink"
+            }
+          >
+            Campaigns
           </NavLink>
           <NavLink
             to="/runs"
@@ -121,6 +132,8 @@ export function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/actions" element={<Actions />} />
           <Route path="/actions/:id" element={<ActionDetail />} />
+          <Route path="/campaigns" element={<Campaigns />} />
+          <Route path="/campaigns/:id" element={<CampaignDetail />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/runs/:id" element={<RunDetail />} />
           <Route path="/workers" element={<Workers />} />

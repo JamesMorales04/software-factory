@@ -302,6 +302,102 @@ export interface Worker {
   updatedAt: string;
 }
 
+export type CampaignStatus =
+  | "pending"
+  | "running"
+  | "accepted"
+  | "repair_required"
+  | "blocked"
+  | "human_required"
+  | "failed"
+  | "cancelled";
+
+export interface CampaignTaskPlan {
+  key: string;
+  role: string;
+  cycle: number;
+  dependsOn: string[];
+  timeoutSecs: number;
+  maxExecutions: number;
+}
+
+export interface CampaignPlan {
+  revision: number;
+  maxRepairCycles: number;
+  tasks: CampaignTaskPlan[];
+  parallelism: number;
+  wallClockSeconds: number;
+}
+
+export interface Campaign {
+  id: string;
+  projectId: string;
+  actionId: string;
+  specId: string;
+  specHash: string;
+  policyRevision: string;
+  planHash: string;
+  plan: CampaignPlan;
+  status: CampaignStatus;
+  terminalReason?: string;
+  maxRepairCycles: number;
+  repairCycles: number;
+  maxAttempts: number;
+  maxWallClockSecs: number;
+  maxParallel: number;
+  correlationId?: string;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CampaignTask {
+  id: string;
+  campaignId: string;
+  key: string;
+  role: string;
+  cycle: number;
+  status: string;
+  dependsOn: string[];
+  participantId?: string;
+  candidateId?: string;
+  runId?: string;
+  outcome?: string;
+  error?: string;
+  executionCount: number;
+  maxExecutions: number;
+  idempotencyKey?: string;
+  dispatchOwner?: string;
+  dispatchExpiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface CampaignBudgetUsage {
+  maxAttempts: number;
+  attemptsUsed: number;
+  maxRepairCycles: number;
+  repairCycles: number;
+  maxWallClockSecs: number;
+  elapsedSecs: number;
+  remainingWallClockSecs: number;
+  maxParallel: number;
+  activeParticipantMax: number;
+  providerBudget: string;
+}
+
+export interface CampaignProjection {
+  campaign: Campaign;
+  tasks: CampaignTask[];
+  budget: CampaignBudgetUsage;
+  candidate?: Candidate;
+  decision?: GateDecision;
+}
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -467,6 +563,47 @@ export const api = {
       `/api/v1/candidates/${encodeURIComponent(id)}/gate`,
       { method: "POST", body: "{}" },
     ).then((r) => r.data),
+  listCampaigns: (params: { status?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<{ campaigns: Campaign[] }>(
+      `/api/v1/campaigns${suffix}`,
+    ).then((r) => r.data.campaigns);
+  },
+  getCampaign: (id: string) =>
+    request<CampaignProjection>(
+      `/api/v1/campaigns/${encodeURIComponent(id)}`,
+    ).then((r) => r.data),
+  createCampaign: (
+    input: {
+      specId: string;
+      maxRepairCycles?: number;
+      maxWallClockSecs?: number;
+      maxParallel?: number;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<CampaignProjection>("/api/v1/campaigns", {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey,
+    }),
+  startCampaign: (id: string) =>
+    request<CampaignProjection>(
+      `/api/v1/campaigns/${encodeURIComponent(id)}/start`,
+      { method: "POST", body: "{}" },
+    ).then((r) => r.data),
+  cancelCampaign: (id: string) =>
+    request<CampaignProjection>(
+      `/api/v1/campaigns/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", body: "{}" },
+    ).then((r) => r.data),
+  listCampaignEvents: (id: string) =>
+    request<{ events: FactoryEvent[] }>(
+      `/api/v1/campaigns/${encodeURIComponent(id)}/events`,
+    ).then((r) => r.data.events),
   listRunEvents: (id: string) =>
     request<{ events: FactoryEvent[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/events`,
