@@ -3,24 +3,24 @@
   "recordedAt": "2026-10-20",
   "mode": "deterministic fixture lane; real Core/Worker/verifier/reviewer/Chromium; deterministic Paseo CLI",
   "buildVersion": "0.1.0-s4b",
-  "sourceNote": "Lane output for the code state recorded by the campaign PR head; rerun from any candidate to reproduce.",
+  "sourceNote": "Exact source commit is recorded after the code commit; rerun from any candidate to reproduce.",
   "securityDisposition": "TRUSTED_LOCAL only; not isolated or SEC-01 certified",
   "campaigns": {
-    "acceptedCampaign": "e4d8bcd2d9685d0013f3f4e7b0fae5e9",
-    "repairCampaign": "992290da65f1fbd31662995f0a325476",
-    "humanCampaign": "2c640f957109b3c459a7ce9917d90add",
-    "crashCampaign": "afba809127075cef636109cd1832b5c4",
-    "browserCampaign": "dfbfd115f93139d3df614c51c404ce9d"
+    "acceptedCampaign": "aba13a8490bf6d6f41eb6bb6a366d767",
+    "repairCampaign": "c2e76648b152b0ffaac923e4fd12f847",
+    "humanCampaign": "8d4d3cbb6b3d93d2915cf310b5bd5500",
+    "crashCampaign": "060353ef97093e5d7dbddcdf0844f587",
+    "browserCampaign": "4f52088d2d54ca97275f3b7fca1248f3"
   },
   "browserJourney": {
     "ok": true,
-    "campaignId": "dfbfd115f93139d3df614c51c404ce9d",
-    "actionId": "abe61b6b3e5e083388dbd01a848c7f65",
-    "specId": "77d255854f4c976f7d0b3550e76098bc",
-    "candidateId": "1cf034492dd999458c280a045e9473c2",
-    "candidateSha": "37ce47f6f00476707318c77cdb094bc408ef31e5",
-    "verifier": "verifier-dfbfd115-0",
-    "reviewer": "reviewer-dfbfd115-0",
+    "campaignId": "4f52088d2d54ca97275f3b7fca1248f3",
+    "actionId": "e745f3543e81895a1b0c59bc2c78e358",
+    "specId": "8265825b6450258855b334887e35fb53",
+    "candidateId": "5edeb9f6138a30503f67a8cfb5545f02",
+    "candidateSha": "b6672c7596d65269e5ee6123d8beeaf87e00f7d6",
+    "verifier": "verifier-4f52088d-0",
+    "reviewer": "reviewer-4f52088d-0",
     "decision": "ACCEPTED",
     "taskCount": 4,
     "accepted": true,
@@ -28,7 +28,7 @@
       {
         "name": "browser created and started a campaign",
         "pass": true,
-        "detail": "dfbfd115f93139d3df614c51c404ce9d"
+        "detail": "4f52088d2d54ca97275f3b7fca1248f3"
       },
       {
         "name": "campaign reaches ACCEPTED from the browser journey",
@@ -59,12 +59,12 @@
       {
         "name": "browser renders independent verifier/reviewer actors",
         "pass": true,
-        "detail": "verifier verifier-dfbfd115-0 \u00b7 reviewer reviewer-dfbfd115-0:APPROVE"
+        "detail": "verifier verifier-4f52088d-0 \u00b7 reviewer reviewer-4f52088d-0:APPROVE"
       },
       {
         "name": "browser renders the real task graph row",
         "pass": true,
-        "detail": "implementer-0\timplementer\t0\tsucceeded\t\u2014 6e9edfbb\t1cf03449\t37ce47f6f00476707318c77cdb094bc408ef31e5"
+        "detail": "implementer-0\timplementer\t0\tsucceeded\t\u2014 4efd5e88\t5edeb9f6\tb6672c7596d65269e5ee6123d8beeaf87e00f7d6"
       },
       {
         "name": "campaign state survives reload without invention",
@@ -76,7 +76,7 @@
       }
     ],
     "consoleErrors": [],
-    "finishedAt": "2026-10-20T23:19:35.265Z"
+    "finishedAt": "2026-10-20T23:42:07.168Z"
   },
   "result": "PASS_B1_B12_DETERMINISTIC",
   "b14": "PASS_LIVE_SEPARATE_EVIDENCE"

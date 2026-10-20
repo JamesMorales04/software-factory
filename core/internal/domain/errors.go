@@ -20,4 +20,7 @@ var (
 	// a second receipt or clean a resource claimed by another Worker.
 	ErrStaleRecoveryClaim       = errors.New("stale recovery claim")
 	ErrRecoveryIdentityConflict = errors.New("recovery identity conflict")
+	// S4-B: a campaign-level bound was reached; this is a durable terminal
+	// condition, not a transient scheduling conflict.
+	ErrBudgetExhausted = errors.New("budget exhausted")
 )

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -210,6 +211,26 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 		verifierTask.CandidateID != candidate.ID || reviewerTask.CandidateID != candidate.ID {
 		t.Fatalf("dependent tasks not candidate-bound: %+v %+v", verifierTask, reviewerTask)
 	}
+	makeEvidence := func(key, actor string) domain.VerificationEvidence {
+		evidence := domain.VerificationEvidence{
+			CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
+			SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+			Authority: "verifier", Actor: actor, Independent: true,
+			CleanResource: "git-clone:test", OracleDigest: spec.OracleDigest(),
+			IdempotencyKey: key,
+		}
+		for _, check := range spec.AllChecks() {
+			evidence.Checks = append(evidence.Checks, domain.CheckResult{
+				ID: check.ID, Kind: check.Kind, Status: domain.CheckPass, ExitCode: check.ExpectExit,
+			})
+		}
+		return evidence
+	}
+	deterministicKey := "campaign-" + campaign.ID + "-verifier-0-" + candidate.ID
+	if _, _, _, err := db.RecordVerification(ctx,
+		makeEvidence(deterministicKey, verifierTask.ParticipantID), "c"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("pre-claim evidence = %v, want unauthorized", err)
+	}
 	var wg sync.WaitGroup
 	claims := make([]bool, 2)
 	for i, task := range []domain.CampaignTask{verifierTask, reviewerTask} {
@@ -233,19 +254,12 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 	}
 	verifierTask, _ = db.getCampaignTask(campaign.ID, verifierTask.ID)
 	reviewerTask, _ = db.getCampaignTask(campaign.ID, reviewerTask.ID)
-	wrong := domain.VerificationEvidence{
-		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
-		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		Authority: "verifier", Actor: "not-the-assigned-participant", Independent: true,
-		CleanResource: "git-clone:forged", OracleDigest: spec.OracleDigest(),
-		IdempotencyKey: verifierTask.IdempotencyKey,
+	if _, _, _, err := db.RecordVerification(ctx,
+		makeEvidence("alternate-key", verifierTask.ParticipantID), "c"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("alternate-key evidence = %v, want unauthorized", err)
 	}
-	for _, check := range spec.AllChecks() {
-		wrong.Checks = append(wrong.Checks, domain.CheckResult{
-			ID: check.ID, Kind: check.Kind, Status: domain.CheckPass, ExitCode: check.ExpectExit,
-		})
-	}
-	if _, _, _, err := db.RecordVerification(ctx, wrong, "c"); !errors.Is(err, domain.ErrUnauthorized) {
+	if _, _, _, err := db.RecordVerification(ctx,
+		makeEvidence(verifierTask.IdempotencyKey, "not-the-assigned-participant"), "c"); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("mismatched participant evidence = %v, want unauthorized", err)
 	}
 	evidenceFor(t, db, spec, candidate, verifierTask.IdempotencyKey, verifierTask.ParticipantID, "")
@@ -254,6 +268,9 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 		outcome, ok, err := db.TaskEvidence(task)
 		if err != nil || !ok {
 			t.Fatalf("evidence for %s: %v ok=%v", task.Key, err, ok)
+		}
+		if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, "stale-token", "c"); !errors.Is(err, domain.ErrStaleGeneration) {
+			t.Fatalf("stale complete token = %v, want stale generation", err)
 		}
 		if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, task.DispatchToken, "c"); err != nil {
 			t.Fatal(err)
@@ -277,6 +294,10 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 	}
 	if _, ok, _, err := db.ClaimGateTask(ctx, campaign.ID, gate.ID, "orchestrator-2", time.Minute, "c"); err == nil || ok {
 		t.Fatal("concurrent gate claim must fail")
+	}
+	if _, _, err := db.ApplyGateOutcome(ctx, campaign.ID, gate.ID, "stale-token",
+		domain.GateDecision{CandidateID: candidate.ID}, "c"); !errors.Is(err, domain.ErrStaleGeneration) {
+		t.Fatalf("stale gate token = %v, want stale generation", err)
 	}
 	decision, final, gateEvents, err := db.EvaluateCampaignGate(ctx, campaign.ID, gate.ID, "c")
 	if err != nil || !final || decision.Status != domain.GateAccepted {
@@ -576,5 +597,145 @@ func TestCampaignRejectsSecondActiveCampaignForAction(t *testing.T) {
 		SpecID: second.ID, MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 2,
 	}, "c"); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("second active campaign = %v, want conflict", err)
+	}
+}
+
+func TestMigrateS4BBackfillsLegacyAttemptBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_, _, campaign := createCampaignFixture(t, db, 1)
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET max_attempts=1, attempt_budget_version=0 WHERE id=?`,
+		campaign.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	migrated, err := reopened.GetCampaign(campaign.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.MaxAttempts != 2 {
+		t.Fatalf("migrated attempt budget = %d, want 2", migrated.MaxAttempts)
+	}
+	if _, err := reopened.sql.Exec(`SELECT status FROM campaigns WHERE id=?`, campaign.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCampaignCreateReplaySurvivesActionCancellation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	action, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, err := db.TransitionAction(ctx, action.ID, domain.StatusCancelled, "c"); err != nil {
+		t.Fatal(err)
+	}
+	replayed, replay, events, err := db.CreateCampaign(ctx, domain.NewCampaignParams{
+		SpecID: spec.ID, MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 2,
+	}, "c")
+	if err != nil || !replay || replayed.ID != campaign.ID || len(events) != 0 {
+		t.Fatalf("terminal-action replay: %v replay=%v events=%d", err, replay, len(events))
+	}
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("start after action cancellation = %v, want invalid transition", err)
+	}
+}
+
+func TestCampaignAttemptBudgetExhaustionIsExplicit(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET max_attempts=0 WHERE id=?`, campaign.ID); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign.ID)
+	if _, _, _, err := db.DispatchImplementer(ctx, campaign.ID, tasks[0].ID, spec.Goal, "c"); !errors.Is(err, domain.ErrBudgetExhausted) {
+		t.Fatalf("dispatch at zero budget = %v, want budget exhausted", err)
+	}
+}
+
+func TestCampaignWallClockExpiryBlocksAndCancels(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign.ID)
+	_, run, _, err := db.DispatchImplementer(ctx, campaign.ID, tasks[0].ID, spec.Goal, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := stamp(db.now().Add(-time.Hour))
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET started_at=? WHERE id=?`, old, campaign.ID); err != nil {
+		t.Fatal(err)
+	}
+	events, err := db.ExpireCampaigns(ctx, "c")
+	if err != nil || len(events) == 0 {
+		t.Fatalf("expire: %v events=%d", err, len(events))
+	}
+	expired, _ := db.GetCampaign(campaign.ID)
+	if expired.Status != domain.CampaignBlocked || !strings.Contains(expired.TerminalReason, "wall-clock") {
+		t.Fatalf("expired campaign = %+v", expired)
+	}
+	storedRun, _ := db.GetRun(run.ID)
+	if storedRun.Status != domain.RunCancelled {
+		t.Fatalf("expired campaign Run = %s, want cancelled", storedRun.Status)
+	}
+}
+
+func TestCampaignUnresolvedPaseoRecoveryIsDetected(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign.ID)
+	_, run, _, err := db.DispatchImplementer(ctx, campaign.ID, tasks[0].ID, spec.Goal, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", "c"); err != nil {
+		t.Fatal(err)
+	}
+	run, attempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "c")
+	if err != nil || !found {
+		t.Fatalf("claim: %v %v", err, found)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "ws", "sess", "c"); err != nil {
+		t.Fatal(err)
+	}
+	unresolved, reason, err := db.RunRecoveryUnresolved(run.ID)
+	if err != nil || !unresolved || reason == "" {
+		t.Fatalf("active binding recovery = %v %q %v", unresolved, reason, err)
+	}
+	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "c"); err != nil {
+		t.Fatal(err)
+	}
+	unresolved, _, err = db.RunRecoveryUnresolved(run.ID)
+	if err != nil || unresolved {
+		t.Fatalf("closed binding recovery = %v %v", unresolved, err)
 	}
 }

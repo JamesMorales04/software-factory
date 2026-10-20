@@ -283,6 +283,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 	max_repair_cycles INTEGER NOT NULL,
 	repair_cycles INTEGER NOT NULL DEFAULT 0,
 	max_attempts INTEGER NOT NULL DEFAULT 1,
+	attempt_budget_version INTEGER NOT NULL DEFAULT 1,
 	max_wall_clock_secs INTEGER NOT NULL,
 	max_parallel INTEGER NOT NULL,
 	idempotency_key TEXT NOT NULL DEFAULT '',
@@ -297,7 +298,6 @@ CREATE TABLE IF NOT EXISTS campaigns (
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_campaigns_action ON campaigns(action_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_idempotency ON campaigns(idempotency_key) WHERE idempotency_key<>'';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_active_action ON campaigns(action_id) WHERE status IN ('pending','running');
 CREATE TABLE IF NOT EXISTS campaign_tasks (
 	id TEXT PRIMARY KEY,
 	campaign_id TEXT NOT NULL REFERENCES campaigns(id),
@@ -366,6 +366,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4A(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-a migration: %w", err)
+	}
+	if err := db.migrateS4B(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-b migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -573,6 +577,71 @@ func (db *DB) migrateS4A() error {
 		if _, err := db.sql.Exec(`ALTER TABLE gate_decisions ADD COLUMN evidence_digest TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add gate_decisions.evidence_digest: %w", err)
 		}
+	}
+	return nil
+}
+
+// migrateS4B upgrades databases created before the repaired Campaign
+// invariants. Fresh databases already carry attempt_budget_version=1 and the
+// partial unique index; older rows are backfilled once, duplicate active
+// campaigns are blocked instead of breaking startup, and only then is the
+// uniqueness index created.
+func (db *DB) migrateS4B() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('campaigns')`)
+	if err != nil {
+		return err
+	}
+	hasBudgetVersion := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "attempt_budget_version" {
+			hasBudgetVersion = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasBudgetVersion {
+		if _, err := db.sql.Exec(`ALTER TABLE campaigns ADD COLUMN attempt_budget_version INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add campaigns.attempt_budget_version: %w", err)
+		}
+	}
+	if _, err := db.sql.Exec(
+		`UPDATE campaigns SET max_attempts=max_attempts*(max_repair_cycles+1),
+		 attempt_budget_version=1 WHERE attempt_budget_version=0`); err != nil {
+		return fmt.Errorf("backfill campaign attempt budgets: %w", err)
+	}
+	if _, err := db.sql.Exec(
+		`UPDATE campaigns SET status='blocked',
+		 terminal_reason='migration: duplicate active campaign',
+		 completed_at=CASE WHEN completed_at='' THEN updated_at ELSE completed_at END,
+		 updated_at=updated_at
+		 WHERE status IN ('pending','running') AND EXISTS (
+		   SELECT 1 FROM campaigns c2
+		   WHERE c2.action_id=campaigns.action_id
+		     AND c2.status IN ('pending','running')
+		     AND (c2.created_at<campaigns.created_at OR
+		          (c2.created_at=campaigns.created_at AND c2.id<campaigns.id))
+		 )`); err != nil {
+		return fmt.Errorf("resolve duplicate active campaigns: %w", err)
+	}
+	if _, err := db.sql.Exec(
+		`UPDATE campaign_tasks SET status='cancelled',
+		 error='migration: duplicate active campaign'
+		 WHERE status IN ('pending','ready','dispatched','running') AND campaign_id IN (
+		   SELECT id FROM campaigns WHERE terminal_reason='migration: duplicate active campaign'
+		 )`); err != nil {
+		return fmt.Errorf("cancel migrated duplicate campaign tasks: %w", err)
+	}
+	if _, err := db.sql.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_active_action
+		 ON campaigns(action_id) WHERE status IN ('pending','running')`); err != nil {
+		return fmt.Errorf("create active campaign uniqueness index: %w", err)
 	}
 	return nil
 }

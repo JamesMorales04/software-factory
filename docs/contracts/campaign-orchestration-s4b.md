@@ -45,7 +45,7 @@ campaigns are outside F1-S4-B).
 Bounds: repair cycles `0..3`, wall clock `120..7200s`, parallelism `1..2`,
 task executions `1..3`, task graph `≤16` rows. Campaign `maxAttempts` is the
 total Implementer-attempt budget across the initial cycle and authorized
-repairs (`spec.maxAttempts × (repairCycles+1)`), enforced before dispatching a
+repairs (`spec.maxAttempts × (maxRepairCycles+1)`), enforced before dispatching a
 new implementer Run. Unknown provider quota/cost remains `unknown`; no zero is
 fabricated.
 

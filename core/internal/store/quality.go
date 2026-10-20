@@ -655,17 +655,30 @@ func normalizeVerifierChecks(checks []domain.CheckResult, spec domain.ActionSpec
 // idempotency key to the exact Factory-assigned participant identity. It
 // preserves the S4-A standalone evidence path, where no campaign task exists.
 func enforceCampaignParticipantTx(ctx context.Context, tx *sql.Tx, candidateID, key, actor string, role domain.TaskRole) error {
+	var campaignBound int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM campaign_tasks WHERE candidate_id=? AND role=?`,
+		candidateID, string(domain.RoleImplementer)).Scan(&campaignBound); err != nil {
+		return err
+	}
+	if campaignBound == 0 {
+		// Standalone S4-A candidate: the scoped role credential remains the
+		// authority and there is no campaign participant to bind.
+		return nil
+	}
 	var participant string
 	err := tx.QueryRowContext(ctx,
-		`SELECT participant_id FROM campaign_tasks WHERE candidate_id=? AND idempotency_key=? AND role=?`,
+		`SELECT participant_id FROM campaign_tasks
+		 WHERE candidate_id=? AND idempotency_key=? AND role=?`,
 		candidateID, key, string(role)).Scan(&participant)
 	if err == sql.ErrNoRows {
-		return nil
+		return fmt.Errorf("%w: campaign evidence has no assigned, claimed task",
+			domain.ErrUnauthorized)
 	}
 	if err != nil {
 		return err
 	}
-	if participant != "" && participant != actor {
+	if participant == "" || participant != actor {
 		return fmt.Errorf("%w: evidence actor does not match the assigned campaign participant",
 			domain.ErrUnauthorized)
 	}

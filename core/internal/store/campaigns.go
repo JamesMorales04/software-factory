@@ -104,13 +104,6 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	if err := spec.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: frozen spec failed validation: %v", domain.ErrInvalidInput, err)
 	}
-	var actionStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM actions WHERE id=?`, spec.ActionID).Scan(&actionStatus); err != nil {
-		return domain.Campaign{}, false, nil, fmt.Errorf("%w: unknown actionId %q", domain.ErrInvalidInput, spec.ActionID)
-	}
-	if actionStatus == string(domain.StatusCompleted) || actionStatus == string(domain.StatusCancelled) {
-		return domain.Campaign{}, false, nil, fmt.Errorf("%w: action is %s", domain.ErrInvalidTransition, actionStatus)
-	}
 	if existing, rerr := scanCampaign(tx.QueryRowContext(ctx,
 		`SELECT `+campaignColumns+` FROM campaigns WHERE action_id=? AND spec_id=?`,
 		spec.ActionID, spec.ID)); rerr == nil {
@@ -135,6 +128,16 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 		} else if rerr != sql.ErrNoRows {
 			return domain.Campaign{}, false, nil, rerr
 		}
+	}
+	var actionStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM actions WHERE id=?`, spec.ActionID).Scan(&actionStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Campaign{}, false, nil, fmt.Errorf("%w: unknown actionId %q", domain.ErrInvalidInput, spec.ActionID)
+		}
+		return domain.Campaign{}, false, nil, err
+	}
+	if actionStatus == string(domain.StatusCompleted) || actionStatus == string(domain.StatusCancelled) {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: action is %s", domain.ErrInvalidTransition, actionStatus)
 	}
 
 	var activeCampaign string
@@ -264,7 +267,7 @@ func (db *DB) GetCampaign(id string) (domain.Campaign, error) {
 
 // ListCampaigns returns campaigns newest first.
 func (db *DB) ListCampaigns(status domain.CampaignStatus, limit int) ([]domain.Campaign, error) {
-	if limit <= 0 || limit > 500 {
+	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
 	q := `SELECT ` + campaignColumns + ` FROM campaigns WHERE 1=1`
@@ -402,6 +405,16 @@ func (db *DB) StartCampaign(ctx context.Context, campaignID, correlationID strin
 			return campaign, true, nil, nil
 		}
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: campaign is %s", domain.ErrInvalidTransition, campaign.Status)
+	}
+	var actionStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM actions WHERE id=?`, campaign.ActionID).Scan(&actionStatus); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Campaign{}, false, nil, fmt.Errorf("%w: unknown actionId %q", domain.ErrInvalidInput, campaign.ActionID)
+		}
+		return domain.Campaign{}, false, nil, err
+	}
+	if actionStatus == string(domain.StatusCompleted) || actionStatus == string(domain.StatusCancelled) {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: action is %s", domain.ErrInvalidTransition, actionStatus)
 	}
 	startRes, err := tx.ExecContext(ctx,
 		`UPDATE campaigns SET status=?, started_at=?, updated_at=? WHERE id=? AND status=?`,
@@ -616,7 +629,7 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 		return domain.Campaign{}, domain.Run{}, nil, err
 	}
 	if attemptsUsed >= campaign.MaxAttempts {
-		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted", domain.ErrInvalidTransition)
+		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted", domain.ErrBudgetExhausted)
 	}
 	spec, err := scanSpec(tx.QueryRowContext(ctx,
 		`SELECT `+specColumns+` FROM action_specs WHERE id=?`, campaign.SpecID))
@@ -1566,8 +1579,9 @@ func (db *DB) TaskEvidence(task domain.CampaignTask) (outcome string, ok bool, e
 	case domain.RoleVerifier:
 		var status string
 		err = db.sql.QueryRow(
-			`SELECT status FROM candidate_verifications WHERE candidate_id=? AND idempotency_key=?`,
-			task.CandidateID, task.IdempotencyKey).Scan(&status)
+			`SELECT status FROM candidate_verifications
+			 WHERE candidate_id=? AND idempotency_key=? AND actor=?`,
+			task.CandidateID, task.IdempotencyKey, task.ParticipantID).Scan(&status)
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}
@@ -1575,8 +1589,9 @@ func (db *DB) TaskEvidence(task domain.CampaignTask) (outcome string, ok bool, e
 	case domain.RoleReviewer:
 		var verdict string
 		err = db.sql.QueryRow(
-			`SELECT verdict FROM candidate_reviews WHERE candidate_id=? AND idempotency_key=?`,
-			task.CandidateID, task.IdempotencyKey).Scan(&verdict)
+			`SELECT verdict FROM candidate_reviews
+			 WHERE candidate_id=? AND idempotency_key=? AND actor=?`,
+			task.CandidateID, task.IdempotencyKey, task.ParticipantID).Scan(&verdict)
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}

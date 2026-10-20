@@ -153,7 +153,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 	e.publish(expired)
 	e.pruneProcesses()
 
-	campaigns, err := e.db.ListCampaigns(domain.CampaignRunning, 500)
+	campaigns, err := e.db.ListCampaigns(domain.CampaignRunning, 5000)
 	if err != nil {
 		e.log.Error("list running campaigns failed", "error", err.Error())
 		return
@@ -168,6 +168,26 @@ func (e *Engine) reconcile(ctx context.Context) {
 
 func (e *Engine) reconcileCampaign(ctx context.Context, campaign domain.Campaign) {
 	correlation := "campaign-tick-" + randomID()
+	action, err := e.db.GetAction(campaign.ActionID)
+	if err != nil {
+		e.log.Error("load campaign action failed", "campaignId", campaign.ID, "error", err.Error())
+		return
+	}
+	switch action.Status {
+	case domain.StatusCancelled:
+		cancelled, events, cerr := e.db.CancelCampaign(ctx, campaign.ID,
+			"action cancelled outside the campaign", correlation)
+		if cerr != nil {
+			e.log.Error("cancel campaign after action cancellation failed", "campaignId", campaign.ID, "error", cerr.Error())
+			return
+		}
+		e.publish(events)
+		e.killCampaign(cancelled.ID)
+		return
+	case domain.StatusCompleted:
+		e.block(ctx, campaign, "action completed outside the campaign", correlation)
+		return
+	}
 	events, err := e.db.PromoteReadyTasks(ctx, campaign.ID, correlation)
 	if err != nil {
 		e.log.Error("promote campaign tasks failed", "campaignId", campaign.ID, "error", err.Error())
@@ -320,6 +340,10 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 	_, _, events, err := e.db.DispatchImplementer(ctx, campaign.ID, task.ID, text,
 		"campaign-dispatch-"+randomID())
 	if err != nil {
+		if errors.Is(err, domain.ErrBudgetExhausted) {
+			e.block(ctx, campaign, err.Error(), "campaign-dispatch-"+randomID())
+			return
+		}
 		if !errors.Is(err, domain.ErrConflict) && !errors.Is(err, domain.ErrInvalidTransition) {
 			e.log.Error("dispatch implementer failed", "campaignId", campaign.ID, "error", err.Error())
 		}
