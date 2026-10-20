@@ -49,7 +49,9 @@ func (s *Server) WithWorkerToken(token string) *Server {
 // token; only the protocol endpoints below accept the worker token.
 func workerRoute(path string) bool {
 	switch path {
-	case "/api/v1/workers/register", "/api/v1/workers/poll", "/api/v1/workers/heartbeat", "/api/v1/workers/report":
+	case "/api/v1/workers/register", "/api/v1/workers/poll", "/api/v1/workers/heartbeat", "/api/v1/workers/report",
+		"/api/v1/workers/session/intend", "/api/v1/workers/session/bind",
+		"/api/v1/workers/session/close", "/api/v1/workers/session/orphan":
 		return true
 	default:
 		return false
@@ -81,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
 	mux.HandleFunc("GET /api/v1/runs/{id}", s.handleGetRun)
 	mux.HandleFunc("GET /api/v1/runs/{id}/attempts", s.handleListAttempts)
+	mux.HandleFunc("GET /api/v1/runs/{id}/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEvents)
 	mux.HandleFunc("POST /api/v1/runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("GET /api/v1/workers", s.handleListWorkers)
@@ -89,6 +92,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/workers/poll", s.handleWorkerPoll)
 	mux.HandleFunc("POST /api/v1/workers/heartbeat", s.handleWorkerHeartbeat)
 	mux.HandleFunc("POST /api/v1/workers/report", s.handleWorkerReport)
+	mux.HandleFunc("POST /api/v1/workers/session/intend", s.handleSessionIntend)
+	mux.HandleFunc("POST /api/v1/workers/session/bind", s.handleSessionBind)
+	mux.HandleFunc("POST /api/v1/workers/session/close", s.handleSessionClose)
+	mux.HandleFunc("POST /api/v1/workers/session/orphan", s.handleSessionOrphan)
 
 	authed := s.withAuth(mux)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

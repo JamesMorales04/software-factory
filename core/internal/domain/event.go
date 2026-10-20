@@ -27,6 +27,18 @@ const (
 	EventWorkerOffline    = "WorkerOffline"
 )
 
+// S3-A event types for the durable Paseo session binding. All are recorded
+// on the run aggregate so the existing replay transport (per-aggregate and
+// global) carries them with no second ledger.
+const (
+	EventPaseoSessionIntended  = "PaseoSessionIntended"
+	EventPaseoSessionActive    = "PaseoSessionActive"
+	EventPaseoSessionSucceeded = "PaseoSessionSucceeded"
+	EventPaseoSessionFailed    = "PaseoSessionFailed"
+	EventPaseoSessionCancelled = "PaseoSessionCancelled"
+	EventPaseoSessionOrphaned  = "PaseoSessionOrphaned"
+)
+
 // EventSchemaVersion is the S1 payload contract version.
 const EventSchemaVersion = "1"
 
@@ -65,7 +77,10 @@ func (e Event) Validate() error {
 	case EventCoreStarted, EventActionCreated, EventActionTransitioned,
 		EventRunQueued, EventRunLeased, EventRunStarted, EventRunCompleted,
 		EventRunFailed, EventRunExpired, EventRunCancelled,
-		EventWorkerRegistered, EventWorkerOffline:
+		EventWorkerRegistered, EventWorkerOffline,
+		EventPaseoSessionIntended, EventPaseoSessionActive,
+		EventPaseoSessionSucceeded, EventPaseoSessionFailed,
+		EventPaseoSessionCancelled, EventPaseoSessionOrphaned:
 	default:
 		return errors.New("unknown eventType")
 	}

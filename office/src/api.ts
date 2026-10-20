@@ -69,6 +69,31 @@ export interface Run {
   leaseExpiresAt?: string;
   result?: Record<string, unknown>;
   error?: string;
+  // S3-A: requested execution mode and pinned Paseo routing. Absent for S2
+  // synthetic runs (restricted). Rendered read-only; the timeline view that
+  // projects session activity arrives in S3-C.
+  executionMode: string;
+  provider?: string;
+  model?: string;
+  paseoMode?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PaseoSession {
+  attemptId: string;
+  runId: string;
+  seq: number;
+  workerId: string;
+  leaseGeneration: number;
+  provider: string;
+  model: string;
+  mode: string;
+  execMode: string;
+  workspaceId?: string;
+  sessionId?: string;
+  status: string;
+  error?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -241,6 +266,10 @@ export const api = {
     request<{ events: FactoryEvent[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/events`,
     ).then((r) => r.data.events),
+  listSessions: (id: string) =>
+    request<{ sessions: PaseoSession[] }>(
+      `/api/v1/runs/${encodeURIComponent(id)}/sessions`,
+    ).then((r) => r.data.sessions),
   listWorkers: () =>
     request<{ workers: Worker[] }>(`/api/v1/workers`).then(
       (r) => r.data.workers,

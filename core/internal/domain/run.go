@@ -84,8 +84,15 @@ type Run struct {
 	LeaseExpiresAt  time.Time      `json:"leaseExpiresAt,omitempty"`
 	Result          map[string]any `json:"result,omitempty"`
 	Error           string         `json:"error,omitempty"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	// S3-A: requested execution mode and pinned Paseo routing. Empty for
+	// S2 synthetic runs (restricted). TRUSTED_LOCAL runs carry the exact
+	// provider/model/mode the Worker must assert from session evidence.
+	ExecutionMode string    `json:"executionMode"`
+	Provider      string    `json:"provider,omitempty"`
+	Model         string    `json:"model,omitempty"`
+	PaseoMode     string    `json:"paseoMode,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // Attempt is one lease grant for a Run. History is append-only.
@@ -122,14 +129,31 @@ type NewRunParams struct {
 	WorkloadInput map[string]any
 	MaxAttempts   int
 	TimeoutSecs   int
+	// S3-A: requested execution mode and Paseo routing. Empty means the
+	// S2 default (restricted synthetic execution).
+	ExecutionMode string
+	Provider      string
+	Model         string
+	PaseoMode     string
 }
 
-// ValidateWorkloadInput enforces the synthetic-echo bounds so untrusted
-// input cannot smuggle arbitrary operations past the domain boundary.
+// ValidateWorkloadInput enforces the authorized workload bounds so untrusted
+// input cannot smuggle arbitrary operations past the domain boundary. S2
+// authorizes only synthetic-echo; S3-A additionally authorizes paseo-task
+// under TRUSTED_LOCAL routing (validated in NewRunParams.Validate).
 func ValidateWorkloadInput(kind string, input map[string]any) (map[string]any, error) {
-	if kind != SyntheticEchoKind {
-		return nil, fmt.Errorf("unsupported workloadKind %q: only %q is authorized in S2", kind, SyntheticEchoKind)
+	switch kind {
+	case SyntheticEchoKind:
+		return validateSyntheticInput(input)
+	case PaseoTaskKind:
+		return validatePaseoTaskInput(input)
+	default:
+		return nil, fmt.Errorf("unsupported workloadKind %q: only %q and %q are authorized",
+			kind, SyntheticEchoKind, PaseoTaskKind)
 	}
+}
+
+func validateSyntheticInput(input map[string]any) (map[string]any, error) {
 	if input == nil {
 		return nil, errors.New("workloadInput is required")
 	}
@@ -196,6 +220,37 @@ func (p NewRunParams) Validate() (NewRunParams, error) {
 	}
 	if p.ActionID != "" && len(p.ActionID) != 32 {
 		return p, errors.New("actionId must be a 32-character hex id when present")
+	}
+	if p.ExecutionMode == "" {
+		p.ExecutionMode = string(ExecRestricted)
+	}
+	if err := ValidateExecutionMode(p.ExecutionMode); err != nil {
+		return p, err
+	}
+	switch p.WorkloadKind {
+	case SyntheticEchoKind:
+		if p.ExecutionMode != string(ExecRestricted) {
+			return p, fmt.Errorf("workloadKind %q requires executionMode %q",
+				SyntheticEchoKind, ExecRestricted)
+		}
+		if p.Provider != "" || p.Model != "" || p.PaseoMode != "" {
+			return p, errors.New("provider/model/paseoMode are only valid for paseo-task runs")
+		}
+	case PaseoTaskKind:
+		if p.ExecutionMode != string(ExecTrustedLocal) {
+			return p, fmt.Errorf("workloadKind %q requires executionMode %q",
+				PaseoTaskKind, ExecTrustedLocal)
+		}
+		route, err := ValidatePaseoRoute(p.Provider, p.Model, p.PaseoMode)
+		if err != nil {
+			return p, err
+		}
+		p.Provider = route.Provider
+		p.Model = route.Model
+		p.PaseoMode = route.Mode
+	default:
+		return p, fmt.Errorf("unsupported workloadKind %q: only %q and %q are authorized",
+			p.WorkloadKind, SyntheticEchoKind, PaseoTaskKind)
 	}
 	input, err := ValidateWorkloadInput(p.WorkloadKind, p.WorkloadInput)
 	if err != nil {
@@ -294,7 +349,7 @@ func SanitizeResult(v map[string]any) (map[string]any, error) {
 			if len(t) > 1024 {
 				return nil, fmt.Errorf("result value for %q exceeds 1024 characters", k)
 			}
-			out[k] = t
+			out[k] = val
 		case bool, float64, int, int64, nil:
 			out[k] = val
 		default:

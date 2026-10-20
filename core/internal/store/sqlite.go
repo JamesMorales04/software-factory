@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS runs (
 	lease_expires_at TEXT NOT NULL DEFAULT '',
 	result TEXT NOT NULL DEFAULT '{}',
 	error TEXT NOT NULL DEFAULT '',
+	execution_mode TEXT NOT NULL DEFAULT 'restricted',
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	paseo_mode TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -98,6 +102,29 @@ CREATE TABLE IF NOT EXISTS workers (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_attempts_run ON attempts(run_id, seq);
+-- S3-A: durable 1:1 link between one Attempt generation and one real Paseo
+-- session. The row is intended before any non-idempotent Paseo call so a
+-- crash between session creation and identity persistence is detectable.
+CREATE TABLE IF NOT EXISTS paseo_bindings (
+	attempt_id TEXT PRIMARY KEY,
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	seq INTEGER NOT NULL,
+	worker_id TEXT NOT NULL,
+	lease_generation INTEGER NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	mode TEXT NOT NULL,
+	exec_mode TEXT NOT NULL,
+	workspace_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paseo_bindings_run ON paseo_bindings(run_id);
+CREATE INDEX IF NOT EXISTS idx_paseo_bindings_session ON paseo_bindings(session_id);
+CREATE INDEX IF NOT EXISTS idx_paseo_bindings_status ON paseo_bindings(status);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -128,6 +155,10 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	db := &DB{sql: sqldb}
+	if err := db.migrateS3A(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s3-a migration: %w", err)
+	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
 	db.hooks.offlineAfter = domain.WorkerOfflineAfter
@@ -186,6 +217,43 @@ func (db *DB) JournalMode() (string, error) {
 		return "", err
 	}
 	return mode, nil
+}
+
+// migrateS3A adds the S3-A runs columns to databases created before the
+// session-identity slice. Fresh databases already carry them via the schema
+// above; the ALTERs below only fire when the column is absent, so the
+// migration is idempotent and never rewrites existing rows.
+func (db *DB) migrateS3A() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('runs')`)
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		present[name] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range []string{"execution_mode", "provider", "model", "paseo_mode"} {
+		if present[col] {
+			continue
+		}
+		def := `TEXT NOT NULL DEFAULT ''`
+		if col == "execution_mode" {
+			def = `TEXT NOT NULL DEFAULT 'restricted'`
+		}
+		if _, err := db.sql.Exec(`ALTER TABLE runs ADD COLUMN ` + col + ` ` + def); err != nil {
+			return fmt.Errorf("add runs.%s: %w", col, err)
+		}
+	}
+	return nil
 }
 
 func newID() string {
