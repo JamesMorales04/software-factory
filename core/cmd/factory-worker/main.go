@@ -29,7 +29,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.2.0-s2"
+const workerVersion = "0.3.0-s3b"
 
 type client struct {
 	base   string
@@ -239,7 +239,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 	}()
 
 	spec, err := fixtureSpec(run, attempt)
-	if err != nil {
+	if err != nil && run.WorkloadKind != domain.PaseoTaskKind {
 		cancel() // stop the heartbeat loop before waiting for it
 		<-hbDone
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "invalid-workload: "+err.Error(), log)
@@ -252,7 +252,14 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "workspace: "+err.Error(), log)
 		return
 	}
-	defer func() { _ = os.RemoveAll(workDir) }()
+	// Paseo-task workspaces are retained on reported failure so the actual
+	// result stays inspectable; synthetic fixtures are always removed.
+	retainWorkDir := false
+	defer func() {
+		if !retainWorkDir {
+			_ = os.RemoveAll(workDir)
+		}
+	}()
 
 	// Synchronous start heartbeat: records execution start (leased→
 	// running, RunStarted) before the first renewal interval elapses, so
@@ -269,7 +276,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		return
 	}
 
-	result, err := exec.Run(execCtx, spec, workDir, podmanOK)
+	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, log)
 	cancel() // execution finished: stop the heartbeat loop before joining it
 	<-hbDone
 	select {
@@ -279,6 +286,14 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		log.Info("attempt fenced during execution; abandoning without report", "error", ferr.Error())
 		return
 	default:
+	}
+	var fenceErr *fenceError
+	if errors.As(err, &fenceErr) {
+		// Core fenced the session lifecycle itself (stale generation,
+		// expiry, cancel): abandon without reporting, same as a lease
+		// fence. Core-side expiry/restart reconciliation owns the orphan.
+		log.Info("attempt session fenced; abandoning without report", "error", fenceErr.Error())
+		return
 	}
 	if err != nil {
 		reason := "execution-failed"
@@ -291,19 +306,18 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		} else if ctx.Err() != nil {
 			reason = "worker-shutdown"
 		}
+		if run.WorkloadKind == domain.PaseoTaskKind {
+			// A reported paseo-task failure keeps its workspace for
+			// inspection; the reason already names the failed stage.
+			retainWorkDir = true
+			log.Info("retaining paseo-task workspace for inspection", "workDir", workDir)
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, result, truncate(err.Error()), log)
+			return
+		}
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, reason+": "+truncate(err.Error()), log)
 		return
 	}
-	output := map[string]any{
-		"mode":          string(result.Mode),
-		"steps":         result.StepsCompleted,
-		"receipt":       result.Receipt,
-		"messageDigest": result.MessageDigest,
-		"elapsedMs":     result.ElapsedMs,
-	}
-	if result.ImageDigest != "" {
-		output["imageDigest"] = result.ImageDigest
-	}
+	output := result
 	c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeCompleted, output, "", log)
 }
 
