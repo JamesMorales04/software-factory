@@ -12,3 +12,4 @@ Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preser
 - [ADR-0006 — Early-development compatibility](ADR-0006-early-development-compatibility.md) — no speculative compatibility shims.
 - [ADR-0007 — Maintainable, DRY code](ADR-0007-maintainable-code-and-dry.md) — code architecture quality principles.
 - [ADR-0008 — Static quality gates](ADR-0008-static-analysis-gates.md) — language-appropriate linting.
+- [ADR-0009 — Trusted-local execution](ADR-0009-trusted-local-execution.md) — accepted; owner risk acceptance for TRUSTED_LOCAL broad local access; SEC-01-STRICT not required for that mode, SEC-01-ISOLATED available-only-where-verified.

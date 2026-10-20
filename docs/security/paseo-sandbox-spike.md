@@ -4,7 +4,7 @@
 
 ## Current disposition
 
-Podman host boundaries and a functional Paseo SDK → Codex → MCP broker → Podman Worker route were demonstrated using disposable fixtures. The original host Paseo agent **did** read an external canary; an in-container same-user process **did** read a synthetic colocated credential. No experiment proved that every provider tool is forced through the broker. Therefore, full security isolation **has not passed**. Implementation may advance through F1-S1 and credential-free F1-S2 only; F1-S3 and autonomous untrusted execution remain blocked. Do not convert a limited PASS into overall SEC-01 approval.
+Podman host boundaries and a functional Paseo SDK → Codex → MCP broker → Podman Worker route were demonstrated using disposable fixtures. The original host Paseo agent **did** read an external canary; an in-container same-user process **did** read a synthetic colocated credential. No experiment proved that every provider tool is forced through the broker. Therefore, full security isolation **has not passed**. Implementation may advance through F1-S1 and credential-free F1-S2 only; F1-S3-ISOLATED and autonomous untrusted execution remain blocked. S3-TRUSTED_LOCAL follows its own entry conditions per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and is not gated by this spike. Do not convert a limited PASS into overall SEC-01 approval.
 
 ## Questions to answer
 
