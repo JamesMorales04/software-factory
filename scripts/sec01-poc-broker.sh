@@ -65,6 +65,9 @@ if head -c 1 "$FAKECREDS/provider.key" >/dev/null 2>&1; then CRED_READ="READABLE
 check "unconstrained shell reads colocated credential (control)" "READABLE" "$CRED_READ"
 
 # --- 3. Same battery inside the S2 disposable container boundary.
+# Mount-scope check only: $WORK alone is mounted, so $OUTSIDE/$FAKECREDS
+# are invisible by construction (not a host-escape test). The
+# unconstrained-shell control above is what proves mediation is required.
 if ! command -v podman >/dev/null 2>&1; then
   echo "[BLOCKED] podman unavailable: container battery NOT_TESTED"
 else
@@ -80,7 +83,7 @@ else
         echo "--- sockets:"; (test ! -e /run/podman/podman.sock && test ! -e /run/docker.sock && echo ABSENT || echo PRESENT)
       ' >"$C_OUT" 2>&1; then
     grep -q "POCMARKER2" "$C_OUT"; check "container broker op works" "0" "$?"
-    grep -q "INACCESSIBLE" "$C_OUT"; check "container cannot see host canary" "0" "$?"
+    grep -q "INACCESSIBLE" "$C_OUT"; check "container mount scope hides unmounted host paths" "0" "$?"
     grep -q "UNREACHABLE" "$C_OUT"; check "container egress denied" "0" "$?"
     grep -q "CLEAN" "$C_OUT"; check "container env clean" "0" "$?"
     grep -q "ABSENT" "$C_OUT"; check "container sockets absent" "0" "$?"

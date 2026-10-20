@@ -68,46 +68,52 @@ func ensureImage(ctx context.Context) error {
 
 func TestPodmanArgsAuditLocksRestrictionSet(t *testing.T) {
 	spec := Spec{Message: "audit", Steps: 2, StepMs: 5, RunID: "r", AttemptID: "a123", Generation: 7}
-	args := podmanArgs(spec, 2, "/tmp/factory-s2-work")
-	joined := " " + strings.Join(args, " ") + " "
-	mustContain := []string{
-		" --network=none ", " --read-only ", " --cap-drop=ALL ",
-		" --security-opt=no-new-privileges ", " --pids-limit=32 ",
-		" --memory=128m ", " --cpus=0.5 ", " --userns=keep-id ",
-		" --rm ", " -v /tmp/factory-s2-work:/workspace:rw ",
-		" --workdir /workspace ", " docker.io/library/alpine:3.20 ",
-		" --env MESSAGE=audit ", " --env STEPS=2 ",
-		" --env RECEIPT=r/a123/7 ",
+	args := podmanArgs(spec, 2, "/tmp/factory-s2-work", "docker.io/library/alpine:3.20@sha256:abc123")
+	// Exact argv: any flag drift, new mount, env change, reordered
+	// restriction, STEPMS encoding change, or unpinned image reference
+	// fails this test. The fixture script text is locked verbatim.
+	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
+		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
+		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
+	want := []string{
+		"run", "--rm",
+		"--network=none",
+		"--read-only",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"--pids-limit=32",
+		"--memory=128m",
+		"--cpus=0.5",
+		"--userns=keep-id",
+		"-v", "/tmp/factory-s2-work:/workspace:rw",
+		"--workdir", "/workspace",
+		"--env", "MESSAGE=audit",
+		"--env", "STEPS=2",
+		"--env", "STEPMS=0.005",
+		"--env", "RECEIPT=r/a123/7",
+		"--name", "factory-s2-a123",
+		"docker.io/library/alpine:3.20@sha256:abc123",
+		"sh", "-c", script,
 	}
-	for _, want := range mustContain {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("podman argv missing %q in %q", want, joined)
+	if len(args) != len(want) {
+		t.Fatalf("podman argv length %d, want %d:\n got %q", len(args), len(want), args)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("podman argv[%d] = %q, want %q (full: %q)", i, args[i], want[i], args)
 		}
 	}
+	joined := " " + strings.Join(args, " ") + " "
 	forbidden := []string{
 		"--privileged", "--network=host", "/run/podman", "/run/docker",
 		"/root", "/home/", "--env HOME=", "--env PATH=",
 		"--env FACTORY_", "--env OPENAI", "--env GITHUB", "--volume", ":ro ",
+		"alpine:3.20 ",
 	}
 	for _, bad := range forbidden {
 		if strings.Contains(joined, bad) {
 			t.Fatalf("podman argv contains forbidden %q in %q", bad, joined)
 		}
-	}
-	envCount := 0
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "--env" {
-			envCount++
-			key, _, _ := strings.Cut(args[i+1], "=")
-			switch key {
-			case "MESSAGE", "STEPS", "STEPMS", "RECEIPT":
-			default:
-				t.Fatalf("unexpected container env key %q", key)
-			}
-		}
-	}
-	if envCount != 4 {
-		t.Fatalf("expected exactly 4 container env vars, got %d", envCount)
 	}
 }
 

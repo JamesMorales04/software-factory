@@ -78,15 +78,20 @@ a config flag is **not** an OS boundary.
 3. **Container argv audit** (`core/internal/exec`): the disposable
    invocation is built by a pure function with a unit test locking the
    restriction set; any flag drift fails the test.
-4. **Image digest evidence**: resolved digest recorded in startup logs
-   and attempt results for drift detection.
+4. **Image digest evidence**: per-attempt inspect resolves the digest
+   immediately before execution and the container runs the pinned
+   `image@digest` reference; a resolution failure fails the Attempt
+   closed instead of executing an unproven image. The digest is recorded
+   in attempt results.
 5. **Orphan workspace reaper**: Worker sweeps its own disposable
    pattern at startup; in-process cleanup on every attempt return;
    `podman rm -f` discipline proven by the PoC.
 6. **Scoped broker PoC** (`scripts/sec01-poc-broker.sh`, synthetic-only,
     disposable, RESTRICTED/research basis): fixed-op workspace-bound broker, traversal rejection,
    unconstrained-shell control reads (proving mediation is required),
-   container battery (canary/env/network/socket), orphan cleanup,
+   container battery (unmounted-path invisibility, env clean, egress
+   denied, sockets absent — a mount-scope check, not a host-escape
+   test), orphan cleanup,
    canary-absent broker I/O. ALL CHECKS PASSED on this host.
 
 ## 4. What S2-D still requires

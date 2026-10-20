@@ -61,7 +61,10 @@ type Result struct {
 	StepsCompleted int
 	Receipt        string
 	MessageDigest  string
-	ElapsedMs      int64
+	// ImageDigest is the pinned fixture-image digest the container
+	// actually executed (podman mode only; empty for local mode).
+	ImageDigest string
+	ElapsedMs   int64
 }
 
 // PodmanAvailable reports whether the podman CLI runs in this environment.
@@ -75,6 +78,11 @@ func PodmanAvailable(ctx context.Context) bool {
 // the caller) and returns the bounded result. podmanOK selects the
 // container path; otherwise the pure-Go path runs. ctx carries the
 // Attempt timeout and the Worker's cancellation.
+//
+// In podman mode the image digest is resolved immediately before
+// execution and the container runs the pinned image@digest reference;
+// a resolution failure fails the Attempt closed instead of executing an
+// unproven image.
 func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result, error) {
 	start := time.Now()
 	digest := sha256.Sum256([]byte(spec.Message))
@@ -84,10 +92,14 @@ func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result,
 		steps = 1
 	}
 	var mode Mode
+	var imageDigest string
 	var err error
 	if podmanOK {
 		mode = ModePodman
-		err = runPodman(ctx, spec, steps, workDir)
+		if imageDigest, err = ImageDigest(ctx); err != nil {
+			return Result{}, fmt.Errorf("fixture image digest unavailable: %w", err)
+		}
+		err = runPodman(ctx, spec, steps, workDir, PodmanImage+"@"+imageDigest)
 	} else {
 		mode = ModeLocal
 		err = runLocal(ctx, steps, spec.StepMs, workDir, receipt)
@@ -100,6 +112,7 @@ func Run(ctx context.Context, spec Spec, workDir string, podmanOK bool) (Result,
 		StepsCompleted: steps,
 		Receipt:        receipt,
 		MessageDigest:  "sha256:" + hex.EncodeToString(digest[:]),
+		ImageDigest:    imageDigest,
 		ElapsedMs:      time.Since(start).Milliseconds(),
 	}, nil
 }
@@ -128,8 +141,9 @@ func runLocal(ctx context.Context, steps, stepMs int, workDir, receipt string) e
 // runPodman executes the same fixed steps inside a disposable rootless
 // container. The argv is fixed; only scalar env values vary. No HOME, no
 // credential paths, no sockets and no host networking are ever mounted.
-func runPodman(ctx context.Context, spec Spec, steps int, workDir string) error {
-	args := podmanArgs(spec, steps, workDir)
+// imageRef is the digest-pinned image reference resolved for this Attempt.
+func runPodman(ctx context.Context, spec Spec, steps int, workDir, imageRef string) error {
+	args := podmanArgs(spec, steps, workDir, imageRef)
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout = &stdout
@@ -175,8 +189,9 @@ func PullImage(ctx context.Context) error { return pullImage(ctx) }
 // podmanArgs builds the exact disposable-container invocation. It is a
 // pure function so the restriction set is unit-auditable: any future flag
 // drift (privileged mode, host mounts, network, sockets) fails the audit
-// test instead of silently widening the boundary.
-func podmanArgs(spec Spec, steps int, workDir string) []string {
+// test instead of silently widening the boundary. imageRef must be the
+// digest-pinned reference resolved for the Attempt, never a bare tag.
+func podmanArgs(spec Spec, steps int, workDir, imageRef string) []string {
 	script := `printf '%s' "$MESSAGE" > /workspace/message.txt; ` +
 		`i=0; while [ "$i" -lt "$STEPS" ]; do echo "step-$i" >> /workspace/steps.txt; i=$((i+1)); sleep "$STEPMS"; done; ` +
 		`printf '%s' "$RECEIPT" > /workspace/receipt.txt`
@@ -200,14 +215,16 @@ func podmanArgs(spec Spec, steps int, workDir string) []string {
 		"--env", "STEPMS=" + stepMsS,
 		"--env", "RECEIPT=" + spec.RunID + "/" + spec.AttemptID + "/" + strconv.FormatInt(spec.Generation, 10),
 		"--name", containerName(spec.AttemptID),
-		PodmanImage,
+		imageRef,
 		"sh", "-c", script,
 	}
 }
 
-// ImageDigest resolves the fixture image to its content digest for
-// evidence binding. The tag stays the select mechanism; the digest is
-// recorded in startup logs and attempt results so drift is detectable.
+// ImageDigest resolves the fixture image to its content digest. Callers
+// resolve it immediately before execution and run the pinned
+// image@digest reference; a resolution failure must fail the Attempt
+// closed, never execute an unproven image. The tag stays the select
+// mechanism for pulls; the digest is the execution evidence.
 func ImageDigest(ctx context.Context) (string, error) {
 	c, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

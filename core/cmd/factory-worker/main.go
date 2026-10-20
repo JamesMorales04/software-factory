@@ -101,27 +101,14 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create fixture runs root: %w", err)
 	}
-	// Graceful-shutdown cleanup: only killed Workers leave run roots
-	// behind, so the reaper has something unambiguous to collect.
-	defer func() {
-		if cerr := runsRoot.Close(); cerr != nil {
-			logger.Warn("runs root cleanup failed", "error", cerr.Error())
-		}
-	}()
-
-	// Evidence binding: record the resolved fixture image digest so
-	// content drift between runs is detectable in attempt results.
-	imageDigest := ""
-	if podmanOK {
-		imageDigest, err = exec.ImageDigest(ctx)
-		if err != nil {
-			logger.Warn("fixture image digest unavailable; continuing with pinned tag", "error", err.Error())
-		} else {
-			logger.Info("fixture image digest resolved", "digest", imageDigest)
-		}
-	}
+	// Shutdown cleanup: the graceful path closes the run root after all
+	// slots exit (below). On the shutdown-timeout path the root is
+	// deliberately left locked: slots may still be live, and the kernel
+	// releases the lock on process exit so the next Worker reaps it as
+	// stale. Never remove a root that may still be in use.
 
 	if err := c.register(ctx, *workerID); err != nil {
+		_ = runsRoot.Close()
 		return fmt.Errorf("register worker: %w", err)
 	}
 	logger.Info("worker registered", "workerId", *workerID, "mode", map[bool]string{true: "podman", false: "local"}[podmanOK])
@@ -131,7 +118,7 @@ func run(args []string) error {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK, imageDigest, runsRoot.Dir())
+			c.slotLoop(ctx, slot, *workerID, *pollInterval, *heartbeatInterval, podmanOK, runsRoot.Dir())
 		}(i)
 	}
 	<-ctx.Done()
@@ -140,8 +127,15 @@ func run(args []string) error {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		// All slots exited: no live user of the root remains.
+		if cerr := runsRoot.Close(); cerr != nil {
+			logger.Warn("runs root cleanup failed", "error", cerr.Error())
+		}
 		return nil
 	case <-time.After(15 * time.Second):
+		// Slots may still be live: leave the root locked for stale
+		// reaping instead of removing a directory in use.
+		logger.Warn("worker shutdown timed out waiting for slots; leaving run root locked for stale reaping")
 		return errors.New("worker shutdown timed out waiting for slots")
 	}
 }
@@ -174,7 +168,7 @@ func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (boo
 }
 
 // slotLoop polls for work and handles one Attempt at a time.
-func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, heartbeat time.Duration, podmanOK bool, imageDigest, runsRoot string) {
+func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, heartbeat time.Duration, podmanOK bool, runsRoot string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -203,7 +197,7 @@ func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, 
 			}
 			continue
 		}
-		c.handleAttempt(ctx, workerID, run, attempt, heartbeat, podmanOK, imageDigest, runsRoot)
+		c.handleAttempt(ctx, workerID, run, attempt, heartbeat, podmanOK, runsRoot)
 	}
 }
 
@@ -212,7 +206,7 @@ func (c *client) slotLoop(ctx context.Context, slot int, workerID string, poll, 
 // the correct recovery, not an error loop.
 var errWorkerUnknown = errors.New("worker unknown")
 
-func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.Run, attempt domain.Attempt, heartbeat time.Duration, podmanOK bool, imageDigest, runsRoot string) {
+func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.Run, attempt domain.Attempt, heartbeat time.Duration, podmanOK bool, runsRoot string) {
 	log := c.logger.With("workerId", workerID, "runId", run.ID, "attemptId", attempt.ID, "generation", attempt.LeaseGeneration)
 	execTimeout := runTimeout(run.TimeoutSecs)
 	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
@@ -307,8 +301,8 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		"messageDigest": result.MessageDigest,
 		"elapsedMs":     result.ElapsedMs,
 	}
-	if imageDigest != "" {
-		output["imageDigest"] = imageDigest
+	if result.ImageDigest != "" {
+		output["imageDigest"] = result.ImageDigest
 	}
 	c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeCompleted, output, "", log)
 }

@@ -61,7 +61,7 @@ func TestHandleAttemptCompletesPromptly(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		c.handleAttempt(ctx, "reg-1", claimed, attempt, 100*time.Millisecond, false, "", t.TempDir())
+		c.handleAttempt(ctx, "reg-1", claimed, attempt, 100*time.Millisecond, false, t.TempDir())
 	}()
 	select {
 	case <-done:
@@ -176,7 +176,7 @@ func TestHandleAttemptReportsEffectiveModeAndReceipt(t *testing.T) {
 	}
 
 	// podmanOK=false selects the explicit local fixture path.
-	c.handleAttempt(ctx, "reg-mode", claimed, attempt, 100*time.Millisecond, false, "", t.TempDir())
+	c.handleAttempt(ctx, "reg-mode", claimed, attempt, 100*time.Millisecond, false, t.TempDir())
 
 	final, err := db.GetRun(run.ID)
 	if err != nil {
