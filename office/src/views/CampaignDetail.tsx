@@ -7,6 +7,7 @@ import {
   type CandidateBundle,
   type FactoryEvent,
 } from "../api";
+import { StreamStateBadge } from "../components/StreamStateBadge";
 import { presentEvent } from "../eventPresentation";
 import { useEventStream } from "../useEventStream";
 
@@ -19,7 +20,11 @@ export function CampaignDetail() {
   const [ledger, setLedger] = useState<FactoryEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { events: live, lastMatchedSeq } = useEventStream(
+  const {
+    events: live,
+    lastMatchedSeq,
+    state: streamState,
+  } = useEventStream(
     0,
     (e) => e.aggregateType === "campaign" && e.aggregateId === id,
     { maxEvents: 400 },
@@ -108,11 +113,14 @@ export function CampaignDetail() {
         <h2>
           Campaign <code>{campaign.id.slice(0, 8)}</code>
         </h2>
-        <span
-          className={`pill campaign-${campaign.status}`}
-          data-testid="campaign-status"
-        >
-          {campaign.status}
+        <span>
+          <span
+            className={`pill campaign-${campaign.status}`}
+            data-testid="campaign-status"
+          >
+            {campaign.status}
+          </span>{" "}
+          <StreamStateBadge state={streamState} />
         </span>
       </div>
       {error && <p className="error">{error}</p>}

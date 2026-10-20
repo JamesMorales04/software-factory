@@ -24,7 +24,9 @@ existing Worker, Paseo, verifier, reviewer and gate infrastructure.
    `implementer → (verifier || reviewer) → quality_gate` per cycle, with at most
    three repair cycles. Later cycles are dormant until the preceding gate
    returns `REPAIR_REQUIRED`; they cannot be authorized by an operator, a
-   Worker or a model.
+   Worker or a model. At most one campaign may be active for an Action so
+   concurrent Specifications cannot interfere through S4-A Action-wide
+   candidate supersession.
 3. **Core schedules, participants execute.** Core atomically claims ready
    tasks, creates spec-bound Runs, and spawns the existing separate
    `factory-verifier` and `factory-reviewer` binaries with dedicated scoped

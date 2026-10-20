@@ -521,6 +521,10 @@ func (db *DB) RecordVerification(ctx context.Context, evidence domain.Verificati
 		return domain.VerificationEvidence{}, false, domain.Event{}, fmt.Errorf("%w: evidence oracle does not match the frozen spec",
 			domain.ErrUnauthorized)
 	}
+	if err := enforceCampaignParticipantTx(ctx, tx, evidence.CandidateID, evidence.IdempotencyKey,
+		evidence.Actor, domain.RoleVerifier); err != nil {
+		return domain.VerificationEvidence{}, false, domain.Event{}, err
+	}
 	if !evidence.Independent || strings.TrimSpace(evidence.CleanResource) == "" {
 		return domain.VerificationEvidence{}, false, domain.Event{}, fmt.Errorf("%w: independent clean-resource evidence is required",
 			domain.ErrInvalidInput)
@@ -647,6 +651,27 @@ func normalizeVerifierChecks(checks []domain.CheckResult, spec domain.ActionSpec
 	return out, nil
 }
 
+// enforceCampaignParticipantTx binds evidence delivered with a campaign task
+// idempotency key to the exact Factory-assigned participant identity. It
+// preserves the S4-A standalone evidence path, where no campaign task exists.
+func enforceCampaignParticipantTx(ctx context.Context, tx *sql.Tx, candidateID, key, actor string, role domain.TaskRole) error {
+	var participant string
+	err := tx.QueryRowContext(ctx,
+		`SELECT participant_id FROM campaign_tasks WHERE candidate_id=? AND idempotency_key=? AND role=?`,
+		candidateID, key, string(role)).Scan(&participant)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if participant != "" && participant != actor {
+		return fmt.Errorf("%w: evidence actor does not match the assigned campaign participant",
+			domain.ErrUnauthorized)
+	}
+	return nil
+}
+
 func aggregateVerificationStatus(checks []domain.CheckResult) domain.EvidenceStatus {
 	status := domain.EvidencePassed
 	for _, check := range checks {
@@ -732,6 +757,10 @@ func (db *DB) RecordReview(ctx context.Context, review domain.ReviewEvidence, co
 	if review.Actor == candidate.ImplementerWorkerID {
 		return domain.ReviewEvidence{}, false, domain.Event{}, fmt.Errorf("%w: reviewer identity equals the implementer",
 			domain.ErrUnauthorized)
+	}
+	if err := enforceCampaignParticipantTx(ctx, tx, review.CandidateID, review.IdempotencyKey,
+		review.Actor, domain.RoleReviewer); err != nil {
+		return domain.ReviewEvidence{}, false, domain.Event{}, err
 	}
 	review.CreatedAt = now
 	if existing, rerr := scanReview(tx.QueryRowContext(ctx,

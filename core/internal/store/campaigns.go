@@ -104,6 +104,13 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	if err := spec.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: frozen spec failed validation: %v", domain.ErrInvalidInput, err)
 	}
+	var actionStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM actions WHERE id=?`, spec.ActionID).Scan(&actionStatus); err != nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: unknown actionId %q", domain.ErrInvalidInput, spec.ActionID)
+	}
+	if actionStatus == string(domain.StatusCompleted) || actionStatus == string(domain.StatusCancelled) {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: action is %s", domain.ErrInvalidTransition, actionStatus)
+	}
 	if existing, rerr := scanCampaign(tx.QueryRowContext(ctx,
 		`SELECT `+campaignColumns+` FROM campaigns WHERE action_id=? AND spec_id=?`,
 		spec.ActionID, spec.ID)); rerr == nil {
@@ -130,6 +137,14 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 		}
 	}
 
+	var activeCampaign string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id FROM campaigns WHERE action_id=? AND status IN (?,?) LIMIT 1`,
+		spec.ActionID, string(domain.CampaignPending), string(domain.CampaignRunning)).Scan(&activeCampaign); err == nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: action already has an active campaign", domain.ErrConflict)
+	} else if err != sql.ErrNoRows {
+		return domain.Campaign{}, false, nil, err
+	}
 	plan := domain.BuildCampaignPlan(params.MaxRepairCycles, params.MaxWallClockSecs, params.MaxParallel)
 	if err := plan.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: campaign plan invalid: %v", domain.ErrInvalidInput, err)
@@ -145,7 +160,7 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 		Plan:             plan,
 		Status:           domain.CampaignPending,
 		MaxRepairCycles:  params.MaxRepairCycles,
-		MaxAttempts:      spec.Budget.MaxAttempts,
+		MaxAttempts:      spec.Budget.MaxAttempts * (params.MaxRepairCycles + 1),
 		MaxWallClockSecs: params.MaxWallClockSecs,
 		MaxParallel:      params.MaxParallel,
 		CorrelationID:    correlationID,
@@ -592,6 +607,17 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	if task.Cycle > campaign.RepairCycles {
 		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: repair cycle is not authorized", domain.ErrUnauthorized)
 	}
+	var attemptsUsed int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(r.attempt_count),0) FROM runs r
+		 JOIN campaign_tasks t ON t.run_id=r.id
+		 WHERE t.campaign_id=? AND t.role=?`,
+		campaignID, string(domain.RoleImplementer)).Scan(&attemptsUsed); err != nil {
+		return domain.Campaign{}, domain.Run{}, nil, err
+	}
+	if attemptsUsed >= campaign.MaxAttempts {
+		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted", domain.ErrInvalidTransition)
+	}
 	spec, err := scanSpec(tx.QueryRowContext(ctx,
 		`SELECT `+specColumns+` FROM action_specs WHERE id=?`, campaign.SpecID))
 	if err != nil {
@@ -805,6 +831,9 @@ func (db *DB) ClaimGateTask(ctx context.Context, campaignID, taskID, owner strin
 	if task.CandidateID == "" {
 		return domain.CampaignTask{}, false, nil, fmt.Errorf("%w: gate task has no candidate", domain.ErrInvalidTransition)
 	}
+	if task.Cycle > campaign.RepairCycles {
+		return domain.CampaignTask{}, false, nil, fmt.Errorf("%w: repair cycle is not authorized", domain.ErrUnauthorized)
+	}
 	dispatchToken := newID()
 	res, err := tx.ExecContext(ctx,
 		`UPDATE campaign_tasks SET status=?, execution_count=execution_count+1,
@@ -850,7 +879,7 @@ func (db *DB) ClaimGateTask(ctx context.Context, campaignID, taskID, owner strin
 // CompleteCampaignTask records an observed successful task execution. It is
 // idempotent: a repeated completion returns the existing task without a
 // second event.
-func (db *DB) CompleteCampaignTask(ctx context.Context, campaignID, taskID, outcome, correlationID string) (domain.CampaignTask, bool, []domain.Event, error) {
+func (db *DB) CompleteCampaignTask(ctx context.Context, campaignID, taskID, outcome, dispatchToken, correlationID string) (domain.CampaignTask, bool, []domain.Event, error) {
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -874,6 +903,9 @@ func (db *DB) CompleteCampaignTask(ctx context.Context, campaignID, taskID, outc
 	}
 	if task.Status != domain.TaskDispatched && task.Status != domain.TaskRunning {
 		return domain.CampaignTask{}, false, nil, fmt.Errorf("%w: task is %s", domain.ErrInvalidTransition, task.Status)
+	}
+	if dispatchToken == "" || task.DispatchToken != dispatchToken {
+		return domain.CampaignTask{}, false, nil, fmt.Errorf("%w: stale task dispatch owner", domain.ErrStaleGeneration)
 	}
 	if task.Role == domain.RoleImplementer {
 		run, rerr := scanRun(tx.QueryRowContext(ctx,
@@ -905,9 +937,9 @@ func (db *DB) CompleteCampaignTask(ctx context.Context, campaignID, taskID, outc
 	res, err := tx.ExecContext(ctx,
 		`UPDATE campaign_tasks SET status=?, outcome=?, error='', completed_at=?,
 		 updated_at=?, dispatch_owner='', dispatch_token='', dispatch_expires_at=''
-		 WHERE id=? AND campaign_id=? AND status IN (?,?)`,
+		 WHERE id=? AND campaign_id=? AND status IN (?,?) AND dispatch_token=?`,
 		string(domain.TaskSucceeded), outcome, stamp(now), stamp(now),
-		task.ID, campaignID, string(domain.TaskDispatched), string(domain.TaskRunning),
+		task.ID, campaignID, string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken,
 	)
 	if err != nil {
 		return domain.CampaignTask{}, false, nil, err
@@ -944,7 +976,7 @@ func (db *DB) CompleteCampaignTask(ctx context.Context, campaignID, taskID, outc
 
 // FailParticipantTask applies bounded retry or terminal campaign blocking
 // when a verifier/reviewer process cannot produce evidence.
-func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reason, correlationID string) (domain.CampaignTask, []domain.Event, error) {
+func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reason, dispatchToken, correlationID string) (domain.CampaignTask, []domain.Event, error) {
 	reason = domain.SanitizeReason(reason)
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -972,6 +1004,9 @@ func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reaso
 	if task.Status.Terminal() {
 		return task, nil, nil
 	}
+	if dispatchToken == "" || task.DispatchToken != dispatchToken {
+		return task, nil, fmt.Errorf("%w: stale task dispatch owner", domain.ErrStaleGeneration)
+	}
 	if campaign.Status != domain.CampaignRunning {
 		if _, events, ferr := finishCampaignTx(ctx, tx, campaignID, domain.CampaignCancelled, "campaign is no longer running", domain.EventCampaignCancelled, correlationID, now); ferr != nil {
 			return domain.CampaignTask{}, nil, ferr
@@ -986,9 +1021,9 @@ func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reaso
 		retryRes, err := tx.ExecContext(ctx,
 			`UPDATE campaign_tasks SET status=?, error=?, outcome='retry', dispatch_owner='',
 			 dispatch_token='', dispatch_expires_at='', updated_at=?
-			 WHERE id=? AND status IN (?,?)`,
+			 WHERE id=? AND status IN (?,?) AND dispatch_token=?`,
 			string(domain.TaskReady), reason, stamp(now), task.ID,
-			string(domain.TaskDispatched), string(domain.TaskRunning),
+			string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken,
 		)
 		if err != nil {
 			return domain.CampaignTask{}, nil, err
@@ -1027,9 +1062,9 @@ func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reaso
 	failRes, err := tx.ExecContext(ctx,
 		`UPDATE campaign_tasks SET status=?, error=?, outcome='exhausted',
 		 completed_at=?, updated_at=?, dispatch_owner='', dispatch_token='',
-		 dispatch_expires_at='' WHERE id=? AND status IN (?,?)`,
+		 dispatch_expires_at='' WHERE id=? AND status IN (?,?) AND dispatch_token=?`,
 		string(domain.TaskFailed), reason, stamp(now), stamp(now), task.ID,
-		string(domain.TaskDispatched), string(domain.TaskRunning),
+		string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken,
 	)
 	if err != nil {
 		return domain.CampaignTask{}, nil, err
@@ -1074,7 +1109,7 @@ func (db *DB) FailParticipantTask(ctx context.Context, campaignID, taskID, reaso
 // FailImplementerTask terminates a campaign when its spec-bound Run fails
 // and no earlier candidate can advance. It never authorizes repair: only a
 // Quality Gate REPAIR_REQUIRED result can do that.
-func (db *DB) FailImplementerTask(ctx context.Context, campaignID, taskID, reason, correlationID string) (domain.CampaignTask, []domain.Event, error) {
+func (db *DB) FailImplementerTask(ctx context.Context, campaignID, taskID, reason, dispatchToken, correlationID string) (domain.CampaignTask, []domain.Event, error) {
 	reason = domain.SanitizeReason(reason)
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -1094,12 +1129,15 @@ func (db *DB) FailImplementerTask(ctx context.Context, campaignID, taskID, reaso
 	if task.Status.Terminal() {
 		return task, nil, nil
 	}
+	if dispatchToken == "" || task.DispatchToken != dispatchToken {
+		return task, nil, fmt.Errorf("%w: stale task dispatch owner", domain.ErrStaleGeneration)
+	}
 	failRes, err := tx.ExecContext(ctx,
 		`UPDATE campaign_tasks SET status=?, error=?, outcome='failed', completed_at=?,
 		 updated_at=?, dispatch_owner='', dispatch_token='', dispatch_expires_at=''
-		 WHERE id=? AND status IN (?,?)`,
+		 WHERE id=? AND status IN (?,?) AND dispatch_token=?`,
 		string(domain.TaskFailed), reason, stamp(now), stamp(now), task.ID,
-		string(domain.TaskDispatched), string(domain.TaskRunning),
+		string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken,
 	)
 	if err != nil {
 		return domain.CampaignTask{}, nil, err
@@ -1169,6 +1207,13 @@ func (db *DB) EvaluateCampaignGate(ctx context.Context, campaignID, taskID, corr
 	if err != nil {
 		return domain.GateDecision{}, false, nil, err
 	}
+	campaign, err := db.GetCampaign(campaignID)
+	if err != nil {
+		return domain.GateDecision{}, false, nil, err
+	}
+	if campaign.Status != domain.CampaignRunning {
+		return domain.GateDecision{}, false, nil, fmt.Errorf("%w: campaign is %s", domain.ErrInvalidTransition, campaign.Status)
+	}
 	if task.Role != domain.RoleQualityGate || task.CandidateID == "" {
 		return domain.GateDecision{}, false, nil, fmt.Errorf("%w: task is not a candidate gate", domain.ErrInvalidTransition)
 	}
@@ -1178,10 +1223,10 @@ func (db *DB) EvaluateCampaignGate(ctx context.Context, campaignID, taskID, corr
 	}
 	if !final {
 		_, events, ferr := db.FailParticipantTask(ctx, campaignID, taskID,
-			"quality gate requires complete verifier and reviewer evidence", correlationID)
+			"quality gate requires complete verifier and reviewer evidence", task.DispatchToken, correlationID)
 		return decision, false, events, ferr
 	}
-	_, events, err := db.ApplyGateOutcome(ctx, campaignID, taskID, decision, correlationID)
+	_, events, err := db.ApplyGateOutcome(ctx, campaignID, taskID, task.DispatchToken, decision, correlationID)
 	if err != nil {
 		return domain.GateDecision{}, final, nil, err
 	}
@@ -1193,7 +1238,7 @@ func (db *DB) EvaluateCampaignGate(ctx context.Context, campaignID, taskID, corr
 
 // ApplyGateOutcome persists the task completion and the campaign-level
 // consequence of the one authoritative Quality Gate decision.
-func (db *DB) ApplyGateOutcome(ctx context.Context, campaignID, taskID string, decision domain.GateDecision, correlationID string) (domain.Campaign, []domain.Event, error) {
+func (db *DB) ApplyGateOutcome(ctx context.Context, campaignID, taskID, dispatchToken string, decision domain.GateDecision, correlationID string) (domain.Campaign, []domain.Event, error) {
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -1235,13 +1280,25 @@ func (db *DB) ApplyGateOutcome(ctx context.Context, campaignID, taskID string, d
 	if task.Status != domain.TaskDispatched && task.Status != domain.TaskRunning {
 		return domain.Campaign{}, nil, fmt.Errorf("%w: gate task is %s", domain.ErrInvalidTransition, task.Status)
 	}
+	if dispatchToken == "" || task.DispatchToken != dispatchToken {
+		return domain.Campaign{}, nil, fmt.Errorf("%w: stale gate dispatch owner", domain.ErrStaleGeneration)
+	}
+	durable, derr := scanDecision(tx.QueryRowContext(ctx,
+		`SELECT `+decisionColumns+` FROM gate_decisions WHERE candidate_id=?`, task.CandidateID))
+	if derr != nil {
+		return domain.Campaign{}, nil, fmt.Errorf("%w: no durable decision for campaign gate", domain.ErrNotFound)
+	}
+	if durable.ID != decision.ID || durable.Status != decision.Status ||
+		durable.CandidateSHA != decision.CandidateSHA {
+		return domain.Campaign{}, nil, fmt.Errorf("%w: gate decision does not match durable Core state", domain.ErrUnauthorized)
+	}
 	gateRes, err := tx.ExecContext(ctx,
 		`UPDATE campaign_tasks SET status=?, outcome=?, error=?, completed_at=?,
 		 updated_at=?, dispatch_owner='', dispatch_token='', dispatch_expires_at=''
-		 WHERE id=? AND status IN (?,?)`,
+		 WHERE id=? AND status IN (?,?) AND dispatch_token=?`,
 		string(domain.TaskSucceeded), string(decision.Status),
 		strings.Join(decision.Reasons, "; "), stamp(now), stamp(now), task.ID,
-		string(domain.TaskDispatched), string(domain.TaskRunning),
+		string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken,
 	)
 	if err != nil {
 		return domain.Campaign{}, nil, err
@@ -1597,6 +1654,10 @@ func finishCampaignTx(ctx context.Context, tx *sql.Tx, campaignID string, status
 	campaign.TerminalReason = reason
 	campaign.CompletedAt = now
 	campaign.UpdatedAt = now
+	activeEvents, err := cancelActiveImplementerRunsTx(ctx, tx, campaignID, correlationID, now)
+	if err != nil {
+		return domain.Campaign{}, nil, err
+	}
 	events, err := cancelOpenTasksTx(ctx, tx, campaignID, reason, correlationID, now)
 	if err != nil {
 		return domain.Campaign{}, nil, err
@@ -1609,7 +1670,43 @@ func finishCampaignTx(ctx context.Context, tx *sql.Tx, campaignID string, status
 	if err != nil {
 		return domain.Campaign{}, nil, err
 	}
-	return campaign, append(events, finished), nil
+	return campaign, append(activeEvents, append(events, finished)...), nil
+}
+
+// cancelActiveImplementerRunsTx cancels any still-live Run bound to an
+// implementer task when a campaign terminates. The Run cancellation path
+// keeps its own fencing, candidate rejection and orphan recording.
+func cancelActiveImplementerRunsTx(ctx context.Context, tx *sql.Tx, campaignID, correlationID string, now time.Time) ([]domain.Event, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT r.id FROM runs r JOIN campaign_tasks t ON t.run_id=r.id
+		 WHERE t.campaign_id=? AND t.role=? AND r.status IN (?,?,?)`,
+		campaignID, string(domain.RoleImplementer),
+		string(domain.RunQueued), string(domain.RunLeased), string(domain.RunRunning))
+	if err != nil {
+		return nil, err
+	}
+	var runIDs []string
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		runIDs = append(runIDs, runID)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var events []domain.Event
+	for _, runID := range runIDs {
+		_, runEvents, cerr := cancelRunTx(ctx, tx, runID, correlationID, now, campaignActor)
+		if cerr != nil {
+			return nil, cerr
+		}
+		events = append(events, runEvents...)
+	}
+	return events, nil
 }
 
 func cancelOpenTasksTx(ctx context.Context, tx *sql.Tx, campaignID, reason, correlationID string, now time.Time) ([]domain.Event, error) {

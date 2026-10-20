@@ -15,7 +15,7 @@ import (
 // and wakes the deterministic engine.
 type CampaignCoordinator interface {
 	Wake()
-	CancelCampaign(ctx context.Context, campaignID string) error
+	CancelCampaign(ctx context.Context, campaignID, reason, correlationID string) error
 }
 
 // WithCampaignCoordinator installs the native orchestrator. Without one the
@@ -161,7 +161,7 @@ func (s *Server) handleCancelCampaign(w http.ResponseWriter, r *http.Request) {
 	var campaign domain.Campaign
 	var err error
 	if s.campaigns != nil {
-		err = s.campaigns.CancelCampaign(ctx, campaignID)
+		err = s.campaigns.CancelCampaign(ctx, campaignID, "operator cancelled", telemetry.CorrelationIDFrom(ctx))
 		if err == nil {
 			campaign, err = s.db.GetCampaign(campaignID)
 		}

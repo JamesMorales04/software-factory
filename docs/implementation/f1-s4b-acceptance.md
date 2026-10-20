@@ -1,11 +1,13 @@
 # F1-S4-B acceptance matrix
 
-**Status:** Implemented and exercised by the deterministic native-orchestration
-lane (2026-10-20; see [sanitized evidence](../evidence/f1-s4b-deterministic-2026-10-20.json));
-final candidate-bound results are recorded in the campaign PR. The
-bounded live orchestration lane is recorded separately and remains
-`BLOCKED`/`NOT_RUN` unless an authorized provider session is available.
-TRUSTED_LOCAL only; never isolated or SEC-01 certified.
+**Status:** Implemented and exercised by both the deterministic
+native-orchestration lane and one bounded real workflow (2026-10-20; see
+[deterministic evidence](../evidence/f1-s4b-deterministic-2026-10-20.json) and
+[live evidence](../evidence/f1-s4b-live-2026-10-20.json)); final candidate-bound
+results are recorded in the campaign PR. The live run was exercised by the
+implementer and its recorded evidence was reviewed independently; it was not
+rerun by the independent verifier. TRUSTED_LOCAL only; never isolated or SEC-01
+certified.
 
 The executable oracle is [`scripts/e2e-s4b.sh`](../../scripts/e2e-s4b.sh)
 ([`scripts/e2e_s4b_oracle.py`](../../scripts/e2e_s4b_oracle.py)); the Office
@@ -31,8 +33,8 @@ simulator. Only the Paseo CLI is simulated.
 | B10 | Concurrent schedulers, delayed reports, ineligible tasks, lease expiry do not duplicate/starve | Two Core instances on one DB; exactly one dispatch per task; Go test with 300 ineligible tasks | PASS (deterministic + Go) |
 | B11 | Chromium starts a Campaign in Office, observes real tasks and survives reload | `s4b-journey.mjs` + Core API cross-check | PASS (deterministic, real Chromium) |
 | B12 | Forged role results, mismatched identities, unauthorized transitions, budget escalation rejected | Scoped-token, forged-evidence, task-route and budget negatives | PASS (deterministic) |
-| B13 | Existing S1–S4-A suites preserve contracts | `go test -race ./...` plus s1/s2/s3a/s3b/s3c/s3d/s4a CI workflows | CI (regression) |
-| B14 | At least one bounded real Factory-managed workflow with actual Paseo Implementer | `e2e-s4b-live.sh`: one real `opencode/opencode-go/deepseek-v4.1-flash` mode `build` session; Core then scheduled verifier/reviewer/gate | PASS (live 2026-10-20; candidate `db2f3399c51a40e414c605b933d2fbb54e0487c5`, session `3e038bcc-8111-494c-bfe3-88ce13909599`) |
+| B13 | Existing S1–S4-A suites preserve contracts | `go test -race ./...` plus s1/s2/s3a/s3b/s3c/s3d/s4a CI workflows | CI on the exact PR head; S4-A deterministic lane rerun locally |
+| B14 | At least one bounded real Factory-managed workflow with actual Paseo Implementer | `e2e-s4b-live.sh`: one real `opencode/opencode-go/deepseek-v4.1-flash` mode `build` session; Core then scheduled verifier/reviewer/gate | PASS (implementer-run live 2026-10-20; candidate `db2f3399c51a40e414c605b933d2fbb54e0487c5`, session `3e038bcc-8111-494c-bfe3-88ce13909599`; independent verifier reviewed evidence, did not rerun the paid session) |
 
 ## Commands
 
@@ -51,9 +53,10 @@ FACTORY_S4B_LIVE=1 bash scripts/e2e-s4b-live.sh
 ## Status semantics
 
 `PASS` refers to the deterministic fixture lane unless stated otherwise.
-B14 is the separately recorded live session; simulator evidence alone is not
-B14. A missing Chromium/tooling or an unavailable live provider budget remains
-`NOT_TESTED`/`BLOCKED`, never PASS. B8 `BLOCKED` is
+B14 is the separately recorded implementer-run live session; simulator evidence
+alone is not B14, and the independent verifier's B14 result is `NOT_TESTED` for
+the paid execution itself. A missing Chromium/tooling or an unavailable live
+provider budget remains `NOT_TESTED`/`BLOCKED`, never PASS. B8 `BLOCKED` is
 covered by deterministic Go tests; the live lane's `HUMAN_REQUIRED` case is not
 rewritten as a blocked case.
 

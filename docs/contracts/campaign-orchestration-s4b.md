@@ -13,7 +13,7 @@ Core-owned task graph.
 
 | Entity | Identity | Notes |
 | --- | --- | --- |
-| Campaign | 16 random bytes hex (32 chars) | One per `(actionId, specId)` |
+| Campaign | 16 random bytes hex (32 chars) | One per `(actionId, specId)`; at most one active campaign per Action |
 | Plan | SHA-256 of the immutable `CampaignPlan` JSON | `planHash`; no update route |
 | Campaign task | 16 random bytes hex | Unique `(campaignId, taskKey)` |
 | Participant identity | `verifier-<campaign8>-<cycle>` / `reviewer-<campaign8>-<cycle>` | Passed to the separate process and stored as evidence actor |
@@ -23,7 +23,10 @@ Core-owned task graph.
 
 Campaign creation derives project, Action, spec hash and policy from the frozen
 spec; caller-supplied copies are ignored. The repetitive operator request is
-idempotent by `(actionId, specId)` and optional `Idempotency-Key`.
+idempotent by `(actionId, specId)` and optional `Idempotency-Key`. Completed or
+cancelled Actions cannot start new campaigns, and a pending/running campaign
+blocks a second active campaign for the same Action (concurrent cross-spec
+campaigns are outside F1-S4-B).
 
 ## 2. Campaign schema
 
@@ -40,8 +43,11 @@ idempotent by `(actionId, specId)` and optional `Idempotency-Key`.
 ```
 
 Bounds: repair cycles `0..3`, wall clock `120..7200s`, parallelism `1..2`,
-task executions `1..3`, task graph `≤16` rows. Unknown provider quota/cost
-remains `unknown`; no zero is fabricated.
+task executions `1..3`, task graph `≤16` rows. Campaign `maxAttempts` is the
+total Implementer-attempt budget across the initial cycle and authorized
+repairs (`spec.maxAttempts × (repairCycles+1)`), enforced before dispatching a
+new implementer Run. Unknown provider quota/cost remains `unknown`; no zero is
+fabricated.
 
 ## 3. Task graph and states
 

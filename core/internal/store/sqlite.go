@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_campaigns_action ON campaigns(action_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_idempotency ON campaigns(idempotency_key) WHERE idempotency_key<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_active_action ON campaigns(action_id) WHERE status IN ('pending','running');
 CREATE TABLE IF NOT EXISTS campaign_tasks (
 	id TEXT PRIMARY KEY,
 	campaign_id TEXT NOT NULL REFERENCES campaigns(id),

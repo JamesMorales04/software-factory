@@ -104,12 +104,12 @@ func driveImplementer(t *testing.T, db *DB, campaign domain.Campaign, task domai
 	return candidate
 }
 
-func evidenceFor(t *testing.T, db *DB, spec domain.ActionSpec, candidate domain.CandidateRevision, key string, failID string) domain.VerificationEvidence {
+func evidenceFor(t *testing.T, db *DB, spec domain.ActionSpec, candidate domain.CandidateRevision, key, actor, failID string) domain.VerificationEvidence {
 	t.Helper()
 	evidence := domain.VerificationEvidence{
 		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
 		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		Authority: "verifier", Actor: "verifier-1", Independent: true,
+		Authority: "verifier", Actor: actor, Independent: true,
 		CleanResource: "git-clone:cccccccccccc", OracleDigest: spec.OracleDigest(),
 		IdempotencyKey: key,
 	}
@@ -129,12 +129,12 @@ func evidenceFor(t *testing.T, db *DB, spec domain.ActionSpec, candidate domain.
 	return stored
 }
 
-func reviewFor(t *testing.T, db *DB, spec domain.ActionSpec, candidate domain.CandidateRevision, key string, verdict domain.ReviewVerdictValues) domain.ReviewEvidence {
+func reviewFor(t *testing.T, db *DB, spec domain.ActionSpec, candidate domain.CandidateRevision, key, actor string, verdict domain.ReviewVerdictValues) domain.ReviewEvidence {
 	t.Helper()
 	stored, _, _, err := db.RecordReview(context.Background(), domain.ReviewEvidence{
 		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
 		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		Authority: "reviewer", Actor: "reviewer-1", Verdict: verdict,
+		Authority: "reviewer", Actor: actor, Verdict: verdict,
 		IdempotencyKey: key,
 	}, "c")
 	if err != nil {
@@ -189,7 +189,7 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 		t.Fatalf("dispatch replay: %v run=%s events=%d", err, replayRun.ID, len(replayEvents))
 	}
 	candidate := driveImplementer(t, db, campaign, impl)
-	completed, replayed, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", "c")
+	completed, replayed, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", impl.DispatchToken, "c")
 	if err != nil || replayed || completed.CandidateID != candidate.ID {
 		t.Fatalf("complete implementer: %v replayed=%v candidate=%s", err, replayed, completed.CandidateID)
 	}
@@ -233,14 +233,29 @@ func TestCampaignAcceptedEndToEndAndClaimFencing(t *testing.T) {
 	}
 	verifierTask, _ = db.getCampaignTask(campaign.ID, verifierTask.ID)
 	reviewerTask, _ = db.getCampaignTask(campaign.ID, reviewerTask.ID)
-	evidenceFor(t, db, spec, candidate, verifierTask.IdempotencyKey, "")
-	reviewFor(t, db, spec, candidate, reviewerTask.IdempotencyKey, domain.ReviewApprove)
+	wrong := domain.VerificationEvidence{
+		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		Authority: "verifier", Actor: "not-the-assigned-participant", Independent: true,
+		CleanResource: "git-clone:forged", OracleDigest: spec.OracleDigest(),
+		IdempotencyKey: verifierTask.IdempotencyKey,
+	}
+	for _, check := range spec.AllChecks() {
+		wrong.Checks = append(wrong.Checks, domain.CheckResult{
+			ID: check.ID, Kind: check.Kind, Status: domain.CheckPass, ExitCode: check.ExpectExit,
+		})
+	}
+	if _, _, _, err := db.RecordVerification(ctx, wrong, "c"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("mismatched participant evidence = %v, want unauthorized", err)
+	}
+	evidenceFor(t, db, spec, candidate, verifierTask.IdempotencyKey, verifierTask.ParticipantID, "")
+	reviewFor(t, db, spec, candidate, reviewerTask.IdempotencyKey, reviewerTask.ParticipantID, domain.ReviewApprove)
 	for _, task := range []domain.CampaignTask{verifierTask, reviewerTask} {
 		outcome, ok, err := db.TaskEvidence(task)
 		if err != nil || !ok {
 			t.Fatalf("evidence for %s: %v ok=%v", task.Key, err, ok)
 		}
-		if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, "c"); err != nil {
+		if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, task.DispatchToken, "c"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -310,7 +325,7 @@ func TestCampaignRepairRequiresGateAndCreatesFreshCycle(t *testing.T) {
 	}
 	impl = reloaded
 	candidate := driveImplementer(t, db, campaign, impl)
-	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", "c"); err != nil {
+	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", impl.DispatchToken, "c"); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = db.PromoteReadyTasks(ctx, campaign.ID, "c")
@@ -332,12 +347,12 @@ func TestCampaignRepairRequiresGateAndCreatesFreshCycle(t *testing.T) {
 	}
 	verifierTask, _ = db.getCampaignTask(campaign.ID, verifierTask.ID)
 	reviewerTask, _ = db.getCampaignTask(campaign.ID, reviewerTask.ID)
-	evidenceFor(t, db, spec, candidate, verifierTask.IdempotencyKey, "functional")
-	reviewFor(t, db, spec, candidate, reviewerTask.IdempotencyKey, domain.ReviewApprove)
-	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, verifierTask.ID, "failed", "c"); err != nil {
+	evidenceFor(t, db, spec, candidate, verifierTask.IdempotencyKey, verifierTask.ParticipantID, "functional")
+	reviewFor(t, db, spec, candidate, reviewerTask.IdempotencyKey, reviewerTask.ParticipantID, domain.ReviewApprove)
+	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, verifierTask.ID, "failed", verifierTask.DispatchToken, "c"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, reviewerTask.ID, "APPROVE", "c"); err != nil {
+	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, reviewerTask.ID, "APPROVE", reviewerTask.DispatchToken, "c"); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = db.PromoteReadyTasks(ctx, campaign.ID, "c")
@@ -420,7 +435,7 @@ func TestCampaignParticipantRetryIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := driveImplementer(t, db, campaign, impl)
-	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", "c"); err != nil {
+	if _, _, _, err := db.CompleteCampaignTask(ctx, campaign.ID, impl.ID, "succeeded", impl.DispatchToken, "c"); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = db.PromoteReadyTasks(ctx, campaign.ID, "c")
@@ -434,8 +449,10 @@ func TestCampaignParticipantRetryIsBounded(t *testing.T) {
 	if _, _, _, err := db.ClaimParticipantTask(ctx, campaign.ID, verifierTask.ID, "o", time.Minute, "c"); err != nil {
 		t.Fatal(err)
 	}
+	verifierTask, _ = db.getCampaignTask(campaign.ID, verifierTask.ID)
+	oldToken := verifierTask.DispatchToken
 	// First failure retries with the same candidate and idempotency key.
-	failed, events, err := db.FailParticipantTask(ctx, campaign.ID, verifierTask.ID, "worker missing", "c")
+	failed, events, err := db.FailParticipantTask(ctx, campaign.ID, verifierTask.ID, "worker missing", oldToken, "c")
 	if err != nil || failed.Status != domain.TaskReady || len(events) == 0 {
 		t.Fatalf("retry: %v status=%s", err, failed.Status)
 	}
@@ -446,7 +463,12 @@ func TestCampaignParticipantRetryIsBounded(t *testing.T) {
 	if _, _, _, err := db.ClaimParticipantTask(ctx, campaign.ID, verifierTask.ID, "o", time.Minute, "c"); err != nil {
 		t.Fatal(err)
 	}
-	failed, _, err = db.FailParticipantTask(ctx, campaign.ID, verifierTask.ID, "worker missing again", "c")
+	verifierTask, _ = db.getCampaignTask(campaign.ID, verifierTask.ID)
+	if _, _, err := db.FailParticipantTask(ctx, campaign.ID, verifierTask.ID,
+		"stale owner", oldToken, "c"); !errors.Is(err, domain.ErrStaleGeneration) {
+		t.Fatalf("stale dispatch token = %v, want stale generation", err)
+	}
+	failed, _, err = db.FailParticipantTask(ctx, campaign.ID, verifierTask.ID, "worker missing again", verifierTask.DispatchToken, "c")
 	if err != nil || failed.Status != domain.TaskFailed {
 		t.Fatalf("exhaust: %v status=%s", err, failed.Status)
 	}
@@ -494,5 +516,65 @@ func TestCampaignSchedulerIsNotStarvedByIneligibleTasks(t *testing.T) {
 	}
 	if _, _, _, err := db.DispatchImplementer(ctx, campaign.ID, impl.ID, spec.Goal, "c"); err != nil {
 		t.Fatalf("dispatch after ineligible tasks: %v", err)
+	}
+}
+
+func TestCampaignBlocksCancelLiveImplementerRun(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign.ID)
+	impl := tasks[0]
+	_, run, _, err := db.DispatchImplementer(ctx, campaign.ID, impl.ID, spec.Goal, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, events, err := db.BlockCampaign(ctx, campaign.ID, "test block", "c")
+	if err != nil || blocked.Status != domain.CampaignBlocked || len(events) == 0 {
+		t.Fatalf("block: %v status=%s", err, blocked.Status)
+	}
+	stored, err := db.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.RunCancelled {
+		t.Fatalf("live Run status = %s, want cancelled", stored.Status)
+	}
+}
+
+func TestCampaignRejectsSecondActiveCampaignForAction(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 1)
+	if campaign.MaxAttempts != 2 {
+		t.Fatalf("campaign attempt budget = %d, want two-cycle total 2", campaign.MaxAttempts)
+	}
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	params := domain.NewActionSpecParams{
+		ActionID: spec.ActionID, Goal: "A different spec",
+		Repository: spec.Repository, BaseRevision: spec.BaseRevision,
+		AllowedPaths:       spec.AllowedPaths,
+		AcceptanceCriteria: spec.AcceptanceCriteria, NegativeCases: spec.NegativeCases,
+		RiskClass: "R0", QualityProfile: "node-basic",
+		Budget: spec.Budget, ExecutionMode: "trusted-local",
+		Provider: spec.Provider, Model: spec.Model, PaseoMode: spec.PaseoMode,
+	}
+	second, err := params.Validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, _, err = db.CreateActionSpec(ctx, second, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.CreateCampaign(ctx, domain.NewCampaignParams{
+		SpecID: second.ID, MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 2,
+	}, "c"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("second active campaign = %v, want conflict", err)
 	}
 }

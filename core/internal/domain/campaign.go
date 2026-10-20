@@ -410,11 +410,6 @@ func (s CampaignTaskStatus) Terminal() bool {
 	}
 }
 
-// Active reports whether a task currently occupies an execution slot.
-func (s CampaignTaskStatus) Active() bool {
-	return s == TaskDispatched || s == TaskRunning
-}
-
 // CanTransition reports the legal task edges. Failed -> ready is permitted
 // only through the store's bounded retry path.
 func (s CampaignTaskStatus) CanTransition(to CampaignTaskStatus) bool {

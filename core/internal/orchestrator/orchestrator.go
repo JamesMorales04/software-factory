@@ -123,9 +123,14 @@ func (e *Engine) Run(ctx context.Context) {
 // CancelCampaign commits cancellation and tears down local participant
 // processes. External Paseo sessions remain owned by the existing Run
 // cancellation/recovery path.
-func (e *Engine) CancelCampaign(ctx context.Context, campaignID string) error {
-	campaign, events, err := e.db.CancelCampaign(ctx, campaignID,
-		"operator cancelled", "campaign-cancel-"+randomID())
+func (e *Engine) CancelCampaign(ctx context.Context, campaignID, reason, correlationID string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "operator cancelled"
+	}
+	if strings.TrimSpace(correlationID) == "" {
+		correlationID = "campaign-cancel-" + randomID()
+	}
+	campaign, events, err := e.db.CancelCampaign(ctx, campaignID, reason, correlationID)
 	if err != nil {
 		return err
 	}
@@ -214,7 +219,7 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 	}
 	switch run.Status {
 	case domain.RunSucceeded:
-		completed, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, string(run.Status), correlation)
+		completed, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, string(run.Status), task.DispatchToken, correlation)
 		if cerr != nil {
 			e.failImplementer(ctx, campaign, task, "candidate validation failed: "+cerr.Error(), correlation)
 			return
@@ -248,7 +253,7 @@ func (e *Engine) reconcileParticipant(ctx context.Context, campaign domain.Campa
 		return
 	}
 	if ok {
-		_, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, correlation)
+		_, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome, task.DispatchToken, correlation)
 		if cerr != nil {
 			e.log.Error("complete participant task failed", "taskId", task.ID, "error", cerr.Error())
 			return
@@ -263,7 +268,7 @@ func (e *Engine) reconcileParticipant(ctx context.Context, campaign domain.Campa
 		return
 	}
 	_, events, ferr := e.db.FailParticipantTask(ctx, campaign.ID, task.ID,
-		"participant dispatch expired without durable evidence", correlation)
+		"participant dispatch expired without durable evidence", task.DispatchToken, correlation)
 	if ferr != nil {
 		e.log.Error("expire participant task failed", "taskId", task.ID, "error", ferr.Error())
 		return
@@ -377,12 +382,6 @@ func (e *Engine) dispatchParticipant(ctx context.Context, campaign domain.Campai
 		default:
 		}
 	}
-	bin, err := e.participantBinary(task.Role)
-	if err != nil {
-		release()
-		e.failParticipant(ctx, campaign, task, err.Error())
-		return
-	}
 	ttl := time.Duration(taskTimeout(campaign, task)+120) * time.Second
 	claimed, ok, events, err := e.db.ClaimParticipantTask(ctx, campaign.ID, task.ID,
 		e.instID, ttl, "campaign-dispatch-"+randomID())
@@ -394,6 +393,14 @@ func (e *Engine) dispatchParticipant(ctx context.Context, campaign domain.Campai
 		return
 	}
 	e.publish(events)
+	// Resolve the executable only after the durable claim: a missing tool is
+	// then a real failed/blocked task, never a permanently ready task.
+	bin, err := e.participantBinary(task.Role)
+	if err != nil {
+		release()
+		e.failParticipant(ctx, campaign, claimed, err.Error())
+		return
+	}
 	if err := e.spawnParticipant(ctx, campaign, claimed, bin, release); err != nil {
 		release()
 		e.failParticipant(ctx, campaign, claimed, err.Error())
@@ -463,7 +470,7 @@ func (e *Engine) finishParticipant(ctx context.Context, campaign domain.Campaign
 	}
 	if ok {
 		_, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, outcome,
-			"campaign-participant-"+randomID())
+			task.DispatchToken, "campaign-participant-"+randomID())
 		if cerr != nil {
 			e.log.Error("complete participant task failed", "taskId", task.ID, "error", cerr.Error())
 			return
@@ -483,7 +490,7 @@ func (e *Engine) finishParticipant(ctx context.Context, campaign domain.Campaign
 
 func (e *Engine) failParticipant(ctx context.Context, campaign domain.Campaign, task domain.CampaignTask, reason string) {
 	_, events, err := e.db.FailParticipantTask(ctx, campaign.ID, task.ID,
-		reason, "campaign-participant-fail-"+randomID())
+		reason, task.DispatchToken, "campaign-participant-fail-"+randomID())
 	if err != nil {
 		e.log.Error("fail participant task failed", "taskId", task.ID, "error", err.Error())
 		return
@@ -492,7 +499,7 @@ func (e *Engine) failParticipant(ctx context.Context, campaign domain.Campaign, 
 }
 
 func (e *Engine) failImplementer(ctx context.Context, campaign domain.Campaign, task domain.CampaignTask, reason, correlation string) {
-	_, events, err := e.db.FailImplementerTask(ctx, campaign.ID, task.ID, reason, correlation)
+	_, events, err := e.db.FailImplementerTask(ctx, campaign.ID, task.ID, reason, task.DispatchToken, correlation)
 	if err != nil {
 		e.log.Error("fail implementer task failed", "taskId", task.ID, "error", err.Error())
 		return
