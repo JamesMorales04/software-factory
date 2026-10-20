@@ -162,7 +162,11 @@ case "\$1" in
     esac ;;
   run)
     if [[ "\$MODE" == "fail-run" ]]; then echo "stub: daemon unreachable" >&2; exit 1; fi
-    if [[ "\$MODE" == "hang" ]]; then sleep 120; echo '{"Id":"STUBNEVER"}'; exit 0; fi
+    # Hang mode simulates a session that never settles on its own. exec
+    # replaces the shell so cancellation leaves no orphaned descendant
+    # holding the captured pipes (a plain sleep would survive the
+    # parent's death, keep the pipes open, and stall Wait on EOF).
+    if [[ "\$MODE" == "hang" ]]; then exec sleep 120; fi
     ws=""; while (( \$# > 0 )); do case "\$1" in --workspace) ws="\$2"; shift 2;; *) shift;; esac; done
     sid="\$(next_id STUBAGENT)"; record "sess \$sid \$ws"
     if [[ "\$MODE" == "ok" ]]; then

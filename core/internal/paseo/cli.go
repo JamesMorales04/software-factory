@@ -394,6 +394,12 @@ const (
 	maxStderrBytes    = 1 << 16
 )
 
+// WaitDelay backstop for captured pipes. Group kill normally closes
+// every inheritor at once; if anything ever escapes the group
+// (double-fork, setsid), Wait still stops waiting after this bound
+// instead of stalling the Worker slot indefinitely.
+const paseoPipeWaitDelay = 10 * time.Second
+
 // boundedWriter caps captured subprocess output. Grow-style hints do not
 // bound anything; this writer refuses writes past the limit so capture
 // itself is the bound, checked before any content is retained.
@@ -415,14 +421,22 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 }
 
 // run executes one paseo invocation under ctx. Cancellation kills the
-// subprocess. Failures report only the operation, the exit status and a
-// redacted shape — never command output bodies.
+// whole process group (see isolateChild): the CLI's descendants inherit
+// the captured pipes, and killing only the direct child would leave
+// orphans holding them, blocking Wait on EOF until they exit. WaitDelay
+// bounds even that escape. Failures report only the operation, the exit
+// status and a redacted shape — never command output bodies.
 func (a *CLIAdapter) run(ctx context.Context, args ...string) ([]byte, error) {
 	op := args[0]
 	if op == "workspace" && len(args) > 1 {
 		op = "workspace-" + args[1]
 	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
+	isolateChild(cmd)
+	cmd.Cancel = func() error {
+		return killGroup(cmd.Process)
+	}
+	cmd.WaitDelay = paseoPipeWaitDelay
 	// Controlled environment: inherit only what the local daemon and
 	// provider CLIs need (PATH/HOME/TMPDIR). Tokens are never passed as
 	// arguments or captured into output.

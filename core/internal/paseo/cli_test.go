@@ -242,6 +242,36 @@ func TestAssertRouteTable(t *testing.T) {
 	}
 }
 
+func TestRunCancellationReapsPipeHoldingDescendants(t *testing.T) {
+	// Regression: cancelling a call must return promptly even when the
+	// child spawned an orphaned descendant that inherits the captured
+	// pipes. Killing only the direct child leaves the orphan holding
+	// the pipes, and Wait then blocks on EOF until it exits (the CI
+	// s3 -> s4 stall: a 120 s hang held the only Worker slot ~120 s).
+	stub := `#!/bin/sh
+sleep 30 &
+exec sleep 30
+`
+	a := newStubAdapter(t, stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.run(ctx, "run", "x")
+		done <- err
+	}()
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		perr, ok := err.(*Error)
+		if !ok || (perr.Kind != KindCancelled && perr.Kind != KindTimeout) {
+			t.Fatalf("want cancelled/timeout, got %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("cancel blocked on orphaned descendant holding the pipe")
+	}
+}
+
 func TestFakeAdapterScripting(t *testing.T) {
 	f := NewFakeAdapter()
 	if _, err := f.CreateWorkspace(context.Background(), "/x", "t"); err != nil {
