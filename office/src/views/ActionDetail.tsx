@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { type Action, type ActionStatus, ApiError, api } from "../api";
+import { presentEvent } from "../eventPresentation";
 import { useEventStream } from "../useEventStream";
 
 const NEXT: Record<ActionStatus, ActionStatus[]> = {
@@ -133,16 +134,27 @@ export function ActionDetail() {
         <p className="muted">No events recorded.</p>
       ) : (
         <ul className="events">
-          {timeline.map((e) => (
-            <li key={e.globalSeq}>
-              <code>seq {e.sequence}</code> <strong>{e.eventType}</strong>{" "}
-              <span className="muted">
-                {new Date(e.recordedAt).toLocaleString()} · corr{" "}
-                {e.correlationId ? e.correlationId.slice(0, 8) : "—"}
-              </span>
-              <pre>{JSON.stringify(e.payload, null, 2)}</pre>
-            </li>
-          ))}
+          {timeline.map((event) => {
+            const presented = presentEvent(event);
+            return (
+              <li key={event.globalSeq}>
+                <div className="event-head">
+                  <strong>{presented.label}</strong>{" "}
+                  <span className="muted">
+                    {event.eventType} · #{event.globalSeq} · seq{" "}
+                    {event.sequence}
+                  </span>
+                </div>
+                {presented.detail && (
+                  <p className="event-detail">{presented.detail}</p>
+                )}
+                <span className="muted">
+                  {new Date(event.recordedAt).toLocaleString()} · corr{" "}
+                  {event.correlationId ? event.correlationId.slice(0, 8) : "—"}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

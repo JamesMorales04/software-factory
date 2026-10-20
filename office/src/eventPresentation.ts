@@ -82,6 +82,12 @@ export function presentEvent(event: FactoryEvent): {
       parts.push(attempt(p), text(p.workspaceId), text(p.sessionId));
       parts.push(text(p.provider), text(p.model));
       break;
+    case "ActionCreated":
+      parts.push(text(p.projectId), text(p.status));
+      break;
+    case "ActionTransitioned":
+      parts.push(text(p.from), text(p.to));
+      break;
     case "PaseoSessionSucceeded":
     case "PaseoSessionFailed":
     case "PaseoSessionCancelled":

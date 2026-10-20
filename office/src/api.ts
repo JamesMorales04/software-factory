@@ -70,8 +70,8 @@ export interface Run {
   result?: Record<string, unknown>;
   error?: string;
   // S3-A: requested execution mode and pinned Paseo routing. Absent for S2
-  // synthetic runs (restricted). Rendered read-only; the timeline view that
-  // projects session activity arrives in S3-C.
+  // synthetic runs (restricted). Rendered read-only alongside the S3-C
+  // session/evidence projection.
   executionMode: string;
   provider?: string;
   model?: string;

@@ -33,7 +33,7 @@ PHASE=2 npm run journey   # same env as above
 
 ## S3-C agent observability
 
-`office/e2e-browser/s3c-journey.mjs` runs in two phases against a real Core
+`office/e2e-browser/s3c-journey.mjs` runs four phases against a real Core
 and Worker with a deterministic `paseo` CLI stub (no daemon, no provider
 calls). Phase `success` asserts the empty Agents state, provider/model/mode/Worker/
 Attempt identity, Run-detail session evidence, an ordered duplicate-free

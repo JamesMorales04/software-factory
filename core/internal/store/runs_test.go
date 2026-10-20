@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -368,5 +370,34 @@ func TestExhaustionClearsLeaseOwner(t *testing.T) {
 	}
 	if exhausted.LeaseOwner != "" {
 		t.Fatalf("exhausted run retains lease owner %q", exhausted.LeaseOwner)
+	}
+}
+
+func TestReportReasonRedactedAtPersistence(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queueRun(t, db, 1)
+	registerWorker(t, db, "local-1")
+
+	_, attempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "corr-claim")
+	if err != nil || !found {
+		t.Fatalf("claim: found=%v err=%v", found, err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "local-1", run.ID, attempt.ID, 1, "corr-hb"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	final, _, events, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, 1,
+		domain.OutcomeFailed, nil, "provider said Bearer abc123 with token=xyz", "corr-report")
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	payload, _ := json.Marshal(events)
+	for _, text := range []string{final.Error, string(payload)} {
+		if strings.Contains(text, "abc123") || strings.Contains(text, "token=xyz") {
+			t.Fatalf("secret shape persisted in report reason: %q", text)
+		}
+	}
+	if !strings.Contains(final.Error, "provider said") {
+		t.Fatalf("ordinary reason text lost: %q", final.Error)
 	}
 }

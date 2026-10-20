@@ -128,7 +128,9 @@ revision.
   rewriting the durable ledger. Office renders a whitelist of lifecycle
   fields and never dumps event payload JSON.
 - Session reason/error text keeps the S3-A bounded, shape-redacted
-  persistence rule.
+  persistence rule. S3-C applies the same shape redaction plus bound to the
+  shared Worker report reason before persistence; fencing, authorization and
+  field semantics are unchanged.
 - Preexisting S3-B run/attempt result snapshots may retain a legacy
   `diffExcerpt`; Office does not render result bodies or source excerpts.
   Removing that historical field requires an authorized data-retention
