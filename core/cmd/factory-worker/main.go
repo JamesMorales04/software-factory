@@ -52,7 +52,7 @@ func run(args []string) error {
 	pollInterval := flags.Duration("poll-interval", time.Second, "delay between empty polls")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 2*time.Second, "lease renewal period")
 	maxConcurrent := flags.Int("max-concurrent", 1, "simultaneous Attempts (bounded)")
-	execMode := flags.String("exec-mode", "podman", "fixture execution: podman (fail-closed default) or local (explicit pure-Go mode for tests/dev only)")
+	execMode := flags.String("exec-mode", "podman", "fixture execution: podman (fail-closed default) or local (explicit pure-Go synthetic fixture for tests/dev only, NOT a Paseo TRUSTED_LOCAL path)")
 	showVersion := flags.Bool("version", false, "print worker version and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -149,8 +149,9 @@ func run(args []string) error {
 // resolveExecMode probes the execution boundary once at startup and fails
 // closed: podman mode without a working Podman or fixture image refuses to
 // start rather than silently downgrading. The explicit local mode (pure-Go,
-// no subprocess, no container) exists for appropriate tests and development
-// only; it is never selected implicitly.
+// no subprocess, no container) is a synthetic fixture for tests and
+// development only — NOT a Paseo TRUSTED_LOCAL path; it is never selected
+// implicitly.
 func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (bool, error) {
 	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -165,7 +166,7 @@ func resolveExecMode(ctx context.Context, mode string, logger *slog.Logger) (boo
 		}
 		return true, nil
 	case "local":
-		logger.Info("fixture execution using explicit local mode (no subprocess, no container)")
+		logger.Info("fixture execution using explicit local mode (synthetic pure-Go fixture for tests/dev only, no subprocess, no container; NOT a Paseo TRUSTED_LOCAL path)")
 		return false, nil
 	default:
 		return false, fmt.Errorf("unknown exec-mode %q", mode)

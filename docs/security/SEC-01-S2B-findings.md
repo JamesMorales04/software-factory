@@ -1,6 +1,6 @@
 # SEC-01 S2-B — threat model, provider verdicts and S2-C boundary
 
-**Status:** investigation synthesis for S2 completion. No certification is granted here. SEC-01 remains **PAUSED / BLOCKED** for credential-bearing autonomous execution. Factory candidate `1bef07b`; S2-C product changes (below) are review-bound, not certified.
+**Status:** investigation synthesis for S2 completion. No certification is granted here. SEC-01 remains **PAUSED / BLOCKED** for credential-bearing autonomous execution **under an isolation claim (ISOLATED)**; per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md), SEC-01-STRICT is not required for owner-authorized TRUSTED_LOCAL, which proceeds under its own entry conditions. Factory candidate `1bef07b`; S2-C product changes (below) are review-bound, not certified.
 
 Related: [isolation invariants](isolation.md), [spike plan](paseo-sandbox-spike.md), [recorded results](SEC-01-results-2026-10-18.md), [Run–Worker contract](../contracts/run-worker-s2.md).
 
@@ -84,7 +84,7 @@ a config flag is **not** an OS boundary.
    pattern at startup; in-process cleanup on every attempt return;
    `podman rm -f` discipline proven by the PoC.
 6. **Scoped broker PoC** (`scripts/sec01-poc-broker.sh`, synthetic-only,
-   disposable): fixed-op workspace-bound broker, traversal rejection,
+    disposable, RESTRICTED/research basis): fixed-op workspace-bound broker, traversal rejection,
    unconstrained-shell control reads (proving mediation is required),
    container battery (canary/env/network/socket), orphan cleanup,
    canary-absent broker I/O. ALL CHECKS PASSED on this host.
@@ -94,6 +94,7 @@ a config flag is **not** an OS boundary.
 Per-provider real-route certification with the approved auth plans,
 independent verifier evidence on exact candidate SHAs, fresh Luna
 review, and an explicit owner decision. One passing provider does not
-certify the other; S3 scope must be reduced to the certified provider,
-or stay blocked. CI success and Reviewer APPROVE are necessary but not
+certify the other; S3-ISOLATED scope must be reduced to the certified provider,
+or stay blocked. (S3-TRUSTED_LOCAL is not gated by provider certification;
+it follows its ADR-0009 entry conditions.) CI success and Reviewer APPROVE are necessary but not
 sufficient for security acceptance.

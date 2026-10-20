@@ -7,8 +7,11 @@
 // no network, a read-only root filesystem, dropped capabilities, bounded
 // resources, a single writable workspace mount and a minimal environment —
 // never the user HOME, never credential files, never a container socket.
-// Fallback: pure-Go in-process execution (no shell, no subprocess) used only
-// when Podman is unavailable; the mode is always reported in the result.
+// Explicit local: pure-Go in-process execution (no shell, no subprocess)
+// selected only via explicit --exec-mode local for tests/dev; it is a
+// synthetic fixture, NOT a Paseo TRUSTED_LOCAL path, and is never chosen as
+// a silent fallback — podman mode without a working Podman fails closed.
+// The effective mode is always reported in the result.
 //
 // Nothing here executes arbitrary commands, mounts host secrets or confers
 // SEC-01 certification: this fixture is credential-free by construction.
@@ -32,7 +35,9 @@ import (
 // PodmanImage is the pinned fixture image for containerized execution.
 const PodmanImage = "docker.io/library/alpine:3.20"
 
-// Mode of fixture execution, always reported in the result.
+// Mode of fixture execution, always reported in the result. ModeLocal is
+// the synthetic pure-Go fixture for tests/dev, NOT a Paseo TRUSTED_LOCAL
+// path.
 type Mode string
 
 const (

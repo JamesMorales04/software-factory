@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SEC-01 S2-C synthetic broker proof of concept (disposable, credential-free).
+# RESTRICTED / security-research scope only (per ADR-0009): this script is the
+# research basis for ISOLATED/RESTRICTED broker mediation, NOT a TRUSTED_LOCAL
+# path and NOT a universal execution architecture.
 # Demonstrates the trust topology the S2 Worker already implements, plus the
-# narrow-broker pattern required for any future provider integration:
+# narrow-broker pattern required for any future ISOLATED/RESTRICTED provider
+# integration:
 #   trusted supervisor (this script) -> scoped broker (fixed op, workspace-
 #   bound, attempt-scoped) -> disposable rootless Podman workspace.
 # Every check uses synthetic canaries under a fresh TMP dir and asserts
