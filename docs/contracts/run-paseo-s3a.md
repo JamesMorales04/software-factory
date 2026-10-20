@@ -7,7 +7,10 @@ and fixtures atomically ([ADR-0006](../architecture/decisions/ADR-0006-early-dev
 S3-A covers exactly the slice below: durable execution configuration and
 session identity for real Paseo workloads. Real session start/observe/stop
 (Worker → Paseo), Office timeline projection, and the full
-cancel/recovery matrix are deferred to S3-B/S3-C/S3-D. No Paseo session is
+cancel/recovery matrix are deferred to S3-B/S3-C/S3-D. S3-C adds only the
+read-only observability projection in
+[`agent-observability-s3c.md`](agent-observability-s3c.md); it does not
+change this contract's identities, lifecycle or authority. No Paseo session is
 started by this slice; no paid provider call is required to verify it.
 
 This contract does not amend the frozen S2 contract: `run-worker-s2.md` v1

@@ -11,9 +11,18 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 )
 
-// marshalEvent encodes one ledger event as a single SSE data line.
+// projectEvents filters read-only event payloads before they leave the API.
+// Legacy source excerpts are dropped; durable rows are untouched.
+func projectEvents(events []domain.Event) []domain.Event {
+	for i := range events {
+		events[i] = events[i].Projected()
+	}
+	return events
+}
+
+// marshalEvent encodes one projected ledger event as a single SSE data line.
 func marshalEvent(e domain.Event) (string, error) {
-	raw, err := json.Marshal(e)
+	raw, err := json.Marshal(e.Projected())
 	if err != nil {
 		return "", err
 	}

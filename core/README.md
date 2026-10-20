@@ -46,20 +46,23 @@ CLI provisions it, the Core accepts it only on Worker routes),
   restart retention.
 - `internal/exec` — credential-free synthetic fixture (Podman + local).
 - `internal/api` — auth (operator + scoped worker tokens), correlation IDs,
-  JSON errors, SSE stream, static UI.
+  JSON errors, SSE stream, read-only Agent-observability projection, static UI.
 - `internal/telemetry` — redacted JSON logs, correlation IDs, OTel setup.
 
 Core acceptance: `scripts/e2e-s1.sh` from the repo root. S2 acceptance:
 `scripts/e2e-s2.sh` (API/CLI journeys, crash/restart/fencing, Podman
 probes, S1 regression) and `scripts/e2e-s2-browser.sh` (real-Chromium
-Runs/Workers journey). The compiled
+Runs/Workers journey). S3-C acceptance: `scripts/e2e-s3c.sh`
+(deterministic Paseo CLI stub, session observability, reload/reconnect,
+orphan and Core-restart durability, real Chromium). The compiled
 lifecycle experience is exercised by `scripts/e2e-factory-cli.sh`; it builds
 the distribution, runs `factory` from outside the source directory, and checks
 auth, readiness, logs, stop/restart, and SQLite retention.
 Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events-s1.md`,
 `docs/contracts/run-worker-s2.md`, `docs/contracts/run-paseo-s3a.md` (S3-A:
-execution modes, pinned routing, durable session identity; no real session
-lifecycle yet).
+execution modes, pinned routing, durable session identity), and
+`docs/contracts/agent-observability-s3c.md` (S3-C: cross-Run session
+projection and evidence levels).
 
 ## Local lifecycle CLI
 

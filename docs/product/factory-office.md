@@ -17,6 +17,13 @@ The browser consumes Core snapshots plus persisted event projections. It cannot 
 
 Persist stable correlation of `runId`, `agentId`, `paseoSessionId` and `workerId`. Expose an authenticated inspector link/route only if tested. Validate SDK timeline/replay and redaction rather than assuming capabilities.
 
+S3-C implements the read-only Agents and Run-detail session projections from
+durable Core bindings. The contract is
+[`agent-observability-s3c.md`](../contracts/agent-observability-s3c.md).
+Lifecycle events and the bounded final S3-B summary are shown; live
+per-tool streaming is not implemented and is documented as a Level-3
+limitation rather than simulated.
+
 ## F1 verification
 
 - Real browser creates an Action, reloads and finds the same persisted record.

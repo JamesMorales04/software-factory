@@ -38,11 +38,14 @@ function sleepWithAbort(signal: AbortSignal, ms: number): Promise<void> {
 export function useEventStream(
   fromSeq = 0,
   filter?: (e: FactoryEvent) => boolean,
+  options: { enabled?: boolean; maxEvents?: number } = {},
 ) {
+  const enabled = options.enabled ?? true;
+  const maxEvents = options.maxEvents ?? 0;
   const [events, setEvents] = useState<FactoryEvent[]>([]);
   const [state, setState] = useState<StreamState>("connecting");
+  const [lastMatchedSeq, setLastMatchedSeq] = useState(fromSeq);
   const cursorRef = useRef(fromSeq);
-  const seenRef = useRef(new Set<number>());
   const filterRef = useRef(filter);
 
   useEffect(() => {
@@ -50,23 +53,36 @@ export function useEventStream(
   });
 
   useEffect(() => {
+    if (!enabled) {
+      setEvents([]);
+      setState("connecting");
+      setLastMatchedSeq(fromSeq);
+      return;
+    }
     const controller = new AbortController();
     const { signal } = controller;
     cursorRef.current = fromSeq;
-    seenRef.current = new Set();
     setEvents([]);
+    setLastMatchedSeq(fromSeq);
 
     function append(e: FactoryEvent): void {
-      if (seenRef.current.has(e.globalSeq)) {
+      // The ledger is gapless and strictly ordered, so the durable cursor is
+      // also the deduplication boundary: replay/SSE overlap can only deliver
+      // an event at or below it. This keeps client memory bounded without a
+      // growing seen-set while preserving exactly-once UI updates.
+      if (e.globalSeq <= cursorRef.current) {
         return;
       }
-      seenRef.current.add(e.globalSeq);
-      cursorRef.current = Math.max(cursorRef.current, e.globalSeq);
+      cursorRef.current = e.globalSeq;
       const f = filterRef.current;
       if (!f || f(e)) {
-        setEvents((prev) =>
-          [...prev, e].sort((a, b) => a.globalSeq - b.globalSeq),
-        );
+        setLastMatchedSeq(e.globalSeq);
+        setEvents((prev) => {
+          const next = [...prev, e].sort((a, b) => a.globalSeq - b.globalSeq);
+          return maxEvents > 0 && next.length > maxEvents
+            ? next.slice(-maxEvents)
+            : next;
+        });
       }
     }
 
@@ -203,7 +219,7 @@ export function useEventStream(
     return () => {
       controller.abort();
     };
-  }, [fromSeq]);
+  }, [fromSeq, enabled, maxEvents]);
 
-  return { events, state };
+  return { events, state, lastMatchedSeq };
 }

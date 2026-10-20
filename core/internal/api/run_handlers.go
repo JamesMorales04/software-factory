@@ -148,7 +148,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []domain.Event{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{"events": projectEvents(events)})
 }
 
 // --- Operator: Worker observations (read-only; never fabricated) ---

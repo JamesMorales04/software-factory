@@ -549,16 +549,16 @@ func TestGitDiffEvidenceHonest(t *testing.T) {
 	if err := seedPaseoFixture(context.Background(), workDir); err != nil {
 		t.Fatal(err)
 	}
-	stat, n, _, err := gitDiffEvidence(context.Background(), workDir)
+	stat, n, err := gitDiffEvidence(context.Background(), workDir)
 	if err != nil || n != 0 || stat != "" {
 		t.Fatalf("clean tree: %q %d %v", stat, n, err)
 	}
 	simulateAgentEdit(t, workDir)
-	stat, n, excerpt, err := gitDiffEvidence(context.Background(), workDir)
+	stat, n, err = gitDiffEvidence(context.Background(), workDir)
 	if err != nil || n == 0 {
 		t.Fatalf("edited tree must diff: %q %d %v", stat, n, err)
 	}
-	if !strings.Contains(excerpt, "multiply") {
-		t.Fatalf("excerpt must carry the change: %q", excerpt)
+	if !strings.Contains(stat, "add.js") {
+		t.Fatalf("diff stat must identify the changed file: %q", stat)
 	}
 }

@@ -1,4 +1,4 @@
-# Factory Office browser journey (S1)
+# Factory Office browser journeys (S1, S2, S3-C)
 
 Real-Chromium user journey against a running Core + Office build. This is
 the independent browser oracle for F1-S1 acceptance: it drives the actual
@@ -30,6 +30,26 @@ BASE_URL=http://127.0.0.1:8471 FACTORY_API_TOKEN=<token> \
 # 3. Restart Core on the SAME db, then verify persistence in a fresh browser:
 PHASE=2 npm run journey   # same env as above
 ```
+
+## S3-C agent observability
+
+`office/e2e-browser/s3c-journey.mjs` runs four phases against a real Core
+and Worker with a deterministic `paseo` CLI stub (no daemon, no provider
+calls). Phase `success` asserts the empty Agents state, provider/model/mode/Worker/
+Attempt identity, Run-detail session evidence, an ordered duplicate-free
+timeline, reload across a malformed SSE frame, and no source/prompt
+rendering. Phase `multi` asserts two Attempts/generations stay distinct.
+Phase `live` asserts a pending/active binding appears while the Run is still
+executing, with no fabricated final evidence. Phase `orphan` asserts
+historical state after a Core restart, an honest orphan warning, and
+cancellation wording that never claims an external stop. Run the whole deterministic lane from the repo root:
+
+```sh
+bash scripts/e2e-s3c.sh
+```
+
+Set `FACTORY_S3C_STRICT=1` in CI so a missing browser or install becomes a
+failure instead of `BLOCKED`.
 
 ## Core outage recovery
 

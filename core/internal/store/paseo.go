@@ -18,16 +18,17 @@ const bindingColumns = `attempt_id, run_id, seq, worker_id, lease_generation,
 
 func scanPaseoBinding(row interface {
 	Scan(dest ...any) error
-},
+}, extra ...any,
 ) (domain.PaseoBinding, error) {
 	var b domain.PaseoBinding
 	var status, created, updated string
-	err := row.Scan(
+	dest := []any{
 		&b.AttemptID, &b.RunID, &b.Seq, &b.WorkerID, &b.LeaseGeneration,
 		&b.Provider, &b.Model, &b.Mode, &b.ExecMode, &b.WorkspaceID, &b.SessionID,
 		&status, &b.Error, &created, &updated,
-	)
-	if err != nil {
+	}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return domain.PaseoBinding{}, err
 	}
 	b.Status = domain.PaseoSessionStatus(status)
@@ -614,6 +615,50 @@ func (db *DB) ListPaseoBindings(runID string) ([]domain.PaseoBinding, error) {
 			return nil, err
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ListPaseoSessionSummaries is the read-only cross-Run projection for the
+// Office Agents view. It joins each binding to its owning Run status in a
+// correlated subquery so a 100-row page never becomes 100 extra queries.
+// Live bindings (intended/active) sort first, then the most recently
+// updated history. Filters are exact and parameterized; the handler owns
+// input-shape validation.
+func (db *DB) ListPaseoSessionSummaries(status domain.PaseoSessionStatus, provider string, limit int) ([]domain.PaseoSessionSummary, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	q := `SELECT ` + bindingColumns + `,
+		(SELECT status FROM runs WHERE runs.id = paseo_bindings.run_id)
+		FROM paseo_bindings WHERE 1=1`
+	var args []any
+	if status != "" {
+		q += ` AND status=?`
+		args = append(args, string(status))
+	}
+	if provider != "" {
+		q += ` AND provider=?`
+		args = append(args, provider)
+	}
+	q += ` ORDER BY (status=? OR status=?) DESC, updated_at DESC, attempt_id ASC LIMIT ?`
+	args = append(args, string(domain.PaseoIntended), string(domain.PaseoActive), limit)
+	rows, err := db.sql.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []domain.PaseoSessionSummary
+	for rows.Next() {
+		var runStatus string
+		b, err := scanPaseoBinding(rows, &runStatus)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, domain.PaseoSessionSummary{
+			PaseoBinding: b,
+			RunStatus:    domain.RunStatus(runStatus),
+		})
 	}
 	return out, rows.Err()
 }

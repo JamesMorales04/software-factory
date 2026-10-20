@@ -70,8 +70,8 @@ export interface Run {
   result?: Record<string, unknown>;
   error?: string;
   // S3-A: requested execution mode and pinned Paseo routing. Absent for S2
-  // synthetic runs (restricted). Rendered read-only; the timeline view that
-  // projects session activity arrives in S3-C.
+  // synthetic runs (restricted). Rendered read-only alongside the S3-C
+  // session/evidence projection.
   executionMode: string;
   provider?: string;
   model?: string;
@@ -96,6 +96,17 @@ export interface PaseoSession {
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PaseoSessionSummary extends PaseoSession {
+  /** Current status of the Run that owns this binding. */
+  runStatus: string;
+}
+
+export interface PaseoSessionList {
+  sessions: PaseoSessionSummary[];
+  /** Durable ledger head at snapshot time; used as the SSE start cursor. */
+  eventCursor: number;
 }
 
 export interface Attempt {
@@ -270,6 +281,18 @@ export const api = {
     request<{ sessions: PaseoSession[] }>(
       `/api/v1/runs/${encodeURIComponent(id)}/sessions`,
     ).then((r) => r.data.sessions),
+  listAllSessions: (
+    params: { status?: string; provider?: string; limit?: number } = {},
+  ) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.provider) q.set("provider", params.provider);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<PaseoSessionList>(`/api/v1/sessions${suffix}`).then(
+      (r) => r.data,
+    );
+  },
   listWorkers: () =>
     request<{ workers: Worker[] }>(`/api/v1/workers`).then(
       (r) => r.data.workers,

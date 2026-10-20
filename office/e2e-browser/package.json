@@ -9,6 +9,7 @@
     "test:parser": "../node_modules/.bin/esbuild ../src/sse.ts --bundle --platform=node --format=cjs --outfile=.sse.cjs --log-level=error && node --test --test-timeout=10000 sse-parser.test.mjs",
     "test:close": "node --test --test-timeout=10000 browser-close.test.mjs",
     "test:launch": "node --test --test-timeout=30000 launch-timeout.test.mjs",
+    "s3c": "node s3c-journey.mjs",
     "soak": "node soak.mjs"
   },
   "dependencies": {

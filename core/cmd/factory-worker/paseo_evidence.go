@@ -17,15 +17,14 @@ import (
 
 // paseoEvidence is the task-specific proof collected from the Attempt
 // workspace and the session timeline. Only counts, exit statuses and a
-// truncated diff excerpt cross into Factory evidence: transcript bodies,
-// prompts and raw tool output never do.
+// bounded diff stat cross into Factory evidence: transcript bodies, prompts,
+// source file contents and raw tool output never do.
 type paseoEvidence struct {
 	timelineLines int
 	toolSteps     int
 	stepsSummary  string
 	diffStat      string
 	diffBytes     int
-	diffExcerpt   string
 	testExit      int
 	formatExit    int
 }
@@ -73,13 +72,12 @@ func collectPaseoEvidence(
 	ev.toolSteps = summary.ToolSteps
 	ev.stepsSummary = formatSteps(summary.Steps)
 
-	diffStat, diffBytes, excerpt, derr := gitDiffEvidence(ctx, workDir)
+	diffStat, diffBytes, derr := gitDiffEvidence(ctx, workDir)
 	if derr != nil {
 		return summary, ev, derr
 	}
 	ev.diffStat = diffStat
 	ev.diffBytes = diffBytes
-	ev.diffExcerpt = excerpt
 	if diffBytes == 0 {
 		return summary, ev, errors.New("no-source-change: agent left no git diff")
 	}
@@ -136,43 +134,41 @@ func formatSteps(steps map[string]int) string {
 	return out
 }
 
-// gitDiffEvidence returns the workDir diff stat, byte size and a truncated
-// excerpt. An empty diff also checks git status so created-but-uncommitted
-// files are reported honestly instead of mistaken for a clean tree.
-func gitDiffEvidence(ctx context.Context, workDir string) (string, int, string, error) {
+// gitDiffEvidence returns the workDir diff stat and byte size. The diff
+// body is deliberately not retained: S3-C evidence is bounded metadata, not
+// source contents. An empty diff also checks git status so
+// created-but-uncommitted files are reported honestly instead of mistaken
+// for a clean tree.
+func gitDiffEvidence(ctx context.Context, workDir string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, paseoCmdTimeout)
 	defer cancel()
 	diff, err := gitOutput(ctx, workDir, "diff")
 	if err != nil {
-		return "", 0, "", fmt.Errorf("git diff: %w", err)
+		return "", 0, fmt.Errorf("git diff: %w", err)
 	}
 	if len(bytes.TrimSpace(diff)) == 0 {
 		status, serr := gitOutput(ctx, workDir, "status", "--short")
 		if serr != nil {
-			return "", 0, "", fmt.Errorf("git status: %w", serr)
+			return "", 0, fmt.Errorf("git status: %w", serr)
 		}
 		if len(bytes.TrimSpace(status)) > 0 {
 			lines := strings.Split(strings.TrimSpace(string(status)), "\n")
 			if len(lines) > 10 {
 				lines = lines[:10]
 			}
-			return "untracked:" + strings.Join(lines, ","), 0, "", nil
+			return "untracked:" + strings.Join(lines, ","), 0, nil
 		}
-		return "", 0, "", nil
+		return "", 0, nil
 	}
 	stat, err := gitOutput(ctx, workDir, "diff", "--stat")
 	if err != nil {
-		return "", 0, "", fmt.Errorf("git diff --stat: %w", err)
+		return "", 0, fmt.Errorf("git diff --stat: %w", err)
 	}
 	statLine := strings.TrimSpace(string(stat))
 	if len(statLine) > 512 {
 		statLine = statLine[:512]
 	}
-	excerpt := string(diff)
-	if len(excerpt) > 1000 {
-		excerpt = excerpt[:1000]
-	}
-	return statLine, len(diff), excerpt, nil
+	return statLine, len(diff), nil
 }
 
 func gitOutput(ctx context.Context, workDir string, args ...string) ([]byte, error) {

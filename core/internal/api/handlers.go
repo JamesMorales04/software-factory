@@ -159,7 +159,7 @@ func (s *Server) handleActionEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []domain.Event{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{"events": projectEvents(events)})
 }
 
 func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +181,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 			nextAfter = e.GlobalSeq
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events, "nextAfter": nextAfter})
+	writeJSON(w, http.StatusOK, map[string]any{"events": projectEvents(events), "nextAfter": nextAfter})
 }
 
 func parseReplayParams(w http.ResponseWriter, r *http.Request) (int64, int, bool) {

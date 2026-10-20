@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 )
 
 // runColumns lists runs columns in scan order shared by all readers.
@@ -546,7 +547,10 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 	if err != nil {
 		return domain.Run{}, false, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
 	}
-	reason := domain.SanitizeReason(errMsg)
+	// Worker report text can carry external tool/provider output. Mask secret
+	// shapes before the bounded reason is persisted, matching the S3-A session
+	// path; S2 fencing and field semantics are unchanged.
+	reason := domain.SanitizeReason(telemetry.Redact(errMsg))
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
