@@ -9,6 +9,7 @@
 | Project–Action | `project-action-s1.md` | S1 | identities, schema, lifecycle, auth, idempotency, errors |
 | Factory Events | `factory-events-s1.md` | S1 | event schema, durability, replay transport, redaction |
 | Run–Worker | `run-worker-s2.md` | S2 | Run/Attempt/Worker identities, lifecycles, dispatch, leases, fencing, recovery |
+| Run–Paseo session identity | `run-paseo-s3a.md` | S3-A | execution modes, pinned routing, session binding lifecycle, intend-before-create, fencing, recovery |
 
 The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery) are still proposed.
 

@@ -57,7 +57,9 @@ lifecycle experience is exercised by `scripts/e2e-factory-cli.sh`; it builds
 the distribution, runs `factory` from outside the source directory, and checks
 auth, readiness, logs, stop/restart, and SQLite retention.
 Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events-s1.md`,
-`docs/contracts/run-worker-s2.md`.
+`docs/contracts/run-worker-s2.md`, `docs/contracts/run-paseo-s3a.md` (S3-A:
+execution modes, pinned routing, durable session identity; no real session
+lifecycle yet).
 
 ## Local lifecycle CLI
 

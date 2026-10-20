@@ -24,6 +24,12 @@ type createRunRequest struct {
 	WorkloadInput map[string]any `json:"workloadInput"`
 	MaxAttempts   int            `json:"maxAttempts"`
 	TimeoutSecs   int            `json:"timeoutSecs"`
+	// S3-A: requested execution mode and Paseo routing. Empty means the S2
+	// default (restricted synthetic execution).
+	ExecutionMode string `json:"executionMode"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	PaseoMode     string `json:"paseoMode"`
 }
 
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +44,10 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		WorkloadInput: req.WorkloadInput,
 		MaxAttempts:   req.MaxAttempts,
 		TimeoutSecs:   req.TimeoutSecs,
+		ExecutionMode: strings.TrimSpace(req.ExecutionMode),
+		Provider:      strings.TrimSpace(req.Provider),
+		Model:         strings.TrimSpace(req.Model),
+		PaseoMode:     strings.TrimSpace(req.PaseoMode),
 	}.Validate()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", err.Error())
@@ -111,12 +121,14 @@ func (s *Server) handleListAttempts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	run, event, err := s.db.CancelRun(ctx, r.PathValue("id"), telemetry.CorrelationIDFrom(ctx))
+	run, events, err := s.db.CancelRun(ctx, r.PathValue("id"), telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		mapDomainError(w, err, s.log, "cancel run")
 		return
 	}
-	s.hub.Publish(event)
+	for _, event := range events {
+		s.hub.Publish(event)
+	}
 	s.log.Info("run cancelled",
 		"runId", run.ID,
 		"correlationId", telemetry.CorrelationIDFrom(ctx))
@@ -297,7 +309,7 @@ func (s *Server) handleWorkerReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	run, replayed, event, err := s.db.ReportAttempt(ctx,
+	run, replayed, events, err := s.db.ReportAttempt(ctx,
 		req.WorkerID, req.RunID, req.AttemptID, req.Generation,
 		outcome, req.Output, req.Error, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
@@ -315,7 +327,9 @@ func (s *Server) handleWorkerReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"run": run})
 		return
 	}
-	s.hub.Publish(event)
+	for _, event := range events {
+		s.hub.Publish(event)
+	}
 	s.log.Info("worker report recorded",
 		"workerId", req.WorkerID,
 		"runId", run.ID,
