@@ -67,6 +67,16 @@ Luna also flagged unbounded claims when a Worker dies before completion.
 Claim grant now enforces the 8-attempt budget and records a
 `retry-exhausted` blocked receipt.
 
+## Final liveness repair
+
+A targeted source inspection found that `ResolveBlockedPaseoRetries` scanned
+the oldest 200 queued paseo Runs before evaluating recovery state. With 200
+older pending/unconfirmed rows, a later terminal `blocked` Run could remain
+queued indefinitely. A deterministic 201-Run regression reproduced the
+starvation; the sweep now filters `blocked` recovery in SQL. The test also
+proves pending/unconfirmed Runs are not failed and unrelated synthetic
+dispatch is unaffected.
+
 ## Limitations
 
 - Real Paseo daemon restart is BLOCKED unless an isolated daemon is

@@ -495,3 +495,73 @@ func TestPaseoRecoveryConcurrentClaimsHaveOneWinner(t *testing.T) {
 		t.Fatalf("concurrent claims found=%d, want exactly 1", winners)
 	}
 }
+
+func TestResolveBlockedPaseoRetriesIsNotStarvedByPendingRows(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	current := base
+	db.SetClock(func() time.Time { return current })
+	db.SetLeaseTTL(50 * time.Millisecond)
+	registerWorker(t, db, "local-1")
+
+	// 200 older queued paseo Runs remain in pending recovery.
+	for i := 0; i < 200; i++ {
+		current = base.Add(time.Duration(i) * time.Millisecond)
+		run := queuePaseoRun(t, db, 2)
+		attempt := claimAndStart(t, db, run, "local-1")
+		if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "corr-intend"); err != nil {
+			t.Fatalf("intend %d: %v", i, err)
+		}
+	}
+	current = base.Add(500 * time.Millisecond)
+	if _, err := db.ExpireLeases(ctx); err != nil {
+		t.Fatalf("expire pending runs: %v", err)
+	}
+
+	// One later Run has a terminal blocked receipt and must be failed closed.
+	current = base.Add(time.Second)
+	blockedRun := queuePaseoRun(t, db, 2)
+	blockedAttempt := claimAndStart(t, db, blockedRun, "local-1")
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", blockedRun.ID, blockedAttempt.ID, blockedAttempt.LeaseGeneration, "corr-blocked-intend"); err != nil {
+		t.Fatalf("blocked intend: %v", err)
+	}
+	current = base.Add(2 * time.Second)
+	if _, err := db.ExpireLeases(ctx); err != nil {
+		t.Fatalf("expire blocked run: %v", err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE paseo_recovery SET status=?, reason=? WHERE attempt_id=?`,
+		string(domain.RecoveryBlocked), "retry-exhausted: deterministic test", blockedAttempt.ID,
+	); err != nil {
+		t.Fatalf("mark blocked: %v", err)
+	}
+
+	events, err := db.ResolveBlockedPaseoRetries(ctx)
+	if err != nil {
+		t.Fatalf("resolve blocked: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != domain.EventRunFailed || events[0].AggregateID != blockedRun.ID {
+		t.Fatalf("blocked later Run was not failed closed: %+v", events)
+	}
+	failed, err := db.GetRun(blockedRun.ID)
+	if err != nil || failed.Status != domain.RunFailed || !strings.HasPrefix(failed.Error, "recovery-unresolved") {
+		t.Fatalf("blocked run state = %+v err=%v", failed, err)
+	}
+
+	var pendingQueued int
+	if err := db.sql.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM runs WHERE status=? AND workload_kind=?`,
+		string(domain.RunQueued), domain.PaseoTaskKind).Scan(&pendingQueued); err != nil {
+		t.Fatalf("count pending queued: %v", err)
+	}
+	if pendingQueued != 200 {
+		t.Fatalf("pending queued paseo runs = %d, want 200 (not failed)", pendingQueued)
+	}
+
+	synthetic := queueRun(t, db, 1)
+	claimed, _, found, _, err := db.ClaimNextRun(ctx, "local-1", "corr-synthetic")
+	if err != nil || !found || claimed.ID != synthetic.ID {
+		t.Fatalf("unrelated synthetic dispatch affected: found=%v err=%v claimed=%+v", found, err, claimed)
+	}
+}

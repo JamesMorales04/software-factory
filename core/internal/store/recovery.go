@@ -558,10 +558,24 @@ func (db *DB) ResolveBlockedPaseoRetries(ctx context.Context) ([]domain.Event, e
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Filter terminal blocked recovery in SQL so pending/unconfirmed rows
+	// cannot occupy a fixed sweep prefix and postpone an older failure
+	// forever. Each sweep handles a bounded 200 blocked Runs; later sweeps
+	// continue if more remain.
 	rows, err := tx.QueryContext(ctx,
-		`SELECT `+runColumns+` FROM runs WHERE status=? AND workload_kind=? AND attempt_count>0
-		 ORDER BY created_at ASC LIMIT 200`,
-		string(domain.RunQueued), domain.PaseoTaskKind)
+		`SELECT `+runColumnsR+` FROM runs r
+		 WHERE r.status=? AND r.workload_kind=? AND r.attempt_count>0
+		   AND EXISTS (
+		     SELECT 1 FROM paseo_bindings b
+		     JOIN paseo_recovery rec ON rec.attempt_id=b.attempt_id
+		     WHERE b.run_id=r.id
+		       AND b.seq=(SELECT MAX(b2.seq) FROM paseo_bindings b2 WHERE b2.run_id=r.id)
+		       AND b.status=?
+		       AND rec.status=?
+		   )
+		 ORDER BY r.created_at ASC, r.id ASC LIMIT 200`,
+		string(domain.RunQueued), domain.PaseoTaskKind,
+		string(domain.PaseoOrphaned), string(domain.RecoveryBlocked))
 	if err != nil {
 		return nil, err
 	}

@@ -188,6 +188,10 @@ delete`, or a title with a short/derived Run ID for ownership.
   waits while recovery is `pending`/`claimed`/retryable `unconfirmed`.
 - Dispatch eligibility is filtered in SQL, not by a fixed prefix of the
   queue: gated Runs can never hide later eligible Runs from a Worker poll.
+- The fail-closed sweeper selects only queued Runs whose latest binding has a
+  terminal `blocked` recovery receipt. Pending/unconfirmed rows cannot occupy
+  a fixed sweep prefix and delay a later blocked Run; each sweep is bounded,
+  and subsequent sweeps continue through any remaining blocked Runs.
 - If the prior recovery becomes `blocked` (including retry exhaustion), the
   Run fails closed with a bounded `recovery-unresolved` reason instead of
   starting concurrent coding work. Other Runs and projects continue.
