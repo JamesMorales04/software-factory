@@ -163,8 +163,14 @@ func runPaseoLifecycle(
 	}
 
 	// 3. Create the real Paseo workspace rooted at the Attempt workspace.
+	// The title is the full Run-and-generation correlation key, never a
+	// short prefix; recovery uses it for exact ownership discovery.
 	stage = "workspace-create"
-	workspaceID, err := adapter.CreateWorkspace(ctx, workDir, "factory-"+shortRunID(run.ID))
+	correlationKey := binding.CorrelationKey
+	if correlationKey == "" {
+		correlationKey = domain.PaseoLegacyTitle(run.ID)
+	}
+	workspaceID, err := adapter.CreateWorkspace(ctx, workDir, correlationKey)
 	if err != nil {
 		if ctx.Err() != nil {
 			return orphanExternal(backend, context.Background(), workerID, run, attempt, binding, adapter, identity0(""), stage, "workspace-create: "+shortErr(err)+"; cancelled")
@@ -189,12 +195,14 @@ func runPaseoLifecycle(
 
 	// 5. Start the requested session. The adapter asserts the effective
 	// provider/model/mode from inspect evidence; mismatch fails here.
+	labels := domain.PaseoCorrelationLabels(run.ID, attempt.ID, attempt.LeaseGeneration, workspaceID)
 	identity, err := adapter.StartSession(ctx, paseo.StartRequest{
 		Provider:    route.Provider,
 		Model:       route.Model,
 		Mode:        route.Mode,
 		WorkspaceID: workspaceID,
-		Title:       "factory-" + shortRunID(run.ID),
+		Title:       correlationKey,
+		Labels:      labels,
 		Prompt:      paseoTaskPrompt(task, workDir),
 		WaitTimeout: remaining,
 	})
@@ -466,14 +474,6 @@ func externalUncertain(err error, ctx context.Context) bool {
 		return pe.Kind == paseo.KindCancelled || pe.Kind == paseo.KindTimeout
 	}
 	return false
-}
-
-// shortRunID bounds the Run prefix used in Paseo titles.
-func shortRunID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 // shortErr bounds an error for reasons and logs without external bodies.

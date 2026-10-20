@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -145,6 +146,54 @@ func ParsePaseoSessionStatus(s string) (PaseoSessionStatus, error) {
 	}
 }
 
+// S3-D external ownership correlation. Paseo 0.9.1 supports exact agent
+// labels and workspace/session titles, but workspaces have no label API.
+// The full Run ID plus generation is therefore the title identity; the
+// labels add the Attempt, generation and workspace for exact session
+// filtering. Short Run prefixes are never an ownership identity.
+const (
+	PaseoLabelOwner      = "factory.owner"
+	PaseoLabelRun        = "factory.run"
+	PaseoLabelAttempt    = "factory.attempt"
+	PaseoLabelGeneration = "factory.generation"
+	PaseoLabelWorkspace  = "factory.workspace"
+	PaseoOwnerValue      = "software-factory"
+)
+
+// PaseoCorrelationKey is the deterministic, collision-free-by-content title
+// for resources created by one Attempt generation. It is persisted on the
+// binding before any external call.
+func PaseoCorrelationKey(runID string, generation int64) string {
+	return fmt.Sprintf("factory-s3d:%s:g%d", strings.TrimSpace(runID), generation)
+}
+
+// PaseoLegacyTitle is the S3-B title convention. It is not generation
+// safe; it is used only as an additional marker for already-bound legacy
+// resources that are cleaned by their durable Paseo ID.
+func PaseoLegacyTitle(runID string) string {
+	id := strings.TrimSpace(runID)
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	return "factory-" + id
+}
+
+// PaseoCorrelationLabels returns the exact label set for one session. The
+// workspace ID is known before the session starts; empty values are
+// omitted rather than matched loosely.
+func PaseoCorrelationLabels(runID, attemptID string, generation int64, workspaceID string) map[string]string {
+	labels := map[string]string{
+		PaseoLabelOwner:      PaseoOwnerValue,
+		PaseoLabelRun:        strings.TrimSpace(runID),
+		PaseoLabelAttempt:    strings.TrimSpace(attemptID),
+		PaseoLabelGeneration: fmt.Sprintf("%d", generation),
+	}
+	if strings.TrimSpace(workspaceID) != "" {
+		labels[PaseoLabelWorkspace] = strings.TrimSpace(workspaceID)
+	}
+	return labels
+}
+
 // PaseoBinding is the durable 1:1 link between one Attempt generation and
 // one real Paseo session. The row is created (intended) before any
 // non-idempotent Paseo call, so a crash between session creation and
@@ -163,6 +212,7 @@ type PaseoBinding struct {
 	ExecMode        string             `json:"execMode"`
 	WorkspaceID     string             `json:"workspaceId,omitempty"`
 	SessionID       string             `json:"sessionId,omitempty"`
+	CorrelationKey  string             `json:"correlationKey,omitempty"`
 	Status          PaseoSessionStatus `json:"status"`
 	Error           string             `json:"error,omitempty"`
 	CreatedAt       time.Time          `json:"createdAt"`
@@ -171,12 +221,136 @@ type PaseoBinding struct {
 
 // PaseoSessionSummary is the read-only cross-Run projection the Office
 // Agents view renders. It embeds the authoritative binding row and adds the
-// owning Run's current status; it is a snapshot, never a second source of
-// truth. No prompt, transcript, credential or source body is part of this
-// projection.
+// owning Run's current status plus the optional S3-D recovery receipt; it is
+// a snapshot, never a second source of truth. No prompt, transcript,
+// credential or source body is part of this projection.
 type PaseoSessionSummary struct {
 	PaseoBinding
-	RunStatus RunStatus `json:"runStatus"`
+	RunStatus RunStatus      `json:"runStatus"`
+	Recovery  *PaseoRecovery `json:"recovery,omitempty"`
+}
+
+// PaseoRecoveryStatus is the durable recovery-operation state for one
+// orphaned binding. confirmed/absent/blocked are terminal; unconfirmed is
+// retryable within the bounded budget. It never changes the binding status.
+type PaseoRecoveryStatus string
+
+const (
+	RecoveryPending     PaseoRecoveryStatus = "pending"
+	RecoveryClaimed     PaseoRecoveryStatus = "claimed"
+	RecoveryUnconfirmed PaseoRecoveryStatus = "unconfirmed"
+	RecoveryConfirmed   PaseoRecoveryStatus = "confirmed"
+	RecoveryAbsent      PaseoRecoveryStatus = "absent"
+	RecoveryBlocked     PaseoRecoveryStatus = "blocked"
+)
+
+// Terminal reports whether automatic recovery has finished for this row.
+func (s PaseoRecoveryStatus) Terminal() bool {
+	return s == RecoveryConfirmed || s == RecoveryAbsent || s == RecoveryBlocked
+}
+
+// SafeForReplacement reports whether a prior orphaned generation is settled
+// enough to permit a new Attempt of the same Run.
+func (s PaseoRecoveryStatus) SafeForReplacement() bool {
+	return s == RecoveryConfirmed || s == RecoveryAbsent
+}
+
+// ParsePaseoRecoveryStatus maps an operator/API string to a recovery state.
+func ParsePaseoRecoveryStatus(s string) (PaseoRecoveryStatus, error) {
+	st := PaseoRecoveryStatus(strings.TrimSpace(s))
+	switch st {
+	case RecoveryPending, RecoveryClaimed, RecoveryUnconfirmed, RecoveryConfirmed, RecoveryAbsent, RecoveryBlocked:
+		return st, nil
+	default:
+		return "", fmt.Errorf("unknown recovery status %q", s)
+	}
+}
+
+// PaseoObservation is a bounded external observation. Workspace values use
+// absent/present/unknown; session values use absent/archived/active/idle/
+// unknown.
+type PaseoObservation string
+
+const (
+	PaseoObservedAbsent   PaseoObservation = "absent"
+	PaseoObservedArchived PaseoObservation = "archived"
+	PaseoObservedActive   PaseoObservation = "active"
+	PaseoObservedIdle     PaseoObservation = "idle"
+	PaseoObservedPresent  PaseoObservation = "present"
+	PaseoObservedUnknown  PaseoObservation = "unknown"
+)
+
+// PaseoRecoveryOutcome is the Worker's completed observation class.
+type PaseoRecoveryOutcome string
+
+const (
+	RecoveryOutcomeConfirmed   PaseoRecoveryOutcome = "confirmed"
+	RecoveryOutcomeAbsent      PaseoRecoveryOutcome = "absent"
+	RecoveryOutcomeUnconfirmed PaseoRecoveryOutcome = "unconfirmed"
+	RecoveryOutcomeBlocked     PaseoRecoveryOutcome = "blocked"
+)
+
+// ParsePaseoRecoveryOutcome validates a completion outcome.
+func ParsePaseoRecoveryOutcome(s string) (PaseoRecoveryOutcome, error) {
+	o := PaseoRecoveryOutcome(strings.TrimSpace(s))
+	switch o {
+	case RecoveryOutcomeConfirmed, RecoveryOutcomeAbsent, RecoveryOutcomeUnconfirmed, RecoveryOutcomeBlocked:
+		return o, nil
+	default:
+		return "", fmt.Errorf("unknown recovery outcome %q (want confirmed|absent|unconfirmed|blocked)", s)
+	}
+}
+
+// ValidateSessionObservation checks the session observation vocabulary.
+func ValidateSessionObservation(o PaseoObservation) error {
+	switch o {
+	case PaseoObservedAbsent, PaseoObservedArchived, PaseoObservedActive, PaseoObservedIdle, PaseoObservedUnknown:
+		return nil
+	default:
+		return fmt.Errorf("unknown session observation %q", o)
+	}
+}
+
+// ValidateWorkspaceObservation checks the workspace observation vocabulary.
+func ValidateWorkspaceObservation(o PaseoObservation) error {
+	switch o {
+	case PaseoObservedAbsent, PaseoObservedPresent, PaseoObservedUnknown:
+		return nil
+	default:
+		return fmt.Errorf("unknown workspace observation %q", o)
+	}
+}
+
+// PaseoRecovery is the durable cleanup/reconciliation receipt for one
+// orphaned binding. It is separate from the immutable binding row: an
+// orphaned binding stays orphaned even after cleanup is confirmed.
+type PaseoRecovery struct {
+	AttemptID         string               `json:"attemptId"`
+	RunID             string               `json:"runId"`
+	LeaseGeneration   int64                `json:"leaseGeneration"`
+	Status            PaseoRecoveryStatus  `json:"status"`
+	ClaimOwner        string               `json:"claimOwner,omitempty"`
+	ClaimToken        string               `json:"-"`
+	ClaimExpiresAt    time.Time            `json:"claimExpiresAt,omitempty"`
+	Attempts          int                  `json:"attempts"`
+	NextAttemptAt     time.Time            `json:"nextAttemptAt,omitempty"`
+	LastObservedAt    time.Time            `json:"lastObservedAt,omitempty"`
+	SessionID         string               `json:"sessionId,omitempty"`
+	WorkspaceID       string               `json:"workspaceId,omitempty"`
+	SessionObserved   PaseoObservation     `json:"sessionObserved,omitempty"`
+	WorkspaceObserved PaseoObservation     `json:"workspaceObserved,omitempty"`
+	LastOutcome       PaseoRecoveryOutcome `json:"lastOutcome,omitempty"`
+	Reason            string               `json:"reason,omitempty"`
+	CreatedAt         time.Time            `json:"createdAt"`
+	UpdatedAt         time.Time            `json:"updatedAt"`
+}
+
+// PaseoRecoveryClaim is the Worker-only claim response. ClaimToken is a
+// cleanup fencing token and is never part of the operator projection.
+type PaseoRecoveryClaim struct {
+	Recovery   PaseoRecovery `json:"recovery"`
+	ClaimToken string        `json:"claimToken"`
+	Session    PaseoBinding  `json:"session"`
 }
 
 // ValidatePaseoIdentity checks a Paseo workspace/session identifier shape:
@@ -198,4 +372,55 @@ func ValidatePaseoIdentity(kind, id string) error {
 		}
 	}
 	return nil
+}
+
+// MarshalJSON omits unset optional timestamps. Go's encoding/json does not
+// omit a zero time.Time even with omitempty, which would fabricate a year-1
+// "last observed" value in the operator projection.
+func (r PaseoRecovery) MarshalJSON() ([]byte, error) {
+	type recoveryJSON struct {
+		AttemptID         string               `json:"attemptId"`
+		RunID             string               `json:"runId"`
+		LeaseGeneration   int64                `json:"leaseGeneration"`
+		Status            PaseoRecoveryStatus  `json:"status"`
+		ClaimOwner        string               `json:"claimOwner,omitempty"`
+		ClaimExpiresAt    *string              `json:"claimExpiresAt,omitempty"`
+		Attempts          int                  `json:"attempts"`
+		NextAttemptAt     *string              `json:"nextAttemptAt,omitempty"`
+		LastObservedAt    *string              `json:"lastObservedAt,omitempty"`
+		SessionID         string               `json:"sessionId,omitempty"`
+		WorkspaceID       string               `json:"workspaceId,omitempty"`
+		SessionObserved   PaseoObservation     `json:"sessionObserved,omitempty"`
+		WorkspaceObserved PaseoObservation     `json:"workspaceObserved,omitempty"`
+		LastOutcome       PaseoRecoveryOutcome `json:"lastOutcome,omitempty"`
+		Reason            string               `json:"reason,omitempty"`
+		CreatedAt         time.Time            `json:"createdAt"`
+		UpdatedAt         time.Time            `json:"updatedAt"`
+	}
+	optional := func(t time.Time) *string {
+		if t.IsZero() {
+			return nil
+		}
+		value := t.UTC().Format(time.RFC3339Nano)
+		return &value
+	}
+	return json.Marshal(recoveryJSON{
+		AttemptID:         r.AttemptID,
+		RunID:             r.RunID,
+		LeaseGeneration:   r.LeaseGeneration,
+		Status:            r.Status,
+		ClaimOwner:        r.ClaimOwner,
+		ClaimExpiresAt:    optional(r.ClaimExpiresAt),
+		Attempts:          r.Attempts,
+		NextAttemptAt:     optional(r.NextAttemptAt),
+		LastObservedAt:    optional(r.LastObservedAt),
+		SessionID:         r.SessionID,
+		WorkspaceID:       r.WorkspaceID,
+		SessionObserved:   r.SessionObserved,
+		WorkspaceObserved: r.WorkspaceObserved,
+		LastOutcome:       r.LastOutcome,
+		Reason:            r.Reason,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
+	})
 }

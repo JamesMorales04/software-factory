@@ -77,6 +77,29 @@ type Identity struct {
 	Mode        string
 	Cwd         string
 	Status      string
+	Title       string
+	Archived    bool
+}
+
+// SessionRef is one bounded agent-listing entry used for exact label
+// discovery and absence checks. Labels are not echoed by the CLI listing;
+// the filter itself is the exact-match proof.
+type SessionRef struct {
+	ID       string
+	Title    string
+	Provider string
+	Status   string
+	Cwd      string
+	Labels   map[string]string
+}
+
+// WorkspaceRef is one active Paseo workspace listing entry. Workspaces have
+// titles but no labels, so the deterministic title is the ownership marker.
+type WorkspaceRef struct {
+	ID        string
+	Title     string
+	Cwd       string
+	Isolation string
 }
 
 // StartRequest pins one real Paseo session. Provider/Model/Mode must be an
@@ -88,6 +111,7 @@ type StartRequest struct {
 	Mode        string
 	WorkspaceID string
 	Title       string
+	Labels      map[string]string
 	Prompt      string
 	WaitTimeout time.Duration
 }
@@ -114,6 +138,14 @@ type Adapter interface {
 	StartSession(ctx context.Context, req StartRequest) (Identity, error)
 	// InspectSession returns the current observed identity of sessionID.
 	InspectSession(ctx context.Context, sessionID string) (Identity, error)
+	// ListSessions returns global agents including archived ones.
+	ListSessions(ctx context.Context) ([]SessionRef, error)
+	// ListSessionsByLabels returns global agents (including archived) whose
+	// labels exactly match every provided key/value pair.
+	ListSessionsByLabels(ctx context.Context, labels map[string]string) ([]SessionRef, error)
+	// ListWorkspaces returns active workspaces (archived workspaces are not
+	// listed by Paseo).
+	ListWorkspaces(ctx context.Context) ([]WorkspaceRef, error)
 	// ObserveTimeline returns the redacted step summary of sessionID.
 	ObserveTimeline(ctx context.Context, sessionID string) (TimelineSummary, error)
 	// SendNudge delivers one bounded continuation message and waits for

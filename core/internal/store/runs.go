@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
@@ -16,6 +17,14 @@ const runColumns = `id, project_id, action_id, workload_kind, workload_input,
 	status, attempt_count, max_attempts, timeout_secs, lease_owner,
 	lease_generation, lease_expires_at, result, error, execution_mode,
 	provider, model, paseo_mode, created_at, updated_at`
+
+// runColumnsR is the alias-qualified form used by dispatch eligibility
+// queries with correlated subqueries.
+const runColumnsR = `r.id, r.project_id, r.action_id, r.workload_kind,
+	r.workload_input, r.status, r.attempt_count, r.max_attempts,
+	r.timeout_secs, r.lease_owner, r.lease_generation, r.lease_expires_at,
+	r.result, r.error, r.execution_mode, r.provider, r.model, r.paseo_mode,
+	r.created_at, r.updated_at`
 
 const attemptColumns = `id, run_id, seq, worker_id, lease_generation,
 	status, heartbeats, result, error, created_at, updated_at`
@@ -289,13 +298,33 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 
+	// Dispatch eligibility is filtered in SQL so gated paseo Runs can never
+	// hide later eligible Runs behind a fixed scan cutoff. The gate mirrors
+	// paseoRetryGateTx: a prior orphaned/intended/active generation blocks a
+	// replacement until its recovery is confirmed or absent.
 	var run domain.Run
 	err = func() error {
-		r, err := scanRun(tx.QueryRowContext(ctx,
-			`SELECT `+runColumns+` FROM runs WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 1`,
-			string(domain.RunQueued)))
-		if err != nil {
-			return err
+		r, qerr := scanRun(tx.QueryRowContext(ctx,
+			`SELECT `+runColumnsR+` FROM runs r
+			 WHERE r.status=?
+			   AND (r.workload_kind<>?
+			        OR r.attempt_count=0
+			        OR NOT EXISTS (
+			          SELECT 1 FROM paseo_bindings b
+			          WHERE b.run_id=r.id
+			            AND b.seq=(SELECT MAX(b2.seq) FROM paseo_bindings b2 WHERE b2.run_id=r.id)
+			            AND b.status IN (?,?,?)
+			            AND NOT EXISTS (
+			              SELECT 1 FROM paseo_recovery rec
+			              WHERE rec.attempt_id=b.attempt_id AND rec.status IN (?,?)
+			            )
+			        ))
+			 ORDER BY r.created_at ASC, r.id ASC LIMIT 1`,
+			string(domain.RunQueued), domain.PaseoTaskKind,
+			string(domain.PaseoOrphaned), string(domain.PaseoIntended), string(domain.PaseoActive),
+			string(domain.RecoveryConfirmed), string(domain.RecoveryAbsent)))
+		if qerr != nil {
+			return qerr
 		}
 		run = r
 		return nil
@@ -630,6 +659,16 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
 			return domain.Run{}, false, nil, err
 		}
+		if run.WorkloadKind == domain.PaseoTaskKind && cleanupUnconfirmed(sanitized) {
+			if binding, berr := scanPaseoBinding(tx.QueryRowContext(ctx,
+				`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, attempt.ID)); berr == nil {
+				if _, rerr := ensureRecoveryTx(ctx, tx, binding, now); rerr != nil {
+					return domain.Run{}, false, nil, rerr
+				}
+			} else if berr != sql.ErrNoRows {
+				return domain.Run{}, false, nil, berr
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return domain.Run{}, false, nil, err
 		}
@@ -687,6 +726,14 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 	default:
 		return domain.Run{}, false, nil, fmt.Errorf("%w: unknown outcome %q", domain.ErrInvalidInput, outcome)
 	}
+}
+
+// cleanupUnconfirmed reports whether a completed paseo-task result records
+// that the Worker could not verify external cleanup. Such a result is still
+// authoritative for the Run, but it schedules a separate cleanup receipt.
+func cleanupUnconfirmed(output map[string]any) bool {
+	value, _ := output["cleanup"].(string)
+	return strings.HasPrefix(strings.TrimSpace(value), "unconfirmed")
 }
 
 // settleBindingForReportTx enforces the S3-A session/report coherence for
@@ -1076,6 +1123,16 @@ func orphanBindingForAttemptTx(ctx context.Context, tx *sql.Tx, attempt domain.A
 	}
 	if err != nil {
 		return nil, err
+	}
+	if binding.Status == domain.PaseoSucceeded {
+		// The session closed but the post-close cleanup was never reported
+		// (crash before report or an unconfirmed cleanup). Schedule a
+		// cleanup verification receipt without rewriting the succeeded
+		// binding or the Run.
+		if _, rerr := ensureRecoveryTx(ctx, tx, binding, now); rerr != nil {
+			return nil, rerr
+		}
+		return nil, nil
 	}
 	if binding.Status.Terminal() {
 		return nil, nil

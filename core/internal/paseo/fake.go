@@ -18,6 +18,10 @@ type FakeAdapter struct {
 	Session     Identity
 	Timeline    TimelineSummary
 	Listed      map[string]bool
+	Sessions    []SessionRef
+	Workspaces  []WorkspaceRef
+	// StartLabels records the labels of every StartSession request.
+	StartLabels []map[string]string
 	// Scripted failures by operation name (create, run, inspect, logs,
 	// send, wait, stop, archive, workspace-archive, workspace-ls).
 	Fail map[string]error
@@ -83,10 +87,16 @@ func (f *FakeAdapter) StartSession(_ context.Context, req StartRequest) (Identit
 	if err := f.record("run"); err != nil {
 		return Identity{}, err
 	}
+	f.mu.Lock()
+	f.StartLabels = append(f.StartLabels, req.Labels)
+	f.mu.Unlock()
 	out := f.Session
 	out.WorkspaceID = req.WorkspaceID
 	if out.Cwd == "" {
 		out.Cwd = "/tmp/fake-proj"
+	}
+	if out.Title == "" {
+		out.Title = req.Title
 	}
 	if f.StartErr != nil {
 		return out, f.StartErr
@@ -101,6 +111,49 @@ func (f *FakeAdapter) InspectSession(_ context.Context, sessionID string) (Ident
 	out := f.Session
 	out.SessionID = sessionID
 	return out, nil
+}
+
+func (f *FakeAdapter) ListSessions(ctx context.Context) ([]SessionRef, error) {
+	return f.ListSessionsByLabels(ctx, nil)
+}
+
+func (f *FakeAdapter) ListSessionsByLabels(_ context.Context, labels map[string]string) ([]SessionRef, error) {
+	if err := f.record("ls"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]SessionRef, 0, len(f.Sessions))
+	for _, session := range f.Sessions {
+		if labelsMatch(session.Labels, labels) {
+			out = append(out, session)
+		}
+	}
+	return out, nil
+}
+
+func (f *FakeAdapter) ListWorkspaces(_ context.Context) ([]WorkspaceRef, error) {
+	if err := f.record("workspace-ls"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]WorkspaceRef, 0, len(f.Workspaces))
+	for _, ws := range f.Workspaces {
+		if f.Listed[ws.ID] {
+			out = append(out, ws)
+		}
+	}
+	return out, nil
+}
+
+func labelsMatch(have, want map[string]string) bool {
+	for key, value := range want {
+		if have[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *FakeAdapter) ObserveTimeline(_ context.Context, _ string) (TimelineSummary, error) {
@@ -132,8 +185,17 @@ func (f *FakeAdapter) StopSession(_ context.Context, _ string) error {
 	return f.record("stop")
 }
 
-func (f *FakeAdapter) ArchiveSession(_ context.Context, _ string) error {
-	return f.record("archive")
+func (f *FakeAdapter) ArchiveSession(_ context.Context, sessionID string) error {
+	if err := f.record("archive"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Session.SessionID == "" || f.Session.SessionID == sessionID {
+		f.Session.SessionID = sessionID
+		f.Session.Archived = true
+	}
+	return nil
 }
 
 func (f *FakeAdapter) ArchiveWorkspace(_ context.Context, workspaceID string) error {

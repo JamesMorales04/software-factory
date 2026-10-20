@@ -29,7 +29,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.4.0-s3c"
+const workerVersion = "0.5.0-s3d"
 
 type client struct {
 	base   string
@@ -53,6 +53,8 @@ func run(args []string) error {
 	heartbeatInterval := flags.Duration("heartbeat-interval", 2*time.Second, "lease renewal period")
 	maxConcurrent := flags.Int("max-concurrent", 1, "simultaneous Attempts (bounded)")
 	execMode := flags.String("exec-mode", "podman", "fixture execution: podman (fail-closed default) or local (explicit pure-Go synthetic fixture for tests/dev only, NOT a Paseo TRUSTED_LOCAL path)")
+	recoveryInterval := flags.Duration("recovery-interval", 10*time.Second, "interval between bounded Paseo orphan-recovery claims (0 disables)")
+	recoveryOnly := flags.Bool("recovery-only", false, "run only the bounded Paseo recovery coordinator (no Workload polling)")
 	showVersion := flags.Bool("version", false, "print worker version and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -70,6 +72,12 @@ func run(args []string) error {
 	}
 	if *maxConcurrent < 1 || *maxConcurrent > 4 {
 		return errors.New("max-concurrent must be 1..4")
+	}
+	if *recoveryInterval < 0 || *recoveryInterval > 10*time.Minute {
+		return errors.New("recovery-interval must be 0..10m")
+	}
+	if *recoveryOnly && *recoveryInterval <= 0 {
+		return errors.New("recovery-only requires a positive recovery-interval")
 	}
 	switch *execMode {
 	case "podman", "local":
@@ -112,6 +120,21 @@ func run(args []string) error {
 		return fmt.Errorf("register worker: %w", err)
 	}
 	logger.Info("worker registered", "workerId", *workerID, "mode", map[bool]string{true: "podman", false: "local"}[podmanOK])
+
+	// S3-D recovery coordinator: one bounded claim at a time, independent
+	// of execution slots. A dedicated recovery-only process is useful when
+	// an execution Worker was killed and must not be restarted as an
+	// executor merely to clean up after itself.
+	if *recoveryOnly {
+		go c.recoveryLoop(ctx, *workerID, *recoveryInterval, logger)
+		<-ctx.Done()
+		_ = runsRoot.Close()
+		return nil
+	}
+	if *recoveryInterval > 0 {
+		go c.recoveryLoop(ctx, *workerID, *recoveryInterval, logger)
+		logger.Info("paseo recovery loop enabled", "interval", recoveryInterval.String())
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < *maxConcurrent; i++ {

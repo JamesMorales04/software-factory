@@ -37,6 +37,9 @@ const (
 	EventPaseoSessionFailed    = "PaseoSessionFailed"
 	EventPaseoSessionCancelled = "PaseoSessionCancelled"
 	EventPaseoSessionOrphaned  = "PaseoSessionOrphaned"
+	// S3-D records the observed cleanup/reconciliation result on the same
+	// run aggregate; it never rewrites the immutable orphan event.
+	EventPaseoSessionRecoveryRecorded = "PaseoSessionRecoveryRecorded"
 )
 
 // EventSchemaVersion is the S1 payload contract version.
@@ -80,7 +83,8 @@ func (e Event) Validate() error {
 		EventWorkerRegistered, EventWorkerOffline,
 		EventPaseoSessionIntended, EventPaseoSessionActive,
 		EventPaseoSessionSucceeded, EventPaseoSessionFailed,
-		EventPaseoSessionCancelled, EventPaseoSessionOrphaned:
+		EventPaseoSessionCancelled, EventPaseoSessionOrphaned,
+		EventPaseoSessionRecoveryRecorded:
 	default:
 		return errors.New("unknown eventType")
 	}

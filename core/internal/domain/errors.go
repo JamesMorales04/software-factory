@@ -16,4 +16,8 @@ var (
 	ErrLeaseExpired     = errors.New("lease expired")
 	ErrRunCancelled     = errors.New("run cancelled")
 	ErrAttemptNotActive = errors.New("attempt not active")
+	// S3-D cleanup claim fencing: a stale recovery Worker must never record
+	// a second receipt or clean a resource claimed by another Worker.
+	ErrStaleRecoveryClaim       = errors.New("stale recovery claim")
+	ErrRecoveryIdentityConflict = errors.New("recovery identity conflict")
 )

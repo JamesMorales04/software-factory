@@ -51,7 +51,8 @@ func workerRoute(path string) bool {
 	switch path {
 	case "/api/v1/workers/register", "/api/v1/workers/poll", "/api/v1/workers/heartbeat", "/api/v1/workers/report",
 		"/api/v1/workers/session/intend", "/api/v1/workers/session/bind",
-		"/api/v1/workers/session/close", "/api/v1/workers/session/orphan":
+		"/api/v1/workers/session/close", "/api/v1/workers/session/orphan",
+		"/api/v1/workers/recovery/claim", "/api/v1/workers/recovery/complete":
 		return true
 	default:
 		return false
@@ -98,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/workers/session/bind", s.handleSessionBind)
 	mux.HandleFunc("POST /api/v1/workers/session/close", s.handleSessionClose)
 	mux.HandleFunc("POST /api/v1/workers/session/orphan", s.handleSessionOrphan)
+	mux.HandleFunc("POST /api/v1/workers/recovery/claim", s.handleRecoveryClaim)
+	mux.HandleFunc("POST /api/v1/workers/recovery/complete", s.handleRecoveryComplete)
 
 	authed := s.withAuth(mux)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

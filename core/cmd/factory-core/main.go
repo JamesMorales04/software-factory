@@ -154,6 +154,16 @@ func sweepLeases(ctx context.Context, db *store.DB, hub *api.Hub, logger *slog.L
 			for _, e := range events {
 				hub.Publish(e)
 			}
+			// S3-D: fail closed only Runs whose prior external generation
+			// can no longer be reconciled automatically.
+			gated, err := db.ResolveBlockedPaseoRetries(context.Background())
+			if err != nil {
+				logger.Error("paseo retry gate failed", "error", err.Error())
+				continue
+			}
+			for _, e := range gated {
+				hub.Publish(e)
+			}
 		}
 	}
 }

@@ -129,6 +129,9 @@ func (a *CLIAdapter) StartSession(ctx context.Context, req StartRequest) (Identi
 	if strings.TrimSpace(req.Title) != "" {
 		args = append(args, "--title", strings.TrimSpace(req.Title))
 	}
+	for _, key := range sortedLabelKeys(req.Labels) {
+		args = append(args, "--label", key+"="+req.Labels[key])
+	}
 	args = append(args, req.Prompt)
 	out, err := a.run(ctx, args...)
 	if err != nil {
@@ -178,6 +181,8 @@ func (a *CLIAdapter) InspectSession(ctx context.Context, sessionID string) (Iden
 		Mode:      strings.TrimSpace(ciString(obj, "mode")),
 		Cwd:       strings.TrimSpace(ciString(obj, "cwd")),
 		Status:    strings.TrimSpace(ciString(obj, "status")),
+		Title:     strings.TrimSpace(ciString(obj, "name", "title")),
+		Archived:  ciBool(obj, "archived"),
 	}
 	if observed.Provider == "" || observed.Model == "" {
 		return Identity{}, &Error{Op: "inspect", Kind: KindIdentity, Reason: "session evidence missing provider or model"}
@@ -295,35 +300,115 @@ func (a *CLIAdapter) ArchiveWorkspace(ctx context.Context, workspaceID string) e
 	return err
 }
 
-// WorkspaceListed reports whether workspaceID is still listed.
-func (a *CLIAdapter) WorkspaceListed(ctx context.Context, workspaceID string) (bool, error) {
-	if verr := domain.ValidatePaseoIdentity("workspaceId", workspaceID); verr != nil {
-		return false, &Error{Op: "workspace-ls", Kind: KindStartup, Reason: "invalid workspace identity shape"}
+// ListSessions returns global agents including archived ones.
+func (a *CLIAdapter) ListSessions(ctx context.Context) ([]SessionRef, error) {
+	return a.listSessions(ctx, nil)
+}
+
+// ListSessionsByLabels filters global agents (including archived) by every
+// exact label pair. An empty result is an authoritative "no matching agent"
+// only when the CLI call itself succeeded.
+func (a *CLIAdapter) ListSessionsByLabels(ctx context.Context, labels map[string]string) ([]SessionRef, error) {
+	return a.listSessions(ctx, labels)
+}
+
+func (a *CLIAdapter) listSessions(ctx context.Context, labels map[string]string) ([]SessionRef, error) {
+	ctx, cancel := context.WithTimeout(ctx, InspectTimeout)
+	defer cancel()
+	args := []string{"ls", "-g", "-a", "--json"}
+	for _, key := range sortedLabelKeys(labels) {
+		args = append(args, "--label", key+"="+labels[key])
 	}
+	out, err := a.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := decodeObjectList(out)
+	if err != nil {
+		return nil, &Error{Op: "ls", Kind: KindIdentity, Reason: "unparseable agent listing"}
+	}
+	refs := make([]SessionRef, 0, len(docs))
+	for _, doc := range docs {
+		refs = append(refs, SessionRef{
+			ID:       strings.TrimSpace(ciString(doc, "id", "agentId")),
+			Title:    strings.TrimSpace(ciString(doc, "name", "title")),
+			Provider: normalizeProvider(ciString(doc, "provider", "providerId")),
+			Status:   strings.TrimSpace(ciString(doc, "status")),
+			Cwd:      strings.TrimSpace(ciString(doc, "cwd")),
+		})
+	}
+	return refs, nil
+}
+
+// ListWorkspaces returns active workspaces. Archived workspaces are absent
+// from this listing; that is the authoritative workspace-absence check.
+func (a *CLIAdapter) ListWorkspaces(ctx context.Context) ([]WorkspaceRef, error) {
 	ctx, cancel := context.WithTimeout(ctx, InspectTimeout)
 	defer cancel()
 	out, err := a.run(ctx, "workspace", "ls", "--json")
 	if err != nil {
+		return nil, err
+	}
+	docs, err := decodeObjectList(out)
+	if err != nil {
+		return nil, &Error{Op: "workspace-ls", Kind: KindIdentity, Reason: "unparseable workspace listing"}
+	}
+	refs := make([]WorkspaceRef, 0, len(docs))
+	for _, doc := range docs {
+		refs = append(refs, WorkspaceRef{
+			ID:        strings.TrimSpace(ciString(doc, "workspaceId", "id")),
+			Title:     strings.TrimSpace(ciString(doc, "name", "title")),
+			Cwd:       strings.TrimSpace(ciString(doc, "cwd")),
+			Isolation: strings.TrimSpace(ciString(doc, "isolation")),
+		})
+	}
+	return refs, nil
+}
+
+// WorkspaceListed reports whether workspaceID is still active/listed.
+func (a *CLIAdapter) WorkspaceListed(ctx context.Context, workspaceID string) (bool, error) {
+	if verr := domain.ValidatePaseoIdentity("workspaceId", workspaceID); verr != nil {
+		return false, &Error{Op: "workspace-ls", Kind: KindStartup, Reason: "invalid workspace identity shape"}
+	}
+	workspaces, err := a.ListWorkspaces(ctx)
+	if err != nil {
 		return false, err
 	}
-	var docs []map[string]any
-	raw := bytes.TrimSpace(out)
-	if len(raw) == 0 {
-		return false, nil
-	}
-	if err := json.Unmarshal(raw, &docs); err != nil {
-		var single map[string]any
-		if serr := json.Unmarshal(raw, &single); serr != nil {
-			return false, &Error{Op: "workspace-ls", Kind: KindIdentity, Reason: "unparseable workspace listing"}
-		}
-		docs = []map[string]any{single}
-	}
-	for _, doc := range docs {
-		if ciString(doc, "workspaceId", "workspaceid", "id") == workspaceID {
+	for _, ws := range workspaces {
+		if ws.ID == workspaceID {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// decodeObjectList accepts an empty output, one object, or an array of
+// objects. Shape-only failures never include values.
+func decodeObjectList(raw []byte) ([]map[string]any, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var docs []map[string]any
+	if err := json.Unmarshal(raw, &docs); err == nil {
+		return docs, nil
+	}
+	var single map[string]any
+	if err := json.Unmarshal(raw, &single); err != nil {
+		return nil, err
+	}
+	return []map[string]any{single}, nil
+}
+
+func sortedLabelKeys(labels map[string]string) []string {
+	keys := make([]string, 0, len(labels))
+	for key, value := range labels {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // AssertRoute checks observed session evidence against the frozen request.
@@ -520,6 +605,18 @@ func ciString(obj map[string]any, names ...string) string {
 		}
 	}
 	return ""
+}
+
+// ciBool reads a case-insensitive boolean field; missing or non-bool values
+// report false rather than inventing archived state.
+func ciBool(obj map[string]any, name string) bool {
+	for k, v := range obj {
+		if strings.EqualFold(k, name) {
+			b, ok := v.(bool)
+			return ok && b
+		}
+	}
+	return false
 }
 
 // keyList renders the sorted top-level JSON keys for shape-only reports.

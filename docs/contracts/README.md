@@ -11,6 +11,7 @@
 | Run–Worker | `run-worker-s2.md` | S2 | Run/Attempt/Worker identities, lifecycles, dispatch, leases, fencing, recovery |
 | Run–Paseo session identity | `run-paseo-s3a.md` | S3-A | execution modes, pinned routing, session binding lifecycle, intend-before-create, fencing, recovery |
 | Agent observability projection | `agent-observability-s3c.md` | S3-C | cross-Run session listing, Agent/Run-detail projections, evidence levels, redaction |
+| Paseo recovery and cleanup | `paseo-recovery-s3d.md` | S3-D | external correlation, recovery receipts, claim/complete protocol, retry gate, events, bounded cleanup |
 
 The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery) are still proposed.
 

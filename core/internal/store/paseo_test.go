@@ -602,6 +602,20 @@ func TestPaseoSessionIdCannotSpanAttempts(t *testing.T) {
 	if _, err := db.ExpireLeases(ctx); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
+	// S3-D: a replacement generation waits until the orphaned session is
+	// reconciled. Record the verified cleanup receipt first.
+	claim, found, err := db.ClaimPaseoRecovery(ctx, "local-1")
+	if err != nil || !found {
+		t.Fatalf("claim recovery: found=%v err=%v", found, err)
+	}
+	if _, _, _, err := db.CompletePaseoRecovery(ctx, RecoveryCompletion{
+		WorkerID: "local-1", AttemptID: attempt1.ID, ClaimToken: claim.ClaimToken,
+		Outcome:   domain.RecoveryOutcomeConfirmed,
+		SessionID: "session-dup-1", WorkspaceID: "ws_dup",
+		SessionObserved: domain.PaseoObservedArchived, WorkspaceObserved: domain.PaseoObservedAbsent,
+	}, "corr-recovery"); err != nil {
+		t.Fatalf("complete recovery: %v", err)
+	}
 	_, attempt2, _, _, err := db.ClaimNextRun(ctx, "local-1", "corr-3")
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)

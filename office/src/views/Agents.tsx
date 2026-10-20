@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type PaseoSessionSummary } from "../api";
+import { RecoveryStatus } from "../components/RecoveryStatus";
 import { StreamStateBadge } from "../components/StreamStateBadge";
 import {
   formatTimestamp,
@@ -337,6 +338,7 @@ function SessionCard({ session }: { session: PaseoSessionSummary }) {
           not proof that it is running, and cleanup may be required.
         </p>
       )}
+      {session.recovery && <RecoveryStatus recovery={session.recovery} />}
     </article>
   );
 }
