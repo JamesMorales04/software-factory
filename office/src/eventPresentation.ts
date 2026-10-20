@@ -17,6 +17,7 @@ const EVENT_LABELS: Record<string, string> = {
   PaseoSessionFailed: "Paseo session failed",
   PaseoSessionCancelled: "Paseo session cancelled",
   PaseoSessionOrphaned: "Paseo session orphaned",
+  PaseoSessionRecoveryRecorded: "Paseo session recovery recorded",
   ActionCreated: "Action created",
   ActionTransitioned: "Action transitioned",
 };
@@ -93,6 +94,16 @@ export function presentEvent(event: FactoryEvent): {
     case "PaseoSessionCancelled":
     case "PaseoSessionOrphaned":
       parts.push(attempt(p), text(p.sessionId), text(p.error), text(p.reason));
+      break;
+    case "PaseoSessionRecoveryRecorded":
+      parts.push(
+        attempt(p),
+        text(p.workerId),
+        text(p.outcome),
+        text(p.sessionObserved),
+        text(p.workspaceObserved),
+        text(p.reason),
+      );
       break;
     default:
       break;

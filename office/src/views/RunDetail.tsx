@@ -8,6 +8,7 @@ import {
   type PaseoSession,
   type Run,
 } from "../api";
+import { RecoveryStatus } from "../components/RecoveryStatus";
 import { StreamStateBadge } from "../components/StreamStateBadge";
 import { presentEvent } from "../eventPresentation";
 import {
@@ -567,9 +568,10 @@ function SessionDetail({
           not proof that it is running. Core cancellation or a superseded
           Attempt never claims the external session stopped.
           {!session.sessionId &&
-            " No session ID was bound, so cleanup must discover it by Run/Attempt/generation labels."}
+            " No session ID was bound, so cleanup must discover it by exact Run/Attempt/generation labels."}
         </p>
       )}
+      {session.recovery && <RecoveryStatus recovery={session.recovery} />}
       {session.status === "failed" && !session.error && (
         <p className="muted">
           The session failed. No external stop confirmation is recorded.

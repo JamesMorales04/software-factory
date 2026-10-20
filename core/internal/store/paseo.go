@@ -13,8 +13,13 @@ import (
 
 // bindingColumns lists paseo_bindings columns in scan order.
 const bindingColumns = `attempt_id, run_id, seq, worker_id, lease_generation,
-	provider, model, mode, exec_mode, workspace_id, session_id,
+	provider, model, mode, exec_mode, workspace_id, session_id, correlation_key,
 	status, error, created_at, updated_at`
+
+// bindingColumnsB is the alias-qualified form for joins against recovery.
+const bindingColumnsB = `b.attempt_id, b.run_id, b.seq, b.worker_id, b.lease_generation,
+	b.provider, b.model, b.mode, b.exec_mode, b.workspace_id, b.session_id, b.correlation_key,
+	b.status, b.error, b.created_at, b.updated_at`
 
 func scanPaseoBinding(row interface {
 	Scan(dest ...any) error
@@ -24,7 +29,7 @@ func scanPaseoBinding(row interface {
 	var status, created, updated string
 	dest := []any{
 		&b.AttemptID, &b.RunID, &b.Seq, &b.WorkerID, &b.LeaseGeneration,
-		&b.Provider, &b.Model, &b.Mode, &b.ExecMode, &b.WorkspaceID, &b.SessionID,
+		&b.Provider, &b.Model, &b.Mode, &b.ExecMode, &b.WorkspaceID, &b.SessionID, &b.CorrelationKey,
 		&status, &b.Error, &created, &updated,
 	}
 	dest = append(dest, extra...)
@@ -121,17 +126,18 @@ func (db *DB) IntendPaseoSession(ctx context.Context, workerID, runID, attemptID
 		Model:           run.Model,
 		Mode:            run.PaseoMode,
 		ExecMode:        run.ExecutionMode,
+		CorrelationKey:  domain.PaseoCorrelationKey(run.ID, generation),
 		Status:          domain.PaseoIntended,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO paseo_bindings(attempt_id, run_id, seq, worker_id, lease_generation,
-		 provider, model, mode, exec_mode, workspace_id, session_id,
+		 provider, model, mode, exec_mode, workspace_id, session_id, correlation_key,
 		 status, error, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		binding.AttemptID, binding.RunID, binding.Seq, binding.WorkerID, binding.LeaseGeneration,
-		binding.Provider, binding.Model, binding.Mode, binding.ExecMode, "", "",
+		binding.Provider, binding.Model, binding.Mode, binding.ExecMode, "", "", binding.CorrelationKey,
 		string(binding.Status), "", stamp(now), stamp(now),
 	); err != nil {
 		return domain.PaseoBinding{}, false, domain.Event{}, fmt.Errorf("insert paseo binding: %w", err)
@@ -629,19 +635,22 @@ func (db *DB) ListPaseoSessionSummaries(status domain.PaseoSessionStatus, provid
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	q := `SELECT ` + bindingColumns + `,
-		(SELECT status FROM runs WHERE runs.id = paseo_bindings.run_id)
-		FROM paseo_bindings WHERE 1=1`
+	q := `SELECT ` + bindingColumnsB + `,
+		(SELECT status FROM runs WHERE runs.id = b.run_id),
+		r.attempt_id, ` + recoveryColumns + `
+		FROM paseo_bindings b
+		LEFT JOIN paseo_recovery r ON r.attempt_id=b.attempt_id
+		WHERE 1=1`
 	var args []any
 	if status != "" {
-		q += ` AND status=?`
+		q += ` AND b.status=?`
 		args = append(args, string(status))
 	}
 	if provider != "" {
-		q += ` AND provider=?`
+		q += ` AND b.provider=?`
 		args = append(args, provider)
 	}
-	q += ` ORDER BY (status=? OR status=?) DESC, updated_at DESC, attempt_id ASC LIMIT ?`
+	q += ` ORDER BY (b.status=? OR b.status=?) DESC, b.updated_at DESC, b.attempt_id ASC LIMIT ?`
 	args = append(args, string(domain.PaseoIntended), string(domain.PaseoActive), limit)
 	rows, err := db.sql.Query(q, args...)
 	if err != nil {
@@ -650,17 +659,69 @@ func (db *DB) ListPaseoSessionSummaries(status domain.PaseoSessionStatus, provid
 	defer func() { _ = rows.Close() }()
 	var out []domain.PaseoSessionSummary
 	for rows.Next() {
-		var runStatus string
-		b, err := scanPaseoBinding(rows, &runStatus)
+		s, err := scanSessionSummary(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, domain.PaseoSessionSummary{
-			PaseoBinding: b,
-			RunStatus:    domain.RunStatus(runStatus),
-		})
+		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// scanSessionSummary reads one binding, its Run status and the optional
+// recovery receipt from a single joined row.
+func scanSessionSummary(row interface {
+	Scan(dest ...any) error
+},
+) (domain.PaseoSessionSummary, error) {
+	var b domain.PaseoBinding
+	var status, created, updated, runStatus string
+	var present sql.NullString
+	var (
+		rStatus, claimOwner, claimToken, claimExpires, nextAttempt, lastObserved sql.NullString
+		sessionID, workspaceID, sessionObs, workspaceObs, outcome                sql.NullString
+		reason, rCreated, rUpdated                                               sql.NullString
+		attempts                                                                 sql.NullInt64
+	)
+	if err := row.Scan(
+		&b.AttemptID, &b.RunID, &b.Seq, &b.WorkerID, &b.LeaseGeneration,
+		&b.Provider, &b.Model, &b.Mode, &b.ExecMode, &b.WorkspaceID, &b.SessionID,
+		&b.CorrelationKey, &status, &b.Error, &created, &updated, &runStatus,
+		&present, &rStatus, &claimOwner, &claimToken, &claimExpires, &attempts, &nextAttempt,
+		&lastObserved, &sessionID, &workspaceID, &sessionObs, &workspaceObs,
+		&outcome, &reason, &rCreated, &rUpdated,
+	); err != nil {
+		return domain.PaseoSessionSummary{}, err
+	}
+	b.Status = domain.PaseoSessionStatus(status)
+	b.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	b.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	summary := domain.PaseoSessionSummary{PaseoBinding: b, RunStatus: domain.RunStatus(runStatus)}
+	if !present.Valid {
+		return summary, nil
+	}
+	r := &domain.PaseoRecovery{
+		AttemptID:         b.AttemptID,
+		RunID:             b.RunID,
+		LeaseGeneration:   b.LeaseGeneration,
+		Status:            domain.PaseoRecoveryStatus(rStatus.String),
+		ClaimOwner:        claimOwner.String,
+		ClaimToken:        claimToken.String,
+		Attempts:          int(attempts.Int64),
+		SessionID:         sessionID.String,
+		WorkspaceID:       workspaceID.String,
+		SessionObserved:   domain.PaseoObservation(sessionObs.String),
+		WorkspaceObserved: domain.PaseoObservation(workspaceObs.String),
+		LastOutcome:       domain.PaseoRecoveryOutcome(outcome.String),
+		Reason:            reason.String,
+	}
+	r.ClaimExpiresAt = parseStamp(claimExpires.String)
+	r.NextAttemptAt = parseStamp(nextAttempt.String)
+	r.LastObservedAt = parseStamp(lastObserved.String)
+	r.CreatedAt = parseStamp(rCreated.String)
+	r.UpdatedAt = parseStamp(rUpdated.String)
+	summary.Recovery = r
+	return summary, nil
 }
 
 // ListOrphanedBindings reports non-terminal bindings whose sessions may

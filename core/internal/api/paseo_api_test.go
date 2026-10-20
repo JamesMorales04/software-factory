@@ -487,3 +487,175 @@ func TestPaseoSessionAuthIsScoped(t *testing.T) {
 		t.Fatalf("unknown run sessions: got %d, want 404", rec.Code)
 	}
 }
+
+func registerPaseoWorker(t *testing.T, h http.Handler, worker string) {
+	t.Helper()
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register",
+		`{"workerId":"`+worker+`","version":"test-s3d"}`, testWorkerToken)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("register %s: got %d (%s)", worker, rec.Code, rec.Body.String())
+	}
+}
+
+func orphanPaseoBinding(t *testing.T, h http.Handler, run domain.Run, attempt domain.Attempt, worker string) {
+	t.Helper()
+	intend := `{"workerId":"` + worker + `","runId":"` + run.ID + `","attemptId":"` + attempt.ID + `","generation":1}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/intend", intend, testWorkerToken); rec.Code != http.StatusCreated {
+		t.Fatalf("intend: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	bind := `{"workerId":"` + worker + `","runId":"` + run.ID + `","attemptId":"` + attempt.ID +
+		`","generation":1,"workspaceId":"ws_recovery_http","sessionId":"99999999-9999-4999-8999-999999999999"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/session/bind", bind, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("bind: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := serveRun(t, h, "POST", "/api/v1/runs/"+run.ID+"/cancel", `{}`, testToken); rec.Code != http.StatusOK {
+		t.Fatalf("cancel: got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaseoRecoveryOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+	run := queuePaseoRun(t, h, "")
+	attempt := startPaseoAttempt(t, h, run, "s3d-1")
+	orphanPaseoBinding(t, h, run, attempt, "s3d-1")
+	registerPaseoWorker(t, h, "s3d-2")
+
+	// Worker token may claim/complete; it may not read the operator projection.
+	if rec := serveRun(t, h, "GET", "/api/v1/sessions", "", testWorkerToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("worker token sessions: got %d, want 401", rec.Code)
+	}
+	claimBody := `{"workerId":"s3d-1"}`
+	rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", claimBody, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var claimed struct {
+		Claim domain.PaseoRecoveryClaim `json:"claim"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if claimed.Claim.ClaimToken == "" || claimed.Claim.Session.AttemptID != attempt.ID {
+		t.Fatalf("bad claim: %+v", claimed.Claim)
+	}
+	if claimed.Claim.Session.CorrelationKey == "" {
+		t.Fatal("claim must expose the durable correlation key")
+	}
+	// A second Worker cannot steal a live claim.
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", `{"workerId":"s3d-2"}`, testWorkerToken); rec.Code != http.StatusNoContent {
+		t.Fatalf("second claim: got %d, want 204 (%s)", rec.Code, rec.Body.String())
+	}
+	complete := func(token, outcome, sessionID, workspaceID, sessionObs, workspaceObs string) *httptest.ResponseRecorder {
+		body := `{"workerId":"s3d-1","attemptId":"` + attempt.ID + `","claimToken":"` + token +
+			`","outcome":"` + outcome + `","sessionId":"` + sessionID + `","workspaceId":"` + workspaceID +
+			`","sessionObserved":"` + sessionObs + `","workspaceObserved":"` + workspaceObs + `"}`
+		return serveRun(t, h, "POST", "/api/v1/workers/recovery/complete", body, testWorkerToken)
+	}
+	if rec := complete("wrong-token", "confirmed", "99999999-9999-4999-8999-999999999999", "ws_recovery_http", "archived", "absent"); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "stale_recovery_claim") {
+		t.Fatalf("stale completion: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = complete(claimed.Claim.ClaimToken, "confirmed", "99999999-9999-4999-8999-999999999999", "ws_recovery_http", "archived", "absent")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"confirmed"`) {
+		t.Fatalf("completion receipt: %s", rec.Body.String())
+	}
+	rec = complete(claimed.Claim.ClaimToken, "confirmed", "99999999-9999-4999-8999-999999999999", "ws_recovery_http", "archived", "absent")
+	if rec.Code != http.StatusOK || rec.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("replay: got %d replay=%q", rec.Code, rec.Header().Get("Idempotent-Replayed"))
+	}
+	// The immutable binding stays orphaned; recovery is additional history.
+	rec = serveRun(t, h, "GET", "/api/v1/runs/"+run.ID+"/sessions", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"orphaned"`) ||
+		!strings.Contains(rec.Body.String(), `"recovery":{`) || !strings.Contains(rec.Body.String(), `"status":"confirmed"`) {
+		t.Fatalf("run session projection: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = serveRun(t, h, "GET", "/api/v1/sessions?status=orphaned", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"recovery":{`) {
+		t.Fatalf("cross-run projection: got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaseoRecoveryIdentityConflictOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+	run := queuePaseoRun(t, h, "")
+	attempt := startPaseoAttempt(t, h, run, "s3d-c1")
+	orphanPaseoBinding(t, h, run, attempt, "s3d-c1")
+	rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", `{"workerId":"s3d-c1"}`, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim: got %d", rec.Code)
+	}
+	var claimed struct {
+		Claim domain.PaseoRecoveryClaim `json:"claim"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &claimed)
+	body := `{"workerId":"s3d-c1","attemptId":"` + attempt.ID + `","claimToken":"` + claimed.Claim.ClaimToken +
+		`","outcome":"confirmed","sessionId":"aaaaaaaa-0000-4000-8000-000000000000","workspaceId":"ws_recovery_http","sessionObserved":"archived","workspaceObserved":"absent"}`
+	rec = serveRun(t, h, "POST", "/api/v1/workers/recovery/complete", body, testWorkerToken)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "recovery_identity_conflict") {
+		t.Fatalf("identity conflict: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	// Invalid evidence is rejected before touching state.
+	bad := `{"workerId":"s3d-c1","attemptId":"` + attempt.ID + `","claimToken":"` + claimed.Claim.ClaimToken +
+		`","outcome":"confirmed","sessionObserved":"active","workspaceObserved":"present"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/complete", bad, testWorkerToken); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid evidence: got %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaseoRetryGateOverHTTP(t *testing.T) {
+	srv, _ := newRunTestServer(t)
+	h := srv.Handler()
+	run := queuePaseoRun(t, h, `{"workloadKind":"paseo-task","workloadInput":{"task":"add multiply"},"executionMode":"trusted-local","provider":"codex","model":"gpt-6-luna","paseoMode":"full-access","maxAttempts":2}`)
+	attempt := startPaseoAttempt(t, h, run, "s3d-gate")
+	orphanPaseoBindingViaFailure := func() {
+		t.Helper()
+		rec := serveRun(t, h, "POST", "/api/v1/workers/session/intend",
+			`{"workerId":"s3d-gate","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1}`, testWorkerToken)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("intend: %d", rec.Code)
+		}
+		rec = serveRun(t, h, "POST", "/api/v1/workers/session/bind",
+			`{"workerId":"s3d-gate","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1,"workspaceId":"ws_gate","sessionId":"bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb"}`, testWorkerToken)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("bind: %d", rec.Code)
+		}
+		rec = serveRun(t, h, "POST", "/api/v1/workers/report",
+			`{"workerId":"s3d-gate","runId":"`+run.ID+`","attemptId":"`+attempt.ID+`","generation":1,"outcome":"failed","error":"agent failed"}`, testWorkerToken)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("report failed: %d (%s)", rec.Code, rec.Body.String())
+		}
+	}
+	orphanPaseoBindingViaFailure()
+	// The requeued Run must not be leased until the orphan is settled.
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/poll", `{"workerId":"s3d-gate"}`, testWorkerToken); rec.Code != http.StatusNoContent {
+		t.Fatalf("gated poll: got %d, want 204 (%s)", rec.Code, rec.Body.String())
+	}
+	rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", `{"workerId":"s3d-gate"}`, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim: got %d", rec.Code)
+	}
+	var claimed struct {
+		Claim domain.PaseoRecoveryClaim `json:"claim"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &claimed)
+	body := `{"workerId":"s3d-gate","attemptId":"` + attempt.ID + `","claimToken":"` + claimed.Claim.ClaimToken +
+		`","outcome":"confirmed","sessionId":"bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb","workspaceId":"ws_gate","sessionObserved":"archived","workspaceObserved":"absent"}`
+	if rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/complete", body, testWorkerToken); rec.Code != http.StatusOK {
+		t.Fatalf("complete: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = serveRun(t, h, "POST", "/api/v1/workers/poll", `{"workerId":"s3d-gate"}`, testWorkerToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("poll after recovery: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var leased struct {
+		Attempt domain.Attempt `json:"attempt"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &leased)
+	if leased.Attempt.LeaseGeneration != 2 || leased.Attempt.Seq != 2 {
+		t.Fatalf("replacement attempt: %+v", leased.Attempt)
+	}
+}

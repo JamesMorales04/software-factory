@@ -80,6 +80,26 @@ export interface Run {
   updatedAt: string;
 }
 
+export interface PaseoRecovery {
+  attemptId: string;
+  runId: string;
+  leaseGeneration: number;
+  status: string;
+  claimOwner?: string;
+  claimExpiresAt?: string;
+  attempts: number;
+  nextAttemptAt?: string;
+  lastObservedAt?: string;
+  sessionId?: string;
+  workspaceId?: string;
+  sessionObserved?: string;
+  workspaceObserved?: string;
+  lastOutcome?: string;
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PaseoSession {
   attemptId: string;
   runId: string;
@@ -92,8 +112,11 @@ export interface PaseoSession {
   execMode: string;
   workspaceId?: string;
   sessionId?: string;
+  correlationKey?: string;
   status: string;
   error?: string;
+  /** S3-D cleanup/reconciliation receipt; absent until claimed. */
+  recovery?: PaseoRecovery;
   createdAt: string;
   updatedAt: string;
 }

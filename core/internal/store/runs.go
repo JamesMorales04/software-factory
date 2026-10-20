@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
@@ -290,17 +291,44 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 	}
 
 	var run domain.Run
-	err = func() error {
-		r, err := scanRun(tx.QueryRowContext(ctx,
-			`SELECT `+runColumns+` FROM runs WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 1`,
-			string(domain.RunQueued)))
-		if err != nil {
-			return err
+	foundRun := false
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM runs WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 200`,
+		string(domain.RunQueued))
+	if err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+	}
+	var candidates []domain.Run
+	for rows.Next() {
+		r, serr := scanRun(rows)
+		if serr != nil {
+			_ = rows.Close()
+			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, serr
 		}
-		run = r
-		return nil
-	}()
-	if err == sql.ErrNoRows {
+		candidates = append(candidates, r)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+	}
+	for _, candidate := range candidates {
+		if candidate.WorkloadKind == domain.PaseoTaskKind && candidate.AttemptCount > 0 {
+			// S3-D retry gate: a replacement Attempt must not run while a
+			// prior external session is still uncertain. Blocked recovery is
+			// failed closed by the Core sweeper; this skips it meanwhile.
+			allow, _, gerr := paseoRetryGateTx(ctx, tx, candidate.ID)
+			if gerr != nil {
+				return domain.Run{}, domain.Attempt{}, false, domain.Event{}, gerr
+			}
+			if !allow {
+				continue
+			}
+		}
+		run = candidate
+		foundRun = true
+		break
+	}
+	if !foundRun {
 		// No queued work — but the poll itself proves the Worker is
 		// alive, so record liveness without touching its assignment or
 		// emitting an event. Otherwise an idle Worker polling an empty
@@ -315,9 +343,6 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, cerr
 		}
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, nil
-	}
-	if err != nil {
-		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 
 	generation := run.LeaseGeneration + 1
@@ -630,6 +655,16 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 		if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
 			return domain.Run{}, false, nil, err
 		}
+		if run.WorkloadKind == domain.PaseoTaskKind && cleanupUnconfirmed(sanitized) {
+			if binding, berr := scanPaseoBinding(tx.QueryRowContext(ctx,
+				`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, attempt.ID)); berr == nil {
+				if _, rerr := ensureRecoveryTx(ctx, tx, binding, now); rerr != nil {
+					return domain.Run{}, false, nil, rerr
+				}
+			} else if berr != sql.ErrNoRows {
+				return domain.Run{}, false, nil, berr
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return domain.Run{}, false, nil, err
 		}
@@ -687,6 +722,14 @@ func (db *DB) ReportAttempt(ctx context.Context, workerID, runID, attemptID stri
 	default:
 		return domain.Run{}, false, nil, fmt.Errorf("%w: unknown outcome %q", domain.ErrInvalidInput, outcome)
 	}
+}
+
+// cleanupUnconfirmed reports whether a completed paseo-task result records
+// that the Worker could not verify external cleanup. Such a result is still
+// authoritative for the Run, but it schedules a separate cleanup receipt.
+func cleanupUnconfirmed(output map[string]any) bool {
+	value, _ := output["cleanup"].(string)
+	return strings.HasPrefix(strings.TrimSpace(value), "unconfirmed")
 }
 
 // settleBindingForReportTx enforces the S3-A session/report coherence for
@@ -1076,6 +1119,16 @@ func orphanBindingForAttemptTx(ctx context.Context, tx *sql.Tx, attempt domain.A
 	}
 	if err != nil {
 		return nil, err
+	}
+	if binding.Status == domain.PaseoSucceeded {
+		// The session closed but the post-close cleanup was never reported
+		// (crash before report or an unconfirmed cleanup). Schedule a
+		// cleanup verification receipt without rewriting the succeeded
+		// binding or the Run.
+		if _, rerr := ensureRecoveryTx(ctx, tx, binding, now); rerr != nil {
+			return nil, rerr
+		}
+		return nil, nil
 	}
 	if binding.Status.Terminal() {
 		return nil, nil

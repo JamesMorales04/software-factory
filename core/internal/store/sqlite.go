@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS paseo_bindings (
 	exec_mode TEXT NOT NULL,
 	workspace_id TEXT NOT NULL DEFAULT '',
 	session_id TEXT NOT NULL DEFAULT '',
+	correlation_key TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL,
 	error TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
@@ -125,6 +126,30 @@ CREATE TABLE IF NOT EXISTS paseo_bindings (
 CREATE INDEX IF NOT EXISTS idx_paseo_bindings_run ON paseo_bindings(run_id);
 CREATE INDEX IF NOT EXISTS idx_paseo_bindings_session ON paseo_bindings(session_id);
 CREATE INDEX IF NOT EXISTS idx_paseo_bindings_status ON paseo_bindings(status);
+-- S3-D: durable cleanup/reconciliation receipt for an orphaned binding.
+-- It is an operational record, not a second source of truth for the
+-- immutable binding or the Run.
+CREATE TABLE IF NOT EXISTS paseo_recovery (
+	attempt_id TEXT PRIMARY KEY REFERENCES paseo_bindings(attempt_id),
+	run_id TEXT NOT NULL REFERENCES runs(id),
+	lease_generation INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	claim_owner TEXT NOT NULL DEFAULT '',
+	claim_token TEXT NOT NULL DEFAULT '',
+	claim_expires_at TEXT NOT NULL DEFAULT '',
+	attempts INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at TEXT NOT NULL DEFAULT '',
+	last_observed_at TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	workspace_id TEXT NOT NULL DEFAULT '',
+	session_observed TEXT NOT NULL DEFAULT '',
+	workspace_observed TEXT NOT NULL DEFAULT '',
+	last_outcome TEXT NOT NULL DEFAULT '',
+	reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paseo_recovery_status ON paseo_recovery(status, next_attempt_at);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -158,6 +183,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS3A(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s3-a migration: %w", err)
+	}
+	if err := db.migrateS3D(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s3-d migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -251,6 +280,64 @@ func (db *DB) migrateS3A() error {
 		}
 		if _, err := db.sql.Exec(`ALTER TABLE runs ADD COLUMN ` + col + ` ` + def); err != nil {
 			return fmt.Errorf("add runs.%s: %w", col, err)
+		}
+	}
+	return nil
+}
+
+// migrateS3D adds the S3-D correlation column to databases created before
+// this slice. The recovery table and its index are created idempotently by
+// the schema block above. Existing bindings keep an empty correlation key:
+// they are legacy rows and must never be matched by the new exact labels.
+func (db *DB) migrateS3D() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('paseo_bindings')`)
+	if err != nil {
+		return err
+	}
+	present := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "correlation_key" {
+			present = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !present {
+		if _, err := db.sql.Exec(`ALTER TABLE paseo_bindings ADD COLUMN correlation_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add paseo_bindings.correlation_key: %w", err)
+		}
+	}
+	// The recovery table is new in S3-D, but a mid-development database may
+	// already carry it without the last_outcome column.
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('paseo_recovery')`)
+	if err != nil {
+		return err
+	}
+	hasOutcome := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "last_outcome" {
+			hasOutcome = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasOutcome {
+		if _, err := db.sql.Exec(`ALTER TABLE paseo_recovery ADD COLUMN last_outcome TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add paseo_recovery.last_outcome: %w", err)
 		}
 	}
 	return nil

@@ -325,3 +325,23 @@ td {
     grid-template-columns: 1fr;
   }
 }
+
+.recovery-summary {
+  border-left: 3px solid currentColor;
+  padding-left: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.recovery-summary p {
+  margin: 0.25rem 0;
+}
+
+.pill.recovery-confirmed,
+.pill.recovery-absent {
+  font-weight: 700;
+}
+
+.pill.recovery-blocked {
+  font-weight: 700;
+  color: #b3261e;
+}
