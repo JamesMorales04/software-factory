@@ -342,6 +342,18 @@ func (s *Server) handleRecoveryComplete(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid", "attemptId and claimToken are required")
 		return
 	}
+	if raw := strings.TrimSpace(req.SessionID); raw != "" {
+		if err := domain.ValidatePaseoIdentity("sessionId", raw); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+	}
+	if raw := strings.TrimSpace(req.WorkspaceID); raw != "" {
+		if err := domain.ValidatePaseoIdentity("workspaceId", raw); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+	}
 	outcome, err := domain.ParsePaseoRecoveryOutcome(req.Outcome)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", err.Error())

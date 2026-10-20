@@ -520,6 +520,12 @@ func replaySessionIfRecorded(ctx context.Context, tx *sql.Tx, attemptID string, 
 // caller's transaction (expiry, restart reconciliation, cancellation) and
 // returns the committed event for hub publication.
 func orphanBindingTx(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, actor, reason string, now time.Time) (domain.Event, error) {
+	// Materialize the pending cleanup target in the same transaction as the
+	// orphan transition, so the Office projection can show "cleanup pending"
+	// before any Worker claims it.
+	if _, err := ensureRecoveryTx(ctx, tx, binding, now); err != nil {
+		return domain.Event{}, err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE paseo_bindings SET status=?, error=?, updated_at=? WHERE attempt_id=?`,
 		string(domain.PaseoOrphaned), reason, stamp(now), binding.AttemptID,

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,9 @@ func TestPaseoRecoveryConfirmedReceiptAndRetryGate(t *testing.T) {
 	}
 	if receipt.Status != domain.RecoveryConfirmed || event.EventType != domain.EventPaseoSessionRecoveryRecorded {
 		t.Fatalf("bad receipt/event: %+v %s", receipt, event.EventType)
+	}
+	if _, ok := event.Payload["retryCount"]; !ok {
+		t.Fatalf("recovery event lacks retryCount: %+v", event.Payload)
 	}
 	after, _ := db.CountEvents()
 	if after != before+1 {
@@ -256,6 +260,9 @@ func TestPaseoRecoveryIdentityConflictAndBlockedRetry(t *testing.T) {
 	if err != nil || blocked.Status != domain.RecoveryBlocked {
 		t.Fatalf("recovery did not become blocked: %+v err=%v", blocked, err)
 	}
+	if !strings.HasPrefix(blocked.Reason, "retry-exhausted") {
+		t.Fatalf("blocked reason = %q, want retry-exhausted prefix", blocked.Reason)
+	}
 	events, err := db.ResolveBlockedPaseoRetries(ctx)
 	if err != nil {
 		t.Fatalf("resolve blocked: %v", err)
@@ -355,5 +362,32 @@ func TestPaseoCompletedCleanupUnconfirmedSchedulesRecovery(t *testing.T) {
 	if _, _, _, err := db.CompletePaseoRecovery(ctx, confirmedCompletion(attempt, claim.ClaimToken,
 		claim.Session.SessionID, claim.Session.WorkspaceID), "corr-recovery"); err != nil {
 		t.Fatalf("complete cleanup: %v", err)
+	}
+}
+
+func TestPaseoRecoveryCompletionWithoutReceiptIsNotFound(t *testing.T) {
+	db := openRunTestDB(t)
+	ctx := context.Background()
+	run := queuePaseoRun(t, db, 1)
+	registerWorker(t, db, "local-1")
+	attempt := claimAndStart(t, db, run, "local-1")
+	if _, _, _, err := db.IntendPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration, "corr-intend"); err != nil {
+		t.Fatalf("intend: %v", err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration,
+		"ws_noreceipt", "eeeeeeee-1111-4111-8111-eeeeeeeeeeee", "corr-bind"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, _, _, err := db.ClosePaseoSession(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration,
+		string(domain.PaseoSucceeded), "", "corr-close"); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration,
+		domain.OutcomeCompleted, map[string]any{"cleanup": "ok"}, "", "corr-report"); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if _, _, _, err := db.CompletePaseoRecovery(ctx, confirmedCompletion(attempt, "fabricated",
+		"eeeeeeee-1111-4111-8111-eeeeeeeeeeee", "ws_noreceipt"), "corr-bad"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("completion without receipt err = %v, want ErrNotFound", err)
 	}
 }

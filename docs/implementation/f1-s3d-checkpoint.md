@@ -15,8 +15,11 @@
 - `paseo-task` retry gate: no replacement Attempt until the prior external
   generation is confirmed or absent; blocked recovery fails the Run closed.
 - `PaseoSessionRecoveryRecorded` on the existing run ledger.
+- Orphan transitions materialize a pending cleanup target immediately, so
+  the Office projection can show "cleanup pending" before any claim.
 - Recovery status in the Agents and Run-detail projections.
-- Deterministic D1-D7 suite plus real-browser recovery visibility.
+- Deterministic D1-D7 suite, pending/confirmed/blocked browser visibility,
+  and an opt-in single-session live lane.
 
 ## Local evidence commands
 
@@ -33,6 +36,16 @@ bash scripts/e2e-s3d.sh
 Local S2 Podman acceptance remains BLOCKED by the host's overlay-on-btrfs
 storage backend. It is not reported as PASS; CI is the authoritative S2
 environment for that gate.
+
+## Independent verification repairs
+
+The first independent verification found contract-fidelity defects (year-1
+zero timestamps in pending/claimed projections, missing `retryCount` in the
+recovery event, no explicit `retry-exhausted` reason, completion returning
+409 instead of 404 without a receipt, and no pending browser check). All were
+repaired on the new candidate; the browser lane now proves pending,
+confirmed and blocked recovery states. The verifier's functional findings
+(fencing, concurrency, exact identity, cleanup confirmation) were PASS.
 
 ## Limitations
 

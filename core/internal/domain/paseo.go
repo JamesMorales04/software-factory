@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -371,4 +372,55 @@ func ValidatePaseoIdentity(kind, id string) error {
 		}
 	}
 	return nil
+}
+
+// MarshalJSON omits unset optional timestamps. Go's encoding/json does not
+// omit a zero time.Time even with omitempty, which would fabricate a year-1
+// "last observed" value in the operator projection.
+func (r PaseoRecovery) MarshalJSON() ([]byte, error) {
+	type recoveryJSON struct {
+		AttemptID         string               `json:"attemptId"`
+		RunID             string               `json:"runId"`
+		LeaseGeneration   int64                `json:"leaseGeneration"`
+		Status            PaseoRecoveryStatus  `json:"status"`
+		ClaimOwner        string               `json:"claimOwner,omitempty"`
+		ClaimExpiresAt    *string              `json:"claimExpiresAt,omitempty"`
+		Attempts          int                  `json:"attempts"`
+		NextAttemptAt     *string              `json:"nextAttemptAt,omitempty"`
+		LastObservedAt    *string              `json:"lastObservedAt,omitempty"`
+		SessionID         string               `json:"sessionId,omitempty"`
+		WorkspaceID       string               `json:"workspaceId,omitempty"`
+		SessionObserved   PaseoObservation     `json:"sessionObserved,omitempty"`
+		WorkspaceObserved PaseoObservation     `json:"workspaceObserved,omitempty"`
+		LastOutcome       PaseoRecoveryOutcome `json:"lastOutcome,omitempty"`
+		Reason            string               `json:"reason,omitempty"`
+		CreatedAt         time.Time            `json:"createdAt"`
+		UpdatedAt         time.Time            `json:"updatedAt"`
+	}
+	optional := func(t time.Time) *string {
+		if t.IsZero() {
+			return nil
+		}
+		value := t.UTC().Format(time.RFC3339Nano)
+		return &value
+	}
+	return json.Marshal(recoveryJSON{
+		AttemptID:         r.AttemptID,
+		RunID:             r.RunID,
+		LeaseGeneration:   r.LeaseGeneration,
+		Status:            r.Status,
+		ClaimOwner:        r.ClaimOwner,
+		ClaimExpiresAt:    optional(r.ClaimExpiresAt),
+		Attempts:          r.Attempts,
+		NextAttemptAt:     optional(r.NextAttemptAt),
+		LastObservedAt:    optional(r.LastObservedAt),
+		SessionID:         r.SessionID,
+		WorkspaceID:       r.WorkspaceID,
+		SessionObserved:   r.SessionObserved,
+		WorkspaceObserved: r.WorkspaceObserved,
+		LastOutcome:       r.LastOutcome,
+		Reason:            r.Reason,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
+	})
 }

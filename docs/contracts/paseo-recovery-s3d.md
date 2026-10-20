@@ -125,7 +125,7 @@ Claim:
   retryable `unconfirmed` with `nextAttemptAt <= now`, or `claimed` with an
   expired claim;
 - one transaction sets `status=claimed`, `claimOwner`, a fresh random
-  `claimToken`, `claimExpiresAt = now + 60s` and `attempts = attempts + 1`;
+  `claimToken`, `claimExpiresAt = now + 5 minutes` and `attempts = attempts + 1`;
 - terminal `confirmed`/`absent`/`blocked` records are never claimed again;
 - concurrent Workers cannot receive the same live claim.
 

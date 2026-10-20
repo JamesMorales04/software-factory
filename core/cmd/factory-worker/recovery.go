@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -203,6 +204,10 @@ func reconcilePaseoResources(ctx context.Context, adapter paseo.Adapter, claim d
 	} else {
 		result.WorkspaceObserved = domain.PaseoObservedPresent
 		result.WorkspaceID = workspace.ID
+	}
+	if observed != nil && workspace != nil && observed.Cwd != "" && workspace.Cwd != "" &&
+		filepath.Clean(observed.Cwd) != filepath.Clean(workspace.Cwd) {
+		return blocked("session cwd does not match the owned workspace")
 	}
 
 	cleaned := false

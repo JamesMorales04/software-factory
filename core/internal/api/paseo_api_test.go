@@ -521,12 +521,21 @@ func TestPaseoRecoveryOverHTTP(t *testing.T) {
 	orphanPaseoBinding(t, h, run, attempt, "s3d-1")
 	registerPaseoWorker(t, h, "s3d-2")
 
+	// A materialized pending receipt must not fabricate a year-1 timestamp.
+	rec := serveRun(t, h, "GET", "/api/v1/runs/"+run.ID+"/sessions", "", testToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"pending"`) {
+		t.Fatalf("pending projection: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "0001-01-01") {
+		t.Fatalf("pending projection fabricated a timestamp: %s", rec.Body.String())
+	}
+
 	// Worker token may claim/complete; it may not read the operator projection.
 	if rec := serveRun(t, h, "GET", "/api/v1/sessions", "", testWorkerToken); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("worker token sessions: got %d, want 401", rec.Code)
 	}
 	claimBody := `{"workerId":"s3d-1"}`
-	rec := serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", claimBody, testWorkerToken)
+	rec = serveRun(t, h, "POST", "/api/v1/workers/recovery/claim", claimBody, testWorkerToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("claim: got %d (%s)", rec.Code, rec.Body.String())
 	}

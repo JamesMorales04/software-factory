@@ -371,7 +371,19 @@ stop_recovery_workers
 
 # Browser recovery visibility. Build Office in place (dist/ is ignored).
 echo
-echo "== Office: confirmed and blocked recovery visibility =="
+echo "== Pending recovery projection (no recovery Worker) =="
+set_mode hang-logs; set_daemon up
+start_exec_worker exec-pending
+RUN8="$(queue_run 600 1)"
+SID8="$(wait_active "$RUN8" 60)" || { echo "[FAIL] pending: binding never active"; exit 1; }
+kill_exec_worker
+[[ "$(wait_terminal "$RUN8" 40)" == "failed" ]] || { echo "[FAIL] pending: run"; exit 1; }
+[[ "$(wait_binding "$RUN8" orphaned 20)" == "orphaned" ]] || { echo "[FAIL] pending: orphan"; exit 1; }
+[[ "$(recovery_status "$RUN8")" == "pending" ]] || { echo "[FAIL] pending: no pending receipt"; exit 1; }
+echo "[PASS] pending: orphan has a durable pending cleanup target ($SID8)"
+
+echo
+echo "== Office: pending, confirmed and blocked recovery visibility =="
 CHROMIUM_EXE="${CHROMIUM_EXE:-$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome}"
 if [[ ! -x "$CHROMIUM_EXE" ]]; then
   blocked "Chromium not found at $CHROMIUM_EXE (set CHROMIUM_EXE); S3-D browser check NOT_TESTED"
@@ -383,11 +395,13 @@ BASE_URL="$BASE" FACTORY_API_TOKEN="$TOKEN" CHROMIUM_EXE="$CHROMIUM_EXE" \
   S3D_EVIDENCE_DIR="$TMP/s3d-evidence" \
   S3D_CONFIRMED_RUN="$RUN5" S3D_CONFIRMED_SESSION="$SID5" \
   S3D_BLOCKED_RUN="$RUN7" S3D_BLOCKED_SESSION="$SID7" \
+  S3D_PENDING_RUN="$RUN8" S3D_PENDING_SESSION="$SID8" \
   node "$ROOT/office/e2e-browser/s3d-recovery.mjs"
 
 echo
 echo "S3-D deterministic recovery acceptance: ALL PHASES DONE (stubbed Paseo; no paid sessions)"
 echo "confirmed run: $RUN5 session: $SID5"
 echo "blocked run:   $RUN7 session: $SID7"
+echo "pending run:   $RUN8 session: $SID8"
 echo "real daemon restart: BLOCKED (not attempted; simulator only)"
 echo "evidence: $TMP/s3d-evidence"

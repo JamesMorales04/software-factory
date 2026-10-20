@@ -157,3 +157,16 @@ func TestReconcilePaseoResourcesUnconfirmedOnArchiveFailure(t *testing.T) {
 		t.Fatal("workspace must not be archived after unconfirmed session cleanup")
 	}
 }
+
+func TestReconcilePaseoResourcesBlocksCwdMismatch(t *testing.T) {
+	claim := recoveryClaimForTest()
+	f := matchingFake(claim)
+	f.Session.Cwd = "/tmp/other-project"
+	result := reconcilePaseoResources(t.Context(), f, claim)
+	if result.Outcome != domain.RecoveryOutcomeBlocked {
+		t.Fatalf("outcome = %s, want blocked", result.Outcome)
+	}
+	if f.Called("stop") || f.Called("archive") || f.Called("workspace-archive") {
+		t.Fatal("cwd mismatch must not issue destructive calls")
+	}
+}

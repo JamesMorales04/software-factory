@@ -1,7 +1,8 @@
 // S3-D recovery visibility journey: real Core projection + real Chromium.
 // Env: BASE_URL, FACTORY_API_TOKEN, CHROMIUM_EXE, S3D_EVIDENCE_DIR,
 //      S3D_CONFIRMED_RUN, S3D_CONFIRMED_SESSION,
-//      S3D_BLOCKED_RUN, S3D_BLOCKED_SESSION.
+//      S3D_BLOCKED_RUN, S3D_BLOCKED_SESSION,
+//      S3D_PENDING_RUN, S3D_PENDING_SESSION.
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,8 @@ const CONFIRMED_RUN = process.env.S3D_CONFIRMED_RUN || "";
 const CONFIRMED_SESSION = process.env.S3D_CONFIRMED_SESSION || "";
 const BLOCKED_RUN = process.env.S3D_BLOCKED_RUN || "";
 const BLOCKED_SESSION = process.env.S3D_BLOCKED_SESSION || "";
+const PENDING_RUN = process.env.S3D_PENDING_RUN || "";
+const PENDING_SESSION = process.env.S3D_PENDING_SESSION || "";
 
 const checks = [];
 function check(name, pass, detail = "") {
@@ -41,6 +44,8 @@ try {
     ["S3D_CONFIRMED_SESSION", CONFIRMED_SESSION],
     ["S3D_BLOCKED_RUN", BLOCKED_RUN],
     ["S3D_BLOCKED_SESSION", BLOCKED_SESSION],
+    ["S3D_PENDING_RUN", PENDING_RUN],
+    ["S3D_PENDING_SESSION", PENDING_SESSION],
   ]) {
     if (!value) throw new Error(`${name} required`);
   }
@@ -76,6 +81,16 @@ try {
     "blocked recovery visible with reason",
     blockedText.includes("cleanup blocked") && blockedText.includes("identity"),
     blockedText,
+  );
+
+  const pendingCard = await cardFor(PENDING_SESSION);
+  const pendingText = await pendingCard.innerText();
+  check(
+    "pending recovery visible without a fabricated timestamp",
+    pendingText.includes("cleanup pending") &&
+      pendingText.includes("not observed yet") &&
+      !pendingText.includes("0001"),
+    pendingText,
   );
 
   await confirmedCard.locator("a").first().click();

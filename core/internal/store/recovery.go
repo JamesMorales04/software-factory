@@ -255,6 +255,15 @@ func (db *DB) CompletePaseoRecovery(ctx context.Context, input RecoveryCompletio
 	if binding.Status != domain.PaseoOrphaned && binding.Status != domain.PaseoSucceeded {
 		return domain.PaseoRecovery{}, false, domain.Event{}, domain.ErrStaleGeneration
 	}
+	// A completion is only meaningful for an existing recovery target. It
+	// must not materialize a new one.
+	if _, serr := scanRecovery(tx.QueryRowContext(ctx,
+		`SELECT `+recoveryColumns+` FROM paseo_recovery r WHERE r.attempt_id=?`, binding.AttemptID),
+		binding.AttemptID, binding.RunID, binding.LeaseGeneration); serr == sql.ErrNoRows {
+		return domain.PaseoRecovery{}, false, domain.Event{}, domain.ErrNotFound
+	} else if serr != nil {
+		return domain.PaseoRecovery{}, false, domain.Event{}, serr
+	}
 	recovery, err := ensureRecoveryTx(ctx, tx, binding, now)
 	if err != nil {
 		return domain.PaseoRecovery{}, false, domain.Event{}, err
@@ -307,6 +316,13 @@ func (db *DB) CompletePaseoRecovery(ctx context.Context, input RecoveryCompletio
 	}
 
 	status, next := recoveryTransition(recovery, input, now)
+	if status == domain.RecoveryBlocked && input.Outcome == domain.RecoveryOutcomeUnconfirmed {
+		if reason == "" {
+			reason = "retry-exhausted: bounded retry budget exhausted"
+		} else {
+			reason = domain.SanitizeReason("retry-exhausted: " + reason)
+		}
+	}
 	sessionID := firstNonEmpty(input.SessionID, recovery.SessionID, binding.SessionID)
 	workspaceID := firstNonEmpty(input.WorkspaceID, recovery.WorkspaceID, binding.WorkspaceID)
 	if _, err := tx.ExecContext(ctx,
@@ -320,7 +336,7 @@ func (db *DB) CompletePaseoRecovery(ctx context.Context, input RecoveryCompletio
 	); err != nil {
 		return domain.PaseoRecovery{}, false, domain.Event{}, err
 	}
-	event, err := recordRecoveryEvent(ctx, tx, binding, input, reason, correlationID, now)
+	event, err := recordRecoveryEvent(ctx, tx, binding, input, recovery.Attempts, reason, correlationID, now)
 	if err != nil {
 		return domain.PaseoRecovery{}, false, domain.Event{}, err
 	}
@@ -389,7 +405,11 @@ func recoveryBackoff(attempts int) time.Duration {
 	return d
 }
 
-func recordRecoveryEvent(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, input RecoveryCompletion, reason, correlationID string, now time.Time) (domain.Event, error) {
+func recordRecoveryEvent(ctx context.Context, tx *sql.Tx, binding domain.PaseoBinding, input RecoveryCompletion, attempts int, reason, correlationID string, now time.Time) (domain.Event, error) {
+	retryCount := attempts - 1
+	if retryCount < 0 {
+		retryCount = 0
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"attemptId":         binding.AttemptID,
 		"seq":               binding.Seq,
@@ -400,6 +420,7 @@ func recordRecoveryEvent(ctx context.Context, tx *sql.Tx, binding domain.PaseoBi
 		"workspaceId":       firstNonEmpty(input.WorkspaceID, binding.WorkspaceID),
 		"sessionObserved":   string(input.SessionObserved),
 		"workspaceObserved": string(input.WorkspaceObserved),
+		"retryCount":        retryCount,
 		"reason":            reason,
 	})
 	event, err := appendWorkerRunEvent(ctx, tx, domain.EventPaseoSessionRecoveryRecorded, binding.RunID, payload, now)
