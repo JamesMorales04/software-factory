@@ -13,26 +13,6 @@ import (
 // ActorLocalOperator attributes S1 writes made through the local API token.
 const ActorLocalOperator = "local-operator"
 
-// ListProjects returns the seeded S1 projects ordered by id.
-func (db *DB) ListProjects() ([]domain.Project, error) {
-	rows, err := db.sql.Query(`SELECT id, name, created_at FROM projects ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []domain.Project
-	for rows.Next() {
-		var p domain.Project
-		var ts string
-		if err := rows.Scan(&p.ID, &p.Name, &ts); err != nil {
-			return nil, err
-		}
-		p.CreatedAt, _ = time.Parse(time.RFC3339Nano, ts)
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
 // CreateAction persists an Action and its ActionCreated event atomically.
 // When idempotencyKey matches an existing row, the original Action is
 // returned with replayed=true and no new event is recorded.

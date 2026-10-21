@@ -93,9 +93,13 @@ type Run struct {
 	PaseoMode     string `json:"paseoMode,omitempty"`
 	// S4-A: frozen ActionSpec bound to this Run. Empty for legacy S2/S3
 	// runs without an engineering specification.
-	SpecID    string    `json:"specId,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	SpecID string `json:"specId,omitempty"`
+	// S4-C: immutable capability requirements and Project binding snapshot
+	// derived from the frozen spec by the Core, never by the Worker.
+	Capabilities    []Capability `json:"capabilities"`
+	SpecBindingHash string       `json:"specBindingHash,omitempty"`
+	CreatedAt       time.Time    `json:"createdAt"`
+	UpdatedAt       time.Time    `json:"updatedAt"`
 }
 
 // Attempt is one lease grant for a Run. History is append-only.
@@ -120,6 +124,8 @@ type Worker struct {
 	Status        WorkerStatus `json:"status"`
 	LastHeartbeat time.Time    `json:"lastHeartbeat,omitempty"`
 	LastRunID     string       `json:"lastRunId,omitempty"`
+	Capabilities  []Capability `json:"capabilities"`
+	ExecModes     []string     `json:"execModes"`
 	CreatedAt     time.Time    `json:"createdAt"`
 	UpdatedAt     time.Time    `json:"updatedAt"`
 }
@@ -349,8 +355,8 @@ func SanitizeResult(v map[string]any) (map[string]any, error) {
 	if v == nil {
 		return map[string]any{}, nil
 	}
-	if len(v) > 16 {
-		return nil, errors.New("result carries at most 16 keys")
+	if len(v) > 28 {
+		return nil, errors.New("result carries at most 28 keys")
 	}
 	out := make(map[string]any, len(v))
 	for k, val := range v {

@@ -1,0 +1,112 @@
+# F1-S4-C acceptance gates. Real Core, Worker, Core-spawned verifier/reviewer,
+# two external-style Git Projects, real Chromium and a deterministic Paseo CLI
+# simulator. No paid model calls. Fixtures are materialized as disposable local
+# repositories from committed mirrors; the authoritative copies remain the two
+# separate GitHub fixture repositories.
+name: s4c
+"on":
+  push:
+    branches: [main, "f1-*"]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - run: gofmt -l .
+        name: gofmt (must print nothing)
+      - run: go vet ./...
+      - run: go tool golangci-lint run ./...
+      - run: go test -race ./...
+
+  office:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: office
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: office/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+
+  s4c-e2e:
+    runs-on: ubuntu-24.04
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            office/package-lock.json
+            office/e2e-browser/package-lock.json
+      - name: Install Office dependencies
+        working-directory: office
+        run: npm ci --no-audit --no-fund
+      - name: Install browser test dependencies
+        working-directory: office/e2e-browser
+        run: npm ci --no-audit --no-fund
+      - name: Install Chrome for Testing
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+      - name: Multi-project capabilities, browser and Office journey
+        env:
+          CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: bash scripts/e2e-s4c.sh
+
+  regressions:
+    runs-on: ubuntu-24.04
+    env:
+      FACTORY_S4A_STRICT: "1"
+      FACTORY_S4B_STRICT: "1"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            office/package-lock.json
+            office/e2e-browser/package-lock.json
+      - name: Install dependencies
+        run: |
+          (cd office && npm ci --no-audit --no-fund)
+          (cd office/e2e-browser && npm ci --no-audit --no-fund)
+      - name: Install Chrome for Testing
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+      - name: S4-A regression
+        env:
+          CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: bash scripts/e2e-s4a.sh
+      - name: S4-B regression
+        env:
+          CHROMIUM_EXE: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: bash scripts/e2e-s4b.sh

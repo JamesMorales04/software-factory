@@ -121,7 +121,7 @@ func TestMissingParticipantBinaryFailsTheClaimedTask(t *testing.T) {
 	}
 	tasks, _ = db.CampaignTasks(campaign.ID)
 	impl = tasks[0]
-	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", "c"); err != nil {
+	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "c"); err != nil {
 		t.Fatal(err)
 	}
 	run, attempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "c")
@@ -201,5 +201,46 @@ func TestMissingParticipantBinaryFailsTheClaimedTask(t *testing.T) {
 	final, _ := db.GetCampaign(campaign.ID)
 	if final.Status != domain.CampaignBlocked {
 		t.Fatalf("campaign status = %s, want blocked", final.Status)
+	}
+}
+
+func TestRecoveryPromptCarriesObservedFailureAndBudget(t *testing.T) {
+	engine := New(nil, nil, Config{})
+	spec := domain.ActionSpec{Goal: "Implement filtering"}
+	task := domain.CampaignTask{
+		Cycle: 0, ExecutionCount: 1,
+		Error: "RECOVERABLE_IMPLEMENTATION_FAILURE: no-source-change: agent left no git diff",
+	}
+	text := engine.implementerTaskText(domain.Campaign{}, task, spec, 1, 4)
+	for _, want := range []string{"Recovery attempt 2", "at most 4", "no-source-change", "frozen scope"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovery prompt missing %q: %s", want, text)
+		}
+	}
+	if text == spec.Goal {
+		t.Fatal("recovery prompt repeated the original goal unchanged")
+	}
+}
+
+func TestBrowserRepairPrerequisiteRespectsManagedServer(t *testing.T) {
+	managed := browserRepairPrerequisite(domain.ActionSpec{BrowserTestServer: &domain.BrowserTestServer{Command: []string{"npm", "start"}}})
+	if !strings.Contains(managed, "already managed and running") || strings.Contains(managed, "start the authorized app") {
+		t.Fatalf("managed repair prerequisite is contradictory: %s", managed)
+	}
+	unmanaged := browserRepairPrerequisite(domain.ActionSpec{})
+	if !strings.Contains(unmanaged, "start the authorized app") {
+		t.Fatalf("unmanaged repair prerequisite lost startup guidance: %s", unmanaged)
+	}
+}
+
+func TestCleanupUnconfirmedIsDetected(t *testing.T) {
+	if !cleanupUnconfirmed(domain.Run{Result: map[string]any{"cleanup": "unconfirmed: stop failed"}}) {
+		t.Fatal("unconfirmed cleanup not detected")
+	}
+	if !cleanupUnconfirmed(domain.Run{Result: map[string]any{"browserCleanup": "unconfirmed: close failed"}}) {
+		t.Fatal("unconfirmed browser cleanup not detected")
+	}
+	if cleanupUnconfirmed(domain.Run{Result: map[string]any{"cleanup": "ok"}}) {
+		t.Fatal("successful cleanup treated as unconfirmed")
 	}
 }

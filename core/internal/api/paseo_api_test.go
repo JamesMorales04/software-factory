@@ -34,7 +34,7 @@ func queuePaseoRun(t *testing.T, h http.Handler, body string) domain.Run {
 func startPaseoAttempt(t *testing.T, h http.Handler, run domain.Run, worker string) domain.Attempt {
 	t.Helper()
 	rec := serveRun(t, h, "POST", "/api/v1/workers/register",
-		`{"workerId":"`+worker+`","version":"test-s3a"}`, testWorkerToken)
+		`{"workerId":"`+worker+`","version":"test-s3a","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 		t.Fatalf("register: got %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -423,7 +423,7 @@ func TestPaseoSessionFencingOverHTTP(t *testing.T) {
 	db.SetLeaseTTL(0) // every lease is immediately expired
 
 	run := queuePaseoRun(t, h, "")
-	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"s3a-fence"}`, testWorkerToken)
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"s3a-fence","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: got %d", rec.Code)
 	}
@@ -491,7 +491,7 @@ func TestPaseoSessionAuthIsScoped(t *testing.T) {
 func registerPaseoWorker(t *testing.T, h http.Handler, worker string) {
 	t.Helper()
 	rec := serveRun(t, h, "POST", "/api/v1/workers/register",
-		`{"workerId":"`+worker+`","version":"test-s3d"}`, testWorkerToken)
+		`{"workerId":"`+worker+`","version":"test-s3d","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 		t.Fatalf("register %s: got %d (%s)", worker, rec.Code, rec.Body.String())
 	}

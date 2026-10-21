@@ -1,6 +1,6 @@
 # Software Factory — Master Architecture Specification
 
-> **Status:** F1-S1 through F1-S3-D and F1-S4-A merged; F1-S4-B native campaign orchestration implemented and under independent verification (2026-10-20); architecture baseline revision 0.4. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
+> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities and Factory-managed browser capability are implemented and deterministically verified (2026-10-21 UTC). F1-S4-C-07 achieved the bounded real-Paseo Vlog live path on tested head `9567bc5` / runtime `14133cb7`: one paid session, initial-turn model-mediated browser interaction, independent verifier PASS, reviewer APPROVE, gate ACCEPTED, clean session/workspace/server cleanup. Disposition is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`; PR #12 is unmerged and Product Owner UAT is not claimed. No other component is certified beyond its recorded candidate-bound evidence. Architecture baseline revision 0.5. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
 
 ## 1. Product mission and priorities
 
@@ -38,6 +38,8 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Models | Adaptive routing; low-risk promotion only after reproducible evaluation | Agreed |
 | Resources | Development/Maintenance/Evaluation reserves and reclaimable loans | Agreed |
 | Quality | Mandatory global Quality Baseline with additive project profiles | Agreed |
+| Projects | Registered local Projects bind canonical repository identity, base policy, profile, scope and capabilities | Agreed; ADR-0012 |
+| Capabilities | Core-governed per-Project/Project-spec capability grants matched to Worker runtime | Agreed; ADR-0012 |
 | Verification | Independent real-user verifier separate from the author | Agreed |
 | Compatibility | No speculative backward compatibility for experimental internal contracts | Agreed; ADR-0006 |
 | Engineering | Clean architecture principles, pragmatic patterns, DRY and low complexity | Agreed; ADR-0007 |
@@ -121,6 +123,17 @@ A per-Run isolated checkout bound to a commit is the recommended unit of coding 
 
 Core–Worker authentication, leases, fencing, heartbeat and reconciliation must prevent stale or repeated external effects. Remote Workers later use authenticated API boundaries rather than direct SQLite access.
 
+**Multi-project scoping (F1-S4-C):** a registered Project binds one canonical
+local Git repository identity, authorized base-ref tips, workspace scope,
+Quality Profile and a closed capability grant. ActionSpecs snapshot the exact
+Project configuration revision and binding hash; Runs carry the capability
+snapshot; Workers advertise observed capabilities; dispatch rejects paused,
+mismatched or unsupported work. Browser automation is a Factory-managed
+capability tied to the Run, not a prompt claim. This is **control-plane
+authorization, not OS isolation**: TRUSTED_LOCAL retains broad host access and
+cross-project confidentiality is never claimed. See [ADR-0012](decisions/ADR-0012-project-registry-and-capabilities.md)
+and the [S4-C contract](../contracts/multi-project-s4c.md).
+
 **SEC-01 disposition is mode-specific (see [ADR-0009](decisions/ADR-0009-trusted-local-execution.md)):** a host Paseo agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Historical FAIL/NOT TESTED findings remain valid observations and are never rewritten to PASS. SEC-01-STRICT is **not required for TRUSTED_LOCAL** (owner risk acceptance); SEC-01-ISOLATED is available-only-where-verified. Product owner paused further spike experiments and authorized S1, credential-free S2 prototypes, and S3-TRUSTED_LOCAL under its entry conditions; S3-ISOLATED, credential-bearing untrusted execution under an isolation claim, and privileged autonomous effects remain blocked. Never fall back to a privileged host process. Never call TRUSTED_LOCAL isolated or certified. See [security](../security/isolation.md), [trusted-local policy](../security/trusted-local.md), [spike plan](../security/paseo-sandbox-spike.md) and [observed results](../security/SEC-01-results-2026-10-18.md).
 
 ## 9. Global quality, design quality and delivery
@@ -159,7 +172,7 @@ Keep three systems distinct: (1) transactionally durable domain events that are 
 
 **F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, record SEC-01 as **partially verified / security BLOCKED for ISOLATED** with mode-specific disposition per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md) (SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED available-only-where-verified), and freeze explicit F1 acceptance criteria. S1 may begin with its minimum applicable contracts while remaining F0 contracts are completed incrementally; this is not a waiver of S3-ISOLATED. Repo documentation and `AGENTS.md` are versioned now.
 
-**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + frozen ActionSpec/CandidateRevision + independent user-journey verifier + read-only Reviewer + deterministic Quality Gate (S4-A; browser checks included) and a Core-owned Campaign/Task orchestrator that natively advances the workflow, bounds repair and recovers across restart (S4-B), with delivery deferred to S5; S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
+**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + frozen ActionSpec/CandidateRevision + independent user-journey verifier + read-only Reviewer + deterministic Quality Gate (S4-A; browser checks included) and a Core-owned Campaign/Task orchestrator that natively advances the workflow, bounds repair and recovers across restart (S4-B); S4-C adds a Project Registry, Project-bound specs, scoped capability grants, Factory-managed Playwright and the complete Office provisioning journey; S4-C-03 adds deterministic failure classification, bounded pre-candidate Implementer recovery with immutable failed identities, explicit attempt budgets, protected-oracle discipline one bounded same-session capability continuation when a productive Implementer omits a required browser interaction, and a declarative Worker-managed browser test server so agent-managed background startup is not on the critical path, with real-Paseo certification governed by the [live certification policy](../quality/live-certification.md); S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
 
 F1 excludes production remote workers, mature autonomous global skills, full adaptive router, animated Office and automatic live Core upgrade.
 
@@ -193,7 +206,8 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 - [Engineering/code quality](../engineering/code-quality.md)
 - [Lint and static analysis](../engineering/linting.md)
 - [Global quality baseline](../quality/baseline.md)
-- [F1-S4-A quality pipeline contract](../contracts/quality-pipeline-s4a.md), [F1-S4-B campaign contract](../contracts/campaign-orchestration-s4b.md), [ADR-0010](decisions/ADR-0010-frozen-candidate-quality-pipeline.md) and [ADR-0011](decisions/ADR-0011-native-campaign-orchestration.md)
+- [F1-S4-A quality pipeline contract](../contracts/quality-pipeline-s4a.md), [F1-S4-B campaign contract](../contracts/campaign-orchestration-s4b.md), [F1-S4-C multi-project contract](../contracts/multi-project-s4c.md), [ADR-0010](decisions/ADR-0010-frozen-candidate-quality-pipeline.md), [ADR-0011](decisions/ADR-0011-native-campaign-orchestration.md) and [ADR-0012](decisions/ADR-0012-project-registry-and-capabilities.md)
+- [Live certification policy](../quality/live-certification.md), [campaign recovery contract](../contracts/campaign-recovery-s4c03.md), [ADR-0013](decisions/ADR-0013-bounded-autonomous-recovery.md), [ADR-0014](decisions/ADR-0014-same-session-capability-completion.md), [ADR-0015](decisions/ADR-0015-worker-managed-browser-test-server.md), [F1-S4-C acceptance](../implementation/f1-s4c-acceptance.md), [C-04 diagnosis](../implementation/f1-s4c-04-diagnosis.md), [C-06 server lifecycle](../implementation/f1-s4c-06-server-lifecycle.md) and [C-07 live certification](../implementation/f1-s4c-07-live-certification.md)
 - [Isolation](../security/isolation.md)
 - [F0/F1 implementation plan](../implementation/f0-f1-plan.md)
 - Historical AEH for selective conceptual reuse: https://github.com/JamesMorales04/agentic-engineering-harness

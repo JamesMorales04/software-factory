@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the S1 Core version string, overridden at release time.
-var Version = "0.1.0-s4b"
+var Version = "0.1.0-s4c"
 
 // Server wires persistence, auth and telemetry into one HTTP boundary.
 // Operator routes authenticate with the admin token; Worker protocol routes
@@ -99,6 +99,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.handleRegisterProject)
+	mux.HandleFunc("GET /api/v1/projects/{id}", s.handleGetProject)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.handleUpdateProject)
+	mux.HandleFunc("GET /api/v1/projects/{id}/refs", s.handleProjectRefs)
+	mux.HandleFunc("GET /api/v1/projects/{id}/events", s.handleProjectEvents)
+	mux.HandleFunc("GET /api/v1/projects/{id}/config", s.handleProjectConfigRevision)
 	mux.HandleFunc("POST /api/v1/actions", s.handleCreateAction)
 	mux.HandleFunc("GET /api/v1/actions", s.handleListActions)
 	mux.HandleFunc("GET /api/v1/actions/{id}", s.handleGetAction)

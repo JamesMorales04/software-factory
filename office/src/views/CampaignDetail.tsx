@@ -154,8 +154,9 @@ export function CampaignDetail() {
         <dt>Execution budget</dt>
         <dd>
           attempts {projection.budget.attemptsUsed}/
-          {projection.budget.maxAttempts} · wall {projection.budget.elapsedSecs}
-          s/
+          {projection.budget.maxAttempts} · recoveries{" "}
+          {projection.budget.recoveryAttempts} · wall{" "}
+          {projection.budget.elapsedSecs}s/
           {projection.budget.maxWallClockSecs}s · participants ≤{" "}
           {projection.budget.activeParticipantMax} · provider budget{" "}
           {projection.budget.providerBudget}
@@ -173,6 +174,50 @@ export function CampaignDetail() {
           </button>
         )}
       </div>
+
+      <section className="candidate-panel" data-testid="campaign-recoveries">
+        <h3>Implementer recovery history ({projection.recoveries.length})</h3>
+        {projection.recoveries.length === 0 ? (
+          <p className="muted">No pre-candidate recovery was authorized.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Class</th>
+                <th>Reason</th>
+                <th>Previous Run</th>
+                <th>New Run</th>
+              </tr>
+            </thead>
+            <tbody>
+              {projection.recoveries.map((recovery) => (
+                <tr key={recovery.id}>
+                  <td>{recovery.attemptIndex}</td>
+                  <td>
+                    <code>{recovery.failureClass}</code>
+                  </td>
+                  <td>{recovery.reason}</td>
+                  <td>
+                    <Link to={`/runs/${recovery.previousRunId}`}>
+                      <code>{recovery.previousRunId.slice(0, 8)}</code>
+                    </Link>
+                  </td>
+                  <td>
+                    {recovery.newRunId ? (
+                      <Link to={`/runs/${recovery.newRunId}`}>
+                        <code>{recovery.newRunId.slice(0, 8)}</code>
+                      </Link>
+                    ) : (
+                      <span className="muted">pending</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       <section className="candidate-panel">
         <h3>Task graph ({projection.tasks.length})</h3>

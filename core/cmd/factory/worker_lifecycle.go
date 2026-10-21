@@ -97,7 +97,10 @@ func workerEnvironment(workerToken string) []string {
 // directory) and TMPDIR (disposable workspace allocation). Everything else
 // present in the operator's shell — provider credentials, GitHub tokens,
 // the operator API token — is dropped and never propagated.
-var workerAllowedEnv = []string{"PATH", "HOME", "XDG_RUNTIME_DIR", "TMPDIR"}
+var workerAllowedEnv = []string{
+	"PATH", "HOME", "XDG_RUNTIME_DIR", "TMPDIR",
+	"CHROMIUM_EXE", "FACTORY_PLAYWRIGHT_CORE", "FACTORY_BROWSER_CLI",
+}
 
 func workerEnvironmentFrom(parent []string, workerToken string) []string {
 	keep := make(map[string]string, len(workerAllowedEnv))

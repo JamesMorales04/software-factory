@@ -687,6 +687,17 @@ func TestMigrateS4BBlocksDuplicateActiveCampaignAndCancelsRun(t *testing.T) {
 		`UPDATE campaigns SET action_id=? WHERE id=?`, campaign1.ActionID, campaign2.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Force a deterministic creation order: the migrator keeps the oldest
+	// active campaign and blocks later duplicates. SQLite timestamps can
+	// share a millisecond in fast test runs.
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET created_at='2026-01-01T00:00:00Z' WHERE id=?`, campaign1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET created_at='2026-01-01T00:00:01Z' WHERE id=?`, campaign2.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -802,7 +813,7 @@ func TestCampaignUnresolvedPaseoRecoveryIsDetected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", "c"); err != nil {
+	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "c"); err != nil {
 		t.Fatal(err)
 	}
 	run, attempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "c")

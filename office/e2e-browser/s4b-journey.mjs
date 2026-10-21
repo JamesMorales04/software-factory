@@ -109,19 +109,19 @@ try {
   await unlock();
   await shot("campaigns-empty");
 
-  const selects = page.locator("select");
-  await selects.nth(0).waitFor({ timeout: 20000 });
-  await selects.nth(0).selectOption(ACTION_ID);
+  const actionSelect = page.getByTestId("campaign-action");
+  await actionSelect.waitFor({ timeout: 20000 });
+  await actionSelect.selectOption(ACTION_ID);
   await page.waitForFunction(
     (specId) =>
-      Array.from(document.querySelectorAll("select")[1]?.options ?? []).some(
-        (option) => option.value === specId,
-      ),
+      Array.from(
+        document.querySelectorAll('[data-testid="campaign-spec"] option'),
+      ).some((option) => option.value === specId),
     SPEC_ID,
     { timeout: 20000 },
   );
-  await selects.nth(1).selectOption(SPEC_ID);
-  await page.locator('input[type="number"]').fill("0");
+  await page.getByTestId("campaign-spec").selectOption(SPEC_ID);
+  await page.getByTestId("campaign-repairs").fill("0");
   await page.getByRole("button", { name: "Create & start campaign" }).click();
 
   await page.waitForURL(/#\/campaigns\/[0-9a-f]{32}/, { timeout: 30000 });

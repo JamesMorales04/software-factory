@@ -16,7 +16,8 @@ import (
 const runColumns = `id, project_id, action_id, workload_kind, workload_input,
 	status, attempt_count, max_attempts, timeout_secs, lease_owner,
 	lease_generation, lease_expires_at, result, error, execution_mode,
-	provider, model, paseo_mode, spec_id, created_at, updated_at`
+	provider, model, paseo_mode, spec_id, capabilities, spec_binding_hash,
+	created_at, updated_at`
 
 // runColumnsR is the alias-qualified form used by dispatch eligibility
 // queries with correlated subqueries.
@@ -24,26 +25,27 @@ const runColumnsR = `r.id, r.project_id, r.action_id, r.workload_kind,
 	r.workload_input, r.status, r.attempt_count, r.max_attempts,
 	r.timeout_secs, r.lease_owner, r.lease_generation, r.lease_expires_at,
 	r.result, r.error, r.execution_mode, r.provider, r.model, r.paseo_mode,
-	r.spec_id, r.created_at, r.updated_at`
+	r.spec_id, r.capabilities, r.spec_binding_hash, r.created_at, r.updated_at`
 
 const attemptColumns = `id, run_id, seq, worker_id, lease_generation,
 	status, heartbeats, result, error, created_at, updated_at`
 
 const workerColumns = `id, version, status, last_heartbeat, last_run_id,
-	created_at, updated_at`
+	capabilities, exec_modes, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(dest ...any) error
 },
 ) (domain.Run, error) {
 	var r domain.Run
-	var status, workloadInput, result, leaseExpires, created, updated string
+	var status, workloadInput, result, capabilities, leaseExpires, created, updated string
 	var actionID sql.NullString
 	err := row.Scan(
 		&r.ID, &r.ProjectID, &actionID, &r.WorkloadKind, &workloadInput,
 		&status, &r.AttemptCount, &r.MaxAttempts, &r.TimeoutSecs, &r.LeaseOwner,
 		&r.LeaseGeneration, &leaseExpires, &result, &r.Error, &r.ExecutionMode,
-		&r.Provider, &r.Model, &r.PaseoMode, &r.SpecID, &created, &updated,
+		&r.Provider, &r.Model, &r.PaseoMode, &r.SpecID, &capabilities,
+		&r.SpecBindingHash, &created, &updated,
 	)
 	if err != nil {
 		return domain.Run{}, err
@@ -52,6 +54,14 @@ func scanRun(row interface {
 	r.Status = domain.RunStatus(status)
 	r.WorkloadInput = mustDecode([]byte(workloadInput))
 	r.Result = mustDecode([]byte(result))
+	var capabilityValues []string
+	if err := json.Unmarshal([]byte(capabilities), &capabilityValues); err != nil {
+		return domain.Run{}, err
+	}
+	r.Capabilities = make([]domain.Capability, 0, len(capabilityValues))
+	for _, value := range capabilityValues {
+		r.Capabilities = append(r.Capabilities, domain.Capability(value))
+	}
 	if leaseExpires != "" {
 		r.LeaseExpiresAt, _ = time.Parse(time.RFC3339Nano, leaseExpires)
 	}
@@ -85,14 +95,21 @@ func scanWorker(row interface {
 },
 ) (domain.Worker, error) {
 	var w domain.Worker
-	var status, lastHB, created, updated string
+	var status, lastHB, capabilities, execModes, created, updated string
 	err := row.Scan(
-		&w.ID, &w.Version, &status, &lastHB, &w.LastRunID, &created, &updated,
+		&w.ID, &w.Version, &status, &lastHB, &w.LastRunID,
+		&capabilities, &execModes, &created, &updated,
 	)
 	if err != nil {
 		return domain.Worker{}, err
 	}
 	w.Status = domain.WorkerStatus(status)
+	if err := json.Unmarshal([]byte(capabilities), &w.Capabilities); err != nil {
+		return domain.Worker{}, err
+	}
+	if err := json.Unmarshal([]byte(execModes), &w.ExecModes); err != nil {
+		return domain.Worker{}, err
+	}
 	if lastHB != "" {
 		w.LastHeartbeat, _ = time.Parse(time.RFC3339Nano, lastHB)
 	}
@@ -154,48 +171,70 @@ func createRunTx(ctx context.Context, tx *sql.Tx, params domain.NewRunParams, co
 			return domain.Run{}, domain.Event{}, err
 		}
 	}
+	var specCapabilities []domain.Capability
+	var specBindingHash string
 	if params.SpecID != "" {
-		var specProject, specAction string
-		if err := tx.QueryRowContext(ctx,
-			`SELECT project_id, action_id FROM action_specs WHERE id=?`, params.SpecID).Scan(&specProject, &specAction); err != nil {
-			if err == sql.ErrNoRows {
-				return domain.Run{}, domain.Event{}, fmt.Errorf("%w: unknown specId %q", domain.ErrInvalidInput, params.SpecID)
-			}
+		spec, err := scanSpec(tx.QueryRowContext(ctx,
+			`SELECT `+specColumns+` FROM action_specs WHERE id=?`, params.SpecID))
+		if err == sql.ErrNoRows {
+			return domain.Run{}, domain.Event{}, fmt.Errorf("%w: unknown specId %q", domain.ErrInvalidInput, params.SpecID)
+		}
+		if err != nil {
 			return domain.Run{}, domain.Event{}, err
 		}
-		if specProject != params.ProjectID || specAction != params.ActionID {
+		if spec.ProjectID != params.ProjectID || spec.ActionID != params.ActionID {
 			return domain.Run{}, domain.Event{}, fmt.Errorf("%w: spec does not authorize this project/action",
 				domain.ErrUnauthorized)
 		}
+		project, err := scanProject(tx.QueryRowContext(ctx,
+			`SELECT `+projectColumns+` FROM projects WHERE id=?`, spec.ProjectID))
+		if err != nil {
+			return domain.Run{}, domain.Event{}, err
+		}
+		if !project.Active() {
+			return domain.Run{}, domain.Event{}, fmt.Errorf("%w: project %q is %s", domain.ErrConflict, project.ID, project.Status)
+		}
+		if err := spec.ValidateProjectBinding(project); err != nil {
+			return domain.Run{}, domain.Event{}, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
+		}
+		specCapabilities = spec.Capabilities
+		specBindingHash = spec.BindingHash
 	}
 
 	run := domain.Run{
-		ID:            newID(),
-		ProjectID:     params.ProjectID,
-		ActionID:      params.ActionID,
-		WorkloadKind:  params.WorkloadKind,
-		WorkloadInput: params.WorkloadInput,
-		Status:        domain.RunQueued,
-		MaxAttempts:   params.MaxAttempts,
-		TimeoutSecs:   params.TimeoutSecs,
-		ExecutionMode: params.ExecutionMode,
-		Provider:      params.Provider,
-		Model:         params.Model,
-		PaseoMode:     params.PaseoMode,
-		SpecID:        params.SpecID,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              newID(),
+		ProjectID:       params.ProjectID,
+		ActionID:        params.ActionID,
+		WorkloadKind:    params.WorkloadKind,
+		WorkloadInput:   params.WorkloadInput,
+		Status:          domain.RunQueued,
+		MaxAttempts:     params.MaxAttempts,
+		TimeoutSecs:     params.TimeoutSecs,
+		ExecutionMode:   params.ExecutionMode,
+		Provider:        params.Provider,
+		Model:           params.Model,
+		PaseoMode:       params.PaseoMode,
+		SpecID:          params.SpecID,
+		Capabilities:    specCapabilities,
+		SpecBindingHash: specBindingHash,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	capabilities, merr := json.Marshal(run.Capabilities)
+	if merr != nil {
+		return domain.Run{}, domain.Event{}, merr
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO runs(id, project_id, action_id, workload_kind, workload_input,
 		 status, attempt_count, max_attempts, timeout_secs, lease_owner,
 		 lease_generation, lease_expires_at, result, error, execution_mode,
-		 provider, model, paseo_mode, spec_id, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 provider, model, paseo_mode, spec_id, capabilities, spec_binding_hash,
+		 created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.ProjectID, run.ActionID, run.WorkloadKind, encodeMap(run.WorkloadInput),
 		string(run.Status), 0, run.MaxAttempts, run.TimeoutSecs, "", 0, "",
 		"{}", "", run.ExecutionMode, run.Provider, run.Model, run.PaseoMode,
-		run.SpecID, stamp(now), stamp(now),
+		run.SpecID, string(capabilities), run.SpecBindingHash, stamp(now), stamp(now),
 	); err != nil {
 		return domain.Run{}, domain.Event{}, fmt.Errorf("insert run: %w", err)
 	}
@@ -210,6 +249,7 @@ func createRunTx(ctx context.Context, tx *sql.Tx, params domain.NewRunParams, co
 		"model":         run.Model,
 		"paseoMode":     run.PaseoMode,
 		"specId":        run.SpecID,
+		"capabilities":  run.Capabilities,
 	})
 	event := domain.Event{
 		EventID:       newID(),
@@ -311,11 +351,20 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var registered bool
-	if err := tx.QueryRowContext(ctx, `SELECT TRUE FROM workers WHERE id=?`, workerID).Scan(&registered); err != nil {
-		if err == sql.ErrNoRows {
-			return domain.Run{}, domain.Attempt{}, false, domain.Event{}, domain.ErrNotFound
-		}
+	worker, err := scanWorker(tx.QueryRowContext(ctx,
+		`SELECT `+workerColumns+` FROM workers WHERE id=?`, workerID))
+	if err == sql.ErrNoRows {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+	}
+	workerCaps, err := json.Marshal(worker.Capabilities)
+	if err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+	}
+	workerModes, err := json.Marshal(worker.ExecModes)
+	if err != nil {
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 
@@ -327,7 +376,14 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 	err = func() error {
 		r, qerr := scanRun(tx.QueryRowContext(ctx,
 			`SELECT `+runColumnsR+` FROM runs r
+			 JOIN projects p ON p.id=r.project_id
 			 WHERE r.status=?
+			   AND p.status=?
+			   AND EXISTS (SELECT 1 FROM json_each(?) m WHERE m.value=r.execution_mode)
+			   AND NOT EXISTS (
+			     SELECT 1 FROM json_each(r.capabilities) req
+			     WHERE req.value NOT IN (SELECT value FROM json_each(?))
+			   )
 			   AND (r.workload_kind<>?
 			        OR r.attempt_count=0
 			        OR NOT EXISTS (
@@ -340,8 +396,10 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 			              WHERE rec.attempt_id=b.attempt_id AND rec.status IN (?,?)
 			            )
 			        ))
-			 ORDER BY r.created_at ASC, r.id ASC LIMIT 1`,
-			string(domain.RunQueued), domain.PaseoTaskKind,
+			 ORDER BY COALESCE(NULLIF(p.last_dispatched_at,''),'') ASC,
+			          r.created_at ASC, r.id ASC LIMIT 1`,
+			string(domain.RunQueued), string(domain.ProjectActive),
+			string(workerModes), string(workerCaps), domain.PaseoTaskKind,
 			string(domain.PaseoOrphaned), string(domain.PaseoIntended), string(domain.PaseoActive),
 			string(domain.RecoveryConfirmed), string(domain.RecoveryAbsent)))
 		if qerr != nil {
@@ -426,6 +484,11 @@ func (db *DB) ClaimNextRun(ctx context.Context, workerID, correlationID string) 
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 	if err := touchWorkerTx(ctx, tx, workerID, run.ID, now); err != nil {
+		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE projects SET last_dispatched_at=?, updated_at=updated_at WHERE id=?`,
+		stamp(now), run.ProjectID); err != nil {
 		return domain.Run{}, domain.Attempt{}, false, domain.Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1419,10 +1482,25 @@ func (db *DB) ReconcileOnBoot(ctx context.Context, correlationID string) ([]doma
 // The first registration emits WorkerRegistered; an offline Worker that
 // re-registers emits WorkerRegistered with reconnect=true and returns
 // replayed=false; an online re-registration is a replay with no new event.
-func (db *DB) RegisterWorker(ctx context.Context, workerID, version, correlationID string) (domain.Worker, *domain.Event, error) {
+func (db *DB) RegisterWorker(ctx context.Context, workerID, version string, capabilities []domain.Capability, execModes []string, correlationID string) (domain.Worker, *domain.Event, error) {
 	if err := domain.ValidateWorkerID(workerID); err != nil {
 		return domain.Worker{}, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
 	}
+	for _, capability := range capabilities {
+		if _, err := domain.ParseCapability(string(capability)); err != nil {
+			return domain.Worker{}, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
+		}
+	}
+	if len(execModes) == 0 {
+		return domain.Worker{}, nil, fmt.Errorf("%w: worker must declare at least one execution mode", domain.ErrInvalidInput)
+	}
+	for _, mode := range execModes {
+		if err := domain.ValidateExecutionMode(mode); err != nil {
+			return domain.Worker{}, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
+		}
+	}
+	capsJSON, _ := json.Marshal(capabilities)
+	modesJSON, _ := json.Marshal(execModes)
 	now := db.now()
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -1437,13 +1515,15 @@ func (db *DB) RegisterWorker(ctx context.Context, workerID, version, correlation
 	}
 	if err == sql.ErrNoRows {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO workers(id, version, status, last_heartbeat, last_run_id, created_at, updated_at)
-			 VALUES(?,?,?,?,?,?,?)`,
-			workerID, version, string(domain.WorkerOnline), stamp(now), "", stamp(now), stamp(now),
+			`INSERT INTO workers(id, version, status, last_heartbeat, last_run_id,
+			 capabilities, exec_modes, created_at, updated_at)
+			 VALUES(?,?,?,?,?,?,?,?,?)`,
+			workerID, version, string(domain.WorkerOnline), stamp(now), "",
+			string(capsJSON), string(modesJSON), stamp(now), stamp(now),
 		); err != nil {
 			return domain.Worker{}, nil, err
 		}
-		payload, _ := json.Marshal(map[string]any{"version": version})
+		payload, _ := json.Marshal(map[string]any{"version": version, "capabilities": capabilities, "execModes": execModes})
 		registered, err := appendWorkerEvent(ctx, tx, domain.EventWorkerRegistered, workerID, workerID, correlationID, now, mustDecode(payload))
 		if err != nil {
 			return domain.Worker{}, nil, err
@@ -1460,13 +1540,15 @@ func (db *DB) RegisterWorker(ctx context.Context, workerID, version, correlation
 
 	reconnect := existing.Status != domain.WorkerOnline
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE workers SET version=?, status=?, last_heartbeat=?, updated_at=? WHERE id=?`,
-		version, string(domain.WorkerOnline), stamp(now), stamp(now), workerID,
+		`UPDATE workers SET version=?, status=?, last_heartbeat=?, capabilities=?,
+		 exec_modes=?, updated_at=? WHERE id=?`,
+		version, string(domain.WorkerOnline), stamp(now), string(capsJSON),
+		string(modesJSON), stamp(now), workerID,
 	); err != nil {
 		return domain.Worker{}, nil, err
 	}
 	if reconnect {
-		payload, _ := json.Marshal(map[string]any{"version": version, "reconnect": true})
+		payload, _ := json.Marshal(map[string]any{"version": version, "reconnect": true, "capabilities": capabilities, "execModes": execModes})
 		reconnected, err := appendWorkerEvent(ctx, tx, domain.EventWorkerRegistered, workerID, workerID, correlationID, now, mustDecode(payload))
 		if err != nil {
 			return domain.Worker{}, nil, err

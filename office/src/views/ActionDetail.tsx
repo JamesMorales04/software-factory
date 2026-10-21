@@ -7,9 +7,11 @@ import {
   ApiError,
   api,
   type Candidate,
+  type Project,
 } from "../api";
 import { presentEvent } from "../eventPresentation";
 import { useEventStream } from "../useEventStream";
+import { ActionSpecForm } from "./ActionSpecForm";
 
 const NEXT: Record<ActionStatus, ActionStatus[]> = {
   pending: ["in_progress", "cancelled"],
@@ -23,6 +25,7 @@ export function ActionDetail() {
   const [action, setAction] = useState<Action | null>(null);
   const [specs, setSpecs] = useState<ActionSpec[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { events: live } = useEventStream(0, (e) => e.aggregateId === id, {
@@ -34,14 +37,16 @@ export function ActionDetail() {
       return;
     }
     try {
-      const [nextAction, nextSpecs, nextCandidates] = await Promise.all([
-        api.getAction(id),
+      const nextAction = await api.getAction(id);
+      const [nextSpecs, nextCandidates, nextProject] = await Promise.all([
         api.listActionSpecs(id),
         api.listCandidates({ actionId: id }),
+        api.getProject(nextAction.projectId),
       ]);
       setAction(nextAction);
       setSpecs(nextSpecs);
       setCandidates(nextCandidates);
+      setProject(nextProject);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to load action.");
     }
@@ -114,7 +119,24 @@ export function ActionDetail() {
         <dt>Project</dt>
         <dd>
           <code>{action.projectId}</code>
+          {project && (
+            <>
+              {" "}
+              — {project.name} ({project.registrationStatus}, {project.status},
+              config revision {project.configRevision}, {project.securityLabel})
+            </>
+          )}
         </dd>
+        {project?.registeredAt && (
+          <>
+            <dt>Repository</dt>
+            <dd>
+              <code>{project.repositoryPath}</code>
+              <br />
+              identity <code>{project.repositoryIdentity}</code>
+            </dd>
+          </>
+        )}
         <dt>Status</dt>
         <dd>
           <span className={`pill ${action.status}`}>{action.status}</span>
@@ -145,6 +167,13 @@ export function ActionDetail() {
           <span className="muted">Terminal state: no further transitions.</span>
         )}
       </div>
+      {project && project.registrationStatus === "registered" && (
+        <ActionSpecForm
+          action={action}
+          project={project}
+          onFrozen={(spec) => setSpecs((current) => [spec, ...current])}
+        />
+      )}
       <section className="candidate-panel" data-testid="action-quality">
         <h3>Frozen specifications ({specs.length})</h3>
         {specs.length === 0 ? (

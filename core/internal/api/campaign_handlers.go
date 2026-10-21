@@ -27,10 +27,11 @@ func (s *Server) WithCampaignCoordinator(coordinator CampaignCoordinator) *Serve
 }
 
 type createCampaignRequest struct {
-	SpecID           string `json:"specId"`
-	MaxRepairCycles  *int   `json:"maxRepairCycles"`
-	MaxWallClockSecs *int   `json:"maxWallClockSecs"`
-	MaxParallel      *int   `json:"maxParallel"`
+	SpecID                 string `json:"specId"`
+	MaxRepairCycles        *int   `json:"maxRepairCycles"`
+	MaxWallClockSecs       *int   `json:"maxWallClockSecs"`
+	MaxParallel            *int   `json:"maxParallel"`
+	MaxImplementerAttempts *int   `json:"maxImplementerAttempts"`
 }
 
 func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +46,9 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	params := domain.NewCampaignParams{
 		SpecID:          req.SpecID,
 		MaxRepairCycles: repairs, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
+	}
+	if req.MaxImplementerAttempts != nil {
+		params.MaxImplementerAttempts = *req.MaxImplementerAttempts
 	}
 	if req.MaxWallClockSecs != nil {
 		params.MaxWallClockSecs = *req.MaxWallClockSecs
@@ -100,7 +104,7 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
 		status = domain.CampaignStatus(raw)
 	}
-	campaigns, err := s.db.ListCampaigns(status, limit)
+	campaigns, err := s.db.ListCampaigns(strings.TrimSpace(r.URL.Query().Get("projectId")), status, limit)
 	if err != nil {
 		mapDomainError(w, err, s.log, "list campaigns")
 		return

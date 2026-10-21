@@ -174,7 +174,7 @@ func TestPaseoLifecycleSuccess(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	out, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	out, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err != nil {
 		t.Fatalf("want success, got %v", err)
 	}
@@ -214,7 +214,7 @@ func TestPaseoLifecycleNoFalseSuccess(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("empty diff must fail, never succeed")
 	}
@@ -242,7 +242,7 @@ func TestPaseoLifecycleNoNudgeWithoutToolActivity(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("want failure")
 	}
@@ -260,7 +260,7 @@ func TestPaseoLifecycleStartupFailure(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("startup failure must fail")
 	}
@@ -284,7 +284,7 @@ func TestPaseoLifecycleIdentityMismatch(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("identity mismatch must fail with no substitution")
 	}
@@ -311,7 +311,7 @@ func TestPaseoLifecycleStartMismatchOrphans(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("identity mismatch must fail with no substitution")
 	}
@@ -332,7 +332,7 @@ func TestPaseoLifecycleIntendFencingAbandons(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	var fe *fenceError
 	if !errors.As(err, &fe) {
 		t.Fatalf("fencing must propagate for abandon, got %v", err)
@@ -355,7 +355,7 @@ func TestPaseoLifecycleBindFencingOrphans(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	var fe *fenceError
 	if !errors.As(err, &fe) {
 		t.Fatalf("bind fencing must propagate for abandon, got %v", err)
@@ -382,7 +382,7 @@ func TestPaseoLifecycleObserveFailureClosesFailed(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("cancelled observe must fail")
 	}
@@ -402,7 +402,7 @@ func TestPaseoLifecycleCancelledStartOrphans(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	cancel() // operator cancel / shutdown before the session starts
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("cancelled start must fail")
 	}
@@ -422,7 +422,7 @@ func TestPaseoLifecycleBudgetGateFailsClosed(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("tiny budget must fail before spending")
 	}
@@ -455,7 +455,7 @@ func TestPaseoLifecycleSuccessCleanupUnconfirmed(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	out, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	out, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err != nil {
 		t.Fatalf("proven work stays successful: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestPaseoLifecycleAbandonCleanupFailureOrphans(t *testing.T) {
 	run, attempt := testRun(1)
 	ctx, cancel := budgetedCtx()
 	defer cancel()
-	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, adapter, testLogger())
+	_, err := runPaseoLifecycle(ctx, backend, "local-1", run, attempt, workDir, nil, adapter, testLogger())
 	if err == nil {
 		t.Fatal("startup failure must fail")
 	}
@@ -535,7 +535,7 @@ func TestRunCheckPlumbing(t *testing.T) {
 }
 
 func TestPromptCarriesTaskAndCwd(t *testing.T) {
-	p := paseoTaskPrompt("Do the thing.", "/tmp/wd-1")
+	p := paseoTaskPrompt("Do the thing.", "/tmp/wd-1", domain.Run{}, nil)
 	if !strings.Contains(p, "Do the thing.") || !strings.Contains(p, "/tmp/wd-1") {
 		t.Fatalf("prompt must carry task and absolute dir: %q", p)
 	}

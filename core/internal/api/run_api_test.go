@@ -67,7 +67,7 @@ func queueSyntheticRun(t *testing.T, h http.Handler, body string) domain.Run {
 func registerPoll(t *testing.T, h http.Handler, worker string) (domain.Run, domain.Attempt) {
 	t.Helper()
 	rec := serveRun(t, h, "POST", "/api/v1/workers/register",
-		`{"workerId":"`+worker+`","version":"test-1"}`, testWorkerToken)
+		`{"workerId":"`+worker+`","version":"test-1","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 		t.Fatalf("register: got %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -241,7 +241,7 @@ func TestRunValidationOverHTTP(t *testing.T) {
 func TestPollEmptyReturns204(t *testing.T) {
 	srv, _ := newRunTestServer(t)
 	h := srv.Handler()
-	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"idle-1"}`, testWorkerToken)
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"idle-1","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: got %d", rec.Code)
 	}
@@ -254,7 +254,7 @@ func TestPollEmptyReturns204(t *testing.T) {
 func TestWorkerObservationEndpoints(t *testing.T) {
 	srv, _ := newRunTestServer(t)
 	h := srv.Handler()
-	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"obs-1","version":"v"}`, testWorkerToken)
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"obs-1","version":"v","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: got %d", rec.Code)
 	}
@@ -277,7 +277,7 @@ func TestReportBeforeStartRejectedOverHTTP(t *testing.T) {
 	h := srv.Handler()
 	run := queueSyntheticRun(t, h, "")
 
-	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-1"}`, testWorkerToken)
+	rec := serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-1","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: got %d", rec.Code)
 	}
@@ -308,7 +308,7 @@ func TestCancelledRunRejectsUnknownAttemptOverHTTP(t *testing.T) {
 	}
 	// The Run never granted an Attempt, yet any message from a known
 	// Worker for the cancelled Run must be a cancellation rejection.
-	rec = serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-2"}`, testWorkerToken)
+	rec = serveRun(t, h, "POST", "/api/v1/workers/register", `{"workerId":"early-2","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}`, testWorkerToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: got %d", rec.Code)
 	}

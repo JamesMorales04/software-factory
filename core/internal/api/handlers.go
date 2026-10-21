@@ -19,15 +19,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.db.ListProjects()
-	if err != nil {
-		mapDomainError(w, err, s.log, "list projects")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
-}
-
 type createActionRequest struct {
 	ProjectID   string `json:"projectId"`
 	Title       string `json:"title"`

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/paseo"
 )
 
@@ -32,11 +35,24 @@ type paseoEvidence struct {
 // paseoTaskPrompt wraps the operator task in the containment instructions
 // proven by the trusted-local smoke test: absolute target directory,
 // in-scope edits only, format/tests, short reply, no network or secrets.
-func paseoTaskPrompt(task, workDir string) string {
+func paseoTaskPrompt(task, workDir string, run domain.Run, spec *domain.ActionSpec) string {
 	browserHint := ""
-	if cli := strings.TrimSpace(os.Getenv("FACTORY_BROWSER_CLI")); cli != "" {
-		browserHint = " An agent-native Playwright CLI is available at " + cli +
-			"; use it only for authorized local UI checks and never expose credentials."
+	if spec != nil && domain.ContainsCapability(spec.Capabilities, domain.CapBrowser) {
+		browserHint = " Factory has granted this Run the browser capability. "
+		if spec.BrowserTestServer != nil && len(spec.BrowserEndpoints) > 0 {
+			browserHint += "The authorized test server is already managed and running at " +
+				spec.BrowserEndpoints[0] + "; do not start, restart, or kill it. "
+		} else {
+			browserHint += "Start the app on an authorized endpoint and keep server logs outside the repository. "
+		}
+		browserHint += "Use the project skill .agents/skills/factory-browser/SKILL.md and the wrapper " +
+			".factory/bin/factory-playwright-cli.mjs. Authorized local endpoints are exactly: " +
+			strings.Join(spec.BrowserEndpoints, ", ") + ". MANDATORY: run " +
+			"`node .factory/bin/factory-playwright-cli.mjs open " + firstEndpoint(spec.BrowserEndpoints) + "/` " +
+			"followed by at least one successful observation/interaction command such as `snapshot`, `find`, " +
+			"`fill`, or `click`. The Quality Gate rejects a Run that only invoked `--help` or attempted commands " +
+			"without success. Do not edit .agents/ or .factory/ and do not use any other browser target. " +
+			"Playwright CLI invocation outcomes are recorded as capability evidence."
 	}
 	return "Your target directory is exactly: " + workDir + ". It is an authorized " +
 		"repository checkout with its own package.json scripts. Task: " + task + " " +
@@ -239,6 +255,63 @@ func runCheck(ctx context.Context, dir, name string, args ...string) (int, error
 	return 0, nil
 }
 
+// browserExecutionEvidence reports what the Factory-managed wrapper actually
+// observed. An empty log is reported as an unproven invocation, never as a
+// model self-report.
+func browserExecutionEvidence(workDir string) map[string]any {
+	out := map[string]any{"invoked": false, "invocations": 0, "commands": []string{}}
+	skillPath := filepath.Join(workDir, ".agents", "skills", "factory-browser", "SKILL.md")
+	if raw, err := os.ReadFile(skillPath); err == nil {
+		sum := sha256.Sum256(raw)
+		out["skillDigest"] = hex.EncodeToString(sum[:])
+	}
+	if raw, err := os.ReadFile(filepath.Join(workDir, ".factory", "browser-runtime.json")); err == nil {
+		var runtime map[string]any
+		if json.Unmarshal(raw, &runtime) == nil {
+			out["cli"] = runtime["cli"]
+			out["cliVersion"] = runtime["cliVersion"]
+			out["endpoints"] = runtime["endpoints"]
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(workDir, ".factory", "bin", "browser-invocations.jsonl"))
+	if err != nil {
+		return out
+	}
+	commands := make([]string, 0, 4)
+	successful := make([]string, 0, 4)
+	count := 0
+	successCount := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry struct {
+			Command  string `json:"command"`
+			ExitCode int    `json:"exitCode"`
+			OK       bool   `json:"ok"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		count++
+		if len(commands) < 12 && entry.Command != "" {
+			commands = append(commands, entry.Command)
+		}
+		if entry.OK && entry.ExitCode == 0 {
+			successCount++
+			if len(successful) < 12 && entry.Command != "" {
+				successful = append(successful, entry.Command)
+			}
+		}
+	}
+	out["invoked"] = count > 0
+	out["invocations"] = count
+	out["successfulInvocations"] = successCount
+	out["commands"] = commands
+	out["successfulCommands"] = successful
+	return out
+}
+
 // seedPaseoFixture initializes the Attempt workspace with the disposable
 // Node baseline when it is empty: package.json (format/test scripts),
 // add.js, add.test.js, git repo with one commit. Non-empty workspaces are
@@ -305,4 +378,49 @@ test("add works", () => {
 		return err
 	}
 	return nil
+}
+
+// browserCapabilityComplete reports whether the Factory-managed wrapper
+// recorded a successful open plus a successful observation/interaction.
+// Failed or help-only commands never count.
+func browserCapabilityComplete(workDir string) bool {
+	evidence := browserExecutionEvidence(workDir)
+	commands, _ := evidence["successfulCommands"].([]string)
+	seen := map[string]bool{}
+	for _, command := range commands {
+		seen[strings.TrimSpace(strings.ToLower(command))] = true
+	}
+	if !seen["open"] {
+		return false
+	}
+	for _, command := range []string{"snapshot", "goto", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"} {
+		if seen[command] {
+			return true
+		}
+	}
+	return false
+}
+
+// capabilityNudgePrompt is the single bounded same-session continuation
+// used when a productive Implementer omitted a mandatory browser
+// interaction. It does not grant new scope or authority.
+func capabilityNudgePrompt(workDir string, endpoints []string, managedServer bool) string {
+	prerequisite := "The authorized test server is already managed and running; do not start or restart it. "
+	if !managedServer {
+		prerequisite = "Start the authorized app if needed and keep server logs outside the repository. "
+	}
+	return "Factory capability check: the code change is present, but this Run has no successful " +
+		"browser interaction evidence yet. " + prerequisite + "Run " +
+		"`node .factory/bin/factory-playwright-cli.mjs open " + strings.TrimRight(firstEndpoint(endpoints), "/") + "/` " +
+		"followed by at least one successful `snapshot`, `find`, `fill`, or `click` command against an " +
+		"authorized loopback endpoint. `--help` alone or failed commands are not acceptance evidence. " +
+		"Stay inside " + workDir + ", do not edit tests, protected browser-check.mjs, package.json, .agents/ or " +
+		".factory/, and reply briefly with the observed result."
+}
+
+func firstEndpoint(endpoints []string) string {
+	if len(endpoints) > 0 {
+		return endpoints[0]
+	}
+	return "http://127.0.0.1:4173"
 }

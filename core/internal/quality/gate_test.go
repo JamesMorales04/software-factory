@@ -38,8 +38,8 @@ func gateFixture(t *testing.T) Input {
 	attemptID := strings.Repeat("2", 32)
 	candidate := domain.CandidateRevision{
 		ID: strings.Repeat("3", 32), ProjectID: spec.ProjectID, ActionID: spec.ActionID,
-		SpecID: spec.ID, SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("c", 40),
+		SpecID: spec.ID, SpecHash: spec.ContentHash, SpecBindingHash: spec.BindingHash,
+		PolicyRevision: spec.PolicyRevision, BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("c", 40),
 		TreeSHA: strings.Repeat("d", 40), ContentDigest: strings.Repeat("e", 64),
 		CandidateRef: "refs/factory/candidates/run-1", Repository: spec.Repository,
 		ImplementerRunID: runID, ImplementerAttemptID: attemptID,
@@ -157,5 +157,37 @@ func TestReviewerBlockedIsBLOCKEDNotRepair(t *testing.T) {
 	}}
 	if got := Evaluate(fixture); got.Decision.Status != domain.GateBlocked {
 		t.Fatalf("reviewer BLOCKED: %s, want BLOCKED", got.Decision.Status)
+	}
+}
+
+func TestBrowserCapabilityRequiresInteractionEvidence(t *testing.T) {
+	in := gateFixture(t)
+	in.Spec.Capabilities = []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain, domain.CapBrowser}
+	in.Spec.ProjectConfigRevision = 1
+	in.Run.Result = map[string]any{"browserInvoked": true, "browserSuccessfulCommands": "--help"}
+	if result, _ := capabilityCheck(in); result.Status != domain.CheckFail {
+		t.Fatalf("help-only invocation accepted: %+v", result)
+	}
+	in.Run.Result = map[string]any{"browserInvoked": true, "browserSuccessfulCommands": "open,snapshot,close"}
+	if result, _ := capabilityCheck(in); result.Status != domain.CheckPass {
+		t.Fatalf("open+snapshot invocation rejected: %+v", result)
+	}
+	in.Run.Result = map[string]any{"browserInvoked": false, "browserSuccessfulCommands": "open"}
+	if result, _ := capabilityCheck(in); result.Status != domain.CheckFail {
+		t.Fatalf("uninvoked capability accepted: %+v", result)
+	}
+}
+
+func TestCapabilityFailureRequestsRepairNotSecurityBlock(t *testing.T) {
+	checks := []domain.CheckResult{
+		{ID: "gate-identity", Kind: domain.CheckIdentity, Status: domain.CheckPass},
+		{
+			ID: "gate-capability", Kind: domain.CheckCapability, Status: domain.CheckFail,
+			Detail: "Playwright was invoked only without an observable browser interaction",
+		},
+		{ID: "functional", Kind: domain.CheckFunctional, Status: domain.CheckPass},
+	}
+	if got := aggregateStatus(checks, 0); got != domain.GateRepair {
+		t.Fatalf("capability failure status = %s, want REPAIR_REQUIRED", got)
 	}
 }

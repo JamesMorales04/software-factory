@@ -4,32 +4,36 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/JamesMorales04/software-factory/core/internal/candidate"
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	projectreg "github.com/JamesMorales04/software-factory/core/internal/project"
 	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 )
 
 // --- Operator: frozen engineering specifications ---
 
 type createSpecRequest struct {
-	ProjectID          string             `json:"projectId"`
-	ActionID           string             `json:"actionId"`
-	Goal               string             `json:"goal"`
-	Repository         string             `json:"repository"`
-	BaseRevision       string             `json:"baseRevision"`
-	AllowedPaths       []string           `json:"allowedPaths"`
-	AcceptanceCriteria []domain.SpecCheck `json:"acceptanceCriteria"`
-	NegativeCases      []domain.SpecCheck `json:"negativeCases"`
-	RiskClass          string             `json:"riskClass"`
-	QualityProfile     string             `json:"qualityProfile"`
-	Budget             domain.SpecBudget  `json:"budget"`
-	ExecutionMode      string             `json:"executionMode"`
-	Provider           string             `json:"provider"`
-	Model              string             `json:"model"`
-	PaseoMode          string             `json:"paseoMode"`
+	ProjectID          string                    `json:"projectId"`
+	ActionID           string                    `json:"actionId"`
+	Goal               string                    `json:"goal"`
+	Repository         string                    `json:"repository"`
+	BaseRevision       string                    `json:"baseRevision"`
+	AllowedPaths       []string                  `json:"allowedPaths"`
+	AcceptanceCriteria []domain.SpecCheck        `json:"acceptanceCriteria"`
+	NegativeCases      []domain.SpecCheck        `json:"negativeCases"`
+	RiskClass          string                    `json:"riskClass"`
+	QualityProfile     string                    `json:"qualityProfile"`
+	Budget             domain.SpecBudget         `json:"budget"`
+	ExecutionMode      string                    `json:"executionMode"`
+	Provider           string                    `json:"provider"`
+	Model              string                    `json:"model"`
+	PaseoMode          string                    `json:"paseoMode"`
+	Capabilities       []string                  `json:"capabilities"`
+	BrowserTestServer  *domain.BrowserTestServer `json:"browserTestServer"`
 }
 
 func (s *Server) handleCreateActionSpec(w http.ResponseWriter, r *http.Request) {
@@ -37,23 +41,80 @@ func (s *Server) handleCreateActionSpec(w http.ResponseWriter, r *http.Request) 
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	ctx := r.Context()
+	action, err := s.db.GetAction(strings.TrimSpace(req.ActionID))
+	if err != nil {
+		mapDomainError(w, err, s.log, "spec action lookup")
+		return
+	}
+	if strings.TrimSpace(req.ProjectID) != "" && strings.TrimSpace(req.ProjectID) != action.ProjectID {
+		writeError(w, http.StatusBadRequest, "invalid", "projectId conflicts with the Action's Project")
+		return
+	}
+	project, err := s.db.GetProject(action.ProjectID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "spec project lookup")
+		return
+	}
+	repository := strings.TrimSpace(req.Repository)
+	configRevision := 0
+	repositoryIdentity := ""
+	browserEndpoints := []string(nil)
+	base := strings.TrimSpace(req.BaseRevision)
+	if project.Registered() {
+		if repository != "" && !samePath(repository, project.RepositoryPath) {
+			writeError(w, http.StatusForbidden, "unauthorized", "specification repository differs from the registered Project")
+			return
+		}
+		inspected, ierr := projectreg.Inspect(ctx, project.RepositoryPath, project.BaseRefs)
+		if ierr != nil {
+			writeError(w, http.StatusBadRequest, "invalid", "registered repository is no longer valid: "+ierr.Error())
+			return
+		}
+		if inspected.Identity != project.RepositoryIdentity {
+			writeError(w, http.StatusConflict, "conflict", "registered repository identity changed; refuse to freeze a specification")
+			return
+		}
+		if err := projectreg.ValidateBase(inspected, base); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		if err := domain.SpecsWithinWorkspaceScope(project.WorkspaceScope, req.AllowedPaths); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+		repository = project.RepositoryPath
+		configRevision = project.ConfigRevision
+		repositoryIdentity = project.RepositoryIdentity
+		browserEndpoints = project.BrowserEndpoints
+	}
 	params := domain.NewActionSpecParams{
-		ProjectID: req.ProjectID, ActionID: req.ActionID, Goal: req.Goal,
-		Repository: req.Repository, BaseRevision: req.BaseRevision,
+		ProjectID: action.ProjectID, ActionID: action.ID, Goal: req.Goal,
+		Repository: repository, BaseRevision: base,
 		AllowedPaths: req.AllowedPaths, AcceptanceCriteria: req.AcceptanceCriteria,
 		NegativeCases: req.NegativeCases, RiskClass: req.RiskClass,
 		QualityProfile: req.QualityProfile, Budget: req.Budget,
 		ExecutionMode: req.ExecutionMode, Provider: req.Provider,
 		Model: req.Model, PaseoMode: req.PaseoMode,
+		ProjectConfigRevision: configRevision,
+		RepositoryIdentity:    repositoryIdentity,
+		Capabilities:          req.Capabilities,
+		BrowserEndpoints:      browserEndpoints,
+		BrowserTestServer:     project.BrowserTestServer,
 	}
 	spec, err := params.Validate()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", err.Error())
 		return
 	}
-	ctx := r.Context()
-	if err := candidate.ValidateRepository(ctx, spec.Repository, spec.BaseRevision); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid", "authorized repository/base revision rejected: "+err.Error())
+	if project.Registered() {
+		if missing := domain.MissingCapabilities(project.Capabilities, spec.Capabilities); len(missing) > 0 {
+			writeError(w, http.StatusForbidden, "unauthorized",
+				"project does not grant required capabilities: "+joinCapabilities(missing))
+			return
+		}
+	} else if err := candidate.ValidateRepository(ctx, spec.Repository, spec.BaseRevision); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid", "legacy repository/base revision rejected: "+err.Error())
 		return
 	}
 	stored, replayed, event, err := s.db.CreateActionSpec(ctx, spec, telemetry.CorrelationIDFrom(ctx))
@@ -69,9 +130,27 @@ func (s *Server) handleCreateActionSpec(w http.ResponseWriter, r *http.Request) 
 	s.hub.Publish(event)
 	s.log.Info("action spec frozen",
 		"specId", stored.ID, "actionId", stored.ActionID,
-		"contentHash", stored.ContentHash,
+		"projectId", stored.ProjectID, "contentHash", stored.ContentHash,
+		"bindingHash", stored.BindingHash,
 		"correlationId", telemetry.CorrelationIDFrom(ctx))
 	writeJSON(w, http.StatusCreated, map[string]any{"spec": stored})
+}
+
+func samePath(left, right string) bool {
+	l, lerr := projectreg.CanonicalPath(left)
+	r, rerr := projectreg.CanonicalPath(right)
+	if lerr != nil || rerr != nil {
+		return false
+	}
+	return filepath.Clean(l) == filepath.Clean(r)
+}
+
+func joinCapabilities(missing []domain.Capability) string {
+	values := make([]string, len(missing))
+	for i, capability := range missing {
+		values[i] = string(capability)
+	}
+	return strings.Join(values, ", ")
 }
 
 func (s *Server) handleGetActionSpec(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +191,7 @@ func (s *Server) handleListCandidates(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 	candidates, err := s.db.ListCandidates(
+		strings.TrimSpace(r.URL.Query().Get("projectId")),
 		strings.TrimSpace(r.URL.Query().Get("actionId")),
 		strings.TrimSpace(r.URL.Query().Get("runId")), limit)
 	if err != nil {

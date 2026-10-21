@@ -26,6 +26,7 @@ type CandidateRevision struct {
 	ActionID              string         `json:"actionId"`
 	SpecID                string         `json:"specId"`
 	SpecHash              string         `json:"specHash"`
+	SpecBindingHash       string         `json:"specBindingHash,omitempty"`
 	PolicyRevision        string         `json:"policyRevision"`
 	BaseRevision          string         `json:"baseRevision"`
 	CommitSHA             string         `json:"commitSha"`
@@ -78,6 +79,9 @@ func (c CandidateRevision) Validate() error {
 	}
 	if !isLowerHex(c.SpecHash) || len(c.SpecHash) != 64 {
 		return errors.New("candidate specHash must be a sha256 hex digest")
+	}
+	if c.SpecBindingHash != "" && (!isLowerHex(c.SpecBindingHash) || len(c.SpecBindingHash) != 64) {
+		return errors.New("candidate specBindingHash must be a sha256 hex digest")
 	}
 	if c.PolicyRevision != QualityPolicyRevision {
 		return fmt.Errorf("unsupported candidate policyRevision %q", c.PolicyRevision)

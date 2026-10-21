@@ -1,6 +1,6 @@
 # AGENTS.md — Software Factory
 
-> **Status:** F1-S1 through F1-S3-D and F1-S4-A merged; F1-S4-B native campaign orchestration implemented and under independent verification. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
+> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities, Factory-managed browser capability, bounded autonomous Implementer recovery, same-session browser capability completion and Worker-managed browser test servers are implemented and deterministically verified. F1-S4-C-07 achieved the bounded real-Paseo Vlog live path on tested head `9567bc5` / runtime `14133cb7`: one paid session, initial-turn model-mediated browser interaction, independent verifier PASS, reviewer APPROVE and gate ACCEPTED. Disposition is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`; PR #12 is unmerged and `PRODUCT_OWNER_UAT_VERIFIED` is not claimed. No other Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
 ## Mission and orientation
 
@@ -43,7 +43,7 @@ Build a reliable, maintainable, local-first, multi-project Software Factory capa
 - [ADRs](docs/architecture/decisions/README.md) — context and rationale; supersede accepted ADRs instead of rewriting history.
 - [Contracts](docs/contracts/README.md) — protocol and state invariants; completion is part of F0.
 - [Security](docs/security/isolation.md), [SEC-01](docs/security/paseo-sandbox-spike.md) and [2026-10-18 results](docs/security/SEC-01-results-2026-10-18.md) — isolation is fail-closed. S1 and credential-free S2 development may proceed; S3/unattended real agents remain blocked.
-- [Quality](docs/quality/baseline.md) / [telemetry](docs/observability/telemetry.md) — candidate-bound evidence, measured operation.
+- [Quality](docs/quality/baseline.md) / [live certification](docs/quality/live-certification.md) / [telemetry](docs/observability/telemetry.md) — candidate-bound evidence, evidence levels, measured operation.
 - [F0/F1 plan](docs/implementation/f0-f1-plan.md) — slice boundaries and independent real-use acceptance.
 
 A material architectural change requires an Action, relevant ADR, updated normative documents and acceptance tests. Authorization/merge/sandbox/quality-policy changes are protected, not ordinary R0 changes.

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	projectreg "github.com/JamesMorales04/software-factory/core/internal/project"
+	"github.com/JamesMorales04/software-factory/core/internal/recovery"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 )
 
@@ -154,7 +156,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 	e.pruneProcesses()
 	e.reconcilePendingActionState(ctx)
 
-	campaigns, err := e.db.ListCampaigns(domain.CampaignRunning, 5000)
+	campaigns, err := e.db.ListCampaigns("", domain.CampaignRunning, 5000)
 	if err != nil {
 		e.log.Error("list running campaigns failed", "error", err.Error())
 		return
@@ -168,7 +170,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 }
 
 func (e *Engine) reconcilePendingActionState(ctx context.Context) {
-	pending, err := e.db.ListCampaigns(domain.CampaignPending, 5000)
+	pending, err := e.db.ListCampaigns("", domain.CampaignPending, 5000)
 	if err != nil {
 		e.log.Error("list pending campaigns failed", "error", err.Error())
 		return
@@ -214,6 +216,26 @@ func (e *Engine) reconcileCampaign(ctx context.Context, campaign domain.Campaign
 		return
 	case domain.StatusCompleted:
 		e.block(ctx, campaign, "action completed outside the campaign", correlation)
+		return
+	}
+	project, perr := e.db.GetProject(campaign.ProjectID)
+	if perr != nil {
+		e.block(ctx, campaign, "campaign project is unavailable", correlation)
+		return
+	}
+	if !project.Active() {
+		e.cancelCampaignRuns(ctx, campaign, "project is "+string(project.Status), correlation)
+		e.block(ctx, campaign, "project "+project.ID+" is "+string(project.Status), correlation)
+		return
+	}
+	spec, serr := e.db.GetActionSpec(campaign.SpecID)
+	if serr != nil {
+		e.block(ctx, campaign, "frozen spec is unavailable", correlation)
+		return
+	}
+	if berr := spec.ValidateProjectBinding(project); berr != nil {
+		e.cancelCampaignRuns(ctx, campaign, "spec binding rejected", correlation)
+		e.block(ctx, campaign, "frozen spec binding rejected: "+berr.Error(), correlation)
 		return
 	}
 	events, err := e.db.PromoteReadyTasks(ctx, campaign.ID, correlation)
@@ -265,6 +287,23 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 		e.log.Error("load implementer run failed", "runId", task.RunID, "error", err.Error())
 		return
 	}
+	if run.Status == domain.RunQueued {
+		spec, serr := e.db.GetActionSpec(campaign.SpecID)
+		if serr != nil {
+			return
+		}
+		eligible, werr := e.workerSupports(ctx, spec.Capabilities, spec.ExecutionMode)
+		if werr != nil {
+			return
+		}
+		if !eligible && !campaign.StartedAt.IsZero() && time.Since(campaign.StartedAt) > 20*time.Second {
+			e.cancelCampaignRuns(ctx, campaign, "no eligible Worker", correlation)
+			e.block(ctx, campaign,
+				"no online Worker supports required capabilities "+strings.Join(capabilityStrings(spec.Capabilities), ","),
+				correlation)
+		}
+		return
+	}
 	switch run.Status {
 	case domain.RunSucceeded:
 		completed, _, events, cerr := e.db.CompleteCampaignTask(ctx, campaign.ID, task.ID, string(run.Status), task.DispatchToken, correlation)
@@ -276,16 +315,54 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 		e.log.Info("implementer task completed", "campaignId", campaign.ID,
 			"taskKey", completed.Key, "candidateId", completed.CandidateID)
 	case domain.RunFailed:
+		spec, serr := e.db.GetActionSpec(campaign.SpecID)
+		if serr != nil {
+			e.block(ctx, campaign, "frozen spec is unavailable during recovery", correlation)
+			return
+		}
 		unresolved, reason, rerr := e.db.RunRecoveryUnresolved(run.ID)
 		if rerr != nil {
 			e.log.Error("recovery check failed", "runId", run.ID, "error", rerr.Error())
 			return
 		}
-		if unresolved {
-			e.block(ctx, campaign, "unresolved paseo recovery: "+reason, correlation)
+		used, maxAttempts, uerr := e.db.CampaignAttemptsUsed(campaign.ID)
+		if uerr != nil {
+			e.log.Error("attempt budget lookup failed", "campaignId", campaign.ID, "error", uerr.Error())
 			return
 		}
-		e.failImplementer(ctx, campaign, task, run.Error, correlation)
+		classification := recovery.Classify(recovery.Input{
+			Run: run, Spec: spec, AttemptsUsed: used, MaxAttempts: maxAttempts,
+			UnresolvedRecovery: unresolved, UnresolvedReason: reason,
+			CleanupUnconfirmed: cleanupUnconfirmed(run),
+		})
+		if recovery.Recoverable(classification.Class) && used < maxAttempts {
+			_, events, aerr := e.db.AuthorizeImplementerRecovery(ctx, campaign.ID, task.ID,
+				task.DispatchToken, classification.Class, classification.Reason, correlation)
+			if aerr != nil {
+				e.log.Error("authorize implementer recovery failed", "campaignId", campaign.ID,
+					"taskId", task.ID, "error", aerr.Error())
+				e.block(ctx, campaign, "implementer recovery could not be authorized: "+aerr.Error(), correlation)
+				return
+			}
+			e.publish(events)
+			e.log.Warn("implementer recovery authorized", "campaignId", campaign.ID,
+				"taskKey", task.Key, "failureClass", classification.Class,
+				"attemptsUsed", used, "maxAttempts", maxAttempts,
+				"reason", classification.Reason)
+			return
+		}
+		switch classification.Class {
+		case domain.RecoverableImplementationFailure, domain.RecoverableExecutionFailure:
+			e.failImplementer(ctx, campaign, task,
+				fmt.Sprintf("implementer attempt budget exhausted (%d/%d): %s: %s",
+					used, maxAttempts, classification.Class, classification.Reason), correlation)
+		case domain.PolicyOrSecurityBlocked, domain.UnresolvedExternalRecovery, domain.InfrastructureBlocked:
+			e.block(ctx, campaign, string(classification.Class)+": "+classification.Reason, correlation)
+		case domain.OracleDefectSuspected:
+			e.escalate(ctx, campaign, string(classification.Class)+": "+classification.Reason, correlation)
+		default:
+			e.block(ctx, campaign, "implementer failure is not safely recoverable: "+classification.Reason, correlation)
+		}
 	case domain.RunCancelled:
 		e.block(ctx, campaign, "implementer Run was cancelled outside the campaign", correlation)
 	}
@@ -342,6 +419,25 @@ func (e *Engine) reconcileGate(ctx context.Context, campaign domain.Campaign, ta
 		"candidateId", decision.CandidateID, "status", string(decision.Status))
 }
 
+func (e *Engine) cancelCampaignRuns(ctx context.Context, campaign domain.Campaign, reason, correlation string) {
+	tasks, err := e.db.CampaignTasks(campaign.ID)
+	if err != nil {
+		return
+	}
+	for _, task := range tasks {
+		if task.RunID == "" {
+			continue
+		}
+		run, rerr := e.db.GetRun(task.RunID)
+		if rerr != nil || run.Status.Terminal() {
+			continue
+		}
+		if _, _, cerr := e.db.CancelRun(ctx, run.ID, correlation+": "+reason); cerr != nil {
+			e.log.Error("cancel campaign run failed", "runId", run.ID, "error", cerr.Error())
+		}
+	}
+}
+
 func (e *Engine) dispatchReady(ctx context.Context, projection domain.CampaignProjection) {
 	for _, task := range projection.Tasks {
 		if task.Status != domain.TaskReady {
@@ -364,7 +460,42 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 		e.log.Error("load campaign spec failed", "campaignId", campaign.ID, "error", err.Error())
 		return
 	}
-	text := e.implementerTaskText(campaign, task, spec)
+	project, err := e.db.GetProject(campaign.ProjectID)
+	if err != nil {
+		e.block(ctx, campaign, "campaign project is unavailable", "campaign-dispatch-"+randomID())
+		return
+	}
+	if !project.Active() {
+		e.block(ctx, campaign, "project "+project.ID+" is "+string(project.Status), "campaign-dispatch-"+randomID())
+		return
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		e.block(ctx, campaign, "frozen spec binding rejected: "+err.Error(), "campaign-dispatch-"+randomID())
+		return
+	}
+	if project.Registered() {
+		if rerr := projectreg.RevalidateBound(ctx, spec.Repository, spec.RepositoryIdentity, spec.BaseRevision); rerr != nil {
+			e.block(ctx, campaign, "repository revalidation failed: "+rerr.Error(), "campaign-dispatch-"+randomID())
+			return
+		}
+	}
+	eligible, err := e.workerSupports(ctx, spec.Capabilities, spec.ExecutionMode)
+	if err != nil {
+		e.log.Error("worker capability lookup failed", "campaignId", campaign.ID, "error", err.Error())
+		return
+	}
+	if !eligible {
+		grace := 20 * time.Second
+		if campaign.StartedAt.IsZero() || time.Since(campaign.StartedAt) < grace {
+			return
+		}
+		e.block(ctx, campaign,
+			"no online Worker supports required capabilities "+strings.Join(capabilityStrings(spec.Capabilities), ","),
+			"campaign-dispatch-"+randomID())
+		return
+	}
+	used, maxAttempts, _ := e.db.CampaignAttemptsUsed(campaign.ID)
+	text := e.implementerTaskText(campaign, task, spec, used, maxAttempts)
 	_, _, events, err := e.db.DispatchImplementer(ctx, campaign.ID, task.ID, text,
 		"campaign-dispatch-"+randomID())
 	if err != nil {
@@ -382,10 +513,52 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 		"cycle", task.Cycle, "taskKey", task.Key)
 }
 
-func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.CampaignTask, spec domain.ActionSpec) string {
+func (e *Engine) workerSupports(ctx context.Context, required []domain.Capability, mode string) (bool, error) {
+	workers, err := e.db.ListWorkers()
+	if err != nil {
+		return false, err
+	}
+	for _, worker := range workers {
+		if worker.Status != domain.WorkerOnline {
+			continue
+		}
+		if worker.LastHeartbeat.IsZero() || time.Since(worker.LastHeartbeat) > 15*time.Second {
+			continue
+		}
+		if !domain.CapabilitiesSatisfied(worker.Capabilities, required) {
+			continue
+		}
+		supportedMode := false
+		for _, candidate := range worker.ExecModes {
+			if candidate == mode {
+				supportedMode = true
+				break
+			}
+		}
+		if supportedMode {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func capabilityStrings(caps []domain.Capability) []string {
+	out := make([]string, len(caps))
+	for i, capability := range caps {
+		out[i] = string(capability)
+	}
+	return out
+}
+
+func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.CampaignTask, spec domain.ActionSpec, used, maxAttempts int) string {
 	text := strings.TrimSpace(spec.Goal)
 	if task.Cycle == 0 {
-		return text
+		if strings.TrimSpace(task.Error) == "" {
+			return text
+		}
+		instruction := fmt.Sprintf(" Recovery attempt %d of at most %d. The previous attempt failed before producing an acceptable candidate: %s. Fix the concrete failure only inside the frozen scope and capabilities, run the relevant tests, and report executable evidence. Do not repeat the previous approach unchanged and do not edit protected acceptance files.",
+			task.ExecutionCount+1, maxAttempts, strings.TrimSpace(task.Error))
+		return appendBoundedInstruction(text, instruction)
 	}
 	prior := e.priorGate(campaign, task.Cycle-1)
 	reasons := prior.Error
@@ -396,8 +569,26 @@ func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.Campa
 	if reasons == "" {
 		reasons = "the previous candidate did not satisfy the frozen oracle"
 	}
-	instruction := fmt.Sprintf(" Repair cycle %d: fix the concrete failures reported by the previous Quality Gate (%s) without expanding the authorized scope or changing protected checks.",
-		task.Cycle, reasons)
+	instruction := fmt.Sprintf(" Repair cycle %d: fix the concrete failures reported by the previous Quality Gate (%s) without expanding the authorized scope or changing protected checks. Attempts used %d of at most %d.",
+		task.Cycle, reasons, used, maxAttempts)
+	if strings.Contains(strings.ToLower(reasons), "browser") || strings.Contains(strings.ToLower(reasons), "capability") {
+		instruction += " For the browser capability, " + browserRepairPrerequisite(spec) +
+			"run the wrapper with open plus a successful snapshot/find/fill/click before finishing; help-only invocation is not acceptance evidence."
+	}
+	return appendBoundedInstruction(text, instruction)
+}
+
+// browserRepairPrerequisite keeps repair-cycle guidance truthful for a
+// Worker-managed test server. It never tells the Implementer to start an
+// externally managed server.
+func browserRepairPrerequisite(spec domain.ActionSpec) string {
+	if spec.BrowserTestServer != nil {
+		return "the authorized test server is already managed and running; do not start or restart it. "
+	}
+	return "start the authorized app and keep server logs outside the repository. "
+}
+
+func appendBoundedInstruction(text, instruction string) string {
 	remaining := domain.MaxPaseoTaskChars - len(text)
 	if remaining <= 0 {
 		return text[:domain.MaxPaseoTaskChars]
@@ -406,6 +597,16 @@ func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.Campa
 		instruction = instruction[:remaining]
 	}
 	return text + instruction
+}
+
+func cleanupUnconfirmed(run domain.Run) bool {
+	for _, key := range []string{"cleanup", "browserCleanup"} {
+		value, _ := run.Result[key].(string)
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "unconfirmed") {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) priorGate(campaign domain.Campaign, cycle int) domain.CampaignTask {
@@ -557,6 +758,16 @@ func (e *Engine) failImplementer(ctx context.Context, campaign domain.Campaign, 
 		return
 	}
 	e.publish(events)
+}
+
+func (e *Engine) escalate(ctx context.Context, campaign domain.Campaign, reason, correlation string) {
+	_, events, err := e.db.EscalateCampaign(ctx, campaign.ID, reason, correlation)
+	if err != nil {
+		e.log.Error("escalate campaign failed", "campaignId", campaign.ID, "error", err.Error())
+		return
+	}
+	e.publish(events)
+	e.killCampaign(campaign.ID)
 }
 
 func (e *Engine) block(ctx context.Context, campaign domain.Campaign, reason, correlation string) {

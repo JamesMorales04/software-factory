@@ -16,3 +16,7 @@ __pycache__/
 /office/e2e-browser/.playwright-cli/
 /office/e2e-browser/.s4a-evidence/
 /tmp/
+# Accidental simulator state at the repository root.
+/.lock
+/state.json
+/core/.playwright-cli/

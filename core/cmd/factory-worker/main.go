@@ -25,17 +25,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JamesMorales04/software-factory/core/internal/browserserver"
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.7.0-s4b"
+const workerVersion = "0.8.0-s4c"
 
 type client struct {
-	base   string
-	token  string
-	http   *http.Client
-	logger *slog.Logger
+	base        string
+	token       string
+	http        *http.Client
+	logger      *slog.Logger
+	runtime     runtimeCapabilities
+	registryDir string
 }
 
 func main() {
@@ -89,11 +92,22 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	runtime, err := detectRuntimeCapabilities(ctx)
+	if err != nil {
+		return err
+	}
+	registryDir, releaseRegistry, err := browserserver.AcquireWorkerRegistry(*workerID)
+	if err != nil {
+		return err
+	}
+	defer releaseRegistry()
 	c := &client{
-		base:   strings.TrimRight(*coreAddr, "/"),
-		token:  token,
-		http:   &http.Client{Timeout: 15 * time.Second},
-		logger: logger,
+		base:        strings.TrimRight(*coreAddr, "/"),
+		token:       token,
+		http:        &http.Client{Timeout: 15 * time.Second},
+		logger:      logger,
+		runtime:     runtime,
+		registryDir: registryDir,
 	}
 	podmanOK, err := resolveExecMode(ctx, *execMode, logger)
 	if err != nil {
@@ -104,6 +118,11 @@ func run(args []string) error {
 	// in-process workdir removal; sweep only our own run-root pattern.
 	if reaped := exec.ReapStaleRunRoots(); reaped > 0 {
 		logger.Info("reaped stale fixture workspaces", "count", reaped)
+	}
+	if reaped, rerr := browserserver.Reap(registryDir); rerr != nil {
+		logger.Warn("test-server reaping failed", "error", rerr.Error())
+	} else if reaped > 0 {
+		logger.Info("reaped stale managed test servers", "count", reaped)
 	}
 	runsRoot, err := exec.RunsRoot()
 	if err != nil {
@@ -119,7 +138,10 @@ func run(args []string) error {
 		_ = runsRoot.Close()
 		return fmt.Errorf("register worker: %w", err)
 	}
-	logger.Info("worker registered", "workerId", *workerID, "mode", map[bool]string{true: "podman", false: "local"}[podmanOK])
+	logger.Info("worker registered", "workerId", *workerID,
+		"mode", map[bool]string{true: "podman", false: "local"}[podmanOK],
+		"capabilities", runtime.Capabilities,
+		"browserCLI", runtime.PlaywrightCLI)
 
 	// S3-D recovery coordinator: one bounded claim at a time, independent
 	// of execution slots. A dedicated recovery-only process is useful when
@@ -250,6 +272,12 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				return
 			case <-ticker.C:
 				if herr := c.heartbeat(execCtx, workerID, run.ID, attempt.ID, attempt.LeaseGeneration); herr != nil {
+					// A local completion/shutdown cancellation also makes an
+					// in-flight heartbeat return context.Canceled. That is not
+					// a Core fence and must not suppress a truthful report.
+					if execCtx.Err() != nil {
+						return
+					}
 					select {
 					case fenced <- herr:
 					default:
@@ -319,9 +347,67 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				"spec-workspace: "+truncate(perr.Error()), log)
 			return
 		}
+		if _, berr := prepareBrowserCapability(execCtx, workDir, run.ID, actionSpec, c.runtime.Browser); berr != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"capability: "+truncate(berr.Error()), log)
+			return
+		}
 	}
 
-	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, log)
+	var testServer *browserserver.Server
+	if actionSpec != nil && actionSpec.BrowserTestServer != nil {
+		if len(actionSpec.BrowserEndpoints) == 0 {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"browser-test-server: no authorized endpoint", log)
+			return
+		}
+		testServer, err = browserserver.Start(execCtx, browserserver.Config{
+			ID: attempt.ID, WorkDir: workDir, Endpoint: actionSpec.BrowserEndpoints[0],
+			ReadyPath: actionSpec.BrowserTestServer.ReadyPath,
+			Command:   actionSpec.BrowserTestServer.Command,
+			Timeout:   time.Duration(actionSpec.BrowserTestServer.StartupTimeoutSecs) * time.Second,
+		}, c.registryDir)
+		if err != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"browser-test-server: "+truncate(err.Error()), log)
+			return
+		}
+		defer func() {
+			if stopErr := testServer.Stop(context.Background()); stopErr != nil {
+				log.Warn("managed test server cleanup unconfirmed", "error", stopErr.Error())
+			}
+		}()
+		log.Info("managed browser test server ready", "endpoint", testServer.Endpoint(), "reused", testServer.Reused())
+	}
+
+	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, actionSpec, log)
+	if testServer != nil {
+		if result == nil {
+			result = map[string]any{}
+		}
+		result["testServerManaged"] = true
+		result["testServerReused"] = testServer.Reused()
+		result["testServerEndpoint"] = testServer.Endpoint()
+	}
+	if actionSpec != nil && domain.ContainsCapability(actionSpec.Capabilities, domain.CapBrowser) {
+		if result == nil {
+			result = map[string]any{}
+		}
+		if cleanupErr := cleanupBrowserSession(context.Background(), workDir); cleanupErr != nil {
+			result["browserCleanup"] = "unconfirmed: " + truncate(cleanupErr.Error())
+		} else {
+			result["browserCleanup"] = "ok"
+		}
+	}
 	if err == nil && run.SpecID != "" {
 		if actionSpec == nil {
 			err = errors.New("spec-bound run has no frozen specification")
@@ -508,7 +594,11 @@ func errorCode(raw []byte) string {
 
 func (c *client) register(ctx context.Context, workerID string) error {
 	status, raw, _, err := c.do(ctx, http.MethodPost, "/api/v1/workers/register",
-		map[string]any{"workerId": workerID, "version": workerVersion})
+		map[string]any{
+			"workerId": workerID, "version": workerVersion,
+			"capabilities": c.runtime.Capabilities,
+			"execModes":    []string{string(domain.ExecRestricted), string(domain.ExecTrustedLocal)},
+		})
 	if err != nil {
 		return err
 	}

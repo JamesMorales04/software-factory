@@ -91,6 +91,10 @@ func Evaluate(in Input) Evaluation {
 	checks = append(checks, checkResults...)
 	reasons = append(reasons, checkReasons...)
 
+	capabilityResult, capabilityReasons := capabilityCheck(in)
+	checks = append(checks, capabilityResult)
+	reasons = append(reasons, capabilityReasons...)
+
 	reviewResult, reviewReasons := reviewCheck(in)
 	checks = append(checks, reviewResult)
 	reasons = append(reasons, reviewReasons...)
@@ -153,7 +157,7 @@ func identityCheck(in Input) (bool, string) {
 	}
 	if in.Spec.ID != c.SpecID || in.Spec.ContentHash != c.SpecHash ||
 		in.Spec.PolicyRevision != c.PolicyRevision || in.Spec.ActionID != c.ActionID ||
-		in.Spec.ProjectID != c.ProjectID {
+		in.Spec.ProjectID != c.ProjectID || in.Spec.BindingHash != c.SpecBindingHash {
 		return false, "candidate does not match the frozen specification"
 	}
 	if in.Run.ID != c.ImplementerRunID || in.Run.Status != domain.RunSucceeded {
@@ -235,6 +239,46 @@ func independenceCheck(in Input) (bool, string) {
 		}
 	}
 	return true, "separate verifier and reviewer authorities bound to the exact candidate"
+}
+
+func capabilityCheck(in Input) (domain.CheckResult, []string) {
+	if !domain.ContainsCapability(in.Spec.Capabilities, domain.CapBrowser) {
+		return gateCheck("gate-capability", domain.CheckCapability, true, "no browser capability required"), nil
+	}
+	if in.Spec.ProjectConfigRevision < 1 {
+		// Legacy S4-A/S4-B specs have no registered Project capability grant;
+		// their browser proof remains the protected independent check. Only a
+		// Project-bound Run can require a Factory-managed invocation.
+		return gateCheck("gate-capability", domain.CheckCapability, true,
+			"legacy spec: browser acceptance remains the Independent Verifier's protected check"), nil
+	}
+	invoked, _ := in.Run.Result["browserInvoked"].(bool)
+	commandText, _ := in.Run.Result["browserSuccessfulCommands"].(string)
+	if !invoked {
+		return gateCheck("gate-capability", domain.CheckCapability, false,
+				"browser capability was required but the Factory-managed Implementer recorded no Playwright invocation"), []string{
+				"capability: browser capability was required but not exercised by the Implementer",
+			}
+	}
+	seen := map[string]bool{}
+	for _, command := range strings.Split(commandText, ",") {
+		seen[strings.TrimSpace(strings.ToLower(command))] = true
+	}
+	interaction := false
+	for _, command := range []string{"snapshot", "goto", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"} {
+		if seen[command] {
+			interaction = true
+			break
+		}
+	}
+	if !seen["open"] || !interaction {
+		return gateCheck("gate-capability", domain.CheckCapability, false,
+				"Playwright was invoked only without an observable browser interaction (commands: "+commandText+")"), []string{
+				"capability: browser invocation lacked an open plus interaction/observation command",
+			}
+	}
+	return gateCheck("gate-capability", domain.CheckCapability, true,
+		"Factory-managed Playwright browser interaction recorded by the Implementer Run: "+commandText), nil
 }
 
 func verifierChecks(in Input) ([]domain.CheckResult, []string) {
@@ -379,7 +423,8 @@ func aggregateStatus(checks []domain.CheckResult, finalRisk int) domain.GateStat
 					repair = true
 				}
 			case domain.CheckFormat, domain.CheckLint, domain.CheckBuild,
-				domain.CheckTest, domain.CheckFunctional, domain.CheckNegative, domain.CheckBrowser:
+				domain.CheckTest, domain.CheckFunctional, domain.CheckNegative, domain.CheckBrowser,
+				domain.CheckCapability:
 				repair = true
 			default:
 				blocked = true

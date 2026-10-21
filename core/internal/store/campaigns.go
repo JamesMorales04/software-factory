@@ -104,6 +104,17 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	if err := spec.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: frozen spec failed validation: %v", domain.ErrInvalidInput, err)
 	}
+	project, err := scanProject(tx.QueryRowContext(ctx,
+		`SELECT `+projectColumns+` FROM projects WHERE id=?`, spec.ProjectID))
+	if err != nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: campaign project is unavailable", domain.ErrUnauthorized)
+	}
+	if !project.Active() {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: project %q is %s", domain.ErrConflict, project.ID, project.Status)
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
+	}
 	if existing, rerr := scanCampaign(tx.QueryRowContext(ctx,
 		`SELECT `+campaignColumns+` FROM campaigns WHERE action_id=? AND spec_id=?`,
 		spec.ActionID, spec.ID)); rerr == nil {
@@ -152,6 +163,15 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	if err := plan.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: campaign plan invalid: %v", domain.ErrInvalidInput, err)
 	}
+	maxAttempts := params.MaxImplementerAttempts
+	if maxAttempts == 0 {
+		maxAttempts = spec.Budget.MaxAttempts * (params.MaxRepairCycles + 1)
+	}
+	if maxAttempts < spec.Budget.MaxAttempts {
+		return domain.Campaign{}, false, nil, fmt.Errorf(
+			"%w: maxImplementerAttempts must be at least the spec attempt budget (%d)",
+			domain.ErrInvalidInput, spec.Budget.MaxAttempts)
+	}
 	campaign := domain.Campaign{
 		ID:               newID(),
 		ProjectID:        spec.ProjectID,
@@ -163,7 +183,7 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 		Plan:             plan,
 		Status:           domain.CampaignPending,
 		MaxRepairCycles:  params.MaxRepairCycles,
-		MaxAttempts:      spec.Budget.MaxAttempts * (params.MaxRepairCycles + 1),
+		MaxAttempts:      maxAttempts,
 		MaxWallClockSecs: params.MaxWallClockSecs,
 		MaxParallel:      params.MaxParallel,
 		CorrelationID:    correlationID,
@@ -237,9 +257,10 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 		"campaignId": campaign.ID, "actionId": campaign.ActionID,
 		"specId": campaign.SpecID, "specHash": campaign.SpecHash,
 		"planHash": campaign.PlanHash, "taskCount": len(plan.Tasks),
-		"maxRepairCycles":  campaign.MaxRepairCycles,
-		"maxWallClockSecs": campaign.MaxWallClockSecs,
-		"maxParallel":      campaign.MaxParallel,
+		"maxRepairCycles":        campaign.MaxRepairCycles,
+		"maxImplementerAttempts": campaign.MaxAttempts,
+		"maxWallClockSecs":       campaign.MaxWallClockSecs,
+		"maxParallel":            campaign.MaxParallel,
 	})
 	event, err := appendCampaignEvent(ctx, tx, domain.EventCampaignCreated, campaign.ID, campaignActor, correlationID, now, mustDecode(payload))
 	if err != nil {
@@ -266,12 +287,16 @@ func (db *DB) GetCampaign(id string) (domain.Campaign, error) {
 }
 
 // ListCampaigns returns campaigns newest first.
-func (db *DB) ListCampaigns(status domain.CampaignStatus, limit int) ([]domain.Campaign, error) {
+func (db *DB) ListCampaigns(projectID string, status domain.CampaignStatus, limit int) ([]domain.Campaign, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
 	q := `SELECT ` + campaignColumns + ` FROM campaigns WHERE 1=1`
 	var args []any
+	if projectID != "" {
+		q += ` AND project_id=?`
+		args = append(args, projectID)
+	}
 	if status != "" {
 		q += ` AND status=?`
 		args = append(args, string(status))
@@ -332,14 +357,16 @@ func (db *DB) GetCampaignProjection(campaignID string) (domain.CampaignProjectio
 	attempts := 0
 	var latestCandidateID string
 	for _, task := range tasks {
-		if task.Role == domain.RoleImplementer && task.RunID != "" {
-			if run, rerr := db.GetRun(task.RunID); rerr == nil {
-				attempts += run.AttemptCount
-			}
-		}
 		if task.CandidateID != "" {
 			latestCandidateID = task.CandidateID
 		}
+	}
+	if used, uerr := db.campaignAttemptsUsed(db.sql, campaign.SpecID, campaign.ActionID); uerr == nil {
+		attempts = used
+	}
+	recoveries, rerr := db.CampaignRecoveries(campaign.ID)
+	if rerr != nil {
+		return domain.CampaignProjection{}, rerr
 	}
 	now := db.now()
 	elapsed := int64(0)
@@ -359,14 +386,16 @@ func (db *DB) GetCampaignProjection(campaignID string) (domain.CampaignProjectio
 		}
 	}
 	projection := domain.CampaignProjection{
-		Campaign: campaign,
-		Tasks:    tasks,
+		Campaign:   campaign,
+		Tasks:      tasks,
+		Recoveries: recoveries,
 		Budget: domain.CampaignBudgetUsage{
 			MaxAttempts: campaign.MaxAttempts, AttemptsUsed: attempts,
 			MaxRepairCycles: campaign.MaxRepairCycles, RepairCycles: campaign.RepairCycles,
 			MaxWallClockSecs: campaign.MaxWallClockSecs, ElapsedSecs: elapsed,
 			RemainingWallClock: remaining, MaxParallel: campaign.MaxParallel,
-			ActiveParticipantMax: campaign.MaxParallel, ProviderBudget: "unknown",
+			ActiveParticipantMax: campaign.MaxParallel, RecoveryAttempts: len(recoveries),
+			ProviderBudget: "unknown",
 		},
 	}
 	if latestCandidateID != "" {
@@ -620,12 +649,8 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	if task.Cycle > campaign.RepairCycles {
 		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: repair cycle is not authorized", domain.ErrUnauthorized)
 	}
-	var attemptsUsed int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(r.attempt_count),0) FROM runs r
-		 JOIN campaign_tasks t ON t.run_id=r.id
-		 WHERE t.campaign_id=? AND t.role=?`,
-		campaignID, string(domain.RoleImplementer)).Scan(&attemptsUsed); err != nil {
+	attemptsUsed, err := campaignAttemptsUsedTx(ctx, tx, campaign.SpecID, campaign.ActionID)
+	if err != nil {
 		return domain.Campaign{}, domain.Run{}, nil, err
 	}
 	if attemptsUsed >= campaign.MaxAttempts {
@@ -684,6 +709,13 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	}
 	if affected != 1 {
 		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: implementer task was claimed concurrently", domain.ErrConflict)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE campaign_recoveries SET new_run_id=? WHERE id=(
+		 SELECT id FROM campaign_recoveries WHERE campaign_id=? AND task_id=? AND new_run_id=''
+		 ORDER BY created_at DESC, id DESC LIMIT 1)`,
+		run.ID, campaignID, taskID); err != nil {
+		return domain.Campaign{}, domain.Run{}, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"campaignId": campaign.ID, "taskId": task.ID, "taskKey": task.Key,
@@ -1535,6 +1567,215 @@ func (db *DB) ExpireCampaigns(ctx context.Context, correlationID string) ([]doma
 		return nil, err
 	}
 	return events, nil
+}
+
+const campaignRecoveryColumns = `id, campaign_id, task_id, attempt_index, failure_class,
+	reason, previous_run_id, previous_attempt_id, new_run_id, created_at`
+
+func scanCampaignRecovery(row interface{ Scan(dest ...any) error }) (domain.CampaignRecovery, error) {
+	var r domain.CampaignRecovery
+	var class, created string
+	if err := row.Scan(&r.ID, &r.CampaignID, &r.TaskID, &r.AttemptIndex, &class,
+		&r.Reason, &r.PreviousRunID, &r.PreviousAttempt, &r.NewRunID, &created); err != nil {
+		return domain.CampaignRecovery{}, err
+	}
+	r.FailureClass = domain.FailureClass(class)
+	r.CreatedAt = parseStamp(created)
+	return r, nil
+}
+
+// CampaignRecoveries returns immutable recovery audit rows oldest first.
+func (db *DB) CampaignRecoveries(campaignID string) ([]domain.CampaignRecovery, error) {
+	rows, err := db.sql.Query(
+		`SELECT `+campaignRecoveryColumns+` FROM campaign_recoveries WHERE campaign_id=?
+		 ORDER BY created_at ASC, id ASC`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]domain.CampaignRecovery, 0)
+	for rows.Next() {
+		recovery, err := scanCampaignRecovery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, recovery)
+	}
+	return out, rows.Err()
+}
+
+// AuthorizeImplementerRecovery records one bounded pre-candidate recovery
+// and returns the failed implementer task to ready for a new fenced Run.
+// The old Run/Attempt/session rows are never mutated.
+func (db *DB) AuthorizeImplementerRecovery(ctx context.Context, campaignID, taskID, dispatchToken string, class domain.FailureClass, reason, correlationID string) (domain.CampaignTask, []domain.Event, error) {
+	reason = domain.SanitizeReason(reason)
+	now := db.now()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	campaign, err := scanCampaign(tx.QueryRowContext(ctx,
+		`SELECT `+campaignColumns+` FROM campaigns WHERE id=?`, campaignID))
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if campaign.Status != domain.CampaignRunning {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: campaign is %s", domain.ErrInvalidTransition, campaign.Status)
+	}
+	task, err := scanCampaignTask(tx.QueryRowContext(ctx,
+		`SELECT `+campaignTaskColumns+` FROM campaign_tasks WHERE id=? AND campaign_id=?`,
+		taskID, campaignID))
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if task.Role != domain.RoleImplementer {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: task %s is not an implementer task", domain.ErrInvalidTransition, task.Key)
+	}
+	if task.Status != domain.TaskDispatched && task.Status != domain.TaskRunning {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: implementer task is %s", domain.ErrInvalidTransition, task.Status)
+	}
+	if dispatchToken == "" || task.DispatchToken != dispatchToken {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: stale task dispatch owner", domain.ErrStaleGeneration)
+	}
+	if !class.Recoverable() {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: failure class %s is not recoverable",
+			domain.ErrUnauthorized, class)
+	}
+	if task.RunID == "" {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: implementer task has no failed Run", domain.ErrInvalidTransition)
+	}
+	run, err := scanRun(tx.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM runs WHERE id=?`, task.RunID))
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if run.Status != domain.RunFailed {
+		return domain.CampaignTask{}, nil, fmt.Errorf(
+			"%w: recovery requires the exact failed Run (is %s)", domain.ErrInvalidTransition, run.Status)
+	}
+	used, err := campaignAttemptsUsedTx(ctx, tx, campaign.SpecID, campaign.ActionID)
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if used >= campaign.MaxAttempts {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted (%d/%d)",
+			domain.ErrBudgetExhausted, used, campaign.MaxAttempts)
+	}
+	var previousAttempt string
+	_ = tx.QueryRowContext(ctx,
+		`SELECT id FROM attempts WHERE run_id=? ORDER BY seq DESC LIMIT 1`,
+		task.RunID).Scan(&previousAttempt)
+	index := 0
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(attempt_index),0)+1 FROM campaign_recoveries WHERE campaign_id=?`,
+		campaignID).Scan(&index); err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	recovery := domain.CampaignRecovery{
+		ID: newID(), CampaignID: campaignID, TaskID: taskID,
+		AttemptIndex: index, FailureClass: class, Reason: reason,
+		PreviousRunID: task.RunID, PreviousAttempt: previousAttempt,
+		CreatedAt: now,
+	}
+	failureText := string(class) + ": " + reason
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO campaign_recoveries(id, campaign_id, task_id, attempt_index,
+		 failure_class, reason, previous_run_id, previous_attempt_id, new_run_id, created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		recovery.ID, recovery.CampaignID, recovery.TaskID, recovery.AttemptIndex,
+		string(recovery.FailureClass), recovery.Reason, recovery.PreviousRunID,
+		recovery.PreviousAttempt, "", stamp(now)); err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE campaign_tasks SET status=?, error=?, outcome='recovery', dispatch_owner='',
+		 dispatch_token='', dispatch_expires_at='', updated_at=?, completed_at=''
+		 WHERE id=? AND campaign_id=? AND status IN (?,?) AND dispatch_token=?`,
+		string(domain.TaskReady), failureText, stamp(now), taskID, campaignID,
+		string(domain.TaskDispatched), string(domain.TaskRunning), dispatchToken)
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if affected, aerr := res.RowsAffected(); aerr != nil || affected != 1 {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: recovery task changed concurrently", domain.ErrConflict)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"campaignId": campaignID, "taskId": taskID, "taskKey": task.Key,
+		"cycle": task.Cycle, "failureClass": class, "reason": reason,
+		"previousRunId": task.RunID, "previousAttemptId": previousAttempt,
+		"recoveryIndex": index, "attemptsUsed": used,
+		"maxAttempts": campaign.MaxAttempts,
+	})
+	event, err := appendCampaignEvent(ctx, tx, domain.EventCampaignImplementerRecoveryAuthorized,
+		campaignID, campaignActor, correlationID, now, mustDecode(payload))
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	task.Status = domain.TaskReady
+	task.Error = failureText
+	task.Outcome = "recovery"
+	task.DispatchOwner = ""
+	task.DispatchToken = ""
+	task.DispatchExpiresAt = time.Time{}
+	task.UpdatedAt = now
+	return task, []domain.Event{event}, nil
+}
+
+// CampaignAttemptsUsed counts every implementer Attempt for the campaign's
+// frozen spec, including failed recovery Runs, so total paid work is bounded.
+func (db *DB) CampaignAttemptsUsed(campaignID string) (int, int, error) {
+	campaign, err := db.GetCampaign(campaignID)
+	if err != nil {
+		return 0, 0, err
+	}
+	used, err := db.campaignAttemptsUsed(db.sql, campaign.SpecID, campaign.ActionID)
+	return used, campaign.MaxAttempts, err
+}
+
+func (db *DB) campaignAttemptsUsed(q interface {
+	QueryRow(query string, args ...any) *sql.Row
+}, specID, actionID string,
+) (int, error) {
+	var used int
+	err := q.QueryRow(
+		`SELECT COALESCE(SUM(attempt_count),0) FROM runs
+		 WHERE spec_id=? AND action_id=?`, specID, actionID).Scan(&used)
+	return used, err
+}
+
+func campaignAttemptsUsedTx(ctx context.Context, tx *sql.Tx, specID, actionID string) (int, error) {
+	var used int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(attempt_count),0) FROM runs
+		 WHERE spec_id=? AND action_id=?`, specID, actionID).Scan(&used); err != nil {
+		return 0, err
+	}
+	return used, nil
+}
+
+// EscalateCampaign terminates with HUMAN_REQUIRED for ambiguous or
+// oracle-defect assessments. It never authorizes a repair cycle.
+func (db *DB) EscalateCampaign(ctx context.Context, campaignID, reason, correlationID string) (domain.Campaign, []domain.Event, error) {
+	reason = domain.SanitizeReason(reason)
+	now := db.now()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Campaign{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	campaign, events, err := finishCampaignTx(ctx, tx, campaignID, domain.CampaignHumanRequired,
+		reason, domain.EventCampaignFinished, correlationID, now)
+	if err != nil {
+		return domain.Campaign{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Campaign{}, nil, err
+	}
+	return campaign, events, nil
 }
 
 // RunRecoveryUnresolved reports whether an Implementer Run still has an

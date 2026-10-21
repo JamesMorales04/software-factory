@@ -35,6 +35,7 @@ const EVENT_LABELS: Record<string, string> = {
   CampaignTaskFailed: "Campaign task failed",
   CampaignTaskCancelled: "Campaign task cancelled",
   CampaignRepairAuthorized: "Campaign repair authorized",
+  CampaignImplementerRecoveryAuthorized: "Implementer recovery authorized",
   CampaignFinished: "Campaign finished",
   CampaignCancelled: "Campaign cancelled",
 };
@@ -147,6 +148,17 @@ export function presentEvent(event: FactoryEvent): {
         text(p.candidateId),
         text(p.repairCycle),
         text(p.maxRepairCycles),
+      );
+      break;
+    case "CampaignImplementerRecoveryAuthorized":
+      parts.push(
+        text(p.taskKey),
+        text(p.failureClass),
+        text(p.previousRunId),
+        text(p.recoveryIndex),
+        text(p.attemptsUsed),
+        text(p.maxAttempts),
+        text(p.reason),
       );
       break;
     case "CampaignFinished":

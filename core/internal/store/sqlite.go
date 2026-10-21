@@ -27,7 +27,32 @@ const schema = `
 CREATE TABLE IF NOT EXISTS projects (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
-	created_at TEXT NOT NULL
+	registration_status TEXT NOT NULL DEFAULT 'legacy',
+	status TEXT NOT NULL DEFAULT 'active',
+	repository_path TEXT NOT NULL DEFAULT '',
+	repository_identity TEXT NOT NULL DEFAULT '',
+	base_refs TEXT NOT NULL DEFAULT '[]',
+	quality_profile TEXT NOT NULL DEFAULT 'generic',
+	workspace_scope TEXT NOT NULL DEFAULT '.',
+	capabilities TEXT NOT NULL DEFAULT '[]',
+	browser_endpoints TEXT NOT NULL DEFAULT '[]',
+	browser_test_server TEXT NOT NULL DEFAULT 'null',
+	execution_mode TEXT NOT NULL DEFAULT 'trusted-local',
+	security_label TEXT NOT NULL DEFAULT 'TRUSTED_LOCAL',
+	config_revision INTEGER NOT NULL DEFAULT 0,
+	config_hash TEXT NOT NULL DEFAULT '',
+	registered_at TEXT NOT NULL DEFAULT '',
+	last_dispatched_at TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_config_revisions (
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	revision INTEGER NOT NULL,
+	config_hash TEXT NOT NULL,
+	config TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, revision)
 );
 CREATE TABLE IF NOT EXISTS actions (
 	id TEXT PRIMARY KEY,
@@ -57,6 +82,8 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_global ON events(global_seq);
 CREATE INDEX IF NOT EXISTS idx_actions_project ON actions(project_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_repository_identity
+	ON projects(repository_identity) WHERE repository_identity<>'';
 CREATE TABLE IF NOT EXISTS runs (
 	id TEXT PRIMARY KEY,
 	project_id TEXT NOT NULL REFERENCES projects(id),
@@ -77,6 +104,8 @@ CREATE TABLE IF NOT EXISTS runs (
 	model TEXT NOT NULL DEFAULT '',
 	paseo_mode TEXT NOT NULL DEFAULT '',
 	spec_id TEXT NOT NULL DEFAULT '',
+	capabilities TEXT NOT NULL DEFAULT '[]',
+	spec_binding_hash TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -100,6 +129,8 @@ CREATE TABLE IF NOT EXISTS workers (
 	status TEXT NOT NULL,
 	last_heartbeat TEXT NOT NULL DEFAULT '',
 	last_run_id TEXT NOT NULL DEFAULT '',
+	capabilities TEXT NOT NULL DEFAULT '[]',
+	exec_modes TEXT NOT NULL DEFAULT '[]',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -174,6 +205,12 @@ CREATE TABLE IF NOT EXISTS action_specs (
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	paseo_mode TEXT NOT NULL,
+	project_config_revision INTEGER NOT NULL DEFAULT 0,
+	repository_identity TEXT NOT NULL DEFAULT '',
+	capabilities TEXT NOT NULL DEFAULT '[]',
+	browser_endpoints TEXT NOT NULL DEFAULT '[]',
+	browser_test_server TEXT NOT NULL DEFAULT 'null',
+	binding_hash TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	frozen_at TEXT NOT NULL
 );
@@ -204,6 +241,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 	paseo_mode TEXT NOT NULL,
 	changed_paths TEXT NOT NULL,
 	risk_class TEXT NOT NULL,
+	spec_binding_hash TEXT NOT NULL DEFAULT '',
 	state TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	frozen_at TEXT NOT NULL,
@@ -327,6 +365,22 @@ CREATE TABLE IF NOT EXISTS campaign_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_tasks_campaign ON campaign_tasks(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_campaign_tasks_status ON campaign_tasks(status, campaign_id);
+-- S4-C-03: immutable audit of authorized pre-candidate Implementer
+-- recoveries. The failed Run/Attempt/session rows are never rewritten.
+CREATE TABLE IF NOT EXISTS campaign_recoveries (
+	id TEXT PRIMARY KEY,
+	campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+	task_id TEXT NOT NULL REFERENCES campaign_tasks(id),
+	attempt_index INTEGER NOT NULL,
+	failure_class TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	previous_run_id TEXT NOT NULL REFERENCES runs(id),
+	previous_attempt_id TEXT NOT NULL DEFAULT '',
+	new_run_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
+	ON campaign_recoveries(campaign_id, created_at);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -372,6 +426,18 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4B(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-b migration: %w", err)
+	}
+	if err := db.migrateS4C(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-c migration: %w", err)
+	}
+	if err := db.migrateS4C03(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-c-03 migration: %w", err)
+	}
+	if err := db.migrateS4C06(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-c-06 migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -583,6 +649,253 @@ func (db *DB) migrateS4A() error {
 	return nil
 }
 
+// migrateS4C extends the S1 Project row into the S4-C Project Registry.
+// Existing rows become legacy projects: they keep their identity and data
+// and gain no repository access. Fresh databases already carry the columns.
+func (db *DB) migrateS4C() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('projects')`)
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		present[name] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	columns := []struct {
+		name string
+		def  string
+	}{
+		{"registration_status", `TEXT NOT NULL DEFAULT 'legacy'`},
+		{"status", `TEXT NOT NULL DEFAULT 'active'`},
+		{"repository_path", `TEXT NOT NULL DEFAULT ''`},
+		{"repository_identity", `TEXT NOT NULL DEFAULT ''`},
+		{"base_refs", `TEXT NOT NULL DEFAULT '[]'`},
+		{"quality_profile", `TEXT NOT NULL DEFAULT 'generic'`},
+		{"workspace_scope", `TEXT NOT NULL DEFAULT '.'`},
+		{"capabilities", `TEXT NOT NULL DEFAULT '[]'`},
+		{"browser_endpoints", `TEXT NOT NULL DEFAULT '[]'`},
+		{"execution_mode", `TEXT NOT NULL DEFAULT 'trusted-local'`},
+		{"security_label", `TEXT NOT NULL DEFAULT 'TRUSTED_LOCAL'`},
+		{"config_revision", `INTEGER NOT NULL DEFAULT 0`},
+		{"config_hash", `TEXT NOT NULL DEFAULT ''`},
+		{"registered_at", `TEXT NOT NULL DEFAULT ''`},
+		{"last_dispatched_at", `TEXT NOT NULL DEFAULT ''`},
+		{"updated_at", `TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range columns {
+		if present[column.name] {
+			continue
+		}
+		if _, err := db.sql.Exec(`ALTER TABLE projects ADD COLUMN ` + column.name + ` ` + column.def); err != nil {
+			return fmt.Errorf("add projects.%s: %w", column.name, err)
+		}
+	}
+	runColumns := []struct {
+		name string
+		def  string
+	}{
+		{"capabilities", `TEXT NOT NULL DEFAULT '[]'`},
+		{"spec_binding_hash", `TEXT NOT NULL DEFAULT ''`},
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('runs')`)
+	if err != nil {
+		return err
+	}
+	runPresent := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		runPresent[name] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, column := range runColumns {
+		if runPresent[column.name] {
+			continue
+		}
+		if _, err := db.sql.Exec(`ALTER TABLE runs ADD COLUMN ` + column.name + ` ` + column.def); err != nil {
+			return fmt.Errorf("add runs.%s: %w", column.name, err)
+		}
+	}
+	workerColumns := []struct {
+		name string
+		def  string
+	}{
+		{"capabilities", `TEXT NOT NULL DEFAULT '[]'`},
+		{"exec_modes", `TEXT NOT NULL DEFAULT '[]'`},
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('workers')`)
+	if err != nil {
+		return err
+	}
+	workerPresent := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		workerPresent[name] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, column := range workerColumns {
+		if workerPresent[column.name] {
+			continue
+		}
+		if _, err := db.sql.Exec(`ALTER TABLE workers ADD COLUMN ` + column.name + ` ` + column.def); err != nil {
+			return fmt.Errorf("add workers.%s: %w", column.name, err)
+		}
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('candidates')`)
+	if err != nil {
+		return err
+	}
+	hasCandidateBinding := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "spec_binding_hash" {
+			hasCandidateBinding = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasCandidateBinding {
+		if _, err := db.sql.Exec(`ALTER TABLE candidates ADD COLUMN spec_binding_hash TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add candidates.spec_binding_hash: %w", err)
+		}
+	}
+	rows, err = db.sql.Query(`SELECT name FROM pragma_table_info('action_specs')`)
+	if err != nil {
+		return err
+	}
+	specPresent := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		specPresent[name] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	specColumns := []struct {
+		name string
+		def  string
+	}{
+		{"project_config_revision", `INTEGER NOT NULL DEFAULT 0`},
+		{"repository_identity", `TEXT NOT NULL DEFAULT ''`},
+		{"capabilities", `TEXT NOT NULL DEFAULT '[]'`},
+		{"browser_endpoints", `TEXT NOT NULL DEFAULT '[]'`},
+		{"binding_hash", `TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range specColumns {
+		if specPresent[column.name] {
+			continue
+		}
+		if _, err := db.sql.Exec(`ALTER TABLE action_specs ADD COLUMN ` + column.name + ` ` + column.def); err != nil {
+			return fmt.Errorf("add action_specs.%s: %w", column.name, err)
+		}
+	}
+	if _, err := db.sql.Exec(`UPDATE projects SET updated_at=created_at WHERE updated_at=''`); err != nil {
+		return fmt.Errorf("backfill projects.updated_at: %w", err)
+	}
+	if _, err := db.sql.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_repository_identity
+		ON projects(repository_identity) WHERE repository_identity<>''`); err != nil {
+		return fmt.Errorf("create project repository identity index: %w", err)
+	}
+	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS project_config_revisions (
+		project_id TEXT NOT NULL REFERENCES projects(id),
+		revision INTEGER NOT NULL,
+		config_hash TEXT NOT NULL,
+		config TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (project_id, revision))`); err != nil {
+		return fmt.Errorf("create project_config_revisions: %w", err)
+	}
+	return nil
+}
+
+// migrateS4C06 adds the declarative browser-test startup contract columns.
+// They are additive; existing rows keep a nil contract.
+func (db *DB) migrateS4C06() error {
+	for _, table := range []string{"projects", "action_specs"} {
+		rows, err := db.sql.Query(`SELECT name FROM pragma_table_info(?)`, table)
+		if err != nil {
+			return err
+		}
+		present := false
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if name == "browser_test_server" {
+				present = true
+			}
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if !present {
+			if _, err := db.sql.Exec(`ALTER TABLE ` + table + ` ADD COLUMN browser_test_server TEXT NOT NULL DEFAULT 'null'`); err != nil {
+				return fmt.Errorf("add %s.browser_test_server: %w", table, err)
+			}
+		}
+	}
+	return nil
+}
+
+// migrateS4C03 adds the immutable recovery audit table. It is additive and
+// never rewrites existing campaign, task, run or evidence rows.
+func (db *DB) migrateS4C03() error {
+	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS campaign_recoveries (
+		id TEXT PRIMARY KEY,
+		campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+		task_id TEXT NOT NULL REFERENCES campaign_tasks(id),
+		attempt_index INTEGER NOT NULL,
+		failure_class TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		previous_run_id TEXT NOT NULL REFERENCES runs(id),
+		previous_attempt_id TEXT NOT NULL DEFAULT '',
+		new_run_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create campaign_recoveries: %w", err)
+	}
+	if _, err := db.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
+		ON campaign_recoveries(campaign_id, created_at)`); err != nil {
+		return fmt.Errorf("create campaign_recoveries index: %w", err)
+	}
+	return nil
+}
+
 // migrateS4B upgrades databases created before the repaired Campaign
 // invariants. Fresh databases already carry attempt_budget_version=1 and the
 // partial unique index; older rows are backfilled once, duplicate active
@@ -753,9 +1066,12 @@ func utcNow() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
 
 func (db *DB) seedDefaultProject() error {
 	_, err := db.sql.Exec(
-		`INSERT INTO projects(id, name, created_at) VALUES(?,?,?)
+		`INSERT INTO projects(id, name, registration_status, status, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?)
 		 ON CONFLICT(id) DO NOTHING`,
-		domain.DefaultProjectID, "Default Project", utcNow().Format(time.RFC3339Nano),
+		domain.DefaultProjectID, "Default Project",
+		string(domain.ProjectLegacy), string(domain.ProjectActive),
+		utcNow().Format(time.RFC3339Nano), utcNow().Format(time.RFC3339Nano),
 	)
 	return err
 }

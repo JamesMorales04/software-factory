@@ -7,10 +7,12 @@
 | View | Responsibilities |
 |---|---|
 | Dashboard | Core/Worker health, queues, campaigns and maintenance |
-| Actions | Create/query/filter Actions; show their specs, risk and status |
+| Projects | Register/inspect/pause authorized local Git Projects; show canonical identity, base policy, profile, scope and capability grants |
+| Actions | Create/query/filter Project-bound Actions; show their specs, risk and status |
+| Action Detail | Freeze a Project-bound ActionSpec through an explicit form, then inspect candidates, evidence and history |
 | Agents | Actual role, runtime/model, state and Paseo session for each participant |
 | Action Detail | Events, Runs, tool activity, quality evidence, review and PR/merge status |
-| Campaigns / Campaign Detail | Start an authorized campaign, follow the Core-owned task graph, participant identities, candidate/evidence lineage, repair budget and Quality Gate outcome |
+| Campaigns / Campaign Detail | Start an authorized campaign, follow the Core-owned task graph, participant identities, candidate/evidence lineage, repair/recovery budget, Implementer recovery history and Quality Gate outcome |
 
 The browser consumes Core snapshots plus persisted event projections. It cannot write Core storage or control Workers directly. Reconnect must use cursor/sequence and fetch missing data; stale/lost provider status must be displayed as `UNKNOWN`/`DISCONNECTED`, never as fabricated activity. Observed tool calls are not access to hidden reasoning. Read permissions do not imply control permissions.
 
@@ -18,8 +20,11 @@ The browser consumes Core snapshots plus persisted event projections. It cannot 
 
 Persist stable correlation of `runId`, `agentId`, `paseoSessionId` and `workerId`. Expose an authenticated inspector link/route only if tested. Validate SDK timeline/replay and redaction rather than assuming capabilities.
 
-S4-B implements Campaign list/detail views from Core projections and the
-existing SSE/replay ledger. The browser can create/start/cancel a campaign
+S4-C implements Projects, Project-bound Action creation and ActionSpec
+freezing through real forms backed only by Core APIs/projections. The main
+operator journey no longer needs a Python bootstrap or direct spec/campaign
+API calls. S4-B implements Campaign list/detail views from Core projections and
+the existing SSE/replay ledger. The browser can create/start/cancel a campaign
 through authenticated operator intents; it never schedules tasks itself.
 S3-C implements the read-only Agents and Run-detail session projections from
 durable Core bindings. The contract is

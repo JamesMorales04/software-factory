@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Field Notes Vlog</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Field Notes</p>
+      <h1>A small vlog about ordinary places</h1>
+      <p class="lede">Short films from weekends, workshops and kitchens.</p>
+    </header>
+    <main>
+      <nav id="filters" aria-label="Filter episodes by category"></nav>
+      <section id="entries" aria-live="polite"></section>
+      <p id="empty-state" class="empty" hidden>
+        No episodes in this category yet. Try another one.
+      </p>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

@@ -47,14 +47,6 @@ const (
 // DefaultProjectID is the seeded project S1 operates against.
 const DefaultProjectID = "default"
 
-// Project is the minimal S1 project identity: a repository scope an Action
-// belongs to. Project management beyond seed + list is deferred past S1.
-type Project struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
 // ValidateProjectID enforces the slug shape so project references stay
 // correlatable across Core, logs and UI.
 func ValidateProjectID(id string) error {

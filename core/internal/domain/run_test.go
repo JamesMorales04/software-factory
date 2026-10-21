@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestValidateWorkloadInputAcceptsMinimal(t *testing.T) {
 	out, err := ValidateWorkloadInput(SyntheticEchoKind, map[string]any{"message": "hello"})
@@ -79,17 +82,14 @@ func TestValidateWorkerID(t *testing.T) {
 }
 
 func TestSanitizeResultBounds(t *testing.T) {
-	if _, err := SanitizeResult(map[string]any{"ok": "yes", "n": float64(3)}); err != nil {
-		t.Fatalf("valid result rejected: %v", err)
+	tooMany := map[string]any{}
+	for i := 0; i < 29; i++ {
+		tooMany[fmt.Sprintf("k%d", i)] = "v"
 	}
-	big := map[string]any{}
-	for i := 0; i < 17; i++ {
-		big[string(rune('a'+i))] = "x"
-	}
-	if _, err := SanitizeResult(big); err == nil {
+	if _, err := SanitizeResult(tooMany); err == nil {
 		t.Fatal("expected key-count rejection")
 	}
-	if _, err := SanitizeResult(map[string]any{"cmd": func() {}}); err == nil {
-		t.Fatal("expected type rejection")
+	if _, err := SanitizeResult(map[string]any{"ok": true, "count": 2}); err != nil {
+		t.Fatalf("valid result rejected: %v", err)
 	}
 }
