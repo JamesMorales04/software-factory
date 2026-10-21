@@ -1,6 +1,6 @@
 # Live certification policy for Factory engineering campaigns
 
-**Status:** Adopted 2026-10-21 (F1-S4-C-01). Applies to campaigns that change
+**Status:** Adopted 2026-10-21 UTC (F1-S4-C-01). Applies to campaigns that change
 Core orchestration, Worker/Paseo execution, capability provisioning, agent
 workflows, quality integration or external-project execution.
 
@@ -62,7 +62,7 @@ the owner's manual acceptance on their behalf.
 - Infrastructure failures must be repaired before another paid session.
 - Unknown provider cost/quota remains unknown.
 
-## Current F1-S4-C disposition (2026-10-21)
+## Current F1-S4-C disposition (2026-10-21 UTC)
 
 - `DETERMINISTIC_VERIFIED`: the S4-C lane passed with two external Projects,
   real Chromium and a deterministic Paseo simulator.

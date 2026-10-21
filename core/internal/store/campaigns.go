@@ -1638,6 +1638,22 @@ func (db *DB) AuthorizeImplementerRecovery(ctx context.Context, campaignID, task
 	if dispatchToken == "" || task.DispatchToken != dispatchToken {
 		return domain.CampaignTask{}, nil, fmt.Errorf("%w: stale task dispatch owner", domain.ErrStaleGeneration)
 	}
+	if !class.Recoverable() {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: failure class %s is not recoverable",
+			domain.ErrUnauthorized, class)
+	}
+	if task.RunID == "" {
+		return domain.CampaignTask{}, nil, fmt.Errorf("%w: implementer task has no failed Run", domain.ErrInvalidTransition)
+	}
+	run, err := scanRun(tx.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM runs WHERE id=?`, task.RunID))
+	if err != nil {
+		return domain.CampaignTask{}, nil, err
+	}
+	if run.Status != domain.RunFailed {
+		return domain.CampaignTask{}, nil, fmt.Errorf(
+			"%w: recovery requires the exact failed Run (is %s)", domain.ErrInvalidTransition, run.Status)
+	}
 	used, err := campaignAttemptsUsedTx(ctx, tx, campaign.SpecID, campaign.ActionID)
 	if err != nil {
 		return domain.CampaignTask{}, nil, err

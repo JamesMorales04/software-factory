@@ -127,3 +127,29 @@ func TestRecoveryRefusesStaleDispatchAndEscalationPreservesHistory(t *testing.T)
 		t.Fatalf("failed run lost: %+v %v", oldRun, err)
 	}
 }
+
+func TestRecoveryStoreRejectsNonRecoverableClassAndNonFailedRun(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, campaign, impl, run, attempt := prepareImplementer(t, db, 0, 4)
+	// The Run is running, not failed: no recovery may replace it.
+	if _, _, err := db.AuthorizeImplementerRecovery(ctx, campaign.ID, impl.ID,
+		impl.DispatchToken, domain.RecoverableExecutionFailure, "timeout", "c"); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("running Run recovery not rejected: %v", err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID,
+		attempt.LeaseGeneration, domain.OutcomeFailed, nil, "no-source-change", "c"); err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []domain.FailureClass{
+		domain.PolicyOrSecurityBlocked,
+		domain.OracleDefectSuspected,
+		domain.UnresolvedExternalRecovery,
+		domain.InfrastructureBlocked,
+	} {
+		if _, _, err := db.AuthorizeImplementerRecovery(ctx, campaign.ID, impl.ID,
+			impl.DispatchToken, class, "blocked", "c"); !errors.Is(err, domain.ErrUnauthorized) {
+			t.Fatalf("class %s authorized recovery: %v", class, err)
+		}
+	}
+}

@@ -86,6 +86,13 @@ const (
 	InfrastructureBlocked            FailureClass = "INFRASTRUCTURE_BLOCKED"
 )
 
+// Recoverable is the closed set that may authorize a bounded pre-candidate
+// retry. Security, oracle, unresolved external and infrastructure failures
+// are never recoverable.
+func (c FailureClass) Recoverable() bool {
+	return c == RecoverableImplementationFailure || c == RecoverableExecutionFailure
+}
+
 // CampaignRecovery is the immutable audit row for one authorized
 // pre-candidate recovery. The failed Run/Attempt/session is never mutated;
 // the recovery authorizes the next Run against the same frozen spec/task.

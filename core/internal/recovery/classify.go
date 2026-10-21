@@ -113,8 +113,7 @@ func Classify(in Input) Result {
 // Recoverable reports whether the class authorizes an automatic bounded
 // pre-candidate retry under the same frozen spec.
 func Recoverable(class domain.FailureClass) bool {
-	return class == domain.RecoverableImplementationFailure ||
-		class == domain.RecoverableExecutionFailure
+	return class.Recoverable()
 }
 
 func bounded(value string) string {

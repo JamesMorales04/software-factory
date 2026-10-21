@@ -1,6 +1,6 @@
 # Software Factory — Master Architecture Specification
 
-> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities and Factory-managed browser capability are implemented and deterministically verified (2026-10-21); real-Paseo live certification is not yet achieved and no component is certified beyond its recorded candidate-bound evidence. Architecture baseline revision 0.5. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
+> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities and Factory-managed browser capability are implemented and deterministically verified (2026-10-21 UTC); real-Paseo live certification is not yet achieved and no component is certified beyond its recorded candidate-bound evidence. Architecture baseline revision 0.5. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
 
 ## 1. Product mission and priorities
 

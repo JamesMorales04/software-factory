@@ -1,11 +1,11 @@
 # F1-S4-C acceptance matrix
 
-**Status:** Implemented and deterministically verified (2026-10-21). The
+**Status:** Implemented and deterministically verified (2026-10-21 UTC; local session date 2026-10-20). The
 implementation candidate is the PR head; deterministic evidence is
-[`f1-s4c-deterministic-2026-10-21.json`](../evidence/f1-s4c-deterministic-2026-10-21.json).
+[`f1-s4c-deterministic-2026-10-21 UTC.json`](../evidence/f1-s4c-deterministic-2026-10-21 UTC.json).
 Real Paseo live certification is **not achieved**; the two authorized initial
 sessions and their truthful non-accepting results are recorded in
-[`f1-s4c-live-2026-10-21.json`](../evidence/f1-s4c-live-2026-10-21.json).
+[`f1-s4c-live-2026-10-21 UTC.json`](../evidence/f1-s4c-live-2026-10-21 UTC.json).
 TRUSTED_LOCAL only; control-plane scoping is not OS isolation and is never
 called isolated or SEC-01 certified.
 

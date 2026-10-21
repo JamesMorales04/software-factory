@@ -1,6 +1,6 @@
 # ADR-0013 — Bounded autonomous Implementer recovery and oracle discipline
 
-**Status:** Accepted (F1-S4-C-03 implementation; final candidate evidence is recorded in the PR). **Date:** 2026-10-21.
+**Status:** Accepted (F1-S4-C-03 implementation; final candidate evidence is recorded in the PR). **Date:** 2026-10-21 UTC.
 
 ## Context
 
