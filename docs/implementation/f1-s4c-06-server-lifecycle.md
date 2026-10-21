@@ -47,8 +47,9 @@ The Worker:
 6. refuses to adopt a healthy unowned process on the port;
 7. stops the owned process group on completion, failure or cancellation,
    including descendants after the group leader exits and after the Attempt
-   workspace is deleted; cleanup state is retained if termination is
-   unconfirmed so a later reaper can retry;
+   workspace is deleted; startup cleanup uses a direct group kill, and cleanup
+   state is retained if termination cannot be verified so a later reaper can
+   retry;
 8. reaps stale managed servers at Worker startup after a crash, in a per-Worker
    registry so one Worker cannot kill another Worker's live server; an
    exclusive registry lock refuses a second Worker with the same logical ID.

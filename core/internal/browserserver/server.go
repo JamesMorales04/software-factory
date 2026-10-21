@@ -202,13 +202,10 @@ func start(cfg Config, statePath, registryDir string) error {
 	}
 	raw, _ := json.Marshal(state)
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
-		// The child is ours and just started; clean up the whole group with
-		// the identity we already established, then fail closed.
-		if members, ok := ownedGroup(state); ok {
-			signalOwnedMembers(state, members, signalKill)
-		} else {
-			_ = cmd.Process.Kill()
-		}
+		// The child is ours and just started; kill the whole group with a
+		// direct group signal (no PID-reuse concern for a just-created child
+		// group). No state row exists yet, so this is the only cleanup path.
+		_ = killNewGroup(pgid)
 		return fmt.Errorf("record test-server state: %w", err)
 	}
 	// Detach from cmd.Wait: the server is supervised by Stop/Reap, not by
@@ -281,7 +278,11 @@ func stopState(state processState, registryDir string) error {
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
-		if remaining, err := groupMembers(state.PGID); err == nil && len(remaining) > 0 {
+		remaining, err = groupMembers(state.PGID)
+		if err != nil {
+			return fmt.Errorf("test-server termination unverified: %w", err)
+		}
+		if len(remaining) > 0 {
 			return fmt.Errorf("test-server process group still has %d member(s) after termination", len(remaining))
 		}
 	}
@@ -443,9 +444,18 @@ func Reap(registryDir string) (int, error) {
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-			if remaining, err := groupMembers(state.PGID); err == nil && len(remaining) > 0 {
+			remaining, err := groupMembers(state.PGID)
+			if err != nil {
+				continue
+			}
+			if len(remaining) > 0 {
 				if checked, ok := ownedGroup(state); ok {
 					signalOwnedMembers(state, checked, signalKill)
+				}
+				time.Sleep(100 * time.Millisecond)
+				remaining, err = groupMembers(state.PGID)
+				if err != nil || len(remaining) > 0 {
+					continue
 				}
 			}
 			killed++

@@ -35,3 +35,5 @@ func dirOwnedByCurrentUser(os.FileInfo) bool { return false }
 func acquireRegistryLock(string) (func(), error) {
 	return nil, errManagedServerUnsupported
 }
+
+func killNewGroup(int) error { return errManagedServerUnsupported }

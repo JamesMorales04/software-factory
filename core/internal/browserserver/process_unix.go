@@ -141,3 +141,10 @@ func acquireRegistryLock(path string) (func(), error) {
 		_ = file.Close()
 	}, nil
 }
+
+func killNewGroup(pgid int) error {
+	if pgid <= 0 {
+		return nil
+	}
+	return unix.Kill(-pgid, unix.SIGKILL)
+}
