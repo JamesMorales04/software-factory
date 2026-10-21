@@ -1,10 +1,11 @@
-//go:build !windows
+//go:build linux
 
 package browserserver
 
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,6 +48,56 @@ func processAlive(pid int) (bool, string) {
 		return false, ""
 	}
 	return true, fields[19]
+}
+
+func processCwd(pid int) (string, error) {
+	cwd, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(cwd, " (deleted)"), nil
+}
+
+func groupMemberPIDs(pgid int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		member, err := processGroupOf(pid)
+		if err != nil || member != pgid {
+			continue
+		}
+		out = append(out, pid)
+	}
+	return out
+}
+
+func processGroupOf(pid int) (int, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, err
+	}
+	closeParen := strings.LastIndex(string(raw), ")")
+	if closeParen < 0 {
+		return 0, os.ErrInvalid
+	}
+	fields := strings.Fields(string(raw[closeParen+1:]))
+	if len(fields) <= 2 {
+		return 0, os.ErrInvalid
+	}
+	return strconv.Atoi(fields[2])
+}
+
+func withinWorkspace(cwd, workDir string) bool {
+	cwd = filepath.Clean(cwd)
+	workDir = filepath.Clean(workDir)
+	return cwd == workDir || strings.HasPrefix(cwd, workDir+string(filepath.Separator))
 }
 
 func killProcessGroup(pid int) error {

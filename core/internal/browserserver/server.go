@@ -59,9 +59,15 @@ type Server struct {
 	reused      bool
 }
 
-// RegistryDir is the Worker-owned registry for managed test servers.
+// RegistryDir is the base directory for managed test-server state.
 func RegistryDir() string {
 	return filepath.Join(os.TempDir(), "factory-test-servers")
+}
+
+// WorkerRegistryDir is the per-Worker registry. Per-Worker ownership prevents
+// startup reaping in one Worker from killing another Worker's live server.
+func WorkerRegistryDir(workerID string) string {
+	return filepath.Join(RegistryDir(), "worker-"+stateKey(workerID))
 }
 
 // Reused reports whether an already-owned healthy server was reused.
@@ -85,8 +91,8 @@ func Start(ctx context.Context, cfg Config, registryDir string) (*Server, error)
 	if registryDir == "" {
 		registryDir = RegistryDir()
 	}
-	if err := os.MkdirAll(registryDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create test-server registry: %w", err)
+	if err := ensureRegistry(registryDir); err != nil {
+		return nil, err
 	}
 	statePath := filepath.Join(registryDir, stateKey(cfg.ID)+".json")
 	state, err := loadState(statePath)
@@ -148,9 +154,10 @@ func start(cfg Config, statePath, registryDir string) error {
 		return fmt.Errorf("start test server: %w", err)
 	}
 	pgid := processGroup(cmd)
-	startTime := ""
-	if alive, value := processAlive(cmd.Process.Pid); alive {
-		startTime = value
+	alive, startTime := processAlive(cmd.Process.Pid)
+	if !alive || startTime == "" {
+		_ = killProcessGroup(cmd.Process.Pid)
+		return errors.New("test server exited before ownership could be established")
 	}
 	state := processState{
 		ID: cfg.ID, PID: cmd.Process.Pid, PGID: pgid, StartTime: startTime,
@@ -211,21 +218,67 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 func stopState(state processState, registryDir string) error {
-	if alive, startTime := processAlive(state.PID); alive && (state.StartTime == "" || startTime == state.StartTime) {
-		_ = killProcessGroup(state.PID)
+	members, safe := ownedGroup(state)
+	if !safe {
+		return errors.New("test-server process identity is unverified; refusing to signal")
+	}
+	if len(members) > 0 {
+		_ = killProcessGroup(state.PGID)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			if alive, _ := processAlive(state.PID); !alive {
+			if len(groupMemberPIDs(state.PGID)) == 0 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if alive, _ := processAlive(state.PID); alive {
-			_ = forceKillProcessGroup(state.PID)
+		if len(groupMemberPIDs(state.PGID)) > 0 {
+			_ = forceKillProcessGroup(state.PGID)
 		}
 	}
 	_ = os.Remove(filepath.Join(registryDir, stateKey(state.ID)+".json"))
 	_ = os.Remove(state.LogPath)
+	return nil
+}
+
+func ownedGroup(state processState) ([]int, bool) {
+	if state.PGID <= 0 || state.StartTime == "" || state.WorkDir == "" {
+		return nil, false
+	}
+	if alive, startTime := processAlive(state.PID); alive && startTime != state.StartTime {
+		return nil, false
+	}
+	members := groupMemberPIDs(state.PGID)
+	if len(members) == 0 {
+		return nil, true
+	}
+	for _, pid := range members {
+		cwd, err := processCwd(pid)
+		if err != nil || !withinWorkspace(cwd, state.WorkDir) {
+			return nil, false
+		}
+	}
+	return members, true
+}
+
+func ensureRegistry(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("test-server registry path is not a safe directory")
+		}
+		if info.Mode().Perm() != 0o700 {
+			if err := os.Chmod(path, 0o700); err != nil {
+				return fmt.Errorf("secure test-server registry: %w", err)
+			}
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("create test-server registry: %w", err)
+	}
 	return nil
 }
 
@@ -251,17 +304,24 @@ func Reap(registryDir string) (int, error) {
 			_ = os.Remove(filepath.Join(registryDir, entry.Name()))
 			continue
 		}
-		if alive, startTime := processAlive(state.PID); alive && (state.StartTime == "" || startTime == state.StartTime) {
-			_ = killProcessGroup(state.PID)
+		members, safe := ownedGroup(state)
+		if !safe {
+			// Do not signal an unverified PID/group; drop the stale state.
+			_ = os.Remove(filepath.Join(registryDir, entry.Name()))
+			_ = os.Remove(state.LogPath)
+			continue
+		}
+		if len(members) > 0 {
+			_ = killProcessGroup(state.PGID)
 			deadline := time.Now().Add(3 * time.Second)
 			for time.Now().Before(deadline) {
-				if alive, _ := processAlive(state.PID); !alive {
+				if len(groupMemberPIDs(state.PGID)) == 0 {
 					break
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-			if alive, _ := processAlive(state.PID); alive {
-				_ = forceKillProcessGroup(state.PID)
+			if len(groupMemberPIDs(state.PGID)) > 0 {
+				_ = forceKillProcessGroup(state.PGID)
 			}
 			killed++
 		}

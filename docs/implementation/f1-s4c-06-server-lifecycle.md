@@ -42,10 +42,13 @@ The Worker:
 3. writes logs outside the repository under a Worker-owned registry;
 4. waits for the authorized endpoint to return 2xx;
 5. records PID/process group/start-time/workspace ownership and reuses only a
-   verified owned healthy server;
+   verified owned healthy server; identity is mandatory and an empty start
+   time is never treated as a wildcard;
 6. refuses to adopt a healthy unowned process on the port;
-7. stops the owned process group on completion, failure or cancellation;
-8. reaps stale managed servers at Worker startup after a crash.
+7. stops the owned process group on completion, failure or cancellation,
+   including descendants after the group leader exits;
+8. reaps stale managed servers at Worker startup after a crash, in a per-Worker
+   registry so one Worker cannot kill another Worker's live server.
 
 Startup failure is reported as `browser-test-server: ...` and classified
 `INFRASTRUCTURE_BLOCKED`; no Paseo session is started and no paid model attempt
@@ -67,7 +70,10 @@ prompt tells the model the server is already running and must not be restarted.
 - **D1/D2:** same-session continuation and failed-command rejection remain.
 - **R1–R8, C1–C18** remain green.
 - Unit tests cover readiness, owned reuse, unowned-port rejection, startup
-  diagnosis, process-group cleanup, reaping and spaced command names.
+  diagnosis, process-group cleanup (including descendants after leader exit),
+  identity refusal, reaping and spaced command names. The process probe is
+  Linux-specific; non-Linux builds fail closed rather than pretending to own a
+  process.
 
 ## 4. Zero-paid real preflight
 

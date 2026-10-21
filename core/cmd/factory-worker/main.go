@@ -33,11 +33,12 @@ import (
 const workerVersion = "0.8.0-s4c"
 
 type client struct {
-	base    string
-	token   string
-	http    *http.Client
-	logger  *slog.Logger
-	runtime runtimeCapabilities
+	base        string
+	token       string
+	http        *http.Client
+	logger      *slog.Logger
+	runtime     runtimeCapabilities
+	registryDir string
 }
 
 func main() {
@@ -95,12 +96,14 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	registryDir := browserserver.WorkerRegistryDir(*workerID)
 	c := &client{
-		base:    strings.TrimRight(*coreAddr, "/"),
-		token:   token,
-		http:    &http.Client{Timeout: 15 * time.Second},
-		logger:  logger,
-		runtime: runtime,
+		base:        strings.TrimRight(*coreAddr, "/"),
+		token:       token,
+		http:        &http.Client{Timeout: 15 * time.Second},
+		logger:      logger,
+		runtime:     runtime,
+		registryDir: registryDir,
 	}
 	podmanOK, err := resolveExecMode(ctx, *execMode, logger)
 	if err != nil {
@@ -112,7 +115,7 @@ func run(args []string) error {
 	if reaped := exec.ReapStaleRunRoots(); reaped > 0 {
 		logger.Info("reaped stale fixture workspaces", "count", reaped)
 	}
-	if reaped, rerr := browserserver.Reap(browserserver.RegistryDir()); rerr != nil {
+	if reaped, rerr := browserserver.Reap(registryDir); rerr != nil {
 		logger.Warn("test-server reaping failed", "error", rerr.Error())
 	} else if reaped > 0 {
 		logger.Info("reaped stale managed test servers", "count", reaped)
@@ -359,7 +362,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 			ReadyPath: actionSpec.BrowserTestServer.ReadyPath,
 			Command:   actionSpec.BrowserTestServer.Command,
 			Timeout:   time.Duration(actionSpec.BrowserTestServer.StartupTimeoutSecs) * time.Second,
-		}, browserserver.RegistryDir())
+		}, c.registryDir)
 		if err != nil {
 			cancel()
 			<-hbDone

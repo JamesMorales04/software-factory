@@ -953,7 +953,7 @@ def main():
             time.sleep(0.2)
         call("POST", f"/api/v1/campaigns/{d6_campaign['id']}/cancel", {})
         time.sleep(2)
-        registry_entries = list(Path("/tmp/factory-test-servers").glob("*.json")) if Path("/tmp/factory-test-servers").exists() else []
+        registry_entries = list(Path("/tmp/factory-test-servers").rglob("*.json")) if Path("/tmp/factory-test-servers").exists() else []
         check("D6 cancellation cleans up the managed test server",
               not port_open(4173) and not registry_entries,
               f"portOpen={port_open(4173)} registry={len(registry_entries)}")

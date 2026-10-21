@@ -176,3 +176,31 @@ func TestProcessProbeHandlesSpacedCommandName(t *testing.T) {
 		t.Fatalf("spaced command name not probed: alive=%v start=%q", alive, startTime)
 	}
 }
+
+func TestStopKillsDescendantAfterLeaderExit(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	registry := t.TempDir()
+	port := freePort(t)
+	cfg := Config{
+		ID: "descendant", WorkDir: work, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port),
+		ReadyPath: "/",
+		Command: []string{
+			"bash", "-c",
+			"python3 -m http.server \"$PORT\" --bind 127.0.0.1 >/dev/null 2>&1 & sleep 1; exit 0",
+		},
+		Timeout: 10 * time.Second,
+	}
+	server, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second) // leader exits; descendant remains in the group
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if _, err := client.Get(cfg.Endpoint); err == nil {
+		t.Fatal("descendant server still reachable after Stop")
+	}
+}

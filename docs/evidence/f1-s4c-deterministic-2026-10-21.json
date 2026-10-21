@@ -32,12 +32,12 @@
     {
       "name": "C9 Factory-managed Implementer invoked Playwright CLI through the wrapper",
       "pass": true,
-      "detail": "{\"browserCLIVersion\": \"0.1.22\", \"browserCleanup\": \"ok\", \"browserCommands\": \"open,snapshot,close\", \"browserInvocations\": 3, \"browserInvoked\": true, \"browserSkillDigest\": \"a5206eeb0a68f796933307cdc90620abe576bd5dd0061daa86f073be0e3832f7\", \"browserSuccessfulCommands\": \"open,snapshot,close\", \"candidateId\": \"45add62a4b3de0f691ff29619b2b992f\", \"capability\": \"browser\", \"capabilityNudges\": 0, \"cleanup\": \"ok\", \"cwd\": \"/tmp/factory-worker-runs-1488234969/attempt-2408480128\", \"diffBytes\": 1216, \"diffStat\": \"src/app.js    | 4 ++--\\n src/filter.js | 5 +++--\\n 2 files changed, 5 insertions(+), 4 deletions(-)\", \"formatExit\": 0, \"model\": \"opencode-go/deepseek-v4.1-flash\", \"nudges\": 0, \"paseoMode\": \"build\", \"provider\": \"opencode\", \"sessionId\": \"sess_2\", \"testExit\": 0, \"testServerEndpoint\": \"http://127.0.0.1:4173\", \"testServerManaged\": true, \"testServerReused\": false, \"timelineLines\": 5, \"timelineSteps\": \"Edit:1,Read:1,Shell:2,Text:1\", \"toolSteps\": 4, \"workspaceId\": \"ws_1\"}"
+      "detail": "{\"browserCLIVersion\": \"0.1.22\", \"browserCleanup\": \"ok\", \"browserCommands\": \"open,snapshot,close\", \"browserInvocations\": 3, \"browserInvoked\": true, \"browserSkillDigest\": \"b52c1eaca394e0c88272026216ed65d92b347942f469f3dc3c6a282491ec90cc\", \"browserSuccessfulCommands\": \"open,snapshot,close\", \"candidateId\": \"5bd82c350e6b62054b855406d320de9d\", \"capability\": \"browser\", \"capabilityNudges\": 0, \"cleanup\": \"ok\", \"cwd\": \"/tmp/factory-worker-runs-1912235176/attempt-639839092\", \"diffBytes\": 1216, \"diffStat\": \"src/app.js    | 4 ++--\\n src/filter.js | 5 +++--\\n 2 files changed, 5 insertions(+), 4 deletions(-)\", \"formatExit\": 0, \"model\": \"opencode-go/deepseek-v4.1-flash\", \"nudges\": 0, \"paseoMode\": \"build\", \"provider\": \"opencode\", \"sessionId\": \"sess_2\", \"testExit\": 0, \"testServerEndpoint\": \"http://127.0.0.1:4173\", \"testServerManaged\": true, \"testServerReused\": false, \"timelineLines\": 5, \"timelineSteps\": \"Edit:1,Read:1,Shell:2,Text:1\", \"toolSteps\": 4, \"workspaceId\": \"ws_1\"}"
     },
     {
       "name": "C10 Independent verifier ran a real Chromium browser check",
       "pass": true,
-      "detail": "{\"id\": \"browser\", \"kind\": \"browser\", \"status\": \"PASS\", \"command\": [\"node\", \"tests/acceptance/browser-check.mjs\"], \"exitCode\": 0, \"durationMs\": 709, \"detail\": \"chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true\"}"
+      "detail": "{\"id\": \"browser\", \"kind\": \"browser\", \"status\": \"PASS\", \"command\": [\"node\", \"tests/acceptance/browser-check.mjs\"], \"exitCode\": 0, \"durationMs\": 667, \"detail\": \"chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true\"}"
     },
     {
       "name": "C13 native orchestration; all four role tasks succeeded without external orchestration",
@@ -137,7 +137,7 @@
     {
       "name": "C15 cancellation is scoped to the active Implementer Run",
       "pass": true,
-      "detail": "{\"id\": \"fda7cc0998226ad45003a9d9800ee7d0\", \"projectId\": \"calculator\", \"actionId\": \"f7b64f0686724d3debf70994a96e1f40\", \"workloadKind\": \"paseo-task\", \"workloadInput\": {\"task\": \"Correct division by zero. Keep protected files unchanged.\"}, \"status\": \"cancelled\", \"attemptCount\": 0, \"maxAttempts\": 1, \"timeoutSecs\": 600, \"leaseGeneration\": 0, \"leaseExpiresAt\": \"0001-01-01T00:00:00Z\", \"executionMode\": \"trusted-local\", \"provider\": \"opencode\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"paseoMode\": \"build\", \"specId\": \"7a9fc4c396c0ddb1907e59fcdc433016\", \"capabilities\": [\"repository-edit\", \"node-toolchain\"], \"specBindingHash\": \"190e9d902737809132520d6eb72d98d88ce075836805edecec754407ea3c75e0\", \"createdAt\": \"2026-10-21T16:48:58.923Z\", \"updatedAt\": \"2026-10-21T16:48:59.119Z\"}"
+      "detail": "{\"id\": \"4431c722dbb204babd90daa544902922\", \"projectId\": \"calculator\", \"actionId\": \"549aa024d36f7216b817c2d03c5b07d9\", \"workloadKind\": \"paseo-task\", \"workloadInput\": {\"task\": \"Correct division by zero. Keep protected files unchanged.\"}, \"status\": \"cancelled\", \"attemptCount\": 0, \"maxAttempts\": 1, \"timeoutSecs\": 600, \"leaseGeneration\": 0, \"leaseExpiresAt\": \"0001-01-01T00:00:00Z\", \"executionMode\": \"trusted-local\", \"provider\": \"opencode\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"paseoMode\": \"build\", \"specId\": \"f2ef3f9fec8215cdd50ca72f5e6d10c7\", \"capabilities\": [\"repository-edit\", \"node-toolchain\"], \"specBindingHash\": \"ff9150106c7c3f767c8022c92997b983664ca8522d8bf7926a665f69f9e68449\", \"createdAt\": \"2026-10-21T17:01:49.233Z\", \"updatedAt\": \"2026-10-21T17:01:49.427Z\"}"
     },
     {
       "name": "C16 Campaign terminal state is reached after Core restart",
@@ -165,7 +165,7 @@
     {
       "name": "R2 recovery preserves the failed Run identity and creates a new fenced Run",
       "pass": true,
-      "detail": "[{\"id\": \"9109e1994b788e671724aacf7dba302e\", \"campaignId\": \"16af3a0f2ee4534beb08dc7302b93527\", \"taskId\": \"728d9f2873becc603bdee923deb77d96\", \"attemptIndex\": 1, \"failureClass\": \"RECOVERABLE_IMPLEMENTATION_FAILURE\", \"reason\": \"paseo-task verify: no-source-change: agent left no git diff\", \"previousRunId\": \"c2d54d06ce7366b08dcf2da54e3b89bd\", \"previousAttemptId\": \"d32fef5072e1cdc0396e148a4b77a0e4\", \"newRunId\": \"87a0aecf13f5e71d3875758872f98d3a\", \"createdAt\": \"2026-10-21T16:49:39.188Z\"}]"
+      "detail": "[{\"id\": \"b654aa1dd28852f2e2c32d761907980b\", \"campaignId\": \"817f8a95101c7dce2687adc94ce4541a\", \"taskId\": \"023da911cbc0ccf6e0ea09b69a7aac5a\", \"attemptIndex\": 1, \"failureClass\": \"RECOVERABLE_IMPLEMENTATION_FAILURE\", \"reason\": \"paseo-task verify: no-source-change: agent left no git diff\", \"previousRunId\": \"0e9a2297048d581302cd9b6b6ee31b28\", \"previousAttemptId\": \"5639e6bc42234e77ff59b2152d659856\", \"newRunId\": \"6b996fe356f4def926b22c080d029d6d\", \"createdAt\": \"2026-10-21T17:02:30.009Z\"}]"
     },
     {
       "name": "R2 recovery consumes bounded campaign attempts",
@@ -184,7 +184,7 @@
     {
       "name": "R4 genuine acceptance failure creates a new candidate and fresh evidence",
       "pass": true,
-      "detail": "[[\"frozen\", \"1a55b6c47f7e1bc2f6aadbc8b8e1095503a35605\"], [\"superseded\", \"5dce8a9166ffa2f7dc7db0b122d362eb467539a3\"]]"
+      "detail": "[[\"frozen\", \"858d0bd76382e0027109ec14a5d0362fb54607b3\"], [\"superseded\", \"cb533f1a976a488b5817b7d90c9fd3d38c701803\"]]"
     },
     {
       "name": "R5 exhausted budget terminates with a truthful inspectable reason",
@@ -199,7 +199,7 @@
     {
       "name": "R7 oracle correction requires a new frozen specification and preserves old evidence",
       "pass": true,
-      "detail": "{\"bad\": \"019df9a958596731f3cecdfbe312c7e75fe9d8bf00ccd99505e9ef0c69f15cb3\", \"good\": \"a5800a816325579862f77329f690686b39e10ee75c4faf772d7ebb5faedccb47\"}"
+      "detail": "{\"bad\": \"6426c4f616b94e0b4c6830465e44762decab92c31ef0dba440efd2c2afe7223c\", \"good\": \"65d9bce399951766113aa31cf327ba4d6cdc87287e632b662b721849a6d2e8fb\"}"
     },
     {
       "name": "D1 productive Implementer without browser receives same-session continuation",
@@ -235,45 +235,45 @@
   "failures": [],
   "projectA": "vlog",
   "projectB": "calculator",
-  "actionA": "1a527e87213507f31cf9ce448f56f32d",
-  "specA": "9020ce726ebf5b9459d6b548845907ec",
-  "campaignA": "0ae63203c6c3d01cfab208ef19e6ec57",
-  "candidateA": "52f99938e4e58781fa307eef9278fa1888080d96",
+  "actionA": "940f7646fac374698c9d5e15a56e0bc1",
+  "specA": "77aec317e5ec68e8d34237f30b3289d0",
+  "campaignA": "41d06db053bfe1fd8f3a1ecb587133d7",
+  "candidateA": "956e189ce4889a2a614a770e03d19db3392af17d",
   "baseA": "f52f877bd390223b9fe7d867355528a070118a3d",
-  "actionB": "9dd6e64d079837682df77110ed43da7d",
-  "specB": "02349e0a8a46fa38cc3e5cddc1c0c195",
-  "campaignB": "ec0786f66bec86cfa00013cfa992159f",
-  "candidateB": "5820424ee2c6eb4ea5eeba2c71227d0fc7d45b0e",
+  "actionB": "2808d31e53593c00feb43b2c705aa7b0",
+  "specB": "9e6f293bbe234e1da6f918716412b274",
+  "campaignB": "8f856b8748ad38848d1d2a5c2a623bb4",
+  "candidateB": "a945bd2f143445977592d1c8ab2eb52bf6e085ce",
   "baseB": "451a3a8cf0cae6cb556f87d3f169d9d592339b16",
-  "blockedCampaign": "3e745030a3786a28f78f39b7a8356f8e",
-  "browserFailureCampaign": "90070068cef90ec285bc37dce5d11169",
-  "cancelCampaign": "67f98ac34dbdab398a2e4e249ba946bb",
-  "restartCampaign": "36fdd229fa1d21c79c6cf1eb32f244ff",
+  "blockedCampaign": "a4e00c51906fff63488d6c45d6bfc1f2",
+  "browserFailureCampaign": "3b5ed7f42ab81e1a8d00647c606cc77f",
+  "cancelCampaign": "ee01a11f80eb21548499e72477731f30",
+  "restartCampaign": "84ae1fd332343f2b0cac608c47856a5d",
   "concurrentCampaigns": [
-    "01adcb067245f354b5b993a8f441714c",
-    "7fb0423f970705c61666ceb60b713b62"
+    "bfd151254d8c7f4168b2c659ea8e7bb8",
+    "c4bdfd6fa401000d6215a05b6d0bb213"
   ],
-  "recoveryCampaign": "16af3a0f2ee4534beb08dc7302b93527",
-  "sameSessionCapabilityCampaign": "cbec81a9bd50b0b0ccdde3c042cde4f6",
-  "failedBrowserCommandCampaign": "41a50678f6eb49c5deb8ee22cceb08e1",
-  "serverBlockedCampaign": "c086fb9e5b32782770e9fd1c6ae5952b",
-  "serverStartupFailureCampaign": "68b486d5ffddef3d66c84f1da9610569",
-  "serverCancellationCampaign": "ae2c60b07801f83f4b8a528890a0e7d6",
+  "recoveryCampaign": "817f8a95101c7dce2687adc94ce4541a",
+  "sameSessionCapabilityCampaign": "9d14233cd4a7f53f4d367a60c60980e9",
+  "failedBrowserCommandCampaign": "bbc99161740f2cfce55ef026c7daf11d",
+  "serverBlockedCampaign": "b17ea33c85fc716cab1d46199d395e9d",
+  "serverStartupFailureCampaign": "31884e3fa29c2446b2a966f2b83e3ecd",
+  "serverCancellationCampaign": "fe6e79eb68fd292e190cc0096f27fd62",
   "recoveryCampaigns": {
-    "recoverable": "16af3a0f2ee4534beb08dc7302b93527",
-    "qualityRepair": "f9636a2e039d5573f46302f5f308c472",
-    "budgetExhausted": "3def347efd974c23f72f5f87e97d5997",
-    "securityBlocked": "733f0b26702ee4cca4e6c9186a512f36",
-    "oracleRevisionOld": "4b6986f5d7e9e566191f26d7d35bda23",
-    "oracleRevisionNew": "11b966023feec61df2c85f68451bf480"
+    "recoverable": "817f8a95101c7dce2687adc94ce4541a",
+    "qualityRepair": "590d8e4f00180e3130a35a81e6efae24",
+    "budgetExhausted": "d549285e7fb79e7ee51498e214d40515",
+    "securityBlocked": "5ffed5e2e540c574228afcae81399f51",
+    "oracleRevisionOld": "23f2005575fbf3740559583b076a1057",
+    "oracleRevisionNew": "8c8cadf8314f6f7229e1aef939dbccd7"
   },
   "journey": {
     "ok": true,
     "failure": "",
     "projectId": "vlog",
-    "actionId": "1a527e87213507f31cf9ce448f56f32d",
-    "specId": "9020ce726ebf5b9459d6b548845907ec",
-    "campaignId": "0ae63203c6c3d01cfab208ef19e6ec57",
+    "actionId": "940f7646fac374698c9d5e15a56e0bc1",
+    "specId": "77aec317e5ec68e8d34237f30b3289d0",
+    "campaignId": "41d06db053bfe1fd8f3a1ecb587133d7",
     "checks": [
       {
         "name": "browser registered Project A with a durable configuration",
@@ -283,12 +283,12 @@
       {
         "name": "browser created a Project-bound Action",
         "pass": true,
-        "detail": "1a527e87213507f31cf9ce448f56f32d"
+        "detail": "940f7646fac374698c9d5e15a56e0bc1"
       },
       {
         "name": "browser froze a Project-bound ActionSpec",
         "pass": true,
-        "detail": "9020ce726ebf5b9459d6b548845907ec"
+        "detail": "77aec317e5ec68e8d34237f30b3289d0"
       },
       {
         "name": "frozen spec records the Project identity and capabilities",
@@ -297,7 +297,7 @@
       {
         "name": "browser created and started the Campaign",
         "pass": true,
-        "detail": "0ae63203c6c3d01cfab208ef19e6ec57"
+        "detail": "41d06db053bfe1fd8f3a1ecb587133d7"
       },
       {
         "name": "Campaign reaches ACCEPTED through native orchestration",
