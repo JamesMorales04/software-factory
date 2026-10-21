@@ -423,7 +423,8 @@ func aggregateStatus(checks []domain.CheckResult, finalRisk int) domain.GateStat
 					repair = true
 				}
 			case domain.CheckFormat, domain.CheckLint, domain.CheckBuild,
-				domain.CheckTest, domain.CheckFunctional, domain.CheckNegative, domain.CheckBrowser:
+				domain.CheckTest, domain.CheckFunctional, domain.CheckNegative, domain.CheckBrowser,
+				domain.CheckCapability:
 				repair = true
 			default:
 				blocked = true

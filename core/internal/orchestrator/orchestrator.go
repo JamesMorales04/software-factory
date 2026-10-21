@@ -571,6 +571,9 @@ func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.Campa
 	}
 	instruction := fmt.Sprintf(" Repair cycle %d: fix the concrete failures reported by the previous Quality Gate (%s) without expanding the authorized scope or changing protected checks. Attempts used %d of at most %d.",
 		task.Cycle, reasons, used, maxAttempts)
+	if strings.Contains(strings.ToLower(reasons), "browser") || strings.Contains(strings.ToLower(reasons), "capability") {
+		instruction += " For the browser capability, start the authorized app and run the wrapper with open plus a successful snapshot/find/fill/click before finishing; help-only invocation is not acceptance evidence."
+	}
 	return appendBoundedInstruction(text, instruction)
 }
 

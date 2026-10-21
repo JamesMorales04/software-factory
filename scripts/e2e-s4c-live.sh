@@ -17,6 +17,8 @@ PROVIDER="${S4C_LIVE_PROVIDER:-opencode}"
 MODEL="${S4C_LIVE_MODEL:-opencode-go/deepseek-v4.1-flash}"
 PASEO_MODE="${S4C_LIVE_MODE:-build}"
 PROJECTS="${S4C_LIVE_PROJECTS:-vlog calculator}"
+MAX_ATTEMPTS="${S4C_LIVE_ATTEMPTS:-4}"
+MAX_REPAIRS="${S4C_LIVE_REPAIRS:-3}"
 CHROMIUM_EXE="${CHROMIUM_EXE:-$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome}"
 PLAYWRIGHT_CORE="${FACTORY_PLAYWRIGHT_CORE:-$ROOT/office/e2e-browser/node_modules/playwright-core}"
 BROWSER_CLI="${FACTORY_BROWSER_CLI:-$ROOT/office/e2e-browser/node_modules/.bin/playwright-cli}"
@@ -110,9 +112,11 @@ if project == "vlog":
     profile = "node-browser"
     allowed = ["src/filter.js","src/app.js"]
     goal = ("Implement functional category filtering with a no-results state in src/filter.js and src/app.js. "
-            "Preserve navigation, accessibility and the five existing entries. Use the factory-browser skill and "
-            "wrapper to exercise the UI at http://127.0.0.1:4173 after starting npm start. Do not edit tests, "
-            "browser-check.mjs, package.json, data.js or render.js.")
+            "Preserve navigation, accessibility and the five existing entries. Start the app with PORT=4173 npm start "
+            "(write logs under /tmp, not the repository), then use .agents/skills/factory-browser/SKILL.md and "
+            ".factory/bin/factory-playwright-cli.mjs. MANDATORY browser evidence: run `open http://127.0.0.1:4173/` and "
+            "at least one successful snapshot/find/fill/click before finishing; --help alone is rejected by the "
+            "Quality Gate. Do not edit tests, browser-check.mjs, package.json, data.js or render.js.")
     functional = ("node\n--input-type=module\n-e\nimport { filterEntries } from './src/filter.js'; "
                   "const entries=[{category:'Travel'},{category:'Technology'}]; "
                   "if(filterEntries(entries,'Travel').length!==1||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==2)process.exit(1)")
@@ -155,8 +159,10 @@ if status != 201:
     print(json.dumps({"ok":False,"project":project,"stage":"spec","status":status,"body":body}))
     sys.exit(3)
 spec = body["spec"]
-campaign = call("POST","/api/v1/campaigns",{"specId":spec["id"],"maxRepairCycles":3,
-    "maxWallClockSecs":3600,"maxParallel":2,"maxImplementerAttempts":4})[1]["campaign"]
+max_attempts = int(os.environ.get("S4C_LIVE_ATTEMPTS","4"))
+max_repairs = int(os.environ.get("S4C_LIVE_REPAIRS","3"))
+campaign = call("POST","/api/v1/campaigns",{"specId":spec["id"],"maxRepairCycles":max_repairs,
+    "maxWallClockSecs":3600,"maxParallel":2,"maxImplementerAttempts":max_attempts})[1]["campaign"]
 call("POST","/api/v1/campaigns/"+campaign["id"]+"/start",{})
 deadline = time.time() + 3900
 projection = {}

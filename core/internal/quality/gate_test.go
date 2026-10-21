@@ -177,3 +177,17 @@ func TestBrowserCapabilityRequiresInteractionEvidence(t *testing.T) {
 		t.Fatalf("uninvoked capability accepted: %+v", result)
 	}
 }
+
+func TestCapabilityFailureRequestsRepairNotSecurityBlock(t *testing.T) {
+	checks := []domain.CheckResult{
+		{ID: "gate-identity", Kind: domain.CheckIdentity, Status: domain.CheckPass},
+		{
+			ID: "gate-capability", Kind: domain.CheckCapability, Status: domain.CheckFail,
+			Detail: "Playwright was invoked only without an observable browser interaction",
+		},
+		{ID: "functional", Kind: domain.CheckFunctional, Status: domain.CheckPass},
+	}
+	if got := aggregateStatus(checks, 0); got != domain.GateRepair {
+		t.Fatalf("capability failure status = %s, want REPAIR_REQUIRED", got)
+	}
+}

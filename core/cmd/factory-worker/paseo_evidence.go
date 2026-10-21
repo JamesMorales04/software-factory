@@ -41,8 +41,11 @@ func paseoTaskPrompt(task, workDir string, run domain.Run, spec *domain.ActionSp
 		browserHint = " Factory has granted this Run the browser capability. Use the project skill " +
 			".agents/skills/factory-browser/SKILL.md and the wrapper " +
 			".factory/bin/factory-playwright-cli.mjs for self-testing. Authorized local endpoints are exactly: " +
-			strings.Join(spec.BrowserEndpoints, ", ") + ". Do not edit .agents/ or .factory/ and do not use any other browser target. " +
-			"Playwright CLI invocations are recorded as capability evidence."
+			strings.Join(spec.BrowserEndpoints, ", ") + ". MANDATORY: start the app on an authorized endpoint, then run " +
+			"`node .factory/bin/factory-playwright-cli.mjs open <endpoint>/` followed by at least one successful " +
+			"observation/interaction command such as `snapshot`, `find`, `fill`, or `click`. The Quality Gate rejects " +
+			"a Run that only invoked `--help` or attempted commands without success. Do not edit .agents/ or .factory/ " +
+			"and do not use any other browser target. Playwright CLI invocation outcomes are recorded as capability evidence."
 	}
 	return "Your target directory is exactly: " + workDir + ". It is an authorized " +
 		"repository checkout with its own package.json scripts. Task: " + task + " " +
