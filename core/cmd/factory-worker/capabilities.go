@@ -193,8 +193,10 @@ Use exactly this wrapper: %s
   under /tmp) so runtime artifacts never become candidate changes. Exercise
   the real UI, then close the browser.
 - A screenshot or CLI exit alone is not PASS: assert the observable UI state
-  and report concrete results. Independent verification is performed later
-  by Factory's Verifier, not by you.
+  and report concrete results. Run open followed by an observation or
+  interaction command (snapshot, find, fill, click, eval); --help alone is not
+  browser capability evidence. Independent verification is
+  performed later by Factory's Verifier, not by you.
 `, wrapper, wrapper, allowed, browser.ChromiumPath, browser.CorePath,
 		browser.CLIVersion)
 }

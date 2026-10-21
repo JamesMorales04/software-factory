@@ -253,14 +253,32 @@ func capabilityCheck(in Input) (domain.CheckResult, []string) {
 			"legacy spec: browser acceptance remains the Independent Verifier's protected check"), nil
 	}
 	invoked, _ := in.Run.Result["browserInvoked"].(bool)
+	commandText, _ := in.Run.Result["browserCommands"].(string)
 	if !invoked {
 		return gateCheck("gate-capability", domain.CheckCapability, false,
 				"browser capability was required but the Factory-managed Implementer recorded no Playwright invocation"), []string{
 				"capability: browser capability was required but not exercised by the Implementer",
 			}
 	}
+	seen := map[string]bool{}
+	for _, command := range strings.Split(commandText, ",") {
+		seen[strings.TrimSpace(strings.ToLower(command))] = true
+	}
+	interaction := false
+	for _, command := range []string{"snapshot", "goto", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"} {
+		if seen[command] {
+			interaction = true
+			break
+		}
+	}
+	if !seen["open"] || !interaction {
+		return gateCheck("gate-capability", domain.CheckCapability, false,
+				"Playwright was invoked only without an observable browser interaction (commands: "+commandText+")"), []string{
+				"capability: browser invocation lacked an open plus interaction/observation command",
+			}
+	}
 	return gateCheck("gate-capability", domain.CheckCapability, true,
-		"Factory-managed Playwright invocation recorded by the Implementer Run"), nil
+		"Factory-managed Playwright browser interaction recorded by the Implementer Run: "+commandText), nil
 }
 
 func verifierChecks(in Input) ([]domain.CheckResult, []string) {
