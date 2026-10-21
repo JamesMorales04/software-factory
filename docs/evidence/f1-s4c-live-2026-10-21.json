@@ -1128,7 +1128,7 @@
   },
   "autonomous_recovery_observed_naturally": false,
   "autonomous_recovery_note": "No recoverable failure occurred naturally in any paid session. R10 is NOT_TESTED. R1-R8 recovery behavior was proven deterministically; no artificial paid failure was injected.",
-  "disposition": "C-05 final Vlog live session failed: candidate 3aa64273\u2026 passed independent Chromium verification and review, but the Implementer recorded only --help; the C-04 capability continuation was triggered but the model did not complete a successful open+interaction. Gate REPAIR_REQUIRED. Final implementation 65ca3a8 is not REAL_PASEO_E2E_VERIFIED. No further paid session is authorized.",
+  "disposition": "C-06 resolves the agent-managed server-start reliability gap deterministically and preflights the real Vlog wrapper with zero paid sessions. Final live Vlog certification remains HUMAN_REQUIRED because the prior live attempt failed and no new paid session is authorized.",
   "final_vlog_attempt": [
     {
       "project": "vlog",
@@ -2104,5 +2104,17 @@
     "session_cleanup": "closed and archived",
     "workspace_cleanup": "archived/absent",
     "result": "No additional paid session authorized; final Vlog live certification not achieved."
+  },
+  "c06": {
+    "authorization": "none; zero paid C-06 sessions spent",
+    "runtime_code_commit": "5f85372012326b8cec4f509f2997e118c802b6cc",
+    "final_head": "66a63fb",
+    "preflight": "Real Vlog app + generated Factory wrapper + real Chromium open/snapshot/close; zero paid sessions; unauthorized URL rejected; managed server stopped.",
+    "deterministic": "51/51 checks, three consecutive stable runs, S4-A/S4-B strict green",
+    "independent_verifier": "PASS on 66a63fb; heartbeat-cancel race and stale-descendant path verified",
+    "luna": "APPROVE_WITH_NOTES on 66a63fb",
+    "vlog_live_capability": "NOT_TESTED after C-06; previous C-05 live attempt failed because the model did not complete browser interaction",
+    "paid_sessions_spent": 0,
+    "next_run": "One Vlog Implementer session requires new Product Owner authorization; maxAttempts=1, maxRepairs=0; do not use Calculator allowance."
   }
 }
