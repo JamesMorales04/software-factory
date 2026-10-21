@@ -141,11 +141,13 @@ func Start(ctx context.Context, cfg Config, registryDir string) (*Server, error)
 				server := &Server{registryDir: registryDir, state: state, logPath: state.LogPath, reused: true}
 				return server, nil
 			}
-			if err := stopState(state, registryDir); err != nil {
-				return nil, fmt.Errorf("stale managed test server cleanup is unverified: %w", err)
-			}
 		}
-		_ = os.Remove(statePath)
+		// The leader may be gone while descendants remain. Always let
+		// stopState verify/kill the recorded group; it retains state when
+		// ownership cannot be proven.
+		if err := stopState(state, registryDir); err != nil {
+			return nil, fmt.Errorf("stale managed test server cleanup is unverified: %w", err)
+		}
 	}
 	if healthy(ctx, cfg.Endpoint, cfg.ReadyPath) {
 		return nil, ErrPortOccupied

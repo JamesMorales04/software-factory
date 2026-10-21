@@ -54,6 +54,9 @@ The Worker:
 8. reaps stale managed servers at Worker startup after a crash, in a per-Worker
    registry so one Worker cannot kill another Worker's live server; an
    exclusive registry lock refuses a second Worker with the same logical ID.
+9. before starting a new server, cleans any stale state even when its leader
+   has exited, and keeps the state row if group ownership or termination cannot
+   be verified.
 
 Startup failure is reported as `browser-test-server: ...` and classified
 `INFRASTRUCTURE_BLOCKED`; no Paseo session is started and no paid model attempt

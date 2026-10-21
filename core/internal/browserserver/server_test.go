@@ -317,3 +317,35 @@ func TestStaleStateDoesNotReuseMismatchedWorkspace(t *testing.T) {
 		t.Fatal("unverified stale state was removed")
 	}
 }
+
+func TestStaleStateKillsDescendantAfterLeaderExit(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	registry := t.TempDir()
+	port := freePort(t)
+	cfg := Config{
+		ID: "stale-descendant", WorkDir: work,
+		Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), ReadyPath: "/",
+		Command: []string{
+			"bash", "-c",
+			"python3 -m http.server \"$PORT\" --bind 127.0.0.1 >/dev/null 2>&1 & sleep 1; exit 0",
+		},
+		Timeout: 10 * time.Second,
+	}
+	first, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second) // leader exits, descendant remains
+	second, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatalf("restart over stale descendant: %v", err)
+	}
+	defer func() { _ = second.Stop(context.Background()) }()
+	if second.state.PID == first.state.PID {
+		t.Fatal("stale state was reused instead of cleaned")
+	}
+	if healthy(ctx, cfg.Endpoint, cfg.ReadyPath) == false {
+		t.Fatal("new managed server is not healthy")
+	}
+}

@@ -272,6 +272,12 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				return
 			case <-ticker.C:
 				if herr := c.heartbeat(execCtx, workerID, run.ID, attempt.ID, attempt.LeaseGeneration); herr != nil {
+					// A local completion/shutdown cancellation also makes an
+					// in-flight heartbeat return context.Canceled. That is not
+					// a Core fence and must not suppress a truthful report.
+					if execCtx.Err() != nil {
+						return
+					}
 					select {
 					case fenced <- herr:
 					default:
