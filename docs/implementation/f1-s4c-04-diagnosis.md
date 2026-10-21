@@ -2,8 +2,11 @@
 
 **Status:** Diagnosis complete; same-session completion implemented and
 deterministically verified. No paid Paseo session was spent for C-04.
-Final live certification remains **HUMAN_REQUIRED** pending Product Owner
-authorization.
+Final live certification for the C-04 implementation remained
+**HUMAN_REQUIRED** pending Product Owner authorization. F1-S4-C-07 later
+achieved the bounded Vlog live path on tested head `9567bc5`; see
+[C-07 live certification](f1-s4c-07-live-certification.md). This diagnosis is
+historical and is not rewritten.
 
 ## Phase A — diagnosed root cause
 
@@ -134,6 +137,7 @@ The S4-C lane adds:
   triggered (`capabilityNudges=1`) and the model attempted to restart the app,
   but the shell command errored and the agent ended without `open`/interaction.
   Gate `REPAIR_REQUIRED`. Session/workspace closed and archived. No further
-  paid session is authorized; Vlog live certification remains HUMAN_REQUIRED.
+  paid session was authorized for that implementation; C-07 later achieved the
+  bounded Vlog live path on `9567bc5`.
 - No additional paid session will be started without explicit Product Owner
   authorization.

@@ -1,11 +1,16 @@
 # F1-S4-C acceptance matrix
 
-**Status:** Implemented and deterministically verified (2026-10-21 UTC; local session date 2026-10-20). The
-implementation candidate is the PR head; deterministic evidence is
-[`f1-s4c-deterministic-2026-10-21.json`](../evidence/f1-s4c-deterministic-2026-10-21.json).
-Real Paseo live certification is **not achieved**; the two authorized initial
-sessions and their truthful non-accepting results are recorded in
-[`f1-s4c-live-2026-10-21.json`](../evidence/f1-s4c-live-2026-10-21.json).
+**Status:** F1-S4-C-07 achieved the final bounded real-Paseo Vlog live path on
+tested Factory head `9567bc5` (runtime `14133cb7`): one paid Implementer
+session, initial-turn model-mediated browser `open/snapshot/click`, candidate
+`e49f62d`, independent verifier PASS, reviewer `APPROVE`, deterministic Quality
+Gate `ACCEPTED`, and confirmed session/workspace/server cleanup. The disposition
+is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`; PR #12 is unmerged and
+`PRODUCT_OWNER_UAT_VERIFIED` is not claimed. Historical C-05 failures remain
+recorded unchanged; C-07 supersedes them as the final Vlog live result for the
+tested runtime. Evidence:
+[`f1-s4c-07-live-2026-10-21.json`](../evidence/f1-s4c-07-live-2026-10-21.json)
+and [`f1-s4c-live-2026-10-21.json`](../evidence/f1-s4c-live-2026-10-21.json).
 TRUSTED_LOCAL only; control-plane scoping is not OS isolation and is never
 called isolated or SEC-01 certified.
 
@@ -62,8 +67,31 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | C24 | PASS deterministic | DETERMINISTIC | Candidate Git objects, spec, binding hash, browser/arithmetic checks, reviewer verdict and gate result correlate. Simulated runs are distinguishable from the two live sessions. |
 | C25 | NOT ACHIEVED (full) | LIVE | C-05 tested implementation `65ca3a8`; Vlog gate `REPAIR_REQUIRED` after the capability continuation still yielded only `--help`. Full exact-SHA live certification is not claimed. |
 | C26 | READY | DOCUMENTED | Manual UAT instructions and safe cleanup are in the handoff; the Product Owner journey was not silently executed. |
+| C27 | PASS (live C-07) | LIVE MODEL | Vlog campaign `bd245745…`, Run `b72a6f10…`, session `73dd6dd2…`: one paid session produced candidate `e49f62d` and model-mediated `open,snapshot,click,snapshot,click,snapshot` on the initial turn (`capabilityNudges=0`); gate `ACCEPTED`. |
+| C28 | PASS (live C-07) | LIVE MODEL | Worker-managed `npm start` server ready before Paseo in `wks_69356fdd…`; endpoint `http://127.0.0.1:4173`; stopped with port closed and no registry state afterward. |
+| C29 | PASS (not needed) | LIVE MODEL | Initial-turn browser evidence was complete, so the C-04 same-session continuation was not used; deterministic D1 remains PASS. |
+| C30 | PASS (live C-07) | LIVE MODEL | Session closed/archived, workspace absent, managed server stopped; no orphan or unbound external session. |
+| C31 | PASS | INDEPENDENT | Clean-clone candidate verification reproduced format/test/functional and the protected real-Chromium oracle; 1/2 paid sessions, 0/1 repairs, no authorization breach. One independent S4-B run transiently failed on SQLite lock; local S4-B passed 3/3. |
 
 ## Independent verification and review
+
+### C-07 final live candidate
+
+- **Independent clean-clone acceptance:** PASS for candidate `e49f62d` on
+  tested Factory head `9567bc5` / runtime `14133cb7`. Exact base/changed paths;
+  format/test/functional PASS; protected Chromium oracle PASS
+  (`chromium 156.0.8078.4`, consoleErrors=0, failedRequests=0); live evidence
+  and cleanup reconciled; 1/2 paid sessions, 0/1 repairs.
+- **GPT-6 Luna read-only review:** `APPROVE_WITH_NOTES` on the candidate and
+  live evidence; no blocking defect. Note: raw browser CLI transcripts are not
+  retained by design; `testServerReused=false` is expected because the server
+  is started fresh for the Attempt and was healthy before the session.
+- **Residual deterministic risk:** one independent S4-B run hit a transient
+  SQLite `database is locked` at B10; two subsequent independent runs and three
+  local strict runs passed. This is pre-existing lane flakiness, not a C-07
+  live failure, and is recorded rather than hidden.
+
+### Historical C-05 candidate
 
 - **Independent clean-checkout verifier:** PASS on exact code candidate
   `cfa250e` (`cfa250ee015ca61656e5c48e1c90583241077002`). Clean worktree,
@@ -94,11 +122,14 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
   `ACCEPTED`; closed and archived.
 - Earlier Vlog trial produced an accepted candidate under a weaker
   `--help`-permitted gate; it was superseded after the gate was tightened.
-- No `REAL_PASEO_E2E_VERIFIED` claim is made for final implementation
-  `65ca3a8`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
+- No `REAL_PASEO_E2E_VERIFIED` claim is made for the historical C-05
+  implementation `65ca3a8`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
 - C-05 authorization: exactly 1 Vlog session, used 1/1; 0 repair cycles.
-  No further paid session is authorized.
-- Vlog sessions used: 4/4. Calculator sessions used: 3/4 (one conserved).
+- C-07 authorization: one Vlog campaign, max 2 paid sessions / 1 repair.
+  Used **1/2 sessions**, **0/1 repairs**; one session conserved. Campaign
+  `bd245745…`, Run `b72a6f10…`, session `73dd6dd2…`, candidate `e49f62d`;
+  initial-turn browser PASS, gate ACCEPTED; no real corrective Attempt.
+- Vlog C-03 sessions used: 4/4; Calculator: 3/4 (one conserved).
   Every Paseo session/workspace above was observed closed and archived.
 
 ## F1-S4-C-03 autonomous recovery matrix
@@ -148,14 +179,25 @@ remain required. No frozen contract or historical decision was changed.
 The C-05 failure was an interrupted agent-managed background shell command, not
 an application exit. See [C-06 diagnosis](f1-s4c-06-server-lifecycle.md).
 
+## F1-S4-C-07 final live certification
+
+C-07 completed the bounded real-Paseo Vlog path on tested head `9567bc5`
+(runtime `14133cb7`): one paid `opencode/opencode-go/deepseek-v4.1-flash` build
+session, candidate `e49f62d`, initial-turn browser
+`open,snapshot,click,snapshot,click,snapshot`, independent verifier PASS,
+reviewer `APPROVE`, gate `ACCEPTED`, and confirmed cleanup. No repair cycle was
+used; one of two authorized sessions was conserved. Full report:
+[C-07 live certification](f1-s4c-07-live-certification.md). This is
+`MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`, not merged and not Product Owner UAT.
+
 ## Commands
 
 ```sh
 # deterministic S4-C lane (real Core/Worker/verifier/reviewer/Chromium; stub agent)
 bash scripts/e2e-s4c.sh
 
-# bounded real-Paseo lane; Product Owner opt-in, max two sessions
-FACTORY_S4C_LIVE=1 S4C_LIVE_PROJECTS="vlog calculator" bash scripts/e2e-s4c-live.sh
+# F1-S4-C-07 bounded real-Paseo Vlog lane; Product Owner opt-in only
+FACTORY_S4C_LIVE=1 bash scripts/e2e-s4c-07-live.sh
 
 # core gates
 (cd core && gofmt -l . && go vet ./... && go tool golangci-lint run ./... && go test -race ./...)
@@ -175,10 +217,13 @@ bash scripts/e2e-s1.sh
 - TRUSTED_LOCAL is not isolated. Project scoping rejects unauthorized
   control-plane operations but cannot contain hostile host-level code.
 - The deterministic agent simulator is not live-model evidence.
-- Vlog live certification is blocked on the exhausted C-03 budget; further
-  sessions require Product Owner authorization. The final gate correctly
-  rejected the vlog candidate for missing browser interaction rather than
-  accepting a prompt claim.
+- C-07 completed Vlog live certification for tested head `9567bc5`; the
+  disposition is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`, not merged. Product
+  Owner UAT is still outstanding.
+- One independent S4-B run transiently hit a SQLite lock; local runs passed
+  3/3. This pre-existing deterministic-lane flakiness is recorded, not hidden.
+- C-07 did not exercise corrective repair; no claim of live autonomous repair
+  is made.
 - Recovery classification is deterministic and intentionally conservative;
   ambiguous failures escalate to `HUMAN_REQUIRED` rather than retry.
 - S2 E2E remains blocked by the host's unsupported Podman graph driver.

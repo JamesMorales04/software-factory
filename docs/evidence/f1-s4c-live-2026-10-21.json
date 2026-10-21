@@ -1128,7 +1128,7 @@
   },
   "autonomous_recovery_observed_naturally": false,
   "autonomous_recovery_note": "No recoverable failure occurred naturally in any paid session. R10 is NOT_TESTED. R1-R8 recovery behavior was proven deterministically; no artificial paid failure was injected.",
-  "disposition": "C-06 resolves the agent-managed server-start reliability gap deterministically and preflights the real Vlog wrapper with zero paid sessions. Final live Vlog certification remains HUMAN_REQUIRED because the prior live attempt failed and no new paid session is authorized.",
+  "disposition": "C-06 removed the agent-managed server-start failure from the critical path. C-07 then achieved a real model-mediated Vlog campaign with one paid session, initial-turn browser interaction, independent verification, reviewer APPROVE and gate ACCEPTED. The final tested head is 9567bc5; Product Owner UAT and merge remain outstanding. No Calculator session or repair cycle was used.",
   "final_vlog_attempt": [
     {
       "project": "vlog",
@@ -2116,5 +2116,52 @@
     "vlog_live_capability": "NOT_TESTED after C-06; previous C-05 live attempt failed because the model did not complete browser interaction",
     "paid_sessions_spent": 0,
     "next_run": "One Vlog Implementer session requires new Product Owner authorization; maxAttempts=1, maxRepairs=0; do not use Calculator allowance."
+  },
+  "c07": {
+    "authorization": "one bounded Vlog campaign; max 2 paid Implementer sessions, max 1 corrective cycle, max 1 concurrent; no Calculator, no fallback, no auto-merge",
+    "sessions_authorized": 2,
+    "sessions_used": 1,
+    "sessions_conserved": 1,
+    "tested_factory_head": "9567bc5c144235bef341524adc44277d377f6167",
+    "runtime_code_commit": "14133cb7ce95cf519147632bc04229046e6f56b6",
+    "campaign_id": "bd245745efa4d5ae26d67f77f1933f57",
+    "action_id": "44ff7a007e10bc3da84bbe06f6891124",
+    "spec_id": "95bd9216ee0d58ba8a83c2e9462e2048",
+    "run_id": "b72a6f10726ff072f69e032110da0dfa",
+    "attempt_id": "575e2a639632b91adb5cf44e3abbc227",
+    "session_id": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+    "workspace_id": "wks_69356fdd7fd71c4e",
+    "candidate_commit": "e49f62df32c26e185c840b262435f7a21fea07fd",
+    "candidate_changed_paths": [
+      "src/app.js",
+      "src/filter.js"
+    ],
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseo_mode": "build",
+    "browser_successful_commands": [
+      "open",
+      "snapshot",
+      "click",
+      "snapshot",
+      "click",
+      "snapshot"
+    ],
+    "capability_nudges": 0,
+    "initial_turn": true,
+    "same_session_continuation": false,
+    "repair_cycles_used": 0,
+    "implementer_attempts_used": 1,
+    "verifier": "PASS: browser chromium 156.0.8078.4 consoleErrors=0 failedRequests=0; format/test/functional/negative PASS",
+    "reviewer": "APPROVE",
+    "gate": "ACCEPTED",
+    "managed_server": "Worker-managed http://127.0.0.1:4173; ready before session; stopped; port closed; no registry state",
+    "session_cleanup": "closed and archived",
+    "workspace_cleanup": "archived/absent from active workspace inventory",
+    "independent_verifier": "PASS: clean clone e49f62d; protected Chromium oracle PASS; browser commands confirmed initial turn; one session; cleanup confirmed",
+    "luna": "APPROVE_WITH_NOTES on candidate/economics; no blocking defect",
+    "status": "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW",
+    "product_owner_uat": "not claimed",
+    "notes": "No second session and no real corrective attempt. The managed test server is started fresh per Attempt, so testServerReused=false is expected. One independent S4-B run hit a transient SQLite database-locked at B10; local S4-B passed 3/3 and the C-07 live path passed."
   }
 }

@@ -1,0 +1,1213 @@
+{
+  "campaign": "F1-S4-C-07",
+  "implementation_sha": "9567bc5c144235bef341524adc44277d377f6167",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "paseo_mode": "build",
+  "project_id": "factory-fixture-vlog",
+  "authorization": {
+    "max_paid_implementer_sessions": 2,
+    "max_corrective_cycles": 1,
+    "max_concurrent": 1
+  },
+  "preflight": {
+    "clean-factory-worktree": {
+      "pass": true,
+      "detail": "clean"
+    },
+    "implementation-head": {
+      "pass": true,
+      "detail": "9567bc5c144235bef341524adc44277d377f6167"
+    },
+    "vlog-fixture": {
+      "pass": true,
+      "detail": "/home/james/Escritorio/Development/factory-fixtures/factory-fixture-vlog"
+    },
+    "vlog-clean-worktree": {
+      "pass": true,
+      "detail": "f52f877bd390223b9fe7d867355528a070118a3d"
+    },
+    "vlog-authorized-base": {
+      "pass": true,
+      "detail": "f52f877bd390223b9fe7d867355528a070118a3d"
+    },
+    "chromium": {
+      "pass": true,
+      "detail": "/home/james/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome"
+    },
+    "playwright-core": {
+      "pass": true,
+      "detail": "/home/james/Escritorio/Development/software-factory/office/e2e-browser/node_modules/playwright-core"
+    },
+    "browser-cli": {
+      "pass": true,
+      "detail": "/home/james/Escritorio/Development/software-factory/office/e2e-browser/node_modules/.bin/playwright-cli"
+    },
+    "managed-port-free": {
+      "pass": true,
+      "detail": "127.0.0.1:4173"
+    },
+    "paseo-provider": {
+      "pass": true,
+      "detail": {
+        "provider": "opencode",
+        "label": "OpenCode",
+        "status": "available",
+        "enabled": "Enabled",
+        "defaultMode": "default",
+        "modes": "Build, Plan"
+      }
+    },
+    "paseo-model": {
+      "pass": true,
+      "detail": "opencode-go/deepseek-v4.1-flash"
+    },
+    "paseo-version": {
+      "pass": true,
+      "detail": "0.9.1"
+    },
+    "clean-build": {
+      "pass": true,
+      "detail": "Core/Worker/Verifier/Reviewer/Office"
+    },
+    "worker-registered": {
+      "pass": true,
+      "detail": {
+        "id": "c07-live-69084de0",
+        "version": "0.8.0-s4c",
+        "status": "online",
+        "lastHeartbeat": "2026-10-21T21:44:19.506Z",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "generic-toolchain",
+          "browser"
+        ],
+        "execModes": [
+          "restricted",
+          "trusted-local"
+        ],
+        "createdAt": "2026-10-21T21:44:19.505Z",
+        "updatedAt": "2026-10-21T21:44:19.506Z"
+      }
+    },
+    "vlog-project-registered": {
+      "pass": true,
+      "detail": {
+        "id": "factory-fixture-vlog",
+        "revision": 1,
+        "browserTestServer": {
+          "command": [
+            "npm",
+            "start"
+          ],
+          "readyPath": "/",
+          "startupTimeoutSecs": 30
+        },
+        "browserEndpoints": [
+          "http://127.0.0.1:4173"
+        ]
+      }
+    },
+    "frozen-spec-contracts": {
+      "pass": true,
+      "detail": {
+        "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "browser"
+        ],
+        "browserEndpoints": [
+          "http://127.0.0.1:4173"
+        ],
+        "browserTestServer": {
+          "command": [
+            "npm",
+            "start"
+          ],
+          "readyPath": "/",
+          "startupTimeoutSecs": 30
+        },
+        "allowedPaths": [
+          "src/filter.js",
+          "src/app.js"
+        ],
+        "bindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build"
+      }
+    }
+  },
+  "paid_sessions_spent": 1,
+  "campaign_id": "bd245745efa4d5ae26d67f77f1933f57",
+  "action_id": "44ff7a007e10bc3da84bbe06f6891124",
+  "spec_id": "95bd9216ee0d58ba8a83c2e9462e2048",
+  "spec_binding_hash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+  "vlog_base": "f52f877bd390223b9fe7d867355528a070118a3d",
+  "campaign_bounds": {
+    "maxAttempts": 2,
+    "maxRepairCycles": 1,
+    "maxParallel": 1
+  },
+  "paid_sessions_started_at": 1792619059.7366645,
+  "campaign_status": "accepted",
+  "campaign_terminal_reason": "quality gate ACCEPTED",
+  "budget": {
+    "maxAttempts": 2,
+    "attemptsUsed": 1,
+    "maxRepairCycles": 1,
+    "repairCycles": 0,
+    "maxWallClockSecs": 1800,
+    "elapsedSecs": 56,
+    "remainingWallClockSecs": 1744,
+    "maxParallel": 1,
+    "activeParticipantMax": 1,
+    "recoveryAttempts": 0,
+    "providerBudget": "unknown"
+  },
+  "recoveries": [],
+  "decision": {
+    "id": "ba5b0ba58359c3d3771c1fbd41e07caf",
+    "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+    "candidateSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+    "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+    "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+    "policyRevision": "quality-baseline-s4a-v1",
+    "status": "ACCEPTED",
+    "evidenceDigest": "edb8047312f499239a827f4bc09306d7df62cd717fc63846b81058b9c3f2b8d3",
+    "reasons": [],
+    "checks": [
+      {
+        "id": "gate-identity",
+        "kind": "identity",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "exact candidate/spec/run/attempt identity"
+      },
+      {
+        "id": "gate-scope",
+        "kind": "scope",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "all changed paths are within the authorized scope"
+      },
+      {
+        "id": "gate-freshness",
+        "kind": "freshness",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "all evidence postdates the frozen candidate"
+      },
+      {
+        "id": "gate-independence",
+        "kind": "independence",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "separate verifier and reviewer authorities bound to the exact candidate"
+      },
+      {
+        "id": "gate-security",
+        "kind": "security",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "final diff risk R0 within spec risk R0"
+      },
+      {
+        "id": "format",
+        "kind": "format",
+        "status": "PASS",
+        "command": [
+          "npm",
+          "run",
+          "format"
+        ],
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "verified PASS"
+      },
+      {
+        "id": "test",
+        "kind": "test",
+        "status": "PASS",
+        "command": [
+          "npm",
+          "test"
+        ],
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "verified PASS"
+      },
+      {
+        "id": "functional",
+        "kind": "functional",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--input-type=module",
+          "-e",
+          "import { filterEntries } from './src/filter.js'; import { entries } from './src/data.js'; if(filterEntries(entries,'Travel').length!==2||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==5)process.exit(1)"
+        ],
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "verified PASS"
+      },
+      {
+        "id": "browser",
+        "kind": "browser",
+        "status": "PASS",
+        "command": [
+          "node",
+          "tests/acceptance/browser-check.mjs"
+        ],
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "verified PASS"
+      },
+      {
+        "id": "negative",
+        "kind": "negative",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--input-type=module",
+          "-e",
+          "import { entries, categories } from './src/data.js'; if(entries.length!==5||categories.length!==5||!categories.includes('Film')||!categories.includes('All'))process.exit(1)"
+        ],
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "verified PASS"
+      },
+      {
+        "id": "gate-capability",
+        "kind": "capability",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "Factory-managed Playwright browser interaction recorded by the Implementer Run: open,snapshot,click,snapshot,click,snapshot"
+      },
+      {
+        "id": "gate-review",
+        "kind": "review",
+        "status": "PASS",
+        "exitCode": 0,
+        "durationMs": 0,
+        "detail": "independent reviewer APPROVE"
+      }
+    ],
+    "actor": "core-quality-gate",
+    "createdAt": "2026-10-21T21:45:15.939Z"
+  },
+  "candidate": {
+    "id": "a7c96bbe7ab17568c72b026e726afaf1",
+    "projectId": "factory-fixture-vlog",
+    "actionId": "44ff7a007e10bc3da84bbe06f6891124",
+    "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+    "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+    "specBindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+    "policyRevision": "quality-baseline-s4a-v1",
+    "baseRevision": "f52f877bd390223b9fe7d867355528a070118a3d",
+    "commitSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+    "treeSha": "7dec1af87b552fc9c3b43a26326f8dfc8cd3e067",
+    "contentDigest": "9fb2f1289184891da9f4e9997d8d0850905f668249665a5f85977675feee31a0",
+    "candidateRef": "refs/factory/candidates/b72a6f10726ff072f69e032110da0dfa-1",
+    "repository": "/home/james/Escritorio/Development/factory-fixtures/factory-fixture-vlog",
+    "implementerRunId": "b72a6f10726ff072f69e032110da0dfa",
+    "implementerAttemptId": "575e2a639632b91adb5cf44e3abbc227",
+    "implementerGeneration": 1,
+    "implementerWorkerId": "c07-live-69084de0",
+    "executionMode": "trusted-local",
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseoMode": "build",
+    "changedPaths": [
+      "src/app.js",
+      "src/filter.js"
+    ],
+    "riskClass": "R0",
+    "state": "frozen",
+    "createdAt": "2026-10-21T21:45:14.185Z",
+    "frozenAt": "2026-10-21T21:45:14.185Z",
+    "supersededAt": "0001-01-01T00:00:00Z"
+  },
+  "tasks": [
+    {
+      "key": "implementer-0",
+      "role": "implementer",
+      "cycle": 0,
+      "status": "succeeded",
+      "runId": "b72a6f10726ff072f69e032110da0dfa",
+      "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+      "outcome": "e49f62df32c26e185c840b262435f7a21fea07fd",
+      "error": null
+    },
+    {
+      "key": "verifier-0",
+      "role": "verifier",
+      "cycle": 0,
+      "status": "succeeded",
+      "runId": "b72a6f10726ff072f69e032110da0dfa",
+      "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+      "outcome": "passed",
+      "error": null
+    },
+    {
+      "key": "reviewer-0",
+      "role": "reviewer",
+      "cycle": 0,
+      "status": "succeeded",
+      "runId": "b72a6f10726ff072f69e032110da0dfa",
+      "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+      "outcome": "APPROVE",
+      "error": null
+    },
+    {
+      "key": "gate-0",
+      "role": "quality_gate",
+      "cycle": 0,
+      "status": "succeeded",
+      "runId": "b72a6f10726ff072f69e032110da0dfa",
+      "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+      "outcome": "ACCEPTED",
+      "error": null
+    },
+    {
+      "key": "implementer-1",
+      "role": "implementer",
+      "cycle": 1,
+      "status": "cancelled",
+      "runId": null,
+      "candidateId": null,
+      "outcome": null,
+      "error": "quality gate ACCEPTED"
+    },
+    {
+      "key": "verifier-1",
+      "role": "verifier",
+      "cycle": 1,
+      "status": "cancelled",
+      "runId": null,
+      "candidateId": null,
+      "outcome": null,
+      "error": "quality gate ACCEPTED"
+    },
+    {
+      "key": "reviewer-1",
+      "role": "reviewer",
+      "cycle": 1,
+      "status": "cancelled",
+      "runId": null,
+      "candidateId": null,
+      "outcome": null,
+      "error": "quality gate ACCEPTED"
+    },
+    {
+      "key": "gate-1",
+      "role": "quality_gate",
+      "cycle": 1,
+      "status": "cancelled",
+      "runId": null,
+      "candidateId": null,
+      "outcome": null,
+      "error": "quality gate ACCEPTED"
+    }
+  ],
+  "implementer_runs": [
+    "b72a6f10726ff072f69e032110da0dfa"
+  ],
+  "failed_implementer_runs": [],
+  "runs": [
+    {
+      "run": {
+        "id": "b72a6f10726ff072f69e032110da0dfa",
+        "projectId": "factory-fixture-vlog",
+        "actionId": "44ff7a007e10bc3da84bbe06f6891124",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Implement functional category filtering with a no-results state in src/filter.js and src/app.js. Preserve navigation, accessibility and the five existing entries. The authorized test server is already managed and running by Factory at http://127.0.0.1:4173; do not start, restart, or kill it. Use .agents/skills/factory-browser/SKILL.md and .factory/bin/factory-playwright-cli.mjs. MANDATORY browser evidence: run `node .factory/bin/factory-playwright-cli.mjs open http://127.0.0.1:4173/` followed by a successful `node .factory/bin/factory-playwright-cli.mjs snapshot` against the managed server. Do not use `--help` as browser evidence. Do not edit tests, browser-check.mjs, package.json, data.js or render.js."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "browserCLIVersion": "0.1.22",
+          "browserCleanup": "ok",
+          "browserCommands": "open,snapshot,click,snapshot,click,snapshot",
+          "browserInvocations": 6,
+          "browserInvoked": true,
+          "browserSkillDigest": "15bc6ee1952eddd9ffa4f25511d2a48735bafc354183850982bbbea01d64c81f",
+          "browserSuccessfulCommands": "open,snapshot,click,snapshot,click,snapshot",
+          "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+          "capability": "browser",
+          "capabilityNudges": 0,
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-worker-runs-2493723552/attempt-2392327662",
+          "diffBytes": 1166,
+          "diffStat": "src/app.js    | 4 ++--\n src/filter.js | 6 ++++--\n 2 files changed, 6 insertions(+), 4 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+          "testExit": 0,
+          "testServerEndpoint": "http://127.0.0.1:4173",
+          "testServerManaged": true,
+          "testServerReused": false,
+          "timelineLines": 44,
+          "timelineSteps": "Edit:3,Read:11,Shell:11,Thought:10,User:1",
+          "toolSteps": 25,
+          "workspaceId": "wks_69356fdd7fd71c4e"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "browser"
+        ],
+        "specBindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+        "createdAt": "2026-10-21T21:44:19.746Z",
+        "updatedAt": "2026-10-21T21:45:14.187Z"
+      },
+      "attempts": [
+        {
+          "id": "575e2a639632b91adb5cf44e3abbc227",
+          "runId": "b72a6f10726ff072f69e032110da0dfa",
+          "seq": 1,
+          "workerId": "c07-live-69084de0",
+          "leaseGeneration": 1,
+          "status": "succeeded",
+          "heartbeats": 27,
+          "result": {
+            "browserCLIVersion": "0.1.22",
+            "browserCleanup": "ok",
+            "browserCommands": "open,snapshot,click,snapshot,click,snapshot",
+            "browserInvocations": 6,
+            "browserInvoked": true,
+            "browserSkillDigest": "15bc6ee1952eddd9ffa4f25511d2a48735bafc354183850982bbbea01d64c81f",
+            "browserSuccessfulCommands": "open,snapshot,click,snapshot,click,snapshot",
+            "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+            "capability": "browser",
+            "capabilityNudges": 0,
+            "cleanup": "ok",
+            "cwd": "/tmp/factory-worker-runs-2493723552/attempt-2392327662",
+            "diffBytes": 1166,
+            "diffStat": "src/app.js    | 4 ++--\n src/filter.js | 6 ++++--\n 2 files changed, 6 insertions(+), 4 deletions(-)",
+            "formatExit": 0,
+            "model": "opencode-go/deepseek-v4.1-flash",
+            "nudges": 0,
+            "paseoMode": "build",
+            "provider": "opencode",
+            "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+            "testExit": 0,
+            "testServerEndpoint": "http://127.0.0.1:4173",
+            "testServerManaged": true,
+            "testServerReused": false,
+            "timelineLines": 44,
+            "timelineSteps": "Edit:3,Read:11,Shell:11,Thought:10,User:1",
+            "toolSteps": 25,
+            "workspaceId": "wks_69356fdd7fd71c4e"
+          },
+          "createdAt": "2026-10-21T21:44:20.507Z",
+          "updatedAt": "2026-10-21T21:45:14.187Z"
+        }
+      ]
+    }
+  ],
+  "session_bindings": [
+    {
+      "attemptId": "575e2a639632b91adb5cf44e3abbc227",
+      "runId": "b72a6f10726ff072f69e032110da0dfa",
+      "seq": 1,
+      "workerId": "c07-live-69084de0",
+      "leaseGeneration": 1,
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "mode": "build",
+      "execMode": "trusted-local",
+      "workspaceId": "wks_69356fdd7fd71c4e",
+      "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+      "correlationKey": "factory-s3d:b72a6f10726ff072f69e032110da0dfa:g1",
+      "status": "succeeded",
+      "createdAt": "2026-10-21T21:44:21.179Z",
+      "updatedAt": "2026-10-21T21:45:09.558Z",
+      "runStatus": "succeeded"
+    }
+  ],
+  "attempt_ids": [
+    "575e2a639632b91adb5cf44e3abbc227"
+  ],
+  "orphaned_session_bindings": [],
+  "independent_verification": [
+    {
+      "id": "021053b640b62dbe38059dd644525fae",
+      "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+      "candidateSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+      "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+      "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+      "policyRevision": "quality-baseline-s4a-v1",
+      "authority": "verifier",
+      "actor": "verifier-bd245745-0",
+      "independent": true,
+      "cleanResource": "git-clone:e49f62df32c2",
+      "oracleDigest": "a2e8fc659319e751475ec38326aae650d5a47b58b162fac822ed36fb3c77ec9b",
+      "status": "passed",
+      "checks": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 691,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 157,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { filterEntries } from './src/filter.js'; import { entries } from './src/data.js'; if(filterEntries(entries,'Travel').length!==2||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==5)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 19,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { entries, categories } from './src/data.js'; if(entries.length!==5||categories.length!==5||!categories.includes('Film')||!categories.includes('All'))process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 19,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 227,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "findings": [],
+      "idempotencyKey": "campaign-bd245745efa4d5ae26d67f77f1933f57-verifier-0-a7c96bbe7ab17568c72b026e726afaf1",
+      "createdAt": "2026-10-21T21:45:15.582Z"
+    }
+  ],
+  "review": "APPROVE",
+  "candidates": [
+    {
+      "id": "a7c96bbe7ab17568c72b026e726afaf1",
+      "projectId": "factory-fixture-vlog",
+      "actionId": "44ff7a007e10bc3da84bbe06f6891124",
+      "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+      "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+      "specBindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+      "policyRevision": "quality-baseline-s4a-v1",
+      "baseRevision": "f52f877bd390223b9fe7d867355528a070118a3d",
+      "commitSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+      "treeSha": "7dec1af87b552fc9c3b43a26326f8dfc8cd3e067",
+      "contentDigest": "9fb2f1289184891da9f4e9997d8d0850905f668249665a5f85977675feee31a0",
+      "candidateRef": "refs/factory/candidates/b72a6f10726ff072f69e032110da0dfa-1",
+      "repository": "/home/james/Escritorio/Development/factory-fixtures/factory-fixture-vlog",
+      "implementerRunId": "b72a6f10726ff072f69e032110da0dfa",
+      "implementerAttemptId": "575e2a639632b91adb5cf44e3abbc227",
+      "implementerGeneration": 1,
+      "implementerWorkerId": "c07-live-69084de0",
+      "executionMode": "trusted-local",
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "paseoMode": "build",
+      "changedPaths": [
+        "src/app.js",
+        "src/filter.js"
+      ],
+      "riskClass": "R0",
+      "state": "frozen",
+      "createdAt": "2026-10-21T21:45:14.185Z",
+      "frozenAt": "2026-10-21T21:45:14.185Z",
+      "supersededAt": "0001-01-01T00:00:00Z"
+    }
+  ],
+  "candidate_evidence": {
+    "a7c96bbe7ab17568c72b026e726afaf1": {
+      "candidate": {
+        "id": "a7c96bbe7ab17568c72b026e726afaf1",
+        "projectId": "factory-fixture-vlog",
+        "actionId": "44ff7a007e10bc3da84bbe06f6891124",
+        "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+        "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+        "specBindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+        "policyRevision": "quality-baseline-s4a-v1",
+        "baseRevision": "f52f877bd390223b9fe7d867355528a070118a3d",
+        "commitSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+        "treeSha": "7dec1af87b552fc9c3b43a26326f8dfc8cd3e067",
+        "contentDigest": "9fb2f1289184891da9f4e9997d8d0850905f668249665a5f85977675feee31a0",
+        "candidateRef": "refs/factory/candidates/b72a6f10726ff072f69e032110da0dfa-1",
+        "repository": "/home/james/Escritorio/Development/factory-fixtures/factory-fixture-vlog",
+        "implementerRunId": "b72a6f10726ff072f69e032110da0dfa",
+        "implementerAttemptId": "575e2a639632b91adb5cf44e3abbc227",
+        "implementerGeneration": 1,
+        "implementerWorkerId": "c07-live-69084de0",
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "changedPaths": [
+          "src/app.js",
+          "src/filter.js"
+        ],
+        "riskClass": "R0",
+        "state": "frozen",
+        "createdAt": "2026-10-21T21:45:14.185Z",
+        "frozenAt": "2026-10-21T21:45:14.185Z",
+        "supersededAt": "0001-01-01T00:00:00Z"
+      },
+      "spec": {
+        "id": "95bd9216ee0d58ba8a83c2e9462e2048",
+        "projectId": "factory-fixture-vlog",
+        "actionId": "44ff7a007e10bc3da84bbe06f6891124",
+        "version": 1,
+        "contentHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+        "policyRevision": "quality-baseline-s4a-v1",
+        "goal": "Implement functional category filtering with a no-results state in src/filter.js and src/app.js. Preserve navigation, accessibility and the five existing entries. The authorized test server is already managed and running by Factory at http://127.0.0.1:4173; do not start, restart, or kill it. Use .agents/skills/factory-browser/SKILL.md and .factory/bin/factory-playwright-cli.mjs. MANDATORY browser evidence: run `node .factory/bin/factory-playwright-cli.mjs open http://127.0.0.1:4173/` followed by a successful `node .factory/bin/factory-playwright-cli.mjs snapshot` against the managed server. Do not use `--help` as browser evidence. Do not edit tests, browser-check.mjs, package.json, data.js or render.js.",
+        "repository": "/home/james/Escritorio/Development/factory-fixtures/factory-fixture-vlog",
+        "baseRevision": "f52f877bd390223b9fe7d867355528a070118a3d",
+        "allowedPaths": [
+          "src/filter.js",
+          "src/app.js"
+        ],
+        "acceptanceCriteria": [
+          {
+            "id": "format",
+            "kind": "format",
+            "description": "syntax",
+            "command": [
+              "npm",
+              "run",
+              "format"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 120
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "unit tests",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 180
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "filter assertion",
+            "command": [
+              "node",
+              "--input-type=module",
+              "-e",
+              "import { filterEntries } from './src/filter.js'; import { entries } from './src/data.js'; if(filterEntries(entries,'Travel').length!==2||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==5)process.exit(1)"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 120
+          },
+          {
+            "id": "browser",
+            "kind": "browser",
+            "description": "protected browser oracle",
+            "command": [
+              "node",
+              "tests/acceptance/browser-check.mjs"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 240
+          }
+        ],
+        "negativeCases": [
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "fixture regression",
+            "command": [
+              "node",
+              "--input-type=module",
+              "-e",
+              "import { entries, categories } from './src/data.js'; if(entries.length!==5||categories.length!==5||!categories.includes('Film')||!categories.includes('All'))process.exit(1)"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 120
+          }
+        ],
+        "riskClass": "R0",
+        "qualityProfile": "node-browser",
+        "budget": {
+          "maxAttempts": 1,
+          "timeoutSecs": 600
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "projectConfigRevision": 1,
+        "repositoryIdentity": "1bf754500cf85e8fb78d0c230c2d7883b6b32c7db8186de4d02c4990025a8483",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "browser"
+        ],
+        "browserEndpoints": [
+          "http://127.0.0.1:4173"
+        ],
+        "browserTestServer": {
+          "command": [
+            "npm",
+            "start"
+          ],
+          "readyPath": "/",
+          "startupTimeoutSecs": 30
+        },
+        "bindingHash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+        "createdAt": "2026-10-21T21:44:19.733Z",
+        "frozenAt": "2026-10-21T21:44:19.733Z"
+      },
+      "verifications": [
+        {
+          "id": "021053b640b62dbe38059dd644525fae",
+          "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+          "candidateSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+          "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+          "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+          "policyRevision": "quality-baseline-s4a-v1",
+          "authority": "verifier",
+          "actor": "verifier-bd245745-0",
+          "independent": true,
+          "cleanResource": "git-clone:e49f62df32c2",
+          "oracleDigest": "a2e8fc659319e751475ec38326aae650d5a47b58b162fac822ed36fb3c77ec9b",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "browser",
+              "kind": "browser",
+              "status": "PASS",
+              "command": [
+                "node",
+                "tests/acceptance/browser-check.mjs"
+              ],
+              "exitCode": 0,
+              "durationMs": 691,
+              "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+            },
+            {
+              "id": "format",
+              "kind": "format",
+              "status": "PASS",
+              "command": [
+                "npm",
+                "run",
+                "format"
+              ],
+              "exitCode": 0,
+              "durationMs": 157,
+              "detail": "exit 0 as expected"
+            },
+            {
+              "id": "functional",
+              "kind": "functional",
+              "status": "PASS",
+              "command": [
+                "node",
+                "--input-type=module",
+                "-e",
+                "import { filterEntries } from './src/filter.js'; import { entries } from './src/data.js'; if(filterEntries(entries,'Travel').length!==2||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==5)process.exit(1)"
+              ],
+              "exitCode": 0,
+              "durationMs": 19,
+              "detail": "exit 0 as expected"
+            },
+            {
+              "id": "negative",
+              "kind": "negative",
+              "status": "PASS",
+              "command": [
+                "node",
+                "--input-type=module",
+                "-e",
+                "import { entries, categories } from './src/data.js'; if(entries.length!==5||categories.length!==5||!categories.includes('Film')||!categories.includes('All'))process.exit(1)"
+              ],
+              "exitCode": 0,
+              "durationMs": 19,
+              "detail": "exit 0 as expected"
+            },
+            {
+              "id": "test",
+              "kind": "test",
+              "status": "PASS",
+              "command": [
+                "npm",
+                "test"
+              ],
+              "exitCode": 0,
+              "durationMs": 227,
+              "detail": "exit 0 as expected"
+            }
+          ],
+          "findings": [],
+          "idempotencyKey": "campaign-bd245745efa4d5ae26d67f77f1933f57-verifier-0-a7c96bbe7ab17568c72b026e726afaf1",
+          "createdAt": "2026-10-21T21:45:15.582Z"
+        }
+      ],
+      "reviews": [
+        {
+          "id": "e6de3ef18f13dcaefef2a6cfda82e1f2",
+          "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+          "candidateSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+          "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+          "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+          "policyRevision": "quality-baseline-s4a-v1",
+          "authority": "reviewer",
+          "actor": "reviewer-bd245745-0",
+          "verdict": "APPROVE",
+          "findings": [],
+          "diffStat": "2 files changed, 6 insertions(+), 4 deletions(-)",
+          "diffBytes": 1166,
+          "idempotencyKey": "campaign-bd245745efa4d5ae26d67f77f1933f57-reviewer-0-a7c96bbe7ab17568c72b026e726afaf1",
+          "createdAt": "2026-10-21T21:45:15.938Z"
+        }
+      ],
+      "decision": {
+        "id": "ba5b0ba58359c3d3771c1fbd41e07caf",
+        "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+        "candidateSha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+        "specId": "95bd9216ee0d58ba8a83c2e9462e2048",
+        "specHash": "99b0de5747b303104d7826129543f70e0a3256a29f1e48eeaa32a7c88cf32418",
+        "policyRevision": "quality-baseline-s4a-v1",
+        "status": "ACCEPTED",
+        "evidenceDigest": "edb8047312f499239a827f4bc09306d7df62cd717fc63846b81058b9c3f2b8d3",
+        "reasons": [],
+        "checks": [
+          {
+            "id": "gate-identity",
+            "kind": "identity",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "exact candidate/spec/run/attempt identity"
+          },
+          {
+            "id": "gate-scope",
+            "kind": "scope",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "all changed paths are within the authorized scope"
+          },
+          {
+            "id": "gate-freshness",
+            "kind": "freshness",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "all evidence postdates the frozen candidate"
+          },
+          {
+            "id": "gate-independence",
+            "kind": "independence",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "separate verifier and reviewer authorities bound to the exact candidate"
+          },
+          {
+            "id": "gate-security",
+            "kind": "security",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "final diff risk R0 within spec risk R0"
+          },
+          {
+            "id": "format",
+            "kind": "format",
+            "status": "PASS",
+            "command": [
+              "npm",
+              "run",
+              "format"
+            ],
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "verified PASS"
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "status": "PASS",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "verified PASS"
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "status": "PASS",
+            "command": [
+              "node",
+              "--input-type=module",
+              "-e",
+              "import { filterEntries } from './src/filter.js'; import { entries } from './src/data.js'; if(filterEntries(entries,'Travel').length!==2||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==5)process.exit(1)"
+            ],
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "verified PASS"
+          },
+          {
+            "id": "browser",
+            "kind": "browser",
+            "status": "PASS",
+            "command": [
+              "node",
+              "tests/acceptance/browser-check.mjs"
+            ],
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "verified PASS"
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "status": "PASS",
+            "command": [
+              "node",
+              "--input-type=module",
+              "-e",
+              "import { entries, categories } from './src/data.js'; if(entries.length!==5||categories.length!==5||!categories.includes('Film')||!categories.includes('All'))process.exit(1)"
+            ],
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "verified PASS"
+          },
+          {
+            "id": "gate-capability",
+            "kind": "capability",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "Factory-managed Playwright browser interaction recorded by the Implementer Run: open,snapshot,click,snapshot,click,snapshot"
+          },
+          {
+            "id": "gate-review",
+            "kind": "review",
+            "status": "PASS",
+            "exitCode": 0,
+            "durationMs": 0,
+            "detail": "independent reviewer APPROVE"
+          }
+        ],
+        "actor": "core-quality-gate",
+        "createdAt": "2026-10-21T21:45:15.939Z"
+      }
+    }
+  },
+  "external_sessions": [
+    {
+      "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+      "bound": true,
+      "inspect": {
+        "Id": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+        "Name": "factory-s3d:b72a6f10726ff072f69e032110da0dfa:g1",
+        "Provider": "opencode",
+        "Model": "opencode-go/deepseek-v4.1-flash",
+        "Thinking": "auto",
+        "Status": "closed",
+        "Archived": true,
+        "ArchivedAt": "2026-10-21T21:45:10.765Z",
+        "Mode": "build",
+        "Cwd": "/tmp/factory-worker-runs-2493723552/attempt-2392327662",
+        "CreatedAt": "2026-10-21T21:44:29.187Z",
+        "UpdatedAt": "2026-10-21T21:45:10.765Z",
+        "LastUsage": null,
+        "Capabilities": {
+          "Streaming": false,
+          "Persistence": true,
+          "DynamicModes": false,
+          "McpServers": false
+        },
+        "AvailableModes": [],
+        "PendingPermissions": [],
+        "Worktree": null,
+        "ParentAgentId": null
+      }
+    }
+  ],
+  "external_inventory": {
+    "sessions": [
+      "73dd6dd2-2843-4292-9879-fe4469414fcf"
+    ],
+    "per_run_counts": {
+      "b72a6f10726ff072f69e032110da0dfa": 1
+    },
+    "unbound_external_sessions": [],
+    "missing_bound_sessions": [],
+    "errors": [],
+    "orphaned_bindings": 0
+  },
+  "final_implementer_result": {
+    "browserCLIVersion": "0.1.22",
+    "browserCleanup": "ok",
+    "browserCommands": "open,snapshot,click,snapshot,click,snapshot",
+    "browserInvocations": 6,
+    "browserInvoked": true,
+    "browserSkillDigest": "15bc6ee1952eddd9ffa4f25511d2a48735bafc354183850982bbbea01d64c81f",
+    "browserSuccessfulCommands": "open,snapshot,click,snapshot,click,snapshot",
+    "candidateId": "a7c96bbe7ab17568c72b026e726afaf1",
+    "capability": "browser",
+    "capabilityNudges": 0,
+    "cleanup": "ok",
+    "cwd": "/tmp/factory-worker-runs-2493723552/attempt-2392327662",
+    "diffBytes": 1166,
+    "diffStat": "src/app.js    | 4 ++--\n src/filter.js | 6 ++++--\n 2 files changed, 6 insertions(+), 4 deletions(-)",
+    "formatExit": 0,
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "nudges": 0,
+    "paseoMode": "build",
+    "provider": "opencode",
+    "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+    "testExit": 0,
+    "testServerEndpoint": "http://127.0.0.1:4173",
+    "testServerManaged": true,
+    "testServerReused": false,
+    "timelineLines": 44,
+    "timelineSteps": "Edit:3,Read:11,Shell:11,Thought:10,User:1",
+    "toolSteps": 25,
+    "workspaceId": "wks_69356fdd7fd71c4e"
+  },
+  "browser_certification": {
+    "successful_commands": [
+      "open",
+      "snapshot",
+      "click",
+      "snapshot",
+      "click",
+      "snapshot"
+    ],
+    "invoked": true,
+    "initial_turn": true,
+    "same_session_continuation": false,
+    "capabilityNudges": 0,
+    "testServerManaged": true,
+    "testServerEndpoint": "http://127.0.0.1:4173",
+    "testServerReused": false,
+    "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+    "workspaceId": "wks_69356fdd7fd71c4e",
+    "attempts": [
+      {
+        "runId": "b72a6f10726ff072f69e032110da0dfa",
+        "capabilityNudges": 0,
+        "successfulCommands": [
+          "open",
+          "snapshot",
+          "click",
+          "snapshot",
+          "click",
+          "snapshot"
+        ],
+        "testServerManaged": true
+      }
+    ]
+  },
+  "cleanup": {
+    "managed_server": {
+      "path": "/tmp/factory-test-servers/worker-75f2a66493a2377f243b3eaaef6d2833",
+      "states": [],
+      "errors": []
+    },
+    "managed_server_port_open": false,
+    "managed_server_clean": true,
+    "session_cleanup": [
+      {
+        "sessionId": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+        "bound": true,
+        "archived": true,
+        "status": "closed"
+      }
+    ],
+    "workspace_active": [],
+    "workspace_error": null
+  },
+  "managed_server_log_order": {
+    "ready": true,
+    "ready_before_session": true
+  },
+  "certification": {
+    "identity": true,
+    "external_identity": true,
+    "candidate_allowed_paths": true,
+    "browser_interaction": true,
+    "managed_server": true,
+    "independent_verification": true,
+    "review": true,
+    "gate_accepted": true,
+    "session_inventory": true,
+    "session_ceiling": true,
+    "session_bindings_terminal": true,
+    "cleanup": true
+  },
+  "certification_observations": {
+    "initial_vs_continuation": "initial",
+    "real_corrective_attempt": false
+  },
+  "implementer_attempts_used": 1,
+  "budget_attempts_used": 1,
+  "status": "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW",
+  "evidence_path": "/tmp/factory-s4c07-live-7xxc5_pu/live-evidence.json"
+}

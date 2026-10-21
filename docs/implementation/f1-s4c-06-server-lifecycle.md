@@ -1,8 +1,10 @@
 # F1-S4-C-06 — Browser test-server reliability and certification readiness
 
-**Status:** Implemented and deterministically verified; zero paid sessions spent.
-Final Vlog live certification remains **HUMAN_REQUIRED** pending new Product
-Owner authorization.
+**Status:** Implemented and deterministically verified; zero paid sessions were
+spent in C-06. F1-S4-C-07 subsequently used the Worker-managed contract for a
+successful bounded real-Paseo Vlog campaign on tested head `9567bc5`; see
+[C-07 live certification](f1-s4c-07-live-certification.md). PR #12 remains
+unmerged and Product Owner UAT is not claimed.
 
 ## 1. Exact C-05 failure
 
@@ -108,4 +110,6 @@ This proves the environment path, not model-mediated behavior.
   for the next live attempt.
 - No paid C-06 session was spent; no new authorization is assumed.
 - Proposed next run remains one bounded Vlog Implementer session with
-  `maxAttempts=1`, `maxRepairs=0`.
+  `maxAttempts=1`, `maxRepairs=0`. **Completed by C-07** with one paid session,
+  initial-turn browser interaction, gate `ACCEPTED`, and clean server/session
+  cleanup; one authorized session was conserved and no repair was needed.

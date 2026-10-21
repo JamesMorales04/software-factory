@@ -74,21 +74,29 @@ F1-S4-C/C-04 requires both. A future ADR may let certain projects require only
 product acceptance, but cannot retroactively alter the frozen Vlog contract or
 historical gate decisions.
 
-## Current F1-S4-C-03/C-04 disposition (2026-10-21 UTC)
+## Current F1-S4-C disposition (2026-10-21 UTC)
 
 - `DETERMINISTIC_VERIFIED`: the S4-C/C-03 lane passed with two external
   Projects, real Chromium, deterministic Paseo simulation and forced R1–R8
   recovery scenarios. Independent clean-checkout verification and GPT-6 Luna
   read-only review were performed.
-- `REAL_PASEO_E2E_VERIFIED`: **not achieved for the final implementation.**
-  Vlog used all 4 C-03 sessions; the final session produced a candidate and
+- Historical C-05 Vlog result: **not achieved for that implementation.** Vlog
+  used all 4 C-03 sessions; the final session produced a candidate and
   independent browser PASS but recorded no Playwright invocation, so the gate
   returned `REPAIR_REQUIRED`. Calculator accepted on the non-browser path at
-  `5fa3c1c`; the final `cfa250e` delta is browser-only. No artificial paid
-  failure was injected, so R10 is `NOT_TESTED`.
-- `PRODUCT_OWNER_UAT_VERIFIED`: not claimed; manual instructions are in the
-  campaign handoff.
-- C-04 same-session completion is deterministic-verified. No paid C-04
-  session was spent. A proposed one-session Vlog live run requires explicit
-  Product Owner authorization; the prior Vlog allowance is exhausted.
-- Further Vlog sessions require explicit Product Owner authorization.
+  `5fa3c1c`; the final `cfa250e` delta is browser-only.
+- **C-07 final live result: `REAL_PASEO_E2E_VERIFIED` for the bounded Vlog
+  path on tested Factory head `9567bc5` / runtime `14133cb7`.** One paid
+  `opencode/opencode-go/deepseek-v4.1-flash` build session produced candidate
+  `e49f62d`; the Implementer ran model-mediated `open,snapshot,click,snapshot,
+  click,snapshot` on the initial turn against the Worker-managed server.
+  Independent verifier PASS, reviewer `APPROVE`, gate `ACCEPTED`; session,
+  workspace and server cleanup confirmed. One of two authorized sessions was
+  conserved; no repair cycle was used.
+- `REAL_PASEO_E2E_VERIFIED` is candidate-bound to that tested head and does not
+  prove later runtime changes, Product Owner UAT, isolation or delivery.
+- C-04 same-session completion remains deterministic-verified; the live C-07
+  run did not need the continuation because initial-turn evidence was complete.
+- `PRODUCT_OWNER_UAT_VERIFIED`: not claimed; PR #12 remains unmerged.
+- Further live sessions require explicit Product Owner authorization. C-07's
+  unused second session is not authority for a speculative retry.
