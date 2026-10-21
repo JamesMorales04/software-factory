@@ -267,7 +267,38 @@ func runPaseoLifecycle(
 			_ = cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID)
 			out, ferr := fail("verify", shortErr(err), &binding)
 			out["nudges"] = nudges
+			out["capabilityNudges"] = 0
 			return out, ferr
+		}
+	}
+
+	// 8b. Mandatory capability completion: a productive turn that omitted
+	// the required browser interaction gets one bounded continuation in the
+	// same Paseo session. The session identity, lease and budget do not
+	// change; failed or help-only commands never count.
+	capabilityNudges := 0
+	if spec != nil && domain.ContainsCapability(spec.Capabilities, domain.CapBrowser) &&
+		!browserCapabilityComplete(workDir) && ctxBudgetLeft(ctx) > paseoVerifyReserve {
+		log.Info("browser capability incomplete after productive turn; one bounded continuation",
+			"sessionId", identity.SessionID)
+		nerr := adapter.SendNudge(ctx, identity.SessionID, capabilityNudgePrompt(workDir, spec.BrowserEndpoints), paseoNudgeWait)
+		if nerr != nil {
+			if externalUncertain(nerr, ctx) {
+				return orphanExternal(backend, context.Background(), workerID, run, attempt, binding, adapter, identity,
+					"capability-continuation", "capability continuation cancelled; session state unconfirmed")
+			}
+			log.Warn("capability continuation failed; evaluating partial evidence", "error", shortErr(nerr))
+		} else {
+			capabilityNudges = 1
+			summary, evidence, err = collectPaseoEvidence(ctx, adapter, workDir, identity)
+			if err != nil {
+				_, _ = backend.closeSession(context.Background(), workerID, run.ID, attempt.ID, attempt.LeaseGeneration, string(domain.PaseoFailed), shortErr(err))
+				_ = cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID)
+				out, ferr := fail("capability-verify", shortErr(err), &binding)
+				out["nudges"] = nudges
+				out["capabilityNudges"] = capabilityNudges
+				return out, ferr
+			}
 		}
 	}
 
@@ -285,6 +316,7 @@ func runPaseoLifecycle(
 		_ = cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID)
 		out, ferr := fail(stage, shortErr(err), &binding)
 		out["nudges"] = nudges
+		out["capabilityNudges"] = capabilityNudges
 		return out, ferr
 	}
 
@@ -299,6 +331,7 @@ func runPaseoLifecycle(
 		_ = cleanupPaseoExternal(context.Background(), adapter, identity.SessionID, workspaceID)
 		out, ferr := fail(stage, shortErr(err), &binding)
 		out["nudges"] = nudges
+		out["capabilityNudges"] = capabilityNudges
 		return out, ferr
 	}
 
@@ -317,21 +350,22 @@ func runPaseoLifecycle(
 	// values themselves come from the last Paseo inspect evidence so the
 	// projection's "observed route" has real provenance.
 	out := map[string]any{
-		"sessionId":     closed.SessionID,
-		"workspaceId":   closed.WorkspaceID,
-		"provider":      final.Provider,
-		"model":         final.Model,
-		"paseoMode":     final.Mode,
-		"cwd":           final.Cwd,
-		"timelineLines": evidence.timelineLines,
-		"timelineSteps": evidence.stepsSummary,
-		"toolSteps":     evidence.toolSteps,
-		"diffStat":      evidence.diffStat,
-		"diffBytes":     evidence.diffBytes,
-		"testExit":      evidence.testExit,
-		"formatExit":    evidence.formatExit,
-		"nudges":        nudges,
-		"cleanup":       cleanupNote,
+		"sessionId":        closed.SessionID,
+		"workspaceId":      closed.WorkspaceID,
+		"provider":         final.Provider,
+		"model":            final.Model,
+		"paseoMode":        final.Mode,
+		"cwd":              final.Cwd,
+		"timelineLines":    evidence.timelineLines,
+		"timelineSteps":    evidence.stepsSummary,
+		"toolSteps":        evidence.toolSteps,
+		"diffStat":         evidence.diffStat,
+		"diffBytes":        evidence.diffBytes,
+		"testExit":         evidence.testExit,
+		"formatExit":       evidence.formatExit,
+		"nudges":           nudges,
+		"capabilityNudges": capabilityNudges,
+		"cleanup":          cleanupNote,
 	}
 	if spec != nil && domain.ContainsCapability(spec.Capabilities, domain.CapBrowser) {
 		evidence := browserExecutionEvidence(workDir)

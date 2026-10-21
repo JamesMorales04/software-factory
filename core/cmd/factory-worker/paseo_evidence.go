@@ -372,3 +372,44 @@ test("add works", () => {
 	}
 	return nil
 }
+
+// browserCapabilityComplete reports whether the Factory-managed wrapper
+// recorded a successful open plus a successful observation/interaction.
+// Failed or help-only commands never count.
+func browserCapabilityComplete(workDir string) bool {
+	evidence := browserExecutionEvidence(workDir)
+	commands, _ := evidence["successfulCommands"].([]string)
+	seen := map[string]bool{}
+	for _, command := range commands {
+		seen[strings.TrimSpace(strings.ToLower(command))] = true
+	}
+	if !seen["open"] {
+		return false
+	}
+	for _, command := range []string{"snapshot", "goto", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"} {
+		if seen[command] {
+			return true
+		}
+	}
+	return false
+}
+
+// capabilityNudgePrompt is the single bounded same-session continuation
+// used when a productive Implementer omitted a mandatory browser
+// interaction. It does not grant new scope or authority.
+func capabilityNudgePrompt(workDir string, endpoints []string) string {
+	return "Factory capability check: the code change is present, but this Run has no successful " +
+		"browser interaction evidence yet. Before finishing, start the authorized app if needed and run " +
+		"`node .factory/bin/factory-playwright-cli.mjs open " + strings.TrimRight(firstEndpoint(endpoints), "/") + "/` " +
+		"followed by at least one successful `snapshot`, `find`, `fill`, or `click` command against an " +
+		"authorized loopback endpoint. `--help` alone or failed commands are not acceptance evidence. " +
+		"Stay inside " + workDir + ", do not edit tests, protected browser-check.mjs, package.json, .agents/ or " +
+		".factory/, and reply briefly with the observed result."
+}
+
+func firstEndpoint(endpoints []string) string {
+	if len(endpoints) > 0 {
+		return endpoints[0]
+	}
+	return "http://127.0.0.1:4173"
+}

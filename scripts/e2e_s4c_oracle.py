@@ -800,6 +800,61 @@ def main():
               r7_bundle_before["candidate"]["commitSha"] == r7_bundle_after["candidate"]["commitSha"],
               json.dumps({"bad": r7_bad["contentHash"], "good": r7_good["contentHash"]}))
 
+        # D1: a productive Implementer that omits browser use receives a
+        # same-session capability continuation and completes it without a
+        # new Run or paid session.
+        clear_sequences()
+        set_stub("omit-browser")
+        d1_action = create_action("vlog", "Same-session browser completion")
+        d1_spec = create_spec(d1_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        d1_campaign = start_campaign(d1_spec["id"], repairs=0, max_attempts=1)
+        d1_final = wait_campaign(d1_campaign["id"], timeout=300)
+        d1_run = run(d1_campaign["id"])
+        d1_result = (d1_run or {}).get("result") or {}
+        check("D1 productive Implementer without browser receives same-session continuation",
+              d1_final["campaign"]["status"] == "accepted" and
+              d1_result.get("capabilityNudges", 0) >= 1 and
+              "open" in (d1_result.get("browserSuccessfulCommands") or "") and
+              "snapshot" in (d1_result.get("browserSuccessfulCommands") or "") and
+              d1_final["budget"]["attemptsUsed"] == 1 and len(d1_final.get("recoveries") or []) == 0,
+              json.dumps({"status": d1_final["campaign"]["status"],
+                          "capabilityNudges": d1_result.get("capabilityNudges"),
+                          "commands": d1_result.get("browserSuccessfulCommands")}))
+        set_stub("good")
+
+        # D2: a failed browser command is never reported as success.
+        clear_sequences()
+        set_stub("browser-fails")
+        d2_action = create_action("vlog", "Failed browser command is not success")
+        d2_spec = create_spec(d2_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        d2_campaign = start_campaign(d2_spec["id"], repairs=0, max_attempts=1)
+        d2_final = wait_campaign(d2_campaign["id"], timeout=300)
+        d2_bundle = call("GET", f"/api/v1/candidates/{d2_final['candidate']['id']}/evidence")[1]["bundle"] if d2_final.get("candidate") else {}
+        d2_decision = d2_bundle.get("decision") or {}
+        d2_run = run(d2_campaign["id"])
+        d2_result = (d2_run or {}).get("result") or {}
+        check("D2 failed browser commands cannot be accepted as capability success",
+              d2_final["campaign"]["status"] == "repair_required" and
+              d2_decision.get("status") != "ACCEPTED" and
+              "open" not in (d2_result.get("browserSuccessfulCommands") or "") and
+              d2_result.get("capabilityNudges", 0) >= 1,
+              json.dumps({"status": d2_final["campaign"]["status"],
+                          "successful": d2_result.get("browserSuccessfulCommands"),
+                          "capabilityNudges": d2_result.get("capabilityNudges")}))
+        set_stub("good")
+
         result.update({
             "projectA": "vlog", "projectB": "calculator",
             "actionA": a_action_id, "specA": a_spec_id, "campaignA": a_campaign_id,
@@ -810,6 +865,8 @@ def main():
             "cancelCampaign": cancel_campaign["id"], "restartCampaign": restart_campaign["id"],
             "concurrentCampaigns": [conc_a["id"], conc_b["id"]],
             "recoveryCampaign": r1_campaign["id"],
+            "sameSessionCapabilityCampaign": d1_campaign["id"],
+            "failedBrowserCommandCampaign": d2_campaign["id"],
             "recoveryCampaigns": {
                 "recoverable": r1_campaign["id"],
                 "qualityRepair": r4_campaign["id"],

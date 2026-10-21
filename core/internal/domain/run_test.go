@@ -83,7 +83,7 @@ func TestValidateWorkerID(t *testing.T) {
 
 func TestSanitizeResultBounds(t *testing.T) {
 	tooMany := map[string]any{}
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 29; i++ {
 		tooMany[fmt.Sprintf("k%d", i)] = "v"
 	}
 	if _, err := SanitizeResult(tooMany); err == nil {

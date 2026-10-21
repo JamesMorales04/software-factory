@@ -355,8 +355,8 @@ func SanitizeResult(v map[string]any) (map[string]any, error) {
 	if v == nil {
 		return map[string]any{}, nil
 	}
-	if len(v) > 24 {
-		return nil, errors.New("result carries at most 24 keys")
+	if len(v) > 28 {
+		return nil, errors.New("result carries at most 28 keys")
 	}
 	out := make(map[string]any, len(v))
 	for k, val := range v {

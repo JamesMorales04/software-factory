@@ -188,6 +188,17 @@ def invoke_browser(project):
             server.kill()
 
 
+def invoke_browser_failure(project):
+    wrapper = project / ".factory" / "bin" / "factory-playwright-cli.mjs"
+    if not wrapper.exists():
+        return 0
+    proc = subprocess.run(["node", str(wrapper), "open", "http://127.0.0.1:1/"],
+                          cwd=project, capture_output=True, text=True, timeout=90)
+    # The wrapper records the nonzero outcome; the stub must not convert a
+    # failed command into success.
+    return 0 if proc.returncode != 0 else 1
+
+
 def edit(workspace_path, current, prompt):
     project = Path(workspace_path)
     if (project / "src" / "calc.js").exists() and (project / "package.json").read_text(encoding="utf-8").find("calculator") >= 0:
@@ -201,6 +212,10 @@ def edit(workspace_path, current, prompt):
             oracle.write_text("// tampered oracle\n", encoding="utf-8")
             return 0
         edit_vlog(project, current)
+        if current == "omit-browser":
+            return 0
+        if current == "browser-fails":
+            return invoke_browser_failure(project)
         return invoke_browser(project)
     return 0
 
@@ -254,7 +269,7 @@ def main(argv):
         save_state(state)
         prompt = rest[-1] if rest else ""
         current = next_mode(workspace_path, prompt)
-        if current not in {"good", "empty", "browser-broken", "outside-scope"}:
+        if current not in {"good", "empty", "browser-broken", "outside-scope", "omit-browser", "browser-fails"}:
             print("stub: unknown mode " + current, file=sys.stderr)
             return 1
         rc = edit(workspace_path, current, prompt)
@@ -275,7 +290,20 @@ def main(argv):
     if argv[0] == "logs":
         print("[Read] src\n[Edit] source\n[Shell] npm test\n[Shell] factory-playwright-cli\n[Text] done")
         return 0
-    if argv[0] in {"wait", "send", "stop", "archive"}:
+    if argv[0] == "send":
+        args = [arg for arg in argv[1:] if not arg.startswith("--")]
+        if len(args) >= 2:
+            session = state["sessions"].get(args[0], {})
+            message = " ".join(args[1:])
+            workspace = session.get("workspacePath")
+            if workspace and "browser interaction evidence" in message:
+                current = mode()
+                if current == "browser-fails":
+                    return invoke_browser_failure(Path(workspace))
+                if current in {"omit-browser", "good"}:
+                    return invoke_browser(Path(workspace))
+        return 0
+    if argv[0] in {"wait", "stop", "archive"}:
         return 0
     if argv[0] == "ls":
         print("[]")
