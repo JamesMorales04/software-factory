@@ -147,7 +147,7 @@ status, body = call("POST","/api/v1/action-specs",{"projectId":body["project"]["
     "goal":goal,"baseRevision":sha,"allowedPaths":allowed,"acceptanceCriteria":checks,
     "negativeCases":[{"id":"negative","kind":"negative","description":"regression",
         "command":negative.split("\n"),"expectExit":0,"timeoutSecs":120}],
-    "riskClass":"R0","qualityProfile":profile,"budget":{"maxAttempts":1,"timeoutSecs":900},
+    "riskClass":"R0","qualityProfile":profile,"budget":{"maxAttempts":1,"timeoutSecs":600},
     "executionMode":"trusted-local","provider":provider,"model":model,"paseoMode":mode})
 if status != 201:
     print(json.dumps({"ok":False,"project":project,"stage":"spec","status":status,"body":body}))
