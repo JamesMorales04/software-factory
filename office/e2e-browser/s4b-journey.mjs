@@ -121,7 +121,7 @@ try {
     { timeout: 20000 },
   );
   await page.getByTestId("campaign-spec").selectOption(SPEC_ID);
-  await page.locator('input[type="number"]').fill("0");
+  await page.getByTestId("campaign-repairs").fill("0");
   await page.getByRole("button", { name: "Create & start campaign" }).click();
 
   await page.waitForURL(/#\/campaigns\/[0-9a-f]{32}/, { timeout: 30000 });

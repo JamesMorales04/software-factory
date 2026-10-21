@@ -67,16 +67,17 @@ const (
 // aggregate so the existing ledger and SSE replay carry native workflow
 // progress without a second event store.
 const (
-	EventCampaignCreated          = "CampaignCreated"
-	EventCampaignStarted          = "CampaignStarted"
-	EventCampaignTaskReady        = "CampaignTaskReady"
-	EventCampaignTaskDispatched   = "CampaignTaskDispatched"
-	EventCampaignTaskCompleted    = "CampaignTaskCompleted"
-	EventCampaignTaskFailed       = "CampaignTaskFailed"
-	EventCampaignTaskCancelled    = "CampaignTaskCancelled"
-	EventCampaignRepairAuthorized = "CampaignRepairAuthorized"
-	EventCampaignFinished         = "CampaignFinished"
-	EventCampaignCancelled        = "CampaignCancelled"
+	EventCampaignCreated                       = "CampaignCreated"
+	EventCampaignStarted                       = "CampaignStarted"
+	EventCampaignTaskReady                     = "CampaignTaskReady"
+	EventCampaignTaskDispatched                = "CampaignTaskDispatched"
+	EventCampaignTaskCompleted                 = "CampaignTaskCompleted"
+	EventCampaignTaskFailed                    = "CampaignTaskFailed"
+	EventCampaignTaskCancelled                 = "CampaignTaskCancelled"
+	EventCampaignRepairAuthorized              = "CampaignRepairAuthorized"
+	EventCampaignImplementerRecoveryAuthorized = "CampaignImplementerRecoveryAuthorized"
+	EventCampaignFinished                      = "CampaignFinished"
+	EventCampaignCancelled                     = "CampaignCancelled"
 )
 
 // EventSchemaVersion is the S1 payload contract version.
@@ -131,6 +132,7 @@ func (e Event) Validate() error {
 		EventCampaignCreated, EventCampaignStarted, EventCampaignTaskReady,
 		EventCampaignTaskDispatched, EventCampaignTaskCompleted, EventCampaignTaskFailed,
 		EventCampaignTaskCancelled, EventCampaignRepairAuthorized,
+		EventCampaignImplementerRecoveryAuthorized,
 		EventCampaignFinished, EventCampaignCancelled,
 		EventProjectRegistered, EventProjectUpdated, EventProjectStatusChanged:
 	default:

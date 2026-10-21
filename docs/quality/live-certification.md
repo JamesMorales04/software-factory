@@ -28,8 +28,10 @@ relevant affected execution capability. Record:
 - whether the live test was invalidated by later runtime changes.
 
 A failed real session is a valid result. It is never replaced with a simulator
-or hidden by a retry. Additional paid sessions require explicit Product Owner
-approval.
+or hidden by a retry. Bounded automatic recovery under an approved budget is
+not a hidden retry: each Run, failure class, recovery authorization and new
+candidate is recorded. Additional paid sessions beyond the approved budget
+require explicit Product Owner approval.
 
 ### PRODUCT_OWNER_UAT_VERIFIED
 
@@ -50,6 +52,15 @@ the owner's manual acceptance on their behalf.
 - Simulated records and real records remain distinguishable in evidence.
 - This policy does not certify SEC-01 isolation, authorize unsafe sandbox
   modes, or grant delivery/merge authority.
+
+## F1-S4-C-03 recovery certification budget
+
+- Vlog: up to 4 additional Implementer sessions, max 3 corrective cycles.
+- Calculator: up to 4 additional Implementer sessions, max 3 corrective cycles.
+- One active paid Implementer per Project; no model fallback.
+- Stop on independent acceptance; do not consume unused sessions.
+- Infrastructure failures must be repaired before another paid session.
+- Unknown provider cost/quota remains unknown.
 
 ## Current F1-S4-C disposition (2026-10-21)
 

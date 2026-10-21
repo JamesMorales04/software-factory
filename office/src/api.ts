@@ -410,6 +410,19 @@ export interface CampaignTask {
   completedAt?: string;
 }
 
+export interface CampaignRecovery {
+  id: string;
+  campaignId: string;
+  taskId: string;
+  attemptIndex: number;
+  failureClass: string;
+  reason: string;
+  previousRunId: string;
+  previousAttemptId?: string;
+  newRunId?: string;
+  createdAt: string;
+}
+
 export interface CampaignBudgetUsage {
   maxAttempts: number;
   attemptsUsed: number;
@@ -420,6 +433,7 @@ export interface CampaignBudgetUsage {
   remainingWallClockSecs: number;
   maxParallel: number;
   activeParticipantMax: number;
+  recoveryAttempts: number;
   providerBudget: string;
 }
 
@@ -429,6 +443,7 @@ export interface CampaignProjection {
   budget: CampaignBudgetUsage;
   candidate?: Candidate;
   decision?: GateDecision;
+  recoveries: CampaignRecovery[];
 }
 
 export class ApiError extends Error {
@@ -692,6 +707,7 @@ export const api = {
       maxRepairCycles?: number;
       maxWallClockSecs?: number;
       maxParallel?: number;
+      maxImplementerAttempts?: number;
     },
     idempotencyKey: string,
   ) =>

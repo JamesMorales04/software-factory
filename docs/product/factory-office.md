@@ -12,7 +12,7 @@
 | Action Detail | Freeze a Project-bound ActionSpec through an explicit form, then inspect candidates, evidence and history |
 | Agents | Actual role, runtime/model, state and Paseo session for each participant |
 | Action Detail | Events, Runs, tool activity, quality evidence, review and PR/merge status |
-| Campaigns / Campaign Detail | Start an authorized campaign, follow the Core-owned task graph, participant identities, candidate/evidence lineage, repair budget and Quality Gate outcome |
+| Campaigns / Campaign Detail | Start an authorized campaign, follow the Core-owned task graph, participant identities, candidate/evidence lineage, repair/recovery budget, Implementer recovery history and Quality Gate outcome |
 
 The browser consumes Core snapshots plus persisted event projections. It cannot write Core storage or control Workers directly. Reconnect must use cursor/sequence and fetch missing data; stale/lost provider status must be displayed as `UNKNOWN`/`DISCONNECTED`, never as fabricated activity. Observed tool calls are not access to hidden reasoning. Read permissions do not imply control permissions.
 

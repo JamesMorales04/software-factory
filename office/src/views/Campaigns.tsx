@@ -20,6 +20,7 @@ export function Campaigns() {
   const [actionId, setActionId] = useState("");
   const [specId, setSpecId] = useState("");
   const [repairs, setRepairs] = useState(1);
+  const [maxAttempts, setMaxAttempts] = useState(4);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +90,7 @@ export function Campaigns() {
           maxRepairCycles: repairs,
           maxWallClockSecs: 1800,
           maxParallel: 2,
+          maxImplementerAttempts: maxAttempts,
         },
         newIdempotencyKey(),
       );
@@ -166,16 +168,30 @@ export function Campaigns() {
             <span className="muted">This Action has no frozen ActionSpec.</span>
           )}
         </label>
-        <label>
-          Repair budget (0–3)
-          <input
-            type="number"
-            min={0}
-            max={3}
-            value={repairs}
-            onChange={(e) => setRepairs(Number(e.target.value))}
-          />
-        </label>
+        <div className="grid-2">
+          <label>
+            Repair budget (0–3)
+            <input
+              data-testid="campaign-repairs"
+              type="number"
+              min={0}
+              max={3}
+              value={repairs}
+              onChange={(e) => setRepairs(Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Implementer attempt budget (1–24)
+            <input
+              data-testid="campaign-attempts"
+              type="number"
+              min={1}
+              max={24}
+              value={maxAttempts}
+              onChange={(e) => setMaxAttempts(Number(e.target.value))}
+            />
+          </label>
+        </div>
         <button type="submit" disabled={busy || !canCreate}>
           {busy ? "Starting…" : "Create & start campaign"}
         </button>

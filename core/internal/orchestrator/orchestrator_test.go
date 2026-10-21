@@ -203,3 +203,33 @@ func TestMissingParticipantBinaryFailsTheClaimedTask(t *testing.T) {
 		t.Fatalf("campaign status = %s, want blocked", final.Status)
 	}
 }
+
+func TestRecoveryPromptCarriesObservedFailureAndBudget(t *testing.T) {
+	engine := New(nil, nil, Config{})
+	spec := domain.ActionSpec{Goal: "Implement filtering"}
+	task := domain.CampaignTask{
+		Cycle: 0, ExecutionCount: 1,
+		Error: "RECOVERABLE_IMPLEMENTATION_FAILURE: no-source-change: agent left no git diff",
+	}
+	text := engine.implementerTaskText(domain.Campaign{}, task, spec, 1, 4)
+	for _, want := range []string{"Recovery attempt 2", "at most 4", "no-source-change", "frozen scope"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovery prompt missing %q: %s", want, text)
+		}
+	}
+	if text == spec.Goal {
+		t.Fatal("recovery prompt repeated the original goal unchanged")
+	}
+}
+
+func TestCleanupUnconfirmedIsDetected(t *testing.T) {
+	if !cleanupUnconfirmed(domain.Run{Result: map[string]any{"cleanup": "unconfirmed: stop failed"}}) {
+		t.Fatal("unconfirmed cleanup not detected")
+	}
+	if !cleanupUnconfirmed(domain.Run{Result: map[string]any{"browserCleanup": "unconfirmed: close failed"}}) {
+		t.Fatal("unconfirmed browser cleanup not detected")
+	}
+	if cleanupUnconfirmed(domain.Run{Result: map[string]any{"cleanup": "ok"}}) {
+		t.Fatal("successful cleanup treated as unconfirmed")
+	}
+}

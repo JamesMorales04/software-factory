@@ -105,6 +105,15 @@ def set_stub(mode="good", delay=None):
         (STUB_DIR / "delay").write_text(str(delay) + "\n", encoding="utf-8")
 
 
+def set_sequence(project, modes):
+    (STUB_DIR / f"sequence-{project}").write_text("\n".join(modes) + "\n", encoding="utf-8")
+
+
+def clear_sequences():
+    for project in ("vlog", "calculator"):
+        (STUB_DIR / f"sequence-{project}").unlink(missing_ok=True)
+
+
 def browser_env():
     return {
         "CHROMIUM_EXE": CHROMIUM_EXE,
@@ -228,11 +237,14 @@ def create_spec(action, repo, base_revision, goal, allowed_paths, profile, check
     return payload["spec"]
 
 
-def start_campaign(spec_id, repairs=0, parallel=2):
-    status, payload = call("POST", "/api/v1/campaigns", {
+def start_campaign(spec_id, repairs=0, parallel=2, max_attempts=0):
+    body = {
         "specId": spec_id, "maxRepairCycles": repairs,
         "maxWallClockSecs": 1800, "maxParallel": parallel,
-    })
+    }
+    if max_attempts:
+        body["maxImplementerAttempts"] = max_attempts
+    status, payload = call("POST", "/api/v1/campaigns", body)
     if status != 201:
         raise RuntimeError(f"create campaign failed: {status} {payload}")
     campaign = payload["campaign"]
@@ -280,7 +292,13 @@ def main():
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     STUB_DIR.mkdir(parents=True, exist_ok=True)
     (WORK_ROOT / "stubbin").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "scripts" / "s4c_paseo_stub.py", STUB_BIN)
+    stub_source = WORK_ROOT / "stubbin" / "s4c_paseo_stub.py"
+    shutil.copy2(ROOT / "scripts" / "s4c_paseo_stub.py", stub_source)
+    STUB_BIN.write_text(
+        "#!/bin/sh\nexport S4C_STUB_DIR=\"%s\"\nexec python3 \"%s\" \"$@\"\n"
+        % (STUB_DIR, stub_source),
+        encoding="utf-8",
+    )
     STUB_BIN.chmod(0o755)
     set_stub("good")
 
@@ -618,6 +636,168 @@ def main():
               conc_b_final["campaign"]["status"] == "accepted")
         set_stub("good")
 
+        # R1/R2/R3/R8: recoverable pre-candidate failure recovers through a
+        # new fenced Run under the same Campaign, preserving the old Run.
+        clear_sequences()
+        set_sequence("vlog", ["empty", "good"])
+        r1_action = create_action("vlog", "Recoverable implementation failure")
+        r1_checks = [
+            {"id": "format", "kind": "format", "description": "syntax",
+             "command": ["npm", "run", "format"], "expectExit": 0, "timeoutSecs": 60},
+            {"id": "test", "kind": "test", "description": "tests",
+             "command": ["npm", "test"], "expectExit": 0, "timeoutSecs": 60},
+            {"id": "functional", "kind": "functional", "description": "filter",
+             "command": ["node", "--input-type=module", "-e",
+                         "import {filterEntries} from './src/filter.js'; if(filterEntries([{category:'A'}],'B').length!==0)process.exit(1)"],
+             "expectExit": 0, "timeoutSecs": 60},
+            {"id": "browser", "kind": "browser", "description": "protected browser oracle",
+             "command": ["node", "tests/acceptance/browser-check.mjs"], "expectExit": 0, "timeoutSecs": 180},
+        ]
+        r1_spec = create_spec(r1_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        r1_campaign = start_campaign(r1_spec["id"], repairs=0, max_attempts=4)
+        r1_final = wait_campaign(r1_campaign["id"], timeout=420)
+        r1_recoveries = r1_final.get("recoveries") or []
+        r1_attempts = r1_final["budget"]["attemptsUsed"]
+        r1_new_run = run(r1_campaign["id"])
+        r1_old_run = None
+        if r1_recoveries:
+            r1_old_run = call("GET", f"/api/v1/runs/{r1_recoveries[0]['previousRunId']}")[1].get("run")
+        check("R1 recoverable pre-candidate failure does not terminate the Campaign",
+              r1_final["campaign"]["status"] == "accepted", r1_final["campaign"].get("terminalReason", ""))
+        check("R2 recovery preserves the failed Run identity and creates a new fenced Run",
+              len(r1_recoveries) == 1 and r1_old_run is not None and
+              r1_old_run["status"] == "failed" and r1_new_run is not None and
+              r1_new_run["id"] != r1_old_run["id"] and r1_new_run["status"] == "succeeded",
+              json.dumps(r1_recoveries))
+        check("R2 recovery consumes bounded campaign attempts",
+              r1_attempts == 2 and r1_final["budget"]["recoveryAttempts"] == 1,
+              f"attempts={r1_attempts}")
+        check("R3/R8 corrective execution is native and ends ACCEPTED with a valid candidate",
+              r1_final.get("candidate") is not None and
+              (r1_final.get("decision") or {}).get("status") == "ACCEPTED" and
+              all(t["status"] in {"succeeded", "failed"} for t in r1_final["tasks"]),
+              json.dumps([(t["key"], t["status"]) for t in r1_final["tasks"]]))
+        check("R1/R8 failure history and recovery class remain inspectable",
+              r1_recoveries and r1_recoveries[0]["failureClass"] == "RECOVERABLE_IMPLEMENTATION_FAILURE" and
+              "no-source-change" in r1_recoveries[0]["reason"].lower())
+        clear_sequences()
+        set_stub("good")
+
+        # R4: a genuine browser acceptance failure uses a new repair cycle,
+        # new candidate and fresh independent evidence.
+        set_sequence("vlog", ["browser-broken", "good"])
+        r4_action = create_action("vlog", "Quality repair cycle")
+        r4_spec = create_spec(r4_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering with a no-results state. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        r4_campaign = start_campaign(r4_spec["id"], repairs=1, max_attempts=4)
+        r4_final = wait_campaign(r4_campaign["id"], timeout=420)
+        r4_candidates = call("GET", f"/api/v1/candidates?actionId={r4_action['id']}")[1]["candidates"]
+        r4_first = next((c for c in r4_candidates if c["state"] == "superseded"), None)
+        r4_second = next((c for c in r4_candidates if c["state"] == "frozen"), None)
+        check("R4 genuine acceptance failure creates a new candidate and fresh evidence",
+              r4_final["campaign"]["status"] == "accepted" and len(r4_candidates) == 2 and
+              r4_first is not None and r4_second is not None and
+              r4_first["commitSha"] != r4_second["commitSha"] and
+              r4_second.get("parentCandidateId") == r4_first["id"],
+              json.dumps([(c["state"], c["commitSha"]) for c in r4_candidates]))
+        clear_sequences()
+        set_stub("good")
+
+        # R5: exhausted implementer budget stops with a truthful reason.
+        set_sequence("vlog", ["empty", "empty"])
+        r5_action = create_action("vlog", "Exhausted implementer budget")
+        r5_spec = create_spec(r5_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        r5_campaign = start_campaign(r5_spec["id"], repairs=0, max_attempts=2)
+        r5_final = wait_campaign(r5_campaign["id"], timeout=300)
+        check("R5 exhausted budget terminates with a truthful inspectable reason",
+              r5_final["campaign"]["status"] == "failed" and
+              "attempt budget exhausted" in (r5_final["campaign"].get("terminalReason") or "").lower() and
+              r5_final["budget"]["attemptsUsed"] == 2 and len(r5_final.get("recoveries") or []) == 1,
+              json.dumps(r5_final["campaign"].get("terminalReason")))
+        clear_sequences()
+        set_stub("good")
+
+        # R6: protected oracle modification is not retried.
+        set_sequence("vlog", ["outside-scope"])
+        r6_action = create_action("vlog", "Protected oracle modification")
+        r6_spec = create_spec(r6_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        r6_campaign = start_campaign(r6_spec["id"], repairs=0, max_attempts=4)
+        r6_final = wait_campaign(r6_campaign["id"], timeout=180)
+        check("R6 protected/unauthorized modification remains blocked without retry",
+              r6_final["campaign"]["status"] == "blocked" and
+              "POLICY_OR_SECURITY_BLOCKED" in (r6_final["campaign"].get("terminalReason") or "") and
+              len(r6_final.get("recoveries") or []) == 0,
+              json.dumps(r6_final["campaign"].get("terminalReason")))
+        clear_sequences()
+        set_stub("good")
+
+        # R7: an oracle defect is corrected only by a new frozen spec; old
+        # evidence is never rewritten.
+        bad_checks = json.loads(json.dumps(b_checks))
+        for check_item in bad_checks:
+            if check_item["id"] == "functional":
+                check_item["command"] = ["node", "-e", "process.exit(1)"]
+        r7_action = create_action("calculator", "Oracle defect correction")
+        r7_bad = create_spec(r7_action, CALC, git_sha(CALC),
+                             "Correct division by zero. Keep protected files unchanged.",
+                             ["src/calc.js", "src/app.js"], "node-basic", bad_checks,
+                             [{"id": "negative", "kind": "negative", "description": "integer regression",
+                               "command": b_negative.split("\n"), "expectExit": 0, "timeoutSecs": 60}])
+        r7_campaign = start_campaign(r7_bad["id"], repairs=0, max_attempts=1)
+        r7_first = wait_campaign(r7_campaign["id"], timeout=300)
+        r7_bundle_before = call("GET", f"/api/v1/candidates/{r7_first['candidate']['id']}/evidence")[1]["bundle"] if r7_first.get("candidate") else None
+        r7_evidence_before = (
+            [v["id"] for v in r7_bundle_before.get("verifications", [])],
+            [r["id"] for r in r7_bundle_before.get("reviews", [])],
+            (r7_bundle_before.get("decision") or {}).get("id"),
+            (r7_bundle_before.get("decision") or {}).get("status"),
+        ) if r7_bundle_before else None
+        r7_good = create_spec(r7_action, CALC, git_sha(CALC),
+                              "Correct division by zero. Keep protected files unchanged.",
+                              ["src/calc.js", "src/app.js"], "node-basic", b_checks,
+                              [{"id": "negative", "kind": "negative", "description": "integer regression",
+                                "command": b_negative.split("\n"), "expectExit": 0, "timeoutSecs": 60}])
+        r7_campaign2 = start_campaign(r7_good["id"], repairs=0, max_attempts=1)
+        r7_second = wait_campaign(r7_campaign2["id"], timeout=300)
+        r7_bundle_after = call("GET", f"/api/v1/candidates/{r7_first['candidate']['id']}/evidence")[1]["bundle"] if r7_first.get("candidate") else None
+        r7_evidence_after = (
+            [v["id"] for v in r7_bundle_after.get("verifications", [])],
+            [r["id"] for r in r7_bundle_after.get("reviews", [])],
+            (r7_bundle_after.get("decision") or {}).get("id"),
+            (r7_bundle_after.get("decision") or {}).get("status"),
+        ) if r7_bundle_after else None
+        check("R7 oracle correction requires a new frozen specification and preserves old evidence",
+              r7_bad["id"] != r7_good["id"] and
+              r7_bad["contentHash"] != r7_good["contentHash"] and
+              r7_second["campaign"]["status"] == "accepted" and
+              r7_first["campaign"]["status"] == "repair_required" and
+              r7_evidence_before == r7_evidence_after and
+              r7_bundle_before["candidate"]["commitSha"] == r7_bundle_after["candidate"]["commitSha"],
+              json.dumps({"bad": r7_bad["contentHash"], "good": r7_good["contentHash"]}))
+
         result.update({
             "projectA": "vlog", "projectB": "calculator",
             "actionA": a_action_id, "specA": a_spec_id, "campaignA": a_campaign_id,
@@ -627,6 +807,15 @@ def main():
             "blockedCampaign": no_campaign["id"], "browserFailureCampaign": broken_campaign["id"],
             "cancelCampaign": cancel_campaign["id"], "restartCampaign": restart_campaign["id"],
             "concurrentCampaigns": [conc_a["id"], conc_b["id"]],
+            "recoveryCampaign": r1_campaign["id"],
+            "recoveryCampaigns": {
+                "recoverable": r1_campaign["id"],
+                "qualityRepair": r4_campaign["id"],
+                "budgetExhausted": r5_campaign["id"],
+                "securityBlocked": r6_campaign["id"],
+                "oracleRevisionOld": r7_campaign["id"],
+                "oracleRevisionNew": r7_campaign2["id"],
+            },
             "journey": journey_result,
         })
     finally:

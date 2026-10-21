@@ -363,6 +363,22 @@ CREATE TABLE IF NOT EXISTS campaign_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_tasks_campaign ON campaign_tasks(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_campaign_tasks_status ON campaign_tasks(status, campaign_id);
+-- S4-C-03: immutable audit of authorized pre-candidate Implementer
+-- recoveries. The failed Run/Attempt/session rows are never rewritten.
+CREATE TABLE IF NOT EXISTS campaign_recoveries (
+	id TEXT PRIMARY KEY,
+	campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+	task_id TEXT NOT NULL REFERENCES campaign_tasks(id),
+	attempt_index INTEGER NOT NULL,
+	failure_class TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	previous_run_id TEXT NOT NULL REFERENCES runs(id),
+	previous_attempt_id TEXT NOT NULL DEFAULT '',
+	new_run_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
+	ON campaign_recoveries(campaign_id, created_at);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -412,6 +428,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4C(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-c migration: %w", err)
+	}
+	if err := db.migrateS4C03(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-c-03 migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -811,6 +831,29 @@ func (db *DB) migrateS4C() error {
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (project_id, revision))`); err != nil {
 		return fmt.Errorf("create project_config_revisions: %w", err)
+	}
+	return nil
+}
+
+// migrateS4C03 adds the immutable recovery audit table. It is additive and
+// never rewrites existing campaign, task, run or evidence rows.
+func (db *DB) migrateS4C03() error {
+	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS campaign_recoveries (
+		id TEXT PRIMARY KEY,
+		campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+		task_id TEXT NOT NULL REFERENCES campaign_tasks(id),
+		attempt_index INTEGER NOT NULL,
+		failure_class TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		previous_run_id TEXT NOT NULL REFERENCES runs(id),
+		previous_attempt_id TEXT NOT NULL DEFAULT '',
+		new_run_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create campaign_recoveries: %w", err)
+	}
+	if _, err := db.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
+		ON campaign_recoveries(campaign_id, created_at)`); err != nil {
+		return fmt.Errorf("create campaign_recoveries index: %w", err)
 	}
 	return nil
 }

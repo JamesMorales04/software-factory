@@ -30,3 +30,4 @@ Each completed contract must specify owner, version and stability level; input/o
 
 **Pre-release policy:** internal schemas can change incompatibly without shims; synchronize every caller, fixture and related test in one change. Any stable external or persisted-data contract requires explicit versioning and approval; see [ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md).
 - [Multi-project registry, capabilities and browser capability (F1-S4-C)](multi-project-s4c.md) — Project-bound specs, capability matching, Factory-managed Playwright and cross-project rejection.
+- [Bounded autonomous Implementer recovery (F1-S4-C-03)](campaign-recovery-s4c03.md) — failure classes, fenced recovery Runs, explicit attempt budgets and immutable oracle evidence.

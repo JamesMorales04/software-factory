@@ -59,15 +59,48 @@ const (
 // repair horizon; speculative general-purpose workflow graphs are out of
 // scope for F1-S4-B.
 const (
-	MaxCampaignRepairCycles   = 3
-	DefaultCampaignRepair     = 1
-	MinCampaignWallClockSecs  = 120
-	MaxCampaignWallClockSecs  = 7200
-	DefaultCampaignWallClock  = 1800
-	MaxCampaignParallel       = 2
-	MaxCampaignTasks          = 16
-	MaxCampaignTaskExecutions = 3
+	MaxCampaignRepairCycles    = 3
+	DefaultCampaignRepair      = 1
+	MinCampaignWallClockSecs   = 120
+	MaxCampaignWallClockSecs   = 7200
+	DefaultCampaignWallClock   = 1800
+	MaxCampaignParallel        = 2
+	MaxCampaignTasks           = 16
+	MaxCampaignTaskExecutions  = 3
+	MaxCampaignImplementerRuns = 24
+	DefaultCampaignAttempts    = 1
 )
+
+// FailureClass is the deterministic classification of an Implementer
+// failure before acceptance. It decides whether the Campaign may recover
+// automatically, must repair through the Quality Gate, or must stop.
+type FailureClass string
+
+const (
+	RecoverableImplementationFailure FailureClass = "RECOVERABLE_IMPLEMENTATION_FAILURE"
+	RecoverableExecutionFailure      FailureClass = "RECOVERABLE_EXECUTION_FAILURE"
+	QualityRepairRequired            FailureClass = "QUALITY_REPAIR_REQUIRED"
+	OracleDefectSuspected            FailureClass = "ORACLE_DEFECT_SUSPECTED"
+	PolicyOrSecurityBlocked          FailureClass = "POLICY_OR_SECURITY_BLOCKED"
+	UnresolvedExternalRecovery       FailureClass = "UNRESOLVED_EXTERNAL_RECOVERY"
+	InfrastructureBlocked            FailureClass = "INFRASTRUCTURE_BLOCKED"
+)
+
+// CampaignRecovery is the immutable audit row for one authorized
+// pre-candidate recovery. The failed Run/Attempt/session is never mutated;
+// the recovery authorizes the next Run against the same frozen spec/task.
+type CampaignRecovery struct {
+	ID              string       `json:"id"`
+	CampaignID      string       `json:"campaignId"`
+	TaskID          string       `json:"taskId"`
+	AttemptIndex    int          `json:"attemptIndex"`
+	FailureClass    FailureClass `json:"failureClass"`
+	Reason          string       `json:"reason"`
+	PreviousRunID   string       `json:"previousRunId"`
+	PreviousAttempt string       `json:"previousAttemptId,omitempty"`
+	NewRunID        string       `json:"newRunId,omitempty"`
+	CreatedAt       time.Time    `json:"createdAt"`
+}
 
 // CampaignTaskPlan is one immutable plan node. Cycle zero is the initial
 // implementation; later cycles are authorized only by a REPAIR_REQUIRED
@@ -157,26 +190,29 @@ type CampaignBudgetUsage struct {
 	RemainingWallClock   int64  `json:"remainingWallClockSecs"`
 	MaxParallel          int    `json:"maxParallel"`
 	ActiveParticipantMax int    `json:"activeParticipantMax"`
+	RecoveryAttempts     int    `json:"recoveryAttempts"`
 	ProviderBudget       string `json:"providerBudget"`
 }
 
 // CampaignProjection is the authoritative read model consumed by Office.
 type CampaignProjection struct {
-	Campaign  Campaign            `json:"campaign"`
-	Tasks     []CampaignTask      `json:"tasks"`
-	Budget    CampaignBudgetUsage `json:"budget"`
-	Candidate *CandidateRevision  `json:"candidate,omitempty"`
-	Decision  *GateDecision       `json:"decision,omitempty"`
+	Campaign   Campaign            `json:"campaign"`
+	Tasks      []CampaignTask      `json:"tasks"`
+	Budget     CampaignBudgetUsage `json:"budget"`
+	Candidate  *CandidateRevision  `json:"candidate,omitempty"`
+	Decision   *GateDecision       `json:"decision,omitempty"`
+	Recoveries []CampaignRecovery  `json:"recoveries"`
 }
 
 // NewCampaignParams is operator input. The Action/project/spec identity is
 // derived from the frozen spec, never from a second untrusted claim.
 type NewCampaignParams struct {
-	SpecID           string
-	MaxRepairCycles  int
-	MaxWallClockSecs int
-	MaxParallel      int
-	IdempotencyKey   string
+	SpecID                 string
+	MaxRepairCycles        int
+	MaxWallClockSecs       int
+	MaxParallel            int
+	MaxImplementerAttempts int
+	IdempotencyKey         string
 }
 
 // Validate normalizes campaign creation input and builds the frozen plan.
@@ -200,6 +236,9 @@ func (p NewCampaignParams) Validate() (NewCampaignParams, error) {
 	}
 	if p.MaxParallel < 1 || p.MaxParallel > MaxCampaignParallel {
 		return p, fmt.Errorf("maxParallel must be 1..%d", MaxCampaignParallel)
+	}
+	if p.MaxImplementerAttempts < 0 || p.MaxImplementerAttempts > MaxCampaignImplementerRuns {
+		return p, fmt.Errorf("maxImplementerAttempts must be 0..%d", MaxCampaignImplementerRuns)
 	}
 	p.IdempotencyKey = strings.TrimSpace(p.IdempotencyKey)
 	if len(p.IdempotencyKey) > MaxIdempotencyKeyChars {
@@ -468,6 +507,9 @@ func (c Campaign) Validate() error {
 	}
 	if c.RepairCycles < 0 || c.RepairCycles > c.MaxRepairCycles {
 		return errors.New("campaign repair cycle count is out of range")
+	}
+	if c.MaxAttempts < 1 || c.MaxAttempts > MaxCampaignImplementerRuns {
+		return errors.New("campaign implementer attempt budget is out of range")
 	}
 	if c.MaxRepairCycles != c.Plan.MaxRepairCycles || c.MaxParallel != c.Plan.Parallelism ||
 		c.MaxWallClockSecs != c.Plan.WallClockSeconds {

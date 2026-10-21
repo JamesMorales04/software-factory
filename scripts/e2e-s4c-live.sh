@@ -155,10 +155,10 @@ if status != 201:
     print(json.dumps({"ok":False,"project":project,"stage":"spec","status":status,"body":body}))
     sys.exit(3)
 spec = body["spec"]
-campaign = call("POST","/api/v1/campaigns",{"specId":spec["id"],"maxRepairCycles":0,
-    "maxWallClockSecs":3600,"maxParallel":2})[1]["campaign"]
+campaign = call("POST","/api/v1/campaigns",{"specId":spec["id"],"maxRepairCycles":3,
+    "maxWallClockSecs":3600,"maxParallel":2,"maxImplementerAttempts":4})[1]["campaign"]
 call("POST","/api/v1/campaigns/"+campaign["id"]+"/start",{})
-deadline = time.time() + 2400
+deadline = time.time() + 3900
 projection = {}
 while time.time() < deadline:
     status, projection = call("GET","/api/v1/campaigns/"+campaign["id"])
@@ -169,6 +169,9 @@ record = {"project":project,"campaignId":campaign["id"],"actionId":action["id"],
           "status":projection.get("campaign",{}).get("status"),"reason":projection.get("campaign",{}).get("terminalReason"),
           "candidate":(projection.get("candidate") or {}).get("commitSha"),
           "decision":(projection.get("decision") or {}).get("status"),
+          "attemptsUsed":projection.get("budget",{}).get("attemptsUsed"),
+          "maxAttempts":projection.get("budget",{}).get("maxAttempts"),
+          "recoveries":projection.get("recoveries",[]),
           "tasks":[(t["key"],t["status"],t.get("runId","")) for t in projection.get("tasks",[])]}
 if record["candidate"]:
     info = call("GET","/api/v1/candidates/"+projection["candidate"]["id"]+"/evidence")[1]["bundle"]

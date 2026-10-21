@@ -76,6 +76,25 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
   `REPAIR_REQUIRED`.
 - No `REAL_PASEO_E2E_VERIFIED` or full `MERGE-READY` claim is made.
 
+## F1-S4-C-03 autonomous recovery matrix
+
+| ID | Result (deterministic) | Evidence |
+| --- | --- | --- |
+| R1 | PASS | Sequence `empty → good`: first pre-candidate failure authorized recovery; Campaign reached ACCEPTED. |
+| R2 | PASS | Recovery row preserves failed Run/Attempt; new Run/lease generation; attempts used 2; old Run still `failed`. |
+| R3 | PASS | Core scheduler alone created the corrective Run; no manual participant invocation. |
+| R4 | PASS | `browser-broken → good`: gate REPAIR_REQUIRED, new candidate with parent lineage, fresh verifier/reviewer evidence, ACCEPTED. |
+| R5 | PASS | `empty → empty` with budget 2: Campaign `failed` with “implementer attempt budget exhausted (2/2)” and one preserved recovery. |
+| R6 | PASS | `outside-scope` protected-oracle change: Campaign `blocked` with `POLICY_OR_SECURITY_BLOCKED`; zero recoveries. |
+| R7 | PASS | Defective functional oracle produced `repair_required`; a new frozen spec with corrected oracle produced ACCEPTED; old verification/decision IDs unchanged. |
+| R8 | PASS | Repaired Campaign ends ACCEPTED with the complete failed-Run/recovery history. |
+| R9 | PASS | S1, S4-A, S4-B, S4-C and Go race/lint/typecheck gates pass; exact-candidate evidence unchanged. |
+| R10 | LIVE PENDING | Real Paseo recovery is attempted only if a recoverable failure occurs naturally; no artificial paid failure is injected. Forced failures are deterministic. |
+
+Recovery is bounded by `maxImplementerAttempts` (explicit, 1..24) and the
+existing repair/fairness/wall-clock limits. The live certification lane uses 4
+attempts and 3 corrective cycles per Project within the C-03 authorization.
+
 ## Commands
 
 ```sh
@@ -103,8 +122,11 @@ bash scripts/e2e-s1.sh
 - TRUSTED_LOCAL is not isolated. Project scoping rejects unauthorized
   control-plane operations but cannot contain hostile host-level code.
 - The deterministic agent simulator is not live-model evidence.
-- Live certification must be rerun on the final runtime head after Product
-  Owner authorization.
+- Live certification must be rerun on the final runtime head; C-03 authorizes
+  up to 4 additional Implementer sessions per Project, max 3 corrective
+  cycles, with no manual role invocation.
+- Recovery classification is deterministic and intentionally conservative;
+  ambiguous failures escalate to `HUMAN_REQUIRED` rather than retry.
 - S2 E2E remains blocked by the host's unsupported Podman graph driver.
 - No S5 delivery, merge, remote Worker, MCP orchestration or SEC-01-ISOLATED
   certification is included.

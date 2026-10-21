@@ -86,6 +86,31 @@ def mode():
         return "good"
 
 
+def sequence_for(workspace_path):
+    project = Path(workspace_path)
+    if (project / "src" / "calc.js").exists():
+        return STATE_DIR / "sequence-calculator"
+    return STATE_DIR / "sequence-vlog"
+
+
+def next_mode(workspace_path, prompt):
+    if "deliberately broken" in prompt.lower():
+        return "browser-broken"
+    path = sequence_for(workspace_path)
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return mode()
+    if not lines:
+        return mode()
+    current = lines.pop(0)
+    if lines:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+    return current
+
+
 def next_id(state, prefix):
     state["counter"] = int(state.get("counter", 0)) + 1
     return f"{prefix}_{state['counter']}"
@@ -227,10 +252,8 @@ def main(argv):
             "mode": flags.get("--mode", ""), "prompt": rest[-1] if rest else "",
         }
         save_state(state)
-        current = mode()
         prompt = rest[-1] if rest else ""
-        if "deliberately broken" in prompt.lower():
-            current = "browser-broken"
+        current = next_mode(workspace_path, prompt)
         if current not in {"good", "empty", "browser-broken", "outside-scope"}:
             print("stub: unknown mode " + current, file=sys.stderr)
             return 1

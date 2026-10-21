@@ -87,9 +87,12 @@ automation is a Factory-managed Run capability using the pinned Playwright CLI
 and a disposable profile, while the Independent Verifier keeps its own clean
 checkout and protected browser oracle. Office now registers Projects, creates
 Actions and freezes ActionSpecs through native forms. Deterministic acceptance
-is recorded in [the S4-C acceptance matrix](f1-s4c-acceptance.md); real-Paseo
-evidence is governed by the [live certification policy](../quality/live-certification.md)
-and is not claimed. See the [contract](../contracts/multi-project-s4c.md) and
+is recorded in [the S4-C acceptance matrix](f1-s4c-acceptance.md). F1-S4-C-03
+adds deterministic failure classification and bounded pre-candidate recovery
+(ADR-0013), with explicit campaign attempt budgets, immutable failed Run
+identities and protected-oracle discipline. Real-Paseo evidence is governed by
+the [live certification policy](../quality/live-certification.md) and is not
+claimed until the final runtime passes. See the [contract](../contracts/multi-project-s4c.md) and
 [ADR-0012](../architecture/decisions/ADR-0012-project-registry-and-capabilities.md).
 
 ## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))

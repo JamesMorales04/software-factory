@@ -242,7 +242,7 @@ try {
     { timeout: 20000 },
   );
   await selects.nth(2).selectOption(specId);
-  await page.locator('input[type="number"]').fill("0");
+  await page.getByTestId("campaign-repairs").fill("0");
   await page.getByRole("button", { name: "Create & start campaign" }).click();
   await page.waitForURL(/#\/campaigns\/[0-9a-f]{32}/, { timeout: 30000 });
   campaignId = page.url().match(/#\/campaigns\/([0-9a-f]{32})/)?.[1] || "";

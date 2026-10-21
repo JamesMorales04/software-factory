@@ -16,3 +16,4 @@ Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preser
 - [ADR-0010 — Frozen candidate quality pipeline](ADR-0010-frozen-candidate-quality-pipeline.md) — accepted; immutable spec/candidate, independent verifier/reviewer, deterministic Core gate and pinned agent-native browser automation.
 - [ADR-0011 — Native campaign orchestration](ADR-0011-native-campaign-orchestration.md) — accepted; Core-owned Campaign/Task plan, native participant dispatch, bounded repair and durable recovery.
 - [ADR-0012 — Multi-project registry and scoped capabilities](ADR-0012-project-registry-and-capabilities.md) — accepted; Project-bound specs, capability grants, Factory-managed Playwright and project-fair dispatch. TRUSTED_LOCAL only.
+- [ADR-0013 — Bounded autonomous Implementer recovery](ADR-0013-bounded-autonomous-recovery.md) — accepted; deterministic failure classes, fenced new Runs, immutable failed identity, protected oracle and explicit attempt budgets.
