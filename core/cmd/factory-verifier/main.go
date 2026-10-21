@@ -24,7 +24,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 )
 
-const verifierVersion = "0.1.0-s4a"
+const verifierVersion = "0.1.0-s4b"
 
 type verifierClient struct {
 	base  string

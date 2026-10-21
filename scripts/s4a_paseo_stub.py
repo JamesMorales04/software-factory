@@ -13,6 +13,7 @@ end to end. Behavior is selected by the file in $S4A_STUB_DIR/mode:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("S4A_STUB_DIR", "."))
@@ -35,6 +36,35 @@ def mode():
         return path.read_text(encoding="utf-8").strip() or "good"
     except OSError:
         return "good"
+
+
+def next_mode():
+    """Consume one sequence entry when present, else use the static mode.
+
+    S4-B uses the sequence to drive a deterministic repair cycle
+    (failing first candidate, good repaired candidate) without an external
+    operator switching modes mid-campaign.
+    """
+    path = STATE_DIR / "sequence"
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return mode()
+    if not lines:
+        return mode()
+    current = lines.pop(0)
+    if lines:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+    return current
+
+
+def delay_seconds():
+    try:
+        return max(0.0, min(30.0, float((STATE_DIR / "delay").read_text(encoding="utf-8").strip())))
+    except (OSError, ValueError):
+        return 0.0
 
 
 def next_id(state, prefix):
@@ -92,8 +122,7 @@ function multiply(a, b) {
     app.write_text(text, encoding="utf-8")
 
 
-def edit(workspace_path):
-    current = mode()
+def edit(workspace_path, current):
     project = Path(workspace_path)
     correct = "/** Multiply two numbers. */\nfunction multiply(a, b) {\n  return a * b;\n}\nmodule.exports.multiply = multiply;"
     wrong = "/** Multiply two numbers. */\nfunction multiply(a, b) {\n  return a + b;\n}\nmodule.exports.multiply = multiply;"
@@ -107,6 +136,11 @@ def edit(workspace_path):
         edit_add(project, correct)
     elif current == "outside-scope":
         (project / "outside.txt").write_text("outside the frozen scope\n", encoding="utf-8")
+    elif current == "critical":
+        target = project / "core" / "internal" / "quality" / "policy.go"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = target.read_text(encoding="utf-8") if target.exists() else "package quality\n"
+        target.write_text(text + "\n// simulated protected change\n", encoding="utf-8")
     elif current == "empty":
         return
     else:
@@ -162,7 +196,9 @@ def main(argv):
             "prompt": rest[-1] if rest else "",
         }
         save_state(state)
-        edit(workspace_path)
+        if (pause := delay_seconds()) > 0:
+            time.sleep(pause)
+        edit(workspace_path, next_mode())
         print(json.dumps({"id": session_id}))
         return 0
     if argv[0] == "inspect":

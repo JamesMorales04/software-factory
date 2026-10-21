@@ -120,7 +120,24 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		return domain.Run{}, domain.Event{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	run, event, err := createRunTx(ctx, tx, params, correlationID, now)
+	if err != nil {
+		return domain.Run{}, domain.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Run{}, domain.Event{}, err
+	}
+	stored, err := db.GetRun(run.ID)
+	if err != nil {
+		return domain.Run{}, domain.Event{}, err
+	}
+	return stored, event, nil
+}
 
+// createRunTx persists a Run and its queued event inside the caller's
+// transaction. Campaign dispatch uses it so the task binding and the Run
+// are committed together (no crash window that creates an orphan Run).
+func createRunTx(ctx context.Context, tx *sql.Tx, params domain.NewRunParams, correlationID string, now time.Time) (domain.Run, domain.Event, error) {
 	var projectExists bool
 	if err := tx.QueryRowContext(ctx, `SELECT TRUE FROM projects WHERE id=?`, params.ProjectID).Scan(&projectExists); err != nil {
 		if err == sql.ErrNoRows {
@@ -169,19 +186,13 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	var actionID any
-	if run.ActionID != "" {
-		actionID = run.ActionID
-	} else {
-		actionID = ""
-	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO runs(id, project_id, action_id, workload_kind, workload_input,
 		 status, attempt_count, max_attempts, timeout_secs, lease_owner,
 		 lease_generation, lease_expires_at, result, error, execution_mode,
 		 provider, model, paseo_mode, spec_id, created_at, updated_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		run.ID, run.ProjectID, actionID, run.WorkloadKind, encodeMap(run.WorkloadInput),
+		run.ID, run.ProjectID, run.ActionID, run.WorkloadKind, encodeMap(run.WorkloadInput),
 		string(run.Status), 0, run.MaxAttempts, run.TimeoutSecs, "", 0, "",
 		"{}", "", run.ExecutionMode, run.Provider, run.Model, run.PaseoMode,
 		run.SpecID, stamp(now), stamp(now),
@@ -212,6 +223,7 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 		Actor:         ActorLocalOperator,
 		Payload:       mustDecode(payload),
 	}
+	var err error
 	event.Sequence, err = nextSequence(ctx, tx, domain.AggregateRun, run.ID)
 	if err != nil {
 		return domain.Run{}, domain.Event{}, err
@@ -219,14 +231,7 @@ func (db *DB) CreateRun(ctx context.Context, params domain.NewRunParams, correla
 	if err := insertEvent(ctx, tx, event); err != nil {
 		return domain.Run{}, domain.Event{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.Run{}, domain.Event{}, err
-	}
-	stored, err := db.GetRun(run.ID)
-	if err != nil {
-		return domain.Run{}, domain.Event{}, err
-	}
-	return stored, event, nil
+	return run, event, nil
 }
 
 // GetRun returns one Run by id or domain.ErrNotFound.
@@ -976,7 +981,24 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 		return domain.Run{}, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	run, events, err := cancelRunTx(ctx, tx, runID, correlationID, now, ActorLocalOperator)
+	if err != nil {
+		return domain.Run{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Run{}, nil, err
+	}
+	stored, err := db.GetRun(run.ID)
+	if err != nil {
+		return domain.Run{}, nil, err
+	}
+	return stored, events, nil
+}
 
+// cancelRunTx cancels one non-terminal Run inside the caller's
+// transaction. Campaign cancellation reuses it to keep campaign state, Run
+// state and rejected candidates atomic.
+func cancelRunTx(ctx context.Context, tx *sql.Tx, runID, correlationID string, now time.Time, actor string) (domain.Run, []domain.Event, error) {
 	run, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, runID))
 	if err == sql.ErrNoRows {
 		return domain.Run{}, nil, domain.ErrNotFound
@@ -1005,7 +1027,7 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 			); err != nil {
 				return domain.Run{}, nil, err
 			}
-			rejected, rerr := rejectCandidateForAttemptTx(ctx, tx, a.ID, ActorLocalOperator, correlationID, "run-cancelled", now)
+			rejected, rerr := rejectCandidateForAttemptTx(ctx, tx, a.ID, actor, correlationID, "run-cancelled", now)
 			if rerr != nil {
 				return domain.Run{}, nil, rerr
 			}
@@ -1013,10 +1035,7 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 				emitted = append(emitted, *rejected)
 			}
 			// A live session binding must not be misreported by Core-side
-			// cancellation: orphan it here, in the same transaction as the
-			// Run cancellation, with a reason that records whether a
-			// session was ever bound. Cleanup (S3-B/D) stops the session
-			// by id or discovers it by labels; Core claims no stop.
+			// cancellation: orphan it here for later cleanup.
 			if binding, berr := scanPaseoBinding(tx.QueryRowContext(ctx,
 				`SELECT `+bindingColumns+` FROM paseo_bindings WHERE attempt_id=?`, a.ID)); berr == nil {
 				if !binding.Status.Terminal() {
@@ -1024,7 +1043,7 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 					if binding.SessionID == "" {
 						reason = "run-cancelled before session bind"
 					}
-					orphaned, cerr := orphanBindingTx(ctx, tx, binding, ActorLocalOperator, reason, now)
+					orphaned, cerr := orphanBindingTx(ctx, tx, binding, actor, reason, now)
 					if cerr != nil {
 						return domain.Run{}, nil, cerr
 					}
@@ -1052,19 +1071,16 @@ func (db *DB) CancelRun(ctx context.Context, runID, correlationID string) (domai
 		"generation": run.LeaseGeneration,
 		"workerId":   run.LeaseOwner,
 	})
-	cancelledEvent, err := appendRunEvent(ctx, tx, domain.EventRunCancelled, runID, ActorLocalOperator, correlationID, now, mustDecode(payload))
+	cancelledEvent, err := appendRunEvent(ctx, tx, domain.EventRunCancelled, runID, actor, correlationID, now, mustDecode(payload))
 	if err != nil {
 		return domain.Run{}, nil, err
 	}
 	emitted = append(emitted, cancelledEvent)
-	if err := tx.Commit(); err != nil {
-		return domain.Run{}, nil, err
-	}
-	stored, err := db.GetRun(runID)
-	if err != nil {
-		return domain.Run{}, nil, err
-	}
-	return stored, emitted, nil
+	run.Status = domain.RunCancelled
+	run.LeaseOwner = ""
+	run.LeaseExpiresAt = time.Time{}
+	run.UpdatedAt = now
+	return run, emitted, nil
 }
 
 // ExpireLeases sweeps timed-out leases and overdue Workers. Expired

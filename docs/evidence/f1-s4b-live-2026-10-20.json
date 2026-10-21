@@ -1,0 +1,201 @@
+{
+  "campaign": "F1-S4-B",
+  "recordedAt": "2026-10-20",
+  "sourceCommit": "cdc81b724a963b530c9e2737925a46f86e34da3f",
+  "buildVersion": "0.1.0-s4b",
+  "executionMode": "trusted-local",
+  "isolationLabel": "TRUSTED_LOCAL broad local access; not isolated or SEC-01 certified",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "paseoMode": "build",
+  "campaignId": "19195ad7466755382539c0e6b187d64c",
+  "actionId": "758276adef0dcaca3ecefb270bea916f",
+  "specId": "cc5456e604ba330c881fe88816374998",
+  "specHash": "3678aa28120e26110c5aa1423e97a1a5fc191203a8f7fd9439f69de05fc80841",
+  "planHash": "b6929a98e67819747852b38f6c90e13f05317fb799e429be585d2250c8e14cb6",
+  "runId": "0d0d850ce1f6a221cd4b258835ede593",
+  "attemptId": "e7f5073ec2ea83d65395fc712afee315",
+  "generation": 1,
+  "workerId": "live-s4b",
+  "paseoSessionId": "75895881-df30-4140-90f2-ee22388bc114",
+  "paseoWorkspaceId": "wks_bb69a36d788a6a6f",
+  "bindingsStatus": "succeeded",
+  "candidateId": "fcacd6622bf76b6a5459f9addccf559e",
+  "commitSha": "8daa09266e703dbe7d60983961bf645b95c903c2",
+  "treeSha": "60bcd4e2b431a465a1a5a13aaf66b0d42183ba26",
+  "contentDigest": "197a3797edbad7362d89f0e72af76581dcc472242a1d470fcca7eed809d42e9d",
+  "baseRevision": "1bf790dd400702f5e8d1b942fd5f09c8f8fb1776",
+  "changedPaths": [
+    "add.js",
+    "app.js"
+  ],
+  "riskClass": "R0",
+  "tasks": [
+    {
+      "key": "implementer-0",
+      "role": "implementer",
+      "status": "succeeded",
+      "participantId": "",
+      "outcome": "8daa09266e703dbe7d60983961bf645b95c903c2"
+    },
+    {
+      "key": "verifier-0",
+      "role": "verifier",
+      "status": "succeeded",
+      "participantId": "verifier-19195ad7-0",
+      "outcome": "passed"
+    },
+    {
+      "key": "reviewer-0",
+      "role": "reviewer",
+      "status": "succeeded",
+      "participantId": "reviewer-19195ad7-0",
+      "outcome": "APPROVE"
+    },
+    {
+      "key": "gate-0",
+      "role": "quality_gate",
+      "status": "succeeded",
+      "participantId": "",
+      "outcome": "ACCEPTED"
+    }
+  ],
+  "verifier": {
+    "actor": "verifier-19195ad7-0",
+    "authority": "verifier",
+    "independent": true,
+    "cleanResource": "git-clone:8daa09266e70",
+    "status": "passed",
+    "checks": [
+      {
+        "id": "browser",
+        "kind": "browser",
+        "status": "PASS",
+        "command": [
+          "node",
+          "browser-check.mjs"
+        ],
+        "exitCode": 0,
+        "durationMs": 761,
+        "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+      },
+      {
+        "id": "format",
+        "kind": "format",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--check",
+          "add.js"
+        ],
+        "exitCode": 0,
+        "durationMs": 21,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "functional",
+        "kind": "functional",
+        "status": "PASS",
+        "command": [
+          "node",
+          "-e",
+          "const {multiply}=require('./add.js');if(multiply(2,3)!==6)process.exit(1);"
+        ],
+        "exitCode": 0,
+        "durationMs": 19,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "negative",
+        "kind": "negative",
+        "status": "PASS",
+        "command": [
+          "node",
+          "-e",
+          "const {add}=require('./add.js');if(add(2,3)!==5)process.exit(1);"
+        ],
+        "exitCode": 0,
+        "durationMs": 20,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "test",
+        "kind": "test",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--test",
+          "add.test.js"
+        ],
+        "exitCode": 0,
+        "durationMs": 78,
+        "detail": "exit 0 as expected"
+      }
+    ]
+  },
+  "reviewer": {
+    "actor": "reviewer-19195ad7-0",
+    "authority": "reviewer",
+    "verdict": "APPROVE",
+    "findings": [],
+    "diffBytes": 613
+  },
+  "gate": {
+    "id": "36b03f369d637ec5203ae557929ff3f5",
+    "status": "ACCEPTED",
+    "actor": "core-quality-gate",
+    "checks": [
+      {
+        "id": "gate-identity",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-scope",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-freshness",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-independence",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-security",
+        "status": "PASS"
+      },
+      {
+        "id": "format",
+        "status": "PASS"
+      },
+      {
+        "id": "test",
+        "status": "PASS"
+      },
+      {
+        "id": "functional",
+        "status": "PASS"
+      },
+      {
+        "id": "browser",
+        "status": "PASS"
+      },
+      {
+        "id": "negative",
+        "status": "PASS"
+      },
+      {
+        "id": "gate-review",
+        "status": "PASS"
+      }
+    ]
+  },
+  "cleanup": {
+    "sessionClosed": "Status=closed",
+    "sessionArchived": true,
+    "workspaceBinding": "succeeded"
+  },
+  "paidSessions": 1,
+  "manualRoleInvocations": 0
+}

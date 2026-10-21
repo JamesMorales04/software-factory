@@ -5,9 +5,11 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -267,6 +269,64 @@ CREATE TABLE IF NOT EXISTS gate_decisions (
 	actor TEXT NOT NULL,
 	created_at TEXT NOT NULL
 );
+-- S4-B: one Core-owned campaign binds a frozen spec to an immutable task
+-- plan. Campaign state is authoritative; task rows carry scheduling state.
+CREATE TABLE IF NOT EXISTS campaigns (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	spec_id TEXT NOT NULL REFERENCES action_specs(id),
+	spec_hash TEXT NOT NULL,
+	policy_revision TEXT NOT NULL,
+	plan_hash TEXT NOT NULL,
+	plan TEXT NOT NULL,
+	status TEXT NOT NULL,
+	terminal_reason TEXT NOT NULL DEFAULT '',
+	max_repair_cycles INTEGER NOT NULL,
+	repair_cycles INTEGER NOT NULL DEFAULT 0,
+	max_attempts INTEGER NOT NULL DEFAULT 1,
+	attempt_budget_version INTEGER NOT NULL DEFAULT 1,
+	max_wall_clock_secs INTEGER NOT NULL,
+	max_parallel INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	correlation_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	started_at TEXT NOT NULL DEFAULT '',
+	completed_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (action_id, spec_id),
+	UNIQUE (spec_id)
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_campaigns_action ON campaigns(action_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_idempotency ON campaigns(idempotency_key) WHERE idempotency_key<>'';
+CREATE TABLE IF NOT EXISTS campaign_tasks (
+	id TEXT PRIMARY KEY,
+	campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+	task_key TEXT NOT NULL,
+	role TEXT NOT NULL,
+	cycle INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	depends_on TEXT NOT NULL DEFAULT '[]',
+	participant_id TEXT NOT NULL DEFAULT '',
+	candidate_id TEXT NOT NULL DEFAULT '',
+	run_id TEXT NOT NULL DEFAULT '',
+	outcome TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	execution_count INTEGER NOT NULL DEFAULT 0,
+	max_executions INTEGER NOT NULL,
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	dispatch_owner TEXT NOT NULL DEFAULT '',
+	dispatch_token TEXT NOT NULL DEFAULT '',
+	dispatch_expires_at TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	started_at TEXT NOT NULL DEFAULT '',
+	completed_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (campaign_id, task_key)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_tasks_campaign ON campaign_tasks(campaign_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_campaign_tasks_status ON campaign_tasks(status, campaign_id);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -308,6 +368,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4A(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-a migration: %w", err)
+	}
+	if err := db.migrateS4B(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-b migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -517,6 +581,164 @@ func (db *DB) migrateS4A() error {
 		}
 	}
 	return nil
+}
+
+// migrateS4B upgrades databases created before the repaired Campaign
+// invariants. Fresh databases already carry attempt_budget_version=1 and the
+// partial unique index; older rows are backfilled once, duplicate active
+// campaigns are blocked instead of breaking startup, and only then is the
+// uniqueness index created.
+func (db *DB) migrateS4B() error {
+	rows, err := db.sql.Query(`SELECT name FROM pragma_table_info('campaigns')`)
+	if err != nil {
+		return err
+	}
+	hasBudgetVersion := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "attempt_budget_version" {
+			hasBudgetVersion = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasBudgetVersion {
+		if _, err := db.sql.Exec(`ALTER TABLE campaigns ADD COLUMN attempt_budget_version INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add campaigns.attempt_budget_version: %w", err)
+		}
+	}
+	if err := db.backfillCampaignBudgets(); err != nil {
+		return err
+	}
+	if err := db.blockDuplicateActiveCampaigns(); err != nil {
+		return err
+	}
+	if _, err := db.sql.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_active_action
+		 ON campaigns(action_id) WHERE status IN ('pending','running')`); err != nil {
+		return fmt.Errorf("create active campaign uniqueness index: %w", err)
+	}
+	return nil
+}
+
+// backfillCampaignBudgets recomputes legacy per-Run attempt limits from the
+// frozen spec. Recomputation is idempotent and distinguishes a b71-era total
+// budget from a true pre-total row without multiplying twice.
+func (db *DB) backfillCampaignBudgets() error {
+	rows, err := db.sql.Query(
+		`SELECT id, spec_id, max_repair_cycles FROM campaigns WHERE attempt_budget_version=0`)
+	if err != nil {
+		return err
+	}
+	type legacy struct {
+		id, specID string
+		repairs    int
+	}
+	var pending []legacy
+	for rows.Next() {
+		var item legacy
+		if err := rows.Scan(&item.id, &item.specID, &item.repairs); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		var budgetJSON string
+		if err := db.sql.QueryRow(`SELECT budget FROM action_specs WHERE id=?`, item.specID).Scan(&budgetJSON); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return err
+		}
+		var budget domain.SpecBudget
+		if err := json.Unmarshal([]byte(budgetJSON), &budget); err != nil {
+			return fmt.Errorf("decode legacy spec budget: %w", err)
+		}
+		if budget.MaxAttempts < 1 {
+			continue
+		}
+		total := budget.MaxAttempts * (item.repairs + 1)
+		if _, err := db.sql.Exec(
+			`UPDATE campaigns SET max_attempts=?, attempt_budget_version=1 WHERE id=?`,
+			total, item.id); err != nil {
+			return fmt.Errorf("backfill campaign attempt budget: %w", err)
+		}
+	}
+	return nil
+}
+
+// blockDuplicateActiveCampaigns resolves pre-index data through the normal
+// terminal transition: Run cancellation, task cancellation and durable
+// events are recorded rather than rewritten behind the ledger.
+func (db *DB) blockDuplicateActiveCampaigns() error {
+	rows, err := db.sql.Query(
+		`SELECT id, action_id FROM campaigns WHERE status IN (?,?)
+		 ORDER BY action_id ASC, created_at ASC, id ASC`,
+		string(domain.CampaignPending), string(domain.CampaignRunning))
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	var duplicates []string
+	for rows.Next() {
+		var id, actionID string
+		if err := rows.Scan(&id, &actionID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if seen[actionID] {
+			duplicates = append(duplicates, id)
+			continue
+		}
+		seen[actionID] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range duplicates {
+		if err := db.blockCampaignOnMigration(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) blockCampaignOnMigration(campaignID string) error {
+	ctx := context.Background()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	campaign, err := scanCampaign(tx.QueryRowContext(ctx,
+		`SELECT `+campaignColumns+` FROM campaigns WHERE id=?`, campaignID))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if campaign.Status != domain.CampaignPending && campaign.Status != domain.CampaignRunning {
+		return tx.Commit()
+	}
+	if _, _, err := finishCampaignTx(ctx, tx, campaignID, domain.CampaignBlocked,
+		"migration: duplicate active campaign", domain.EventCampaignFinished,
+		"s4b-migration", utcNow()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func newID() string {

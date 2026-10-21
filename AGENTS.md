@@ -1,6 +1,6 @@
 # AGENTS.md — Software Factory
 
-> **Status:** F1-S1 through F1-S3-D merged; F1-S4-A frozen-candidate quality pipeline implementation/verification in progress. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
+> **Status:** F1-S1 through F1-S3-D and F1-S4-A merged; F1-S4-B native campaign orchestration implemented and under independent verification. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
 ## Mission and orientation
 

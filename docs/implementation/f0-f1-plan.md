@@ -1,6 +1,6 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** F1-S1 through F1-S3-D implementations merged; F1-S4-A implementation and independent verification in progress (2026-10-20); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 through F1-S3-D and F1-S4-A merged; F1-S4-B native campaign orchestration implemented and under independent verification (2026-10-20); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
 
 ## Incremental implementation authorization (2026-10-18)
 
@@ -28,6 +28,7 @@
 | S3-TRUSTED_LOCAL | Real Paseo session under owner-accepted local trust (ADR-0009) | Start/inspect a real coding session in a real workspace, verify effective cwd/provider/model, correlate its timeline | Unauthorized delivery/admin action blocked; session not labeled isolated/certified |
 | S3-ISOLATED | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
 | S4-A | Frozen ActionSpec, CandidateRevision, Implementer, Independent Verifier, read-only Reviewer, deterministic Quality Gate, agent-native browser checks | Produce a real diff; independent tester checks out the exact commit, exercises CLI/build/tests and a protected Chromium journey; reviewer returns a candidate-bound verdict; gate accepts or repairs | Mandatory failure, identity mismatch, forged evidence and out-of-scope diff block; Reviewer cannot mutate candidate; missing browser tooling is NOT_TESTED |
+| S4-B | Core-owned Campaign/Task orchestrator reusing Worker/Paseo/verifier/reviewer/gate; bounded repair and recovery | Start one campaign in Office; Factory dispatches Implementer, independent verifier/reviewer and gate without manual role calls | BLOCKED/HUMAN_REQUIRED cannot repair; budget escalation, forged task state, duplicate decisions, crash and lease contention fail closed |
 | S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |
 | S6 | First self-development campaign | Stable Core A supervises a functional Factory UI improvement in candidate B | B cannot modify or replace A; incorrect evidence blocks delivery |
 
@@ -59,6 +60,19 @@ are bound to the exact candidate/spec/policy identity; a completed Run is not an
 accepted candidate. See [the contract](../contracts/quality-pipeline-s4a.md),
 [ADR-0010](../architecture/decisions/ADR-0010-frozen-candidate-quality-pipeline.md)
 and [acceptance matrix](f1-s4a-acceptance.md).
+
+## F1-S4-B native orchestration (implemented)
+
+S4-B adds a durable Core-owned Campaign aggregate and immutable task plan
+around the existing S4-A pipeline. One authorized start dispatches the
+Implementer Run, schedules the separate verifier/reviewer processes, and
+evaluates the deterministic gate without manual per-role commands. Repair is
+bounded by a campaign ceiling and only authorized by `REPAIR_REQUIRED`;
+`BLOCKED`/`HUMAN_REQUIRED` are terminal. Core crash recovery reuses S2 lease
+reconciliation and the S3-D replacement gate. See the
+[campaign contract](../contracts/campaign-orchestration-s4b.md),
+[ADR-0011](../architecture/decisions/ADR-0011-native-campaign-orchestration.md)
+and [acceptance matrix](f1-s4b-acceptance.md).
 
 ## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))
 

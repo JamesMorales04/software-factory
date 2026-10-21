@@ -11,6 +11,7 @@
     "test:launch": "node --test --test-timeout=30000 launch-timeout.test.mjs",
     "s3c": "node s3c-journey.mjs",
     "s4a": "node s4a-journey.mjs",
+    "s4b": "node s4b-journey.mjs",
     "soak": "node soak.mjs"
   },
   "dependencies": {

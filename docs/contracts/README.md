@@ -13,8 +13,9 @@
 | Agent observability projection | `agent-observability-s3c.md` | S3-C | cross-Run session listing, Agent/Run-detail projections, evidence levels, redaction |
 | Paseo recovery and cleanup | `paseo-recovery-s3d.md` | S3-D | external correlation, recovery receipts, claim/complete protocol, retry gate, events, bounded cleanup |
 | Frozen candidate quality pipeline | `quality-pipeline-s4a.md` | S4-A | ActionSpec, immutable candidate, independent verifier/reviewer, deterministic gate, browser checks |
+| Native campaign orchestration | `campaign-orchestration-s4b.md` | S4-B | Core-owned Campaign/Task plan, native dispatch, repair, budgets, restart and Office projection |
 
-The remaining F0 rows below (Campaign–Run beyond S2's slice, Agent Session, Quality–Delivery beyond S4-A) are still proposed.
+The remaining F0 rows below (Agent Session, Quality–Delivery beyond S4-A/S4-B) are still proposed. Campaign–Run beyond S2's execution slice is now covered by the S4-B contract.
 
 | Contract | Scope | Required adversarial scenarios |
 | --- | --- | --- |

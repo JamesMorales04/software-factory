@@ -1,0 +1,84 @@
+{
+  "slice": "F1-S4-B",
+  "recordedAt": "2026-10-20",
+  "mode": "deterministic fixture lane; real Core/Worker/verifier/reviewer/Chromium; deterministic Paseo CLI",
+  "buildVersion": "0.1.0-s4b",
+  "sourceNote": "Core code commit; this evidence file was added in a docs-only follow-up commit.",
+  "securityDisposition": "TRUSTED_LOCAL only; not isolated or SEC-01 certified",
+  "campaigns": {
+    "acceptedCampaign": "24e1a7d685341e1fd507f55db0f74962",
+    "repairCampaign": "50be5fc66a4e834701a3e6a3f75cca98",
+    "humanCampaign": "a313649652a7c1997ae8f1c31945f7d4",
+    "crashCampaign": "59d39e25984eaac5b8d7822ef13181bc",
+    "browserCampaign": "1bbfb1256c2c54a14aefccba572364b6"
+  },
+  "browserJourney": {
+    "ok": true,
+    "campaignId": "1bbfb1256c2c54a14aefccba572364b6",
+    "actionId": "41ef00a21b8f1c5857598239f29505a7",
+    "specId": "69bd64167530a78c08159f11016fbbc5",
+    "candidateId": "1dfa061401bb74c2b21de58000271246",
+    "candidateSha": "978611367de10070cb44c0aa2364d1dd0377dd6f",
+    "verifier": "verifier-1bbfb125-0",
+    "reviewer": "reviewer-1bbfb125-0",
+    "decision": "ACCEPTED",
+    "taskCount": 4,
+    "accepted": true,
+    "checks": [
+      {
+        "name": "browser created and started a campaign",
+        "pass": true,
+        "detail": "1bbfb1256c2c54a14aefccba572364b6"
+      },
+      {
+        "name": "campaign reaches ACCEPTED from the browser journey",
+        "pass": true,
+        "detail": "accepted"
+      },
+      {
+        "name": "campaign is bound to the authorized Action and frozen spec",
+        "pass": true
+      },
+      {
+        "name": "all four native role tasks completed",
+        "pass": true,
+        "detail": "[[\"implementer-0\",\"succeeded\"],[\"verifier-0\",\"succeeded\"],[\"reviewer-0\",\"succeeded\"],[\"gate-0\",\"succeeded\"]]"
+      },
+      {
+        "name": "browser shows distinct Factory-assigned participant identities",
+        "pass": true
+      },
+      {
+        "name": "Quality Gate accepted the exact frozen candidate",
+        "pass": true
+      },
+      {
+        "name": "browser renders the candidate SHA and ACCEPTED gate",
+        "pass": true
+      },
+      {
+        "name": "browser renders independent verifier/reviewer actors",
+        "pass": true,
+        "detail": "verifier verifier-1bbfb125-0 \u00b7 reviewer reviewer-1bbfb125-0:APPROVE"
+      },
+      {
+        "name": "browser renders the real task graph row",
+        "pass": true,
+        "detail": "implementer-0\timplementer\t0\tsucceeded\t\u2014 bcee7d76\t1dfa0614\t978611367de10070cb44c0aa2364d1dd0377dd6f"
+      },
+      {
+        "name": "campaign state survives reload without invention",
+        "pass": true
+      },
+      {
+        "name": "browser journey produced no console errors",
+        "pass": true
+      }
+    ],
+    "consoleErrors": [],
+    "finishedAt": "2026-10-21T00:09:42.019Z"
+  },
+  "result": "PASS_B1_B12_DETERMINISTIC",
+  "b14": "PASS_LIVE_SEPARATE_EVIDENCE",
+  "sourceCommit": "cdc81b724a963b530c9e2737925a46f86e34da3f"
+}

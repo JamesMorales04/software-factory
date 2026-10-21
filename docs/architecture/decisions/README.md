@@ -14,3 +14,4 @@ Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preser
 - [ADR-0008 — Static quality gates](ADR-0008-static-analysis-gates.md) — language-appropriate linting.
 - [ADR-0009 — Trusted-local execution](ADR-0009-trusted-local-execution.md) — accepted; owner risk acceptance for TRUSTED_LOCAL broad local access; SEC-01-STRICT not required for that mode, SEC-01-ISOLATED available-only-where-verified.
 - [ADR-0010 — Frozen candidate quality pipeline](ADR-0010-frozen-candidate-quality-pipeline.md) — accepted; immutable spec/candidate, independent verifier/reviewer, deterministic Core gate and pinned agent-native browser automation.
+- [ADR-0011 — Native campaign orchestration](ADR-0011-native-campaign-orchestration.md) — accepted; Core-owned Campaign/Task plan, native participant dispatch, bounded repair and durable recovery.

@@ -29,7 +29,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.6.0-s4a"
+const workerVersion = "0.7.0-s4b"
 
 type client struct {
 	base   string

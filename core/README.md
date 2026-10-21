@@ -33,11 +33,14 @@ CLI provisions it, the Core accepts it only on Worker routes),
 ## Layout
 
 - `cmd/factory-core` — entrypoint, flags, startup/shutdown, boot
-  reconciliation and lease sweeper.
+  reconciliation, lease sweeper and the native campaign orchestrator.
 - `cmd/factory-worker` — S2 local Worker: registration, lease poll,
   heartbeats, synthetic fixture execution (rootless Podman by default,
   `--exec-mode local` for explicit pure-Go test/dev use only), fencing, and
   S4-A implementer candidate commit/push/registration.
+- `internal/orchestrator` — S4-B deterministic campaign scheduler: transactional
+  task claims, spec-bound Implementer dispatch, Core-spawned verifier/reviewer
+  processes, bounded repair, cancellation and restart recovery.
 - `cmd/factory-verifier` — independent verifier process (dedicated credential):
   clean read-only candidate checkout, frozen acceptance/negative/browser checks.
 - `cmd/factory-reviewer` — read-only reviewer process (dedicated credential):
@@ -48,7 +51,8 @@ CLI provisions it, the Core accepts it only on Worker routes),
   schema, validation (no deps).
 - `internal/store` — SQLite WAL: atomic action+event and run+event writes,
   idempotency, leases, fencing, expiry, reconciliation, replay cursors,
-  restart retention, frozen specs/candidates/evidence and gate decisions.
+  restart retention, frozen specs/candidates/evidence, gate decisions and
+  campaign/task orchestration state.
 - `internal/candidate` — independent git candidate validation (parent, ref,
   tree/content digest, scope) and clean checkout helpers.
 - `internal/quality` — deterministic final-diff risk and the Core Quality Gate.
@@ -65,7 +69,10 @@ Runs/Workers journey). S3-C acceptance: `scripts/e2e-s3c.sh`
 orphan and Core-restart durability, real Chromium). S4-A acceptance:
 `scripts/e2e-s4a.sh` (real Core/Worker/verifier/reviewer + deterministic Paseo
 CLI + real Chromium candidate/Office journeys); `scripts/e2e-s4a-live.sh` runs
-one bounded real Paseo session when authorized. The compiled
+one bounded real Paseo session when authorized. S4-B acceptance:
+`scripts/e2e-s4b.sh` (two concurrent Core schedulers, native campaign graph,
+Core-spawned verifier/reviewer, automatic repair, crash/restart and the Office
+campaign journey). The compiled
 lifecycle experience is exercised by `scripts/e2e-factory-cli.sh`; it builds
 the distribution, runs `factory` from outside the source directory, and checks
 auth, readiness, logs, stop/restart, and SQLite retention.
@@ -73,9 +80,10 @@ Contracts: `docs/contracts/project-action-s1.md`, `docs/contracts/factory-events
 `docs/contracts/run-worker-s2.md`, `docs/contracts/run-paseo-s3a.md` (S3-A:
 execution modes, pinned routing, durable session identity),
 `docs/contracts/agent-observability-s3c.md` (S3-C: cross-Run session
-projection and evidence levels), and `docs/contracts/quality-pipeline-s4a.md`
+projection and evidence levels), `docs/contracts/quality-pipeline-s4a.md`
 (S4-A: frozen spec/candidate, independent evidence, deterministic gate, browser
-checks).
+checks), and `docs/contracts/campaign-orchestration-s4b.md` (S4-B: Core-owned
+Campaign/Task scheduling, repair/recovery and Office projections).
 
 ## Local lifecycle CLI
 

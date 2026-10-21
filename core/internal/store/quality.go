@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -520,6 +521,10 @@ func (db *DB) RecordVerification(ctx context.Context, evidence domain.Verificati
 		return domain.VerificationEvidence{}, false, domain.Event{}, fmt.Errorf("%w: evidence oracle does not match the frozen spec",
 			domain.ErrUnauthorized)
 	}
+	if err := enforceCampaignParticipantTx(ctx, tx, evidence.CandidateID, evidence.IdempotencyKey,
+		evidence.Actor, domain.RoleVerifier); err != nil {
+		return domain.VerificationEvidence{}, false, domain.Event{}, err
+	}
 	if !evidence.Independent || strings.TrimSpace(evidence.CleanResource) == "" {
 		return domain.VerificationEvidence{}, false, domain.Event{}, fmt.Errorf("%w: independent clean-resource evidence is required",
 			domain.ErrInvalidInput)
@@ -646,6 +651,41 @@ func normalizeVerifierChecks(checks []domain.CheckResult, spec domain.ActionSpec
 	return out, nil
 }
 
+// enforceCampaignParticipantTx binds evidence delivered with a campaign task
+// idempotency key to the exact Factory-assigned participant identity. It
+// preserves the S4-A standalone evidence path, where no campaign task exists.
+func enforceCampaignParticipantTx(ctx context.Context, tx *sql.Tx, candidateID, key, actor string, role domain.TaskRole) error {
+	var campaignBound int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM campaigns c
+		 JOIN candidates cand ON cand.spec_id=c.spec_id
+		 WHERE cand.id=?`, candidateID).Scan(&campaignBound); err != nil {
+		return err
+	}
+	if campaignBound == 0 {
+		// Standalone S4-A candidate: the scoped role credential remains the
+		// authority and there is no campaign participant to bind.
+		return nil
+	}
+	var participant string
+	err := tx.QueryRowContext(ctx,
+		`SELECT participant_id FROM campaign_tasks
+		 WHERE candidate_id=? AND idempotency_key=? AND role=?`,
+		candidateID, key, string(role)).Scan(&participant)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("%w: campaign evidence has no assigned, claimed task",
+			domain.ErrUnauthorized)
+	}
+	if err != nil {
+		return err
+	}
+	if participant == "" || participant != actor {
+		return fmt.Errorf("%w: evidence actor does not match the assigned campaign participant",
+			domain.ErrUnauthorized)
+	}
+	return nil
+}
+
 func aggregateVerificationStatus(checks []domain.CheckResult) domain.EvidenceStatus {
 	status := domain.EvidencePassed
 	for _, check := range checks {
@@ -731,6 +771,10 @@ func (db *DB) RecordReview(ctx context.Context, review domain.ReviewEvidence, co
 	if review.Actor == candidate.ImplementerWorkerID {
 		return domain.ReviewEvidence{}, false, domain.Event{}, fmt.Errorf("%w: reviewer identity equals the implementer",
 			domain.ErrUnauthorized)
+	}
+	if err := enforceCampaignParticipantTx(ctx, tx, review.CandidateID, review.IdempotencyKey,
+		review.Actor, domain.RoleReviewer); err != nil {
+		return domain.ReviewEvidence{}, false, domain.Event{}, err
 	}
 	review.CreatedAt = now
 	if existing, rerr := scanReview(tx.QueryRowContext(ctx,
@@ -1138,4 +1182,50 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+// EvaluateGate is the single Core-owned gate path used by both the operator
+// route and the campaign orchestrator. It re-reads the complete durable
+// evidence set, retries once on a concurrent evidence commit, and persists
+// exactly one final decision per candidate.
+func (db *DB) EvaluateGate(ctx context.Context, candidateID, correlationID string) (domain.GateDecision, bool, bool, *domain.Event, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if existing, err := db.GetGateDecision(candidateID); err == nil {
+			return existing, true, true, nil, nil
+		} else if err != domain.ErrNotFound {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		bundle, err := db.GetCandidateBundle(candidateID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		run, err := db.GetRun(bundle.Candidate.ImplementerRunID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		attemptRecord, err := db.GetAttempt(bundle.Candidate.ImplementerRunID, bundle.Candidate.ImplementerAttemptID)
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		evaluation := quality.Evaluate(quality.Input{
+			Candidate: bundle.Candidate, Spec: bundle.Spec, Run: run, Attempt: attemptRecord,
+			Verifications: bundle.Verifications, Reviews: bundle.Reviews,
+		})
+		if !evaluation.Final {
+			return evaluation.Decision, false, false, nil, nil
+		}
+		decision, replayed, event, err := db.SaveGateDecision(ctx, evaluation.Decision, correlationID)
+		if errors.Is(err, domain.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return domain.GateDecision{}, false, false, nil, err
+		}
+		if replayed {
+			return decision, true, true, nil, nil
+		}
+		return decision, true, false, &event, nil
+	}
+	return domain.GateDecision{}, false, false, nil,
+		fmt.Errorf("%w: evidence kept changing during gate evaluation", domain.ErrConflict)
 }
