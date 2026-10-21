@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	projectreg "github.com/JamesMorales04/software-factory/core/internal/project"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 )
 
@@ -154,7 +155,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 	e.pruneProcesses()
 	e.reconcilePendingActionState(ctx)
 
-	campaigns, err := e.db.ListCampaigns(domain.CampaignRunning, 5000)
+	campaigns, err := e.db.ListCampaigns("", domain.CampaignRunning, 5000)
 	if err != nil {
 		e.log.Error("list running campaigns failed", "error", err.Error())
 		return
@@ -168,7 +169,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 }
 
 func (e *Engine) reconcilePendingActionState(ctx context.Context) {
-	pending, err := e.db.ListCampaigns(domain.CampaignPending, 5000)
+	pending, err := e.db.ListCampaigns("", domain.CampaignPending, 5000)
 	if err != nil {
 		e.log.Error("list pending campaigns failed", "error", err.Error())
 		return
@@ -214,6 +215,26 @@ func (e *Engine) reconcileCampaign(ctx context.Context, campaign domain.Campaign
 		return
 	case domain.StatusCompleted:
 		e.block(ctx, campaign, "action completed outside the campaign", correlation)
+		return
+	}
+	project, perr := e.db.GetProject(campaign.ProjectID)
+	if perr != nil {
+		e.block(ctx, campaign, "campaign project is unavailable", correlation)
+		return
+	}
+	if !project.Active() {
+		e.cancelCampaignRuns(ctx, campaign, "project is "+string(project.Status), correlation)
+		e.block(ctx, campaign, "project "+project.ID+" is "+string(project.Status), correlation)
+		return
+	}
+	spec, serr := e.db.GetActionSpec(campaign.SpecID)
+	if serr != nil {
+		e.block(ctx, campaign, "frozen spec is unavailable", correlation)
+		return
+	}
+	if berr := spec.ValidateProjectBinding(project); berr != nil {
+		e.cancelCampaignRuns(ctx, campaign, "spec binding rejected", correlation)
+		e.block(ctx, campaign, "frozen spec binding rejected: "+berr.Error(), correlation)
 		return
 	}
 	events, err := e.db.PromoteReadyTasks(ctx, campaign.ID, correlation)
@@ -263,6 +284,23 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 			return
 		}
 		e.log.Error("load implementer run failed", "runId", task.RunID, "error", err.Error())
+		return
+	}
+	if run.Status == domain.RunQueued {
+		spec, serr := e.db.GetActionSpec(campaign.SpecID)
+		if serr != nil {
+			return
+		}
+		eligible, werr := e.workerSupports(ctx, spec.Capabilities, spec.ExecutionMode)
+		if werr != nil {
+			return
+		}
+		if !eligible && !campaign.StartedAt.IsZero() && time.Since(campaign.StartedAt) > 20*time.Second {
+			e.cancelCampaignRuns(ctx, campaign, "no eligible Worker", correlation)
+			e.block(ctx, campaign,
+				"no online Worker supports required capabilities "+strings.Join(capabilityStrings(spec.Capabilities), ","),
+				correlation)
+		}
 		return
 	}
 	switch run.Status {
@@ -342,6 +380,25 @@ func (e *Engine) reconcileGate(ctx context.Context, campaign domain.Campaign, ta
 		"candidateId", decision.CandidateID, "status", string(decision.Status))
 }
 
+func (e *Engine) cancelCampaignRuns(ctx context.Context, campaign domain.Campaign, reason, correlation string) {
+	tasks, err := e.db.CampaignTasks(campaign.ID)
+	if err != nil {
+		return
+	}
+	for _, task := range tasks {
+		if task.RunID == "" {
+			continue
+		}
+		run, rerr := e.db.GetRun(task.RunID)
+		if rerr != nil || run.Status.Terminal() {
+			continue
+		}
+		if _, _, cerr := e.db.CancelRun(ctx, run.ID, correlation+": "+reason); cerr != nil {
+			e.log.Error("cancel campaign run failed", "runId", run.ID, "error", cerr.Error())
+		}
+	}
+}
+
 func (e *Engine) dispatchReady(ctx context.Context, projection domain.CampaignProjection) {
 	for _, task := range projection.Tasks {
 		if task.Status != domain.TaskReady {
@@ -364,6 +421,40 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 		e.log.Error("load campaign spec failed", "campaignId", campaign.ID, "error", err.Error())
 		return
 	}
+	project, err := e.db.GetProject(campaign.ProjectID)
+	if err != nil {
+		e.block(ctx, campaign, "campaign project is unavailable", "campaign-dispatch-"+randomID())
+		return
+	}
+	if !project.Active() {
+		e.block(ctx, campaign, "project "+project.ID+" is "+string(project.Status), "campaign-dispatch-"+randomID())
+		return
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		e.block(ctx, campaign, "frozen spec binding rejected: "+err.Error(), "campaign-dispatch-"+randomID())
+		return
+	}
+	if project.Registered() {
+		if rerr := projectreg.RevalidateBound(ctx, spec.Repository, spec.RepositoryIdentity, spec.BaseRevision); rerr != nil {
+			e.block(ctx, campaign, "repository revalidation failed: "+rerr.Error(), "campaign-dispatch-"+randomID())
+			return
+		}
+	}
+	eligible, err := e.workerSupports(ctx, spec.Capabilities, spec.ExecutionMode)
+	if err != nil {
+		e.log.Error("worker capability lookup failed", "campaignId", campaign.ID, "error", err.Error())
+		return
+	}
+	if !eligible {
+		grace := 20 * time.Second
+		if campaign.StartedAt.IsZero() || time.Since(campaign.StartedAt) < grace {
+			return
+		}
+		e.block(ctx, campaign,
+			"no online Worker supports required capabilities "+strings.Join(capabilityStrings(spec.Capabilities), ","),
+			"campaign-dispatch-"+randomID())
+		return
+	}
 	text := e.implementerTaskText(campaign, task, spec)
 	_, _, events, err := e.db.DispatchImplementer(ctx, campaign.ID, task.ID, text,
 		"campaign-dispatch-"+randomID())
@@ -380,6 +471,43 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 	e.publish(events)
 	e.log.Info("implementer dispatched", "campaignId", campaign.ID,
 		"cycle", task.Cycle, "taskKey", task.Key)
+}
+
+func (e *Engine) workerSupports(ctx context.Context, required []domain.Capability, mode string) (bool, error) {
+	workers, err := e.db.ListWorkers()
+	if err != nil {
+		return false, err
+	}
+	for _, worker := range workers {
+		if worker.Status != domain.WorkerOnline {
+			continue
+		}
+		if worker.LastHeartbeat.IsZero() || time.Since(worker.LastHeartbeat) > 15*time.Second {
+			continue
+		}
+		if !domain.CapabilitiesSatisfied(worker.Capabilities, required) {
+			continue
+		}
+		supportedMode := false
+		for _, candidate := range worker.ExecModes {
+			if candidate == mode {
+				supportedMode = true
+				break
+			}
+		}
+		if supportedMode {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func capabilityStrings(caps []domain.Capability) []string {
+	out := make([]string, len(caps))
+	for i, capability := range caps {
+		out[i] = string(capability)
+	}
+	return out
 }
 
 func (e *Engine) implementerTaskText(campaign domain.Campaign, task domain.CampaignTask, spec domain.ActionSpec) string {

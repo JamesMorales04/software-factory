@@ -24,7 +24,7 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 )
 
-const verifierVersion = "0.1.0-s4b"
+const verifierVersion = "0.1.0-s4c"
 
 type verifierClient struct {
 	base  string
@@ -103,6 +103,12 @@ func run(args []string) error {
 	}
 	results := make([]domain.CheckResult, 0, len(spec.AllChecks()))
 	findings := make([]string, 0)
+	// A protected oracle script is part of the frozen acceptance identity.
+	// The candidate may only change paths explicitly authorized by the
+	// spec; any changed command target is rejected before execution.
+	if modified := modifiedOracleTargets(checkout, c.ChangedPaths, spec.AllChecks()); len(modified) > 0 {
+		return fmt.Errorf("protected acceptance oracle was modified by the candidate: %s", strings.Join(modified, ", "))
+	}
 	for _, check := range spec.AllChecks() {
 		result := executeCheck(ctx, checkout, instanceHome, check)
 		results = append(results, result)
@@ -155,6 +161,35 @@ func run(args []string) error {
 	raw, _ := json.Marshal(summary)
 	fmt.Println(string(raw))
 	return nil
+}
+
+func modifiedOracleTargets(checkout string, changed []string, checks []domain.SpecCheck) []string {
+	changedSet := map[string]bool{}
+	for _, path := range changed {
+		changedSet[path] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, check := range checks {
+		for _, arg := range check.Command {
+			target := strings.TrimPrefix(strings.TrimSpace(arg), "./")
+			if target == "" || strings.HasPrefix(target, "-") || strings.Contains(target, "/../") {
+				continue
+			}
+			if !changedSet[target] {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(checkout, target))
+			if err != nil || info.IsDir() {
+				continue
+			}
+			if !seen[target] {
+				seen[target] = true
+				out = append(out, target)
+			}
+		}
+	}
+	return out
 }
 
 func executeCheck(parent context.Context, checkout, home string, check domain.SpecCheck) domain.CheckResult {

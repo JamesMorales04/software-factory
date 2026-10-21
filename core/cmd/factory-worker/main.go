@@ -29,13 +29,14 @@ import (
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
 
-const workerVersion = "0.7.0-s4b"
+const workerVersion = "0.8.0-s4c"
 
 type client struct {
-	base   string
-	token  string
-	http   *http.Client
-	logger *slog.Logger
+	base    string
+	token   string
+	http    *http.Client
+	logger  *slog.Logger
+	runtime runtimeCapabilities
 }
 
 func main() {
@@ -89,11 +90,16 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	runtime, err := detectRuntimeCapabilities(ctx)
+	if err != nil {
+		return err
+	}
 	c := &client{
-		base:   strings.TrimRight(*coreAddr, "/"),
-		token:  token,
-		http:   &http.Client{Timeout: 15 * time.Second},
-		logger: logger,
+		base:    strings.TrimRight(*coreAddr, "/"),
+		token:   token,
+		http:    &http.Client{Timeout: 15 * time.Second},
+		logger:  logger,
+		runtime: runtime,
 	}
 	podmanOK, err := resolveExecMode(ctx, *execMode, logger)
 	if err != nil {
@@ -119,7 +125,10 @@ func run(args []string) error {
 		_ = runsRoot.Close()
 		return fmt.Errorf("register worker: %w", err)
 	}
-	logger.Info("worker registered", "workerId", *workerID, "mode", map[bool]string{true: "podman", false: "local"}[podmanOK])
+	logger.Info("worker registered", "workerId", *workerID,
+		"mode", map[bool]string{true: "podman", false: "local"}[podmanOK],
+		"capabilities", runtime.Capabilities,
+		"browserCLI", runtime.PlaywrightCLI)
 
 	// S3-D recovery coordinator: one bounded claim at a time, independent
 	// of execution slots. A dedicated recovery-only process is useful when
@@ -319,9 +328,27 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				"spec-workspace: "+truncate(perr.Error()), log)
 			return
 		}
+		if _, berr := prepareBrowserCapability(execCtx, workDir, run.ID, actionSpec, c.runtime.Browser); berr != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"capability: "+truncate(berr.Error()), log)
+			return
+		}
 	}
 
-	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, log)
+	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, actionSpec, log)
+	if actionSpec != nil && domain.ContainsCapability(actionSpec.Capabilities, domain.CapBrowser) {
+		if result == nil {
+			result = map[string]any{}
+		}
+		if cleanupErr := cleanupBrowserSession(context.Background(), workDir); cleanupErr != nil {
+			result["browserCleanup"] = "unconfirmed: " + truncate(cleanupErr.Error())
+		} else {
+			result["browserCleanup"] = "ok"
+		}
+	}
 	if err == nil && run.SpecID != "" {
 		if actionSpec == nil {
 			err = errors.New("spec-bound run has no frozen specification")
@@ -508,7 +535,11 @@ func errorCode(raw []byte) string {
 
 func (c *client) register(ctx context.Context, workerID string) error {
 	status, raw, _, err := c.do(ctx, http.MethodPost, "/api/v1/workers/register",
-		map[string]any{"workerId": workerID, "version": workerVersion})
+		map[string]any{
+			"workerId": workerID, "version": workerVersion,
+			"capabilities": c.runtime.Capabilities,
+			"execModes":    []string{string(domain.ExecRestricted), string(domain.ExecTrustedLocal)},
+		})
 	if err != nil {
 		return err
 	}

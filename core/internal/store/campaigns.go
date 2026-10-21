@@ -104,6 +104,17 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	if err := spec.Validate(); err != nil {
 		return domain.Campaign{}, false, nil, fmt.Errorf("%w: frozen spec failed validation: %v", domain.ErrInvalidInput, err)
 	}
+	project, err := scanProject(tx.QueryRowContext(ctx,
+		`SELECT `+projectColumns+` FROM projects WHERE id=?`, spec.ProjectID))
+	if err != nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: campaign project is unavailable", domain.ErrUnauthorized)
+	}
+	if !project.Active() {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: project %q is %s", domain.ErrConflict, project.ID, project.Status)
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		return domain.Campaign{}, false, nil, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
+	}
 	if existing, rerr := scanCampaign(tx.QueryRowContext(ctx,
 		`SELECT `+campaignColumns+` FROM campaigns WHERE action_id=? AND spec_id=?`,
 		spec.ActionID, spec.ID)); rerr == nil {
@@ -266,12 +277,16 @@ func (db *DB) GetCampaign(id string) (domain.Campaign, error) {
 }
 
 // ListCampaigns returns campaigns newest first.
-func (db *DB) ListCampaigns(status domain.CampaignStatus, limit int) ([]domain.Campaign, error) {
+func (db *DB) ListCampaigns(projectID string, status domain.CampaignStatus, limit int) ([]domain.Campaign, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
 	q := `SELECT ` + campaignColumns + ` FROM campaigns WHERE 1=1`
 	var args []any
+	if projectID != "" {
+		q += ` AND project_id=?`
+		args = append(args, projectID)
+	}
 	if status != "" {
 		q += ` AND status=?`
 		args = append(args, string(status))

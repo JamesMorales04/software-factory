@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { type Action, ApiError, api, newIdempotencyKey } from "../api";
+import {
+  type Action,
+  ApiError,
+  api,
+  newIdempotencyKey,
+  type Project,
+} from "../api";
 
 export function Actions() {
   const [actions, setActions] = useState<Action[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -15,9 +23,20 @@ export function Actions() {
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const list = await api.listActions();
+      const [list, nextProjects] = await Promise.all([
+        api.listActions(),
+        api.listProjects(),
+      ]);
       if (!signal?.aborted) {
         setActions(list);
+        setProjects(nextProjects);
+        setProjectId((current) => {
+          if (current) return current;
+          const eligible = nextProjects.find(
+            (project) => project.registrationStatus === "registered",
+          );
+          return eligible?.id ?? "";
+        });
       }
     } catch (e) {
       if (!signal?.aborted) {
@@ -43,7 +62,7 @@ export function Actions() {
     setCreating(true);
     try {
       const { data, replayed } = await api.createAction(
-        { title, description: description || undefined },
+        { projectId, title, description: description || undefined },
         attemptKey.current,
       );
       setNotice(
@@ -70,6 +89,32 @@ export function Actions() {
       <form className="create" onSubmit={onSubmit}>
         <h3>New Action</h3>
         <label>
+          Project
+          <select
+            data-testid="action-project"
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            required
+          >
+            <option value="">Select a registered Project…</option>
+            {projects
+              .filter((project) => project.registrationStatus === "registered")
+              .map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name} ({project.id})
+                </option>
+              ))}
+          </select>
+          {projects.some(
+            (project) => project.registrationStatus === "legacy",
+          ) && (
+            <span className="muted">
+              The legacy default Project is retained for historical data and
+              cannot accept new specifications.
+            </span>
+          )}
+        </label>
+        <label>
           Title
           <input
             value={title}
@@ -89,7 +134,10 @@ export function Actions() {
             placeholder="Acceptance sketch, context, constraints…"
           />
         </label>
-        <button type="submit" disabled={creating || title.trim() === ""}>
+        <button
+          type="submit"
+          disabled={creating || title.trim() === "" || projectId === ""}
+        >
           {creating ? "Creating…" : "Create Action"}
         </button>
       </form>
@@ -101,6 +149,7 @@ export function Actions() {
           <thead>
             <tr>
               <th>ID</th>
+              <th>Project</th>
               <th>Title</th>
               <th>Status</th>
               <th>Updated</th>
@@ -111,6 +160,9 @@ export function Actions() {
               <tr key={a.id}>
                 <td>
                   <code>{a.id.slice(0, 8)}</code>
+                </td>
+                <td>
+                  <code>{a.projectId}</code>
                 </td>
                 <td>
                   <Link to={`/actions/${a.id}`}>{a.title}</Link>

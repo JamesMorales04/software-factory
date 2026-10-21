@@ -230,8 +230,10 @@ func (s *Server) handleGetWorker(w http.ResponseWriter, r *http.Request) {
 // --- Worker protocol (scoped worker token; operator token rejected) ---
 
 type registerWorkerRequest struct {
-	WorkerID string `json:"workerId"`
-	Version  string `json:"version"`
+	WorkerID     string   `json:"workerId"`
+	Version      string   `json:"version"`
+	Capabilities []string `json:"capabilities"`
+	ExecModes    []string `json:"execModes"`
 }
 
 func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +247,20 @@ func (s *Server) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	worker, event, err := s.db.RegisterWorker(ctx, req.WorkerID, strings.TrimSpace(req.Version), telemetry.CorrelationIDFrom(ctx))
+	capabilities, err := domain.NormalizeCapabilities(req.Capabilities)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid", err.Error())
+		return
+	}
+	execModes := make([]string, 0, len(req.ExecModes))
+	for _, mode := range req.ExecModes {
+		mode = strings.TrimSpace(mode)
+		if mode != "" {
+			execModes = append(execModes, mode)
+		}
+	}
+	worker, event, err := s.db.RegisterWorker(ctx, req.WorkerID, strings.TrimSpace(req.Version),
+		capabilities, execModes, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		mapDomainError(w, err, s.log, "register worker")
 		return

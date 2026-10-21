@@ -7,6 +7,33 @@ export type ActionStatus =
   | "completed"
   | "cancelled";
 
+export type Capability =
+  | "repository-edit"
+  | "node-toolchain"
+  | "generic-toolchain"
+  | "browser";
+
+export interface Project {
+  id: string;
+  name: string;
+  registrationStatus: "legacy" | "registered";
+  status: "active" | "paused";
+  repositoryPath?: string;
+  repositoryIdentity?: string;
+  baseRefs: string[];
+  qualityProfile: string;
+  workspaceScope: string;
+  capabilities: Capability[];
+  browserEndpoints: string[];
+  executionMode: string;
+  securityLabel: string;
+  configRevision: number;
+  configHash: string;
+  registeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Action {
   id: string;
   projectId: string;
@@ -169,6 +196,11 @@ export interface ActionSpec {
   provider: string;
   model: string;
   paseoMode: string;
+  projectConfigRevision: number;
+  repositoryIdentity?: string;
+  capabilities: Capability[];
+  browserEndpoints?: string[];
+  bindingHash?: string;
   createdAt: string;
   frozenAt: string;
 }
@@ -179,6 +211,7 @@ export interface Candidate {
   actionId: string;
   specId: string;
   specHash: string;
+  specBindingHash?: string;
   policyRevision: string;
   baseRevision: string;
   commitSha: string;
@@ -465,14 +498,60 @@ async function request<T>(
 export const api = {
   health: () => request<Health>("/api/v1/health").then((r) => r.data),
   listProjects: () =>
-    request<{ projects: { id: string; name: string }[] }>(
-      "/api/v1/projects",
-    ).then((r) => r.data.projects),
-  listActions: (params: { status?: string } = {}) => {
-    const q = params.status
-      ? `?status=${encodeURIComponent(params.status)}`
-      : "";
-    return request<{ actions: Action[] }>(`/api/v1/actions${q}`).then(
+    request<{ projects: Project[] }>("/api/v1/projects").then(
+      (r) => r.data.projects,
+    ),
+  getProject: (id: string) =>
+    request<{ project: Project }>(
+      `/api/v1/projects/${encodeURIComponent(id)}`,
+    ).then((r) => r.data.project),
+  registerProject: (input: {
+    id: string;
+    name: string;
+    repositoryPath: string;
+    baseRefs: string[];
+    qualityProfile: string;
+    workspaceScope: string;
+    capabilities: string[];
+    browserEndpoints: string[];
+    executionMode?: string;
+  }) =>
+    request<{ project: Project }>("/api/v1/projects", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }).then((r) => r.data.project),
+  updateProject: (
+    id: string,
+    input: {
+      name?: string;
+      status?: string;
+      baseRefs?: string[];
+      qualityProfile?: string;
+      workspaceScope?: string;
+      capabilities?: string[];
+      browserEndpoints?: string[];
+    },
+  ) =>
+    request<{ project: Project }>(
+      `/api/v1/projects/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ).then((r) => r.data.project),
+  projectRefs: (id: string) =>
+    request<{
+      repositoryIdentity: string;
+      repositoryPath: string;
+      baseRefs: Record<string, string>;
+    }>(`/api/v1/projects/${encodeURIComponent(id)}/refs`).then((r) => r.data),
+  projectEvents: (id: string) =>
+    request<{ events: FactoryEvent[] }>(
+      `/api/v1/projects/${encodeURIComponent(id)}/events`,
+    ).then((r) => r.data.events),
+  listActions: (params: { projectId?: string; status?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", params.projectId);
+    if (params.status) q.set("status", params.status);
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<{ actions: Action[] }>(`/api/v1/actions${suffix}`).then(
       (r) => r.data.actions,
     );
   },
@@ -481,7 +560,7 @@ export const api = {
       `/api/v1/actions/${encodeURIComponent(id)}`,
     ).then((r) => r.data.action),
   createAction: (
-    input: { title: string; description?: string },
+    input: { projectId?: string; title: string; description?: string },
     idempotencyKey: string,
   ) =>
     request<{ action: Action }>("/api/v1/actions", {
@@ -489,6 +568,28 @@ export const api = {
       body: JSON.stringify(input),
       idempotencyKey,
     }),
+  createActionSpec: (input: {
+    projectId: string;
+    actionId: string;
+    goal: string;
+    repository?: string;
+    baseRevision: string;
+    allowedPaths: string[];
+    acceptanceCriteria: SpecCheck[];
+    negativeCases: SpecCheck[];
+    riskClass: string;
+    qualityProfile: string;
+    budget: { maxAttempts: number; timeoutSecs: number };
+    executionMode: string;
+    provider: string;
+    model: string;
+    paseoMode: string;
+    capabilities?: string[];
+  }) =>
+    request<{ spec: ActionSpec }>("/api/v1/action-specs", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }).then((r) => r.data.spec),
   transitionAction: (id: string, to: ActionStatus) =>
     request<{ action: Action }>(
       `/api/v1/actions/${encodeURIComponent(id)}/transition`,
@@ -543,9 +644,15 @@ export const api = {
       `/api/v1/actions/${encodeURIComponent(id)}/specs`,
     ).then((r) => r.data.specs),
   listCandidates: (
-    params: { actionId?: string; runId?: string; limit?: number } = {},
+    params: {
+      projectId?: string;
+      actionId?: string;
+      runId?: string;
+      limit?: number;
+    } = {},
   ) => {
     const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", params.projectId);
     if (params.actionId) q.set("actionId", params.actionId);
     if (params.runId) q.set("runId", params.runId);
     if (params.limit !== undefined) q.set("limit", String(params.limit));
@@ -563,8 +670,11 @@ export const api = {
       `/api/v1/candidates/${encodeURIComponent(id)}/gate`,
       { method: "POST", body: "{}" },
     ).then((r) => r.data),
-  listCampaigns: (params: { status?: string; limit?: number } = {}) => {
+  listCampaigns: (
+    params: { projectId?: string; status?: string; limit?: number } = {},
+  ) => {
     const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", params.projectId);
     if (params.status) q.set("status", params.status);
     if (params.limit !== undefined) q.set("limit", String(params.limit));
     const suffix = q.toString() ? `?${q.toString()}` : "";

@@ -66,15 +66,16 @@ func (c *client) runAttemptWorkload(
 	workerID string,
 	run domain.Run,
 	attempt domain.Attempt,
-	spec exec.Spec,
+	fixture exec.Spec,
 	workDir string,
 	podmanOK bool,
+	spec *domain.ActionSpec,
 	log *slog.Logger,
 ) (map[string]any, error) {
 	if run.WorkloadKind == domain.PaseoTaskKind {
-		return runPaseoLifecycle(ctx, c, workerID, run, attempt, workDir, paseo.NewCLIAdapter(log), log)
+		return runPaseoLifecycle(ctx, c, workerID, run, attempt, workDir, spec, paseo.NewCLIAdapter(log), log)
 	}
-	result, err := exec.Run(ctx, spec, workDir, podmanOK)
+	result, err := exec.Run(ctx, fixture, workDir, podmanOK)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +103,7 @@ func runPaseoLifecycle(
 	run domain.Run,
 	attempt domain.Attempt,
 	workDir string,
+	spec *domain.ActionSpec,
 	adapter paseo.Adapter,
 	log *slog.Logger,
 ) (map[string]any, error) {
@@ -203,7 +205,7 @@ func runPaseoLifecycle(
 		WorkspaceID: workspaceID,
 		Title:       correlationKey,
 		Labels:      labels,
-		Prompt:      paseoTaskPrompt(task, workDir),
+		Prompt:      paseoTaskPrompt(task, workDir, run, spec),
 		WaitTimeout: remaining,
 	})
 	if err != nil {
@@ -330,6 +332,16 @@ func runPaseoLifecycle(
 		"formatExit":    evidence.formatExit,
 		"nudges":        nudges,
 		"cleanup":       cleanupNote,
+	}
+	if spec != nil && domain.ContainsCapability(spec.Capabilities, domain.CapBrowser) {
+		evidence := browserExecutionEvidence(workDir)
+		out["capability"] = "browser"
+		out["browserInvoked"] = evidence["invoked"]
+		out["browserInvocations"] = evidence["invocations"]
+		commands, _ := evidence["commands"].([]string)
+		out["browserCommands"] = strings.Join(commands, ",")
+		out["browserCLIVersion"] = evidence["cliVersion"]
+		out["browserSkillDigest"] = evidence["skillDigest"]
 	}
 	return out, nil
 }

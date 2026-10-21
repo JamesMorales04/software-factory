@@ -38,8 +38,8 @@ func gateFixture(t *testing.T) Input {
 	attemptID := strings.Repeat("2", 32)
 	candidate := domain.CandidateRevision{
 		ID: strings.Repeat("3", 32), ProjectID: spec.ProjectID, ActionID: spec.ActionID,
-		SpecID: spec.ID, SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("c", 40),
+		SpecID: spec.ID, SpecHash: spec.ContentHash, SpecBindingHash: spec.BindingHash,
+		PolicyRevision: spec.PolicyRevision, BaseRevision: spec.BaseRevision, CommitSHA: strings.Repeat("c", 40),
 		TreeSHA: strings.Repeat("d", 40), ContentDigest: strings.Repeat("e", 64),
 		CandidateRef: "refs/factory/candidates/run-1", Repository: spec.Repository,
 		ImplementerRunID: runID, ImplementerAttemptID: attemptID,

@@ -121,7 +121,7 @@ func TestMissingParticipantBinaryFailsTheClaimedTask(t *testing.T) {
 	}
 	tasks, _ = db.CampaignTasks(campaign.ID)
 	impl = tasks[0]
-	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", "c"); err != nil {
+	if _, _, err := db.RegisterWorker(ctx, "local-1", "test", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "c"); err != nil {
 		t.Fatal(err)
 	}
 	run, attempt, found, _, err := db.ClaimNextRun(ctx, "local-1", "c")

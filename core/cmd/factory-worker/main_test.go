@@ -38,7 +38,7 @@ func TestHandleAttemptCompletesPromptly(t *testing.T) {
 
 	c := &client{base: httpSrv.URL, token: "w-token", http: httpSrv.Client(), logger: logger}
 
-	if _, _, err := db.RegisterWorker(ctx, "reg-1", "test", "corr"); err != nil {
+	if _, _, err := db.RegisterWorker(ctx, "reg-1", "test", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "corr"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	params, err := domain.NewRunParams{
@@ -155,7 +155,7 @@ func TestHandleAttemptReportsEffectiveModeAndReceipt(t *testing.T) {
 
 	c := &client{base: httpSrv.URL, token: "w-token", http: httpSrv.Client(), logger: logger}
 
-	if _, _, err := db.RegisterWorker(ctx, "reg-mode", "test", "corr"); err != nil {
+	if _, _, err := db.RegisterWorker(ctx, "reg-mode", "test", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "corr"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	params, err := domain.NewRunParams{

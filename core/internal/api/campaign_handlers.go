@@ -100,7 +100,7 @@ func (s *Server) handleListCampaigns(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
 		status = domain.CampaignStatus(raw)
 	}
-	campaigns, err := s.db.ListCampaigns(status, limit)
+	campaigns, err := s.db.ListCampaigns(strings.TrimSpace(r.URL.Query().Get("projectId")), status, limit)
 	if err != nil {
 		mapDomainError(w, err, s.log, "list campaigns")
 		return

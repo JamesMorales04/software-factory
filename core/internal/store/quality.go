@@ -24,14 +24,15 @@ const (
 const specColumns = `id, project_id, action_id, version, content_hash, policy_revision,
 	goal, repository, base_revision, allowed_paths, acceptance_criteria,
 	negative_cases, risk_class, quality_profile, budget, execution_mode,
-	provider, model, paseo_mode, created_at, frozen_at`
+	provider, model, paseo_mode, project_config_revision, repository_identity,
+	capabilities, browser_endpoints, binding_hash, created_at, frozen_at`
 
 const candidateColumns = `id, project_id, action_id, spec_id, spec_hash, policy_revision,
 	base_revision, commit_sha, tree_sha, content_digest, candidate_ref,
 	parent_candidate_id, repository, implementer_run_id, implementer_attempt_id,
 	implementer_generation, implementer_worker_id, execution_mode, provider,
-	model, paseo_mode, changed_paths, risk_class, state, created_at, frozen_at,
-	superseded_at`
+	model, paseo_mode, changed_paths, risk_class, spec_binding_hash, state,
+	created_at, frozen_at, superseded_at`
 
 const verificationColumns = `id, candidate_id, candidate_sha, spec_id, spec_hash,
 	policy_revision, authority, actor, independent, clean_resource, oracle_digest,
@@ -70,6 +71,18 @@ func (db *DB) CreateActionSpec(ctx context.Context, spec domain.ActionSpec, corr
 		return domain.ActionSpec{}, false, domain.Event{}, fmt.Errorf("%w: action %q belongs to project %q",
 			domain.ErrUnauthorized, spec.ActionID, projectID)
 	}
+	project, err := scanProject(tx.QueryRowContext(ctx,
+		`SELECT `+projectColumns+` FROM projects WHERE id=?`, spec.ProjectID))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return domain.ActionSpec{}, false, domain.Event{}, fmt.Errorf("%w: unknown projectId %q",
+				domain.ErrInvalidInput, spec.ProjectID)
+		}
+		return domain.ActionSpec{}, false, domain.Event{}, err
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		return domain.ActionSpec{}, false, domain.Event{}, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
+	}
 
 	if existing, gerr := scanSpec(tx.QueryRowContext(ctx,
 		`SELECT `+specColumns+` FROM action_specs WHERE content_hash=?`, spec.ContentHash)); gerr == nil {
@@ -101,30 +114,45 @@ func (db *DB) CreateActionSpec(ctx context.Context, spec domain.ActionSpec, corr
 	if err != nil {
 		return domain.ActionSpec{}, false, domain.Event{}, err
 	}
+	capabilities, err := json.Marshal(spec.Capabilities)
+	if err != nil {
+		return domain.ActionSpec{}, false, domain.Event{}, err
+	}
+	endpoints, err := json.Marshal(spec.BrowserEndpoints)
+	if err != nil {
+		return domain.ActionSpec{}, false, domain.Event{}, err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO action_specs(id, project_id, action_id, version, content_hash,
 		 policy_revision, goal, repository, base_revision, allowed_paths,
 		 acceptance_criteria, negative_cases, risk_class, quality_profile,
-		 budget, execution_mode, provider, model, paseo_mode, created_at, frozen_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 budget, execution_mode, provider, model, paseo_mode,
+		 project_config_revision, repository_identity, capabilities,
+		 browser_endpoints, binding_hash, created_at, frozen_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		spec.ID, spec.ProjectID, spec.ActionID, spec.Version, spec.ContentHash,
 		spec.PolicyRevision, spec.Goal, spec.Repository, spec.BaseRevision, string(allowed),
 		string(acceptance), string(negative), string(spec.RiskClass), string(spec.QualityProfile),
 		string(budget), spec.ExecutionMode, spec.Provider, spec.Model, spec.PaseoMode,
-		stamp(now), stamp(now),
+		spec.ProjectConfigRevision, spec.RepositoryIdentity, string(capabilities),
+		string(endpoints), spec.BindingHash, stamp(now), stamp(now),
 	); err != nil {
 		return domain.ActionSpec{}, false, domain.Event{}, fmt.Errorf("insert action spec: %w", err)
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"specId":         spec.ID,
-		"projectId":      spec.ProjectID,
-		"actionId":       spec.ActionID,
-		"version":        spec.Version,
-		"contentHash":    spec.ContentHash,
-		"policyRevision": spec.PolicyRevision,
-		"riskClass":      spec.RiskClass,
-		"qualityProfile": spec.QualityProfile,
-		"baseRevision":   spec.BaseRevision,
+		"specId":                spec.ID,
+		"projectId":             spec.ProjectID,
+		"actionId":              spec.ActionID,
+		"version":               spec.Version,
+		"contentHash":           spec.ContentHash,
+		"policyRevision":        spec.PolicyRevision,
+		"riskClass":             spec.RiskClass,
+		"qualityProfile":        spec.QualityProfile,
+		"baseRevision":          spec.BaseRevision,
+		"repositoryIdentity":    spec.RepositoryIdentity,
+		"capabilities":          spec.Capabilities,
+		"bindingHash":           spec.BindingHash,
+		"projectConfigRevision": spec.ProjectConfigRevision,
 	})
 	event := domain.Event{
 		EventID:       newID(),
@@ -160,12 +188,14 @@ func scanSpec(row interface {
 ) (domain.ActionSpec, error) {
 	var s domain.ActionSpec
 	var allowed, acceptance, negative, budget string
-	var risk, profile, created, frozen string
+	var risk, profile, capabilities, endpoints, created, frozen string
 	if err := row.Scan(
 		&s.ID, &s.ProjectID, &s.ActionID, &s.Version, &s.ContentHash,
 		&s.PolicyRevision, &s.Goal, &s.Repository, &s.BaseRevision, &allowed,
 		&acceptance, &negative, &risk, &profile, &budget, &s.ExecutionMode,
-		&s.Provider, &s.Model, &s.PaseoMode, &created, &frozen,
+		&s.Provider, &s.Model, &s.PaseoMode, &s.ProjectConfigRevision,
+		&s.RepositoryIdentity, &capabilities, &endpoints, &s.BindingHash,
+		&created, &frozen,
 	); err != nil {
 		return domain.ActionSpec{}, err
 	}
@@ -179,6 +209,17 @@ func scanSpec(row interface {
 		return domain.ActionSpec{}, err
 	}
 	if err := json.Unmarshal([]byte(budget), &s.Budget); err != nil {
+		return domain.ActionSpec{}, err
+	}
+	var capabilityValues []string
+	if err := json.Unmarshal([]byte(capabilities), &capabilityValues); err != nil {
+		return domain.ActionSpec{}, err
+	}
+	s.Capabilities = make([]domain.Capability, 0, len(capabilityValues))
+	for _, value := range capabilityValues {
+		s.Capabilities = append(s.Capabilities, domain.Capability(value))
+	}
+	if err := json.Unmarshal([]byte(endpoints), &s.BrowserEndpoints); err != nil {
 		return domain.ActionSpec{}, err
 	}
 	s.RiskClass = domain.RiskClass(risk)
@@ -223,6 +264,14 @@ func (db *DB) ListActionSpecs(actionID string) ([]domain.ActionSpec, error) {
 // events. The caller supplies only independently computed git evidence.
 func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRevision, correlationID string) (domain.CandidateRevision, []domain.Event, error) {
 	now := db.now()
+	if candidate.SpecBindingHash == "" {
+		// Caller-built candidates may omit the binding hash; fill it from
+		// the durable spec so evidence remains bound to the exact config.
+		var binding string
+		if err := db.sql.QueryRowContext(ctx, `SELECT binding_hash FROM action_specs WHERE id=?`, candidate.SpecID).Scan(&binding); err == nil {
+			candidate.SpecBindingHash = binding
+		}
+	}
 	candidate.ID = newID()
 	candidate.State = domain.CandidateFrozen
 	candidate.CreatedAt = now
@@ -280,9 +329,17 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 	}
 	if spec.ContentHash != candidate.SpecHash || spec.PolicyRevision != candidate.PolicyRevision ||
 		spec.ActionID != candidate.ActionID || spec.ProjectID != candidate.ProjectID ||
-		spec.Repository != candidate.Repository {
+		spec.Repository != candidate.Repository || spec.BindingHash != candidate.SpecBindingHash {
 		return domain.CandidateRevision{}, nil, fmt.Errorf("%w: candidate provenance does not match the frozen spec",
 			domain.ErrUnauthorized)
+	}
+	project, err := scanProject(tx.QueryRowContext(ctx,
+		`SELECT `+projectColumns+` FROM projects WHERE id=?`, spec.ProjectID))
+	if err != nil {
+		return domain.CandidateRevision{}, nil, fmt.Errorf("%w: candidate project is not registered", domain.ErrUnauthorized)
+	}
+	if err := spec.ValidateProjectBinding(project); err != nil {
+		return domain.CandidateRevision{}, nil, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
 	}
 
 	var priorID string
@@ -309,8 +366,8 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		 candidate_ref, parent_candidate_id, repository, implementer_run_id,
 		 implementer_attempt_id, implementer_generation, implementer_worker_id,
 		 execution_mode, provider, model, paseo_mode, changed_paths, risk_class,
-		 state, created_at, frozen_at, superseded_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 spec_binding_hash, state, created_at, frozen_at, superseded_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		candidate.ID, candidate.ProjectID, candidate.ActionID, candidate.SpecID,
 		candidate.SpecHash, candidate.PolicyRevision, candidate.BaseRevision,
 		candidate.CommitSHA, candidate.TreeSHA, candidate.ContentDigest,
@@ -319,7 +376,7 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		candidate.ImplementerGeneration, candidate.ImplementerWorkerID,
 		candidate.ExecutionMode, candidate.Provider, candidate.Model,
 		candidate.PaseoMode, string(changed), string(candidate.RiskClass),
-		string(candidate.State), stamp(now), stamp(now), "",
+		candidate.SpecBindingHash, string(candidate.State), stamp(now), stamp(now), "",
 	); err != nil {
 		return domain.CandidateRevision{}, nil, fmt.Errorf("insert candidate: %w", err)
 	}
@@ -329,6 +386,7 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		"actionId":          candidate.ActionID,
 		"specId":            candidate.SpecID,
 		"specHash":          candidate.SpecHash,
+		"specBindingHash":   candidate.SpecBindingHash,
 		"commitSha":         candidate.CommitSHA,
 		"treeSha":           candidate.TreeSHA,
 		"contentDigest":     candidate.ContentDigest,
@@ -392,7 +450,7 @@ func scanCandidate(row interface {
 		&c.ContentDigest, &c.CandidateRef, &c.ParentCandidateID, &c.Repository,
 		&c.ImplementerRunID, &c.ImplementerAttemptID, &c.ImplementerGeneration,
 		&c.ImplementerWorkerID, &c.ExecutionMode, &c.Provider, &c.Model,
-		&c.PaseoMode, &changed, &risk, &state, &created, &frozen, &superseded,
+		&c.PaseoMode, &changed, &risk, &c.SpecBindingHash, &state, &created, &frozen, &superseded,
 	); err != nil {
 		return domain.CandidateRevision{}, err
 	}
@@ -419,12 +477,16 @@ func (db *DB) GetCandidate(id string) (domain.CandidateRevision, error) {
 
 // ListCandidates returns candidates newest first, optionally filtered by
 // Action, Run or state.
-func (db *DB) ListCandidates(actionID, runID string, limit int) ([]domain.CandidateRevision, error) {
+func (db *DB) ListCandidates(projectID, actionID, runID string, limit int) ([]domain.CandidateRevision, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
 	q := `SELECT ` + candidateColumns + ` FROM candidates WHERE 1=1`
 	var args []any
+	if projectID != "" {
+		q += ` AND project_id=?`
+		args = append(args, projectID)
+	}
 	if actionID != "" {
 		q += ` AND action_id=?`
 		args = append(args, actionID)

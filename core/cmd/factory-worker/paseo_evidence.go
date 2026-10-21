@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/paseo"
 )
 
@@ -32,11 +35,14 @@ type paseoEvidence struct {
 // paseoTaskPrompt wraps the operator task in the containment instructions
 // proven by the trusted-local smoke test: absolute target directory,
 // in-scope edits only, format/tests, short reply, no network or secrets.
-func paseoTaskPrompt(task, workDir string) string {
+func paseoTaskPrompt(task, workDir string, run domain.Run, spec *domain.ActionSpec) string {
 	browserHint := ""
-	if cli := strings.TrimSpace(os.Getenv("FACTORY_BROWSER_CLI")); cli != "" {
-		browserHint = " An agent-native Playwright CLI is available at " + cli +
-			"; use it only for authorized local UI checks and never expose credentials."
+	if spec != nil && domain.ContainsCapability(spec.Capabilities, domain.CapBrowser) {
+		browserHint = " Factory has granted this Run the browser capability. Use the project skill " +
+			".agents/skills/factory-browser/SKILL.md and the wrapper " +
+			".factory/bin/factory-playwright-cli.mjs for self-testing. Authorized local endpoints are exactly: " +
+			strings.Join(spec.BrowserEndpoints, ", ") + ". Do not edit .agents/ or .factory/ and do not use any other browser target. " +
+			"Playwright CLI invocations are recorded as capability evidence."
 	}
 	return "Your target directory is exactly: " + workDir + ". It is an authorized " +
 		"repository checkout with its own package.json scripts. Task: " + task + " " +
@@ -237,6 +243,51 @@ func runCheck(ctx context.Context, dir, name string, args ...string) (int, error
 		return -1, errors.New(name + ": failed to start")
 	}
 	return 0, nil
+}
+
+// browserExecutionEvidence reports what the Factory-managed wrapper actually
+// observed. An empty log is reported as an unproven invocation, never as a
+// model self-report.
+func browserExecutionEvidence(workDir string) map[string]any {
+	out := map[string]any{"invoked": false, "invocations": 0, "commands": []string{}}
+	skillPath := filepath.Join(workDir, ".agents", "skills", "factory-browser", "SKILL.md")
+	if raw, err := os.ReadFile(skillPath); err == nil {
+		sum := sha256.Sum256(raw)
+		out["skillDigest"] = hex.EncodeToString(sum[:])
+	}
+	if raw, err := os.ReadFile(filepath.Join(workDir, ".factory", "browser-runtime.json")); err == nil {
+		var runtime map[string]any
+		if json.Unmarshal(raw, &runtime) == nil {
+			out["cli"] = runtime["cli"]
+			out["cliVersion"] = runtime["cliVersion"]
+			out["endpoints"] = runtime["endpoints"]
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(workDir, ".factory", "bin", "browser-invocations.jsonl"))
+	if err != nil {
+		return out
+	}
+	commands := make([]string, 0, 4)
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		count++
+		if len(commands) < 8 && entry.Command != "" {
+			commands = append(commands, entry.Command)
+		}
+	}
+	out["invoked"] = count > 0
+	out["invocations"] = count
+	out["commands"] = commands
+	return out
 }
 
 // seedPaseoFixture initializes the Attempt workspace with the disposable

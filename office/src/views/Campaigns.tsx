@@ -7,13 +7,16 @@ import {
   api,
   type Campaign,
   newIdempotencyKey,
+  type Project,
 } from "../api";
 
 export function Campaigns() {
   const navigate = useNavigate();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [specs, setSpecs] = useState<ActionSpec[]>([]);
+  const [projectFilter, setProjectFilter] = useState("");
   const [actionId, setActionId] = useState("");
   const [specId, setSpecId] = useState("");
   const [repairs, setRepairs] = useState(1);
@@ -22,16 +25,18 @@ export function Campaigns() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextCampaigns, nextActions] = await Promise.all([
-        api.listCampaigns(),
-        api.listActions(),
+      const [nextCampaigns, nextActions, nextProjects] = await Promise.all([
+        api.listCampaigns(projectFilter ? { projectId: projectFilter } : {}),
+        api.listActions(projectFilter ? { projectId: projectFilter } : {}),
+        api.listProjects(),
       ]);
       setCampaigns(nextCampaigns);
       setActions(nextActions);
+      setProjects(nextProjects);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to load campaigns.");
     }
-  }, []);
+  }, [projectFilter]);
 
   useEffect(() => {
     void refresh();
@@ -105,6 +110,26 @@ export function Campaigns() {
       <form className="create" onSubmit={onCreate}>
         <h3>Start an engineering campaign</h3>
         <label>
+          Project filter
+          <select
+            data-testid="campaign-project-filter"
+            value={projectFilter}
+            onChange={(e) => {
+              setProjectFilter(e.target.value);
+              setActionId("");
+            }}
+          >
+            <option value="">All Projects</option>
+            {projects
+              .filter((project) => project.registrationStatus === "registered")
+              .map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name} ({project.id})
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
           Action
           <select
             value={actionId}
@@ -162,6 +187,7 @@ export function Campaigns() {
           <thead>
             <tr>
               <th>Campaign</th>
+              <th>Project</th>
               <th>Action</th>
               <th>Status</th>
               <th>Repairs</th>
@@ -175,6 +201,9 @@ export function Campaigns() {
                   <Link to={`/campaigns/${campaign.id}`}>
                     <code>{campaign.id.slice(0, 8)}</code>
                   </Link>
+                </td>
+                <td>
+                  <code>{campaign.projectId}</code>
                 </td>
                 <td>
                   <Link to={`/actions/${campaign.actionId}`}>

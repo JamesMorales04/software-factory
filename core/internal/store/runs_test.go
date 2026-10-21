@@ -43,7 +43,7 @@ func queueRun(t *testing.T, db *DB, maxAttempts int) domain.Run {
 
 func registerWorker(t *testing.T, db *DB, id string) domain.Worker {
 	t.Helper()
-	w, _, err := db.RegisterWorker(context.Background(), id, "test-1", "corr-1")
+	w, _, err := db.RegisterWorker(context.Background(), id, "test-1", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "corr-1")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestWorkerLiveness(t *testing.T) {
 		t.Fatalf("expected WorkerOffline, got %+v", events)
 	}
 	// Re-registration reconnects and emits again (not a silent replay).
-	_, reconnected, err := db.RegisterWorker(ctx, "local-1", "test-2", "corr-2")
+	_, reconnected, err := db.RegisterWorker(ctx, "local-1", "test-2", domain.AllCapabilities, []string{"restricted", "trusted-local"}, "corr-2")
 	if err != nil || reconnected == nil {
 		t.Fatalf("reconnect: event=%v err=%v", reconnected, err)
 	}

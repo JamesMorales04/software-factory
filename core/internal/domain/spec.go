@@ -89,6 +89,7 @@ const (
 	CheckReview       CheckKind = "review"
 	CheckSecurity     CheckKind = "security"
 	CheckFreshness    CheckKind = "freshness"
+	CheckCapability   CheckKind = "capability"
 )
 
 // ParseSpecCheckKind accepts only executable acceptance kinds.
@@ -198,8 +199,16 @@ type ActionSpec struct {
 	Provider           string         `json:"provider"`
 	Model              string         `json:"model"`
 	PaseoMode          string         `json:"paseoMode"`
-	CreatedAt          time.Time      `json:"createdAt"`
-	FrozenAt           time.Time      `json:"frozenAt"`
+	// S4-C immutable Project binding. BindingHash covers these fields and
+	// the repository/base snapshot so a later Project edit cannot silently
+	// reinterpret an existing specification.
+	ProjectConfigRevision int          `json:"projectConfigRevision"`
+	RepositoryIdentity    string       `json:"repositoryIdentity,omitempty"`
+	Capabilities          []Capability `json:"capabilities"`
+	BrowserEndpoints      []string     `json:"browserEndpoints,omitempty"`
+	BindingHash           string       `json:"bindingHash,omitempty"`
+	CreatedAt             time.Time    `json:"createdAt"`
+	FrozenAt              time.Time    `json:"frozenAt"`
 }
 
 // NewActionSpecParams carries operator input. The Core assigns ID/version,
@@ -221,6 +230,12 @@ type NewActionSpecParams struct {
 	Provider           string
 	Model              string
 	PaseoMode          string
+	// S4-C Project binding snapshot. The API/store fills these from the
+	// registered Project; the caller cannot choose a different repository.
+	ProjectConfigRevision int
+	RepositoryIdentity    string
+	Capabilities          []string
+	BrowserEndpoints      []string
 }
 
 // Validate normalizes and validates creation input, returning a spec whose
@@ -305,24 +320,42 @@ func (p NewActionSpecParams) Validate() (ActionSpec, error) {
 	if err != nil {
 		return ActionSpec{}, err
 	}
+	capabilities, err := normalizeSpecCapabilities(p.Capabilities, profile, p.RepositoryIdentity)
+	if err != nil {
+		return ActionSpec{}, err
+	}
+	endpoints, err := normalizeBrowserEndpoints(p.BrowserEndpoints, capabilities)
+	if err != nil {
+		return ActionSpec{}, err
+	}
+	if p.ProjectConfigRevision >= 1 && ContainsCapability(capabilities, CapBrowser) && len(endpoints) == 0 {
+		return ActionSpec{}, errors.New("browser capability requires an authorized local endpoint for a registered project")
+	}
+	bindingHash := computeBindingHash(projectID, actionID, p.ProjectConfigRevision,
+		p.RepositoryIdentity, capabilities, endpoints, repository, base, profile, allowed)
 	spec := ActionSpec{
-		ProjectID:          projectID,
-		ActionID:           actionID,
-		Version:            1,
-		PolicyRevision:     QualityPolicyRevision,
-		Goal:               goal,
-		Repository:         repository,
-		BaseRevision:       base,
-		AllowedPaths:       allowed,
-		AcceptanceCriteria: acceptance,
-		NegativeCases:      negative,
-		RiskClass:          risk,
-		QualityProfile:     profile,
-		Budget:             budget,
-		ExecutionMode:      mode,
-		Provider:           route.Provider,
-		Model:              route.Model,
-		PaseoMode:          route.Mode,
+		ProjectID:             projectID,
+		ActionID:              actionID,
+		Version:               1,
+		PolicyRevision:        QualityPolicyRevision,
+		Goal:                  goal,
+		Repository:            repository,
+		BaseRevision:          base,
+		AllowedPaths:          allowed,
+		AcceptanceCriteria:    acceptance,
+		NegativeCases:         negative,
+		RiskClass:             risk,
+		QualityProfile:        profile,
+		Budget:                budget,
+		ExecutionMode:         mode,
+		Provider:              route.Provider,
+		Model:                 route.Model,
+		PaseoMode:             route.Mode,
+		ProjectConfigRevision: p.ProjectConfigRevision,
+		RepositoryIdentity:    strings.TrimSpace(p.RepositoryIdentity),
+		Capabilities:          capabilities,
+		BrowserEndpoints:      endpoints,
+		BindingHash:           bindingHash,
 	}
 	spec.ContentHash = spec.ComputeHash()
 	if err := spec.Validate(); err != nil {
@@ -390,6 +423,32 @@ func (s ActionSpec) Validate() error {
 	}
 	if _, err := ValidatePaseoRoute(s.Provider, s.Model, s.PaseoMode); err != nil {
 		return err
+	}
+	if s.ProjectConfigRevision < 0 {
+		return errors.New("projectConfigRevision must not be negative")
+	}
+	if s.RepositoryIdentity != "" && (!isLowerHex(s.RepositoryIdentity) || len(s.RepositoryIdentity) != 64) {
+		return errors.New("repositoryIdentity must be a sha256 hex digest")
+	}
+	if _, err := normalizeSpecCapabilities(capabilityStrings(s.Capabilities), s.QualityProfile, s.RepositoryIdentity); err != nil {
+		return err
+	}
+	if _, err := normalizeBrowserEndpoints(s.BrowserEndpoints, s.Capabilities); err != nil {
+		return err
+	}
+	if s.ProjectConfigRevision >= 1 && ContainsCapability(s.Capabilities, CapBrowser) && len(s.BrowserEndpoints) == 0 {
+		return errors.New("browser capability requires an authorized local endpoint for a registered project")
+	}
+	if s.BindingHash != "" {
+		if !isLowerHex(s.BindingHash) || len(s.BindingHash) != 64 {
+			return errors.New("bindingHash must be a sha256 hex digest")
+		}
+		want := computeBindingHash(s.ProjectID, s.ActionID, s.ProjectConfigRevision,
+			s.RepositoryIdentity, s.Capabilities, s.BrowserEndpoints, s.Repository,
+			s.BaseRevision, s.QualityProfile, s.AllowedPaths)
+		if want != s.BindingHash {
+			return errors.New("bindingHash does not match the frozen project binding")
+		}
 	}
 	if !isLowerHex(s.ContentHash) || len(s.ContentHash) != 64 {
 		return errors.New("contentHash must be a sha256 hex digest")
@@ -468,6 +527,86 @@ func (s ActionSpec) CheckByID(id string) (SpecCheck, bool) {
 		}
 	}
 	return SpecCheck{}, false
+}
+
+func normalizeSpecCapabilities(raw []string, profile QualityProfile, repositoryIdentity string) ([]Capability, error) {
+	required, err := RequiredCapabilities(profile)
+	if err != nil {
+		return nil, err
+	}
+	caps := required
+	if len(raw) > 0 {
+		caps, err = NormalizeCapabilities(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if missing := MissingCapabilities(caps, required); len(missing) > 0 {
+		return nil, fmt.Errorf("capabilities must include %v for quality profile %q", missing, profile)
+	}
+	if repositoryIdentity == "" && len(caps) > 0 {
+		// A legacy spec may still record its derived requirements; the
+		// empty repository identity is the marker that no Project binding
+		// exists. Registered specs always carry an identity.
+		return caps, nil
+	}
+	return caps, nil
+}
+
+func computeBindingHash(projectID, actionID string, revision int, repositoryIdentity string,
+	capabilities []Capability, endpoints []string, repository, base string,
+	profile QualityProfile, allowed []string,
+) string {
+	payload := struct {
+		ProjectID          string         `json:"projectId"`
+		ActionID           string         `json:"actionId"`
+		ProjectConfigRev   int            `json:"projectConfigRevision"`
+		RepositoryIdentity string         `json:"repositoryIdentity"`
+		Capabilities       []Capability   `json:"capabilities"`
+		BrowserEndpoints   []string       `json:"browserEndpoints"`
+		Repository         string         `json:"repository"`
+		BaseRevision       string         `json:"baseRevision"`
+		QualityProfile     QualityProfile `json:"qualityProfile"`
+		AllowedPaths       []string       `json:"allowedPaths"`
+	}{
+		ProjectID: projectID, ActionID: actionID, ProjectConfigRev: revision,
+		RepositoryIdentity: repositoryIdentity, Capabilities: capabilities,
+		BrowserEndpoints: endpoints, Repository: repository, BaseRevision: base,
+		QualityProfile: profile, AllowedPaths: allowed,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// ValidateProjectBinding proves that a frozen spec still matches the
+// registered project configuration. Legacy specs are reported separately.
+func (s ActionSpec) ValidateProjectBinding(p Project) error {
+	if !p.Registered() {
+		if s.ProjectConfigRevision != 0 || s.RepositoryIdentity != "" {
+			return errors.New("legacy project cannot own a registered spec binding")
+		}
+		return nil
+	}
+	if s.ProjectConfigRevision < 1 || s.ProjectConfigRevision > p.ConfigRevision {
+		return errors.New("spec project configuration revision is not available")
+	}
+	if s.RepositoryIdentity == "" || s.RepositoryIdentity != p.RepositoryIdentity {
+		return errors.New("spec repository identity differs from the project")
+	}
+	if s.Repository != p.RepositoryPath {
+		return errors.New("spec repository path differs from the project; re-freeze the specification")
+	}
+	if missing := MissingCapabilities(p.Capabilities, s.Capabilities); len(missing) > 0 {
+		return fmt.Errorf("project no longer grants required capabilities %v", missing)
+	}
+	if s.BindingHash == "" {
+		return errors.New("registered spec lacks a project binding hash")
+	}
+	return nil
 }
 
 func normalizeAllowedPaths(raw []string) ([]string, error) {

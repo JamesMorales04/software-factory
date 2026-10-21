@@ -91,6 +91,10 @@ func Evaluate(in Input) Evaluation {
 	checks = append(checks, checkResults...)
 	reasons = append(reasons, checkReasons...)
 
+	capabilityResult, capabilityReasons := capabilityCheck(in)
+	checks = append(checks, capabilityResult)
+	reasons = append(reasons, capabilityReasons...)
+
 	reviewResult, reviewReasons := reviewCheck(in)
 	checks = append(checks, reviewResult)
 	reasons = append(reasons, reviewReasons...)
@@ -153,7 +157,7 @@ func identityCheck(in Input) (bool, string) {
 	}
 	if in.Spec.ID != c.SpecID || in.Spec.ContentHash != c.SpecHash ||
 		in.Spec.PolicyRevision != c.PolicyRevision || in.Spec.ActionID != c.ActionID ||
-		in.Spec.ProjectID != c.ProjectID {
+		in.Spec.ProjectID != c.ProjectID || in.Spec.BindingHash != c.SpecBindingHash {
 		return false, "candidate does not match the frozen specification"
 	}
 	if in.Run.ID != c.ImplementerRunID || in.Run.Status != domain.RunSucceeded {
@@ -235,6 +239,21 @@ func independenceCheck(in Input) (bool, string) {
 		}
 	}
 	return true, "separate verifier and reviewer authorities bound to the exact candidate"
+}
+
+func capabilityCheck(in Input) (domain.CheckResult, []string) {
+	if !domain.ContainsCapability(in.Spec.Capabilities, domain.CapBrowser) {
+		return gateCheck("gate-capability", domain.CheckCapability, true, "no browser capability required"), nil
+	}
+	invoked, _ := in.Run.Result["browserInvoked"].(bool)
+	if !invoked {
+		return gateCheck("gate-capability", domain.CheckCapability, false,
+				"browser capability was required but the Factory-managed Implementer recorded no Playwright invocation"), []string{
+				"capability: browser capability was required but not exercised by the Implementer",
+			}
+	}
+	return gateCheck("gate-capability", domain.CheckCapability, true,
+		"Factory-managed Playwright invocation recorded by the Implementer Run"), nil
 }
 
 func verifierChecks(in Input) ([]domain.CheckResult, []string) {
