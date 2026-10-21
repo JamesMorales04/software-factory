@@ -3,31 +3,40 @@
   "failures": [],
   "projectA": "vlog",
   "projectB": "calculator",
-  "actionA": "648127cd1a6db8518a06334d90b00ac6",
-  "specA": "d8b24de80e2e1bfbfcc0e5673f257e4f",
-  "campaignA": "936f948d3a6bc203bbd06c02c963e63f",
-  "candidateA": "47173e05e0af2b7ea014cfcc2039d729ef9f20e4",
+  "actionA": "869e33e2e778be90e429edff8978f16d",
+  "specA": "192184ed26d93c5705b67df9a95abb1d",
+  "campaignA": "8e9d57371b7a713644c41fdd5181bfb2",
+  "candidateA": "a752bfb5794b58854058251b3b64065bae19775c",
   "baseA": "f52f877bd390223b9fe7d867355528a070118a3d",
-  "actionB": "633a64ebc29f4f88b779e9cad8c782a6",
-  "specB": "f73fa17576ad5b41551abd4930951dbb",
-  "campaignB": "787fdc198aceb45d7745eed3b81331ed",
-  "candidateB": "99d2b1f397ea13558e4ec06036ab2eb9eacdf826",
+  "actionB": "45b0bd28df848e699bcec09ba429fa50",
+  "specB": "11a256fa3bd89057290e20501854300f",
+  "campaignB": "0ed78c9cb1ac83f485838a0897b47dab",
+  "candidateB": "8898c5bdcf3cb7d1361b474406cdd8d0f4b4b54a",
   "baseB": "451a3a8cf0cae6cb556f87d3f169d9d592339b16",
-  "blockedCampaign": "18c11ec90933d37027eafa9755b60cfe",
-  "browserFailureCampaign": "9eef6fcee53231eed864334d8f45f88d",
-  "cancelCampaign": "e7d3d5fc89c102a14e070daaa801f99a",
-  "restartCampaign": "ba8c9e8f51d392291f19815ccc6079a5",
+  "blockedCampaign": "834cd3989f012b3a91562277ccda2ad7",
+  "browserFailureCampaign": "f362f29894c6a7b487ea4e4e2aa9e5c9",
+  "cancelCampaign": "ab0b0b2b83f6baa36922bd1e1b1cc874",
+  "restartCampaign": "3b0a490c0307025da9ceb46f443126cb",
   "concurrentCampaigns": [
-    "8703adf4cbb806fd534f0b942b49105b",
-    "a62018dbd6418bc812948d13d324f4a6"
+    "e2226259b2f65c8b9cc7ac93d1427732",
+    "89daea14d99a90922cf3722aec535f4a"
   ],
+  "recoveryCampaign": "c2af6b7d1df6a5d7ef7506d86f94e353",
+  "recoveryCampaigns": {
+    "recoverable": "c2af6b7d1df6a5d7ef7506d86f94e353",
+    "qualityRepair": "df24ccb2d116671e7f6831d32de5b4fe",
+    "budgetExhausted": "6f0854991818b3b4ccd8d575d3233da7",
+    "securityBlocked": "e838fdd9c6f4e0df7d1da93580d07449",
+    "oracleRevisionOld": "34006c18603b00f6f6d09219022d8434",
+    "oracleRevisionNew": "36f8ebe633482ad5de0a67ce056e1c0e"
+  },
   "journey": {
     "ok": true,
     "failure": "",
     "projectId": "vlog",
-    "actionId": "648127cd1a6db8518a06334d90b00ac6",
-    "specId": "d8b24de80e2e1bfbfcc0e5673f257e4f",
-    "campaignId": "936f948d3a6bc203bbd06c02c963e63f",
+    "actionId": "869e33e2e778be90e429edff8978f16d",
+    "specId": "192184ed26d93c5705b67df9a95abb1d",
+    "campaignId": "8e9d57371b7a713644c41fdd5181bfb2",
     "checks": [
       {
         "name": "browser registered Project A with a durable configuration",
@@ -37,12 +46,12 @@
       {
         "name": "browser created a Project-bound Action",
         "pass": true,
-        "detail": "648127cd1a6db8518a06334d90b00ac6"
+        "detail": "869e33e2e778be90e429edff8978f16d"
       },
       {
         "name": "browser froze a Project-bound ActionSpec",
         "pass": true,
-        "detail": "d8b24de80e2e1bfbfcc0e5673f257e4f"
+        "detail": "192184ed26d93c5705b67df9a95abb1d"
       },
       {
         "name": "frozen spec records the Project identity and capabilities",
@@ -51,7 +60,7 @@
       {
         "name": "browser created and started the Campaign",
         "pass": true,
-        "detail": "936f948d3a6bc203bbd06c02c963e63f"
+        "detail": "8e9d57371b7a713644c41fdd5181bfb2"
       },
       {
         "name": "Campaign reaches ACCEPTED through native orchestration",
