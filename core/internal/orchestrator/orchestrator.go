@@ -152,6 +152,7 @@ func (e *Engine) reconcile(ctx context.Context) {
 	}
 	e.publish(expired)
 	e.pruneProcesses()
+	e.reconcilePendingActionState(ctx)
 
 	campaigns, err := e.db.ListCampaigns(domain.CampaignRunning, 5000)
 	if err != nil {
@@ -163,6 +164,33 @@ func (e *Engine) reconcile(ctx context.Context) {
 			return
 		}
 		e.reconcileCampaign(ctx, campaign)
+	}
+}
+
+func (e *Engine) reconcilePendingActionState(ctx context.Context) {
+	pending, err := e.db.ListCampaigns(domain.CampaignPending, 5000)
+	if err != nil {
+		e.log.Error("list pending campaigns failed", "error", err.Error())
+		return
+	}
+	for _, campaign := range pending {
+		action, aerr := e.db.GetAction(campaign.ActionID)
+		if aerr != nil {
+			e.log.Error("load pending campaign action failed", "campaignId", campaign.ID, "error", aerr.Error())
+			continue
+		}
+		switch action.Status {
+		case domain.StatusCancelled:
+			_, events, cerr := e.db.CancelCampaign(ctx, campaign.ID,
+				"action cancelled outside the campaign", "campaign-pending-"+randomID())
+			if cerr != nil {
+				e.log.Error("cancel pending campaign failed", "campaignId", campaign.ID, "error", cerr.Error())
+				continue
+			}
+			e.publish(events)
+		case domain.StatusCompleted:
+			e.block(ctx, campaign, "action completed outside the campaign", "campaign-pending-"+randomID())
+		}
 	}
 }
 

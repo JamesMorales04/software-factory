@@ -657,8 +657,9 @@ func normalizeVerifierChecks(checks []domain.CheckResult, spec domain.ActionSpec
 func enforceCampaignParticipantTx(ctx context.Context, tx *sql.Tx, candidateID, key, actor string, role domain.TaskRole) error {
 	var campaignBound int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM campaign_tasks WHERE candidate_id=? AND role=?`,
-		candidateID, string(domain.RoleImplementer)).Scan(&campaignBound); err != nil {
+		`SELECT COUNT(*) FROM campaigns c
+		 JOIN candidates cand ON cand.spec_id=c.spec_id
+		 WHERE cand.id=?`, candidateID).Scan(&campaignBound); err != nil {
 		return err
 	}
 	if campaignBound == 0 {

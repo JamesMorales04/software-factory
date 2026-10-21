@@ -5,9 +5,11 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -611,32 +613,11 @@ func (db *DB) migrateS4B() error {
 			return fmt.Errorf("add campaigns.attempt_budget_version: %w", err)
 		}
 	}
-	if _, err := db.sql.Exec(
-		`UPDATE campaigns SET max_attempts=max_attempts*(max_repair_cycles+1),
-		 attempt_budget_version=1 WHERE attempt_budget_version=0`); err != nil {
-		return fmt.Errorf("backfill campaign attempt budgets: %w", err)
+	if err := db.backfillCampaignBudgets(); err != nil {
+		return err
 	}
-	if _, err := db.sql.Exec(
-		`UPDATE campaigns SET status='blocked',
-		 terminal_reason='migration: duplicate active campaign',
-		 completed_at=CASE WHEN completed_at='' THEN updated_at ELSE completed_at END,
-		 updated_at=updated_at
-		 WHERE status IN ('pending','running') AND EXISTS (
-		   SELECT 1 FROM campaigns c2
-		   WHERE c2.action_id=campaigns.action_id
-		     AND c2.status IN ('pending','running')
-		     AND (c2.created_at<campaigns.created_at OR
-		          (c2.created_at=campaigns.created_at AND c2.id<campaigns.id))
-		 )`); err != nil {
-		return fmt.Errorf("resolve duplicate active campaigns: %w", err)
-	}
-	if _, err := db.sql.Exec(
-		`UPDATE campaign_tasks SET status='cancelled',
-		 error='migration: duplicate active campaign'
-		 WHERE status IN ('pending','ready','dispatched','running') AND campaign_id IN (
-		   SELECT id FROM campaigns WHERE terminal_reason='migration: duplicate active campaign'
-		 )`); err != nil {
-		return fmt.Errorf("cancel migrated duplicate campaign tasks: %w", err)
+	if err := db.blockDuplicateActiveCampaigns(); err != nil {
+		return err
 	}
 	if _, err := db.sql.Exec(
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_active_action
@@ -644,6 +625,120 @@ func (db *DB) migrateS4B() error {
 		return fmt.Errorf("create active campaign uniqueness index: %w", err)
 	}
 	return nil
+}
+
+// backfillCampaignBudgets recomputes legacy per-Run attempt limits from the
+// frozen spec. Recomputation is idempotent and distinguishes a b71-era total
+// budget from a true pre-total row without multiplying twice.
+func (db *DB) backfillCampaignBudgets() error {
+	rows, err := db.sql.Query(
+		`SELECT id, spec_id, max_repair_cycles FROM campaigns WHERE attempt_budget_version=0`)
+	if err != nil {
+		return err
+	}
+	type legacy struct {
+		id, specID string
+		repairs    int
+	}
+	var pending []legacy
+	for rows.Next() {
+		var item legacy
+		if err := rows.Scan(&item.id, &item.specID, &item.repairs); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		var budgetJSON string
+		if err := db.sql.QueryRow(`SELECT budget FROM action_specs WHERE id=?`, item.specID).Scan(&budgetJSON); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return err
+		}
+		var budget domain.SpecBudget
+		if err := json.Unmarshal([]byte(budgetJSON), &budget); err != nil {
+			return fmt.Errorf("decode legacy spec budget: %w", err)
+		}
+		if budget.MaxAttempts < 1 {
+			continue
+		}
+		total := budget.MaxAttempts * (item.repairs + 1)
+		if _, err := db.sql.Exec(
+			`UPDATE campaigns SET max_attempts=?, attempt_budget_version=1 WHERE id=?`,
+			total, item.id); err != nil {
+			return fmt.Errorf("backfill campaign attempt budget: %w", err)
+		}
+	}
+	return nil
+}
+
+// blockDuplicateActiveCampaigns resolves pre-index data through the normal
+// terminal transition: Run cancellation, task cancellation and durable
+// events are recorded rather than rewritten behind the ledger.
+func (db *DB) blockDuplicateActiveCampaigns() error {
+	rows, err := db.sql.Query(
+		`SELECT id, action_id FROM campaigns WHERE status IN (?,?)
+		 ORDER BY action_id ASC, created_at ASC, id ASC`,
+		string(domain.CampaignPending), string(domain.CampaignRunning))
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	var duplicates []string
+	for rows.Next() {
+		var id, actionID string
+		if err := rows.Scan(&id, &actionID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if seen[actionID] {
+			duplicates = append(duplicates, id)
+			continue
+		}
+		seen[actionID] = true
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range duplicates {
+		if err := db.blockCampaignOnMigration(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) blockCampaignOnMigration(campaignID string) error {
+	ctx := context.Background()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	campaign, err := scanCampaign(tx.QueryRowContext(ctx,
+		`SELECT `+campaignColumns+` FROM campaigns WHERE id=?`, campaignID))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if campaign.Status != domain.CampaignPending && campaign.Status != domain.CampaignRunning {
+		return tx.Commit()
+	}
+	if _, _, err := finishCampaignTx(ctx, tx, campaignID, domain.CampaignBlocked,
+		"migration: duplicate active campaign", domain.EventCampaignFinished,
+		"s4b-migration", utcNow()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func newID() string {

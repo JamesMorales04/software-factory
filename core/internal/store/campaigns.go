@@ -181,14 +181,14 @@ func (db *DB) CreateCampaign(ctx context.Context, params domain.NewCampaignParam
 	insertRes, err := tx.ExecContext(ctx,
 		`INSERT INTO campaigns(id, project_id, action_id, spec_id, spec_hash,
 		 policy_revision, plan_hash, plan, status, terminal_reason,
-		 max_repair_cycles, repair_cycles, max_attempts, max_wall_clock_secs,
-		 max_parallel, correlation_id, idempotency_key, created_at, updated_at,
-		 started_at, completed_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 max_repair_cycles, repair_cycles, max_attempts, attempt_budget_version,
+		 max_wall_clock_secs, max_parallel, correlation_id, idempotency_key,
+		 created_at, updated_at, started_at, completed_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT DO NOTHING`,
 		campaign.ID, campaign.ProjectID, campaign.ActionID, campaign.SpecID,
 		campaign.SpecHash, campaign.PolicyRevision, campaign.PlanHash, string(rawPlan),
-		string(campaign.Status), "", campaign.MaxRepairCycles, 0, campaign.MaxAttempts,
+		string(campaign.Status), "", campaign.MaxRepairCycles, 0, campaign.MaxAttempts, 1,
 		campaign.MaxWallClockSecs, campaign.MaxParallel, campaign.CorrelationID,
 		campaign.IdempotencyKey, stamp(now), stamp(now), "", "",
 	)

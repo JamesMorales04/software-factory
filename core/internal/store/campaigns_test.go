@@ -57,7 +57,7 @@ func createCampaignFixture(t *testing.T, db *DB, repairs int) (domain.Action, do
 	return action, spec, campaign
 }
 
-func driveImplementer(t *testing.T, db *DB, campaign domain.Campaign, task domain.CampaignTask) domain.CandidateRevision {
+func driveImplementerUntilCandidate(t *testing.T, db *DB, campaign domain.Campaign, task domain.CampaignTask) (domain.CandidateRevision, domain.Run, domain.Attempt) {
 	t.Helper()
 	ctx := context.Background()
 	registerWorker(t, db, "local-1")
@@ -98,8 +98,14 @@ func driveImplementer(t *testing.T, db *DB, campaign domain.Campaign, task domai
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.ReportAttempt(ctx, "local-1", run.ID, attempt.ID, attempt.LeaseGeneration,
-		domain.OutcomeCompleted, map[string]any{}, "", "c"); err != nil {
+	return candidate, run, attempt
+}
+
+func driveImplementer(t *testing.T, db *DB, campaign domain.Campaign, task domain.CampaignTask) domain.CandidateRevision {
+	t.Helper()
+	candidate, run, attempt := driveImplementerUntilCandidate(t, db, campaign, task)
+	if _, _, _, err := db.ReportAttempt(context.Background(), "local-1", run.ID, attempt.ID,
+		attempt.LeaseGeneration, domain.OutcomeCompleted, map[string]any{}, "", "c"); err != nil {
 		t.Fatal(err)
 	}
 	return candidate
@@ -609,8 +615,76 @@ func TestMigrateS4BBackfillsLegacyAttemptBudget(t *testing.T) {
 	ctx := context.Background()
 	_, _, campaign := createCampaignFixture(t, db, 1)
 	if _, err := db.sql.ExecContext(ctx,
-		`UPDATE campaigns SET max_attempts=1, attempt_budget_version=0 WHERE id=?`,
-		campaign.ID); err != nil {
+		`UPDATE campaigns SET max_attempts=1 WHERE id=?`, campaign.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`ALTER TABLE campaigns DROP COLUMN attempt_budget_version`); err != nil {
+		t.Fatalf("simulate pre-version schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := reopened.GetCampaign(campaign.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.MaxAttempts != 2 {
+		t.Fatalf("migrated attempt budget = %d, want 2", migrated.MaxAttempts)
+	}
+	_, _, fresh := createCampaignFixture(t, reopened, 1)
+	if fresh.MaxAttempts != 2 {
+		t.Fatalf("fresh campaign budget = %d, want 2", fresh.MaxAttempts)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened2.Close() }()
+	fresh, err = reopened2.GetCampaign(fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.MaxAttempts != 2 {
+		t.Fatalf("fresh campaign budget after restart = %d, want 2", fresh.MaxAttempts)
+	}
+}
+
+func TestMigrateS4BBlocksDuplicateActiveCampaignAndCancelsRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "duplicate.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_, spec1, campaign1 := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign1.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign1.ID)
+	if _, _, _, err := db.DispatchImplementer(ctx, campaign1.ID, tasks[0].ID, spec1.Goal, "c"); err != nil {
+		t.Fatal(err)
+	}
+	_, spec2, campaign2 := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign2.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks2, _ := db.CampaignTasks(campaign2.ID)
+	_, run2, _, err := db.DispatchImplementer(ctx, campaign2.ID, tasks2[0].ID, spec2.Goal, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`DROP INDEX idx_campaigns_active_action`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE campaigns SET action_id=? WHERE id=?`, campaign1.ActionID, campaign2.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -621,15 +695,32 @@ func TestMigrateS4BBackfillsLegacyAttemptBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = reopened.Close() }()
-	migrated, err := reopened.GetCampaign(campaign.ID)
+	blocked, err := reopened.GetCampaign(campaign2.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrated.MaxAttempts != 2 {
-		t.Fatalf("migrated attempt budget = %d, want 2", migrated.MaxAttempts)
+	if blocked.Status != domain.CampaignBlocked {
+		t.Fatalf("duplicate campaign status = %s, want blocked", blocked.Status)
 	}
-	if _, err := reopened.sql.Exec(`SELECT status FROM campaigns WHERE id=?`, campaign.ID); err != nil {
+	storedRun, err := reopened.GetRun(run2.ID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if storedRun.Status != domain.RunCancelled {
+		t.Fatalf("duplicate campaign Run = %s, want cancelled", storedRun.Status)
+	}
+	events, err := reopened.ListAggregateEvents(domain.AggregateCampaign, campaign2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := 0
+	for _, event := range events {
+		if event.EventType == domain.EventCampaignFinished {
+			finished++
+		}
+	}
+	if finished != 1 {
+		t.Fatalf("migration CampaignFinished events = %d, want 1", finished)
 	}
 }
 
@@ -737,5 +828,38 @@ func TestCampaignUnresolvedPaseoRecoveryIsDetected(t *testing.T) {
 	unresolved, _, err = db.RunRecoveryUnresolved(run.ID)
 	if err != nil || unresolved {
 		t.Fatalf("closed binding recovery = %v %v", unresolved, err)
+	}
+}
+
+func TestCampaignRejectsEvidenceBeforeImplementerBinding(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	_, spec, campaign := createCampaignFixture(t, db, 0)
+	if _, _, _, err := db.StartCampaign(ctx, campaign.ID, "c"); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := db.CampaignTasks(campaign.ID)
+	impl := tasks[0]
+	if _, _, _, err := db.DispatchImplementer(ctx, campaign.ID, impl.ID, spec.Goal, "c"); err != nil {
+		t.Fatal(err)
+	}
+	impl, _ = db.getCampaignTask(campaign.ID, impl.ID)
+	candidate, _, _ := driveImplementerUntilCandidate(t, db, campaign, impl)
+	// The candidate exists but the implementer task has not completed; no
+	// verifier task has been claimed, so there is no assigned task key.
+	evidence := domain.VerificationEvidence{
+		CandidateID: candidate.ID, CandidateSHA: candidate.CommitSHA, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		Authority: "verifier", Actor: "verifier-" + campaign.ID[:8] + "-0", Independent: true,
+		CleanResource: "git-clone:prebind", OracleDigest: spec.OracleDigest(),
+		IdempotencyKey: "campaign-" + campaign.ID + "-verifier-0-" + candidate.ID,
+	}
+	for _, check := range spec.AllChecks() {
+		evidence.Checks = append(evidence.Checks, domain.CheckResult{
+			ID: check.ID, Kind: check.Kind, Status: domain.CheckPass, ExitCode: check.ExpectExit,
+		})
+	}
+	if _, _, _, err := db.RecordVerification(ctx, evidence, "c"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("pre-bind evidence = %v, want unauthorized", err)
 	}
 }

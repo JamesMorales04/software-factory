@@ -80,6 +80,11 @@ expands its dependencies, candidate scope or credentials.
   consume exactly its identity. Core spawns the separate binary with its
   scoped token, `--candidate`, participant identity and deterministic
   idempotency key.
+- Every candidate whose spec is owned by a Campaign is campaign-bound from
+  the moment it is frozen, not only after its implementer task completes.
+  Evidence for such a candidate is accepted only when its idempotency key and
+  actor match an assigned verifier/reviewer task; pre-claim, alternate-key and
+  mismatched-actor evidence is rejected.
 - A participant task completes only from durable evidence with that exact key.
   Process exit without evidence is a failure, never success.
 - The gate task evaluates the S4-A bundle through the same Core decision path
