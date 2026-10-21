@@ -34,7 +34,7 @@ simulator. Only the Paseo CLI is simulated.
 | B11 | Chromium starts a Campaign in Office, observes real tasks and survives reload | `s4b-journey.mjs` + Core API cross-check | PASS (deterministic, real Chromium) |
 | B12 | Forged role results, mismatched identities, unauthorized transitions, budget escalation rejected | Scoped-token, forged-evidence, task-route and budget negatives | PASS (deterministic) |
 | B13 | Existing S1–S4-A suites preserve contracts | `go test -race ./...` plus s1/s2/s3a/s3b/s3c/s3d/s4a CI workflows | CI on the exact PR head; S4-A deterministic lane rerun locally |
-| B14 | At least one bounded real Factory-managed workflow with actual Paseo Implementer | `e2e-s4b-live.sh`: one real `opencode/opencode-go/deepseek-v4.1-flash` mode `build` session; Core then scheduled verifier/reviewer/gate | PASS (implementer-run live 2026-10-20; candidate `3682161923fa65fb105070c9ebb3455aaaf362ac`, session `51e042a9-d64a-4575-aff4-23a209203ec0`; independent verifier reviewed evidence, did not rerun the paid session) |
+| B14 | At least one bounded real Factory-managed workflow with actual Paseo Implementer | `e2e-s4b-live.sh`: one real `opencode/opencode-go/deepseek-v4.1-flash` mode `build` session; Core then scheduled verifier/reviewer/gate | PASS (implementer-run live 2026-10-20; candidate `8daa09266e703dbe7d60983961bf645b95c903c2`, session `75895881-df30-4140-90f2-ee22388bc114`; independent verifier reviewed evidence, did not rerun the paid session) |
 
 ## Commands
 

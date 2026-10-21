@@ -3,7 +3,7 @@
   "recordedAt": "2026-10-20",
   "mode": "deterministic fixture lane; real Core/Worker/verifier/reviewer/Chromium; deterministic Paseo CLI",
   "buildVersion": "0.1.0-s4b",
-  "sourceNote": "Exact source commit is recorded after the code commit; rerun from any candidate to reproduce.",
+  "sourceNote": "Core code commit; this evidence file was added in a docs-only follow-up commit.",
   "securityDisposition": "TRUSTED_LOCAL only; not isolated or SEC-01 certified",
   "campaigns": {
     "acceptedCampaign": "24e1a7d685341e1fd507f55db0f74962",
@@ -79,5 +79,6 @@
     "finishedAt": "2026-10-21T00:09:42.019Z"
   },
   "result": "PASS_B1_B12_DETERMINISTIC",
-  "b14": "PASS_LIVE_SEPARATE_EVIDENCE"
+  "b14": "PASS_LIVE_SEPARATE_EVIDENCE",
+  "sourceCommit": "cdc81b724a963b530c9e2737925a46f86e34da3f"
 }
