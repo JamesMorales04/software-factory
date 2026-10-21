@@ -124,7 +124,7 @@ attempts and 3 corrective cycles per Project within the C-03 authorization.
 | D1 | PASS | Productive `omit-browser` Implementer received one same-session capability continuation; `capabilityNudges=1`; successful `open,snapshot,close`; accepted with 1 attempt and 0 recoveries. |
 | D2 | PASS | `browser-fails` attempts were recorded as failed; no successful open; candidate remained `REPAIR_REQUIRED`. |
 | Diagnosis | PASS | Actual OpenCode session records show the final agent read the skill, implemented and started the app, then ended without wrapper use; no tool/timeout error. The final campaign was configured 1 attempt/0 repairs by the runner. See [diagnosis](f1-s4c-04-diagnosis.md). |
-| Preflight | PASS | Skill/wrapper reachable; earlier live session used the wrapper successfully; same-session completion verified deterministically. No paid C-04 session spent. |
+| Preflight | PASS | Real Core/Worker preflight registered Vlog with `browser`/`trusted-local`, froze a bound spec and created a pending campaign with `maxAttempts=1`, `maxRepairCycles=0`; zero paid sessions. Skill/wrapper reachable; earlier live session used the wrapper successfully; same-session completion verified deterministically. No paid C-04 session spent. |
 
 For C-04, both product browser acceptance (independent verifier) and agent
 browser-capability certification (successful model-mediated open + interaction)

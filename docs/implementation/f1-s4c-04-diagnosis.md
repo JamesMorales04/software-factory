@@ -109,7 +109,8 @@ The S4-C lane adds:
 
 ## Phase E — live preflight and authorization gate
 
-- Final code candidate: see PR head; runtime fix `0db2262` plus tests/docs.
+- Final code candidate: `0db2262`; final PR head `6a7fb67` adds tests and
+  documentation only (same runtime).
 - Skill: generated, readable and actually read by OpenCode in live sessions.
 - Wrapper: real successful use observed in an earlier live session; preflight
   confirms executable and URL guard.
@@ -118,6 +119,11 @@ The S4-C lane adds:
   the final Vlog C-03 run used `1/0`.
 - Previous live evidence is valid only for its recorded SHAs; it is stale for
   the final C-04 runtime. Calculator's remaining authorization is untouched.
+- Non-paid preflight completed: real Core + real Worker registered with
+  capabilities `repository-edit,node-toolchain,generic-toolchain,browser` and
+  `trusted-local`; Vlog Project/spec/campaign created in `pending` with
+  `maxAttempts=1`, `maxRepairCycles=0`; zero paid sessions started. The
+  campaign was not started.
 - Proposed bounded live run: **one** Vlog Implementer session with
   `maxImplementerAttempts=1`, `maxRepairCycles=0`, expecting the same-session
   continuation to complete the capability. If it fails, stop and report; do not
