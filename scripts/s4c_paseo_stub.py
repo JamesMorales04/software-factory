@@ -125,7 +125,10 @@ def parse_flags(args, names):
         if arg in names:
             if i + 1 >= len(args):
                 raise SystemExit(f"missing value for {arg}")
-            values[arg] = args[i + 1]
+            if arg == "--label":
+                values.setdefault(arg, []).append(args[i + 1])
+            else:
+                values[arg] = args[i + 1]
             i += 2
         elif arg.startswith("--") and "=" in arg:
             key, value = arg.split("=", 1)
@@ -250,6 +253,16 @@ def main(argv):
         print("paseo-stub 0.0.0-s4c")
         return 0
     state = load_state()
+    if argv[0] == "provider":
+        if len(argv) >= 2 and argv[1] == "ls":
+            print(json.dumps([{"provider": "opencode", "label": "OpenCode",
+                               "status": "available", "enabled": "Enabled"}]))
+            return 0
+        if len(argv) >= 3 and argv[1] == "models":
+            model = os.environ.get("S4C_STUB_MODEL", "opencode-go/deepseek-v4.1-flash")
+            print(json.dumps([{"id": model, "model": model}]))
+            return 0
+        return 3
     if argv[0] == "workspace":
         if len(argv) < 2:
             return 3
@@ -281,10 +294,15 @@ def main(argv):
             print("stub: unknown workspace", file=sys.stderr)
             return 1
         session_id = next_id(state, "sess")
+        labels = {}
+        for raw in flags.get("--label", []):
+            key, _, value = raw.partition("=")
+            labels[key] = value
         state["sessions"][session_id] = {
             "workspace": workspace_id, "workspacePath": workspace_path,
             "provider": flags.get("--provider", ""), "model": flags.get("--model", ""),
             "mode": flags.get("--mode", ""), "prompt": rest[-1] if rest else "",
+            "labels": labels, "archived": False, "status": "idle",
         }
         save_state(state)
         prompt = rest[-1] if rest else ""
@@ -305,7 +323,9 @@ def main(argv):
             return 1
         print(json.dumps({"Id": argv[1], "Provider": session.get("provider", ""),
                           "Model": session.get("model", ""), "Mode": session.get("mode", ""),
-                          "Cwd": session.get("workspacePath", ""), "Status": "idle", "Archived": False}))
+                          "Cwd": session.get("workspacePath", ""),
+                          "Status": session.get("status", "idle"),
+                          "Archived": bool(session.get("archived"))}))
         return 0
     if argv[0] == "logs":
         print("[Read] src\n[Edit] source\n[Shell] npm test\n[Shell] factory-playwright-cli\n[Text] done")
@@ -323,10 +343,44 @@ def main(argv):
                 if current in {"omit-browser", "good"}:
                     return invoke_browser(Path(workspace))
         return 0
-    if argv[0] in {"wait", "stop", "archive"}:
+    if argv[0] == "wait":
+        return 0
+    if argv[0] == "stop":
+        if len(argv) > 1 and argv[1] in state["sessions"]:
+            state["sessions"][argv[1]]["status"] = "closed"
+            save_state(state)
+        return 0
+    if argv[0] == "archive":
+        if len(argv) > 1 and argv[1] in state["sessions"]:
+            state["sessions"][argv[1]]["archived"] = True
+            state["sessions"][argv[1]]["status"] = "closed"
+            save_state(state)
         return 0
     if argv[0] == "ls":
-        print("[]")
+        labels = {}
+        include_archived = "-a" in argv or "--all" in argv
+        if "--label" in argv:
+            index = argv.index("--label")
+            if index + 1 < len(argv):
+                key, _, value = argv[index + 1].partition("=")
+                labels[key] = value
+        docs = []
+        for session_id, session in state["sessions"].items():
+            if not include_archived and session.get("archived"):
+                continue
+            if any(session.get("labels", {}).get(key) != value for key, value in labels.items()):
+                continue
+            labels_for_session = session.get("labels", {})
+            run_id = labels_for_session.get("factory.run", "")
+            generation = labels_for_session.get("factory.generation", "1")
+            docs.append({
+                "id": session_id,
+                "name": f"factory-s3d:{run_id}:g{generation}",
+                "provider": f"{session.get('provider', '')}/{session.get('model', '')}",
+                "status": session.get("status", "idle"),
+                "cwd": session.get("workspacePath", ""),
+            })
+        print(json.dumps(docs))
         return 0
     return 3
 

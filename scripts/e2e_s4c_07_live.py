@@ -124,19 +124,6 @@ def active_paseo_workspaces() -> tuple[set[str], str | None]:
     return ids, None
 
 
-def paseo_agent_inventory() -> tuple[set[str], str | None]:
-    proc = run(["paseo", "ls", "--all", "--global", "--json"], check=False)
-    if proc.returncode != 0:
-        return set(), proc.stderr[-500:] or proc.stdout[-500:]
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return set(), f"invalid agent inventory: {exc}"
-    if not isinstance(payload, list):
-        return set(), "agent inventory is not a list"
-    return {str(item["id"]) for item in payload if isinstance(item, dict) and item.get("id")}, None
-
-
 def worker_registry_dir(worker_id: str) -> Path:
     key = hashlib.sha256(worker_id.encode()).hexdigest()[:32]
     return Path(tempfile.gettempdir()) / "factory-test-servers" / f"worker-{key}"
@@ -512,10 +499,6 @@ def main() -> int:
         # The Worker starts and verifies the managed server before Paseo
         # StartSession. The deterministic preflight already exercised that
         # path; this assertion ties the live log order to the same ordering.
-        inventory_before, inventory_before_error = paseo_agent_inventory()
-        record_preflight("paseo-agent-inventory", inventory_before_error is None,
-                         {"agents": len(inventory_before), "error": inventory_before_error})
-        result["agent_inventory_before"] = sorted(inventory_before)
         result["paid_sessions_started_at"] = time.time()
         status, payload = client.call("POST", f"/api/v1/campaigns/{campaign['id']}/start", {})
         if status not in (200, 202):
@@ -617,31 +600,45 @@ def main() -> int:
             for item in sessions
         } - {""}
 
-        inventory_after, inventory_after_error = paseo_agent_inventory()
-        inventory_before = set(result.get("agent_inventory_before", []))
-        new_ids = inventory_after - inventory_before
-        # The raw inventory helper returns IDs only. Fetch details to filter
-        # by the Factory correlation title without inventing session identity.
-        proc = run(["paseo", "ls", "--all", "--global", "--json"], check=False)
-        inventory_details = []
-        if proc.returncode == 0:
-            try:
-                inventory_details = json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                inventory_after_error = "invalid agent inventory details"
-        new_for_runs = []
-        for item in inventory_details:
-            if not isinstance(item, dict) or str(item.get("id")) not in new_ids:
+        external_inventory = []
+        inventory_errors = []
+        for run_id in run_ids:
+            proc = run([
+                "paseo", "ls", "-g", "-a", "--json",
+                "--label", f"factory.run={run_id}",
+            ], check=False)
+            if proc.returncode != 0:
+                inventory_errors.append(f"{run_id}: {proc.stderr[-300:] or proc.stdout[-300:]}")
                 continue
-            label = str(item.get("name", "")) + " " + str(item.get("cwd", ""))
-            if any(run_id in label for run_id in run_ids):
-                new_for_runs.append(item)
-        unbound_external = [
-            str(item.get("id")) for item in new_for_runs
-            if str(item.get("id")) not in bound_session_ids
-        ]
-        external_ids = set(bound_session_ids)
-        external_ids.update(str(item.get("id")) for item in new_for_runs if item.get("id"))
+            try:
+                items = json.loads(proc.stdout)
+            except json.JSONDecodeError as exc:
+                inventory_errors.append(f"{run_id}: invalid inventory: {exc}")
+                continue
+            if not isinstance(items, list):
+                inventory_errors.append(f"{run_id}: inventory is not a list")
+                continue
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    external_inventory.append({**item, "_runId": run_id})
+        external_ids = {str(item["id"]) for item in external_inventory}
+        unbound_external = sorted(external_ids - bound_session_ids)
+        missing_bound = sorted(bound_session_ids - external_ids)
+        per_run_counts = {
+            run_id: sum(1 for item in external_inventory if item["_runId"] == run_id)
+            for run_id in run_ids
+        }
+        session_ceiling_ok = (
+            len(external_ids) <= MAX_ATTEMPTS
+            and all(count <= 1 for count in per_run_counts.values())
+        )
+        inventory_ok = (
+            not inventory_errors
+            and not unbound_external
+            and not missing_bound
+            and not orphaned
+            and session_ceiling_ok
+        )
 
         external = []
         for sid in sorted(external_ids):
@@ -659,20 +656,13 @@ def main() -> int:
             })
         result["external_sessions"] = external
         result["external_inventory"] = {
-            "before": sorted(inventory_before),
-            "after": sorted(inventory_after),
-            "new_for_runs": [str(item.get("id")) for item in new_for_runs],
+            "sessions": sorted(external_ids),
+            "per_run_counts": per_run_counts,
             "unbound_external_sessions": unbound_external,
-            "error": inventory_after_error,
-            "before_error": result["preflight"].get("paseo-agent-inventory", {}).get("detail", {}).get("error"),
+            "missing_bound_sessions": missing_bound,
+            "errors": inventory_errors,
             "orphaned_bindings": len(orphaned),
         }
-        inventory_ok = (
-            inventory_after_error is None
-            and not result["external_inventory"]["before_error"]
-            and not unbound_external
-            and not orphaned
-        )
 
         final_run_result = {}
         if runs:
@@ -832,6 +822,7 @@ def main() -> int:
             "review": result.get("review") == "APPROVE",
             "gate_accepted": gate_ok,
             "session_inventory": inventory_ok,
+            "session_ceiling": session_ceiling_ok,
             "session_bindings_terminal": sessions_terminal_ok and final_session_succeeded,
             "cleanup": cleanup_ok,
         }
