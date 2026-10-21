@@ -155,6 +155,8 @@ class Processes:
             "PASEO_BIN": str(STUB_BIN),
             "S4A_STUB_DIR": str(STUB_DIR),
             "FACTORY_BROWSER_CLI": str(ROOT / "office" / "e2e-browser" / "node_modules" / ".bin" / "playwright-cli"),
+            "CHROMIUM_EXE": CHROMIUM_EXE,
+            "FACTORY_PLAYWRIGHT_CORE": PLAYWRIGHT_CORE,
         })
         log = open(WORKER_LOG, "ab")
         self.worker = subprocess.Popen(

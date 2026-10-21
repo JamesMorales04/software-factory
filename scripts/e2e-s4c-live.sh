@@ -127,9 +127,11 @@ else:
     goal = ("Correct decimal precision handling and division-by-zero behavior in src/calc.js and src/app.js while "
             "preserving addition, subtraction, multiplication, division and button interaction. The browser must show "
             "0.3 for 0.1 + 0.2 and 'Cannot divide by zero' for division by zero. Do not edit tests or protected files.")
-    functional = ("node\n--input-type=module\n-e\nimport {calculate,formatResult} from './src/calc.js';"
+    functional = ("node\n--input-type=module\n-e\n"
+                  "import {calculate,formatResult} from './src/calc.js';"
                   "if(formatResult(calculate(0.1,0.2,'add'))!=='0.3')process.exit(1);"
-                  "if(formatResult(calculate(1,0,'divide'))!=='Cannot divide by zero')process.exit(1)")
+                  "let zero;try{zero=formatResult(calculate(1,0,'divide'))}catch(error){zero=String(error.message)}"
+                  "if(zero!=='Cannot divide by zero')process.exit(1)")
     negative = ("node\n--input-type=module\n-e\nimport {add,subtract,multiply,divide} from './src/calc.js';"
                 "if(add(2,3)!==5||subtract(9,4)!==5||multiply(6,7)!==42||divide(8,2)!==4)process.exit(1)")
 if status not in (200,201):

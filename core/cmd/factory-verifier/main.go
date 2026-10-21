@@ -106,7 +106,7 @@ func run(args []string) error {
 	// A protected oracle script is part of the frozen acceptance identity.
 	// The candidate may only change paths explicitly authorized by the
 	// spec; any changed command target is rejected before execution.
-	if modified := modifiedOracleTargets(checkout, c.ChangedPaths, spec.AllChecks()); len(modified) > 0 {
+	if modified := modifiedOracleTargets(checkout, c.ChangedPaths, spec.AllowedPaths, spec.AllChecks()); len(modified) > 0 {
 		return fmt.Errorf("protected acceptance oracle was modified by the candidate: %s", strings.Join(modified, ", "))
 	}
 	for _, check := range spec.AllChecks() {
@@ -163,7 +163,7 @@ func run(args []string) error {
 	return nil
 }
 
-func modifiedOracleTargets(checkout string, changed []string, checks []domain.SpecCheck) []string {
+func modifiedOracleTargets(checkout string, changed, allowed []string, checks []domain.SpecCheck) []string {
 	changedSet := map[string]bool{}
 	for _, path := range changed {
 		changedSet[path] = true
@@ -176,7 +176,7 @@ func modifiedOracleTargets(checkout string, changed []string, checks []domain.Sp
 			if target == "" || strings.HasPrefix(target, "-") || strings.Contains(target, "/../") {
 				continue
 			}
-			if !changedSet[target] {
+			if !changedSet[target] || domain.PathAllowed(target, allowed) {
 				continue
 			}
 			info, err := os.Stat(filepath.Join(checkout, target))

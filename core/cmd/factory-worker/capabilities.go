@@ -155,7 +155,10 @@ func excludeRuntimePaths(ctx context.Context, workDir string) error {
 		return err
 	}
 	content := string(existing)
-	for _, entry := range []string{".agents/", ".factory/", ".playwright-cli/"} {
+	for _, entry := range []string{
+		".agents/", ".factory/", ".playwright-cli/",
+		"*.log", "node_modules/", "coverage/", ".cache/", "dist/", "build/",
+	} {
 		if !strings.Contains(content, entry) {
 			content += "\n" + entry + "\n"
 		}
@@ -186,7 +189,9 @@ Use exactly this wrapper: %s
 - Never edit .agents/, .factory/, protected acceptance scripts, tests or
   package manifests while acting as the Implementer.
 - Start the application on one of the authorized endpoints yourself if it is
-  not already running, exercise the real UI, then close the browser.
+  not already running. Write server logs outside the repository (for example
+  under /tmp) so runtime artifacts never become candidate changes. Exercise
+  the real UI, then close the browser.
 - A screenshot or CLI exit alone is not PASS: assert the observable UI state
   and report concrete results. Independent verification is performed later
   by Factory's Verifier, not by you.

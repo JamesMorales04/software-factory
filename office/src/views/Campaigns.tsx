@@ -132,6 +132,7 @@ export function Campaigns() {
         <label>
           Action
           <select
+            data-testid="campaign-action"
             value={actionId}
             onChange={(e) => setActionId(e.target.value)}
             required
@@ -147,6 +148,7 @@ export function Campaigns() {
         <label>
           Frozen ActionSpec
           <select
+            data-testid="campaign-spec"
             value={specId}
             onChange={(e) => setSpecId(e.target.value)}
             required

@@ -35,7 +35,7 @@ export function Actions() {
           const eligible = nextProjects.find(
             (project) => project.registrationStatus === "registered",
           );
-          return eligible?.id ?? "";
+          return eligible?.id ?? nextProjects[0]?.id ?? "";
         });
       }
     } catch (e) {
@@ -97,20 +97,27 @@ export function Actions() {
             required
           >
             <option value="">Select a registered Project…</option>
-            {projects
-              .filter((project) => project.registrationStatus === "registered")
-              .map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name} ({project.id})
-                </option>
-              ))}
+            {(projects.some(
+              (project) => project.registrationStatus === "registered",
+            )
+              ? projects.filter(
+                  (project) => project.registrationStatus === "registered",
+                )
+              : projects
+            ).map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name} ({project.id})
+                {project.registrationStatus === "legacy" ? " — legacy" : ""}
+              </option>
+            ))}
           </select>
-          {projects.some(
-            (project) => project.registrationStatus === "legacy",
+          {!projects.some(
+            (project) => project.registrationStatus === "registered",
           ) && (
             <span className="muted">
-              The legacy default Project is retained for historical data and
-              cannot accept new specifications.
+              No registered Project exists. The legacy default Project can hold
+              Actions for historical compatibility but cannot freeze a new
+              Project-bound ActionSpec.
             </span>
           )}
         </label>

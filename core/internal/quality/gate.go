@@ -245,6 +245,13 @@ func capabilityCheck(in Input) (domain.CheckResult, []string) {
 	if !domain.ContainsCapability(in.Spec.Capabilities, domain.CapBrowser) {
 		return gateCheck("gate-capability", domain.CheckCapability, true, "no browser capability required"), nil
 	}
+	if in.Spec.ProjectConfigRevision < 1 {
+		// Legacy S4-A/S4-B specs have no registered Project capability grant;
+		// their browser proof remains the protected independent check. Only a
+		// Project-bound Run can require a Factory-managed invocation.
+		return gateCheck("gate-capability", domain.CheckCapability, true,
+			"legacy spec: browser acceptance remains the Independent Verifier's protected check"), nil
+	}
 	invoked, _ := in.Run.Result["browserInvoked"].(bool)
 	if !invoked {
 		return gateCheck("gate-capability", domain.CheckCapability, false,
