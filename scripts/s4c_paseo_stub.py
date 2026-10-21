@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("S4C_STUB_DIR", "."))
@@ -157,20 +158,34 @@ def edit_calculator(project):
     (project / "src" / "calc.js").write_text(CALC, encoding="utf-8")
 
 
+def server_ready(endpoint):
+    try:
+        with urllib.request.urlopen(endpoint + "/", timeout=2) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
 def invoke_browser(project):
     wrapper = project / ".factory" / "bin" / "factory-playwright-cli.mjs"
     if not wrapper.exists():
         return 0
     endpoint = os.environ.get("S4C_BROWSER_ENDPOINT", "http://127.0.0.1:4173")
-    server = subprocess.Popen(
-        ["node", "scripts/serve.mjs"],
-        cwd=project,
-        env={**os.environ, "PORT": "4173"},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    owned_server = None
+    if server_ready(endpoint):
+        # The Worker-managed test server is already serving this workspace.
+        server = None
+    else:
+        server = subprocess.Popen(
+            ["node", "scripts/serve.mjs"],
+            cwd=project,
+            env={**os.environ, "PORT": "4173"},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        owned_server = server
     try:
-        time.sleep(1.0)
+        time.sleep(0.5 if server is None else 1.0)
         for args in (["open", endpoint + "/"], ["snapshot"], ["close"]):
             proc = subprocess.run(["node", str(wrapper), *args], cwd=project,
                                   capture_output=True, text=True, timeout=90)
@@ -181,11 +196,12 @@ def invoke_browser(project):
                 return 1
         return 0
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            server.kill()
+        if owned_server is not None:
+            owned_server.terminate()
+            try:
+                owned_server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                owned_server.kill()
 
 
 def invoke_browser_failure(project):

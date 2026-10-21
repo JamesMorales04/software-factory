@@ -45,7 +45,8 @@ func Classify(in Input) Result {
 	if in.CleanupUnconfirmed {
 		return Result{domain.UnresolvedExternalRecovery, "external session cleanup is unconfirmed"}
 	}
-	if strings.Contains(lower, "capability:") ||
+	if strings.Contains(lower, "browser-test-server") ||
+		strings.Contains(lower, "capability:") ||
 		strings.Contains(lower, "tool unavailable") ||
 		strings.Contains(lower, "browser tooling is unavailable") ||
 		strings.Contains(lower, "not configured or installed") ||

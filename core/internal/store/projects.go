@@ -17,17 +17,18 @@ import (
 
 const projectColumns = `id, name, registration_status, status, repository_path,
 	repository_identity, base_refs, quality_profile, workspace_scope,
-	capabilities, browser_endpoints, execution_mode, security_label,
-	config_revision, config_hash, registered_at, created_at, updated_at`
+	capabilities, browser_endpoints, browser_test_server, execution_mode,
+	security_label, config_revision, config_hash, registered_at, created_at,
+	updated_at`
 
 func scanProject(row interface{ Scan(dest ...any) error }) (domain.Project, error) {
 	var p domain.Project
-	var registration, status, baseRefs, profile, caps, endpoints string
+	var registration, status, baseRefs, profile, caps, endpoints, testServer string
 	var registered, created, updated string
 	if err := row.Scan(
 		&p.ID, &p.Name, &registration, &status, &p.RepositoryPath,
 		&p.RepositoryIdentity, &baseRefs, &profile, &p.WorkspaceScope,
-		&caps, &endpoints, &p.ExecutionMode, &p.SecurityLabel,
+		&caps, &endpoints, &testServer, &p.ExecutionMode, &p.SecurityLabel,
 		&p.ConfigRevision, &p.ConfigHash, &registered, &created, &updated,
 	); err != nil {
 		return domain.Project{}, err
@@ -48,6 +49,13 @@ func scanProject(row interface{ Scan(dest ...any) error }) (domain.Project, erro
 	}
 	if err := json.Unmarshal([]byte(endpoints), &p.BrowserEndpoints); err != nil {
 		return domain.Project{}, err
+	}
+	if testServer != "" && testServer != "null" {
+		var server domain.BrowserTestServer
+		if err := json.Unmarshal([]byte(testServer), &server); err != nil {
+			return domain.Project{}, err
+		}
+		p.BrowserTestServer = &server
 	}
 	p.RegisteredAt = parseStamp(registered)
 	p.CreatedAt = parseStamp(created)
@@ -76,15 +84,16 @@ func (db *DB) CreateProject(ctx context.Context, project domain.Project, correla
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO projects(id, name, registration_status, status, repository_path,
 		 repository_identity, base_refs, quality_profile, workspace_scope,
-		 capabilities, browser_endpoints, execution_mode, security_label,
-		 config_revision, config_hash, registered_at, last_dispatched_at, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?)`,
+		 capabilities, browser_endpoints, browser_test_server, execution_mode,
+		 security_label, config_revision, config_hash, registered_at,
+		 last_dispatched_at, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'',?,?)`,
 		project.ID, project.Name, string(project.RegistrationStatus), string(project.Status),
 		project.RepositoryPath, project.RepositoryIdentity, encodeStrings(project.BaseRefs),
 		string(project.QualityProfile), project.WorkspaceScope,
 		encodeStrings(capabilityStrings(project.Capabilities)),
-		encodeStrings(project.BrowserEndpoints), project.ExecutionMode,
-		project.SecurityLabel, project.ConfigRevision, project.ConfigHash,
+		encodeStrings(project.BrowserEndpoints), encodeBrowserTestServer(project.BrowserTestServer),
+		project.ExecutionMode, project.SecurityLabel, project.ConfigRevision, project.ConfigHash,
 		stamp(now), stamp(now), stamp(now),
 	); err != nil {
 		if isUniqueViolation(err) {
@@ -155,13 +164,14 @@ func (db *DB) UpdateProject(ctx context.Context, id string, update domain.Projec
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE projects SET name=?, status=?, repository_path=?, base_refs=?,
 		 quality_profile=?, workspace_scope=?, capabilities=?, browser_endpoints=?,
-		 execution_mode=?, security_label=?, config_revision=?, config_hash=?,
-		 updated_at=? WHERE id=?`,
+		 browser_test_server=?, execution_mode=?, security_label=?,
+		 config_revision=?, config_hash=?, updated_at=? WHERE id=?`,
 		next.Name, string(next.Status), next.RepositoryPath, encodeStrings(next.BaseRefs),
 		string(next.QualityProfile), next.WorkspaceScope,
 		encodeStrings(capabilityStrings(next.Capabilities)),
-		encodeStrings(next.BrowserEndpoints), next.ExecutionMode, next.SecurityLabel,
-		next.ConfigRevision, next.ConfigHash, stamp(now), id,
+		encodeStrings(next.BrowserEndpoints), encodeBrowserTestServer(next.BrowserTestServer),
+		next.ExecutionMode, next.SecurityLabel, next.ConfigRevision, next.ConfigHash,
+		stamp(now), id,
 	); err != nil {
 		return domain.Project{}, domain.Event{}, false, fmt.Errorf("update project: %w", err)
 	}
@@ -267,6 +277,17 @@ func listProjectSpecsTx(ctx context.Context, tx *sql.Tx, projectID string) ([]do
 	return out, rows.Err()
 }
 
+func encodeBrowserTestServer(server *domain.BrowserTestServer) string {
+	if server == nil {
+		return "null"
+	}
+	raw, err := json.Marshal(server)
+	if err != nil {
+		return "null"
+	}
+	return string(raw)
+}
+
 func projectEventPayload(project domain.Project) map[string]any {
 	return map[string]any{
 		"projectId":          project.ID,
@@ -278,6 +299,7 @@ func projectEventPayload(project domain.Project) map[string]any {
 		"workspaceScope":     project.WorkspaceScope,
 		"capabilities":       capabilityStrings(project.Capabilities),
 		"browserEndpoints":   project.BrowserEndpoints,
+		"browserTestServer":  project.BrowserTestServer,
 		"configRevision":     project.ConfigRevision,
 		"configHash":         project.ConfigHash,
 	}

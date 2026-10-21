@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS projects (
 	workspace_scope TEXT NOT NULL DEFAULT '.',
 	capabilities TEXT NOT NULL DEFAULT '[]',
 	browser_endpoints TEXT NOT NULL DEFAULT '[]',
+	browser_test_server TEXT NOT NULL DEFAULT 'null',
 	execution_mode TEXT NOT NULL DEFAULT 'trusted-local',
 	security_label TEXT NOT NULL DEFAULT 'TRUSTED_LOCAL',
 	config_revision INTEGER NOT NULL DEFAULT 0,
@@ -208,6 +209,7 @@ CREATE TABLE IF NOT EXISTS action_specs (
 	repository_identity TEXT NOT NULL DEFAULT '',
 	capabilities TEXT NOT NULL DEFAULT '[]',
 	browser_endpoints TEXT NOT NULL DEFAULT '[]',
+	browser_test_server TEXT NOT NULL DEFAULT 'null',
 	binding_hash TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	frozen_at TEXT NOT NULL
@@ -432,6 +434,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4C03(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-c-03 migration: %w", err)
+	}
+	if err := db.migrateS4C06(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-c-06 migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -831,6 +837,38 @@ func (db *DB) migrateS4C() error {
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (project_id, revision))`); err != nil {
 		return fmt.Errorf("create project_config_revisions: %w", err)
+	}
+	return nil
+}
+
+// migrateS4C06 adds the declarative browser-test startup contract columns.
+// They are additive; existing rows keep a nil contract.
+func (db *DB) migrateS4C06() error {
+	for _, table := range []string{"projects", "action_specs"} {
+		rows, err := db.sql.Query(`SELECT name FROM pragma_table_info(?)`, table)
+		if err != nil {
+			return err
+		}
+		present := false
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if name == "browser_test_server" {
+				present = true
+			}
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if !present {
+			if _, err := db.sql.Exec(`ALTER TABLE ` + table + ` ADD COLUMN browser_test_server TEXT NOT NULL DEFAULT 'null'`); err != nil {
+				return fmt.Errorf("add %s.browser_test_server: %w", table, err)
+			}
+		}
 	}
 	return nil
 }

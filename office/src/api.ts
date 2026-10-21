@@ -13,6 +13,12 @@ export type Capability =
   | "generic-toolchain"
   | "browser";
 
+export interface BrowserTestServer {
+  command: string[];
+  readyPath?: string;
+  startupTimeoutSecs?: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -25,6 +31,7 @@ export interface Project {
   workspaceScope: string;
   capabilities: Capability[];
   browserEndpoints: string[];
+  browserTestServer?: BrowserTestServer;
   executionMode: string;
   securityLabel: string;
   configRevision: number;
@@ -529,6 +536,7 @@ export const api = {
     workspaceScope: string;
     capabilities: string[];
     browserEndpoints: string[];
+    browserTestServer?: BrowserTestServer;
     executionMode?: string;
   }) =>
     request<{ project: Project }>("/api/v1/projects", {
@@ -545,6 +553,7 @@ export const api = {
       workspaceScope?: string;
       capabilities?: string[];
       browserEndpoints?: string[];
+      browserTestServer?: BrowserTestServer | null;
     },
   ) =>
     request<{ project: Project }>(

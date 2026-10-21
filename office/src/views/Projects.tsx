@@ -29,6 +29,9 @@ export function Projects() {
   const [browserEndpoints, setBrowserEndpoints] = useState(
     "http://127.0.0.1:4173",
   );
+  const [browserTestCommand, setBrowserTestCommand] = useState("npm\nstart");
+  const [browserReadyPath, setBrowserReadyPath] = useState("/");
+  const [browserStartupTimeout, setBrowserStartupTimeout] = useState(30);
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +78,16 @@ export function Projects() {
               .map((endpoint) => endpoint.trim())
               .filter(Boolean)
           : [],
+        browserTestServer: capabilities.includes("browser")
+          ? {
+              command: browserTestCommand
+                .split("\n")
+                .map((argument) => argument.trim())
+                .filter(Boolean),
+              readyPath: browserReadyPath,
+              startupTimeoutSecs: browserStartupTimeout,
+            }
+          : undefined,
         executionMode: "trusted-local",
       });
       setNotice(
@@ -214,15 +227,51 @@ export function Projects() {
           ))}
         </fieldset>
         {capabilities.includes("browser") && (
-          <label>
-            Authorized loopback browser endpoints (comma separated)
-            <input
-              data-testid="project-browser-endpoints"
-              value={browserEndpoints}
-              onChange={(e) => setBrowserEndpoints(e.target.value)}
-              placeholder="http://127.0.0.1:4173"
-            />
-          </label>
+          <>
+            <label>
+              Authorized loopback browser endpoints (comma separated)
+              <input
+                data-testid="project-browser-endpoints"
+                value={browserEndpoints}
+                onChange={(e) => setBrowserEndpoints(e.target.value)}
+                placeholder="http://127.0.0.1:4173"
+              />
+            </label>
+            <label>
+              Browser-test start command (argv, one item per line)
+              <textarea
+                data-testid="project-browser-test-command"
+                value={browserTestCommand}
+                onChange={(e) => setBrowserTestCommand(e.target.value)}
+                rows={2}
+                placeholder={"npm\nstart"}
+              />
+            </label>
+            <div className="grid-2">
+              <label>
+                Readiness path
+                <input
+                  data-testid="project-browser-ready-path"
+                  value={browserReadyPath}
+                  onChange={(e) => setBrowserReadyPath(e.target.value)}
+                  placeholder="/"
+                />
+              </label>
+              <label>
+                Startup timeout (seconds)
+                <input
+                  data-testid="project-browser-timeout"
+                  type="number"
+                  min={5}
+                  max={600}
+                  value={browserStartupTimeout}
+                  onChange={(e) =>
+                    setBrowserStartupTimeout(Number(e.target.value))
+                  }
+                />
+              </label>
+            </div>
+          </>
         )}
         <button type="submit" disabled={busy}>
           {busy ? "Registering…" : "Register Project"}
@@ -275,6 +324,12 @@ export function Projects() {
                 <dd>{project.capabilities.join(", ") || "—"}</dd>
                 <dt>Browser endpoints</dt>
                 <dd>{project.browserEndpoints.join(", ") || "—"}</dd>
+                <dt>Test server</dt>
+                <dd>
+                  {project.browserTestServer
+                    ? `${project.browserTestServer.command.join(" ")} · ${project.browserTestServer.readyPath || "/"}`
+                    : "agent-managed"}
+                </dd>
                 <dt>Security</dt>
                 <dd>{project.securityLabel} (not isolated)</dd>
               </dl>

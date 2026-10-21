@@ -108,7 +108,9 @@ if project == "vlog":
     status, body = call("POST","/api/v1/projects",{"id":"vlog-live","name":"Live Vlog","repositoryPath":repo,
         "baseRefs":["main"],"qualityProfile":"node-browser","workspaceScope":".",
         "capabilities":["repository-edit","node-toolchain","browser"],
-        "browserEndpoints":["http://127.0.0.1:4173"],"executionMode":"trusted-local"})
+        "browserEndpoints":["http://127.0.0.1:4173"],
+        "browserTestServer":{"command":["npm","start"],"readyPath":"/","startupTimeoutSecs":30},
+        "executionMode":"trusted-local"})
     profile = "node-browser"
     allowed = ["src/filter.js","src/app.js"]
     goal = ("Implement functional category filtering with a no-results state in src/filter.js and src/app.js. "

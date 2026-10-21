@@ -17,22 +17,23 @@ import (
 // --- Operator: frozen engineering specifications ---
 
 type createSpecRequest struct {
-	ProjectID          string             `json:"projectId"`
-	ActionID           string             `json:"actionId"`
-	Goal               string             `json:"goal"`
-	Repository         string             `json:"repository"`
-	BaseRevision       string             `json:"baseRevision"`
-	AllowedPaths       []string           `json:"allowedPaths"`
-	AcceptanceCriteria []domain.SpecCheck `json:"acceptanceCriteria"`
-	NegativeCases      []domain.SpecCheck `json:"negativeCases"`
-	RiskClass          string             `json:"riskClass"`
-	QualityProfile     string             `json:"qualityProfile"`
-	Budget             domain.SpecBudget  `json:"budget"`
-	ExecutionMode      string             `json:"executionMode"`
-	Provider           string             `json:"provider"`
-	Model              string             `json:"model"`
-	PaseoMode          string             `json:"paseoMode"`
-	Capabilities       []string           `json:"capabilities"`
+	ProjectID          string                    `json:"projectId"`
+	ActionID           string                    `json:"actionId"`
+	Goal               string                    `json:"goal"`
+	Repository         string                    `json:"repository"`
+	BaseRevision       string                    `json:"baseRevision"`
+	AllowedPaths       []string                  `json:"allowedPaths"`
+	AcceptanceCriteria []domain.SpecCheck        `json:"acceptanceCriteria"`
+	NegativeCases      []domain.SpecCheck        `json:"negativeCases"`
+	RiskClass          string                    `json:"riskClass"`
+	QualityProfile     string                    `json:"qualityProfile"`
+	Budget             domain.SpecBudget         `json:"budget"`
+	ExecutionMode      string                    `json:"executionMode"`
+	Provider           string                    `json:"provider"`
+	Model              string                    `json:"model"`
+	PaseoMode          string                    `json:"paseoMode"`
+	Capabilities       []string                  `json:"capabilities"`
+	BrowserTestServer  *domain.BrowserTestServer `json:"browserTestServer"`
 }
 
 func (s *Server) handleCreateActionSpec(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +100,7 @@ func (s *Server) handleCreateActionSpec(w http.ResponseWriter, r *http.Request) 
 		RepositoryIdentity:    repositoryIdentity,
 		Capabilities:          req.Capabilities,
 		BrowserEndpoints:      browserEndpoints,
+		BrowserTestServer:     project.BrowserTestServer,
 	}
 	spec, err := params.Validate()
 	if err != nil {

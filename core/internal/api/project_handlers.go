@@ -11,15 +11,16 @@ import (
 )
 
 type registerProjectRequest struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	RepositoryPath   string   `json:"repositoryPath"`
-	BaseRefs         []string `json:"baseRefs"`
-	QualityProfile   string   `json:"qualityProfile"`
-	WorkspaceScope   string   `json:"workspaceScope"`
-	Capabilities     []string `json:"capabilities"`
-	BrowserEndpoints []string `json:"browserEndpoints"`
-	ExecutionMode    string   `json:"executionMode"`
+	ID                string                    `json:"id"`
+	Name              string                    `json:"name"`
+	RepositoryPath    string                    `json:"repositoryPath"`
+	BaseRefs          []string                  `json:"baseRefs"`
+	QualityProfile    string                    `json:"qualityProfile"`
+	WorkspaceScope    string                    `json:"workspaceScope"`
+	Capabilities      []string                  `json:"capabilities"`
+	BrowserEndpoints  []string                  `json:"browserEndpoints"`
+	BrowserTestServer *domain.BrowserTestServer `json:"browserTestServer"`
+	ExecutionMode     string                    `json:"executionMode"`
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +60,7 @@ func (s *Server) handleRegisterProject(w http.ResponseWriter, r *http.Request) {
 		RepositoryIdentity: repository.Identity, BaseRefs: req.BaseRefs,
 		QualityProfile: req.QualityProfile, WorkspaceScope: req.WorkspaceScope,
 		Capabilities: req.Capabilities, BrowserEndpoints: req.BrowserEndpoints,
-		ExecutionMode: req.ExecutionMode,
+		BrowserTestServer: req.BrowserTestServer, ExecutionMode: req.ExecutionMode,
 	}
 	project, err := params.Validate()
 	if err != nil {
@@ -80,14 +81,15 @@ func (s *Server) handleRegisterProject(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateProjectRequest struct {
-	Name             *string   `json:"name"`
-	Status           *string   `json:"status"`
-	BaseRefs         *[]string `json:"baseRefs"`
-	QualityProfile   *string   `json:"qualityProfile"`
-	WorkspaceScope   *string   `json:"workspaceScope"`
-	Capabilities     *[]string `json:"capabilities"`
-	BrowserEndpoints *[]string `json:"browserEndpoints"`
-	RepositoryPath   *string   `json:"repositoryPath"`
+	Name              *string                    `json:"name"`
+	Status            *string                    `json:"status"`
+	BaseRefs          *[]string                  `json:"baseRefs"`
+	QualityProfile    *string                    `json:"qualityProfile"`
+	WorkspaceScope    *string                    `json:"workspaceScope"`
+	Capabilities      *[]string                  `json:"capabilities"`
+	BrowserEndpoints  *[]string                  `json:"browserEndpoints"`
+	BrowserTestServer **domain.BrowserTestServer `json:"browserTestServer"`
+	RepositoryPath    *string                    `json:"repositoryPath"`
 }
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +111,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		Name: req.Name, Status: req.Status, BaseRefs: req.BaseRefs,
 		QualityProfile: req.QualityProfile, WorkspaceScope: req.WorkspaceScope,
 		Capabilities: req.Capabilities, BrowserEndpoints: req.BrowserEndpoints,
-		RepositoryPath: req.RepositoryPath,
+		BrowserTestServer: req.BrowserTestServer, RepositoryPath: req.RepositoryPath,
 	}
 	baseRefs := current.BaseRefs
 	if req.BaseRefs != nil {

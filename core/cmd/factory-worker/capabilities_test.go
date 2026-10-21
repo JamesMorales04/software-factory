@@ -42,13 +42,17 @@ func TestBrowserCapabilityCompleteRequiresSuccessfulOpenAndInteraction(t *testin
 }
 
 func TestCapabilityNudgePromptIsBoundedAndSpecific(t *testing.T) {
-	got := capabilityNudgePrompt("/tmp/work", []string{"http://127.0.0.1:4173"})
-	for _, want := range []string{"open http://127.0.0.1:4173/", "snapshot", "/tmp/work", "do not edit tests", "protected browser-check.mjs"} {
+	got := capabilityNudgePrompt("/tmp/work", []string{"http://127.0.0.1:4173"}, false)
+	for _, want := range []string{"open http://127.0.0.1:4173/", "snapshot", "/tmp/work", "do not edit tests", "protected browser-check.mjs", "Start the authorized app"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("capability nudge missing %q: %s", want, got)
 		}
 	}
 	if strings.Contains(got, "http://example.com") {
 		t.Fatal("capability nudge invented an endpoint")
+	}
+	managed := capabilityNudgePrompt("/tmp/work", []string{"http://127.0.0.1:4173"}, true)
+	if !strings.Contains(managed, "already managed and running") || strings.Contains(managed, "Start the authorized app") {
+		t.Fatalf("managed-server nudge is not actionable: %s", managed)
 	}
 }

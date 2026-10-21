@@ -202,13 +202,14 @@ type ActionSpec struct {
 	// S4-C immutable Project binding. BindingHash covers these fields and
 	// the repository/base snapshot so a later Project edit cannot silently
 	// reinterpret an existing specification.
-	ProjectConfigRevision int          `json:"projectConfigRevision"`
-	RepositoryIdentity    string       `json:"repositoryIdentity,omitempty"`
-	Capabilities          []Capability `json:"capabilities"`
-	BrowserEndpoints      []string     `json:"browserEndpoints,omitempty"`
-	BindingHash           string       `json:"bindingHash,omitempty"`
-	CreatedAt             time.Time    `json:"createdAt"`
-	FrozenAt              time.Time    `json:"frozenAt"`
+	ProjectConfigRevision int                `json:"projectConfigRevision"`
+	RepositoryIdentity    string             `json:"repositoryIdentity,omitempty"`
+	Capabilities          []Capability       `json:"capabilities"`
+	BrowserEndpoints      []string           `json:"browserEndpoints,omitempty"`
+	BrowserTestServer     *BrowserTestServer `json:"browserTestServer,omitempty"`
+	BindingHash           string             `json:"bindingHash,omitempty"`
+	CreatedAt             time.Time          `json:"createdAt"`
+	FrozenAt              time.Time          `json:"frozenAt"`
 }
 
 // NewActionSpecParams carries operator input. The Core assigns ID/version,
@@ -236,6 +237,7 @@ type NewActionSpecParams struct {
 	RepositoryIdentity    string
 	Capabilities          []string
 	BrowserEndpoints      []string
+	BrowserTestServer     *BrowserTestServer
 }
 
 // Validate normalizes and validates creation input, returning a spec whose
@@ -328,11 +330,15 @@ func (p NewActionSpecParams) Validate() (ActionSpec, error) {
 	if err != nil {
 		return ActionSpec{}, err
 	}
+	testServer, err := normalizeBrowserTestServer(p.BrowserTestServer, capabilities)
+	if err != nil {
+		return ActionSpec{}, err
+	}
 	if p.ProjectConfigRevision >= 1 && ContainsCapability(capabilities, CapBrowser) && len(endpoints) == 0 {
 		return ActionSpec{}, errors.New("browser capability requires an authorized local endpoint for a registered project")
 	}
 	bindingHash := computeBindingHash(projectID, actionID, p.ProjectConfigRevision,
-		p.RepositoryIdentity, capabilities, endpoints, repository, base, profile, allowed)
+		p.RepositoryIdentity, capabilities, endpoints, testServer, repository, base, profile, allowed)
 	spec := ActionSpec{
 		ProjectID:             projectID,
 		ActionID:              actionID,
@@ -355,6 +361,7 @@ func (p NewActionSpecParams) Validate() (ActionSpec, error) {
 		RepositoryIdentity:    strings.TrimSpace(p.RepositoryIdentity),
 		Capabilities:          capabilities,
 		BrowserEndpoints:      endpoints,
+		BrowserTestServer:     testServer,
 		BindingHash:           bindingHash,
 	}
 	spec.ContentHash = spec.ComputeHash()
@@ -436,6 +443,9 @@ func (s ActionSpec) Validate() error {
 	if _, err := normalizeBrowserEndpoints(s.BrowserEndpoints, s.Capabilities); err != nil {
 		return err
 	}
+	if _, err := normalizeBrowserTestServer(s.BrowserTestServer, s.Capabilities); err != nil {
+		return err
+	}
 	if s.ProjectConfigRevision >= 1 && ContainsCapability(s.Capabilities, CapBrowser) && len(s.BrowserEndpoints) == 0 {
 		return errors.New("browser capability requires an authorized local endpoint for a registered project")
 	}
@@ -444,8 +454,8 @@ func (s ActionSpec) Validate() error {
 			return errors.New("bindingHash must be a sha256 hex digest")
 		}
 		want := computeBindingHash(s.ProjectID, s.ActionID, s.ProjectConfigRevision,
-			s.RepositoryIdentity, s.Capabilities, s.BrowserEndpoints, s.Repository,
-			s.BaseRevision, s.QualityProfile, s.AllowedPaths)
+			s.RepositoryIdentity, s.Capabilities, s.BrowserEndpoints, s.BrowserTestServer,
+			s.Repository, s.BaseRevision, s.QualityProfile, s.AllowedPaths)
 		if want != s.BindingHash {
 			return errors.New("bindingHash does not match the frozen project binding")
 		}
@@ -554,24 +564,26 @@ func normalizeSpecCapabilities(raw []string, profile QualityProfile, repositoryI
 }
 
 func computeBindingHash(projectID, actionID string, revision int, repositoryIdentity string,
-	capabilities []Capability, endpoints []string, repository, base string,
-	profile QualityProfile, allowed []string,
+	capabilities []Capability, endpoints []string, testServer *BrowserTestServer,
+	repository, base string, profile QualityProfile, allowed []string,
 ) string {
 	payload := struct {
-		ProjectID          string         `json:"projectId"`
-		ActionID           string         `json:"actionId"`
-		ProjectConfigRev   int            `json:"projectConfigRevision"`
-		RepositoryIdentity string         `json:"repositoryIdentity"`
-		Capabilities       []Capability   `json:"capabilities"`
-		BrowserEndpoints   []string       `json:"browserEndpoints"`
-		Repository         string         `json:"repository"`
-		BaseRevision       string         `json:"baseRevision"`
-		QualityProfile     QualityProfile `json:"qualityProfile"`
-		AllowedPaths       []string       `json:"allowedPaths"`
+		ProjectID          string             `json:"projectId"`
+		ActionID           string             `json:"actionId"`
+		ProjectConfigRev   int                `json:"projectConfigRevision"`
+		RepositoryIdentity string             `json:"repositoryIdentity"`
+		Capabilities       []Capability       `json:"capabilities"`
+		BrowserEndpoints   []string           `json:"browserEndpoints"`
+		BrowserTestServer  *BrowserTestServer `json:"browserTestServer,omitempty"`
+		Repository         string             `json:"repository"`
+		BaseRevision       string             `json:"baseRevision"`
+		QualityProfile     QualityProfile     `json:"qualityProfile"`
+		AllowedPaths       []string           `json:"allowedPaths"`
 	}{
 		ProjectID: projectID, ActionID: actionID, ProjectConfigRev: revision,
 		RepositoryIdentity: repositoryIdentity, Capabilities: capabilities,
-		BrowserEndpoints: endpoints, Repository: repository, BaseRevision: base,
+		BrowserEndpoints: endpoints, BrowserTestServer: testServer,
+		Repository: repository, BaseRevision: base,
 		QualityProfile: profile, AllowedPaths: allowed,
 	}
 	raw, err := json.Marshal(payload)

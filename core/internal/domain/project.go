@@ -128,6 +128,16 @@ func RequiredCapabilities(profile QualityProfile) ([]Capability, error) {
 	}
 }
 
+// BrowserTestServer is the declarative, Project-authorized startup contract
+// for a browser-test application. The Worker starts the command in the
+// Attempt workspace, waits for the authorized loopback endpoint and owns the
+// process lifecycle. It is never a browser-capability evidence source.
+type BrowserTestServer struct {
+	Command            []string `json:"command"`
+	ReadyPath          string   `json:"readyPath,omitempty"`
+	StartupTimeoutSecs int      `json:"startupTimeoutSecs,omitempty"`
+}
+
 // Project bounds.
 const (
 	MaxProjectNameChars       = 120
@@ -155,6 +165,7 @@ type Project struct {
 	WorkspaceScope     string                    `json:"workspaceScope"`
 	Capabilities       []Capability              `json:"capabilities"`
 	BrowserEndpoints   []string                  `json:"browserEndpoints"`
+	BrowserTestServer  *BrowserTestServer        `json:"browserTestServer,omitempty"`
 	ExecutionMode      string                    `json:"executionMode"`
 	SecurityLabel      string                    `json:"securityLabel"`
 	ConfigRevision     int                       `json:"configRevision"`
@@ -230,6 +241,9 @@ func (p Project) Validate() error {
 	if _, err := normalizeBrowserEndpoints(p.BrowserEndpoints, caps); err != nil {
 		return err
 	}
+	if _, err := normalizeBrowserTestServer(p.BrowserTestServer, caps); err != nil {
+		return err
+	}
 	if p.ExecutionMode != string(ExecTrustedLocal) {
 		return errors.New("project executionMode must be trusted-local")
 	}
@@ -249,24 +263,26 @@ func (p Project) Validate() error {
 // registered project. Identity and timestamps are deliberately excluded.
 func (p Project) ComputeConfigHash() string {
 	payload := struct {
-		ID               string         `json:"id"`
-		Name             string         `json:"name"`
-		RepositoryPath   string         `json:"repositoryPath"`
-		RepositoryID     string         `json:"repositoryIdentity"`
-		BaseRefs         []string       `json:"baseRefs"`
-		QualityProfile   QualityProfile `json:"qualityProfile"`
-		WorkspaceScope   string         `json:"workspaceScope"`
-		Capabilities     []Capability   `json:"capabilities"`
-		BrowserEndpoints []string       `json:"browserEndpoints"`
-		ExecutionMode    string         `json:"executionMode"`
-		SecurityLabel    string         `json:"securityLabel"`
-		ConfigRevision   int            `json:"configRevision"`
+		ID                string             `json:"id"`
+		Name              string             `json:"name"`
+		RepositoryPath    string             `json:"repositoryPath"`
+		RepositoryID      string             `json:"repositoryIdentity"`
+		BaseRefs          []string           `json:"baseRefs"`
+		QualityProfile    QualityProfile     `json:"qualityProfile"`
+		WorkspaceScope    string             `json:"workspaceScope"`
+		Capabilities      []Capability       `json:"capabilities"`
+		BrowserEndpoints  []string           `json:"browserEndpoints"`
+		BrowserTestServer *BrowserTestServer `json:"browserTestServer,omitempty"`
+		ExecutionMode     string             `json:"executionMode"`
+		SecurityLabel     string             `json:"securityLabel"`
+		ConfigRevision    int                `json:"configRevision"`
 	}{
 		ID: p.ID, Name: p.Name, RepositoryPath: p.RepositoryPath,
 		RepositoryID: p.RepositoryIdentity, BaseRefs: p.BaseRefs,
 		QualityProfile: p.QualityProfile, WorkspaceScope: p.WorkspaceScope,
 		Capabilities: p.Capabilities, BrowserEndpoints: p.BrowserEndpoints,
-		ExecutionMode: p.ExecutionMode, SecurityLabel: p.SecurityLabel,
+		BrowserTestServer: p.BrowserTestServer,
+		ExecutionMode:     p.ExecutionMode, SecurityLabel: p.SecurityLabel,
 		ConfigRevision: p.ConfigRevision,
 	}
 	raw, err := json.Marshal(payload)
@@ -289,6 +305,7 @@ type NewProjectParams struct {
 	WorkspaceScope     string
 	Capabilities       []string
 	BrowserEndpoints   []string
+	BrowserTestServer  *BrowserTestServer
 	ExecutionMode      string
 }
 
@@ -340,6 +357,10 @@ func (p NewProjectParams) Validate() (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	testServer, err := normalizeBrowserTestServer(p.BrowserTestServer, caps)
+	if err != nil {
+		return Project{}, err
+	}
 	if ContainsCapability(caps, CapBrowser) && len(endpoints) == 0 {
 		return Project{}, errors.New("browser capability requires an authorized local endpoint")
 	}
@@ -362,6 +383,7 @@ func (p NewProjectParams) Validate() (Project, error) {
 		WorkspaceScope:     scope,
 		Capabilities:       caps,
 		BrowserEndpoints:   endpoints,
+		BrowserTestServer:  testServer,
 		ExecutionMode:      mode,
 		SecurityLabel:      TrustedLocalSecurityLabel,
 		ConfigRevision:     1,
@@ -376,14 +398,15 @@ func (p NewProjectParams) Validate() (Project, error) {
 // ProjectUpdateParams is the mutable configuration surface. Repository path
 // and identity are immutable once a project owns a frozen spec.
 type ProjectUpdateParams struct {
-	Name             *string
-	Status           *string
-	BaseRefs         *[]string
-	QualityProfile   *string
-	WorkspaceScope   *string
-	Capabilities     *[]string
-	BrowserEndpoints *[]string
-	RepositoryPath   *string
+	Name              *string
+	Status            *string
+	BaseRefs          *[]string
+	QualityProfile    *string
+	WorkspaceScope    *string
+	Capabilities      *[]string
+	BrowserEndpoints  *[]string
+	BrowserTestServer **BrowserTestServer
+	RepositoryPath    *string
 }
 
 // Validate applies an update onto current and returns the new configuration
@@ -452,6 +475,16 @@ func (p ProjectUpdateParams) Apply(current Project) (Project, bool, error) {
 		}
 		if strings.Join(endpoints, "\x00") != strings.Join(next.BrowserEndpoints, "\x00") {
 			next.BrowserEndpoints = endpoints
+			changed = true
+		}
+	}
+	if p.BrowserTestServer != nil {
+		testServer, err := normalizeBrowserTestServer(*p.BrowserTestServer, next.Capabilities)
+		if err != nil {
+			return Project{}, false, err
+		}
+		if !browserTestServerEqual(testServer, next.BrowserTestServer) {
+			next.BrowserTestServer = testServer
 			changed = true
 		}
 	}
@@ -547,6 +580,43 @@ func validateWorkspaceScope(scope string) error {
 		return fmt.Errorf("workspaceScope: %w", err)
 	}
 	return nil
+}
+
+func normalizeBrowserTestServer(raw *BrowserTestServer, caps []Capability) (*BrowserTestServer, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if !ContainsCapability(caps, CapBrowser) {
+		return nil, errors.New("browserTestServer requires the browser capability")
+	}
+	command, err := normalizeCommand(raw.Command)
+	if err != nil {
+		return nil, fmt.Errorf("browserTestServer.command: %w", err)
+	}
+	readyPath := strings.TrimSpace(raw.ReadyPath)
+	if readyPath == "" {
+		readyPath = "/"
+	}
+	if !strings.HasPrefix(readyPath, "/") || strings.Contains(readyPath, "..") ||
+		strings.ContainsAny(readyPath, "\x00\n\r") || len(readyPath) > MaxAllowedPathChars {
+		return nil, errors.New("browserTestServer.readyPath must be a safe absolute URL path")
+	}
+	timeout := raw.StartupTimeoutSecs
+	if timeout == 0 {
+		timeout = 30
+	}
+	if timeout < 5 || timeout > MaxCheckTimeoutSecs {
+		return nil, fmt.Errorf("browserTestServer.startupTimeoutSecs must be 5..%d", MaxCheckTimeoutSecs)
+	}
+	return &BrowserTestServer{Command: command, ReadyPath: readyPath, StartupTimeoutSecs: timeout}, nil
+}
+
+func browserTestServerEqual(left, right *BrowserTestServer) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return strings.Join(left.Command, "\x00") == strings.Join(right.Command, "\x00") &&
+		left.ReadyPath == right.ReadyPath && left.StartupTimeoutSecs == right.StartupTimeoutSecs
 }
 
 func normalizeBrowserEndpoints(raw []string, caps []Capability) ([]string, error) {

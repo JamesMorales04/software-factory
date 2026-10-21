@@ -33,6 +33,7 @@ func TestClassifyBlockingFailures(t *testing.T) {
 		"candidate: cross-project evidence mismatch",
 		"candidate: repository identity differs from the frozen project binding",
 		"capability: browser capability is required but Playwright CLI/Chromium unavailable",
+		"browser-test-server: authorized endpoint is occupied by an unowned process",
 	}
 	for _, failure := range cases {
 		got := Classify(input(failure))

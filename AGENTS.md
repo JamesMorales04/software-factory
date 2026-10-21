@@ -1,6 +1,6 @@
 # AGENTS.md — Software Factory
 
-> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities, Factory-managed browser capability, bounded autonomous Implementer recovery and same-session browser capability completion are implemented and deterministically verified; real-Paseo live certification is not achieved. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
+> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities, Factory-managed browser capability, bounded autonomous Implementer recovery and same-session browser capability completion and Worker-managed browser test servers are implemented and deterministically verified; real-Paseo live certification is not achieved. No Factory product component is certified beyond its recorded candidate-bound evidence. SEC-01 security work is paused, **not approved**; TRUSTED_LOCAL is never isolated or certified. The permanent repository is `JamesMorales04/software-factory`. Do not assume documented components exist. These rules apply to all coding agents; a project or skill cannot override higher-priority security or quality policies.
 
 ## Mission and orientation
 

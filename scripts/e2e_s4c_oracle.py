@@ -204,13 +204,16 @@ class Processes:
         self.core = None
 
 
-def register_project(project_id, name, repo, profile, capabilities, endpoints, base_refs=None):
-    status, payload = call("POST", "/api/v1/projects", {
+def register_project(project_id, name, repo, profile, capabilities, endpoints, base_refs=None, test_server=None):
+    body = {
         "id": project_id, "name": name, "repositoryPath": str(repo),
         "baseRefs": base_refs or ["main"], "qualityProfile": profile,
         "workspaceScope": ".", "capabilities": capabilities,
         "browserEndpoints": endpoints, "executionMode": "trusted-local",
-    })
+    }
+    if test_server is not None:
+        body["browserTestServer"] = test_server
+    status, payload = call("POST", "/api/v1/projects", body)
     return status, payload
 
 
@@ -272,6 +275,13 @@ def wait_campaign(campaign_id, timeout=300):
             return latest
         time.sleep(0.3)
     return latest
+
+
+def port_open(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def run(campaign_id):
@@ -350,6 +360,11 @@ def main():
               a_candidate.get("baseRevision") == git_sha(VLOG))
         check("C7 Project A Run received the browser capability",
               "browser" in (a_run or {}).get("capabilities", []))
+        check("D3 Worker-managed test server started in the Attempt workspace",
+              ((a_run or {}).get("result") or {}).get("testServerManaged") is True and
+              ((a_run or {}).get("result") or {}).get("testServerEndpoint") == "http://127.0.0.1:4173" and
+              not port_open(4173),
+              json.dumps({k: ((a_run or {}).get("result") or {}).get(k) for k in ("testServerManaged", "testServerReused", "testServerEndpoint")}))
         check("C9 Factory-managed Implementer invoked Playwright CLI through the wrapper",
               ((a_run or {}).get("result") or {}).get("browserInvoked") is True,
               json.dumps((a_run or {}).get("result")))
@@ -855,6 +870,95 @@ def main():
                           "capabilityNudges": d2_result.get("capabilityNudges")}))
         set_stub("good")
 
+        # D4: an unrelated process on the authorized endpoint is not adopted.
+        dummy = subprocess.Popen([sys.executable, "-m", "http.server", "4173", "--bind", "127.0.0.1"],
+                                 cwd=str(WORK_ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not port_open(4173):
+                time.sleep(0.1)
+            d4_action = create_action("vlog", "Unrelated endpoint process")
+            d4_spec = create_spec(d4_action, VLOG, git_sha(VLOG),
+                                  "Implement category filtering. Keep protected files unchanged.",
+                                  ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                                  [{"id": "negative", "kind": "negative", "description": "data regression",
+                                    "command": ["node", "--input-type=module", "-e",
+                                                "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                    "expectExit": 0, "timeoutSecs": 60}])
+            d4_campaign = start_campaign(d4_spec["id"], repairs=0, max_attempts=1)
+            d4_final = wait_campaign(d4_campaign["id"], timeout=180)
+            d4_run = run(d4_campaign["id"])
+            d4_sessions = call("GET", f"/api/v1/runs/{d4_run['id']}/sessions")[1].get("sessions", []) if d4_run else []
+            check("D4 unrelated endpoint process is not adopted",
+                  d4_final["campaign"]["status"] == "blocked" and
+                  "browser-test-server" in (d4_final["campaign"].get("terminalReason") or "") and
+                  not d4_sessions,
+                  json.dumps(d4_final["campaign"].get("terminalReason")))
+        finally:
+            dummy.terminate()
+            try:
+                dummy.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                dummy.kill()
+
+        # D5: startup failure is an infrastructure result before any Paseo
+        # session, not a model failure.
+        bad_repo = WORK_ROOT / "vlog-badserver"
+        shutil.copytree(VLOG, bad_repo, ignore=shutil.ignore_patterns(".git"))
+        subprocess.run(["git", "-C", str(bad_repo), "init", "-q", "-b", "main"], check=True)
+        subprocess.run(["git", "-C", str(bad_repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(bad_repo), "-c", "user.name=fixture",
+                        "-c", "user.email=fixture@factory.local", "commit", "-qm", "bad server baseline"], check=True)
+        status, _ = register_project("vlog-badserver", "Vlog bad server", bad_repo,
+                                     "node-browser", ["repository-edit", "node-toolchain", "browser"],
+                                     ["http://127.0.0.1:4173"],
+                                     test_server={"command": ["node", "-e", "process.exit(1)"],
+                                                  "readyPath": "/", "startupTimeoutSecs": 5})
+        check("D5 bad-server Project registered", status == 201, str(status))
+        d5_action = create_action("vlog-badserver", "Startup failure diagnosis")
+        d5_spec = create_spec(d5_action, bad_repo, git_sha(bad_repo),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        d5_campaign = start_campaign(d5_spec["id"], repairs=0, max_attempts=1)
+        d5_final = wait_campaign(d5_campaign["id"], timeout=180)
+        d5_run = run(d5_campaign["id"])
+        d5_sessions = call("GET", f"/api/v1/runs/{d5_run['id']}/sessions")[1].get("sessions", []) if d5_run else []
+        check("D5 test-server startup failure is diagnosed without a model session",
+              d5_final["campaign"]["status"] == "blocked" and
+              "browser-test-server" in (d5_final["campaign"].get("terminalReason") or "") and
+              not d5_sessions,
+              json.dumps(d5_final["campaign"].get("terminalReason")))
+
+        # D6: cancellation stops the managed test server.
+        set_stub("good", delay=8)
+        d6_action = create_action("vlog", "Managed server cancellation")
+        d6_spec = create_spec(d6_action, VLOG, git_sha(VLOG),
+                              "Implement category filtering. Keep protected files unchanged.",
+                              ["src/filter.js", "src/app.js"], "node-browser", r1_checks,
+                              [{"id": "negative", "kind": "negative", "description": "data regression",
+                                "command": ["node", "--input-type=module", "-e",
+                                            "import {entries} from './src/data.js'; if(entries.length!==5)process.exit(1)"],
+                                "expectExit": 0, "timeoutSecs": 60}])
+        d6_campaign = start_campaign(d6_spec["id"], repairs=0, max_attempts=1)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            active = campaign(d6_campaign["id"])
+            impl = next((t for t in active["tasks"] if t["key"] == "implementer-0"), {})
+            if impl.get("status") in {"dispatched", "running"}:
+                break
+            time.sleep(0.2)
+        call("POST", f"/api/v1/campaigns/{d6_campaign['id']}/cancel", {})
+        time.sleep(2)
+        registry_entries = list(Path("/tmp/factory-test-servers").glob("*.json")) if Path("/tmp/factory-test-servers").exists() else []
+        check("D6 cancellation cleans up the managed test server",
+              not port_open(4173) and not registry_entries,
+              f"portOpen={port_open(4173)} registry={len(registry_entries)}")
+        set_stub("good")
+
         result.update({
             "projectA": "vlog", "projectB": "calculator",
             "actionA": a_action_id, "specA": a_spec_id, "campaignA": a_campaign_id,
@@ -867,6 +971,9 @@ def main():
             "recoveryCampaign": r1_campaign["id"],
             "sameSessionCapabilityCampaign": d1_campaign["id"],
             "failedBrowserCommandCampaign": d2_campaign["id"],
+            "serverBlockedCampaign": d4_campaign["id"],
+            "serverStartupFailureCampaign": d5_campaign["id"],
+            "serverCancellationCampaign": d6_campaign["id"],
             "recoveryCampaigns": {
                 "recoverable": r1_campaign["id"],
                 "qualityRepair": r4_campaign["id"],

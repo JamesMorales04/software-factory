@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JamesMorales04/software-factory/core/internal/browserserver"
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 	"github.com/JamesMorales04/software-factory/core/internal/exec"
 )
@@ -110,6 +111,11 @@ func run(args []string) error {
 	// in-process workdir removal; sweep only our own run-root pattern.
 	if reaped := exec.ReapStaleRunRoots(); reaped > 0 {
 		logger.Info("reaped stale fixture workspaces", "count", reaped)
+	}
+	if reaped, rerr := browserserver.Reap(browserserver.RegistryDir()); rerr != nil {
+		logger.Warn("test-server reaping failed", "error", rerr.Error())
+	} else if reaped > 0 {
+		logger.Info("reaped stale managed test servers", "count", reaped)
 	}
 	runsRoot, err := exec.RunsRoot()
 	if err != nil {
@@ -338,7 +344,43 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 		}
 	}
 
+	var testServer *browserserver.Server
+	if actionSpec != nil && actionSpec.BrowserTestServer != nil {
+		if len(actionSpec.BrowserEndpoints) == 0 {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"browser-test-server: no authorized endpoint", log)
+			return
+		}
+		testServer, err = browserserver.Start(execCtx, browserserver.Config{
+			ID: attempt.ID, WorkDir: workDir, Endpoint: actionSpec.BrowserEndpoints[0],
+			ReadyPath: actionSpec.BrowserTestServer.ReadyPath,
+			Command:   actionSpec.BrowserTestServer.Command,
+			Timeout:   time.Duration(actionSpec.BrowserTestServer.StartupTimeoutSecs) * time.Second,
+		}, browserserver.RegistryDir())
+		if err != nil {
+			cancel()
+			<-hbDone
+			retainWorkDir = true
+			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+				"browser-test-server: "+truncate(err.Error()), log)
+			return
+		}
+		defer func() { _ = testServer.Stop(context.Background()) }()
+		log.Info("managed browser test server ready", "endpoint", testServer.Endpoint(), "reused", testServer.Reused())
+	}
+
 	result, err := c.runAttemptWorkload(execCtx, workerID, run, attempt, spec, workDir, podmanOK, actionSpec, log)
+	if testServer != nil {
+		if result == nil {
+			result = map[string]any{}
+		}
+		result["testServerManaged"] = true
+		result["testServerReused"] = testServer.Reused()
+		result["testServerEndpoint"] = testServer.Endpoint()
+	}
 	if actionSpec != nil && domain.ContainsCapability(actionSpec.Capabilities, domain.CapBrowser) {
 		if result == nil {
 			result = map[string]any{}

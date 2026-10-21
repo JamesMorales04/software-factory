@@ -133,6 +133,21 @@ For C-04, both product browser acceptance (independent verifier) and agent
 browser-capability certification (successful model-mediated open + interaction)
 remain required. No frozen contract or historical decision was changed.
 
+## F1-S4-C-06 browser test-server lifecycle
+
+| ID | Result | Evidence |
+| --- | --- | --- |
+| D3 | PASS | Worker-managed `npm start` server in the Attempt workspace; readiness, current-code browser check, stop and port closure. |
+| D4 | PASS | Unrelated healthy listener on the authorized port rejected as `INFRASTRUCTURE_BLOCKED`; no Paseo session. |
+| D5 | PASS | Immediately failing start command diagnosed within 5s; no Paseo session or model attempt. |
+| D6 | PASS | Campaign cancellation stops the server; registry and port clean. |
+| D7 | PASS (unit) | Server serves the exact workspace marker; unowned listener is not adopted. |
+| D8 | PASS (unit) | Reaper kills stale managed servers; owned reuse preserves PID; spaced command names are probed correctly. |
+| Preflight | PASS | Real Vlog app + real wrapper + real Chromium `open/snapshot/close` with zero paid sessions; unauthorized URL rejected. |
+
+The C-05 failure was an interrupted agent-managed background shell command, not
+an application exit. See [C-06 diagnosis](f1-s4c-06-server-lifecycle.md).
+
 ## Commands
 
 ```sh

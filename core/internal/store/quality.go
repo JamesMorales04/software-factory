@@ -25,7 +25,8 @@ const specColumns = `id, project_id, action_id, version, content_hash, policy_re
 	goal, repository, base_revision, allowed_paths, acceptance_criteria,
 	negative_cases, risk_class, quality_profile, budget, execution_mode,
 	provider, model, paseo_mode, project_config_revision, repository_identity,
-	capabilities, browser_endpoints, binding_hash, created_at, frozen_at`
+	capabilities, browser_endpoints, browser_test_server, binding_hash,
+	created_at, frozen_at`
 
 const candidateColumns = `id, project_id, action_id, spec_id, spec_hash, policy_revision,
 	base_revision, commit_sha, tree_sha, content_digest, candidate_ref,
@@ -122,20 +123,21 @@ func (db *DB) CreateActionSpec(ctx context.Context, spec domain.ActionSpec, corr
 	if err != nil {
 		return domain.ActionSpec{}, false, domain.Event{}, err
 	}
+	testServer := encodeBrowserTestServer(spec.BrowserTestServer)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO action_specs(id, project_id, action_id, version, content_hash,
 		 policy_revision, goal, repository, base_revision, allowed_paths,
 		 acceptance_criteria, negative_cases, risk_class, quality_profile,
 		 budget, execution_mode, provider, model, paseo_mode,
 		 project_config_revision, repository_identity, capabilities,
-		 browser_endpoints, binding_hash, created_at, frozen_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 browser_endpoints, browser_test_server, binding_hash, created_at, frozen_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		spec.ID, spec.ProjectID, spec.ActionID, spec.Version, spec.ContentHash,
 		spec.PolicyRevision, spec.Goal, spec.Repository, spec.BaseRevision, string(allowed),
 		string(acceptance), string(negative), string(spec.RiskClass), string(spec.QualityProfile),
 		string(budget), spec.ExecutionMode, spec.Provider, spec.Model, spec.PaseoMode,
 		spec.ProjectConfigRevision, spec.RepositoryIdentity, string(capabilities),
-		string(endpoints), spec.BindingHash, stamp(now), stamp(now),
+		string(endpoints), testServer, spec.BindingHash, stamp(now), stamp(now),
 	); err != nil {
 		return domain.ActionSpec{}, false, domain.Event{}, fmt.Errorf("insert action spec: %w", err)
 	}
@@ -188,14 +190,14 @@ func scanSpec(row interface {
 ) (domain.ActionSpec, error) {
 	var s domain.ActionSpec
 	var allowed, acceptance, negative, budget string
-	var risk, profile, capabilities, endpoints, created, frozen string
+	var risk, profile, capabilities, endpoints, testServer, created, frozen string
 	if err := row.Scan(
 		&s.ID, &s.ProjectID, &s.ActionID, &s.Version, &s.ContentHash,
 		&s.PolicyRevision, &s.Goal, &s.Repository, &s.BaseRevision, &allowed,
 		&acceptance, &negative, &risk, &profile, &budget, &s.ExecutionMode,
 		&s.Provider, &s.Model, &s.PaseoMode, &s.ProjectConfigRevision,
-		&s.RepositoryIdentity, &capabilities, &endpoints, &s.BindingHash,
-		&created, &frozen,
+		&s.RepositoryIdentity, &capabilities, &endpoints, &testServer,
+		&s.BindingHash, &created, &frozen,
 	); err != nil {
 		return domain.ActionSpec{}, err
 	}
@@ -221,6 +223,13 @@ func scanSpec(row interface {
 	}
 	if err := json.Unmarshal([]byte(endpoints), &s.BrowserEndpoints); err != nil {
 		return domain.ActionSpec{}, err
+	}
+	if testServer != "" && testServer != "null" {
+		var server domain.BrowserTestServer
+		if err := json.Unmarshal([]byte(testServer), &server); err != nil {
+			return domain.ActionSpec{}, err
+		}
+		s.BrowserTestServer = &server
 	}
 	s.RiskClass = domain.RiskClass(risk)
 	s.QualityProfile = domain.QualityProfile(profile)

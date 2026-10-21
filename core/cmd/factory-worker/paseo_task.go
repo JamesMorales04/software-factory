@@ -281,7 +281,7 @@ func runPaseoLifecycle(
 		!browserCapabilityComplete(workDir) && ctxBudgetLeft(ctx) > paseoVerifyReserve {
 		log.Info("browser capability incomplete after productive turn; one bounded continuation",
 			"sessionId", identity.SessionID)
-		nerr := adapter.SendNudge(ctx, identity.SessionID, capabilityNudgePrompt(workDir, spec.BrowserEndpoints), paseoNudgeWait)
+		nerr := adapter.SendNudge(ctx, identity.SessionID, capabilityNudgePrompt(workDir, spec.BrowserEndpoints, spec.BrowserTestServer != nil), paseoNudgeWait)
 		if nerr != nil {
 			if externalUncertain(nerr, ctx) {
 				return orphanExternal(backend, context.Background(), workerID, run, attempt, binding, adapter, identity,
