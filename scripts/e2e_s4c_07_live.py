@@ -535,8 +535,15 @@ def main() -> int:
             for task in projection.get("tasks", [])
         ]
         implementer_tasks = [t for t in projection.get("tasks", []) if t.get("key", "").startswith("implementer-")]
-        run_ids = [t.get("runId") for t in implementer_tasks if t.get("runId")]
+        recovered_run_ids = [
+            recovery.get("previousRunId") for recovery in projection.get("recoveries", [])
+            if recovery.get("previousRunId")
+        ]
+        run_ids = list(dict.fromkeys(
+            [t.get("runId") for t in implementer_tasks if t.get("runId")] + recovered_run_ids
+        ))
         result["implementer_runs"] = run_ids
+        result["failed_implementer_runs"] = recovered_run_ids
 
         # Preserve every real Implementer Run/Attempt/session binding.
         runs = []
@@ -556,6 +563,7 @@ def main() -> int:
             attempt_ids.extend(str(item.get("id")) for item in attempts if item.get("id"))
             runs.append({"run": run_payload["run"], "attempts": attempts})
             sessions.extend(sessions_payload.get("sessions", []))
+        runs.sort(key=lambda record: str(record["run"].get("createdAt", "")))
         result["runs"] = runs
         result["session_bindings"] = sessions
         result["attempt_ids"] = attempt_ids
@@ -664,9 +672,12 @@ def main() -> int:
             "orphaned_bindings": len(orphaned),
         }
 
-        final_run_result = {}
-        if runs:
-            final_run_result = runs[-1]["run"].get("result") or {}
+        final_candidate_run = str(final_candidate.get("implementerRunId") or "")
+        final_record = next(
+            (record for record in runs if str(record["run"].get("id")) == final_candidate_run),
+            runs[-1] if runs else {},
+        )
+        final_run_result = (final_record.get("run") or {}).get("result") or {}
         result["final_implementer_result"] = final_run_result
         browser_attempts = []
         for record in runs:
@@ -772,10 +783,10 @@ def main() -> int:
             for check in verification.get("checks", [])
         }
         candidate_paths = set(final_candidate.get("changedPaths") or [])
-        final_run_identity_ok = bool(runs) and (
-            (runs[-1].get("run") or {}).get("provider") == PROVIDER
-            and (runs[-1].get("run") or {}).get("model") == MODEL
-            and (runs[-1].get("run") or {}).get("paseoMode") == MODE
+        final_run_identity_ok = bool(final_record) and (
+            (final_record.get("run") or {}).get("provider") == PROVIDER
+            and (final_record.get("run") or {}).get("model") == MODEL
+            and (final_record.get("run") or {}).get("paseoMode") == MODE
         )
         external_identity_ok = bool(external) and all(
             (item.get("inspect") or {}).get("Provider") == PROVIDER
@@ -797,9 +808,9 @@ def main() -> int:
         sessions_terminal_ok = all(
             str(item.get("status")) in terminal_session_statuses for item in sessions
         )
-        final_candidate_run = str(final_candidate.get("implementerRunId") or "")
-        if not final_candidate_run and runs:
-            final_candidate_run = str(runs[-1].get("run", {}).get("id") or "")
+        final_candidate_run = final_candidate_run or (
+            str(runs[-1].get("run", {}).get("id") or "") if runs else ""
+        )
         final_session_succeeded = any(
             str(item.get("runId")) == final_candidate_run
             and str(item.get("status")) == "succeeded"
@@ -837,6 +848,7 @@ def main() -> int:
         }
         result["paid_sessions_spent"] = len(external_ids)
         result["implementer_attempts_used"] = len(run_ids)
+        result["budget_attempts_used"] = int((result.get("budget") or {}).get("attemptsUsed") or 0)
         result["status"] = (
             "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW"
             if all(checks.values())
