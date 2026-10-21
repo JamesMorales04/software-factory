@@ -125,6 +125,13 @@ def active_paseo_workspaces() -> tuple[dict[str, str], str | None]:
     return found, None
 
 
+def path_under(path: str, root: Path) -> bool:
+    try:
+        return Path(path).resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
+
+
 def worker_registry_dir(worker_id: str) -> Path:
     key = hashlib.sha256(worker_id.encode()).hexdigest()[:32]
     return Path(tempfile.gettempdir()) / "factory-test-servers" / f"worker-{key}"
@@ -754,7 +761,7 @@ def main() -> int:
             (workspace_ids & set(active_workspaces))
             | {
                 workspace_id for workspace_id, cwd in active_workspaces.items()
-                if str(tmp) in cwd
+                if path_under(cwd, tmp)
             }
         )
         managed_clean = (
