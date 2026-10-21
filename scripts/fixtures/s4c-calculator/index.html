@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pocket Calculator</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Pocket Calculator</h1>
+      <form id="calculator" onsubmit="return false">
+        <label>A <input id="a" type="number" step="any" value="0" /></label>
+        <label>B <input id="b" type="number" step="any" value="0" /></label>
+        <label>
+          Operation
+          <select id="operation">
+            <option value="add">add</option>
+            <option value="subtract">subtract</option>
+            <option value="multiply">multiply</option>
+            <option value="divide">divide</option>
+          </select>
+        </label>
+        <button id="calculate" type="button">Calculate</button>
+      </form>
+      <output id="result" aria-live="polite">-</output>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

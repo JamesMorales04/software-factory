@@ -13,6 +13,26 @@ BROWSER_CLI="${FACTORY_BROWSER_CLI:-$ROOT/office/e2e-browser/node_modules/.bin/p
 VLOG="${S4C_VLOG_REPO:-$HOME/Escritorio/Development/factory-fixtures/factory-fixture-vlog}"
 CALC="${S4C_CALC_REPO:-$HOME/Escritorio/Development/factory-fixtures/factory-fixture-calculator}"
 
+materialize_fixture() {
+  local source="$1" dest="$2" label="$3"
+  mkdir -p "$dest"
+  cp -R "$source"/. "$dest"/
+  rm -rf "$dest/.git"
+  git -C "$dest" init -q -b main
+  git -C "$dest" add .
+  git -C "$dest" -c user.name=fixture -c user.email=fixture@factory.local \
+    commit -qm "disposable $label baseline"
+}
+
+if [[ ! -d "$VLOG/.git" ]]; then
+  materialize_fixture "$ROOT/scripts/fixtures/s4c-vlog" "$TMP/fixtures/vlog" vlog
+  VLOG="$TMP/fixtures/vlog"
+fi
+if [[ ! -d "$CALC/.git" ]]; then
+  materialize_fixture "$ROOT/scripts/fixtures/s4c-calculator" "$TMP/fixtures/calculator" calculator
+  CALC="$TMP/fixtures/calculator"
+fi
+
 blocked() {
   echo "[BLOCKED] $1"
   exit 2

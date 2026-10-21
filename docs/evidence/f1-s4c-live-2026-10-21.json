@@ -1,0 +1,203 @@
+{
+  "campaign": "F1-S4-C / F1-S4-C-01",
+  "date": "2026-10-21",
+  "authorized_paid_sessions": 2,
+  "sessions_used": 2,
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "paseoMode": "build",
+  "implementation_commit": "ad716db",
+  "note": "Two Product Owner-authorized initial sessions. No retries were performed. Both are truthful non-accepting results; live certification is not claimed.",
+  "results": [
+    {
+      "project": "vlog",
+      "campaignId": "ff4a4f0084958354bec39d4b17082cd0",
+      "actionId": "fe75294860cebe397bf526d05b8b3adb",
+      "specId": "4b69950e5c2f5ee2184638a2ae8b540c",
+      "status": "failed",
+      "reason": "implementer Run failed: candidate: candidate status 400 (invalid): {\"error\":{\"code\":\"invalid\",\"message\":\"candidate rejected: candidate changed path \\\".server.log\\\" outside the authorized scope\"}}",
+      "candidate": null,
+      "decision": null,
+      "tasks": [
+        [
+          "implementer-0",
+          "failed",
+          "0c5898f85632a52dffdcce1167e282f6"
+        ],
+        [
+          "verifier-0",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-0",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-0",
+          "cancelled",
+          ""
+        ]
+      ],
+      "paseo": {
+        "workspaceId": "wks_b8895de4333279cd",
+        "sessionId": "1229b3fa-d8b5-4a55-93c4-f76b2515f5a4",
+        "runId": "0c5898f85632a52dffdcce1167e282f6"
+      },
+      "analysis": "The session succeeded and the agent edited the workspace, but it wrote .server.log (a runtime dev-server log) inside the repository. Candidate staging correctly rejected the out-of-scope path. This exposed a Factory runtime-artifact exclusion gap and a prompt/skill instruction gap, both repaired after the session. No live browser-invocation evidence was retained because the Run failed before report."
+    },
+    {
+      "project": "calculator",
+      "campaignId": "e01de48e5267f541735ba509c7fd1b68",
+      "actionId": "0934bb58bb1aebf7acd67fea892833b9",
+      "specId": "56f2292c77c947f3a4160ff2db34b1ba",
+      "status": "repair_required",
+      "reason": "repair budget exhausted",
+      "candidate": "24e924f00d12c7d5a75aa20c1c02468a9d13e30c",
+      "decision": "REPAIR_REQUIRED",
+      "tasks": [
+        [
+          "implementer-0",
+          "succeeded",
+          "2ce96c43d8eae83b80a7356c06bcd04c"
+        ],
+        [
+          "verifier-0",
+          "succeeded",
+          "2ce96c43d8eae83b80a7356c06bcd04c"
+        ],
+        [
+          "reviewer-0",
+          "succeeded",
+          "2ce96c43d8eae83b80a7356c06bcd04c"
+        ],
+        [
+          "gate-0",
+          "succeeded",
+          "2ce96c43d8eae83b80a7356c06bcd04c"
+        ]
+      ],
+      "verification": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 962,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 172,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "FAIL",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {calculate,formatResult} from './src/calc.js';if(formatResult(calculate(0.1,0.2,'add'))!=='0.3')process.exit(1);if(formatResult(calculate(1,0,'divide'))!=='Cannot divide by zero')process.exit(1)"
+          ],
+          "exitCode": 1,
+          "durationMs": 22,
+          "detail": "exit 1, expected 0 (tool output not retained)"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {add,subtract,multiply,divide} from './src/calc.js';if(add(2,3)!==5||subtract(9,4)!==5||multiply(6,7)!==42||divide(8,2)!==4)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 27,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 195,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "review": "APPROVE",
+      "run": {
+        "id": "2ce96c43d8eae83b80a7356c06bcd04c",
+        "projectId": "calculator-live",
+        "actionId": "0934bb58bb1aebf7acd67fea892833b9",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Correct decimal precision handling and division-by-zero behavior in src/calc.js and src/app.js while preserving addition, subtraction, multiplication, division and button interaction. The browser must show 0.3 for 0.1 + 0.2 and 'Cannot divide by zero' for division by zero. Do not edit tests or protected files."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "candidateId": "440dea0ff9eb6cdf3701e874e03f64fe",
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-s4c-live-qfORvP/factory-worker-runs-1140966969/attempt-3873515725",
+          "diffBytes": 915,
+          "diffStat": "src/calc.js | 22 +++++++++++++++++-----\n 1 file changed, 17 insertions(+), 5 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "f38d1ec7-01b3-4b79-b4c6-6946e35bd8f8",
+          "testExit": 0,
+          "timelineLines": 91,
+          "timelineSteps": "Edit:2,Error:15,Read:7,Shell:8,Thought:9,User:1",
+          "toolSteps": 17,
+          "workspaceId": "wks_0d0ecb5af58bb812"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "56f2292c77c947f3a4160ff2db34b1ba",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain"
+        ],
+        "specBindingHash": "590907c772df9689604d23c932245469a4bb7333ff11f473a9030b8be78b1994",
+        "createdAt": "2026-10-21T02:40:29.587Z",
+        "updatedAt": "2026-10-21T02:43:12.238Z"
+      },
+      "paseo": {
+        "workspaceId": "wks_0d0ecb5af58bb812",
+        "sessionId": "f38d1ec7-01b3-4b79-b4c6-6946e35bd8f8",
+        "runId": "2ce96c43d8eae83b80a7356c06bcd04c"
+      },
+      "analysis": "The agent changed src/calc.js and the independent browser oracle passed. The task-specific functional oracle assumed a sentinel return for division by zero, while the candidate threw \"Cannot divide by zero\" and the UI caught it. The verifier therefore returned FAIL and the gate REPAIR_REQUIRED. The oracle was too prescriptive; it was corrected after the session to accept either contract. This candidate was not accepted and no retry was performed."
+    }
+  ],
+  "disposition": "REAL_PASEO_E2E_VERIFIED not achieved"
+}

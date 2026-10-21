@@ -29,3 +29,4 @@ The remaining F0 rows below (Agent Session, Quality–Delivery beyond S4-A/S4-B)
 Each completed contract must specify owner, version and stability level; input/output schemas and identities; state machine; authorization; idempotency; error handling; liveness/resource limits; telemetry; positive/negative acceptance cases; and compatibility policy. Do not invent RPCs or provider capabilities before F0 viability tests.
 
 **Pre-release policy:** internal schemas can change incompatibly without shims; synchronize every caller, fixture and related test in one change. Any stable external or persisted-data contract requires explicit versioning and approval; see [ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md).
+- [Multi-project registry, capabilities and browser capability (F1-S4-C)](multi-project-s4c.md) — Project-bound specs, capability matching, Factory-managed Playwright and cross-project rejection.

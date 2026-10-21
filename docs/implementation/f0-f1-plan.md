@@ -1,6 +1,6 @@
 # F0 and F1 — implementation and independent validation plan
 
-**Status:** F1-S1 through F1-S3-D and F1-S4-A merged; F1-S4-B native campaign orchestration implemented and under independent verification (2026-10-20); source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
+**Status:** F1-S1 through F1-S4-B merged; F1-S4-C multi-project registry, scoped capabilities and Factory-managed browser capability implemented and deterministically verified (2026-10-21); real-Paseo live certification not achieved; source repository is permanently `JamesMorales04/software-factory`. SEC-01 disposition is mode-specific per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md): SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED paused / BLOCKED, available-only-where-verified. This documentation does **not** certify a working product or authorize unbounded campaigns.
 
 ## Incremental implementation authorization (2026-10-18)
 
@@ -29,6 +29,7 @@
 | S3-ISOLATED | Real Paseo integrated inside certified sandbox | Start/inspect a real coding session and correlate its timeline | Cannot read host/other-project/credential canaries; bounded egress |
 | S4-A | Frozen ActionSpec, CandidateRevision, Implementer, Independent Verifier, read-only Reviewer, deterministic Quality Gate, agent-native browser checks | Produce a real diff; independent tester checks out the exact commit, exercises CLI/build/tests and a protected Chromium journey; reviewer returns a candidate-bound verdict; gate accepts or repairs | Mandatory failure, identity mismatch, forged evidence and out-of-scope diff block; Reviewer cannot mutate candidate; missing browser tooling is NOT_TESTED |
 | S4-B | Core-owned Campaign/Task orchestrator reusing Worker/Paseo/verifier/reviewer/gate; bounded repair and recovery | Start one campaign in Office; Factory dispatches Implementer, independent verifier/reviewer and gate without manual role calls | BLOCKED/HUMAN_REQUIRED cannot repair; budget escalation, forged task state, duplicate decisions, crash and lease contention fail closed |
+| S4-C | Project Registry, Project-bound specs, scoped capabilities and Factory-managed Playwright; complete Office provisioning journey | Register two external local Projects; create Action/spec/campaign in Office; browser-capable and non-browser campaigns accepted with project-scoped evidence | Cross-project mismatch rejected; missing browser tooling blocked; concurrent projects progress; restart/cancel preserve ownership |
 | S5 | GitHub Delivery and R0 gate | Open real PR with CI/review and accept or reject exact SHA | Ineligible R0 blocked; repeated webhook cannot double merge |
 | S6 | First self-development campaign | Stable Core A supervises a functional Factory UI improvement in candidate B | B cannot modify or replace A; incorrect evidence blocks delivery |
 
@@ -73,6 +74,23 @@ reconciliation and the S3-D replacement gate. See the
 [campaign contract](../contracts/campaign-orchestration-s4b.md),
 [ADR-0011](../architecture/decisions/ADR-0011-native-campaign-orchestration.md)
 and [acceptance matrix](f1-s4b-acceptance.md).
+
+## F1-S4-C multi-project and capability scoping (implemented; live certification pending)
+
+S4-C extends the S1 Project into a registered local-Git binding with canonical
+repository identity, base-ref policy, Quality Profile, workspace scope,
+capability grants and audit revisions. ActionSpecs snapshot the exact Project
+configuration and carry a binding hash; Runs carry capability requirements;
+Workers advertise observed runtime capabilities; dispatch rejects paused,
+mismatched or unsupported work and rotates fairly across Projects. Browser
+automation is a Factory-managed Run capability using the pinned Playwright CLI
+and a disposable profile, while the Independent Verifier keeps its own clean
+checkout and protected browser oracle. Office now registers Projects, creates
+Actions and freezes ActionSpecs through native forms. Deterministic acceptance
+is recorded in [the S4-C acceptance matrix](f1-s4c-acceptance.md); real-Paseo
+evidence is governed by the [live certification policy](../quality/live-certification.md)
+and is not claimed. See the [contract](../contracts/multi-project-s4c.md) and
+[ADR-0012](../architecture/decisions/ADR-0012-project-registry-and-capabilities.md).
 
 ## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))
 

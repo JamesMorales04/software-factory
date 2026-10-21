@@ -1,7 +1,8 @@
 # Browser automation for Implementers and independent verification
 
-**Status:** F1-S4-A implementation. Research and disposition: **CLI adopted,
-MCP deferred**. TRUSTED_LOCAL only; no isolation/certification claim.
+**Status:** F1-S4-A implementation; extended by F1-S4-C as a Core-governed
+Project/Run capability. Research and disposition: **CLI adopted, MCP deferred**.
+TRUSTED_LOCAL only; no isolation/certification claim.
 
 ## Primary tool: pinned Playwright CLI + existing Chromium harness
 

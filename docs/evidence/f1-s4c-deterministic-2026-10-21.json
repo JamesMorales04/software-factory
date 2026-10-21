@@ -1,0 +1,85 @@
+{
+  "checks": [],
+  "failures": [],
+  "projectA": "vlog",
+  "projectB": "calculator",
+  "actionA": "67349c291c76736f13bcc9552cb2ef0b",
+  "specA": "fde93ffaeaaf9f18b5ad9b752a4911e2",
+  "campaignA": "df17352f546c735506dd1010d7a901d2",
+  "candidateA": "7b7540a746eb644e3081b8e363aaee4eef76c2f7",
+  "baseA": "f52f877bd390223b9fe7d867355528a070118a3d",
+  "actionB": "acd6d101528d63482c8978d5eb5b533f",
+  "specB": "474d03a5b4f466117424fe732aeabdf4",
+  "campaignB": "257b86f58860af39645639de79e38476",
+  "candidateB": "4eaad184e4191210c1a3a7cd605d44e6768827c2",
+  "baseB": "451a3a8cf0cae6cb556f87d3f169d9d592339b16",
+  "blockedCampaign": "4423ea27dd417ed7daf44d3f34b85eab",
+  "browserFailureCampaign": "0becf0b4011f4bf867b84b25861c7efd",
+  "cancelCampaign": "e5cf0352e7b9032cf38cb1cea11cee0a",
+  "restartCampaign": "b2af5d9818aa1b2321f9b92dec35fff2",
+  "concurrentCampaigns": [
+    "f8ddcfbb90ddf1bfe5a5ace17add3ee9",
+    "aef4e601a78dd6e60fc7fcdb62275491"
+  ],
+  "journey": {
+    "ok": true,
+    "failure": "",
+    "projectId": "vlog",
+    "actionId": "67349c291c76736f13bcc9552cb2ef0b",
+    "specId": "fde93ffaeaaf9f18b5ad9b752a4911e2",
+    "campaignId": "df17352f546c735506dd1010d7a901d2",
+    "checks": [
+      {
+        "name": "browser registered Project A with a durable configuration",
+        "pass": true,
+        "detail": "1"
+      },
+      {
+        "name": "browser created a Project-bound Action",
+        "pass": true,
+        "detail": "67349c291c76736f13bcc9552cb2ef0b"
+      },
+      {
+        "name": "browser froze a Project-bound ActionSpec",
+        "pass": true,
+        "detail": "fde93ffaeaaf9f18b5ad9b752a4911e2"
+      },
+      {
+        "name": "frozen spec records the Project identity and capabilities",
+        "pass": true
+      },
+      {
+        "name": "browser created and started the Campaign",
+        "pass": true,
+        "detail": "df17352f546c735506dd1010d7a901d2"
+      },
+      {
+        "name": "Campaign reaches ACCEPTED through native orchestration",
+        "pass": true,
+        "detail": "quality gate ACCEPTED"
+      },
+      {
+        "name": "all native role tasks completed",
+        "pass": true,
+        "detail": "[[\"implementer-0\",\"succeeded\"],[\"verifier-0\",\"succeeded\"],[\"reviewer-0\",\"succeeded\"],[\"gate-0\",\"succeeded\"]]"
+      },
+      {
+        "name": "Quality Gate accepted the exact candidate",
+        "pass": true
+      },
+      {
+        "name": "browser renders the candidate SHA and ACCEPTED gate",
+        "pass": true
+      },
+      {
+        "name": "durable state survives reload",
+        "pass": true
+      },
+      {
+        "name": "no browser console errors in the Office journey",
+        "pass": true
+      }
+    ],
+    "consoleErrors": []
+  }
+}

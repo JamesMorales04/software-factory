@@ -46,8 +46,8 @@ paseo provider ls 2>/dev/null | grep -q "opencode.*available" || { echo "[BLOCKE
 [[ -x "$CHROMIUM_EXE" ]] || { echo "[BLOCKED] Chromium not found at $CHROMIUM_EXE"; exit 2; }
 [[ -d "$PLAYWRIGHT_CORE" ]] || { echo "[BLOCKED] playwright-core not found at $PLAYWRIGHT_CORE"; exit 2; }
 [[ -x "$BROWSER_CLI" ]] || { echo "[BLOCKED] pinned Playwright CLI not found"; exit 2; }
-[[ -d "$VLOG/.git" ]] || { echo "[BLOCKED] vlog fixture missing"; exit 2; }
-[[ -d "$CALC/.git" ]] || { echo "[BLOCKED] calculator fixture missing"; exit 2; }
+[[ -d "$VLOG/.git" ]] || { echo "[BLOCKED] vlog fixture missing at $VLOG"; exit 2; }
+[[ -d "$CALC/.git" ]] || { echo "[BLOCKED] calculator fixture missing at $CALC"; exit 2; }
 
 echo "== build binaries and Office =="
 (cd "$ROOT/core" && go build -o "$TMP/factory-core" ./cmd/factory-core)

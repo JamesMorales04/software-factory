@@ -30,3 +30,14 @@ This policy governs TRUSTED_LOCAL runs only: real local Paseo/agent sessions ope
 ## Relationship to frozen contracts
 
 This policy does not amend frozen S1/S2 contract semantics. The S2 synthetic-fixture contract (`run-worker-s2.md` v1) keeps its credential-free scope; TRUSTED_LOCAL workload kinds, if ever contracted, require a separate versioned revision. See the amendment note in [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md).
+
+## Project scoping (F1-S4-C)
+
+The Project Registry, canonical repository identity, base-ref policy, workspace
+scope, capability matching and cross-project evidence checks are **control-plane
+authorization**, not an operating-system confinement boundary. They reject
+unauthorized Core operations and keep evidence attributable to one Project, but
+a TRUSTED_LOCAL process can still read other host paths under the owner's user
+privileges. Do not claim cross-project confidentiality, hostile-code
+containment or ISOLATED equivalence from these controls. Browser wrappers and
+loopback endpoint checks likewise enforce Factory policy, not OS egress rules.
