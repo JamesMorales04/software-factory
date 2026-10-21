@@ -94,7 +94,7 @@ echo "[PASS] six malformed/substituted queue bodies rejected with 400"
 
 echo "== phase 3: intend → bind → close over the worker protocol =="
 worker -X POST "$BASE/api/v1/workers/register" -H 'Content-Type: application/json' \
-  -d '{"workerId":"s3a-e2e","version":"e2e"}' >/dev/null
+  -d '{"workerId":"s3a-e2e","version":"e2e","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}' >/dev/null
 POLL="$(worker -X POST "$BASE/api/v1/workers/poll" -H 'Content-Type: application/json' \
   -d '{"workerId":"s3a-e2e"}')"
 ATTEMPT="$(python3 -c "import json,sys; a=json.load(sys.stdin)['attempt']; print(a['id'], a['leaseGeneration'])" <<<"$POLL")"
@@ -221,7 +221,7 @@ EV_AFTER="$(auth "$BASE/api/v1/runs/$RUN_CODEX/events" | python3 -c "import json
 if [[ "$EV_AFTER" -lt "$EV_BEFORE" ]]; then echo "[FAIL] events lost across restart"; exit 1; fi
 # A fresh registration after restart can lease the remaining queued run.
 worker -X POST "$BASE/api/v1/workers/register" -H 'Content-Type: application/json' \
-  -d '{"workerId":"s3a-e2e","version":"e2e"}' >/dev/null
+  -d '{"workerId":"s3a-e2e","version":"e2e","capabilities":["repository-edit","node-toolchain","generic-toolchain","browser"],"execModes":["restricted","trusted-local"]}' >/dev/null
 POLL3_CODE="$(curl -s -o /tmp/factory-s3a-poll3.json -w '%{http_code}' -X POST "$BASE/api/v1/workers/poll" \
   -H "Authorization: Bearer $WTOKEN" -H 'Content-Type: application/json' -d '{"workerId":"s3a-e2e"}')"
 if [[ "$POLL3_CODE" != "200" ]]; then echo "[FAIL] post-restart poll: $POLL3_CODE"; exit 1; fi
