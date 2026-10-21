@@ -123,7 +123,7 @@ func prepareBrowserCapability(ctx context.Context, workDir, runID string, spec *
 	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o700); err != nil {
 		return "", fmt.Errorf("write browser wrapper: %w", err)
 	}
-	skill := browserSkill(wrapperPath, browser, spec.BrowserEndpoints)
+	skill := browserSkill(wrapperPath, browser, spec.BrowserEndpoints, spec.BrowserTestServer != nil)
 	if err := os.WriteFile(skillPath, []byte(skill), 0o600); err != nil {
 		return "", fmt.Errorf("write browser skill: %w", err)
 	}
@@ -171,8 +171,12 @@ func excludeRuntimePaths(ctx context.Context, workDir string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
-func browserSkill(wrapper string, browser browserRuntime, endpoints []string) string {
+func browserSkill(wrapper string, browser browserRuntime, endpoints []string, managedServer bool) string {
 	allowed := strings.Join(endpoints, ", ")
+	serverRule := "- Start the application on one of the authorized endpoints yourself if it is\n  not already running. Write server logs outside the repository (for example\n  under /tmp) so runtime artifacts never become candidate changes. Exercise\n  the real UI, then close the browser.\n"
+	if managedServer {
+		serverRule = "- The authorized test server is already managed and running by Factory at\n  " + firstEndpoint(endpoints) + ". Do not start, restart, or kill it. Exercise the\n  real UI, then close the browser.\n"
+	}
 	return fmt.Sprintf(`---
 name: factory-browser
 description: Exercise the authorized local web application with the pinned Factory Playwright CLI. Use only for implementer self-tests inside this Factory Run; it is not independent acceptance evidence.
@@ -193,17 +197,13 @@ Use exactly this wrapper: %s
   projects.
 - Never edit .agents/, .factory/, protected acceptance scripts, tests or
   package manifests while acting as the Implementer.
-- Start the application on one of the authorized endpoints yourself if it is
-  not already running. Write server logs outside the repository (for example
-  under /tmp) so runtime artifacts never become candidate changes. Exercise
-  the real UI, then close the browser.
-- A screenshot or CLI exit alone is not PASS: assert the observable UI state
+%s- A screenshot or CLI exit alone is not PASS: assert the observable UI state
   and report concrete results. Run open followed by an observation or
   interaction command (snapshot, find, fill, click, eval); --help alone is not
   browser capability evidence. Independent verification is
   performed later by Factory's Verifier, not by you.
 `, wrapper, wrapper, allowed, browser.ChromiumPath, browser.CorePath,
-		browser.CLIVersion)
+		browser.CLIVersion, serverRule)
 }
 
 // browserWrapper is a generated, disposable Node guard around the pinned

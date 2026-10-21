@@ -349,3 +349,43 @@ func TestStaleStateKillsDescendantAfterLeaderExit(t *testing.T) {
 		t.Fatal("new managed server is not healthy")
 	}
 }
+
+func TestUnverifiedStaleCleanupRetainsState(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	registry := t.TempDir()
+	port := freePort(t)
+	cfg := Config{
+		ID: "unverified-stale", WorkDir: work,
+		Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), ReadyPath: "/",
+		Command: pythonServerCommand(), Timeout: 10 * time.Second,
+	}
+	server, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Stop(context.Background()) }()
+	statePath := filepath.Join(registry, stateKey(cfg.ID)+".json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["startTime"] = "not-this-process"
+	raw, _ = json.Marshal(state)
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Start(ctx, cfg, registry); err == nil || !strings.Contains(err.Error(), "cleanup is unverified") {
+		t.Fatalf("unverified stale cleanup was not refused: %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatal("unverified stale state was removed")
+	}
+	if !healthy(ctx, cfg.Endpoint, cfg.ReadyPath) {
+		t.Fatal("unverified process was killed instead of retained")
+	}
+}

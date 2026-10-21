@@ -56,3 +56,20 @@ func TestCapabilityNudgePromptIsBoundedAndSpecific(t *testing.T) {
 		t.Fatalf("managed-server nudge is not actionable: %s", managed)
 	}
 }
+
+func TestBrowserSkillManagedServerInstructions(t *testing.T) {
+	browser := browserRuntime{ChromiumPath: "/chromium", CorePath: "/playwright-core", CLIVersion: "0.1.22"}
+	managed := browserSkill("/work/.factory/bin/factory-playwright-cli.mjs", browser, []string{"http://127.0.0.1:4173"}, true)
+	for _, want := range []string{"already managed and running", "Do not start, restart, or kill it"} {
+		if !strings.Contains(managed, want) {
+			t.Fatalf("managed skill missing %q", want)
+		}
+	}
+	if strings.Contains(managed, "Start the application on one of the authorized endpoints yourself") {
+		t.Fatal("managed skill still tells the model to start the server")
+	}
+	unmanaged := browserSkill("/work/.factory/bin/factory-playwright-cli.mjs", browser, []string{"http://127.0.0.1:4173"}, false)
+	if !strings.Contains(unmanaged, "Start the application on one of the authorized endpoints yourself") {
+		t.Fatal("unmanaged skill lost its startup instruction")
+	}
+}
