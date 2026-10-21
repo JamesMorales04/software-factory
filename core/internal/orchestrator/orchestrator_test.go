@@ -222,6 +222,17 @@ func TestRecoveryPromptCarriesObservedFailureAndBudget(t *testing.T) {
 	}
 }
 
+func TestBrowserRepairPrerequisiteRespectsManagedServer(t *testing.T) {
+	managed := browserRepairPrerequisite(domain.ActionSpec{BrowserTestServer: &domain.BrowserTestServer{Command: []string{"npm", "start"}}})
+	if !strings.Contains(managed, "already managed and running") || strings.Contains(managed, "start the authorized app") {
+		t.Fatalf("managed repair prerequisite is contradictory: %s", managed)
+	}
+	unmanaged := browserRepairPrerequisite(domain.ActionSpec{})
+	if !strings.Contains(unmanaged, "start the authorized app") {
+		t.Fatalf("unmanaged repair prerequisite lost startup guidance: %s", unmanaged)
+	}
+}
+
 func TestCleanupUnconfirmedIsDetected(t *testing.T) {
 	if !cleanupUnconfirmed(domain.Run{Result: map[string]any{"cleanup": "unconfirmed: stop failed"}}) {
 		t.Fatal("unconfirmed cleanup not detected")

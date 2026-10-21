@@ -8,6 +8,7 @@ Core's bounded repair plan, no merge.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -105,11 +106,14 @@ def paseo_json(*args: str):
     return json.loads(proc.stdout)
 
 
-def active_paseo_workspaces() -> set[str]:
+def active_paseo_workspaces() -> tuple[set[str], str | None]:
+    proc = run(["paseo", "workspace", "ls", "--json"], check=False)
+    if proc.returncode != 0:
+        return set(), proc.stderr[-500:] or proc.stdout[-500:]
     try:
-        payload = paseo_json("workspace", "ls")
-    except Exception:
-        return set()
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return set(), f"invalid workspace inventory: {exc}"
     ids = set()
     if isinstance(payload, list):
         for item in payload:
@@ -117,41 +121,115 @@ def active_paseo_workspaces() -> set[str]:
                 value = item.get("id") or item.get("workspaceId")
                 if value:
                     ids.add(str(value))
-    return ids
+    return ids, None
 
 
-def managed_server_states(attempt_ids: set[str]) -> list[dict]:
-    base = Path(tempfile.gettempdir()) / "factory-test-servers"
-    found = []
+def paseo_agent_inventory() -> tuple[set[str], str | None]:
+    proc = run(["paseo", "ls", "--all", "--global", "--json"], check=False)
+    if proc.returncode != 0:
+        return set(), proc.stderr[-500:] or proc.stdout[-500:]
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return set(), f"invalid agent inventory: {exc}"
+    if not isinstance(payload, list):
+        return set(), "agent inventory is not a list"
+    return {str(item["id"]) for item in payload if isinstance(item, dict) and item.get("id")}, None
+
+
+def worker_registry_dir(worker_id: str) -> Path:
+    key = hashlib.sha256(worker_id.encode()).hexdigest()[:32]
+    return Path(tempfile.gettempdir()) / "factory-test-servers" / f"worker-{key}"
+
+
+def managed_server_states(worker_id: str, attempt_ids: set[str]) -> dict:
+    base = worker_registry_dir(worker_id)
+    found: list[dict] = []
+    errors: list[str] = []
     if not base.exists():
-        return found
-    for path in base.rglob("*.json"):
+        return {"path": str(base), "states": found, "errors": errors}
+    for path in base.glob("*.json"):
         try:
             payload = json.loads(path.read_text())
-        except Exception:
+        except Exception as exc:
+            errors.append(f"unreadable state {path}: {exc}")
             continue
         if str(payload.get("id", "")) in attempt_ids:
             found.append({"path": str(path), **payload})
-    return found
+    return {"path": str(base), "states": found, "errors": errors}
 
 
-def cleanup_operator(sessions: list[dict], attempts: list[str]) -> dict:
-    """Best-effort safety cleanup after evidence capture. Never counted as PASS."""
-    notes = []
-    for session in sessions:
-        sid = session.get("sessionId") or session.get("Id") or ""
-        if not sid:
+def _proc_start(pid: int) -> str | None:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+        fields = raw[raw.rfind(")") + 1:].split()
+        return fields[19] if len(fields) > 19 else None
+    except OSError:
+        return None
+
+
+def _proc_cwd(pid: int) -> str | None:
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def _group_members(pgid: int) -> list[tuple[int, str]]:
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
             continue
-        for command in (["paseo", "stop", sid], ["paseo", "archive", sid]):
-            proc = run(command, check=False)
-            if proc.returncode != 0:
-                notes.append(f"{command[1]} {sid}: {proc.stderr[-200:]}")
-    for state in managed_server_states(set(attempts)):
+        pid = int(entry.name)
         try:
-            os.killpg(int(state["pgid"]), signal.SIGKILL)
-            notes.append(f"killed managed server pgid {state['pgid']}")
-        except Exception as exc:
-            notes.append(f"managed server cleanup {state.get('path')}: {exc}")
+            raw = Path(f"/proc/{pid}/stat").read_text()
+            fields = raw[raw.rfind(")") + 1:].split()
+            if len(fields) > 19 and int(fields[2]) == pgid:
+                members.append((pid, fields[19]))
+        except (OSError, ValueError):
+            continue
+    return members
+
+
+def safe_managed_cleanup(worker_id: str, attempt_ids: set[str]) -> list[str]:
+    """Kill only a process group whose /proc identity matches the state row."""
+    notes: list[str] = []
+    observed = managed_server_states(worker_id, attempt_ids)
+    notes.extend(observed["errors"])
+    for state in observed["states"]:
+        pgid = int(state.get("pgid") or 0)
+        workdir = str(state.get("workDir") or "")
+        leader_start = str(state.get("startTime") or "")
+        if pgid <= 0 or not workdir or not leader_start:
+            notes.append(f"managed server state {state.get('path')} has incomplete identity; retained")
+            continue
+        leader_pid = int(state.get("pid") or 0)
+        leader_alive_start = _proc_start(leader_pid)
+        if leader_alive_start and leader_alive_start != leader_start:
+            notes.append(f"managed server leader {leader_pid} start-time mismatch; retained")
+            continue
+        members = _group_members(pgid)
+        safe = True
+        for pid, member_start in members:
+            cwd = _proc_cwd(pid)
+            if cwd and not (cwd == workdir or cwd.startswith(workdir + "/")):
+                safe = False
+                break
+            if pid == leader_pid and member_start != leader_start:
+                safe = False
+                break
+        if not safe:
+            notes.append(f"managed server pgid {pgid} has an unverified member; retained")
+            continue
+        if members:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                notes.append(f"killed verified managed server pgid {pgid}")
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                notes.append(f"managed server pgid {pgid} cleanup failed: {exc}")
+                continue
         for key in ("path", "logPath"):
             value = state.get(key)
             if value:
@@ -159,6 +237,27 @@ def cleanup_operator(sessions: list[dict], attempts: list[str]) -> dict:
                     Path(value).unlink()
                 except FileNotFoundError:
                     pass
+    return notes
+
+
+def cleanup_operator(sessions: list[dict], workspaces: list[str],
+                     worker_id: str, attempt_ids: set[str]) -> dict:
+    """Best-effort safety cleanup after evidence capture. Never counted as PASS."""
+    notes: list[str] = []
+    session_ids = {
+        str(item.get("sessionId") or item.get("Id") or "")
+        for item in sessions
+    } - {""}
+    for sid in sorted(session_ids):
+        for command in (["paseo", "stop", sid], ["paseo", "archive", sid]):
+            proc = run(command, check=False)
+            if proc.returncode != 0:
+                notes.append(f"{command[1]} {sid}: {proc.stderr[-200:]}")
+    for workspace in sorted({w for w in workspaces if w}):
+        proc = run(["paseo", "workspace", "archive", workspace], check=False)
+        if proc.returncode != 0:
+            notes.append(f"workspace archive {workspace}: {proc.stderr[-200:]}")
+    notes.extend(safe_managed_cleanup(worker_id, attempt_ids))
     return {"notes": notes, "performed": bool(notes)}
 
 
@@ -184,6 +283,13 @@ def main() -> int:
         "S4C_VLOG_REPO", str(Path.home() / "Escritorio/Development/factory-fixtures/factory-fixture-vlog")))
     implementation_sha = git("rev-parse", "HEAD")
     core = worker = None
+    campaign = None
+    worker_id = ""
+    run_ids: list[str] = []
+    attempt_ids: list[str] = []
+    sessions: list[dict] = []
+    external: list[dict] = []
+    evidence_written = False
     core_log = (tmp / "core.log").open("w")
     worker_log = (tmp / "worker.log").open("w")
     result = {
@@ -398,6 +504,7 @@ def main() -> int:
             result["status"] = "PREFLIGHT_ONLY"
             result["evidence_path"] = str(tmp / "live-evidence.json")
             (tmp / "live-evidence.json").write_text(json.dumps(result, indent=2))
+            evidence_written = True
             print(json.dumps(result, indent=2))
             print(f"preflight evidence: {tmp / 'live-evidence.json'}")
             return 0
@@ -405,6 +512,10 @@ def main() -> int:
         # The Worker starts and verifies the managed server before Paseo
         # StartSession. The deterministic preflight already exercised that
         # path; this assertion ties the live log order to the same ordering.
+        inventory_before, inventory_before_error = paseo_agent_inventory()
+        record_preflight("paseo-agent-inventory", inventory_before_error is None,
+                         {"agents": len(inventory_before), "error": inventory_before_error})
+        result["agent_inventory_before"] = sorted(inventory_before)
         result["paid_sessions_started_at"] = time.time()
         status, payload = client.call("POST", f"/api/v1/campaigns/{campaign['id']}/start", {})
         if status not in (200, 202):
@@ -441,13 +552,14 @@ def main() -> int:
             for task in projection.get("tasks", [])
         ]
         implementer_tasks = [t for t in projection.get("tasks", []) if t.get("key", "").startswith("implementer-")]
-        attempt_ids = [t.get("runId") for t in implementer_tasks if t.get("runId")]
-        result["implementer_runs"] = attempt_ids
+        run_ids = [t.get("runId") for t in implementer_tasks if t.get("runId")]
+        result["implementer_runs"] = run_ids
 
         # Preserve every real Implementer Run/Attempt/session binding.
         runs = []
         sessions = []
-        for run_id in attempt_ids:
+        attempt_ids: list[str] = []
+        for run_id in run_ids:
             status, run_payload = client.call("GET", f"/api/v1/runs/{run_id}")
             if status != 200:
                 fail("failed to load implementer Run", runId=run_id, status=status)
@@ -457,15 +569,27 @@ def main() -> int:
             status, sessions_payload = client.call("GET", f"/api/v1/runs/{run_id}/sessions")
             if status != 200:
                 fail("failed to load session bindings", runId=run_id, status=status)
-            run_record = run_payload["run"]
-            runs.append({"run": run_record, "attempts": attempts_payload.get("attempts", [])})
+            attempts = attempts_payload.get("attempts", [])
+            attempt_ids.extend(str(item.get("id")) for item in attempts if item.get("id"))
+            runs.append({"run": run_payload["run"], "attempts": attempts})
             sessions.extend(sessions_payload.get("sessions", []))
         result["runs"] = runs
         result["session_bindings"] = sessions
+        result["attempt_ids"] = attempt_ids
+
+        status, orphan_payload = client.call("GET", "/api/v1/sessions/orphaned")
+        if status != 200:
+            fail("failed to read orphan queue", status=status)
+        orphaned = [
+            binding for binding in orphan_payload.get("sessions", [])
+            if binding.get("runId") in set(run_ids)
+        ]
+        result["orphaned_session_bindings"] = orphaned
+
         result["independent_verification"] = {}
         result["review"] = None
         candidates = []
-        for run_id in attempt_ids:
+        for run_id in run_ids:
             status, candidate_payload = client.call("GET", f"/api/v1/candidates?runId={run_id}")
             if status != 200:
                 fail("failed to list Run candidates", runId=run_id, status=status)
@@ -485,14 +609,42 @@ def main() -> int:
             verifications = bundle.get("verifications", [])
             reviews = bundle.get("reviews", [])
             result["independent_verification"] = verifications
-            result["review"] = reviews[0].get("verdict") if reviews else None
+            reviews = sorted(reviews, key=lambda item: str(item.get("createdAt", "")))
+            result["review"] = reviews[-1].get("verdict") if reviews else None
 
-        # External Paseo identity and cleanup observations.
-        external = []
-        for binding in sessions:
-            sid = binding.get("sessionId") or binding.get("SessionID") or ""
-            if not sid:
+        bound_session_ids = {
+            str(item.get("sessionId") or item.get("SessionID") or "")
+            for item in sessions
+        } - {""}
+
+        inventory_after, inventory_after_error = paseo_agent_inventory()
+        inventory_before = set(result.get("agent_inventory_before", []))
+        new_ids = inventory_after - inventory_before
+        # The raw inventory helper returns IDs only. Fetch details to filter
+        # by the Factory correlation title without inventing session identity.
+        proc = run(["paseo", "ls", "--all", "--global", "--json"], check=False)
+        inventory_details = []
+        if proc.returncode == 0:
+            try:
+                inventory_details = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                inventory_after_error = "invalid agent inventory details"
+        new_for_runs = []
+        for item in inventory_details:
+            if not isinstance(item, dict) or str(item.get("id")) not in new_ids:
                 continue
+            label = str(item.get("name", "")) + " " + str(item.get("cwd", ""))
+            if any(run_id in label for run_id in run_ids):
+                new_for_runs.append(item)
+        unbound_external = [
+            str(item.get("id")) for item in new_for_runs
+            if str(item.get("id")) not in bound_session_ids
+        ]
+        external_ids = set(bound_session_ids)
+        external_ids.update(str(item.get("id")) for item in new_for_runs if item.get("id"))
+
+        external = []
+        for sid in sorted(external_ids):
             proc = run(["paseo", "inspect", sid, "--json"], check=False)
             if proc.returncode == 0:
                 try:
@@ -501,32 +653,72 @@ def main() -> int:
                     observed = {"raw_error": proc.stdout[:300]}
             else:
                 observed = {"inspect_error": proc.stderr[-500:]}
-            external.append({"sessionId": sid, "inspect": observed})
+            external.append({
+                "sessionId": sid, "bound": sid in bound_session_ids,
+                "inspect": observed,
+            })
         result["external_sessions"] = external
+        result["external_inventory"] = {
+            "before": sorted(inventory_before),
+            "after": sorted(inventory_after),
+            "new_for_runs": [str(item.get("id")) for item in new_for_runs],
+            "unbound_external_sessions": unbound_external,
+            "error": inventory_after_error,
+            "before_error": result["preflight"].get("paseo-agent-inventory", {}).get("detail", {}).get("error"),
+            "orphaned_bindings": len(orphaned),
+        }
+        inventory_ok = (
+            inventory_after_error is None
+            and not result["external_inventory"]["before_error"]
+            and not unbound_external
+            and not orphaned
+        )
 
         final_run_result = {}
         if runs:
             final_run_result = runs[-1]["run"].get("result") or {}
         result["final_implementer_result"] = final_run_result
-        successful = [s.strip() for s in str(final_run_result.get("browserSuccessfulCommands", "")).split(",") if s.strip()]
+        browser_attempts = []
+        for record in runs:
+            run_result = record["run"].get("result") or {}
+            commands = [
+                value.strip() for value in
+                str(run_result.get("browserSuccessfulCommands", "")).split(",")
+                if value.strip()
+            ]
+            browser_attempts.append({
+                "runId": record["run"].get("id"),
+                "capabilityNudges": int(run_result.get("capabilityNudges") or 0),
+                "successfulCommands": commands,
+                "testServerManaged": bool(run_result.get("testServerManaged")),
+            })
+        successful = [
+            value.strip() for value in
+            str(final_run_result.get("browserSuccessfulCommands", "")).split(",")
+            if value.strip()
+        ]
         nudges = int(final_run_result.get("capabilityNudges") or 0)
+        observation_commands = {
+            "snapshot", "find", "fill", "click", "eval",
+            "screenshot", "select", "type", "press", "reload",
+        }
+        browser_ok = "open" in successful and bool(set(successful) & observation_commands)
         result["browser_certification"] = {
             "successful_commands": successful,
             "invoked": bool(final_run_result.get("browserInvoked")),
-            "initial_turn": nudges == 0 and "open" in successful and bool(set(successful) & {
-                "snapshot", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"}),
-            "same_session_continuation": nudges == 1 and "open" in successful and bool(set(successful) & {
-                "snapshot", "find", "fill", "click", "eval", "screenshot", "select", "type", "press", "reload"}),
+            "initial_turn": browser_ok and nudges == 0,
+            "same_session_continuation": browser_ok and nudges == 1,
             "capabilityNudges": nudges,
             "testServerManaged": bool(final_run_result.get("testServerManaged")),
             "testServerEndpoint": final_run_result.get("testServerEndpoint"),
             "testServerReused": final_run_result.get("testServerReused"),
             "sessionId": final_run_result.get("sessionId"),
             "workspaceId": final_run_result.get("workspaceId"),
+            "attempts": browser_attempts,
         }
 
         # Managed server cleanup: no state row for these Attempts and no listener.
-        states = managed_server_states(set(attempt_ids))
+        managed = managed_server_states(worker_id, set(attempt_ids))
         time.sleep(2)
         # Session archive is asynchronous in Paseo; observe it bounded.
         archive_deadline = time.time() + 30
@@ -546,28 +738,46 @@ def main() -> int:
                         item["inspect"] = json.loads(proc.stdout)
                     except json.JSONDecodeError:
                         pass
+        workspace_ids = {
+            str(record["run"].get("result", {}).get("workspaceId", ""))
+            for record in runs
+        } - {""}
+        active_workspaces, workspace_error = active_paseo_workspaces()
+        workspace_active = sorted(workspace_ids & active_workspaces)
+        managed_clean = (
+            not managed["states"] and not managed["errors"] and not port_open(4173)
+        )
         result["cleanup"] = {
-            "managed_server_state_rows": states,
+            "managed_server": managed,
             "managed_server_port_open": port_open(4173),
-            "managed_server_clean": not states and not port_open(4173),
+            "managed_server_clean": managed_clean,
             "session_cleanup": [
                 {
                     "sessionId": item.get("sessionId"),
+                    "bound": item.get("bound"),
                     "archived": (item.get("inspect") or {}).get("Archived"),
                     "status": (item.get("inspect") or {}).get("Status"),
                 }
                 for item in external
             ],
-            "workspace_active": sorted(
-                {str(r["run"].get("result", {}).get("workspaceId", "")) for r in runs}
-                & active_paseo_workspaces()
-            ),
+            "workspace_active": workspace_active,
+            "workspace_error": workspace_error,
+        }
+
+        worker_log.flush()
+        log_text = (tmp / "worker.log").read_text(errors="replace")
+        ready_at = log_text.find("managed browser test server ready")
+        session_at = log_text.find("paseo session observed")
+        managed_order_ok = ready_at >= 0 and (session_at < 0 or ready_at < session_at)
+        result["managed_server_log_order"] = {
+            "ready": ready_at >= 0,
+            "ready_before_session": managed_order_ok,
         }
 
         # Certification conditions. The Core verifier is the independent
         # functional/Chromium authority; this script does not replace it.
         verifier_checks = {
-            (check.get("id")): check
+            str(check.get("id")): check
             for verification in result.get("independent_verification", [])
             for check in verification.get("checks", [])
         }
@@ -577,15 +787,11 @@ def main() -> int:
             and (runs[-1].get("run") or {}).get("model") == MODEL
             and (runs[-1].get("run") or {}).get("paseoMode") == MODE
         )
-        external_identity_ok = all(
+        external_identity_ok = bool(external) and all(
             (item.get("inspect") or {}).get("Provider") == PROVIDER
             and (item.get("inspect") or {}).get("Model") == MODEL
             and (item.get("inspect") or {}).get("Mode") == MODE
             for item in external
-        ) if external else False
-        browser_ok = (
-            result["browser_certification"]["initial_turn"]
-            or result["browser_certification"]["same_session_continuation"]
         )
         server_ok = (
             result["browser_certification"]["testServerManaged"] is True
@@ -597,12 +803,26 @@ def main() -> int:
             and verifier_checks.get("functional", {}).get("status") == "PASS"
         )
         gate_ok = terminal == "accepted" and (result.get("decision") or {}).get("status") == "ACCEPTED"
-        cleanup_ok = (
-            result["cleanup"]["managed_server_clean"]
-            and not result["cleanup"]["workspace_active"]
-            and all(item.get("archived") for item in result["cleanup"]["session_cleanup"])
+        terminal_session_statuses = {"succeeded", "failed", "cancelled", "orphaned"}
+        sessions_terminal_ok = all(
+            str(item.get("status")) in terminal_session_statuses for item in sessions
         )
-        result["certification"] = {
+        final_candidate_run = str(final_candidate.get("implementerRunId") or "")
+        if not final_candidate_run and runs:
+            final_candidate_run = str(runs[-1].get("run", {}).get("id") or "")
+        final_session_succeeded = any(
+            str(item.get("runId")) == final_candidate_run
+            and str(item.get("status")) == "succeeded"
+            for item in sessions
+        )
+        cleanup_ok = (
+            managed_clean
+            and not workspace_active
+            and workspace_error is None
+            and all(item.get("archived") for item in result["cleanup"]["session_cleanup"])
+            and managed_order_ok
+        )
+        checks = {
             "identity": final_run_identity_ok,
             "external_identity": external_identity_ok,
             "candidate_allowed_paths": bool(candidate_paths) and candidate_paths <= set(ALLOWED_PATHS),
@@ -611,50 +831,86 @@ def main() -> int:
             "independent_verification": verification_ok,
             "review": result.get("review") == "APPROVE",
             "gate_accepted": gate_ok,
+            "session_inventory": inventory_ok,
+            "session_bindings_terminal": sessions_terminal_ok and final_session_succeeded,
             "cleanup": cleanup_ok,
+        }
+        result["certification"] = checks
+        result["certification_observations"] = {
             "initial_vs_continuation": (
                 "initial" if result["browser_certification"]["initial_turn"] else
-                "same-session-continuation" if result["browser_certification"]["same_session_continuation"] else
-                "none"
+                "same-session-continuation"
+                if result["browser_certification"]["same_session_continuation"] else "none"
             ),
-            "real_corrective_attempt": len(bound_session_ids) > 1 and len(attempt_ids) > 1,
+            "real_corrective_attempt": len(bound_session_ids) > 1 and len(run_ids) > 1,
         }
-        bound_session_ids = {
-            str(item.get("sessionId") or item.get("SessionID") or "")
-            for item in sessions
-        } - {""}
-        result["paid_sessions_spent"] = len(bound_session_ids)
-        result["implementer_attempts_used"] = len(attempt_ids)
+        result["paid_sessions_spent"] = len(external_ids)
+        result["implementer_attempts_used"] = len(run_ids)
         result["status"] = (
             "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW"
-            if all(v for k, v in result["certification"].items()
-                   if k not in {"initial_vs_continuation", "real_corrective_attempt"})
+            if all(checks.values())
             else "HUMAN_REQUIRED"
         )
-
-        # Worker log ordering: managed server ready precedes any session
-        # observation. If the managed start failed, no Paseo session starts.
-        worker_log.flush()
-        log_text = (tmp / "worker.log").read_text(errors="replace")
-        ready_at = log_text.find("managed browser test server ready")
-        session_at = log_text.find("paseo session observed")
-        result["managed_server_log_order"] = {
-            "ready": ready_at >= 0,
-            "ready_before_session": ready_at >= 0 and (session_at < 0 or ready_at < session_at),
-        }
 
         if result["paid_sessions_spent"] > MAX_ATTEMPTS:
             fail("authorization ceiling exceeded", paid_sessions=result["paid_sessions_spent"])
         if result["status"] != "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW":
-            result["operator_cleanup"] = cleanup_operator(external, attempt_ids)
+            result["operator_cleanup"] = cleanup_operator(
+                external, sorted(workspace_ids), worker_id, set(attempt_ids))
         result["evidence_path"] = str(tmp / "live-evidence.json")
         (tmp / "live-evidence.json").write_text(json.dumps(result, indent=2))
+        evidence_written = True
         print(json.dumps(result, indent=2)[-12000:])
         print(f"evidence: {tmp / 'live-evidence.json'}")
         print(f"core log: {tmp / 'core.log'}")
         print(f"worker log: {tmp / 'worker.log'}")
         return 0 if result["status"] == "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW" else 1
     finally:
+        if not evidence_written:
+            result["status"] = "HUMAN_REQUIRED"
+            result["interrupted"] = True
+            try:
+                if campaign and core and core.poll() is None:
+                    _, partial = client.call("GET", f"/api/v1/campaigns/{campaign['id']}")
+                    result["partial_projection"] = partial
+                    for task in partial.get("tasks", []):
+                        if not str(task.get("key", "")).startswith("implementer-"):
+                            continue
+                        run_id = task.get("runId")
+                        if not run_id or run_id in run_ids:
+                            continue
+                        run_ids.append(run_id)
+                        _, run_payload = client.call("GET", f"/api/v1/runs/{run_id}")
+                        _, attempts_payload = client.call("GET", f"/api/v1/runs/{run_id}/attempts")
+                        _, sessions_payload = client.call("GET", f"/api/v1/runs/{run_id}/sessions")
+                        result.setdefault("partial_runs", []).append({
+                            "run": run_payload.get("run"),
+                            "attempts": attempts_payload.get("attempts", []),
+                        })
+                        sessions.extend(sessions_payload.get("sessions", []))
+                        attempt_ids.extend(
+                            str(item.get("id")) for item in attempts_payload.get("attempts", [])
+                            if item.get("id")
+                        )
+                bound_ids = {
+                    str(item.get("sessionId") or item.get("SessionID") or "")
+                    for item in sessions
+                } - {""}
+                external = [{"sessionId": sid, "bound": True} for sid in sorted(bound_ids)]
+                workspace_ids = {
+                    str((record.get("run") or {}).get("result", {}).get("workspaceId", ""))
+                    for record in result.get("partial_runs", [])
+                } - {""}
+                result["operator_cleanup"] = cleanup_operator(
+                    external, sorted(workspace_ids), worker_id, set(attempt_ids))
+            except Exception as exc:
+                result["partial_collection_error"] = str(exc)
+            result["evidence_path"] = str(tmp / "live-evidence.json")
+            try:
+                (tmp / "live-evidence.json").write_text(json.dumps(result, indent=2))
+                print(f"interrupted evidence: {tmp / 'live-evidence.json'}")
+            except Exception as exc:
+                print(f"failed to write interrupted evidence: {exc}", file=sys.stderr)
         for proc in (worker, core):
             if proc and proc.poll() is None:
                 proc.terminate()
