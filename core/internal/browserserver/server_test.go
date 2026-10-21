@@ -232,3 +232,50 @@ func TestWorkerRegistryLockAndSymlinkRefusal(t *testing.T) {
 		t.Fatal("symlinked registry base was accepted")
 	}
 }
+
+func TestEmptyProcessIdentityIsRefused(t *testing.T) {
+	state := processState{PGID: 123, StartTime: "", WorkDir: t.TempDir()}
+	if _, ok := ownedGroup(state); ok {
+		t.Fatal("empty process identity was treated as owned")
+	}
+}
+
+func TestSymlinkedAncestorIsRefused(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "real")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink creation unavailable")
+	}
+	if err := ensureSecureDir(filepath.Join(link, "registry")); err == nil {
+		t.Fatal("symlinked ancestor accepted")
+	}
+}
+
+func TestStopAfterWorkspaceDeleted(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	registry := t.TempDir()
+	port := freePort(t)
+	cfg := Config{
+		ID: "deleted-workspace", WorkDir: work, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port),
+		ReadyPath: "/", Command: pythonServerCommand(), Timeout: 10 * time.Second,
+	}
+	server, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(work); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Stop(context.Background()); err != nil {
+		t.Fatalf("stop after workspace deletion: %v", err)
+	}
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if _, err := client.Get(cfg.Endpoint); err == nil {
+		t.Fatal("server survived workspace deletion cleanup")
+	}
+}

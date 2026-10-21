@@ -171,6 +171,10 @@ def invoke_browser(project):
     if not wrapper.exists():
         return 0
     endpoint = os.environ.get("S4C_BROWSER_ENDPOINT", "http://127.0.0.1:4173")
+    managed = (project / ".factory" / "test-server-managed").exists()
+    if managed and not server_ready(endpoint):
+        print("managed test server is not ready; refusing to start a replacement", file=sys.stderr)
+        return 1
     owned_server = None
     if server_ready(endpoint):
         # The Worker-managed test server is already serving this workspace.

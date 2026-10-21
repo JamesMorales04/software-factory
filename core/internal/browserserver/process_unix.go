@@ -36,7 +36,7 @@ func processAlive(pid int) (bool, string) {
 	if err := syscall.Kill(pid, 0); err != nil {
 		return false, ""
 	}
-	start, _, err := processIdentity(pid)
+	start, _, err := processStat(pid)
 	if err != nil {
 		return false, ""
 	}
@@ -44,23 +44,35 @@ func processAlive(pid int) (bool, string) {
 }
 
 func processIdentity(pid int) (string, string, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	start, _, err := processStat(pid)
 	if err != nil {
 		return "", "", err
-	}
-	closeParen := strings.LastIndex(string(raw), ")")
-	if closeParen < 0 {
-		return "", "", os.ErrInvalid
-	}
-	fields := strings.Fields(string(raw[closeParen+1:]))
-	if len(fields) <= 19 {
-		return "", "", os.ErrInvalid
 	}
 	cwd, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
 	if err != nil {
 		return "", "", err
 	}
-	return fields[19], strings.TrimSuffix(cwd, " (deleted)"), nil
+	return start, strings.TrimSuffix(cwd, " (deleted)"), nil
+}
+
+func processStat(pid int) (string, int, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", 0, err
+	}
+	closeParen := strings.LastIndex(string(raw), ")")
+	if closeParen < 0 {
+		return "", 0, os.ErrInvalid
+	}
+	fields := strings.Fields(string(raw[closeParen+1:]))
+	if len(fields) <= 19 {
+		return "", 0, os.ErrInvalid
+	}
+	pgrp, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return "", 0, err
+	}
+	return fields[19], pgrp, nil
 }
 
 func processCwd(pid int) (string, error) {
@@ -79,34 +91,19 @@ func groupMembers(pgid int) ([]processMember, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		start, err := processStartTime(pid)
+		start, memberGroup, err := processStat(pid)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		if err != nil {
-			continue
-		}
-		closeParen := strings.LastIndex(string(raw), ")")
-		if closeParen < 0 {
-			continue
-		}
-		fields := strings.Fields(string(raw[closeParen+1:]))
-		if len(fields) <= 2 {
-			continue
-		}
-		memberGroup, err := strconv.Atoi(fields[2])
-		if err != nil || memberGroup != pgid {
+		if memberGroup != pgid {
 			continue
 		}
 		out = append(out, processMember{PID: pid, StartTime: start})
 	}
 	return out, nil
-}
-
-func processStartTime(pid int) (string, error) {
-	start, _, err := processIdentity(pid)
-	return start, err
 }
 
 func openProcessHandle(pid int) (int, error) {

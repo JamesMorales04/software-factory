@@ -375,7 +375,11 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				"browser-test-server: "+truncate(err.Error()), log)
 			return
 		}
-		defer func() { _ = testServer.Stop(context.Background()) }()
+		defer func() {
+			if stopErr := testServer.Stop(context.Background()); stopErr != nil {
+				log.Warn("managed test server cleanup unconfirmed", "error", stopErr.Error())
+			}
+		}()
 		log.Info("managed browser test server ready", "endpoint", testServer.Endpoint(), "reused", testServer.Reused())
 	}
 

@@ -47,6 +47,7 @@ JOURNEY_FILE = EVIDENCE / "office-journey.json"
 TERMINAL = {"accepted", "repair_required", "blocked", "human_required", "failed", "cancelled"}
 FAILURES = []
 CHECKS = []
+IMPLEMENTATION_SHA = os.environ.get("S4C_IMPLEMENTATION_SHA", "").strip()
 
 
 def check(name, cond, detail=""):
@@ -315,7 +316,7 @@ def main():
     set_stub("good")
 
     processes = Processes()
-    result = {"checks": CHECKS, "failures": FAILURES}
+    result = {"implementationSha": IMPLEMENTATION_SHA, "checks": CHECKS, "failures": FAILURES}
     try:
         processes.start_core()
         processes.start_worker()

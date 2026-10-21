@@ -135,6 +135,11 @@ func prepareBrowserCapability(ctx context.Context, workDir, runID string, spec *
 	if err := os.WriteFile(filepath.Join(workDir, ".factory", "browser-runtime.json"), runtimeJSON, 0o600); err != nil {
 		return "", fmt.Errorf("write browser runtime evidence: %w", err)
 	}
+	if spec.BrowserTestServer != nil {
+		if err := os.WriteFile(filepath.Join(workDir, ".factory", "test-server-managed"), []byte("1\n"), 0o600); err != nil {
+			return "", fmt.Errorf("mark managed test server: %w", err)
+		}
+	}
 	return skillPath, nil
 }
 

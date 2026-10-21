@@ -53,6 +53,7 @@ echo "== build Core, Worker, Verifier, Reviewer and Office =="
 command -v node >/dev/null || blocked "node is unavailable"
 
 echo "== F1-S4-C deterministic oracle =="
+export S4C_IMPLEMENTATION_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 python3 "$ROOT/scripts/e2e_s4c_oracle.py" \
   "$VLOG" "$CALC" \
   "$TMP/factory-core" "$TMP/factory-worker" \

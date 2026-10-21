@@ -1,4 +1,5 @@
 {
+  "implementationSha": "161f4cef069b794f9b31819970d6720500267ce7",
   "checks": [
     {
       "name": "C17 Office journey; register Project A, Action, spec, Campaign",
@@ -32,12 +33,12 @@
     {
       "name": "C9 Factory-managed Implementer invoked Playwright CLI through the wrapper",
       "pass": true,
-      "detail": "{\"browserCLIVersion\": \"0.1.22\", \"browserCleanup\": \"ok\", \"browserCommands\": \"open,snapshot,close\", \"browserInvocations\": 3, \"browserInvoked\": true, \"browserSkillDigest\": \"a1f4c47ab8866a145237f9c64431bf54222d9f40371d048218a3710ee3e753da\", \"browserSuccessfulCommands\": \"open,snapshot,close\", \"candidateId\": \"b738b4e0a8e28b2d90162cc71416aaaf\", \"capability\": \"browser\", \"capabilityNudges\": 0, \"cleanup\": \"ok\", \"cwd\": \"/tmp/factory-worker-runs-856184182/attempt-3981321413\", \"diffBytes\": 1216, \"diffStat\": \"src/app.js    | 4 ++--\\n src/filter.js | 5 +++--\\n 2 files changed, 5 insertions(+), 4 deletions(-)\", \"formatExit\": 0, \"model\": \"opencode-go/deepseek-v4.1-flash\", \"nudges\": 0, \"paseoMode\": \"build\", \"provider\": \"opencode\", \"sessionId\": \"sess_2\", \"testExit\": 0, \"testServerEndpoint\": \"http://127.0.0.1:4173\", \"testServerManaged\": true, \"testServerReused\": false, \"timelineLines\": 5, \"timelineSteps\": \"Edit:1,Read:1,Shell:2,Text:1\", \"toolSteps\": 4, \"workspaceId\": \"ws_1\"}"
+      "detail": "{\"browserCLIVersion\": \"0.1.22\", \"browserCleanup\": \"ok\", \"browserCommands\": \"open,snapshot,close\", \"browserInvocations\": 3, \"browserInvoked\": true, \"browserSkillDigest\": \"f5b05665d48cea84e840d4910ba9abb9f1cf2ea553bd4198b11a8862bebd6bdb\", \"browserSuccessfulCommands\": \"open,snapshot,close\", \"candidateId\": \"da5fe1bdaa78e8d375337766915ac2c6\", \"capability\": \"browser\", \"capabilityNudges\": 0, \"cleanup\": \"ok\", \"cwd\": \"/tmp/factory-worker-runs-3390972821/attempt-2725287249\", \"diffBytes\": 1216, \"diffStat\": \"src/app.js    | 4 ++--\\n src/filter.js | 5 +++--\\n 2 files changed, 5 insertions(+), 4 deletions(-)\", \"formatExit\": 0, \"model\": \"opencode-go/deepseek-v4.1-flash\", \"nudges\": 0, \"paseoMode\": \"build\", \"provider\": \"opencode\", \"sessionId\": \"sess_2\", \"testExit\": 0, \"testServerEndpoint\": \"http://127.0.0.1:4173\", \"testServerManaged\": true, \"testServerReused\": false, \"timelineLines\": 5, \"timelineSteps\": \"Edit:1,Read:1,Shell:2,Text:1\", \"toolSteps\": 4, \"workspaceId\": \"ws_1\"}"
     },
     {
       "name": "C10 Independent verifier ran a real Chromium browser check",
       "pass": true,
-      "detail": "{\"id\": \"browser\", \"kind\": \"browser\", \"status\": \"PASS\", \"command\": [\"node\", \"tests/acceptance/browser-check.mjs\"], \"exitCode\": 0, \"durationMs\": 678, \"detail\": \"chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true\"}"
+      "detail": "{\"id\": \"browser\", \"kind\": \"browser\", \"status\": \"PASS\", \"command\": [\"node\", \"tests/acceptance/browser-check.mjs\"], \"exitCode\": 0, \"durationMs\": 670, \"detail\": \"chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true\"}"
     },
     {
       "name": "C13 native orchestration; all four role tasks succeeded without external orchestration",
@@ -137,7 +138,7 @@
     {
       "name": "C15 cancellation is scoped to the active Implementer Run",
       "pass": true,
-      "detail": "{\"id\": \"672c0e9e14a17bbcb73b2028f49ce6b4\", \"projectId\": \"calculator\", \"actionId\": \"8196ec8774b4a518c1a088361eba72a6\", \"workloadKind\": \"paseo-task\", \"workloadInput\": {\"task\": \"Correct division by zero. Keep protected files unchanged.\"}, \"status\": \"cancelled\", \"attemptCount\": 0, \"maxAttempts\": 1, \"timeoutSecs\": 600, \"leaseGeneration\": 0, \"leaseExpiresAt\": \"0001-01-01T00:00:00Z\", \"executionMode\": \"trusted-local\", \"provider\": \"opencode\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"paseoMode\": \"build\", \"specId\": \"2afeb99c905b855efcf55a8453308b1c\", \"capabilities\": [\"repository-edit\", \"node-toolchain\"], \"specBindingHash\": \"744500d1357e8fe6cff47c990390cfae773a2b2624c560345c92f3594fafc3e9\", \"createdAt\": \"2026-10-21T17:17:19.331Z\", \"updatedAt\": \"2026-10-21T17:17:19.526Z\"}"
+      "detail": "{\"id\": \"72f98635c84bbc54584f31e518ca44dd\", \"projectId\": \"calculator\", \"actionId\": \"c31ad0742b4fe83e4921da8c75a28fd9\", \"workloadKind\": \"paseo-task\", \"workloadInput\": {\"task\": \"Correct division by zero. Keep protected files unchanged.\"}, \"status\": \"cancelled\", \"attemptCount\": 0, \"maxAttempts\": 1, \"timeoutSecs\": 600, \"leaseGeneration\": 0, \"leaseExpiresAt\": \"0001-01-01T00:00:00Z\", \"executionMode\": \"trusted-local\", \"provider\": \"opencode\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"paseoMode\": \"build\", \"specId\": \"23a5ebd57c2425170296f5a8feb49bb7\", \"capabilities\": [\"repository-edit\", \"node-toolchain\"], \"specBindingHash\": \"cd7ed433b446cde588e43377a889ce52bfefd959cee1658e16b2a2f7f9a42d25\", \"createdAt\": \"2026-10-21T17:59:16.523Z\", \"updatedAt\": \"2026-10-21T17:59:16.717Z\"}"
     },
     {
       "name": "C16 Campaign terminal state is reached after Core restart",
@@ -165,7 +166,7 @@
     {
       "name": "R2 recovery preserves the failed Run identity and creates a new fenced Run",
       "pass": true,
-      "detail": "[{\"id\": \"b58ef1caede953b8071706a4fd9bf562\", \"campaignId\": \"29f5d748cf948c75c7003fcd53ce42c4\", \"taskId\": \"261475839aa8be9144f907eab70d5732\", \"attemptIndex\": 1, \"failureClass\": \"RECOVERABLE_IMPLEMENTATION_FAILURE\", \"reason\": \"paseo-task verify: no-source-change: agent left no git diff\", \"previousRunId\": \"f8e649b537fe8a8516a17a64978fef05\", \"previousAttemptId\": \"250c8b00339fba95b99b7186f28df67a\", \"newRunId\": \"7fbd6ba3a195913d8907e26e65e4f182\", \"createdAt\": \"2026-10-21T17:17:59.351Z\"}]"
+      "detail": "[{\"id\": \"47bdbb78f5186cb20c30b82cca10a287\", \"campaignId\": \"5038baa82f3a76ef83ce37551bdbf23f\", \"taskId\": \"e666efb57795a89fa2a734319aaae2d9\", \"attemptIndex\": 1, \"failureClass\": \"RECOVERABLE_IMPLEMENTATION_FAILURE\", \"reason\": \"paseo-task verify: no-source-change: agent left no git diff\", \"previousRunId\": \"7ce31d4b94a1299d10b8d1d8b85df7bf\", \"previousAttemptId\": \"fee1f31f38f8a38863750f8b3da04beb\", \"newRunId\": \"5aba4abc2ffbc81e4ea083e70913a4ad\", \"createdAt\": \"2026-10-21T17:59:56.517Z\"}]"
     },
     {
       "name": "R2 recovery consumes bounded campaign attempts",
@@ -184,7 +185,7 @@
     {
       "name": "R4 genuine acceptance failure creates a new candidate and fresh evidence",
       "pass": true,
-      "detail": "[[\"frozen\", \"b685199fc12b3af0935451c2e31e5c49a5921ed3\"], [\"superseded\", \"5f5e9a3aa8cd07d0a60d9a33ddec6d0a8d92ec33\"]]"
+      "detail": "[[\"frozen\", \"695d1d532e021673dc94544fe911f7761d28787d\"], [\"superseded\", \"1ed2e033ceb639aa89f950370fc4043651a8b145\"]]"
     },
     {
       "name": "R5 exhausted budget terminates with a truthful inspectable reason",
@@ -199,7 +200,7 @@
     {
       "name": "R7 oracle correction requires a new frozen specification and preserves old evidence",
       "pass": true,
-      "detail": "{\"bad\": \"c8b7e1a0575432a42fe3ec4ab93c8e2c0e7710c79b8630ad56961fe85db03093\", \"good\": \"34d48b6f4a278dbb9cea8deecfb69358a0478b46de694da8f98e13cc54930bbd\"}"
+      "detail": "{\"bad\": \"642e8d6b2a3c42e13a4ccc381fd91dd190a20273471160d58e4530b9f256a21c\", \"good\": \"6a2ee36b0332f9a55abb893dcc623860b4607f3459af8e1145460a0bb769e107\"}"
     },
     {
       "name": "D1 productive Implementer without browser receives same-session continuation",
@@ -235,45 +236,45 @@
   "failures": [],
   "projectA": "vlog",
   "projectB": "calculator",
-  "actionA": "96d380a65c9856b1029bef43efe308e5",
-  "specA": "84211753358ef3435bf4fb0624b542ee",
-  "campaignA": "c077558395a25832f9f7833cb89ed1b6",
-  "candidateA": "f0eeaa110cbac518a4b3d8d9741555790994acda",
+  "actionA": "6d73a2bcc8d0d0f3a1c96a86978adf41",
+  "specA": "74909ddf69ef6d83cefdd706d3d55ff5",
+  "campaignA": "94b8243c3c562b4db4cf16c56302e3cf",
+  "candidateA": "a1e10196ab322e02f780a37374bc12de9d3053d3",
   "baseA": "f52f877bd390223b9fe7d867355528a070118a3d",
-  "actionB": "69594ceafce199d5cb04e54b43f977c0",
-  "specB": "5ab3982faeff0b70198c7c6c78ba2f5e",
-  "campaignB": "3c382db3ad3c2b1537f515f9c4a716e4",
-  "candidateB": "d30c79fa1aece093f35dbe741097b8dd0c4a5663",
+  "actionB": "7e7ead1d2a34d466a7be15e3a85bc710",
+  "specB": "ba8d9676760bc363dca8f1dca2e814d2",
+  "campaignB": "df6169eef7b7b3e319be4316a6c11bd7",
+  "candidateB": "0641e6637c6bec69fcb5a9688e943abb9f185dc5",
   "baseB": "451a3a8cf0cae6cb556f87d3f169d9d592339b16",
-  "blockedCampaign": "4c1f6c1e6f21d8279c8237137a2c6972",
-  "browserFailureCampaign": "25b3854c7a6382e10d19be2ea9bf65cd",
-  "cancelCampaign": "6712ac8bfc3fa3386689a4c1f5bf3fdf",
-  "restartCampaign": "26db531dad142d2194276d3cf9bd0eef",
+  "blockedCampaign": "76db7ac155c21cbbb96af779e09e50ea",
+  "browserFailureCampaign": "eb7faf29cb3e170e9d9c7992e69780d2",
+  "cancelCampaign": "0e3bb7041577eeab4d77ab7403e931e2",
+  "restartCampaign": "b5128b48cf5548e6381b002f75b527a8",
   "concurrentCampaigns": [
-    "046344226bb5fb1215bbb80a0797a6a6",
-    "bc6b04ab20161c94079e26b5a51daa79"
+    "1835e98ba9f7c8c85342577105a6a9b6",
+    "5c65015341fe63688c456aa4d7a84394"
   ],
-  "recoveryCampaign": "29f5d748cf948c75c7003fcd53ce42c4",
-  "sameSessionCapabilityCampaign": "b79fb3c0f603a5c100a58f5299994cb2",
-  "failedBrowserCommandCampaign": "76dbed47f186ff7397ff33ea7a249659",
-  "serverBlockedCampaign": "79e4992a4a7e4ab13f51e7c2281b4581",
-  "serverStartupFailureCampaign": "260d9ba327f6f9956d631696b1ea7006",
-  "serverCancellationCampaign": "ae4e2f872585426b19619b7fdee31ce3",
+  "recoveryCampaign": "5038baa82f3a76ef83ce37551bdbf23f",
+  "sameSessionCapabilityCampaign": "9e2e09cf0cce4507cfe03e0288d66dab",
+  "failedBrowserCommandCampaign": "6986bae039dbd7b56f66fb6271e7afaf",
+  "serverBlockedCampaign": "efc4458d79bae1c405593c732c9cca56",
+  "serverStartupFailureCampaign": "445e4f4b30f36f16c62a1a997942f1a2",
+  "serverCancellationCampaign": "5abb6196d63282c06f26e2842826572e",
   "recoveryCampaigns": {
-    "recoverable": "29f5d748cf948c75c7003fcd53ce42c4",
-    "qualityRepair": "ba0f4a0c001e4160aaaa2e78d6fec19f",
-    "budgetExhausted": "5769e66df46432f0e1e930774e2fb259",
-    "securityBlocked": "8980ec42a554d967ba0c84fd0140b06e",
-    "oracleRevisionOld": "71c0576d6784bcdacb201719d90e4f00",
-    "oracleRevisionNew": "acfafece7c51a42aa26a10f8049657bb"
+    "recoverable": "5038baa82f3a76ef83ce37551bdbf23f",
+    "qualityRepair": "f29430e0dbfd9d848a85b366520d74fc",
+    "budgetExhausted": "86c158128c53dad19ea27d17e8438643",
+    "securityBlocked": "3157c704a3b76fae2d49d00d2a557db4",
+    "oracleRevisionOld": "5c73c6b29f588fa9df885691f665a596",
+    "oracleRevisionNew": "cd554c424ad0c6561a47b09b0cc120d2"
   },
   "journey": {
     "ok": true,
     "failure": "",
     "projectId": "vlog",
-    "actionId": "96d380a65c9856b1029bef43efe308e5",
-    "specId": "84211753358ef3435bf4fb0624b542ee",
-    "campaignId": "c077558395a25832f9f7833cb89ed1b6",
+    "actionId": "6d73a2bcc8d0d0f3a1c96a86978adf41",
+    "specId": "74909ddf69ef6d83cefdd706d3d55ff5",
+    "campaignId": "94b8243c3c562b4db4cf16c56302e3cf",
     "checks": [
       {
         "name": "browser registered Project A with a durable configuration",
@@ -283,12 +284,12 @@
       {
         "name": "browser created a Project-bound Action",
         "pass": true,
-        "detail": "96d380a65c9856b1029bef43efe308e5"
+        "detail": "6d73a2bcc8d0d0f3a1c96a86978adf41"
       },
       {
         "name": "browser froze a Project-bound ActionSpec",
         "pass": true,
-        "detail": "84211753358ef3435bf4fb0624b542ee"
+        "detail": "74909ddf69ef6d83cefdd706d3d55ff5"
       },
       {
         "name": "frozen spec records the Project identity and capabilities",
@@ -297,7 +298,7 @@
       {
         "name": "browser created and started the Campaign",
         "pass": true,
-        "detail": "c077558395a25832f9f7833cb89ed1b6"
+        "detail": "94b8243c3c562b4db4cf16c56302e3cf"
       },
       {
         "name": "Campaign reaches ACCEPTED through native orchestration",

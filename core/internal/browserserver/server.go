@@ -202,7 +202,13 @@ func start(cfg Config, statePath, registryDir string) error {
 	}
 	raw, _ := json.Marshal(state)
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
-		_ = cmd.Process.Kill()
+		// The child is ours and just started; clean up the whole group with
+		// the identity we already established, then fail closed.
+		if members, ok := ownedGroup(state); ok {
+			signalOwnedMembers(state, members, signalKill)
+		} else {
+			_ = cmd.Process.Kill()
+		}
 		return fmt.Errorf("record test-server state: %w", err)
 	}
 	// Detach from cmd.Wait: the server is supervised by Stop/Reap, not by
@@ -274,6 +280,10 @@ func stopState(state processState, registryDir string) error {
 				signalOwnedMembers(state, checked, signalKill)
 			}
 		}
+		time.Sleep(100 * time.Millisecond)
+		if remaining, err := groupMembers(state.PGID); err == nil && len(remaining) > 0 {
+			return fmt.Errorf("test-server process group still has %d member(s) after termination", len(remaining))
+		}
 	}
 	_ = os.Remove(filepath.Join(registryDir, stateKey(state.ID)+".json"))
 	_ = os.Remove(state.LogPath)
@@ -296,7 +306,13 @@ func ownedGroup(state processState) ([]processMember, bool) {
 	}
 	for _, member := range members {
 		cwd, err := processCwd(member.PID)
-		if err != nil || !withinWorkspace(cwd, state.WorkDir) {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, false
+			}
+			// The Attempt workspace may already be removed. Group membership
+			// plus the recorded start time remains the identity anchor.
+		} else if !withinWorkspace(cwd, state.WorkDir) {
 			return nil, false
 		}
 		if member.PID == state.PID && member.StartTime != state.StartTime {
@@ -313,8 +329,17 @@ func signalOwnedMembers(state processState, members []processMember, signal int)
 			continue
 		}
 		start, cwd, err := processIdentity(member.PID)
-		if err != nil || start != member.StartTime || !withinWorkspace(cwd, state.WorkDir) ||
-			(member.PID == state.PID && start != state.StartTime) {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				closeProcessHandle(fd)
+				continue
+			}
+			start = member.StartTime
+		} else if !withinWorkspace(cwd, state.WorkDir) {
+			closeProcessHandle(fd)
+			continue
+		}
+		if start != member.StartTime || (member.PID == state.PID && start != state.StartTime) {
 			closeProcessHandle(fd)
 			continue
 		}
@@ -404,9 +429,8 @@ func Reap(registryDir string) (int, error) {
 		}
 		members, safe := ownedGroup(state)
 		if !safe {
-			// Do not signal an unverified PID/group; drop the stale state.
-			_ = os.Remove(filepath.Join(registryDir, entry.Name()))
-			_ = os.Remove(state.LogPath)
+			// Do not signal an unverified PID/group and do not discard its
+			// state: a later Stop/Reap can retry when identity is provable.
 			continue
 		}
 		if len(members) > 0 {

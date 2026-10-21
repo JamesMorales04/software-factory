@@ -26,11 +26,10 @@ func processCwd(int) (string, error) { return "", errManagedServerUnsupported }
 func groupMembers(int) ([]processMember, error) {
 	return nil, errManagedServerUnsupported
 }
-func processStartTime(int) (string, error) { return "", errManagedServerUnsupported }
-func openProcessHandle(int) (int, error)   { return -1, errManagedServerUnsupported }
-func signalProcessHandle(int, int) error   { return errManagedServerUnsupported }
-func closeProcessHandle(int)               {}
-func withinWorkspace(string, string) bool  { return false }
+func openProcessHandle(int) (int, error)  { return -1, errManagedServerUnsupported }
+func signalProcessHandle(int, int) error  { return errManagedServerUnsupported }
+func closeProcessHandle(int)              {}
+func withinWorkspace(string, string) bool { return false }
 
 func dirOwnedByCurrentUser(os.FileInfo) bool { return false }
 func acquireRegistryLock(string) (func(), error) {
