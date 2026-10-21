@@ -1,7 +1,7 @@
 {
   "campaign": "F1-S4-C / F1-S4-C-01 / F1-S4-C-03",
   "date": "2026-10-21 UTC",
-  "implementation_commit": "cfa250e",
+  "implementation_commit": "65ca3a8",
   "provider": "opencode",
   "model": "opencode-go/deepseek-v4.1-flash",
   "paseoMode": "build",
@@ -1119,11 +1119,16 @@
       "workspaceId": "wks_2cd89e0bd414e88f",
       "sessionId": "e31abc98-2137-4eb7-90be-da8b2a427914",
       "state": "closed and archived"
+    },
+    "c05_vlog": {
+      "workspaceId": "wks_aa6e1ff4e395ae1a",
+      "sessionId": "ae35d976-220d-4bcb-98f1-b75b43991b2b",
+      "state": "closed and archived"
     }
   },
   "autonomous_recovery_observed_naturally": false,
   "autonomous_recovery_note": "No recoverable failure occurred naturally in any paid session. R10 is NOT_TESTED. R1-R8 recovery behavior was proven deterministically; no artificial paid failure was injected.",
-  "disposition": "Deterministic S4-C-03 verified. Calculator live acceptance exists at 5fa3c1c with browser-only delta to cfa250e. Vlog live certification NOT achieved: the final Implementer session produced a valid candidate and independent browser PASS but recorded no Playwright invocation, so the Quality Gate returned REPAIR_REQUIRED; the 4-session vlog authorization is exhausted. REAL_PASEO_E2E_VERIFIED is not claimed for the final implementation. PRODUCT_OWNER_UAT_VERIFIED not claimed.",
+  "disposition": "C-05 final Vlog live session failed: candidate 3aa64273\u2026 passed independent Chromium verification and review, but the Implementer recorded only --help; the C-04 capability continuation was triggered but the model did not complete a successful open+interaction. Gate REPAIR_REQUIRED. Final implementation 65ca3a8 is not REAL_PASEO_E2E_VERIFIED. No further paid session is authorized.",
   "final_vlog_attempt": [
     {
       "project": "vlog",
@@ -1922,5 +1927,182 @@
     "implementation_commit": "5fa3c1c",
     "final_runtime": "cfa250e",
     "validity": "Accepted live result for the non-browser calculator path. The cfa250e delta only changes browser-capability gate/prompt behavior; no calculator dispatch, capability or verifier path changed. No additional session was consumed because the remaining calculator session was conserved."
+  },
+  "c05_final_vlog": {
+    "project": "vlog",
+    "campaignId": "e2daf085c85250fa977dd0f0ec4b6147",
+    "actionId": "0aa74d86848f81c363716f1cc89a06ae",
+    "specId": "8dc311a955b307d3532a181fd52114ec",
+    "status": "repair_required",
+    "reason": "repair budget exhausted",
+    "candidate": "3aa6427373993676db632c08d2749a0a9a3a6438",
+    "decision": "REPAIR_REQUIRED",
+    "attemptsUsed": 1,
+    "maxAttempts": 1,
+    "recoveries": [],
+    "tasks": [
+      [
+        "implementer-0",
+        "succeeded",
+        "59a0bbf3da47d5a724f8ea9bc66f204f"
+      ],
+      [
+        "verifier-0",
+        "succeeded",
+        "59a0bbf3da47d5a724f8ea9bc66f204f"
+      ],
+      [
+        "reviewer-0",
+        "succeeded",
+        "59a0bbf3da47d5a724f8ea9bc66f204f"
+      ],
+      [
+        "gate-0",
+        "succeeded",
+        "59a0bbf3da47d5a724f8ea9bc66f204f"
+      ]
+    ],
+    "verification": [
+      {
+        "id": "browser",
+        "kind": "browser",
+        "status": "PASS",
+        "command": [
+          "node",
+          "tests/acceptance/browser-check.mjs"
+        ],
+        "exitCode": 0,
+        "durationMs": 711,
+        "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+      },
+      {
+        "id": "format",
+        "kind": "format",
+        "status": "PASS",
+        "command": [
+          "npm",
+          "run",
+          "format"
+        ],
+        "exitCode": 0,
+        "durationMs": 163,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "functional",
+        "kind": "functional",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--input-type=module",
+          "-e",
+          "import { filterEntries } from './src/filter.js'; const entries=[{category:'Travel'},{category:'Technology'}]; if(filterEntries(entries,'Travel').length!==1||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==2)process.exit(1)"
+        ],
+        "exitCode": 0,
+        "durationMs": 35,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "negative",
+        "kind": "negative",
+        "status": "PASS",
+        "command": [
+          "node",
+          "--input-type=module",
+          "-e",
+          "import { entries } from './src/data.js'; if(entries.length!==5)process.exit(1)"
+        ],
+        "exitCode": 0,
+        "durationMs": 31,
+        "detail": "exit 0 as expected"
+      },
+      {
+        "id": "test",
+        "kind": "test",
+        "status": "PASS",
+        "command": [
+          "npm",
+          "test"
+        ],
+        "exitCode": 0,
+        "durationMs": 183,
+        "detail": "exit 0 as expected"
+      }
+    ],
+    "review": "APPROVE",
+    "run": {
+      "id": "59a0bbf3da47d5a724f8ea9bc66f204f",
+      "projectId": "vlog-live",
+      "actionId": "0aa74d86848f81c363716f1cc89a06ae",
+      "workloadKind": "paseo-task",
+      "workloadInput": {
+        "task": "Implement functional category filtering with a no-results state in src/filter.js and src/app.js. Preserve navigation, accessibility and the five existing entries. Start the app with PORT=4173 npm start (write logs under /tmp, not the repository), then use .agents/skills/factory-browser/SKILL.md and .factory/bin/factory-playwright-cli.mjs. MANDATORY browser evidence: run `open http://127.0.0.1:4173/` and at least one successful snapshot/find/fill/click before finishing; --help alone is rejected by the Quality Gate. Do not edit tests, browser-check.mjs, package.json, data.js or render.js."
+      },
+      "status": "succeeded",
+      "attemptCount": 1,
+      "maxAttempts": 1,
+      "timeoutSecs": 600,
+      "leaseGeneration": 1,
+      "leaseExpiresAt": "0001-01-01T00:00:00Z",
+      "result": {
+        "browserCLIVersion": "0.1.22",
+        "browserCleanup": "ok",
+        "browserCommands": "--help",
+        "browserInvocations": 1,
+        "browserInvoked": true,
+        "browserSkillDigest": "fde771469d35e948725150dfe4a2554826dda97dc3cd11201b8b23802422cd01",
+        "browserSuccessfulCommands": "--help",
+        "candidateId": "6ed9eb44514415cffc2d8b29a82cafed",
+        "capability": "browser",
+        "capabilityNudges": 1,
+        "cleanup": "ok",
+        "cwd": "/tmp/factory-s4c-live-GfKtK6/factory-worker-runs-3814107180/attempt-1998987096",
+        "diffBytes": 2042,
+        "diffStat": "src/app.js    | 22 +++++++++++++++++++---\n src/filter.js |  6 ++++--\n 2 files changed, 23 insertions(+), 5 deletions(-)",
+        "formatExit": 0,
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "nudges": 0,
+        "paseoMode": "build",
+        "provider": "opencode",
+        "sessionId": "ae35d976-220d-4bcb-98f1-b75b43991b2b",
+        "testExit": 0,
+        "timelineLines": 22,
+        "timelineSteps": "Edit:1,Read:1,Shell:7,Thought:5,User:2,Write:2",
+        "toolSteps": 11,
+        "workspaceId": "wks_aa6e1ff4e395ae1a"
+      },
+      "executionMode": "trusted-local",
+      "provider": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "paseoMode": "build",
+      "specId": "8dc311a955b307d3532a181fd52114ec",
+      "capabilities": [
+        "repository-edit",
+        "node-toolchain",
+        "browser"
+      ],
+      "specBindingHash": "9c1add8469f444107cc05784d0c47fe7541fa22278695699e9cf87f6ca83aff8",
+      "createdAt": "2026-10-21T16:10:33.464Z",
+      "updatedAt": "2026-10-21T16:11:09.694Z"
+    }
+  },
+  "c05": {
+    "authorization": "one additional real Vlog Implementer session; maxAttempts=1; maxRepairs=0; maxConcurrent=1",
+    "sessions_used": 1,
+    "session_id": "ae35d976-220d-4bcb-98f1-b75b43991b2b",
+    "workspace_id": "wks_aa6e1ff4e395ae1a",
+    "campaign_id": "e2daf085c85250fa977dd0f0ec4b6147",
+    "run_id": "59a0bbf3da47d5a724f8ea9bc66f204f",
+    "candidate_commit": "3aa6427373993676db632c08d2749a0a9a3a6438",
+    "initial_browser_use": false,
+    "capability_continuation_triggered": true,
+    "capability_continuation_succeeded": false,
+    "successful_browser_commands": "--help",
+    "independent_browser_check": "PASS",
+    "review": "APPROVE",
+    "gate": "REPAIR_REQUIRED",
+    "session_cleanup": "closed and archived",
+    "workspace_cleanup": "archived/absent",
+    "result": "No additional paid session authorized; final Vlog live certification not achieved."
   }
 }

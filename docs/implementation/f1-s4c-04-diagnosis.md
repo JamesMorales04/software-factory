@@ -128,5 +128,12 @@ The S4-C lane adds:
   `maxImplementerAttempts=1`, `maxRepairCycles=0`, expecting the same-session
   continuation to complete the capability. If it fails, stop and report; do not
   consume the Calculator session or silently create a new allowance.
+- **C-05 result (2026-10-21 UTC):** one authorized Vlog session was run on
+  `65ca3a8`. The model produced candidate `3aa64273…` and independent browser
+  PASS, but only `--help` was recorded. The C-04 same-session continuation was
+  triggered (`capabilityNudges=1`) and the model attempted to restart the app,
+  but the shell command errored and the agent ended without `open`/interaction.
+  Gate `REPAIR_REQUIRED`. Session/workspace closed and archived. No further
+  paid session is authorized; Vlog live certification remains HUMAN_REQUIRED.
 - No additional paid session will be started without explicit Product Owner
   authorization.

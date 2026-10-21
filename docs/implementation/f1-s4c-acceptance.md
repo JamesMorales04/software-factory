@@ -55,12 +55,12 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | C17 | PASS | REAL CHROMIUM | Office journey registered Project A, created Action, froze ActionSpec through the form, started the Campaign, observed Accepted candidate/gate, reloaded and rechecked. No custom Python bootstrap or direct spec/campaign API calls from the operator journey. |
 | C18 | PASS (scoped) | REGRESSION | `go test -race ./...`, gofmt/vet/golangci-lint, Office typecheck/lint/build, strict S4-A and S4-B deterministic lanes, S1 E2E. S2 E2E is BLOCKED by host Podman overlay/btrfs, not by this change. |
 | C19 | PASS | EXTERNAL | Two private GitHub repositories exist with distinct baseline commits and protected acceptance fixtures. |
-| C20 | PARTIAL (live) | LIVE MODEL | The final vlog session produced a valid candidate `159bae56…` and independent verifier PASS, but the Implementer recorded no Playwright invocation; the gate returned `REPAIR_REQUIRED`. The 4-session vlog budget is exhausted. Earlier vlog sessions included an out-of-scope `.server.log` rejection and two accepted candidates under weaker browser-evidence rules. |
+| C20 | FAIL (live, final C-05) | LIVE MODEL | C-05 candidate `3aa64273…` passed independent browser verification and review, but the Implementer recorded only `--help`; the C-04 continuation was triggered but the model did not complete a successful `open` + interaction. Gate `REPAIR_REQUIRED`; the one authorized C-05 session is exhausted. |
 | C21 | PASS (live, scoped) | LIVE MODEL | Calculator accepted candidate `393eab7b…` at implementation `5fa3c1c`, with browser PASS, review APPROVE and gate ACCEPTED. The final `cfa250e` delta is browser-capability-only and does not alter calculator dispatch, capability or verification paths; the remaining calculator session was conserved. |
-| C22 | PASS deterministically; FAIL live | REAL BROWSER/TOOL / LIVE | Deterministic simulated Implementer recorded successful `open`+`snapshot` interaction. Live vlog trials 2 produced open/interaction evidence but under the older command log; the final trial recorded no Playwright invocation, so the final live claim is not made. |
+| C22 | PASS deterministically; FAIL live | REAL BROWSER/TOOL / LIVE | Deterministic D1 recorded successful same-session `open`+`snapshot`. In C-05 the real model received the capability continuation but still produced only `--help`; no live capability claim is made. |
 | C23 | PASS deterministic | DETERMINISTIC | Negative cross-project control-plane cases fail closed. TRUSTED_LOCAL host access is not contained; no cross-project confidentiality claim. |
 | C24 | PASS deterministic | DETERMINISTIC | Candidate Git objects, spec, binding hash, browser/arithmetic checks, reviewer verdict and gate result correlate. Simulated runs are distinguishable from the two live sessions. |
-| C25 | NOT ACHIEVED (full) | LIVE | Final implementation `cfa250e`: vlog live gate `REPAIR_REQUIRED` with no browser invocation; calculator accepted at `5fa3c1c` with a browser-only delta to the final head. Full exact-SHA live certification is not claimed. |
+| C25 | NOT ACHIEVED (full) | LIVE | C-05 tested implementation `65ca3a8`; Vlog gate `REPAIR_REQUIRED` after the capability continuation still yielded only `--help`. Full exact-SHA live certification is not claimed. |
 | C26 | READY | DOCUMENTED | Manual UAT instructions and safe cleanup are in the handoff; the Product Owner journey was not silently executed. |
 
 ## Independent verification and review
@@ -83,10 +83,11 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 - F1-S4-C-03 authorization: 4 additional sessions per Project, max 3
   corrective cycles. Used: Vlog 4/4, Calculator 3/4 (one conserved).
 - No paid failure was injected; the recovery path was forced deterministically.
-- Final Vlog trial: Campaign `cb6f5a5d…`, Run `25b78705…`, workspace
-  `wks_2cd89e0bd414e88f`, session `e31abc98-2137-4eb7-90be-da8b2a427914`.
-  Candidate `159bae56…`; browser verifier PASS; Implementer `browserInvoked=false`;
-  gate `REPAIR_REQUIRED`; session/workspace closed and archived.
+- C-05 final Vlog trial: Campaign `e2daf085…`, Run `59a0bbf3…`, workspace
+  `wks_aa6e1ff4e395ae1a`, session `ae35d976-220d-4bcb-98f1-b75b43991b2b`.
+  Candidate `3aa64273…`; independent browser PASS and review APPROVE;
+  `capabilityNudges=1` but successful commands remained `--help`; gate
+  `REPAIR_REQUIRED`; session/workspace closed and archived.
 - Calculator accepted trial: Campaign `210c7794…`, Run `0089ca7c…`,
   workspace `wks_9602f3602a298eca`, session
   `ee106eed-ab33-4183-b101-f550f2706c60`; candidate `393eab7b…`; gate
@@ -94,7 +95,9 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 - Earlier Vlog trial produced an accepted candidate under a weaker
   `--help`-permitted gate; it was superseded after the gate was tightened.
 - No `REAL_PASEO_E2E_VERIFIED` claim is made for final implementation
-  `cfa250e`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
+  `65ca3a8`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
+- C-05 authorization: exactly 1 Vlog session, used 1/1; 0 repair cycles.
+  No further paid session is authorized.
 - Vlog sessions used: 4/4. Calculator sessions used: 3/4 (one conserved).
   Every Paseo session/workspace above was observed closed and archived.
 
@@ -111,7 +114,7 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | R7 | PASS | Defective functional oracle produced `repair_required`; a new frozen spec row/content hash with corrected oracle produced ACCEPTED; old verification/decision IDs unchanged. The new spec remains `version=1`; the immutable row/content hash is the revision identity. |
 | R8 | PASS | Repaired Campaign ends ACCEPTED with the complete failed-Run/recovery history. |
 | R9 | PASS | S1, S4-A, S4-B, S4-C and Go race/lint/typecheck gates pass; exact-candidate evidence unchanged. |
-| R10 | NOT_TESTED | No recoverable failure occurred naturally in the paid sessions; no artificial paid failure was injected. The forced R1–R8 scenarios are deterministic. |
+| R10 | FAIL (live completion) | The C-05 live model received the C-04 same-session capability continuation but did not complete browser interaction; no accepted live capability recovery. Forced R1–R8 scenarios remain deterministic PASS. |
 
 Recovery is bounded by `maxImplementerAttempts` (explicit, 1..24) and the
 existing repair/fairness/wall-clock limits. The live certification lane uses 4
