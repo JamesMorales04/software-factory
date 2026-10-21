@@ -3,8 +3,9 @@
 **Status:** Implemented and deterministically verified; zero paid sessions were
 spent in C-06. F1-S4-C-07 subsequently used the Worker-managed contract for a
 successful bounded real-Paseo Vlog campaign on tested head `9567bc5`; see
-[C-07 live certification](f1-s4c-07-live-certification.md). PR #12 remains
-unmerged and Product Owner UAT is not claimed.
+[C-07 live certification](f1-s4c-07-live-certification.md). PR #12 is merged
+at `9ec7643`; Product Owner UAT is recorded separately as an owner
+attestation. Deployment and SEC-01 isolation are not claimed.
 
 ## 1. Exact C-05 failure
 

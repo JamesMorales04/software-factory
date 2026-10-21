@@ -1,0 +1,26 @@
+{
+  "campaign": "F1-S4-C-07",
+  "evidence_level": "PRODUCT_OWNER_UAT_VERIFIED",
+  "status": "VERIFIED",
+  "authority": "Product Owner",
+  "claimed_by": "JamesMorales04",
+  "claimed_at": "2026-10-21T22:48:58Z",
+  "scope": {
+    "tested_factory_head": "9567bc5c144235bef341524adc44277d377f6167",
+    "runtime_code_commit": "14133cb7ce95cf519147632bc04229046e6f56b6",
+    "candidate_commit": "e49f62df32c26e185c840b262435f7a21fea07fd",
+    "path": "bounded Vlog Implementer campaign with Worker-managed browser test server"
+  },
+  "merge": {
+    "pr": 12,
+    "merge_commit": "9ec7643485f3abcbc499d655374c8fe4731c26de",
+    "merged_at": "2026-10-21T22:40:26Z",
+    "merged_by": "JamesMorales04"
+  },
+  "basis": "Explicit Product Owner attestation in the delivery session that Product Owner UAT is complete. This records owner acceptance; it is not independent technical evidence and does not include a UAT transcript.",
+  "not_claimed": [
+    "DEPLOYED",
+    "SEC-01-ISOLATED",
+    "S5/S6/GOV-01"
+  ]
+}

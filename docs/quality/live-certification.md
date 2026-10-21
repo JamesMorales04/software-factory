@@ -94,9 +94,15 @@ historical gate decisions.
   workspace and server cleanup confirmed. One of two authorized sessions was
   conserved; no repair cycle was used.
 - `REAL_PASEO_E2E_VERIFIED` is candidate-bound to that tested head and does not
-  prove later runtime changes, Product Owner UAT, isolation or delivery.
+  by itself prove later runtime changes, isolation or delivery.
 - C-04 same-session completion remains deterministic-verified; the live C-07
   run did not need the continuation because initial-turn evidence was complete.
-- `PRODUCT_OWNER_UAT_VERIFIED`: not claimed; PR #12 remains unmerged.
+- `PRODUCT_OWNER_UAT_VERIFIED`: recorded on 2026-10-21 from the Product
+  Owner's explicit attestation for the C-07 Vlog path. This is owner
+  acceptance, not independent technical evidence; no UAT transcript was
+  retained. See
+  [the attestation](../evidence/f1-s4c-07-product-owner-uat-2026-10-21.json).
+- PR #12 is merged at `9ec7643`. Deployment and SEC-01 isolation are not
+  claimed.
 - Further live sessions require explicit Product Owner authorization. C-07's
   unused second session is not authority for a speculative retry.

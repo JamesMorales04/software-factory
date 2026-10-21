@@ -1,12 +1,15 @@
 # F1-S4-C-07 — Final bounded live Vlog certification
 
-**Status:** `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`.
+**Status:** `PRODUCT_OWNER_UAT_VERIFIED` and merged.
 The bounded real-Paseo Vlog path passed with one paid Implementer session.
-Product Owner UAT is **not** claimed; PR #12 remains unmerged.
+PR #12 merged at `9ec7643485f3abcbc499d655374c8fe4731c26de`. Product Owner UAT
+is recorded from the owner's explicit attestation; it is owner acceptance, not
+an independent technical test and not a deployment claim.
 
 - Tested Factory head: `9567bc5c144235bef341524adc44277d377f6167`
 - Runtime code commit: `14133cb7ce95cf519147632bc04229046e6f56b6`
 - Final evidence: [f1-s4c-07-live-2026-10-21.json](../evidence/f1-s4c-07-live-2026-10-21.json)
+- Product Owner UAT attestation: [f1-s4c-07-product-owner-uat-2026-10-21.json](../evidence/f1-s4c-07-product-owner-uat-2026-10-21.json)
 - Authorization: one Vlog campaign, at most 2 paid Implementer sessions, at
   most 1 corrective cycle, 1 concurrent Implementer. No Calculator, model
   fallback or automatic merge.
@@ -95,13 +98,14 @@ Certified (candidate-bound):
   session, Worker-managed browser test server, model-mediated browser use,
   candidate freeze, independent verification, review and deterministic Quality
   Gate;
-- exact tested Factory head `9567bc5` and candidate `e49f62d`.
+- exact tested Factory head `9567bc5` and candidate `e49f62d`;
+- `PRODUCT_OWNER_UAT_VERIFIED` by explicit Product Owner attestation on
+  2026-10-21 (owner acceptance; no independent UAT transcript retained).
 
 Not certified:
 
-- Product Owner UAT (`PRODUCT_OWNER_UAT_VERIFIED` not claimed);
 - OS isolation or SEC-01 (`TRUSTED_LOCAL` remains broad local access);
-- delivery, merge, S5/S6/GOV-01, remote Workers or multi-Provider fallback;
+- deployment, S5/S6/GOV-01, remote Workers or multi-Provider fallback;
 - live corrective repair (no corrective Attempt occurred in this campaign);
 - Calculator live execution (not authorized/used in C-07).
 
@@ -111,7 +115,7 @@ Not certified:
   and evidence only and do not invalidate the candidate-bound live evidence.
 - Prior C-05 failures remain recorded unchanged. C-07 supersedes them as the
   final Vlog live result for the tested runtime.
-- Exact-SHA CI on the final PR head is reported in the PR/CI evidence; the
-  tested head had 38/38 checks passing before the evidence-only commit.
-- PR #12 remains open and unmerged. Merge requires explicit Product Owner
-  authority.
+- Exact-SHA CI on the final PR head was 38/38 before merge, and all post-merge
+  `main` workflows completed successfully.
+- PR #12 was merged at `9ec7643` after explicit Product Owner approval. No
+  deployment occurred.

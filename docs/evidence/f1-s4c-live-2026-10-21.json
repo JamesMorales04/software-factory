@@ -1128,7 +1128,7 @@
   },
   "autonomous_recovery_observed_naturally": false,
   "autonomous_recovery_note": "No recoverable failure occurred naturally in any paid session. R10 is NOT_TESTED. R1-R8 recovery behavior was proven deterministically; no artificial paid failure was injected.",
-  "disposition": "C-06 removed the agent-managed server-start failure from the critical path. C-07 then achieved a real model-mediated Vlog campaign with one paid session, initial-turn browser interaction, independent verification, reviewer APPROVE and gate ACCEPTED. The final tested head is 9567bc5; Product Owner UAT and merge remain outstanding. No Calculator session or repair cycle was used.",
+  "disposition": "C-06 removed the agent-managed server-start failure from the critical path. C-07 achieved a real model-mediated Vlog campaign with one paid session, initial-turn browser interaction, independent verification, reviewer APPROVE and gate ACCEPTED. The tested head is 9567bc5; PR #12 merged at 9ec7643. Product Owner UAT is recorded from explicit owner attestation; deployment and SEC-01 isolation are not claimed. No Calculator session or repair cycle was used.",
   "final_vlog_attempt": [
     {
       "project": "vlog",
@@ -2160,8 +2160,14 @@
     "workspace_cleanup": "archived/absent from active workspace inventory",
     "independent_verifier": "PASS: clean clone e49f62d; protected Chromium oracle PASS; browser commands confirmed initial turn; one session; cleanup confirmed",
     "luna": "APPROVE_WITH_NOTES on candidate/economics; no blocking defect",
-    "status": "MERGE_READY_FOR_PRODUCT_OWNER_REVIEW",
-    "product_owner_uat": "not claimed",
-    "notes": "No second session and no real corrective attempt. The managed test server is started fresh per Attempt, so testServerReused=false is expected. One independent S4-B run hit a transient SQLite database-locked at B10; local S4-B passed 3/3 and the C-07 live path passed."
+    "status": "PRODUCT_OWNER_UAT_VERIFIED",
+    "product_owner_uat": "VERIFIED by JamesMorales04 (Product Owner) on 2026-10-21 via explicit attestation; owner acceptance, not independent technical evidence",
+    "notes": "No second session and no real corrective attempt. The managed test server is started fresh per Attempt, so testServerReused=false is expected. One independent S4-B run hit a transient SQLite database-locked at B10; local S4-B passed 3/3 and the C-07 live path passed.",
+    "merge": {
+      "pr": 12,
+      "merge_commit": "9ec7643485f3abcbc499d655374c8fe4731c26de",
+      "merged_at": "2026-10-21T22:40:26Z",
+      "merged_by": "JamesMorales04"
+    }
   }
 }

@@ -4,11 +4,12 @@
 tested Factory head `9567bc5` (runtime `14133cb7`): one paid Implementer
 session, initial-turn model-mediated browser `open/snapshot/click`, candidate
 `e49f62d`, independent verifier PASS, reviewer `APPROVE`, deterministic Quality
-Gate `ACCEPTED`, and confirmed session/workspace/server cleanup. The disposition
-is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`; PR #12 is unmerged and
-`PRODUCT_OWNER_UAT_VERIFIED` is not claimed. Historical C-05 failures remain
-recorded unchanged; C-07 supersedes them as the final Vlog live result for the
-tested runtime. Evidence:
+Gate `ACCEPTED`, and confirmed session/workspace/server cleanup. PR #12 merged
+at `9ec7643`; `PRODUCT_OWNER_UAT_VERIFIED` is recorded from the Product Owner's
+explicit attestation (owner acceptance, not an independent UAT transcript).
+Deployment and SEC-01 isolation are not claimed. Historical C-05 failures
+remain recorded unchanged; C-07 supersedes them as the final Vlog live result
+for the tested runtime. Evidence:
 [`f1-s4c-07-live-2026-10-21.json`](../evidence/f1-s4c-07-live-2026-10-21.json)
 and [`f1-s4c-live-2026-10-21.json`](../evidence/f1-s4c-live-2026-10-21.json).
 TRUSTED_LOCAL only; control-plane scoping is not OS isolation and is never
@@ -66,7 +67,7 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | C23 | PASS deterministic | DETERMINISTIC | Negative cross-project control-plane cases fail closed. TRUSTED_LOCAL host access is not contained; no cross-project confidentiality claim. |
 | C24 | PASS deterministic | DETERMINISTIC | Candidate Git objects, spec, binding hash, browser/arithmetic checks, reviewer verdict and gate result correlate. Simulated runs are distinguishable from the two live sessions. |
 | C25 | NOT ACHIEVED (full) | LIVE | C-05 tested implementation `65ca3a8`; Vlog gate `REPAIR_REQUIRED` after the capability continuation still yielded only `--help`. Full exact-SHA live certification is not claimed. |
-| C26 | READY | DOCUMENTED | Manual UAT instructions and safe cleanup are in the handoff; the Product Owner journey was not silently executed. |
+| C26 | PASS (owner attestation) | PRODUCT OWNER UAT | Product Owner explicitly attested UAT complete on 2026-10-21 for the C-07 Vlog path. This records owner acceptance, not independent technical evidence; no UAT transcript was retained. |
 | C27 | PASS (live C-07) | LIVE MODEL | Vlog campaign `bd245745…`, Run `b72a6f10…`, session `73dd6dd2…`: one paid session produced candidate `e49f62d` and model-mediated `open,snapshot,click,snapshot,click,snapshot` on the initial turn (`capabilityNudges=0`); gate `ACCEPTED`. |
 | C28 | PASS (live C-07) | LIVE MODEL | Worker-managed `npm start` server ready before Paseo in `wks_69356fdd…`; endpoint `http://127.0.0.1:4173`; stopped with port closed and no registry state afterward. |
 | C29 | PASS (not needed) | LIVE MODEL | Initial-turn browser evidence was complete, so the C-04 same-session continuation was not used; deterministic D1 remains PASS. |
@@ -123,7 +124,9 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 - Earlier Vlog trial produced an accepted candidate under a weaker
   `--help`-permitted gate; it was superseded after the gate was tightened.
 - No `REAL_PASEO_E2E_VERIFIED` claim is made for the historical C-05
-  implementation `65ca3a8`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
+  implementation `65ca3a8`. Product Owner UAT for the historical C-05
+  implementation is not claimed; the separate C-07 attestation applies only to
+  its recorded scope.
 - C-05 authorization: exactly 1 Vlog session, used 1/1; 0 repair cycles.
 - C-07 authorization: one Vlog campaign, max 2 paid sessions / 1 repair.
   Used **1/2 sessions**, **0/1 repairs**; one session conserved. Campaign
@@ -186,9 +189,10 @@ C-07 completed the bounded real-Paseo Vlog path on tested head `9567bc5`
 session, candidate `e49f62d`, initial-turn browser
 `open,snapshot,click,snapshot,click,snapshot`, independent verifier PASS,
 reviewer `APPROVE`, gate `ACCEPTED`, and confirmed cleanup. No repair cycle was
-used; one of two authorized sessions was conserved. Full report:
-[C-07 live certification](f1-s4c-07-live-certification.md). This is
-`MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`, not merged and not Product Owner UAT.
+used; one of two authorized sessions was conserved. PR #12 merged at
+`9ec7643`; Product Owner UAT is recorded from the owner's explicit attestation.
+Full report: [C-07 live certification](f1-s4c-07-live-certification.md).
+Deployment is not claimed.
 
 ## Commands
 
@@ -217,9 +221,9 @@ bash scripts/e2e-s1.sh
 - TRUSTED_LOCAL is not isolated. Project scoping rejects unauthorized
   control-plane operations but cannot contain hostile host-level code.
 - The deterministic agent simulator is not live-model evidence.
-- C-07 completed Vlog live certification for tested head `9567bc5`; the
-  disposition is `MERGE_READY_FOR_PRODUCT_OWNER_REVIEW`, not merged. Product
-  Owner UAT is still outstanding.
+- C-07 completed Vlog live certification for tested head `9567bc5`; PR #12 is
+  merged at `9ec7643` and Product Owner UAT is recorded by owner attestation.
+  No deployment or SEC-01 isolation is claimed.
 - One independent S4-B run transiently hit a SQLite lock; local runs passed
   3/3. This pre-existing deterministic-lane flakiness is recorded, not hidden.
 - C-07 did not exercise corrective repair; no claim of live autonomous repair
