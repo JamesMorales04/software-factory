@@ -3,13 +3,17 @@
 package browserserver
 
 import (
+	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
+
+func Supported() error { return nil }
 
 func configureProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -32,78 +36,111 @@ func processAlive(pid int) (bool, string) {
 	if err := syscall.Kill(pid, 0); err != nil {
 		return false, ""
 	}
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	start, _, err := processIdentity(pid)
 	if err != nil {
 		return false, ""
 	}
-	// The comm field is parenthesized and may contain spaces, so split only
-	// after the final ')'. starttime is field 22 overall; it is index 19 of
-	// the suffix beginning at state (field 3).
+	return true, start
+}
+
+func processIdentity(pid int) (string, string, error) {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", "", err
+	}
 	closeParen := strings.LastIndex(string(raw), ")")
 	if closeParen < 0 {
-		return false, ""
+		return "", "", os.ErrInvalid
 	}
 	fields := strings.Fields(string(raw[closeParen+1:]))
 	if len(fields) <= 19 {
-		return false, ""
+		return "", "", os.ErrInvalid
 	}
-	return true, fields[19]
+	cwd, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	if err != nil {
+		return "", "", err
+	}
+	return fields[19], strings.TrimSuffix(cwd, " (deleted)"), nil
 }
 
 func processCwd(pid int) (string, error) {
-	cwd, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSuffix(cwd, " (deleted)"), nil
+	_, cwd, err := processIdentity(pid)
+	return cwd, err
 }
 
-func groupMemberPIDs(pgid int) []int {
+func groupMembers(pgid int) ([]processMember, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	var out []int
+	var out []processMember
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		member, err := processGroupOf(pid)
-		if err != nil || member != pgid {
+		start, err := processStartTime(pid)
+		if err != nil {
 			continue
 		}
-		out = append(out, pid)
+		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err != nil {
+			continue
+		}
+		closeParen := strings.LastIndex(string(raw), ")")
+		if closeParen < 0 {
+			continue
+		}
+		fields := strings.Fields(string(raw[closeParen+1:]))
+		if len(fields) <= 2 {
+			continue
+		}
+		memberGroup, err := strconv.Atoi(fields[2])
+		if err != nil || memberGroup != pgid {
+			continue
+		}
+		out = append(out, processMember{PID: pid, StartTime: start})
 	}
-	return out
+	return out, nil
 }
 
-func processGroupOf(pid int) (int, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, err
-	}
-	closeParen := strings.LastIndex(string(raw), ")")
-	if closeParen < 0 {
-		return 0, os.ErrInvalid
-	}
-	fields := strings.Fields(string(raw[closeParen+1:]))
-	if len(fields) <= 2 {
-		return 0, os.ErrInvalid
-	}
-	return strconv.Atoi(fields[2])
+func processStartTime(pid int) (string, error) {
+	start, _, err := processIdentity(pid)
+	return start, err
 }
+
+func openProcessHandle(pid int) (int, error) {
+	return unix.PidfdOpen(pid, 0)
+}
+
+func signalProcessHandle(fd, sig int) error {
+	//nolint:gosec // sig is a fixed SIGTERM/SIGKILL selected by the caller.
+	return unix.PidfdSendSignal(fd, unix.Signal(sig), nil, 0)
+}
+
+func closeProcessHandle(fd int) { _ = unix.Close(fd) }
 
 func withinWorkspace(cwd, workDir string) bool {
-	cwd = filepath.Clean(cwd)
-	workDir = filepath.Clean(workDir)
-	return cwd == workDir || strings.HasPrefix(cwd, workDir+string(filepath.Separator))
+	cwd = strings.TrimSuffix(cwd, " (deleted)")
+	return cwd == workDir || strings.HasPrefix(cwd, workDir+"/")
 }
 
-func killProcessGroup(pid int) error {
-	return syscall.Kill(-pid, syscall.SIGTERM)
+func dirOwnedByCurrentUser(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
-func forceKillProcessGroup(pid int) error {
-	return syscall.Kill(-pid, syscall.SIGKILL)
+func acquireRegistryLock(path string) (func(), error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, errors.New("another Worker with this ID owns the test-server registry")
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }

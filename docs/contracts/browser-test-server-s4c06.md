@@ -30,8 +30,10 @@ A Project granting `browser` may declare:
 4. Own the process group; record PID/start-time/workspace.
 5. Reuse only an owned, healthy server for the same workspace/endpoint.
 6. Reject a healthy unowned listener (`ErrPortOccupied`); never adopt it.
-7. Stop the owned group on success, failure, cancellation and shutdown.
-8. Reap stale owned servers at Worker startup.
+7. Stop the owned group on success, failure, cancellation and shutdown,
+   including descendants after the leader exits.
+8. Reap stale owned servers at Worker startup under an exclusive per-Worker
+   registry lock.
 
 Startup/readiness/port-ownership failures are `INFRASTRUCTURE_BLOCKED` before
 any Paseo session. They are not model failures.
@@ -46,6 +48,7 @@ product acceptance authority.
 ## Limitations
 
 TRUSTED_LOCAL processes can still ignore `HOST`/`PORT` and bind elsewhere; the
-contract is control-plane policy, not OS network isolation. The server must be
+contract is control-plane policy, not OS network isolation. The managed-server
+lifecycle is Linux-only and fails closed on other platforms. The server must be
 able to serve the current workspace (static/reload-capable); projects needing a
 rebuild-on-edit dev server must include that in the authorized command.

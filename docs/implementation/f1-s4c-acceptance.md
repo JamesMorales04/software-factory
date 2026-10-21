@@ -141,8 +141,8 @@ remain required. No frozen contract or historical decision was changed.
 | D4 | PASS | Unrelated healthy listener on the authorized port rejected as `INFRASTRUCTURE_BLOCKED`; no Paseo session. |
 | D5 | PASS | Immediately failing start command diagnosed within 5s; no Paseo session or model attempt. |
 | D6 | PASS | Campaign cancellation stops the server; registry and port clean. |
-| D7 | PASS (unit) | Server serves the exact workspace marker; unowned listener is not adopted. |
-| D8 | PASS (unit) | Reaper kills stale managed servers; owned reuse preserves PID; spaced command names are probed correctly. |
+| D7 | PASS (unit) | Server serves the exact workspace marker; unowned listener is not adopted; empty process identity is refused. |
+| D8 | PASS (unit) | Reaper kills stale managed servers; owned reuse preserves PID; descendants die after leader exit; spaced command names, per-Worker lock and symlink registry checks are covered. |
 | Preflight | PASS | Real Vlog app + real wrapper + real Chromium `open/snapshot/close` with zero paid sessions; unauthorized URL rejected. |
 
 The C-05 failure was an interrupted agent-managed background shell command, not

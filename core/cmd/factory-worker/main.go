@@ -96,7 +96,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	registryDir := browserserver.WorkerRegistryDir(*workerID)
+	registryDir, releaseRegistry, err := browserserver.AcquireWorkerRegistry(*workerID)
+	if err != nil {
+		return err
+	}
+	defer releaseRegistry()
 	c := &client{
 		base:        strings.TrimRight(*coreAddr, "/"),
 		token:       token,

@@ -168,7 +168,7 @@ func TestProcessProbeHandlesSpacedCommandName(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		_ = forceKillProcessGroup(cmd.Process.Pid)
+		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	}()
 	alive, startTime := processAlive(cmd.Process.Pid)
@@ -202,5 +202,33 @@ func TestStopKillsDescendantAfterLeaderExit(t *testing.T) {
 	client := &http.Client{Timeout: 300 * time.Millisecond}
 	if _, err := client.Get(cfg.Endpoint); err == nil {
 		t.Fatal("descendant server still reachable after Stop")
+	}
+}
+
+func TestWorkerRegistryLockAndSymlinkRefusal(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	dir, release, err := AcquireWorkerRegistry("worker-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := AcquireWorkerRegistry("worker-1"); err == nil {
+		t.Fatal("second same-ID Worker registry lock was not refused")
+	}
+	release()
+	if _, release2, err := AcquireWorkerRegistry("worker-1"); err != nil {
+		t.Fatalf("registry not reusable after release: %v", err)
+	} else {
+		release2()
+	}
+	_ = dir
+
+	other := t.TempDir()
+	base := RegistryDir()
+	_ = os.RemoveAll(base)
+	if err := os.Symlink(other, base); err != nil {
+		t.Skip("symlink creation unavailable")
+	}
+	if _, _, err := AcquireWorkerRegistry("worker-2"); err == nil {
+		t.Fatal("symlinked registry base was accepted")
 	}
 }

@@ -48,7 +48,8 @@ The Worker:
 7. stops the owned process group on completion, failure or cancellation,
    including descendants after the group leader exits;
 8. reaps stale managed servers at Worker startup after a crash, in a per-Worker
-   registry so one Worker cannot kill another Worker's live server.
+   registry so one Worker cannot kill another Worker's live server; an
+   exclusive registry lock refuses a second Worker with the same logical ID.
 
 Startup failure is reported as `browser-test-server: ...` and classified
 `INFRASTRUCTURE_BLOCKED`; no Paseo session is started and no paid model attempt
@@ -71,9 +72,11 @@ prompt tells the model the server is already running and must not be restarted.
 - **R1–R8, C1–C18** remain green.
 - Unit tests cover readiness, owned reuse, unowned-port rejection, startup
   diagnosis, process-group cleanup (including descendants after leader exit),
-  identity refusal, reaping and spaced command names. The process probe is
-  Linux-specific; non-Linux builds fail closed rather than pretending to own a
-  process.
+  identity refusal, reaping, spaced command names, registry locking and
+  symlinked-registry refusal.
+- Linux uses pidfd handles plus `/proc` start-time/cwd verification; signals
+  are sent through the pidfd so PID reuse cannot redirect them. Non-Linux
+  builds fail closed before launching a child.
 
 ## 4. Zero-paid real preflight
 

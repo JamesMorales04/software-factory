@@ -39,6 +39,16 @@ type Config struct {
 	Timeout   time.Duration
 }
 
+type processMember struct {
+	PID       int
+	StartTime string
+}
+
+const (
+	signalTerminate = 15
+	signalKill      = 9
+)
+
 type processState struct {
 	ID        string    `json:"id"`
 	PID       int       `json:"pid"`
@@ -70,6 +80,29 @@ func WorkerRegistryDir(workerID string) string {
 	return filepath.Join(RegistryDir(), "worker-"+stateKey(workerID))
 }
 
+// AcquireWorkerRegistry locks the per-Worker registry for this process. It
+// prevents two Worker processes with the same logical ID from sharing and
+// reaping each other's live test servers.
+func AcquireWorkerRegistry(workerID string) (string, func(), error) {
+	if err := Supported(); err != nil {
+		return "", nil, err
+	}
+	base := RegistryDir()
+	if err := ensureSecureDir(base); err != nil {
+		return "", nil, err
+	}
+	dir := WorkerRegistryDir(workerID)
+	if err := ensureSecureDir(dir); err != nil {
+		return "", nil, err
+	}
+	lockPath := filepath.Join(base, "worker-"+stateKey(workerID)+".lock")
+	release, err := acquireRegistryLock(lockPath)
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, release, nil
+}
+
 // Reused reports whether an already-owned healthy server was reused.
 func (s *Server) Reused() bool { return s != nil && s.reused }
 
@@ -86,6 +119,9 @@ func (s *Server) Endpoint() string {
 // reused. A healthy unowned endpoint is rejected rather than adopted.
 func Start(ctx context.Context, cfg Config, registryDir string) (*Server, error) {
 	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	if err := Supported(); err != nil {
 		return nil, err
 	}
 	if registryDir == "" {
@@ -156,7 +192,7 @@ func start(cfg Config, statePath, registryDir string) error {
 	pgid := processGroup(cmd)
 	alive, startTime := processAlive(cmd.Process.Pid)
 	if !alive || startTime == "" {
-		_ = killProcessGroup(cmd.Process.Pid)
+		_ = cmd.Process.Kill()
 		return errors.New("test server exited before ownership could be established")
 	}
 	state := processState{
@@ -166,7 +202,7 @@ func start(cfg Config, statePath, registryDir string) error {
 	}
 	raw, _ := json.Marshal(state)
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
-		_ = killProcessGroup(cmd.Process.Pid)
+		_ = cmd.Process.Kill()
 		return fmt.Errorf("record test-server state: %w", err)
 	}
 	// Detach from cmd.Wait: the server is supervised by Stop/Reap, not by
@@ -223,16 +259,20 @@ func stopState(state processState, registryDir string) error {
 		return errors.New("test-server process identity is unverified; refusing to signal")
 	}
 	if len(members) > 0 {
-		_ = killProcessGroup(state.PGID)
+		signalOwnedMembers(state, members, signalTerminate)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			if len(groupMemberPIDs(state.PGID)) == 0 {
+			remaining, err := groupMembers(state.PGID)
+			if err != nil || len(remaining) == 0 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if len(groupMemberPIDs(state.PGID)) > 0 {
-			_ = forceKillProcessGroup(state.PGID)
+		remaining, err := groupMembers(state.PGID)
+		if err == nil && len(remaining) > 0 {
+			if checked, ok := ownedGroup(state); ok {
+				signalOwnedMembers(state, checked, signalKill)
+			}
 		}
 	}
 	_ = os.Remove(filepath.Join(registryDir, stateKey(state.ID)+".json"))
@@ -240,31 +280,62 @@ func stopState(state processState, registryDir string) error {
 	return nil
 }
 
-func ownedGroup(state processState) ([]int, bool) {
+func ownedGroup(state processState) ([]processMember, bool) {
 	if state.PGID <= 0 || state.StartTime == "" || state.WorkDir == "" {
 		return nil, false
 	}
 	if alive, startTime := processAlive(state.PID); alive && startTime != state.StartTime {
 		return nil, false
 	}
-	members := groupMemberPIDs(state.PGID)
+	members, err := groupMembers(state.PGID)
+	if err != nil {
+		return nil, false
+	}
 	if len(members) == 0 {
 		return nil, true
 	}
-	for _, pid := range members {
-		cwd, err := processCwd(pid)
+	for _, member := range members {
+		cwd, err := processCwd(member.PID)
 		if err != nil || !withinWorkspace(cwd, state.WorkDir) {
+			return nil, false
+		}
+		if member.PID == state.PID && member.StartTime != state.StartTime {
 			return nil, false
 		}
 	}
 	return members, true
 }
 
-func ensureRegistry(path string) error {
+func signalOwnedMembers(state processState, members []processMember, signal int) {
+	for _, member := range members {
+		fd, err := openProcessHandle(member.PID)
+		if err != nil {
+			continue
+		}
+		start, cwd, err := processIdentity(member.PID)
+		if err != nil || start != member.StartTime || !withinWorkspace(cwd, state.WorkDir) ||
+			(member.PID == state.PID && start != state.StartTime) {
+			closeProcessHandle(fd)
+			continue
+		}
+		_ = signalProcessHandle(fd, signal)
+		closeProcessHandle(fd)
+	}
+}
+
+func ensureRegistry(path string) error { return ensureSecureDir(path) }
+
+func ensureSecureDir(path string) error {
+	if err := ensureNoSymlinkAncestors(path); err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("test-server registry path is not a safe directory")
+		}
+		if !dirOwnedByCurrentUser(info) {
+			return fmt.Errorf("test-server registry is not owned by the current user")
 		}
 		if info.Mode().Perm() != 0o700 {
 			if err := os.Chmod(path, 0o700); err != nil {
@@ -278,6 +349,33 @@ func ensureRegistry(path string) error {
 	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return fmt.Errorf("create test-server registry: %w", err)
+	}
+	info, err = os.Lstat(path)
+	if err != nil || !info.IsDir() || !dirOwnedByCurrentUser(info) {
+		return fmt.Errorf("created test-server registry has unsafe ownership")
+	}
+	return os.Chmod(path, 0o700)
+}
+
+func ensureNoSymlinkAncestors(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	current := string(filepath.Separator)
+	parts := strings.Split(strings.TrimPrefix(abs, string(filepath.Separator)), string(filepath.Separator))
+	for _, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("test-server registry path has a symlinked ancestor")
+		}
 	}
 	return nil
 }
@@ -312,16 +410,19 @@ func Reap(registryDir string) (int, error) {
 			continue
 		}
 		if len(members) > 0 {
-			_ = killProcessGroup(state.PGID)
+			signalOwnedMembers(state, members, signalTerminate)
 			deadline := time.Now().Add(3 * time.Second)
 			for time.Now().Before(deadline) {
-				if len(groupMemberPIDs(state.PGID)) == 0 {
+				remaining, err := groupMembers(state.PGID)
+				if err != nil || len(remaining) == 0 {
 					break
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
-			if len(groupMemberPIDs(state.PGID)) > 0 {
-				_ = forceKillProcessGroup(state.PGID)
+			if remaining, err := groupMembers(state.PGID); err == nil && len(remaining) > 0 {
+				if checked, ok := ownedGroup(state); ok {
+					signalOwnedMembers(state, checked, signalKill)
+				}
 			}
 			killed++
 		}
