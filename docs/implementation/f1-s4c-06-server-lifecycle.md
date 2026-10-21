@@ -45,7 +45,8 @@ The Worker:
    verified owned healthy server; identity is mandatory and an empty start
    time is never treated as a wildcard;
 6. refuses to adopt a healthy unowned process on the port;
-7. stops the owned process group on completion, failure or cancellation,
+7. reuses a healthy server only after verifying its exact workspace ownership,
+   and stops the owned process group on completion, failure or cancellation,
    including descendants after the group leader exits and after the Attempt
    workspace is deleted; startup cleanup uses a direct group kill, and cleanup
    state is retained if termination cannot be verified so a later reaper can

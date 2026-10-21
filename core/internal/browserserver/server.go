@@ -137,11 +137,13 @@ func Start(ctx context.Context, cfg Config, registryDir string) (*Server, error)
 			return nil, fmt.Errorf("test-server state belongs to a different Attempt workspace/endpoint")
 		}
 		if alive, startTime := processAlive(state.PID); alive && startTime == state.StartTime {
-			if healthy(ctx, cfg.Endpoint, cfg.ReadyPath) {
+			if _, owned := ownedGroup(state); owned && healthy(ctx, cfg.Endpoint, cfg.ReadyPath) {
 				server := &Server{registryDir: registryDir, state: state, logPath: state.LogPath, reused: true}
 				return server, nil
 			}
-			_ = stopState(state, registryDir)
+			if err := stopState(state, registryDir); err != nil {
+				return nil, fmt.Errorf("stale managed test server cleanup is unverified: %w", err)
+			}
 		}
 		_ = os.Remove(statePath)
 	}

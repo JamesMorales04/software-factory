@@ -2,6 +2,7 @@ package browserserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -277,5 +278,42 @@ func TestStopAfterWorkspaceDeleted(t *testing.T) {
 	client := &http.Client{Timeout: 300 * time.Millisecond}
 	if _, err := client.Get(cfg.Endpoint); err == nil {
 		t.Fatal("server survived workspace deletion cleanup")
+	}
+}
+
+func TestStaleStateDoesNotReuseMismatchedWorkspace(t *testing.T) {
+	ctx := context.Background()
+	work := t.TempDir()
+	other := t.TempDir()
+	registry := t.TempDir()
+	port := freePort(t)
+	id := "stale-state"
+	cfg := Config{ID: id, WorkDir: work, Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), ReadyPath: "/", Command: pythonServerCommand(), Timeout: 10 * time.Second}
+	server, err := Start(ctx, cfg, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Stop(context.Background()) }()
+	statePath := filepath.Join(registry, stateKey(id)+".json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["workDir"] = other
+	raw, _ = json.Marshal(state)
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	otherCfg := cfg
+	otherCfg.WorkDir = other
+	if _, err := Start(ctx, otherCfg, registry); err == nil {
+		t.Fatal("stale state with mismatched workspace was reused")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatal("unverified stale state was removed")
 	}
 }
