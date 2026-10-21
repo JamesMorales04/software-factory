@@ -33,6 +33,7 @@ MAX_ATTEMPTS = 2
 MAX_REPAIRS = 1
 MAX_PARALLEL = 1
 ENDPOINT = "http://127.0.0.1:4173"
+EXPECTED_VLOG_BASE = "f52f877bd390223b9fe7d867355528a070118a3d"
 ALLOWED_PATHS = ["src/filter.js", "src/app.js"]
 TERMINAL = {"accepted", "repair_required", "blocked", "human_required", "failed", "cancelled"}
 
@@ -106,22 +107,22 @@ def paseo_json(*args: str):
     return json.loads(proc.stdout)
 
 
-def active_paseo_workspaces() -> tuple[set[str], str | None]:
+def active_paseo_workspaces() -> tuple[dict[str, str], str | None]:
     proc = run(["paseo", "workspace", "ls", "--json"], check=False)
     if proc.returncode != 0:
-        return set(), proc.stderr[-500:] or proc.stdout[-500:]
+        return {}, proc.stderr[-500:] or proc.stdout[-500:]
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
-        return set(), f"invalid workspace inventory: {exc}"
-    ids = set()
+        return {}, f"invalid workspace inventory: {exc}"
+    found: dict[str, str] = {}
     if isinstance(payload, list):
         for item in payload:
             if isinstance(item, dict):
                 value = item.get("id") or item.get("workspaceId")
                 if value:
-                    ids.add(str(value))
-    return ids, None
+                    found[str(value)] = str(item.get("cwd") or "")
+    return found, None
 
 
 def worker_registry_dir(worker_id: str) -> Path:
@@ -307,6 +308,7 @@ def main() -> int:
         record_preflight("vlog-fixture", vlog.is_dir() and (vlog / ".git").is_dir(), str(vlog))
         vlog_head = git("rev-parse", "HEAD", cwd=vlog)
         record_preflight("vlog-clean-worktree", not git("status", "--porcelain", cwd=vlog), vlog_head)
+        record_preflight("vlog-authorized-base", vlog_head == EXPECTED_VLOG_BASE, vlog_head)
         record_preflight("chromium", Path(chromium).is_file(), chromium)
         record_preflight("playwright-core", Path(playwright_core).is_dir(), playwright_core)
         record_preflight("browser-cli", Path(browser_cli).is_file(), browser_cli)
@@ -742,9 +744,19 @@ def main() -> int:
         workspace_ids = {
             str(record["run"].get("result", {}).get("workspaceId", ""))
             for record in runs
-        } - {""}
+        }
+        workspace_ids.update(
+            str(binding.get("workspaceId") or "") for binding in sessions
+        )
+        workspace_ids -= {""}
         active_workspaces, workspace_error = active_paseo_workspaces()
-        workspace_active = sorted(workspace_ids & active_workspaces)
+        workspace_active = sorted(
+            (workspace_ids & set(active_workspaces))
+            | {
+                workspace_id for workspace_id, cwd in active_workspaces.items()
+                if str(tmp) in cwd
+            }
+        )
         managed_clean = (
             not managed["states"] and not managed["errors"] and not port_open(4173)
         )
@@ -876,11 +888,18 @@ def main() -> int:
                 if campaign and core and core.poll() is None:
                     _, partial = client.call("GET", f"/api/v1/campaigns/{campaign['id']}")
                     result["partial_projection"] = partial
-                    for task in partial.get("tasks", []):
-                        if not str(task.get("key", "")).startswith("implementer-"):
-                            continue
-                        run_id = task.get("runId")
-                        if not run_id or run_id in run_ids:
+                    partial_run_ids = [
+                        task.get("runId") for task in partial.get("tasks", [])
+                        if str(task.get("key", "")).startswith("implementer-")
+                        and task.get("runId")
+                    ]
+                    partial_run_ids.extend(
+                        recovery.get("previousRunId")
+                        for recovery in partial.get("recoveries", [])
+                        if recovery.get("previousRunId")
+                    )
+                    for run_id in dict.fromkeys(partial_run_ids):
+                        if run_id in run_ids:
                             continue
                         run_ids.append(run_id)
                         _, run_payload = client.call("GET", f"/api/v1/runs/{run_id}")
@@ -903,7 +922,11 @@ def main() -> int:
                 workspace_ids = {
                     str((record.get("run") or {}).get("result", {}).get("workspaceId", ""))
                     for record in result.get("partial_runs", [])
-                } - {""}
+                }
+                workspace_ids.update(
+                    str(binding.get("workspaceId") or "") for binding in sessions
+                )
+                workspace_ids -= {""}
                 result["operator_cleanup"] = cleanup_operator(
                     external, sorted(workspace_ids), worker_id, set(attempt_ids))
             except Exception as exc:
