@@ -345,7 +345,7 @@ def main() -> int:
                                "description": "fixture regression", "command": negative.split("\n"),
                                "expectExit": 0, "timeoutSecs": 120}],
             "riskClass": "R0", "qualityProfile": "node-browser",
-            "budget": {"maxAttempts": 1, "timeoutSecs": 900},
+            "budget": {"maxAttempts": 1, "timeoutSecs": 600},
             "executionMode": "trusted-local", "provider": PROVIDER,
             "model": MODEL, "paseoMode": MODE,
         })
