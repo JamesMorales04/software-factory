@@ -62,7 +62,19 @@ the owner's manual acceptance on their behalf.
 - Infrastructure failures must be repaired before another paid session.
 - Unknown provider cost/quota remains unknown.
 
-## Current F1-S4-C-03 disposition (2026-10-21 UTC)
+## Browser capability vs product acceptance (proposed)
+
+- **Product browser acceptance:** the Independent Verifier executes the
+  protected browser oracle against the exact candidate. This is UI quality evidence.
+- **Agent browser-capability certification:** the Factory-managed Implementer
+  records successful model-mediated `open` + observation/interaction commands
+  in the authorized Paseo session. This is capability-use evidence.
+
+F1-S4-C/C-04 requires both. A future ADR may let certain projects require only
+product acceptance, but cannot retroactively alter the frozen Vlog contract or
+historical gate decisions.
+
+## Current F1-S4-C-03/C-04 disposition (2026-10-21 UTC)
 
 - `DETERMINISTIC_VERIFIED`: the S4-C/C-03 lane passed with two external
   Projects, real Chromium, deterministic Paseo simulation and forced R1–R8
@@ -76,4 +88,7 @@ the owner's manual acceptance on their behalf.
   failure was injected, so R10 is `NOT_TESTED`.
 - `PRODUCT_OWNER_UAT_VERIFIED`: not claimed; manual instructions are in the
   campaign handoff.
+- C-04 same-session completion is deterministic-verified. No paid C-04
+  session was spent. A proposed one-session Vlog live run requires explicit
+  Product Owner authorization; the prior Vlog allowance is exhausted.
 - Further Vlog sessions require explicit Product Owner authorization.

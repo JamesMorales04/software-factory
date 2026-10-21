@@ -11,7 +11,7 @@ All normative software architecture and engineering guidance is maintained **in 
 5. [Security](security/isolation.md), [SEC-01 spike](security/paseo-sandbox-spike.md) and [2026-10-18 results](security/SEC-01-results-2026-10-18.md).
 6. [Observability](observability/telemetry.md) — durable events, traces, metrics, logging.
 7. [Factory Office](product/factory-office.md) — F1 UI and event projections.
-8. [F0/F1 plan](implementation/f0-f1-plan.md), [F1-S4-A acceptance](implementation/f1-s4a-acceptance.md), [F1-S4-B acceptance](implementation/f1-s4b-acceptance.md), [F1-S4-C acceptance](implementation/f1-s4c-acceptance.md) and [campaign brief](implementation/campaign-prompt.md).
+8. [F0/F1 plan](implementation/f0-f1-plan.md), [F1-S4-A acceptance](implementation/f1-s4a-acceptance.md), [F1-S4-B acceptance](implementation/f1-s4b-acceptance.md), [F1-S4-C acceptance](implementation/f1-s4c-acceptance.md), [F1-S4-C-04 diagnosis](implementation/f1-s4c-04-diagnosis.md) and [campaign brief](implementation/campaign-prompt.md).
 9. [Browser automation](engineering/browser-automation.md) — pinned agent-native Playwright CLI, Factory-managed Implementer capability, verifier boundary and MCP disposition.
 10. [Decision records](architecture/decisions/README.md) — decisions, trade-offs, and supersession.
 
