@@ -55,26 +55,48 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | C17 | PASS | REAL CHROMIUM | Office journey registered Project A, created Action, froze ActionSpec through the form, started the Campaign, observed Accepted candidate/gate, reloaded and rechecked. No custom Python bootstrap or direct spec/campaign API calls from the operator journey. |
 | C18 | PASS (scoped) | REGRESSION | `go test -race ./...`, gofmt/vet/golangci-lint, Office typecheck/lint/build, strict S4-A and S4-B deterministic lanes, S1 E2E. S2 E2E is BLOCKED by host Podman overlay/btrfs, not by this change. |
 | C19 | PASS | EXTERNAL | Two private GitHub repositories exist with distinct baseline commits and protected acceptance fixtures. |
-| C20 | FAIL (live) | LIVE MODEL | The authorized vlog session ran but produced no candidate: the agent wrote `.server.log` in the workspace and candidate validation rejected the out-of-scope path. No retry. |
-| C21 | FAIL (live) | LIVE MODEL | The authorized calculator session produced candidate `24e924f0…`; browser check PASS, review APPROVE, but the task-specific functional oracle rejected a valid throw-based division-by-zero contract. Gate `REPAIR_REQUIRED`; no retry. |
-| C22 | PASS deterministically; FAIL live | REAL BROWSER/TOOL / LIVE | Deterministic simulated Implementer invoked the CLI for real. The failed vlog live Run did not retain browser-invocation evidence; no live claim. |
+| C20 | PARTIAL (live) | LIVE MODEL | The final vlog session produced a valid candidate `159bae56…` and independent verifier PASS, but the Implementer recorded no Playwright invocation; the gate returned `REPAIR_REQUIRED`. The 4-session vlog budget is exhausted. Earlier vlog sessions included an out-of-scope `.server.log` rejection and two accepted candidates under weaker browser-evidence rules. |
+| C21 | PASS (live, scoped) | LIVE MODEL | Calculator accepted candidate `393eab7b…` at implementation `5fa3c1c`, with browser PASS, review APPROVE and gate ACCEPTED. The final `cfa250e` delta is browser-capability-only and does not alter calculator dispatch, capability or verification paths; the remaining calculator session was conserved. |
+| C22 | PASS deterministically; FAIL live | REAL BROWSER/TOOL / LIVE | Deterministic simulated Implementer recorded successful `open`+`snapshot` interaction. Live vlog trials 2 produced open/interaction evidence but under the older command log; the final trial recorded no Playwright invocation, so the final live claim is not made. |
 | C23 | PASS deterministic | DETERMINISTIC | Negative cross-project control-plane cases fail closed. TRUSTED_LOCAL host access is not contained; no cross-project confidentiality claim. |
 | C24 | PASS deterministic | DETERMINISTIC | Candidate Git objects, spec, binding hash, browser/arithmetic checks, reviewer verdict and gate result correlate. Simulated runs are distinguishable from the two live sessions. |
-| C25 | NOT ACHIEVED | LIVE | Live evidence applies to implementation `ad716db`; subsequent runtime repairs (runtime-artifact staging, oracle protection scope, legacy capability semantics) invalidate it for the final PR head. A new authorized live run is required. |
+| C25 | NOT ACHIEVED (full) | LIVE | Final implementation `cfa250e`: vlog live gate `REPAIR_REQUIRED` with no browser invocation; calculator accepted at `5fa3c1c` with a browser-only delta to the final head. Full exact-SHA live certification is not claimed. |
 | C26 | READY | DOCUMENTED | Manual UAT instructions and safe cleanup are in the handoff; the Product Owner journey was not silently executed. |
+
+## Independent verification and review
+
+- **Independent clean-checkout verifier:** PASS on exact code candidate
+  `cfa250e` (`cfa250ee015ca61656e5c48e1c90583241077002`). Clean worktree,
+  gofmt/vet/golangci-lint/race, Office check/build, strict S4-A/S4-B and
+  S4-C 44/44 deterministic checks. No source modification.
+- **GPT-6 Luna read-only review:** `APPROVE_WITH_NOTES` on `cfa250e`, using
+  Codex `--sandbox read-only`. Prior review findings (recovery class at the
+  persistence boundary, exact failed-Run binding, date wording) were repaired
+  and re-reviewed. Residual note: the browser gate proves successful CLI
+  command names, not semantic interaction with a specific target/session; the
+  Independent Verifier remains the authoritative browser acceptance authority.
+- No independent human verdict is claimed.
 
 ## Live session facts
 
 - Provider/model/mode: `opencode` / `opencode-go/deepseek-v4.1-flash` / `build`.
-- Authorized and used: 2 initial Implementer sessions; no retries.
-- Vlog: Campaign `ff4a4f00…`, Run `0c5898f8…`, Paseo workspace
-  `wks_b8895de4333279cd`, session `1229b3fa-d8b5-4a55-93c4-f76b2515f5a4`.
-  Result: failed before candidate; `.server.log` outside allowed scope.
-- Calculator: Campaign `e01de48e…`, Run `2ce96c43…`, Paseo workspace
-  `wks_0d0ecb5af58bb812`, session `f38d1ec7-01b3-4b79-b4c6-6946e35bd8f8`.
-  Candidate `24e924f0…`; verifier browser PASS but functional FAIL; gate
-  `REPAIR_REQUIRED`.
-- No `REAL_PASEO_E2E_VERIFIED` or full `MERGE-READY` claim is made.
+- F1-S4-C-03 authorization: 4 additional sessions per Project, max 3
+  corrective cycles. Used: Vlog 4/4, Calculator 3/4 (one conserved).
+- No paid failure was injected; the recovery path was forced deterministically.
+- Final Vlog trial: Campaign `cb6f5a5d…`, Run `25b78705…`, workspace
+  `wks_2cd89e0bd414e88f`, session `e31abc98-2137-4eb7-90be-da8b2a427914`.
+  Candidate `159bae56…`; browser verifier PASS; Implementer `browserInvoked=false`;
+  gate `REPAIR_REQUIRED`; session/workspace closed and archived.
+- Calculator accepted trial: Campaign `210c7794…`, Run `0089ca7c…`,
+  workspace `wks_9602f3602a298eca`, session
+  `ee106eed-ab33-4183-b101-f550f2706c60`; candidate `393eab7b…`; gate
+  `ACCEPTED`; closed and archived.
+- Earlier Vlog trial produced an accepted candidate under a weaker
+  `--help`-permitted gate; it was superseded after the gate was tightened.
+- No `REAL_PASEO_E2E_VERIFIED` claim is made for final implementation
+  `cfa250e`. `PRODUCT_OWNER_UAT_VERIFIED` is not claimed.
+- Vlog sessions used: 4/4. Calculator sessions used: 3/4 (one conserved).
+  Every Paseo session/workspace above was observed closed and archived.
 
 ## F1-S4-C-03 autonomous recovery matrix
 
@@ -89,7 +111,7 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | R7 | PASS | Defective functional oracle produced `repair_required`; a new frozen spec row/content hash with corrected oracle produced ACCEPTED; old verification/decision IDs unchanged. The new spec remains `version=1`; the immutable row/content hash is the revision identity. |
 | R8 | PASS | Repaired Campaign ends ACCEPTED with the complete failed-Run/recovery history. |
 | R9 | PASS | S1, S4-A, S4-B, S4-C and Go race/lint/typecheck gates pass; exact-candidate evidence unchanged. |
-| R10 | LIVE PENDING | Real Paseo recovery is attempted only if a recoverable failure occurs naturally; no artificial paid failure is injected. Forced failures are deterministic. |
+| R10 | NOT_TESTED | No recoverable failure occurred naturally in the paid sessions; no artificial paid failure was injected. The forced R1–R8 scenarios are deterministic. |
 
 Recovery is bounded by `maxImplementerAttempts` (explicit, 1..24) and the
 existing repair/fairness/wall-clock limits. The live certification lane uses 4
@@ -122,9 +144,10 @@ bash scripts/e2e-s1.sh
 - TRUSTED_LOCAL is not isolated. Project scoping rejects unauthorized
   control-plane operations but cannot contain hostile host-level code.
 - The deterministic agent simulator is not live-model evidence.
-- Live certification must be rerun on the final runtime head; C-03 authorizes
-  up to 4 additional Implementer sessions per Project, max 3 corrective
-  cycles, with no manual role invocation.
+- Vlog live certification is blocked on the exhausted C-03 budget; further
+  sessions require Product Owner authorization. The final gate correctly
+  rejected the vlog candidate for missing browser interaction rather than
+  accepting a prompt claim.
 - Recovery classification is deterministic and intentionally conservative;
   ambiguous failures escalate to `HUMAN_REQUIRED` rather than retry.
 - S2 E2E remains blocked by the host's unsupported Podman graph driver.

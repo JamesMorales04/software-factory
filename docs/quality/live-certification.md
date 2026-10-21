@@ -62,15 +62,18 @@ the owner's manual acceptance on their behalf.
 - Infrastructure failures must be repaired before another paid session.
 - Unknown provider cost/quota remains unknown.
 
-## Current F1-S4-C disposition (2026-10-21 UTC)
+## Current F1-S4-C-03 disposition (2026-10-21 UTC)
 
-- `DETERMINISTIC_VERIFIED`: the S4-C lane passed with two external Projects,
-  real Chromium and a deterministic Paseo simulator.
-- `REAL_PASEO_E2E_VERIFIED`: **not achieved.** Two authorized initial sessions
-  ran. The vlog session produced a candidate rejected for an out-of-scope
-  runtime log; the calculator session produced a candidate whose browser oracle
-  passed but whose task-specific functional oracle rejected a valid
-  throw-based implementation. Both are recorded truthfully. Further paid
-  sessions require Product Owner approval.
+- `DETERMINISTIC_VERIFIED`: the S4-C/C-03 lane passed with two external
+  Projects, real Chromium, deterministic Paseo simulation and forced R1–R8
+  recovery scenarios. Independent clean-checkout verification and GPT-6 Luna
+  read-only review were performed.
+- `REAL_PASEO_E2E_VERIFIED`: **not achieved for the final implementation.**
+  Vlog used all 4 C-03 sessions; the final session produced a candidate and
+  independent browser PASS but recorded no Playwright invocation, so the gate
+  returned `REPAIR_REQUIRED`. Calculator accepted on the non-browser path at
+  `5fa3c1c`; the final `cfa250e` delta is browser-only. No artificial paid
+  failure was injected, so R10 is `NOT_TESTED`.
 - `PRODUCT_OWNER_UAT_VERIFIED`: not claimed; manual instructions are in the
   campaign handoff.
+- Further Vlog sessions require explicit Product Owner authorization.
