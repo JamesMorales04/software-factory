@@ -76,7 +76,9 @@ The Implementer cannot edit the frozen oracle to turn a failure into success.
 If independent assessment establishes a defective oracle:
 
 1. record the assessment and limitations;
-2. freeze a new ActionSpec revision with a new content/binding hash;
+2. freeze a new ActionSpec revision (new immutable row with a new content
+   hash; the Project binding hash may remain unchanged because it covers the
+   Project/scope/base/profile/allowed-path binding, not acceptance criteria);
 3. run a new Campaign against the new spec;
 4. preserve the old candidate, verification, reviewer verdict and gate
    decision unchanged.

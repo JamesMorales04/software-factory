@@ -2,10 +2,10 @@
 
 **Status:** Implemented and deterministically verified (2026-10-21 UTC; local session date 2026-10-20). The
 implementation candidate is the PR head; deterministic evidence is
-[`f1-s4c-deterministic-2026-10-21 UTC.json`](../evidence/f1-s4c-deterministic-2026-10-21 UTC.json).
+[`f1-s4c-deterministic-2026-10-21.json`](../evidence/f1-s4c-deterministic-2026-10-21.json).
 Real Paseo live certification is **not achieved**; the two authorized initial
 sessions and their truthful non-accepting results are recorded in
-[`f1-s4c-live-2026-10-21 UTC.json`](../evidence/f1-s4c-live-2026-10-21 UTC.json).
+[`f1-s4c-live-2026-10-21.json`](../evidence/f1-s4c-live-2026-10-21.json).
 TRUSTED_LOCAL only; control-plane scoping is not OS isolation and is never
 called isolated or SEC-01 certified.
 
@@ -86,7 +86,7 @@ to GitHub Actions; the external repositories remain the authoritative fixtures.
 | R4 | PASS | `browser-broken → good`: gate REPAIR_REQUIRED, new candidate with parent lineage, fresh verifier/reviewer evidence, ACCEPTED. |
 | R5 | PASS | `empty → empty` with budget 2: Campaign `failed` with “implementer attempt budget exhausted (2/2)” and one preserved recovery. |
 | R6 | PASS | `outside-scope` protected-oracle change: Campaign `blocked` with `POLICY_OR_SECURITY_BLOCKED`; zero recoveries. |
-| R7 | PASS | Defective functional oracle produced `repair_required`; a new frozen spec with corrected oracle produced ACCEPTED; old verification/decision IDs unchanged. |
+| R7 | PASS | Defective functional oracle produced `repair_required`; a new frozen spec row/content hash with corrected oracle produced ACCEPTED; old verification/decision IDs unchanged. The new spec remains `version=1`; the immutable row/content hash is the revision identity. |
 | R8 | PASS | Repaired Campaign ends ACCEPTED with the complete failed-Run/recovery history. |
 | R9 | PASS | S1, S4-A, S4-B, S4-C and Go race/lint/typecheck gates pass; exact-candidate evidence unchanged. |
 | R10 | LIVE PENDING | Real Paseo recovery is attempted only if a recoverable failure occurs naturally; no artificial paid failure is injected. Forced failures are deterministic. |

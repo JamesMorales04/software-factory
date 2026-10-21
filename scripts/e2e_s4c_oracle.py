@@ -46,10 +46,12 @@ EVIDENCE = WORK_ROOT / "evidence"
 JOURNEY_FILE = EVIDENCE / "office-journey.json"
 TERMINAL = {"accepted", "repair_required", "blocked", "human_required", "failed", "cancelled"}
 FAILURES = []
+CHECKS = []
 
 
 def check(name, cond, detail=""):
     print(f"[{'PASS' if cond else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""), flush=True)
+    CHECKS.append({"name": name, "pass": cond, **({"detail": detail} if detail else {})})
     if not cond:
         FAILURES.append(name)
     return cond
@@ -303,7 +305,7 @@ def main():
     set_stub("good")
 
     processes = Processes()
-    result = {"checks": [], "failures": FAILURES}
+    result = {"checks": CHECKS, "failures": FAILURES}
     try:
         processes.start_core()
         processes.start_worker()
@@ -821,6 +823,7 @@ def main():
     finally:
         processes.stop()
         result["failures"] = FAILURES
+        result["checks"] = CHECKS
         (EVIDENCE / "s4c-deterministic.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         print("\nEvidence:", EVIDENCE / "s4c-deterministic.json", flush=True)
     if FAILURES:
