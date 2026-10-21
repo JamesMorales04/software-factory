@@ -232,13 +232,17 @@ for (const raw of urlArgs) {
   }
 }
 mkdirSync(dirname(log), { recursive: true });
-appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), command: args[0] || "", argc: args.length, targetCount: urlArgs.length }) + "\n");
+const record = (code) => appendFileSync(log, JSON.stringify({
+  at: new Date().toISOString(), command: args[0] || "", argc: args.length,
+  targetCount: urlArgs.length, exitCode: code, ok: code === 0,
+}) + "\n");
 const effective = args[0] === "open" ? [args[0], "--config", CONFIG, ...args.slice(1)] : args;
 const child = spawn(CLI, ["-s=" + SESSION, ...effective], {
   stdio: "inherit",
   env: { ...process.env, HOME },
 });
-child.on("exit", (code) => process.exit(code ?? 1));
+child.on("error", () => { record(-1); process.exit(127); });
+child.on("exit", (code) => { record(code); process.exit(code ?? 1); });
 `, cli, session, string(rawEndpoints), config, home)
 }
 

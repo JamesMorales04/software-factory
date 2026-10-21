@@ -164,15 +164,15 @@ func TestBrowserCapabilityRequiresInteractionEvidence(t *testing.T) {
 	in := gateFixture(t)
 	in.Spec.Capabilities = []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain, domain.CapBrowser}
 	in.Spec.ProjectConfigRevision = 1
-	in.Run.Result = map[string]any{"browserInvoked": true, "browserCommands": "--help"}
+	in.Run.Result = map[string]any{"browserInvoked": true, "browserSuccessfulCommands": "--help"}
 	if result, _ := capabilityCheck(in); result.Status != domain.CheckFail {
 		t.Fatalf("help-only invocation accepted: %+v", result)
 	}
-	in.Run.Result = map[string]any{"browserInvoked": true, "browserCommands": "open,snapshot,close"}
+	in.Run.Result = map[string]any{"browserInvoked": true, "browserSuccessfulCommands": "open,snapshot,close"}
 	if result, _ := capabilityCheck(in); result.Status != domain.CheckPass {
 		t.Fatalf("open+snapshot invocation rejected: %+v", result)
 	}
-	in.Run.Result = map[string]any{"browserInvoked": false, "browserCommands": "open"}
+	in.Run.Result = map[string]any{"browserInvoked": false, "browserSuccessfulCommands": "open"}
 	if result, _ := capabilityCheck(in); result.Status != domain.CheckFail {
 		t.Fatalf("uninvoked capability accepted: %+v", result)
 	}

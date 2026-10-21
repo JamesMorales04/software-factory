@@ -1,14 +1,889 @@
 {
-  "campaign": "F1-S4-C / F1-S4-C-01",
-  "date": "2026-10-21",
-  "authorized_paid_sessions": 2,
-  "sessions_used": 2,
+  "campaign": "F1-S4-C / F1-S4-C-01 / F1-S4-C-03",
+  "date": "2026-10-21 UTC",
+  "implementation_commit": "11cd9e6",
   "provider": "opencode",
   "model": "opencode-go/deepseek-v4.1-flash",
   "paseoMode": "build",
-  "implementation_commit": "ad716db",
-  "note": "Two Product Owner-authorized initial sessions. No retries were performed. Both are truthful non-accepting results; live certification is not claimed.",
-  "results": [
+  "authorization": "F1-S4-C-03: up to 4 additional paid Implementer sessions per Project, max 3 corrective cycles",
+  "paid_session_accounting": {
+    "pre_c03_f1_s4c_01": {
+      "vlog": 1,
+      "calculator": 1,
+      "outcome": "both non-accepting"
+    },
+    "c03_trial_1": {
+      "vlog": 1,
+      "calculator": 1,
+      "outcome": "both accepted; vlog Implementer evidence was only --help, so the capability gate was tightened and the trial was superseded"
+    },
+    "c03_trial_2_final": {
+      "vlog": 1,
+      "calculator": 1,
+      "outcome": "both accepted with required observable browser interaction"
+    },
+    "total_c03_sessions": {
+      "vlog": 2,
+      "calculator": 2
+    },
+    "remaining_c03_authorization": {
+      "vlog": 2,
+      "calculator": 2
+    }
+  },
+  "final_results": [
+    {
+      "project": "vlog",
+      "campaignId": "ef1221b5f1acffbba2190d40b3199b4a",
+      "actionId": "7b20dabb1e46a0392e5f2e6f6bedf8ab",
+      "specId": "daaca3aed18d1df63595e5f923f85624",
+      "status": "accepted",
+      "reason": "quality gate ACCEPTED",
+      "candidate": "9e54be3dc6830ab80baae986708f81ceb5cff0f4",
+      "decision": "ACCEPTED",
+      "attemptsUsed": 1,
+      "maxAttempts": 4,
+      "recoveries": [],
+      "tasks": [
+        [
+          "implementer-0",
+          "succeeded",
+          "c00f089f4cb8c9cc216048281dd5c3d5"
+        ],
+        [
+          "verifier-0",
+          "succeeded",
+          "c00f089f4cb8c9cc216048281dd5c3d5"
+        ],
+        [
+          "reviewer-0",
+          "succeeded",
+          "c00f089f4cb8c9cc216048281dd5c3d5"
+        ],
+        [
+          "gate-0",
+          "succeeded",
+          "c00f089f4cb8c9cc216048281dd5c3d5"
+        ],
+        [
+          "implementer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-3",
+          "cancelled",
+          ""
+        ]
+      ],
+      "verification": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 693,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 166,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { filterEntries } from './src/filter.js'; const entries=[{category:'Travel'},{category:'Technology'}]; if(filterEntries(entries,'Travel').length!==1||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==2)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 22,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { entries } from './src/data.js'; if(entries.length!==5)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 19,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 202,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "review": "APPROVE",
+      "run": {
+        "id": "c00f089f4cb8c9cc216048281dd5c3d5",
+        "projectId": "vlog-live",
+        "actionId": "7b20dabb1e46a0392e5f2e6f6bedf8ab",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Implement functional category filtering with a no-results state in src/filter.js and src/app.js. Preserve navigation, accessibility and the five existing entries. Use the factory-browser skill and wrapper to exercise the UI at http://127.0.0.1:4173 after starting npm start. Do not edit tests, browser-check.mjs, package.json, data.js or render.js."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "browserCLIVersion": "0.1.22",
+          "browserCleanup": "ok",
+          "browserCommands": "--help,open,eval,console,requests,click,snapshot,click",
+          "browserInvocations": 16,
+          "browserInvoked": true,
+          "browserSkillDigest": "df6aecf2650b82413a0519f41eb9bac3b2729a335d086a653de853b363204a44",
+          "candidateId": "660a9281c0ba1bb16c6741f90d4f59aa",
+          "capability": "browser",
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-s4c-live-6qjnMh/factory-worker-runs-71485118/attempt-2907494626",
+          "diffBytes": 1154,
+          "diffStat": "src/app.js    | 4 ++--\n src/filter.js | 4 ++--\n 2 files changed, 4 insertions(+), 4 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "cd61d3a7-b156-40d7-bbb6-516865717b56",
+          "testExit": 0,
+          "timelineLines": 65,
+          "timelineSteps": "Edit:2,Read:13,Shell:18,Thought:16,User:1,Write:1",
+          "toolSteps": 34,
+          "workspaceId": "wks_9759c50626fe5137"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "daaca3aed18d1df63595e5f923f85624",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "browser"
+        ],
+        "specBindingHash": "d55eb8fb11c6d313c03da0ee48e5f02cf0f59498b88384e96b7e7eac0cbc47ed",
+        "createdAt": "2026-10-21T04:44:00.752Z",
+        "updatedAt": "2026-10-21T04:48:21.587Z"
+      }
+    },
+    {
+      "project": "calculator",
+      "campaignId": "8d6bf7fa01899f4259e92fcc5f445391",
+      "actionId": "0ba4acb408ca00a25eb06fb71f0112dd",
+      "specId": "1c4c82d828de531926773c90d9082b2b",
+      "status": "accepted",
+      "reason": "quality gate ACCEPTED",
+      "candidate": "633bb7c6101c9e2901e47ff46828a130263d5ea2",
+      "decision": "ACCEPTED",
+      "attemptsUsed": 1,
+      "maxAttempts": 4,
+      "recoveries": [],
+      "tasks": [
+        [
+          "implementer-0",
+          "succeeded",
+          "230f5b3f9a9382becf811c425f22c943"
+        ],
+        [
+          "verifier-0",
+          "succeeded",
+          "230f5b3f9a9382becf811c425f22c943"
+        ],
+        [
+          "reviewer-0",
+          "succeeded",
+          "230f5b3f9a9382becf811c425f22c943"
+        ],
+        [
+          "gate-0",
+          "succeeded",
+          "230f5b3f9a9382becf811c425f22c943"
+        ],
+        [
+          "implementer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-3",
+          "cancelled",
+          ""
+        ]
+      ],
+      "verification": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 798,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 134,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {calculate,formatResult} from './src/calc.js';if(formatResult(calculate(0.1,0.2,'add'))!=='0.3')process.exit(1);let zero;try{zero=formatResult(calculate(1,0,'divide'))}catch(error){zero=String(error.message)}if(zero!=='Cannot divide by zero')process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 20,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {add,subtract,multiply,divide} from './src/calc.js';if(add(2,3)!==5||subtract(9,4)!==5||multiply(6,7)!==42||divide(8,2)!==4)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 22,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 166,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "review": "APPROVE",
+      "run": {
+        "id": "230f5b3f9a9382becf811c425f22c943",
+        "projectId": "calculator-live",
+        "actionId": "0ba4acb408ca00a25eb06fb71f0112dd",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Correct decimal precision handling and division-by-zero behavior in src/calc.js and src/app.js while preserving addition, subtraction, multiplication, division and button interaction. The browser must show 0.3 for 0.1 + 0.2 and 'Cannot divide by zero' for division by zero. Do not edit tests or protected files."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "candidateId": "934e3632a41a0ba8e685b17e690b1180",
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-s4c-live-6qjnMh/factory-worker-runs-71485118/attempt-1933912110",
+          "diffBytes": 891,
+          "diffStat": "src/calc.js | 18 +++++++++++++-----\n 1 file changed, 13 insertions(+), 5 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "19ff6178-cb6b-416b-af08-d3c80ada519b",
+          "testExit": 0,
+          "timelineLines": 30,
+          "timelineSteps": "Edit:2,Read:2,Shell:6,Thought:5,User:1",
+          "toolSteps": 10,
+          "workspaceId": "wks_99d30de856056c6e"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "1c4c82d828de531926773c90d9082b2b",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain"
+        ],
+        "specBindingHash": "8fa993960eb916711715f08526d7787a5ce343d03a477844873965fa42ce663b",
+        "createdAt": "2026-10-21T04:48:25.099Z",
+        "updatedAt": "2026-10-21T04:48:58.262Z"
+      }
+    }
+  ],
+  "c03_trial_1_superseded": [
+    {
+      "project": "vlog",
+      "campaignId": "849a15871c221d2de12034d22b005858",
+      "actionId": "e6ebda5ab25b1421bb234c35a9011d13",
+      "specId": "719c8cd18f89322649bb1a5d1a1dbe2d",
+      "status": "accepted",
+      "reason": "quality gate ACCEPTED",
+      "candidate": "b583c0c18c644c9bf05a9f0213813dc689abc2e3",
+      "decision": "ACCEPTED",
+      "attemptsUsed": 1,
+      "maxAttempts": 4,
+      "recoveries": [],
+      "tasks": [
+        [
+          "implementer-0",
+          "succeeded",
+          "337a7d124f4543d116b653194d1a4731"
+        ],
+        [
+          "verifier-0",
+          "succeeded",
+          "337a7d124f4543d116b653194d1a4731"
+        ],
+        [
+          "reviewer-0",
+          "succeeded",
+          "337a7d124f4543d116b653194d1a4731"
+        ],
+        [
+          "gate-0",
+          "succeeded",
+          "337a7d124f4543d116b653194d1a4731"
+        ],
+        [
+          "implementer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-3",
+          "cancelled",
+          ""
+        ]
+      ],
+      "verification": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 697,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 175,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { filterEntries } from './src/filter.js'; const entries=[{category:'Travel'},{category:'Technology'}]; if(filterEntries(entries,'Travel').length!==1||filterEntries(entries,'Film').length!==0||filterEntries(entries,'All').length!==2)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 33,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { entries } from './src/data.js'; if(entries.length!==5)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 20,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 186,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "review": "APPROVE",
+      "run": {
+        "id": "337a7d124f4543d116b653194d1a4731",
+        "projectId": "vlog-live",
+        "actionId": "e6ebda5ab25b1421bb234c35a9011d13",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Implement functional category filtering with a no-results state in src/filter.js and src/app.js. Preserve navigation, accessibility and the five existing entries. Use the factory-browser skill and wrapper to exercise the UI at http://127.0.0.1:4173 after starting npm start. Do not edit tests, browser-check.mjs, package.json, data.js or render.js."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "browserCLIVersion": "0.1.22",
+          "browserCleanup": "ok",
+          "browserCommands": "--help",
+          "browserInvocations": 1,
+          "browserInvoked": true,
+          "browserSkillDigest": "0abf021afb1077e850206672bec17b876e203032831f767f9be7f6df73f7613f",
+          "candidateId": "d9e73a60dd3adecb411e6ddbde654153",
+          "capability": "browser",
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-s4c-live-IR9kuj/factory-worker-runs-361011194/attempt-1842618351",
+          "diffBytes": 1166,
+          "diffStat": "src/app.js    | 4 ++--\n src/filter.js | 6 ++++--\n 2 files changed, 6 insertions(+), 4 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "6a156b90-1763-4da1-acdd-5b7d9dd07eae",
+          "testExit": 0,
+          "timelineLines": 36,
+          "timelineSteps": "Edit:2,Read:12,Shell:5,Thought:5,User:1,Write:1",
+          "toolSteps": 20,
+          "workspaceId": "wks_16d70c98439a1429"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "719c8cd18f89322649bb1a5d1a1dbe2d",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain",
+          "browser"
+        ],
+        "specBindingHash": "ca119a78f4ccc6a85a0630d05bd64419c59f56b6ef3612a9b561600d94c065c6",
+        "createdAt": "2026-10-21T04:37:04.307Z",
+        "updatedAt": "2026-10-21T04:37:50.923Z"
+      }
+    },
+    {
+      "project": "calculator",
+      "campaignId": "4c626fd4bb2a7a5c7d7031cf0c7c7310",
+      "actionId": "5e7999d43df473db42291586e971b3ae",
+      "specId": "ec726cb9ec7614a8c3b58673aacd4de9",
+      "status": "accepted",
+      "reason": "quality gate ACCEPTED",
+      "candidate": "6703904713ea3711964ac69b04da6471262fe9eb",
+      "decision": "ACCEPTED",
+      "attemptsUsed": 1,
+      "maxAttempts": 4,
+      "recoveries": [],
+      "tasks": [
+        [
+          "implementer-0",
+          "succeeded",
+          "09d436b62b4a977e4f7ab9f1a8b308bf"
+        ],
+        [
+          "verifier-0",
+          "succeeded",
+          "09d436b62b4a977e4f7ab9f1a8b308bf"
+        ],
+        [
+          "reviewer-0",
+          "succeeded",
+          "09d436b62b4a977e4f7ab9f1a8b308bf"
+        ],
+        [
+          "gate-0",
+          "succeeded",
+          "09d436b62b4a977e4f7ab9f1a8b308bf"
+        ],
+        [
+          "implementer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-1",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-2",
+          "cancelled",
+          ""
+        ],
+        [
+          "implementer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "verifier-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "reviewer-3",
+          "cancelled",
+          ""
+        ],
+        [
+          "gate-3",
+          "cancelled",
+          ""
+        ]
+      ],
+      "verification": [
+        {
+          "id": "browser",
+          "kind": "browser",
+          "status": "PASS",
+          "command": [
+            "node",
+            "tests/acceptance/browser-check.mjs"
+          ],
+          "exitCode": 0,
+          "durationMs": 855,
+          "detail": "chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+        },
+        {
+          "id": "format",
+          "kind": "format",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "run",
+            "format"
+          ],
+          "exitCode": 0,
+          "durationMs": 147,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {calculate,formatResult} from './src/calc.js';if(formatResult(calculate(0.1,0.2,'add'))!=='0.3')process.exit(1);let zero;try{zero=formatResult(calculate(1,0,'divide'))}catch(error){zero=String(error.message)}if(zero!=='Cannot divide by zero')process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 19,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "status": "PASS",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import {add,subtract,multiply,divide} from './src/calc.js';if(add(2,3)!==5||subtract(9,4)!==5||multiply(6,7)!==42||divide(8,2)!==4)process.exit(1)"
+          ],
+          "exitCode": 0,
+          "durationMs": 37,
+          "detail": "exit 0 as expected"
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "status": "PASS",
+          "command": [
+            "npm",
+            "test"
+          ],
+          "exitCode": 0,
+          "durationMs": 172,
+          "detail": "exit 0 as expected"
+        }
+      ],
+      "review": "APPROVE",
+      "run": {
+        "id": "09d436b62b4a977e4f7ab9f1a8b308bf",
+        "projectId": "calculator-live",
+        "actionId": "5e7999d43df473db42291586e971b3ae",
+        "workloadKind": "paseo-task",
+        "workloadInput": {
+          "task": "Correct decimal precision handling and division-by-zero behavior in src/calc.js and src/app.js while preserving addition, subtraction, multiplication, division and button interaction. The browser must show 0.3 for 0.1 + 0.2 and 'Cannot divide by zero' for division by zero. Do not edit tests or protected files."
+        },
+        "status": "succeeded",
+        "attemptCount": 1,
+        "maxAttempts": 1,
+        "timeoutSecs": 600,
+        "leaseGeneration": 1,
+        "leaseExpiresAt": "0001-01-01T00:00:00Z",
+        "result": {
+          "candidateId": "2ab457b920b2643aa0d54958023bb959",
+          "cleanup": "ok",
+          "cwd": "/tmp/factory-s4c-live-IR9kuj/factory-worker-runs-361011194/attempt-4194800360",
+          "diffBytes": 1475,
+          "diffStat": "src/app.js  |  8 ++++----\n src/calc.js | 21 +++++++++++++++++----\n 2 files changed, 21 insertions(+), 8 deletions(-)",
+          "formatExit": 0,
+          "model": "opencode-go/deepseek-v4.1-flash",
+          "nudges": 0,
+          "paseoMode": "build",
+          "provider": "opencode",
+          "sessionId": "e5033057-60e6-41d0-b6fe-963e7b70898e",
+          "testExit": 0,
+          "timelineLines": 165,
+          "timelineSteps": "Edit:2,Read:8,Shell:10,Thought:9,User:1",
+          "toolSteps": 20,
+          "workspaceId": "wks_33c55e8e29de73b9"
+        },
+        "executionMode": "trusted-local",
+        "provider": "opencode",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "paseoMode": "build",
+        "specId": "ec726cb9ec7614a8c3b58673aacd4de9",
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain"
+        ],
+        "specBindingHash": "eaa684535e0e4825aa47ac22905bc9f39ba76cdfb68cdef58add262166833da9",
+        "createdAt": "2026-10-21T04:37:54.455Z",
+        "updatedAt": "2026-10-21T04:39:51.151Z"
+      }
+    }
+  ],
+  "earlier_f1_s4c_01": [
     {
       "project": "vlog",
       "campaignId": "ff4a4f0084958354bec39d4b17082cd0",
@@ -199,5 +1074,29 @@
       "analysis": "The agent changed src/calc.js and the independent browser oracle passed. The task-specific functional oracle assumed a sentinel return for division by zero, while the candidate threw \"Cannot divide by zero\" and the UI caught it. The verifier therefore returned FAIL and the gate REPAIR_REQUIRED. The oracle was too prescriptive; it was corrected after the session to accept either contract. This candidate was not accepted and no retry was performed."
     }
   ],
-  "disposition": "REAL_PASEO_E2E_VERIFIED not achieved"
+  "cleanup": {
+    "vlog": {
+      "workspaceId": "wks_9759c50626fe5137",
+      "sessionId": "cd61d3a7-b156-40d7-bbb6-516865717b56",
+      "state": "closed and archived"
+    },
+    "calculator": {
+      "workspaceId": "wks_99d30de856056c6e",
+      "sessionId": "19ff6178-cb6b-416b-af08-d3c80ada519b",
+      "state": "closed and archived"
+    },
+    "trial_1_vlog": {
+      "workspaceId": "wks_16d70c98439a1429",
+      "sessionId": "6a156b90-1763-4da1-acdd-5b7d9dd07eae",
+      "state": "closed and archived"
+    },
+    "trial_1_calculator": {
+      "workspaceId": "wks_33c55e8e29de73b9",
+      "sessionId": "e5033057-60e6-41d0-b6fe-963e7b70898e",
+      "state": "closed and archived"
+    }
+  },
+  "autonomous_recovery_observed_naturally": false,
+  "autonomous_recovery_note": "No recoverable failure occurred naturally in the paid sessions, so R10 is NOT_TESTED. R1-R8 recovery behavior was proven deterministically; no artificial paid failure was injected.",
+  "disposition": "REAL_PASEO_E2E_VERIFIED for implementation 11cd9e6, subject to independent final verification; PRODUCT_OWNER_UAT_VERIFIED not claimed"
 }

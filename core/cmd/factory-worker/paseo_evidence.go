@@ -268,25 +268,37 @@ func browserExecutionEvidence(workDir string) map[string]any {
 		return out
 	}
 	commands := make([]string, 0, 4)
+	successful := make([]string, 0, 4)
 	count := 0
+	successCount := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		var entry struct {
-			Command string `json:"command"`
+			Command  string `json:"command"`
+			ExitCode int    `json:"exitCode"`
+			OK       bool   `json:"ok"`
 		}
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
 		count++
-		if len(commands) < 8 && entry.Command != "" {
+		if len(commands) < 12 && entry.Command != "" {
 			commands = append(commands, entry.Command)
+		}
+		if entry.OK && entry.ExitCode == 0 {
+			successCount++
+			if len(successful) < 12 && entry.Command != "" {
+				successful = append(successful, entry.Command)
+			}
 		}
 	}
 	out["invoked"] = count > 0
 	out["invocations"] = count
+	out["successfulInvocations"] = successCount
 	out["commands"] = commands
+	out["successfulCommands"] = successful
 	return out
 }
 

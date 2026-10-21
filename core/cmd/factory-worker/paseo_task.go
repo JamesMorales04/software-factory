@@ -340,6 +340,8 @@ func runPaseoLifecycle(
 		out["browserInvocations"] = evidence["invocations"]
 		commands, _ := evidence["commands"].([]string)
 		out["browserCommands"] = strings.Join(commands, ",")
+		successful, _ := evidence["successfulCommands"].([]string)
+		out["browserSuccessfulCommands"] = strings.Join(successful, ",")
 		out["browserCLIVersion"] = evidence["cliVersion"]
 		out["browserSkillDigest"] = evidence["skillDigest"]
 	}

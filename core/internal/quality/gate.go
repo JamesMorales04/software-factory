@@ -253,7 +253,7 @@ func capabilityCheck(in Input) (domain.CheckResult, []string) {
 			"legacy spec: browser acceptance remains the Independent Verifier's protected check"), nil
 	}
 	invoked, _ := in.Run.Result["browserInvoked"].(bool)
-	commandText, _ := in.Run.Result["browserCommands"].(string)
+	commandText, _ := in.Run.Result["browserSuccessfulCommands"].(string)
 	if !invoked {
 		return gateCheck("gate-capability", domain.CheckCapability, false,
 				"browser capability was required but the Factory-managed Implementer recorded no Playwright invocation"), []string{
