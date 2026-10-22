@@ -33,6 +33,8 @@ jobs:
         run: python3 .github/scripts/test_check_pr_architecture_impact.py
       - name: Test live E2E authorization preflight with fixtures
         run: python3 scripts/test-live-e2e-authorization.py
+      - name: Prove live entrypoints make no provider call by default or without authorization
+        run: python3 -u scripts/test-live-e2e-entrypoints.py
       - name: Run checker tests
         working-directory: core
         run: go test ./cmd/architecturecheck
