@@ -369,6 +369,7 @@ func boundedAssessmentFailure(err error) string {
 	var outer struct {
 		SessionReconciliation json.RawMessage `json:"sessionReconciliation"`
 		WorkspaceArchive      string          `json:"workspaceArchive"`
+		WorkspaceCleanup      string          `json:"workspaceCleanup"`
 	}
 	if json.Unmarshal([]byte(message[index+len(marker):]), &outer) != nil || len(outer.SessionReconciliation) == 0 {
 		return "Lead assessment failed; reconciliation evidence was malformed"
@@ -379,11 +380,16 @@ func boundedAssessmentFailure(err error) string {
 	} else if strings.HasPrefix(outer.WorkspaceArchive, "failed") {
 		archiveStatus = "failed"
 	}
+	cleanupStatus := ""
+	if outer.WorkspaceCleanup == "failed" {
+		cleanupStatus = "failed"
+	}
 	reason, marshalErr := json.Marshal(struct {
 		Code                  string          `json:"code"`
 		SessionReconciliation json.RawMessage `json:"sessionReconciliation"`
 		WorkspaceArchive      string          `json:"workspaceArchive"`
-	}{"assessment_run_failed", outer.SessionReconciliation, archiveStatus})
+		WorkspaceCleanup      string          `json:"workspaceCleanup,omitempty"`
+	}{"assessment_run_failed", outer.SessionReconciliation, archiveStatus, cleanupStatus})
 	if marshalErr != nil || len(reason)+len("Lead assessment failed; reconciliation=") > 600 {
 		return "Lead assessment failed; reconciliation evidence exceeded its storage bound"
 	}

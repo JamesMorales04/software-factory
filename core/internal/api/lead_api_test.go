@@ -26,7 +26,7 @@ type reconciliationFailureAssessor struct{ calls int }
 
 func (a *reconciliationFailureAssessor) Assess(context.Context, lead.Input) (lead.Assessment, lead.Observation, error) {
 	a.calls++
-	return lead.Assessment{}, lead.Observation{}, errors.New(`lead assessment Paseo run failed; reconciliation={"runCause":"secret=redacted","sessionReconciliation":{"status":"session_reconciled","sessionId":"session_test_1","requestedProvider":"opencode","requestedModel":"opencode-go/deepseek-v4.1-flash","requestedMode":"build","observedProvider":"opencode","observedModel":"opencode-go/deepseek-v4.1-flash","observedMode":"build","observedStatus":"closed","routeStatus":"verified","stop":"ok","archive":"ok"},"workspaceArchive":"failed: /private/path"}`)
+	return lead.Assessment{}, lead.Observation{}, errors.New(`lead assessment Paseo run failed; reconciliation={"runCause":"secret=redacted","sessionReconciliation":{"status":"session_reconciled","sessionId":"session_test_1","requestedProvider":"opencode","requestedModel":"opencode-go/deepseek-v4.1-flash","requestedMode":"build","observedProvider":"opencode","observedModel":"opencode-go/deepseek-v4.1-flash","observedMode":"build","observedStatus":"closed","routeStatus":"verified","stop":"ok","archive":"ok"},"workspaceArchive":"failed: /private/path","workspaceCleanup":"failed"}`)
 }
 
 func (a *fixtureAssessor) Assess(_ context.Context, input lead.Input) (lead.Assessment, lead.Observation, error) {
@@ -484,6 +484,7 @@ func TestLeadPersistsBoundedMachineReadableSessionReconciliation(t *testing.T) {
 	var evidence struct {
 		Code                  string `json:"code"`
 		WorkspaceArchive      string `json:"workspaceArchive"`
+		WorkspaceCleanup      string `json:"workspaceCleanup"`
 		SessionReconciliation struct {
 			Status           string `json:"status"`
 			SessionID        string `json:"sessionId"`
@@ -499,7 +500,8 @@ func TestLeadPersistsBoundedMachineReadableSessionReconciliation(t *testing.T) {
 	}
 	if evidence.Code != "assessment_run_failed" || evidence.SessionReconciliation.SessionID != "session_test_1" ||
 		evidence.SessionReconciliation.Status != "session_reconciled" || evidence.SessionReconciliation.RouteStatus != "verified" ||
-		evidence.SessionReconciliation.ObservedProvider != "opencode" || evidence.WorkspaceArchive != "failed" {
+		evidence.SessionReconciliation.ObservedProvider != "opencode" || evidence.WorkspaceArchive != "failed" ||
+		evidence.WorkspaceCleanup != "failed" {
 		t.Fatalf("persisted reconciliation identity/status incomplete: %+v", evidence)
 	}
 	if strings.Contains(out.Request.FailureReason, "secret") || strings.Contains(out.Request.FailureReason, "/private/path") {

@@ -160,6 +160,14 @@ func TestAssessmentRunFailureEvidenceFitsPersistenceBoundAtMaximumSessionID(t *t
 	if decoded.SessionReconciliation.SessionID != evidence.SessionReconciliation.SessionID {
 		t.Fatal("bounded evidence lost the session identity")
 	}
+	cleaned := applyAssessmentWorkspaceCleanup(evidence, nil)
+	if len(cleaned.Error()) > 560 {
+		t.Fatalf("successful cleanup pushed maximum evidence past its bound: %d bytes", len(cleaned.Error()))
+	}
+	var cleanedEvidence assessmentRunFailureEvidence
+	if !errors.As(cleaned, &cleanedEvidence) || cleanedEvidence.WorkspaceCleanup != "" {
+		t.Fatalf("successful cleanup added an unnecessary field: %+v", cleaned)
+	}
 }
 
 func TestAssessmentWorkspaceCleanupPreservesFailureEvidence(t *testing.T) {
@@ -190,8 +198,8 @@ func TestAssessmentWorkspaceCleanupPreservesFailureEvidence(t *testing.T) {
 		t.Fatalf("cleanup status did not survive encoding: %+v", decoded)
 	}
 	err = applyAssessmentWorkspaceCleanup(original, nil)
-	if !errors.As(err, &evidence) || evidence.WorkspaceCleanup != "ok" {
-		t.Fatalf("successful cleanup was not recorded: %+v", err)
+	if !errors.As(err, &evidence) || evidence.WorkspaceCleanup != "" {
+		t.Fatalf("successful cleanup altered the evidence bound: %+v", err)
 	}
 	sentinel := errors.New("other failure")
 	err = applyAssessmentWorkspaceCleanup(sentinel, errors.New("remove failed"))

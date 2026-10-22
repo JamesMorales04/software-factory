@@ -45,7 +45,6 @@ type assessmentRunFailureEvidence struct {
 func applyAssessmentWorkspaceCleanup(returnErr, cleanupErr error) error {
 	var runFailure assessmentRunFailureEvidence
 	if errors.As(returnErr, &runFailure) {
-		runFailure.WorkspaceCleanup = "ok"
 		if cleanupErr != nil {
 			runFailure.WorkspaceCleanup = "failed"
 		}
@@ -71,7 +70,11 @@ func (e assessmentRunFailureEvidence) Error() string {
 	if len(message) <= maxErrorBytes {
 		return message
 	}
-	return prefix + `{"runCause":"failed","sessionReconciliation":{"status":"evidence_compacted","routeStatus":"unknown","stop":"not_attempted","archive":"not_attempted"},"workspaceArchive":"unknown"}`
+	cleanup := ""
+	if e.WorkspaceCleanup == "failed" {
+		cleanup = `,"workspaceCleanup":"failed"`
+	}
+	return prefix + `{"runCause":"failed","sessionReconciliation":{"status":"evidence_compacted","routeStatus":"unknown","stop":"not_attempted","archive":"not_attempted"},"workspaceArchive":"unknown"` + cleanup + `}`
 }
 
 type sessionReconciliation struct {
