@@ -40,3 +40,26 @@ func TestEventProjectionDropsLegacySourceExcerpt(t *testing.T) {
 		t.Fatal("projection mutated the source event")
 	}
 }
+
+func TestLeadEventRequiresClosedAggregateAndSanitizedPayload(t *testing.T) {
+	event := Event{
+		EventID: "event-1", EventType: EventLeadRequestCreated, SchemaVersion: EventSchemaVersion,
+		AggregateType: AggregateLeadRequest, AggregateID: "request-1", Sequence: 1,
+		Payload: map[string]any{
+			"requestId": "request-1", "projectId": "project-1", "requestHash": "hash",
+			"delegationId": "grant-1", "projectConfigHash": "config-hash", "status": "submitted",
+		},
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("valid Lead event rejected: %v", err)
+	}
+	event.AggregateType = AggregateProject
+	if err := event.Validate(); err == nil {
+		t.Fatal("Lead event accepted on the wrong aggregate")
+	}
+	event.AggregateType = AggregateLeadRequest
+	event.Payload["objective"] = "raw objective must not enter event history"
+	if err := event.Validate(); err == nil {
+		t.Fatal("Lead event accepted an unapproved payload field")
+	}
+}

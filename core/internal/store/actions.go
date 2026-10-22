@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
@@ -96,6 +97,113 @@ func (db *DB) CreateAction(ctx context.Context, params domain.NewActionParams, c
 		return domain.Action{}, false, err
 	}
 	return actionWithSeq, false, nil
+}
+
+// CreateLeadAction atomically creates the Action, appends ActionCreated, and
+// binds that Action to its reserved Lead request. The request-scoped
+// idempotency key is fixed so retries cannot create an unowned Action.
+func (db *DB) CreateLeadAction(ctx context.Context, requestID string, params domain.NewActionParams, correlationID string) (domain.Action, bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Action{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	request, err := scanLeadRequest(tx.QueryRowContext(ctx,
+		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE id=?`, requestID))
+	if err != nil {
+		return domain.Action{}, false, err
+	}
+	if params.ProjectID != request.ProjectID || params.IdempotencyKey != "lead-action-"+requestID {
+		return domain.Action{}, false, fmt.Errorf("%w: Lead Action identity does not match its reservation", domain.ErrUnauthorized)
+	}
+	if request.ActionID != "" {
+		action, err := scanAction(tx.QueryRowContext(ctx,
+			`SELECT id, project_id, title, description, status, idempotency_key, created_at, updated_at FROM actions WHERE id=?`, request.ActionID))
+		if err != nil {
+			return domain.Action{}, false, err
+		}
+		if action.ProjectID != request.ProjectID || action.IdempotencyKey != params.IdempotencyKey {
+			return domain.Action{}, false, fmt.Errorf("%w: Lead Action binding does not match its reservation", domain.ErrConflict)
+		}
+		if err := tx.Commit(); err != nil {
+			return domain.Action{}, false, err
+		}
+		return action, true, nil
+	}
+	if request.Status != "submitted" {
+		return domain.Action{}, false, fmt.Errorf("%w: Lead Action must be created before assessment", domain.ErrInvalidTransition)
+	}
+	var projectExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT TRUE FROM projects WHERE id=?`, params.ProjectID).Scan(&projectExists); err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Action{}, false, fmt.Errorf("%w: unknown projectId %q", domain.ErrInvalidInput, params.ProjectID)
+		}
+		return domain.Action{}, false, err
+	}
+	now := db.now()
+	action := domain.Action{ID: newID(), ProjectID: params.ProjectID, Title: params.Title,
+		Description: params.Description, Status: domain.StatusPending, IdempotencyKey: params.IdempotencyKey,
+		CreatedAt: now, UpdatedAt: now}
+	actionReplay := false
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO actions(id, project_id, title, description, status, idempotency_key, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?)`, action.ID, action.ProjectID, action.Title, action.Description,
+		string(action.Status), action.IdempotencyKey, stamp(now), stamp(now))
+	if err != nil {
+		existing, findErr := findByIdempotencyKey(ctx, tx, params.IdempotencyKey)
+		if findErr != nil {
+			return domain.Action{}, false, fmt.Errorf("insert Lead Action: %w", err)
+		}
+		if existing.ProjectID != request.ProjectID {
+			return domain.Action{}, false, fmt.Errorf("%w: Lead Action idempotency key belongs to another Project", domain.ErrConflict)
+		}
+		action = existing
+		actionReplay = true
+	} else {
+		payload, _ := json.Marshal(map[string]any{"projectId": action.ProjectID, "title": action.Title,
+			"description": action.Description, "status": string(action.Status)})
+		event := domain.Event{EventID: newID(), EventType: domain.EventActionCreated,
+			SchemaVersion: domain.EventSchemaVersion, AggregateType: domain.AggregateAction,
+			AggregateID: action.ID, Sequence: 1, OccurredAt: now, RecordedAt: now,
+			CorrelationID: correlationID, Actor: ActorLocalOperator, Payload: mustDecode(payload)}
+		if err := insertEvent(ctx, tx, event); err != nil {
+			return domain.Action{}, false, err
+		}
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE lead_requests SET action_id=?, updated_at=? WHERE id=? AND status='submitted' AND action_id=''`,
+		action.ID, stamp(now), requestID)
+	if err != nil {
+		return domain.Action{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		if err == nil {
+			err = fmt.Errorf("%w: Lead Action reservation changed concurrently", domain.ErrConflict)
+		}
+		return domain.Action{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Action{}, false, err
+	}
+	stored, err := db.GetAction(action.ID)
+	return stored, actionReplay, err
+}
+
+func scanAction(row interface{ Scan(...any) error }) (domain.Action, error) {
+	var action domain.Action
+	var description, key sql.NullString
+	var status, created, updated string
+	if err := row.Scan(&action.ID, &action.ProjectID, &action.Title, &description, &status,
+		&key, &created, &updated); err != nil {
+		return domain.Action{}, err
+	}
+	action.Description, action.IdempotencyKey = description.String, key.String
+	action.Status = domain.ActionStatus(status)
+	action.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	action.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return action, nil
 }
 
 func findByIdempotencyKey(ctx context.Context, tx *sql.Tx, key string) (domain.Action, error) {

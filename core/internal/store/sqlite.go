@@ -381,6 +381,79 @@ CREATE TABLE IF NOT EXISTS campaign_recoveries (
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
 	ON campaign_recoveries(campaign_id, created_at);
+-- S4-D intake reserves request identity before any semantic session. All
+-- grant, assessment, proposal, and plan records are Core-owned and durable.
+CREATE TABLE IF NOT EXISTS standing_delegations (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	revision INTEGER NOT NULL,
+	content_hash TEXT NOT NULL,
+	delegation_json TEXT NOT NULL,
+	revoked_at TEXT NOT NULL DEFAULT '',
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	UNIQUE(project_id, revision)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_standing_delegations_key
+	ON standing_delegations(idempotency_key) WHERE idempotency_key<>'';
+CREATE TABLE IF NOT EXISTS lead_requests (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	objective TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	status TEXT NOT NULL,
+	delegation_id TEXT NOT NULL REFERENCES standing_delegations(id),
+	project_config_hash TEXT NOT NULL,
+	action_id TEXT NOT NULL DEFAULT '',
+	failure_reason TEXT NOT NULL DEFAULT '',
+	assessment_id TEXT NOT NULL DEFAULT '',
+	proposal_id TEXT NOT NULL DEFAULT '',
+	frozen_plan_id TEXT NOT NULL DEFAULT '',
+	spec_id TEXT NOT NULL DEFAULT '',
+	campaign_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE(delegation_id)
+);
+CREATE TABLE IF NOT EXISTS lead_assessments (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	mechanism TEXT NOT NULL,
+	assessment_json TEXT NOT NULL,
+	route_json TEXT NOT NULL,
+	assessment_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lead_proposals (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	assessment_id TEXT NOT NULL REFERENCES lead_assessments(id),
+	proposal_json TEXT NOT NULL,
+	content_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS frozen_lead_plans (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	proposal_id TEXT NOT NULL UNIQUE REFERENCES lead_proposals(id),
+	delegation_id TEXT NOT NULL REFERENCES standing_delegations(id),
+	proposal_hash TEXT NOT NULL,
+	delegation_hash TEXT NOT NULL,
+	project_config_revision INTEGER NOT NULL,
+	project_config_hash TEXT NOT NULL,
+	plan_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds

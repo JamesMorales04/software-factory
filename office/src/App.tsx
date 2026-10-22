@@ -7,6 +7,7 @@ import { Agents } from "./views/Agents";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { Dashboard } from "./views/Dashboard";
+import { Lead } from "./views/Lead";
 import { Projects } from "./views/Projects";
 import { RunDetail } from "./views/RunDetail";
 import { Runs } from "./views/Runs";
@@ -59,7 +60,7 @@ export function App() {
           <Link to="/" className="brand">
             Factory Office
           </Link>{" "}
-          <span className="muted">S4-C</span>
+          <span className="muted">S4-D</span>
         </h1>
         <nav>
           <NavLink
@@ -79,6 +80,15 @@ export function App() {
             }
           >
             Projects
+          </NavLink>
+          <NavLink
+            to="/lead"
+            end
+            className={({ isActive }) =>
+              isActive ? "navlink active" : "navlink"
+            }
+          >
+            Lead
           </NavLink>
           <NavLink
             to="/actions"
@@ -141,6 +151,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/projects" element={<Projects />} />
+          <Route path="/lead" element={<Lead />} />
           <Route path="/actions" element={<Actions />} />
           <Route path="/actions/:id" element={<ActionDetail />} />
           <Route path="/campaigns" element={<Campaigns />} />

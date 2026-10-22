@@ -41,6 +41,105 @@ export interface Project {
   updatedAt: string;
 }
 
+/** Server-owned Lead assessment and authorization projection. Fields that
+ * have not been produced by Core remain absent and are rendered as such. */
+export interface LeadRequest {
+  id: string;
+  projectId: string;
+  objective: string;
+  delegationId?: string;
+  status:
+    | "submitted"
+    | "assessing"
+    | "planned"
+    | "frozen"
+    | "needs_review"
+    | "ready"
+    | "running"
+    | "blocked"
+    | "accepted"
+    | "failed"
+    | "cancelled";
+  assessment?: LeadAssessment;
+  modelObservation?: LeadModelObservation;
+  plan?: LeadPlanProposal;
+  planHash?: string;
+  campaignStatus?: string;
+  failureReason?: string;
+  authorizationState?: "permitted" | "denied";
+  actionId?: string;
+  actionSpecId?: string;
+  campaignId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadAssessment {
+  schemaRevision?: number;
+  projectId?: string;
+  actionId?: string;
+  requestId?: string;
+  evidenceRefs?: string[];
+  intent?: string;
+  complexity?: string;
+  knowledgeGaps?: string[];
+  changeImpact?: string[];
+  validationNeeds?: string[];
+  assumptions?: string[];
+  uncertainty?: string[];
+  suggestedNextAction?: string;
+  effortEstimate: {
+    status: "estimated" | "unknown" | "not_requested";
+    unit: "person-hours" | "";
+    minPersonHours: number;
+    maxPersonHours: number;
+    assumptions: string[];
+    unknownReason: string;
+  };
+  proposal?: LeadPlanProposal;
+}
+
+export interface LeadModelObservation {
+  mechanism?: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+  sessionId?: string;
+  elapsed?: number;
+  inputBytes?: number;
+  outputBytes?: number;
+}
+
+export interface LeadPlanProposal {
+  projectId?: string;
+  actionId?: string;
+  baseRevision?: string;
+  projectConfigHash?: string;
+  objective?: string;
+  class?: string;
+  assumptions?: string[];
+  risks?: string[];
+  acceptanceCriteria?: SpecCheck[];
+  negativeCases?: SpecCheck[];
+  qualityProfile?: string;
+  riskClass?: string;
+  budget?: { maxAttempts?: number; timeoutSecs?: number };
+  provider?: string;
+  model?: string;
+  paseoMode?: string;
+  maxRepairCycles?: number;
+  maxWallClockSecs?: number;
+  maxParallel?: number;
+  maxSessions?: number;
+  workUnits?: Array<{
+    id?: string;
+    kind?: string;
+    dependsOn?: string[];
+    allowedPaths?: string[];
+    capabilities?: Capability[];
+  }>;
+}
+
 export interface Action {
   id: string;
   projectId: string;
@@ -527,6 +626,32 @@ export const api = {
     request<{ project: Project }>(
       `/api/v1/projects/${encodeURIComponent(id)}`,
     ).then((r) => r.data.project),
+  createLeadRequest: (
+    input: {
+      projectId: string;
+      objective: string;
+      delegationId: string;
+    },
+    idempotencyKey: string,
+  ) =>
+    request<{ request: LeadRequest }>("/api/v1/lead/requests", {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey,
+    }),
+  getLeadRequest: (id: string) =>
+    request<{ request: LeadRequest }>(
+      `/api/v1/lead/requests/${encodeURIComponent(id)}`,
+    ).then((r) => r.data.request),
+  getLeadRequestEvents: (id: string) =>
+    request<{ events: FactoryEvent[] }>(
+      `/api/v1/lead/requests/${encodeURIComponent(id)}/events`,
+    ).then((r) => r.data.events),
+  startLeadRequest: (id: string) =>
+    request<{ request: LeadRequest }>(
+      `/api/v1/lead/requests/${encodeURIComponent(id)}/start`,
+      { method: "POST", body: "{}" },
+    ).then((r) => r.data.request),
   registerProject: (input: {
     id: string;
     name: string;

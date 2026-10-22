@@ -50,6 +50,12 @@ func scanProject(row interface{ Scan(dest ...any) error }) (domain.Project, erro
 	if err := json.Unmarshal([]byte(endpoints), &p.BrowserEndpoints); err != nil {
 		return domain.Project{}, err
 	}
+	// Project normalization represents an absent browser endpoint list as nil.
+	// The database encoder stores both nil and empty slices as `[]`, so restore
+	// that canonical representation before validating the configuration hash.
+	if len(p.BrowserEndpoints) == 0 {
+		p.BrowserEndpoints = nil
+	}
 	if testServer != "" && testServer != "null" {
 		var server domain.BrowserTestServer
 		if err := json.Unmarshal([]byte(testServer), &server); err != nil {

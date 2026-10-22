@@ -198,6 +198,14 @@ func (e *Engine) reconcilePendingActionState(ctx context.Context) {
 
 func (e *Engine) reconcileCampaign(ctx context.Context, campaign domain.Campaign) {
 	correlation := "campaign-tick-" + randomID()
+	if applicable, authorized, aerr := e.db.CheckLeadCampaignAuthorization(ctx, campaign.ID); aerr != nil {
+		e.log.Error("lead authorization check failed", "campaignId", campaign.ID, "error", aerr.Error())
+		return
+	} else if applicable && !authorized {
+		e.cancelCampaignRuns(ctx, campaign, "lead delegation is expired, revoked, or stale", correlation)
+		e.block(ctx, campaign, "lead delegation is expired, revoked, or stale", correlation)
+		return
+	}
 	action, err := e.db.GetAction(campaign.ActionID)
 	if err != nil {
 		e.log.Error("load campaign action failed", "campaignId", campaign.ID, "error", err.Error())
