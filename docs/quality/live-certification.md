@@ -41,7 +41,8 @@ implementation SHA and the executable oracle.
 ### REAL_PASEO_E2E_VERIFIED
 
 At least one bounded, genuine Factory-managed Paseo/model Run has exercised the
-relevant affected execution capability. Record:
+relevant affected execution capability. A successful deterministic or non-Paseo
+Run cannot satisfy this level, even when its other acceptance records pass. Record:
 
 - exact Factory implementation SHA;
 - provider, model and mode;
@@ -84,12 +85,13 @@ the owner's manual acceptance on their behalf.
 - Simulated records and real records remain distinguishable in evidence.
 - A REAL_PASEO_E2E_VERIFIED record must bind implementation SHA, Project,
   Action, frozen spec, Campaign, Run, Attempt, frozen candidate, independent
-  verifier and reviewer, Quality Gate decision, and explicit cleanup. Provider,
-  model, mode and session identities are required when the source Run used a
-  model session. Capability-specific observations are checked against the
-  frozen ActionSpec. Simulation evidence cannot satisfy the live level. A
-  subsequent runtime change invalidates the certification unless its impact is
-  assessed and a new candidate-bound certification is recorded.
+  verifier and reviewer, Quality Gate decision, and explicit cleanup. The source
+  Run must be a Paseo workload with matching provider, model, mode, session,
+  workspace and successful terminal binding identities. Capability-specific
+  observations are checked against the frozen ActionSpec. Simulation evidence
+  cannot satisfy the live level. A subsequent runtime change invalidates the
+  certification unless its impact is assessed and a new candidate-bound
+  certification is recorded.
 - This policy does not certify SEC-01 isolation, authorize unsafe sandbox
   modes, or grant delivery/merge authority.
 

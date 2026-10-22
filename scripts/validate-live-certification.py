@@ -25,6 +25,7 @@ except ImportError:  # give a useful message instead of a traceback
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
 LIVE_LEVEL = "REAL_PASEO_E2E_VERIFIED"
+NON_LIVE_MODES = {"simulation", "simulated", "stub", "stubbed", "synthetic", "mock", "mocked"}
 
 
 def _load(path: Path, errors: list[str], label: str) -> dict[str, Any]:
@@ -57,6 +58,10 @@ def _schema_errors(manifest: dict[str, Any], schema: dict[str, Any]) -> list[str
 def _same(manifest: dict[str, Any], key: str, expected: Any, errors: list[str]) -> None:
     if manifest.get(key) != expected:
         errors.append(f"{key} does not match source evidence")
+
+
+def _identity(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and not any(char.isspace() for char in value)
 
 
 def _git_commit_exists(repo_root: Path, sha: str) -> bool:
@@ -191,7 +196,7 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
     if errors:
         return errors
 
-    if source.get("status", "").startswith("SIMULATED") or source.get("paseo_mode") in {"simulation", "simulated"}:
+    if str(source.get("status", "")).upper().startswith(("SIMULATED", "STUB", "SYNTHETIC")) or str(source.get("paseo_mode", "")).lower() in NON_LIVE_MODES:
         errors.append("simulated evidence cannot support REAL_PASEO_E2E_VERIFIED")
     if source.get("campaign_status") != "accepted" or source.get("decision", {}).get("status") != "ACCEPTED":
         errors.append("source evidence does not record an accepted Quality Gate")
@@ -222,7 +227,7 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
             or spec.get("projectId") != manifest["project_id"]
             or spec.get("contentHash") != evidence.get("candidate", {}).get("specHash")):
         errors.append("frozen ActionSpec identity or content hash is missing or mismatched")
-    if spec.get("specBindingHash", manifest["spec_binding_hash"]) != manifest["spec_binding_hash"]:
+    if spec.get("bindingHash") != manifest["spec_binding_hash"]:
         errors.append("frozen ActionSpec binding hash does not match manifest")
 
     runs = source.get("runs", [])
@@ -243,53 +248,58 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
     result = run.get("result", {})
 
     session_id = manifest.get("session_id")
-    model_execution = bool(result.get("sessionId") or run.get("workloadKind") == "paseo-task")
-    if model_execution:
-        for key, source_key in (("provider", "provider"), ("model", "model"), ("mode", "paseoMode"),
-                                ("session_id", "sessionId"), ("workspace_id", "workspaceId")):
-            _same(manifest, key, result.get(source_key), errors)
-        bindings = source.get("session_bindings", [])
-        binding = next((b for b in bindings if b.get("sessionId") == session_id), None)
-        if not binding:
-            errors.append("session_id has no source session binding")
+    if run.get("workloadKind") != "paseo-task":
+        errors.append("REAL_PASEO_E2E_VERIFIED requires a Factory-managed paseo-task Run")
+    for key, source_key in (("provider", "provider"), ("model", "model"), ("mode", "paseoMode"),
+                            ("session_id", "sessionId"), ("workspace_id", "workspaceId")):
+        if not _identity(manifest.get(key)) or not _identity(result.get(source_key)):
+            errors.append(f"real Paseo execution requires valid {key} identities in manifest and Run result")
+        _same(manifest, key, result.get(source_key), errors)
+    for key, source_key in (("provider", "provider"), ("model", "model"), ("mode", "paseoMode")):
+        if not _identity(run.get(source_key)) or run.get(source_key) != manifest.get(key):
+            errors.append(f"authoritative Run {source_key} does not match the manifest")
+    if str(result.get("paseoMode", "")).lower() in NON_LIVE_MODES:
+        errors.append("stubbed or simulated Run mode cannot support REAL_PASEO_E2E_VERIFIED")
+    bindings = source.get("session_bindings", [])
+    binding = next((b for b in bindings if b.get("sessionId") == session_id), None)
+    if not binding:
+        errors.append("session_id has no source session binding")
+    else:
+        for field, expected in (("runId", manifest["run_id"]), ("attemptId", manifest["attempt_id"]),
+                                ("workspaceId", manifest.get("workspace_id")), ("provider", manifest.get("provider")),
+                                ("model", manifest.get("model")), ("mode", manifest.get("mode"))):
+            if binding.get(field) != expected:
+                errors.append(f"session binding {field} does not match manifest")
+        if binding.get("status") != "succeeded" or binding.get("runStatus") != "succeeded":
+            errors.append("session binding is not terminal-success")
+    recorded_budget = source.get("authorization", {}).get("max_paid_implementer_sessions")
+    spent = source.get("paid_sessions_spent")
+    if type(recorded_budget) is int and type(spent) is int and spent > recorded_budget:
+        errors.append("recorded session use exceeds source campaign authorization")
+    if source.get("provider") and source.get("provider") != manifest.get("provider"):
+        errors.append("manifest provider differs from the source campaign route")
+    if source.get("model") and source.get("model") != manifest.get("model"):
+        errors.append("manifest model differs from the source campaign route")
+    if manifest["schema_version"] == 2:
+        authorization = manifest.get("authorization")
+        if authorization is None:
+            errors.append("version 2 model execution requires explicit campaign authorization")
         else:
-            for field, expected in (("runId", manifest["run_id"]), ("attemptId", manifest["attempt_id"]),
-                                    ("workspaceId", manifest.get("workspace_id")), ("provider", manifest.get("provider")),
-                                    ("model", manifest.get("model")), ("mode", manifest.get("mode"))):
-                if binding.get(field) != expected:
-                    errors.append(f"session binding {field} does not match manifest")
-            if binding.get("status") != "succeeded" or binding.get("runStatus") != "succeeded":
-                errors.append("session binding is not terminal-success")
-        recorded_budget = source.get("authorization", {}).get("max_paid_implementer_sessions")
-        spent = source.get("paid_sessions_spent")
-        if type(recorded_budget) is int and type(spent) is int and spent > recorded_budget:
-            errors.append("recorded session use exceeds source campaign authorization")
-        if source.get("provider") and source.get("provider") != manifest.get("provider"):
-            errors.append("manifest provider differs from the source campaign route")
-        if source.get("model") and source.get("model") != manifest.get("model"):
-            errors.append("manifest model differs from the source campaign route")
-        if manifest["schema_version"] == 2:
-            authorization = manifest.get("authorization")
-            if authorization is None:
-                errors.append("version 2 model execution requires explicit campaign authorization")
-            else:
-                route = authorization.get("route", {})
-                if authorization.get("campaign_id") != manifest.get("campaign_id"):
-                    errors.append("authorization campaign identity does not match manifest")
-                if route.get("provider") != manifest.get("provider") or route.get("model") != manifest.get("model"):
-                    errors.append("authorized provider/model route does not match manifest")
-                if route.get("provider") != source.get("provider") or route.get("model") != source.get("model"):
-                    errors.append("authorized route does not match source campaign route")
-                if type(recorded_budget) is not int or recorded_budget <= 0:
-                    errors.append("source campaign authorization has no positive session budget")
-                elif authorization.get("max_sessions", 0) > recorded_budget:
-                    errors.append("manifest authorized budget exceeds source campaign authorization")
-                if type(spent) is not int or spent < 0:
-                    errors.append("source campaign does not record session spend")
-                elif spent > authorization.get("max_sessions", 0):
-                    errors.append("recorded session use exceeds manifest authorized budget")
-    elif any(manifest.get(k) for k in ("provider", "model", "mode", "session_id", "workspace_id")):
-        errors.append("manifest claims a model session absent from the source Run")
+            route = authorization.get("route", {})
+            if authorization.get("campaign_id") != manifest.get("campaign_id"):
+                errors.append("authorization campaign identity does not match manifest")
+            if route.get("provider") != manifest.get("provider") or route.get("model") != manifest.get("model"):
+                errors.append("authorized provider/model route does not match manifest")
+            if route.get("provider") != source.get("provider") or route.get("model") != source.get("model"):
+                errors.append("authorized route does not match source campaign route")
+            if type(recorded_budget) is not int or recorded_budget <= 0:
+                errors.append("source campaign authorization has no positive session budget")
+            elif authorization.get("max_sessions", 0) > recorded_budget:
+                errors.append("manifest authorized budget exceeds source campaign authorization")
+            if type(spent) is not int or spent < 0:
+                errors.append("source campaign does not record session spend")
+            elif spent > authorization.get("max_sessions", 0):
+                errors.append("recorded session use exceeds manifest authorized budget")
 
     _check_capability_evidence(manifest, source, run, evidence, spec, errors)
 

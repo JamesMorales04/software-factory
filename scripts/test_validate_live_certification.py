@@ -82,6 +82,75 @@ class CertificationManifestTests(unittest.TestCase):
         manifest, source = self._non_browser_campaign()
         self.assertEqual([], self.validate_manifest(manifest, source))
 
+    def test_v2_model_backed_browser_campaign_remains_valid(self):
+        manifest = copy.deepcopy(self.manifest)
+        source = copy.deepcopy(self.source)
+        manifest["schema_version"] = 2
+        manifest["authorization"] = {
+            "campaign_id": manifest["campaign_id"],
+            "max_sessions": 2,
+            "route": {"provider": manifest["provider"], "model": manifest["model"]},
+        }
+        self.assertEqual([], self.validate_manifest(manifest, source))
+
+    def test_real_level_rejects_non_paseo_workload_with_session_records(self):
+        manifest, source = self._non_browser_campaign()
+        source["runs"][0]["run"]["workloadKind"] = "command"
+        self.assertTrue(any("paseo-task Run" in error for error in self.validate_manifest(manifest, source)))
+
+    def test_real_level_rejects_non_paseo_workload_without_session_records(self):
+        manifest, source = self._non_browser_campaign()
+        for key in ("provider", "model", "mode", "session_id", "workspace_id", "authorization"):
+            manifest.pop(key, None)
+        run = source["runs"][0]["run"]
+        run["workloadKind"] = "command"
+        for key in ("provider", "model", "paseoMode", "sessionId", "workspaceId"):
+            run["result"].pop(key, None)
+        source["session_bindings"] = []
+        source["cleanup"]["session_cleanup"] = []
+        source.pop("authorization", None)
+        source.pop("paid_sessions_spent", None)
+        errors = self.validate_manifest(manifest, source)
+        self.assertTrue(any("schema" in error for error in errors), errors)
+        manifest, source = self._non_browser_campaign()
+        source["runs"][0]["run"]["workloadKind"] = "command"
+        source["runs"][0]["run"]["result"] = {}
+        source["session_bindings"] = []
+        errors = self.validate_manifest(manifest, source)
+        self.assertTrue(any("paseo-task Run" in error for error in errors), errors)
+
+    def test_real_level_requires_correlated_session_identity_and_terminal_binding(self):
+        def reject(label, change, expected):
+            manifest, source = self._non_browser_campaign()
+            change(manifest, source)
+            errors = self.validate_manifest(manifest, source)
+            self.assertTrue(any(expected in error for error in errors), f"{label}: {errors}")
+
+        reject("missing manifest session", lambda m, s: m.pop("session_id"), "schema")
+        reject("missing source session", lambda m, s: s["runs"][0]["run"]["result"].pop("sessionId"), "session_id")
+        reject("missing manifest workspace", lambda m, s: m.pop("workspace_id"), "schema")
+        reject("missing source workspace", lambda m, s: s["runs"][0]["run"]["result"].pop("workspaceId"), "workspace_id")
+        reject("missing binding", lambda m, s: s.update(session_bindings=[]), "no source session binding")
+        reject("wrong binding Run", lambda m, s: s["session_bindings"][0].update(runId="other-run"), "binding runId")
+        reject("wrong binding Attempt", lambda m, s: s["session_bindings"][0].update(attemptId="other-attempt"), "binding attemptId")
+        for status in ("failed", "intended", "running", "orphaned"):
+            reject(f"binding {status}", lambda m, s, value=status: s["session_bindings"][0].update(status=value), "not terminal-success")
+        for field, manifest_key in (("provider", "provider"), ("model", "model"), ("paseoMode", "mode")):
+            reject(f"missing Run {field}", lambda m, s, key=field: s["runs"][0]["run"].pop(key), "authoritative Run")
+            reject(f"missing result {field}", lambda m, s, key=field: s["runs"][0]["run"]["result"].pop(key), manifest_key)
+            reject(f"missing manifest {manifest_key}", lambda m, s, key=manifest_key: m.pop(key), "schema")
+        reject("manifest/source disagreement", lambda m, s: m.update(session_id="other-session"), "session_id")
+        reject("simulated source", lambda m, s: s.update(status="SIMULATED_SUCCESS"), "simulated evidence")
+
+        def stubbed_mode(manifest, source):
+            manifest["mode"] = "stub"
+            source["paseo_mode"] = "stub"
+            source["runs"][0]["run"]["paseoMode"] = "stub"
+            source["runs"][0]["run"]["result"]["paseoMode"] = "stub"
+            source["session_bindings"][0]["mode"] = "stub"
+
+        reject("stubbed Paseo mode", stubbed_mode, "stubbed or simulated Run mode")
+
     def test_v2_model_execution_requires_campaign_budget_and_exact_route(self):
         manifest, source = self._non_browser_campaign()
         missing_auth = copy.deepcopy(manifest)
@@ -96,6 +165,15 @@ class CertificationManifestTests(unittest.TestCase):
         missing_source_budget = copy.deepcopy(source)
         missing_source_budget["authorization"].pop("max_paid_implementer_sessions")
         self.assertTrue(self.validate_manifest(manifest, missing_source_budget))
+
+    def test_frozen_action_spec_requires_matching_binding_hash(self):
+        manifest, source = self._non_browser_campaign()
+        spec = source["candidate_evidence"][manifest["candidate_id"]]["spec"]
+        spec.pop("bindingHash")
+        self.assertTrue(any("frozen ActionSpec binding hash" in error for error in self.validate_manifest(manifest, source)))
+        manifest, source = self._non_browser_campaign()
+        source["candidate_evidence"][manifest["candidate_id"]]["spec"]["bindingHash"] = "0" * 64
+        self.assertTrue(any("frozen ActionSpec binding hash" in error for error in self.validate_manifest(manifest, source)))
 
     def test_v2_source_budget_and_spend_reject_booleans_and_malformed_values(self):
         manifest, source = self._non_browser_campaign()

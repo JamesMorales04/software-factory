@@ -103,11 +103,15 @@
     {
       "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
       "then": {
+        "required": ["provider", "model", "mode", "session_id", "workspace_id", "authorization"],
+        "properties": {
+          "provider": {"type": "string", "pattern": "^\\S+$"},
+          "model": {"type": "string", "pattern": "^\\S+$"},
+          "mode": {"type": "string", "pattern": "^\\S+$"},
+          "session_id": {"type": "string", "pattern": "^\\S+$"},
+          "workspace_id": {"type": "string", "pattern": "^\\S+$"}
+        },
         "allOf": [
-          {
-            "if": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
-            "then": {"required": ["provider", "model", "mode", "session_id", "workspace_id", "authorization"]}
-          },
           {
             "if": {"properties": {"recovery": {"properties": {"claimed": {"const": true}}, "required": ["claimed"]}}, "required": ["recovery"]},
             "then": {"properties": {"recovery": {"required": ["failed_run_id", "failed_attempt_id", "corrective_run_id"]}}}
