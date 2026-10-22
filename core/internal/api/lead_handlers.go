@@ -244,8 +244,10 @@ func (s *Server) processLeadRequest(ctx context.Context, request store.LeadReque
 		block("assessing", "Delegation or paid-session authorization changed before Lead assessment")
 		return
 	}
-	input := lead.Input{ProjectID: project.ID, ActionID: action.ID, RequestID: request.ID,
-		Objective: objective, Context: contextRefs, Project: currentProject, Grant: currentGrant, BaseRevision: base}
+	input := lead.Input{
+		ProjectID: project.ID, ActionID: action.ID, RequestID: request.ID,
+		Objective: objective, Context: contextRefs, Project: currentProject, Grant: currentGrant, BaseRevision: base,
+	}
 	assessment, observation, err := s.leadAssessor.Assess(ctx, input)
 	if err != nil {
 		block("assessing", boundedAssessmentFailure(err))
@@ -447,7 +449,7 @@ func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, act
 		return domain.ActionSpec{}, err
 	}
 	if missing := domain.MissingCapabilities(project.Capabilities, spec.Capabilities); len(missing) > 0 {
-		return domain.ActionSpec{}, fmt.Errorf("Project lacks proposed capabilities")
+		return domain.ActionSpec{}, fmt.Errorf("project lacks proposed capabilities")
 	}
 	stored, _, _, err := s.db.CreateActionSpec(ctx, spec, telemetry.CorrelationIDFrom(ctx))
 	return stored, err

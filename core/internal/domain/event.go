@@ -152,10 +152,10 @@ func (e Event) Validate() error {
 	case EventLeadRequestCreated, EventLeadRequestStarted, EventLeadAssessmentRecorded,
 		EventLeadPlanFrozen, EventLeadRequestBlocked:
 		if e.AggregateType != AggregateLeadRequest {
-			return errors.New("Lead request event must use the lead_request aggregate")
+			return errors.New("lead request event must use the lead_request aggregate")
 		}
 		if e.Payload["requestId"] != e.AggregateID {
-			return errors.New("Lead request event identity must match its aggregate")
+			return errors.New("lead request event identity must match its aggregate")
 		}
 		if err := validateLeadEventPayload(e.EventType, e.Payload); err != nil {
 			return err
@@ -209,16 +209,16 @@ func validateLeadEventPayload(eventType string, payload map[string]any) error {
 		return errors.New("unknown Lead eventType")
 	}
 	if len(payload) != len(keys) {
-		return errors.New("Lead event payload has unexpected fields")
+		return errors.New("lead event payload has unexpected fields")
 	}
 	for _, key := range keys {
 		value, ok := payload[key]
 		if !ok || value == nil {
-			return errors.New("Lead event payload is missing a required field")
+			return errors.New("lead event payload is missing a required field")
 		}
 		if key != "revision" {
 			if _, ok := value.(string); !ok {
-				return errors.New("Lead event payload fields must be strings")
+				return errors.New("lead event payload fields must be strings")
 			}
 		} else {
 			validRevision := false

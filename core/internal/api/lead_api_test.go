@@ -34,8 +34,10 @@ func (a *fixtureAssessor) Assess(_ context.Context, input lead.Input) (lead.Asse
 	assessment := lead.Assessment{
 		SchemaRevision: 1, ProjectID: input.ProjectID, ActionID: input.ActionID, RequestID: input.RequestID,
 		EvidenceRefs: []string{"repository-files"}, Intent: "change", Complexity: "small",
-		EffortEstimate: lead.EffortEstimate{Status: "estimated", Unit: "person-hours", MinPersonHours: 1, MaxPersonHours: 2,
-			Assumptions: []string{"One bounded implementation unit with existing project checks."}},
+		EffortEstimate: lead.EffortEstimate{
+			Status: "estimated", Unit: "person-hours", MinPersonHours: 1, MaxPersonHours: 2,
+			Assumptions: []string{"One bounded implementation unit with existing project checks."},
+		},
 		ValidationNeeds:     []string{"Run syntax, unit, functional and negative checks."},
 		Uncertainty:         []string{"The exact implementation has not yet been inspected."},
 		SuggestedNextAction: "Review and start the bounded Campaign.",
@@ -52,15 +54,19 @@ func (a *fixtureAssessor) Assess(_ context.Context, input lead.Input) (lead.Asse
 			Budget:   domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120},
 			Provider: input.Grant.Provider, Model: input.Grant.Model, PaseoMode: input.Grant.PaseoMode,
 			MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 1, MaxSessions: 2,
-			WorkUnits: []domain.LeadWorkUnit{{ID: "implementation", Kind: "implementation", AllowedPaths: []string{"add.js"},
-				Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}}},
+			WorkUnits: []domain.LeadWorkUnit{{
+				ID: "implementation", Kind: "implementation", AllowedPaths: []string{"add.js"},
+				Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain},
+			}},
 		},
 	}
 	if a.malformed {
 		assessment.EvidenceRefs = []string{"unavailable-evidence"}
 	}
-	return assessment, lead.Observation{Mechanism: "MODEL", Provider: input.Grant.Provider, Model: input.Grant.Model,
-		Mode: input.Grant.PaseoMode, SessionID: "fixture-session", InputBytes: 100, OutputBytes: 100}, nil
+	return assessment, lead.Observation{
+		Mechanism: "MODEL", Provider: input.Grant.Provider, Model: input.Grant.Model,
+		Mode: input.Grant.PaseoMode, SessionID: "fixture-session", InputBytes: 100, OutputBytes: 100,
+	}, nil
 }
 
 func leadFixture(t *testing.T) (*Server, string, string) {
@@ -133,8 +139,10 @@ func TestLeadObjectiveToFrozenSpecAndAuthorizedCampaign(t *testing.T) {
 	for _, event := range initialEvents {
 		seen[event.EventType] = true
 	}
-	for _, eventType := range []string{domain.EventLeadRequestCreated, domain.EventLeadRequestStarted,
-		domain.EventLeadAssessmentRecorded, domain.EventLeadPlanFrozen} {
+	for _, eventType := range []string{
+		domain.EventLeadRequestCreated, domain.EventLeadRequestStarted,
+		domain.EventLeadAssessmentRecorded, domain.EventLeadPlanFrozen,
+	} {
 		if !seen[eventType] {
 			t.Fatalf("live event %q was not published: %#v", eventType, initialEvents)
 		}
@@ -366,8 +374,10 @@ func TestLeadBoundActionCannotCreateOrStartCampaignBeforeLeadLink(t *testing.T) 
 	if err != nil || replayed {
 		t.Fatalf("reserve request: replayed=%t err=%v", replayed, err)
 	}
-	actionParams, err := (domain.NewActionParams{ProjectID: project.ID, Title: request.Objective, Description: request.Objective,
-		IdempotencyKey: "lead-action-" + request.ID}).Validate()
+	actionParams, err := (domain.NewActionParams{
+		ProjectID: project.ID, Title: request.Objective, Description: request.Objective,
+		IdempotencyKey: "lead-action-" + request.ID,
+	}).Validate()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,8 +408,10 @@ func TestLeadBoundActionCannotCreateOrStartCampaignBeforeLeadLink(t *testing.T) 
 		NegativeCases:  []domain.SpecCheck{{ID: "negative", Kind: domain.CheckNegative, Description: "Invalid input", Command: []string{"node", "--test", "tests/negative.test.js"}, TimeoutSecs: 30}},
 		QualityProfile: project.QualityProfile, RiskClass: domain.RiskR0, Budget: domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120},
 		Provider: grant.Provider, Model: grant.Model, PaseoMode: grant.PaseoMode,
-		WorkUnits: []domain.LeadWorkUnit{{ID: "implementation", Kind: "implementation", AllowedPaths: []string{"add.js"},
-			Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}}},
+		WorkUnits: []domain.LeadWorkUnit{{
+			ID: "implementation", Kind: "implementation", AllowedPaths: []string{"add.js"},
+			Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain},
+		}},
 	}
 	spec, err := srv.freezeLeadSpec(ctx, project, action, proposal)
 	if err != nil {

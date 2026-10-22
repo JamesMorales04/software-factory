@@ -653,9 +653,11 @@ func (db *DB) CreateLeadAssessment(ctx context.Context, requestID, mechanism, as
 	if actionID == "" {
 		return LeadAssessmentRecord{}, false, fmt.Errorf("%w: lead request has no bound Action", domain.ErrInvalidTransition)
 	}
-	record := LeadAssessmentRecord{ID: newID(), RequestID: requestID, ProjectID: projectID, ActionID: actionID,
+	record := LeadAssessmentRecord{
+		ID: newID(), RequestID: requestID, ProjectID: projectID, ActionID: actionID,
 		Mechanism: mechanism, AssessmentJSON: string(assessment), RouteJSON: string(route),
-		AssessmentHash: hash, IdempotencyKey: idempotencyKey, CreatedAt: db.now()}
+		AssessmentHash: hash, IdempotencyKey: idempotencyKey, CreatedAt: db.now(),
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO lead_assessments(id, request_id, project_id, action_id, mechanism, assessment_json,
 		 route_json, assessment_hash, idempotency_key, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -724,9 +726,11 @@ func (db *DB) CreateLeadProposal(ctx context.Context, requestID, assessmentID st
 	if assessmentProject != proposal.ProjectID || request.ProjectID != proposal.ProjectID || request.ActionID != proposal.ActionID {
 		return LeadProposalRecord{}, false, fmt.Errorf("%w: proposal project binding differs from request or assessment", domain.ErrUnauthorized)
 	}
-	record := LeadProposalRecord{ID: newID(), RequestID: requestID, ProjectID: proposal.ProjectID,
+	record := LeadProposalRecord{
+		ID: newID(), RequestID: requestID, ProjectID: proposal.ProjectID,
 		AssessmentID: assessmentID, Proposal: proposal, ContentHash: hash,
-		IdempotencyKey: idempotencyKey, CreatedAt: db.now()}
+		IdempotencyKey: idempotencyKey, CreatedAt: db.now(),
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO lead_proposals(id, request_id, project_id, action_id, assessment_id,
 		 content_hash, proposal_json, idempotency_key, created_at) VALUES(?,?,?,?,?,?,?,?,?)`,
@@ -814,17 +818,21 @@ func (db *DB) FreezeLeadPlan(ctx context.Context, requestID, proposalID, idempot
 	identity := struct {
 		RequestID, ProjectID, ProposalHash, GrantHash, ProjectConfigHash string
 		ProjectConfigRevision                                            int
-	}{requestID, project.ID, proposal.ContentHash, grant.ContentHash,
-		project.ConfigHash, project.ConfigRevision}
+	}{
+		requestID, project.ID, proposal.ContentHash, grant.ContentHash,
+		project.ConfigHash, project.ConfigRevision,
+	}
 	planHash, err := hashJSON(identity)
 	if err != nil {
 		return FrozenLeadPlanRecord{}, false, err
 	}
-	record := FrozenLeadPlanRecord{ID: newID(), RequestID: requestID,
+	record := FrozenLeadPlanRecord{
+		ID: newID(), RequestID: requestID,
 		ProjectID: project.ID, ProposalID: proposalID, ProposalHash: proposal.ContentHash,
 		DelegationID: grant.ID, DelegationHash: grant.ContentHash,
 		ProjectConfigRevision: project.ConfigRevision, ProjectConfigHash: project.ConfigHash,
-		PlanHash: planHash, IdempotencyKey: idempotencyKey, CreatedAt: db.now()}
+		PlanHash: planHash, IdempotencyKey: idempotencyKey, CreatedAt: db.now(),
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO frozen_lead_plans(id, request_id, project_id, proposal_id, delegation_id,
 		 proposal_hash, delegation_hash, project_config_revision, project_config_hash,
@@ -876,9 +884,7 @@ func (db *DB) GetLeadProposal(ctx context.Context, id string) (LeadProposalRecor
 // bindings before every orchestrator tick. Ordinary campaigns are not
 // governed by a Lead request and return applicable=false.
 func (db *DB) CheckLeadCampaignAuthorization(ctx context.Context, campaignID string) (applicable, authorized bool, err error) {
-	var request LeadRequest
-	err = nil
-	request, err = scanLeadRequest(db.sql.QueryRowContext(ctx,
+	request, err := scanLeadRequest(db.sql.QueryRowContext(ctx,
 		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE campaign_id=?`, strings.TrimSpace(campaignID)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, false, nil
@@ -952,8 +958,10 @@ func (db *DB) CheckLeadCampaignAuthorization(ctx context.Context, campaignID str
 	identity := struct {
 		RequestID, ProjectID, ProposalHash, GrantHash, ProjectConfigHash string
 		ProjectConfigRevision                                            int
-	}{request.ID, project.ID, plan.ProposalHash, plan.DelegationHash,
-		plan.ProjectConfigHash, plan.ProjectConfigRevision}
+	}{
+		request.ID, project.ID, plan.ProposalHash, plan.DelegationHash,
+		plan.ProjectConfigHash, plan.ProjectConfigRevision,
+	}
 	planHash, err := hashJSON(identity)
 	if err != nil {
 		return true, false, err
@@ -1025,18 +1033,6 @@ func scanLeadRequest(row interface{ Scan(...any) error }) (LeadRequest, error) {
 	return r, nil
 }
 
-func scanStandingDelegation(row interface{ Scan(...any) error }) (domain.StandingDelegation, error) {
-	var raw string
-	if err := row.Scan(&raw); err != nil {
-		return domain.StandingDelegation{}, err
-	}
-	var grant domain.StandingDelegation
-	if err := json.Unmarshal([]byte(raw), &grant); err != nil {
-		return domain.StandingDelegation{}, err
-	}
-	return grant, nil
-}
-
 func scanStandingDelegationState(row interface{ Scan(...any) error }) (domain.StandingDelegation, error) {
 	var raw, revokedAt string
 	if err := row.Scan(&raw, &revokedAt); err != nil {
@@ -1100,8 +1096,10 @@ func scanFrozenLeadPlan(row interface{ Scan(...any) error }) (FrozenLeadPlanReco
 	identity := struct {
 		RequestID, ProjectID, ProposalHash, GrantHash, ProjectConfigHash string
 		ProjectConfigRevision                                            int
-	}{r.RequestID, r.ProjectID, r.ProposalHash, r.DelegationHash,
-		r.ProjectConfigHash, r.ProjectConfigRevision}
+	}{
+		r.RequestID, r.ProjectID, r.ProposalHash, r.DelegationHash,
+		r.ProjectConfigHash, r.ProjectConfigRevision,
+	}
 	digest, err := hashJSON(identity)
 	if err != nil {
 		return FrozenLeadPlanRecord{}, err
@@ -1179,7 +1177,7 @@ func isLeadID(value string) bool {
 		return false
 	}
 	for _, char := range value {
-		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f') {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
 			return false
 		}
 	}
@@ -1187,7 +1185,8 @@ func isLeadID(value string) bool {
 }
 
 func appendLeadEvent(ctx context.Context, tx *sql.Tx, eventType, aggregateType, aggregateID, actor string,
-	payload map[string]any, now time.Time) (domain.Event, error) {
+	payload map[string]any, now time.Time,
+) (domain.Event, error) {
 	event := domain.Event{
 		EventID: newID(), EventType: eventType, SchemaVersion: domain.EventSchemaVersion,
 		AggregateType: aggregateType, AggregateID: aggregateID,

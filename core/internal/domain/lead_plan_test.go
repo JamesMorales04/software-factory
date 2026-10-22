@@ -50,7 +50,8 @@ func TestLeadPlanProposalValidatesBoundedDelegation(t *testing.T) {
 	if err := proposal.Validate(grant, project, action, now); err != nil {
 		t.Fatalf("valid proposal rejected: %v", err)
 	}
-	if proposal.ContentHash() == "" || proposal.ContentHash() != proposal.ContentHash() {
+	contentHash := proposal.ContentHash()
+	if contentHash == "" || contentHash != proposal.ContentHash() {
 		t.Fatal("proposal content hash is empty or unstable")
 	}
 }
@@ -62,7 +63,7 @@ func TestStandingDelegationRejectsExpiredRevokedAndTamperedGrants(t *testing.T) 
 	if err := grant.Validate(now); err == nil {
 		t.Fatal("revoked grant was accepted")
 	}
-	grant, _, _, _, now = validLeadInputs()
+	grant, _, _, _, _ = validLeadInputs()
 	if err := grant.Validate(grant.ExpiresAt); err == nil {
 		t.Fatal("grant at expiry boundary was accepted")
 	}

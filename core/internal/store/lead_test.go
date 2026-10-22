@@ -108,8 +108,10 @@ func TestCreateLeadActionAtomicallyBindsReservation(t *testing.T) {
 	if err != nil || replayed {
 		t.Fatalf("reserve Lead request: replayed=%v err=%v", replayed, err)
 	}
-	params := domain.NewActionParams{ProjectID: project.ID, Title: "Bound Lead Action",
-		Description: "Bound Lead Action", IdempotencyKey: "lead-action-" + request.ID}
+	params := domain.NewActionParams{
+		ProjectID: project.ID, Title: "Bound Lead Action",
+		Description: "Bound Lead Action", IdempotencyKey: "lead-action-" + request.ID,
+	}
 	action, replayed, err := db.CreateLeadAction(ctx, request.ID, params, "lead-correlation")
 	if err != nil || replayed {
 		t.Fatalf("create and bind Lead Action: replayed=%v action=%+v err=%v", replayed, action, err)
@@ -141,10 +143,14 @@ func TestConcurrentLeadRequestsCannotBothConsumeOneDelegation(t *testing.T) {
 	ctx := context.Background()
 	project, _, grant := createLeadFixture(t, db)
 	inputs := []NewLeadRequest{
-		{ProjectID: project.ID, Objective: "Concurrent request A", RequestJSON: `{"objective":"Concurrent request A"}`,
-			IdempotencyKey: "concurrent-lead-a", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash},
-		{ProjectID: project.ID, Objective: "Concurrent request B", RequestJSON: `{"objective":"Concurrent request B"}`,
-			IdempotencyKey: "concurrent-lead-b", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash},
+		{
+			ProjectID: project.ID, Objective: "Concurrent request A", RequestJSON: `{"objective":"Concurrent request A"}`,
+			IdempotencyKey: "concurrent-lead-a", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+		},
+		{
+			ProjectID: project.ID, Objective: "Concurrent request B", RequestJSON: `{"objective":"Concurrent request B"}`,
+			IdempotencyKey: "concurrent-lead-b", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+		},
 	}
 	type result struct {
 		request  LeadRequest
@@ -325,9 +331,11 @@ func TestLeadAssessmentProposalAndPlanPersistIdentity(t *testing.T) {
 		Budget:   domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120},
 		Provider: grant.Provider, Model: grant.Model, PaseoMode: grant.PaseoMode,
 		MaxRepairCycles: 0, MaxWallClockSecs: 1800, MaxParallel: 1, MaxSessions: 2,
-		WorkUnits: []domain.LeadWorkUnit{{ID: "implement", Kind: string(domain.LeadImplementationUnit),
+		WorkUnits: []domain.LeadWorkUnit{{
+			ID: "implement", Kind: string(domain.LeadImplementationUnit),
 			DependsOn: []string{}, AllowedPaths: []string{"src"},
-			Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}}},
+			Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain},
+		}},
 	}
 	proposalRecord, replayed, err := db.CreateLeadProposal(ctx, request.ID, assessment.ID, proposal, "proposal-key")
 	if err != nil || replayed {
@@ -372,8 +380,10 @@ func TestLeadAssessmentProposalAndPlanPersistIdentity(t *testing.T) {
 		t.Fatalf("frozen plan did not survive restart: %v", err)
 	}
 	events, err := reopened.ListAggregateEvents(domain.AggregateLeadRequest, request.ID)
-	wantTypes := []string{domain.EventLeadRequestCreated, domain.EventLeadRequestStarted,
-		domain.EventLeadAssessmentRecorded, domain.EventLeadPlanFrozen}
+	wantTypes := []string{
+		domain.EventLeadRequestCreated, domain.EventLeadRequestStarted,
+		domain.EventLeadAssessmentRecorded, domain.EventLeadPlanFrozen,
+	}
 	if err != nil || len(events) != len(wantTypes) {
 		t.Fatalf("lead event history did not survive restart: %d events err=%v", len(events), err)
 	}

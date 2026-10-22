@@ -265,12 +265,7 @@ func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDeleg
 		return fmt.Errorf("unsupported S4-D work unit kind %q", unit.Kind)
 	}
 	if len(unit.DependsOn) > 0 {
-		for _, dep := range unit.DependsOn {
-			if dep == unit.ID {
-				return errors.New("work unit dependency cycle")
-			}
-			return fmt.Errorf("work unit dependency %q is missing", dep)
-		}
+		return errors.New("work unit dependencies are not supported")
 	}
 	paths, err := normalizeAllowedPaths(unit.AllowedPaths)
 	if err != nil {

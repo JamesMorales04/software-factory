@@ -142,9 +142,11 @@ func (db *DB) CreateLeadAction(ctx context.Context, requestID string, params dom
 		return domain.Action{}, false, err
 	}
 	now := db.now()
-	action := domain.Action{ID: newID(), ProjectID: params.ProjectID, Title: params.Title,
+	action := domain.Action{
+		ID: newID(), ProjectID: params.ProjectID, Title: params.Title,
 		Description: params.Description, Status: domain.StatusPending, IdempotencyKey: params.IdempotencyKey,
-		CreatedAt: now, UpdatedAt: now}
+		CreatedAt: now, UpdatedAt: now,
+	}
 	actionReplay := false
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO actions(id, project_id, title, description, status, idempotency_key, created_at, updated_at)
@@ -161,12 +163,16 @@ func (db *DB) CreateLeadAction(ctx context.Context, requestID string, params dom
 		action = existing
 		actionReplay = true
 	} else {
-		payload, _ := json.Marshal(map[string]any{"projectId": action.ProjectID, "title": action.Title,
-			"description": action.Description, "status": string(action.Status)})
-		event := domain.Event{EventID: newID(), EventType: domain.EventActionCreated,
+		payload, _ := json.Marshal(map[string]any{
+			"projectId": action.ProjectID, "title": action.Title,
+			"description": action.Description, "status": string(action.Status),
+		})
+		event := domain.Event{
+			EventID: newID(), EventType: domain.EventActionCreated,
 			SchemaVersion: domain.EventSchemaVersion, AggregateType: domain.AggregateAction,
 			AggregateID: action.ID, Sequence: 1, OccurredAt: now, RecordedAt: now,
-			CorrelationID: correlationID, Actor: ActorLocalOperator, Payload: mustDecode(payload)}
+			CorrelationID: correlationID, Actor: ActorLocalOperator, Payload: mustDecode(payload),
+		}
 		if err := insertEvent(ctx, tx, event); err != nil {
 			return domain.Action{}, false, err
 		}
