@@ -26,7 +26,7 @@ type reconciliationFailureAssessor struct{ calls int }
 
 func (a *reconciliationFailureAssessor) Assess(context.Context, lead.Input) (lead.Assessment, lead.Observation, error) {
 	a.calls++
-	return lead.Assessment{}, lead.Observation{}, errors.New(`Lead assessment Paseo run failed; reconciliation={"runCause":"secret=redacted","sessionReconciliation":{"status":"session_reconciled","sessionId":"session_test_1","requestedProvider":"opencode","requestedModel":"opencode-go/deepseek-v4.1-flash","requestedMode":"build","observedProvider":"opencode","observedModel":"opencode-go/deepseek-v4.1-flash","observedMode":"build","observedStatus":"closed","routeStatus":"verified","stop":"ok","archive":"ok"},"workspaceArchive":"failed: /private/path"}`)
+	return lead.Assessment{}, lead.Observation{}, errors.New(`lead assessment Paseo run failed; reconciliation={"runCause":"secret=redacted","sessionReconciliation":{"status":"session_reconciled","sessionId":"session_test_1","requestedProvider":"opencode","requestedModel":"opencode-go/deepseek-v4.1-flash","requestedMode":"build","observedProvider":"opencode","observedModel":"opencode-go/deepseek-v4.1-flash","observedMode":"build","observedStatus":"closed","routeStatus":"verified","stop":"ok","archive":"ok"},"workspaceArchive":"failed: /private/path"}`)
 }
 
 func (a *fixtureAssessor) Assess(_ context.Context, input lead.Input) (lead.Assessment, lead.Observation, error) {

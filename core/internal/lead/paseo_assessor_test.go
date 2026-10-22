@@ -3,6 +3,7 @@ package lead
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,47 @@ func TestAssessmentRunFailureEvidenceFitsPersistenceBoundAtMaximumSessionID(t *t
 	}
 	if decoded.SessionReconciliation.SessionID != evidence.SessionReconciliation.SessionID {
 		t.Fatal("bounded evidence lost the session identity")
+	}
+}
+
+func TestAssessmentWorkspaceCleanupPreservesFailureEvidence(t *testing.T) {
+	original := assessmentRunFailureEvidence{
+		RunCause:         "timeout",
+		WorkspaceArchive: "ok",
+		SessionReconciliation: sessionReconciliation{
+			Status: "session_reconciled", SessionID: "session_lead_1",
+		},
+	}
+	err := applyAssessmentWorkspaceCleanup(original, errors.New("remove failed"))
+	var evidence assessmentRunFailureEvidence
+	if !errors.As(err, &evidence) {
+		t.Fatalf("cleanup failure replaced structured evidence: %v", err)
+	}
+	if evidence.WorkspaceCleanup != "failed" || evidence.SessionReconciliation.SessionID != "session_lead_1" {
+		t.Fatalf("unexpected cleanup evidence: %+v", evidence)
+	}
+	marker := strings.Index(err.Error(), "reconciliation=")
+	if marker < 0 {
+		t.Fatalf("reconciliation marker missing: %v", err)
+	}
+	var decoded assessmentRunFailureEvidence
+	if err := json.Unmarshal([]byte(err.Error()[marker+len("reconciliation="):]), &decoded); err != nil {
+		t.Fatalf("cleanup failure corrupted machine-readable evidence: %v", err)
+	}
+	if decoded.WorkspaceCleanup != "failed" {
+		t.Fatalf("cleanup status did not survive encoding: %+v", decoded)
+	}
+	err = applyAssessmentWorkspaceCleanup(original, nil)
+	if !errors.As(err, &evidence) || evidence.WorkspaceCleanup != "ok" {
+		t.Fatalf("successful cleanup was not recorded: %+v", err)
+	}
+	sentinel := errors.New("other failure")
+	err = applyAssessmentWorkspaceCleanup(sentinel, errors.New("remove failed"))
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("ordinary errors must preserve cause and cleanup failure: %v", err)
+	}
+	if err := applyAssessmentWorkspaceCleanup(nil, errors.New("remove failed")); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("cleanup failure was silently dropped: %v", err)
 	}
 }
 

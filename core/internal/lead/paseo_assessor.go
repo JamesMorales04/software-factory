@@ -39,6 +39,22 @@ type assessmentRunFailureEvidence struct {
 	RunCause              string                `json:"runCause"`
 	SessionReconciliation sessionReconciliation `json:"sessionReconciliation"`
 	WorkspaceArchive      string                `json:"workspaceArchive"`
+	WorkspaceCleanup      string                `json:"workspaceCleanup,omitempty"`
+}
+
+func applyAssessmentWorkspaceCleanup(returnErr, cleanupErr error) error {
+	var runFailure assessmentRunFailureEvidence
+	if errors.As(returnErr, &runFailure) {
+		runFailure.WorkspaceCleanup = "ok"
+		if cleanupErr != nil {
+			runFailure.WorkspaceCleanup = "failed"
+		}
+		return runFailure
+	}
+	if cleanupErr != nil {
+		return errors.Join(returnErr, fmt.Errorf("lead assessment temporary workspace cleanup failed: %w", cleanupErr))
+	}
+	return returnErr
 }
 
 func (e assessmentRunFailureEvidence) Error() string {
@@ -124,9 +140,7 @@ func (a *PaseoAssessor) Assess(ctx context.Context, input Input) (assessment Ass
 		return Assessment{}, Observation{}, errors.New("lead assessment workspace could not be prepared")
 	}
 	defer func() {
-		if err := os.RemoveAll(root); err != nil {
-			returnErr = errors.Join(returnErr, fmt.Errorf("lead assessment temporary workspace cleanup failed: %w", err))
-		}
+		returnErr = applyAssessmentWorkspaceCleanup(returnErr, os.RemoveAll(root))
 	}()
 	schemaPath := filepath.Join(root, "assessment.schema.json")
 	if err := os.WriteFile(schemaPath, assessmentOutputSchema, 0o600); err != nil {
