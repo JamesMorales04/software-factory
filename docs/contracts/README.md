@@ -1,6 +1,6 @@
 # F0 contract inventory
 
-**Status: proposed, not yet specified or certified.** This index is a contract-development checklist, not a set of completed APIs.
+**Status:** S1 through S4-C slice contracts exist and have candidate-bound acceptance evidence. S5 delivery, autonomous planning and maintenance contracts remain proposed; the [capability registry](../product/capabilities.yaml) records current implementation and verification status. This index is a protocol map, not certification by itself.
 
 ## Frozen for F1 (implemented, review-bound)
 

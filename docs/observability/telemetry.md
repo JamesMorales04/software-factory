@@ -1,6 +1,6 @@
 # Observability from the first slice
 
-**Status:** agreed requirement; technical design proposed, real integration not implemented. Observability starts with the first functional Core slice (F1/S1), not after the other modules.
+**Status:** S1 onward implements transactional Core events, structured redacted logs and an OpenTelemetry tracing path (`core/internal/store/sqlite.go`, `core/internal/telemetry/log.go`, `tracing.go`). The broader metric/event vocabulary below remains a proposed target; its full coverage is not certified. Observability began with S1.
 
 ## Three distinct planes
 

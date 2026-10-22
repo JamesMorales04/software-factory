@@ -46,16 +46,16 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Lint | Format/lint/static-analysis gates for every active implementation language | Agreed; ADR-0008 |
 | Self-development | Stable controller A supervises isolated candidate B | Agreed safety boundary |
 
-### Proposed technology choices (not yet ratified)
+### Implemented technology choices and remaining proposals
 
-- **Core + local Worker:** **Go, ratified** for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). TypeScript remains the Paseo SDK adapter language. This selection does not certify provider credential isolation (SEC-01).
-- **Persistence:** Core-owned SQLite WAL with one logical writer initially; Postgres only when a real scale constraint warrants it.
-- **Paseo:** a TypeScript adapter around the actual supported `@getpaseo/client`/CLI behavior; keep SDK types out of Core domain contracts.
-- **Web UI:** React and TypeScript over authenticated HTTP + event stream (SSE/WebSocket to be empirically selected).
+- **Core + local Worker:** Go is ratified and implemented for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). This does not certify provider credential isolation (SEC-01).
+- **Persistence:** Core-owned SQLite WAL is implemented. The observed transient lock error remains open in the [reliability register](../quality/reliability-debt.md); Postgres is only a future option if a measured scale constraint warrants it.
+- **Paseo:** the implemented Go adapter invokes the installed Paseo CLI and checks observed session identity (`core/internal/paseo/adapter.go`). Keep runtime details out of Core domain contracts.
+- **Web UI:** React and TypeScript Office is implemented over authenticated HTTP and SSE with replay. Future visualization remains proposed.
 - **Sandbox:** rootless OCI/Podman, with no unauthorized host execution fallback; alternative confinement if proven appropriate.
-- **Observability:** durable event ledger, structured redacted logs, OpenTelemetry for traces/metrics, local-first export and optional OTLP.
+- **Observability:** a durable event ledger, structured redacted logs and OpenTelemetry tracing path are implemented. Full metrics coverage remains proposed; see [telemetry](../observability/telemetry.md).
 
-None of these proposed technologies overrides F0 security or acceptance blockers.
+No technology choice overrides security or acceptance blockers.
 
 ## 4. System responsibilities and boundaries
 
@@ -133,6 +133,14 @@ capability tied to the Run, not a prompt claim. This is **control-plane
 authorization, not OS isolation**: TRUSTED_LOCAL retains broad host access and
 cross-project confidentiality is never claimed. See [ADR-0012](decisions/ADR-0012-project-registry-and-capabilities.md)
 and the [S4-C contract](../contracts/multi-project-s4c.md).
+
+The Product Owner ratified both autonomous development and persistent
+maintenance/evolution as product operating modes in
+[ADR-0016](decisions/ADR-0016-dual-mode-autonomous-engineering.md). They share
+the existing Core and Action/Campaign path; Lead planning, maintenance event
+processing, governed delivery and stable-controller promotion remain future
+capabilities. The [registry](../product/capabilities.yaml) and [roadmap](../roadmap/ROADMAP.md)
+carry their distinct decision, implementation and verification states.
 
 **SEC-01 disposition is mode-specific (see [ADR-0009](decisions/ADR-0009-trusted-local-execution.md)):** a host Paseo agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Historical FAIL/NOT TESTED findings remain valid observations and are never rewritten to PASS. SEC-01-STRICT is **not required for TRUSTED_LOCAL** (owner risk acceptance); SEC-01-ISOLATED is available-only-where-verified. Product owner paused further spike experiments and authorized S1, credential-free S2 prototypes, and S3-TRUSTED_LOCAL under its entry conditions; S3-ISOLATED, credential-bearing untrusted execution under an isolation claim, and privileged autonomous effects remain blocked. Never fall back to a privileged host process. Never call TRUSTED_LOCAL isolated or certified. See [security](../security/isolation.md), [trusted-local policy](../security/trusted-local.md), [spike plan](../security/paseo-sandbox-spike.md) and [observed results](../security/SEC-01-results-2026-10-18.md).
 

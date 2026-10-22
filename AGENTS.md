@@ -42,8 +42,9 @@ Build a reliable, maintainable, local-first, multi-project Software Factory capa
 - [MASTER](docs/architecture/MASTER.md) — product scope, boundaries, agreed vs proposed decisions.
 - [ADRs](docs/architecture/decisions/README.md) — context and rationale; supersede accepted ADRs instead of rewriting history.
 - [Contracts](docs/contracts/README.md) — protocol and state invariants; completion is part of F0.
-- [Security](docs/security/isolation.md), [SEC-01](docs/security/paseo-sandbox-spike.md) and [2026-10-18 results](docs/security/SEC-01-results-2026-10-18.md) — isolation is fail-closed. S1 and credential-free S2 development may proceed; S3/unattended real agents remain blocked.
+- [Security](docs/security/isolation.md), [SEC-01](docs/security/paseo-sandbox-spike.md) and [2026-10-18 results](docs/security/SEC-01-results-2026-10-18.md) — TRUSTED_LOCAL real-agent work is allowed only under its recorded owner risk acceptance; ISOLATED execution remains blocked without SEC-01 certification.
 - [Quality](docs/quality/baseline.md) / [live certification](docs/quality/live-certification.md) / [telemetry](docs/observability/telemetry.md) — candidate-bound evidence, evidence levels, measured operation.
+- [Capability registry](docs/product/capabilities.yaml) / [generated roadmap](docs/roadmap/ROADMAP.md) / [reliability debt](docs/quality/reliability-debt.md) — current status, future slices and unresolved findings.
 - [F0/F1 plan](docs/implementation/f0-f1-plan.md) — slice boundaries and independent real-use acceptance.
 
 A material architectural change requires an Action, relevant ADR, updated normative documents and acceptance tests. Authorization/merge/sandbox/quality-policy changes are protected, not ordinary R0 changes.

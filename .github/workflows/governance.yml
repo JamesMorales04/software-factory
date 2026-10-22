@@ -1,0 +1,65 @@
+name: Governance consistency
+
+on:
+  pull_request:
+    paths:
+      - "core/cmd/architecturecheck/**"
+      - "scripts/check-architecture-consistency"
+      - "docs/product/capabilities.yaml"
+      - "docs/roadmap/ROADMAP.md"
+      - "docs/architecture/contract-impact.yaml"
+      - "docs/architecture/**"
+      - "docs/contracts/**"
+      - "docs/quality/**"
+      - "docs/implementation/**"
+      - "docs/observability/**"
+      - "docs/*.md"
+      - "README.md"
+      - "scripts/validate-live-certification.py"
+      - "scripts/test_validate_live_certification.py"
+      - "scripts/fixtures/live-certification-invalid-cases.json"
+      - "docs/evidence/**"
+      - "AGENTS.md"
+      - ".github/workflows/governance.yml"
+  push:
+    branches: [main]
+
+jobs:
+  architecture-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run checker tests
+        working-directory: core
+        run: go test ./cmd/architecturecheck
+      - name: Validate registry, roadmap, and contract impact
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ] && [ "$BASE_REF" != "0000000000000000000000000000000000000000" ]; then
+            scripts/check-architecture-consistency --base-ref "$BASE_REF"
+          else
+            scripts/check-architecture-consistency
+          fi
+      - name: Test certification manifest validator
+        run: python3 -m unittest scripts/test_validate_live_certification.py
+      - name: Validate every recorded live certification manifest
+        run: |
+          shopt -s nullglob
+          manifests=(docs/evidence/*certification-manifest.json)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No live certification manifests found" >&2
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            python3 scripts/validate-live-certification.py "$manifest"
+          done

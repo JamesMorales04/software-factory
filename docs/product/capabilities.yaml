@@ -1,0 +1,1882 @@
+schema_version: 1
+milestones:
+- id: F1-S4-C
+  title: Completed governed multi-project baseline
+  decision_status: approved
+  dependencies: []
+  deliverables:
+  - Project registry and scoped capabilities
+  - Core Campaign pipeline
+  - Worker-managed browser server
+  - bounded C-07 Vlog live path
+  capability_ids:
+  - CAP-001
+  - CAP-002
+  - CAP-003
+  - CAP-004
+  - CAP-005
+  - CAP-006
+  - CAP-007
+  - CAP-008
+  - CAP-009
+  - CAP-010
+  - CAP-011
+  - CAP-012
+  exclusions:
+  - Deployment readiness
+  - SEC-01 isolation
+  - live corrective repair
+  - autonomous GitHub delivery
+  risks:
+  - TRUSTED_LOCAL has broad host access
+  - SQLite contention is unresolved
+  deterministic_acceptance:
+  - S1 through S4-C candidate-bound regression and negative oracles
+  real_acceptance:
+  - C-07 Vlog at tested Factory head 9567bc5 and runtime 14133cb7 only
+  owner_decisions:
+  - Historical Product Owner UAT attestation recorded; no further paid session authorized
+- id: F1-S4-D
+  title: Leadership and planning
+  decision_status: proposed
+  dependencies:
+  - F1-S4-C
+  deliverables:
+  - Intent interpretation
+  - bounded semantic assessment
+  - frozen plan
+  - WorkGraph validation
+  - standing authorization contract
+  capability_ids:
+  - CAP-013
+  - CAP-014
+  - CAP-015
+  - CAP-016
+  - CAP-017
+  - CAP-043
+  exclusions:
+  - Autonomous merge
+  - permanent specialist team
+  - self-development
+  risks:
+  - Model plans may overrun scope or hide ambiguity
+  deterministic_acceptance:
+  - Reject self-authorizing plans
+  - invalid dependencies
+  - budget overflow
+  - stale authorization and unsupported model routes
+  real_acceptance:
+  - Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role
+    orchestration
+  owner_decisions:
+  - Approve the frozen Action and standing-delegation limits before implementation
+- id: F1-S4-E
+  title: Autonomous team composition
+  decision_status: proposed
+  dependencies:
+  - F1-S4-D
+  deliverables:
+  - Minimal specialist selection
+  - bounded supervision
+  - parallel WorkUnits
+  - semantic review
+  - context assembly and replanning
+  capability_ids:
+  - CAP-018
+  - CAP-019
+  - CAP-020
+  - CAP-021
+  - CAP-022
+  - CAP-023
+  exclusions:
+  - Always-on fixed agent roster
+  - external skill promotion
+  risks:
+  - Coordination overhead
+  - conflicting edits
+  - reviewer independence
+  deterministic_acceptance:
+  - Validate role/tool separation
+  - dependency ordering
+  - work-unit fencing and bounded repair
+  real_acceptance:
+  - Genuine multi-unit engineering task integrates cleanly with independent verification and a corrective cycle
+  owner_decisions:
+  - Approve role permissions and resource ceiling
+- id: F1-S5
+  title: Governed delivery
+  decision_status: proposed
+  dependencies:
+  - F1-S4-E
+  deliverables:
+  - PR creation
+  - CI and review observation
+  - exact-SHA delivery receipts
+  - conditional R0 eligibility
+  capability_ids:
+  - CAP-024
+  - CAP-025
+  - CAP-026
+  exclusions:
+  - Unconditional merge
+  - controller binary promotion
+  risks:
+  - Credential misuse
+  - branch protection drift
+  - duplicate external effects
+  deterministic_acceptance:
+  - Reject stale SHA
+  - unapproved risk
+  - missing CI/review
+  - revoked grant and duplicate webhook effects
+  real_acceptance:
+  - Create a real PR and reconcile CI and review at the exact head; exercise eligible R0 merge only after separate
+    authorization
+  owner_decisions:
+  - Protected delivery credential and merge-policy approval
+- id: F1-S5-M
+  title: Autonomous maintenance pilot
+  decision_status: proposed
+  dependencies:
+  - F1-S5
+  deliverables:
+  - Persistent objective
+  - repository health observation
+  - incident triage
+  - corrective Action
+  - outcome measurement
+  capability_ids:
+  - CAP-027
+  - CAP-028
+  - CAP-029
+  - CAP-030
+  - CAP-044
+  exclusions:
+  - Factory live controller as first target
+  - continuous LLM polling
+  risks:
+  - False incident classification
+  - alert loops
+  - excess spend
+  deterministic_acceptance:
+  - Deduplicate events and enforce authorization
+  - expiry
+  - budget and Action identity
+  real_acceptance:
+  - External fixture incident is detected
+  - repaired
+  - independently accepted and delivered through governed PR
+  owner_decisions:
+  - Approve monitored project
+  - signals
+  - standing limits and intervention classes
+- id: F1-S6
+  title: Guarded self-development
+  decision_status: proposed
+  dependencies:
+  - F1-S5-M
+  deliverables:
+  - Stable controller A
+  - isolated candidate B
+  - independent promotion and rollback
+  capability_ids:
+  - CAP-031
+  - CAP-032
+  exclusions:
+  - GitHub merge as implicit deployment
+  - candidate controlling its own promotion
+  risks:
+  - Control-plane compromise
+  - failed rollback
+  - shared-state corruption
+  deterministic_acceptance:
+  - Candidate B cannot alter controller A or promotion authority; rollback remains possible
+  real_acceptance:
+  - A governs B through a real change
+  - independent verification
+  - controlled promotion and rollback drill
+  owner_decisions:
+  - Protected promotion and isolation approval
+- id: F1-S7
+  title: Persistent maintenance and portfolio
+  decision_status: proposed
+  dependencies:
+  - F1-S5-M
+  deliverables:
+  - Recurring objectives
+  - portfolio fairness
+  - resource reserves
+  - cross-project prioritization
+  capability_ids:
+  - CAP-033
+  - CAP-034
+  - CAP-035
+  exclusions:
+  - Unlimited autonomous objectives
+  - single project monopolizing capacity
+  risks:
+  - Starvation
+  - unnoticed drift
+  - accumulated maintenance debt
+  deterministic_acceptance:
+  - Enforce project fairness
+  - leases
+  - reservations
+  - expiry and restart recovery
+  real_acceptance:
+  - Multiple projects receive scheduled improvements across restarts with observable outcomes
+  owner_decisions:
+  - Approve portfolio priorities and resource allocation boundaries
+- id: LATER
+  title: Evaluated extensions
+  decision_status: proposed
+  dependencies:
+  - F1-S7
+  deliverables:
+  - Adaptive routing
+  - skill evaluation
+  - remote Workers
+  - extended Office
+  - reliability analytics
+  capability_ids:
+  - CAP-036
+  - CAP-037
+  - CAP-038
+  - CAP-039
+  - CAP-040
+  - CAP-041
+  - CAP-042
+  exclusions:
+  - Unproven integrations as default dependencies
+  - autonomous privilege expansion
+  risks:
+  - Provider variability
+  - skill supply chain
+  - remote security and operating cost
+  deterministic_acceptance:
+  - Validate compatibility
+  - authorization
+  - revocation and provenance for each extension
+  real_acceptance:
+  - Each extension demonstrates measured value and candidate-bound external behavior before promotion
+  owner_decisions:
+  - Ratify each extension's protected authority and cost ceiling separately
+capabilities:
+- id: CAP-001
+  name: Registered projects
+  category: Project
+  purpose: Bind repository identity, base policy and quality profile
+  product_objective: Multi-project engineering
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies: []
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/multi-project-s4c.md
+    source:
+    - core/internal/project/repository.go
+    test:
+    - core/internal/project/repository_test.go
+  acceptance:
+    deterministic: Applicable registered projects contract, negative and regression checks pass on an exact candidate.
+    real: Exercise registered projects in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-002
+  name: Action and frozen specification
+  category: Execution
+  purpose: Preserve authorized objective and acceptance revision
+  product_objective: Governed execution
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-001
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/project-action-s1.md
+    source:
+    - core/internal/domain/spec.go
+    test:
+    - core/internal/domain/spec_test.go
+  acceptance:
+    deterministic: Applicable action and frozen specification contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise action and frozen specification in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-003
+  name: Campaign orchestration
+  category: Execution
+  purpose: Advance a durable bounded task plan
+  product_objective: Governed execution
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: verified
+    uat: accepted
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-002
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/campaign-orchestration-s4b.md
+    source:
+    - core/internal/orchestrator/orchestrator.go
+    test:
+    - core/internal/orchestrator/orchestrator_test.go
+  acceptance:
+    deterministic: Applicable campaign orchestration contract, negative and regression checks pass on an exact candidate.
+    real: Exercise campaign orchestration in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent:
+    - docs/evidence/f1-s4c-07-certification-manifest.json
+    uat:
+    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    deployment: []
+    isolation: []
+  limitations:
+  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
+    all uses.
+  blockers: []
+- id: CAP-004
+  name: Worker and Paseo integration
+  category: Runtime
+  purpose: Dispatch leased work to a real local agent runtime
+  product_objective: Real engineering work
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: verified
+    uat: not_tested
+    deployment: not_tested
+    isolation: blocked
+  owner: Core
+  dependencies:
+  - CAP-001
+  - CAP-003
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/run-paseo-s3a.md
+    source:
+    - core/internal/paseo/adapter.go
+    test:
+    - core/internal/paseo/cli_test.go
+  acceptance:
+    deterministic: Applicable worker and paseo integration contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise worker and paseo integration in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent:
+    - docs/evidence/f1-s4c-07-certification-manifest.json
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
+    all uses.
+  blockers:
+  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+- id: CAP-005
+  name: Candidate revision lineage
+  category: Quality
+  purpose: Freeze source changes for exact-candidate checks
+  product_objective: Trustworthy acceptance
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-002
+  - CAP-004
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/quality-pipeline-s4a.md
+    source:
+    - core/internal/candidate/git.go
+    test:
+    - core/internal/candidate/git_test.go
+  acceptance:
+    deterministic: Applicable candidate revision lineage contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise candidate revision lineage in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-006
+  name: Independent verification and review
+  category: Quality
+  purpose: Collect separate candidate-bound functional and review evidence
+  product_objective: Trustworthy acceptance
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-005
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/quality-pipeline-s4a.md
+    source:
+    - core/internal/quality/gate.go
+    test:
+    - core/internal/quality/gate_test.go
+  acceptance:
+    deterministic: Applicable independent verification and review contract, negative and regression checks pass
+      on an exact candidate.
+    real: Exercise independent verification and review in a genuine authorized project journey and independently
+      verify the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-007
+  name: Deterministic Quality Gate
+  category: Quality
+  purpose: Apply Core-owned acceptance policy to candidate evidence
+  product_objective: Trustworthy acceptance
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-005
+  - CAP-006
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/quality-pipeline-s4a.md
+    source:
+    - core/internal/quality/gate.go
+    test:
+    - core/internal/quality/gate_test.go
+  acceptance:
+    deterministic: Applicable deterministic quality gate contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise deterministic quality gate in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Gate acceptance is candidate-specific and is not deployment or security certification.
+  blockers: []
+- id: CAP-008
+  name: Scoped capability grants
+  category: Security
+  purpose: Bind Project and Run capability requirements to Worker support
+  product_objective: Bounded authority
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: blocked
+  owner: Core
+  dependencies:
+  - CAP-001
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/multi-project-s4c.md
+    source:
+    - core/cmd/factory-worker/capabilities.go
+    test:
+    - core/cmd/factory-worker/capabilities_test.go
+  acceptance:
+    deterministic: Applicable scoped capability grants contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise scoped capability grants in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers:
+  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+- id: CAP-009
+  name: Factory-managed browser capability
+  category: Runtime
+  purpose: Supply a pinned browser tool and managed test server to the Run
+  product_objective: Real UI engineering
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: verified
+    uat: accepted
+    deployment: not_tested
+    isolation: blocked
+  owner: Core
+  dependencies:
+  - CAP-004
+  - CAP-008
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/browser-test-server-s4c06.md
+    source:
+    - core/internal/browserserver/server.go
+    test:
+    - core/internal/browserserver/server_test.go
+  acceptance:
+    deterministic: Applicable factory-managed browser capability contract, negative and regression checks pass on
+      an exact candidate.
+    real: Exercise factory-managed browser capability in a genuine authorized project journey and independently
+      verify the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent:
+    - docs/evidence/f1-s4c-07-certification-manifest.json
+    uat:
+    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    deployment: []
+    isolation: []
+  limitations:
+  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
+    all uses.
+  blockers:
+  - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+- id: CAP-010
+  name: Bounded deterministic recovery
+  category: Execution
+  purpose: Classify and retry recoverable failures under immutable budgets
+  product_objective: Reliable campaigns
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-003
+  - CAP-004
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/campaign-recovery-s4c03.md
+    source:
+    - core/cmd/factory-worker/recovery.go
+    test:
+    - core/cmd/factory-worker/recovery_test.go
+  acceptance:
+    deterministic: Applicable bounded deterministic recovery contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise bounded deterministic recovery in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Real corrective repair was not exercised; C-07 used zero corrective cycles.
+  blockers: []
+- id: CAP-011
+  name: Factory Office
+  category: Product
+  purpose: Expose Projects Actions Campaigns Runs and evidence to the owner
+  product_objective: Observable operation
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: accepted
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-001
+  - CAP-003
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/factory-events-s1.md
+    source:
+    - office/src/App.tsx
+    test:
+    - office/src/views/CampaignDetail.tsx
+  acceptance:
+    deterministic: Applicable factory office contract, negative and regression checks pass on an exact candidate.
+    real: Exercise factory office in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat:
+    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-012
+  name: Durable events and telemetry
+  category: Observability
+  purpose: Persist transitions and emit redacted logs and traces
+  product_objective: Diagnosable operation
+  decision_status: approved
+  implementation_status: implemented
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core telemetry
+  dependencies:
+  - CAP-002
+  - CAP-003
+  target_milestone: F1-S4-C
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    contract:
+    - docs/contracts/factory-events-s1.md
+    source:
+    - core/internal/telemetry/tracing.go
+    test:
+    - core/internal/telemetry/redact_test.go
+  acceptance:
+    deterministic: Applicable durable events and telemetry contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise durable events and telemetry in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic:
+    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Metrics completeness and end-to-end telemetry coverage are not established.
+  blockers: []
+- id: CAP-013
+  name: Intelligent Lead
+  category: Planning
+  purpose: Interpret owner objectives and coordinate bounded engineering
+  product_objective: Autonomous product development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-002
+  - CAP-003
+  target_milestone: F1-S4-D
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
+    real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-014
+  name: Intent and semantic assessment
+  category: Planning
+  purpose: Produce typed evidence-bound advisory judgments
+  product_objective: Autonomous product development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-013
+  target_milestone: F1-S4-D
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable intent and semantic assessment contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise intent and semantic assessment in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-015
+  name: Frozen executable planning
+  category: Planning
+  purpose: Turn intent into an authorized plan and specification
+  product_objective: Autonomous product development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-013
+  - CAP-014
+  target_milestone: F1-S4-D
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable frozen executable planning contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise frozen executable planning in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-016
+  name: Dependency-aware WorkGraph
+  category: Planning
+  purpose: Validate WorkUnits dependencies and coverage before dispatch
+  product_objective: Autonomous product development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-015
+  target_milestone: F1-S4-D
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable dependency-aware workgraph contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise dependency-aware workgraph in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-017
+  name: Standing delegation contract
+  category: Authority
+  purpose: Bound autonomous decisions by owner scope expiry and budgets
+  product_objective: Autonomous product development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-002
+  - CAP-008
+  target_milestone: F1-S4-D
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable standing delegation contract contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise standing delegation contract in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-018
+  name: Agent Composer
+  category: Planning
+  purpose: Select minimum necessary roles and skills for an Action
+  product_objective: Efficient autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-015
+  - CAP-017
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable agent composer contract, negative and regression checks pass on an exact candidate.
+    real: Exercise agent composer in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-019
+  name: Operation Supervisor
+  category: Execution
+  purpose: Coordinate participant progress within Core policy
+  product_objective: Reliable autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-003
+  - CAP-018
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable operation supervisor contract, negative and regression checks pass on an exact candidate.
+    real: Exercise operation supervisor in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-020
+  name: Specialist agent roles
+  category: Execution
+  purpose: Activate Explorer Librarian Planner and Spec Manager as needed
+  product_objective: Efficient autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-018
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable specialist agent roles contract, negative and regression checks pass on an exact candidate.
+    real: Exercise specialist agent roles in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-021
+  name: Independent semantic Reviewer
+  category: Quality
+  purpose: Assess code design security and evidence separately from author
+  product_objective: Trustworthy acceptance
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-006
+  - CAP-018
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable independent semantic reviewer contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise independent semantic reviewer in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-022
+  name: Parallel WorkUnits
+  category: Execution
+  purpose: Execute independent tasks concurrently with conflict controls
+  product_objective: Efficient autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-016
+  - CAP-018
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable parallel workunits contract, negative and regression checks pass on an exact candidate.
+    real: Exercise parallel workunits in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-023
+  name: Context and knowledge resolver
+  category: Knowledge
+  purpose: Retrieve source-bound project context within authorized limits
+  product_objective: Grounded decisions
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-020
+  target_milestone: F1-S4-E
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable context and knowledge resolver contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise context and knowledge resolver in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-024
+  name: GitHub PR delivery
+  category: Delivery
+  purpose: Create and reconcile exact-candidate pull requests
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-007
+  - CAP-017
+  target_milestone: F1-S5
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable github pr delivery contract, negative and regression checks pass on an exact candidate.
+    real: Exercise github pr delivery in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-025
+  name: CI and review reconciliation
+  category: Delivery
+  purpose: Observe exact-head checks review and branch protection
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-024
+  target_milestone: F1-S5
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable ci and review reconciliation contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise ci and review reconciliation in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-026
+  name: Conditional R0 merge
+  category: Delivery
+  purpose: Merge eligible low-risk changes only after protected recheck
+  product_objective: Governed delivery
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-024
+  - CAP-025
+  target_milestone: F1-S5
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable conditional r0 merge contract, negative and regression checks pass on an exact candidate.
+    real: Exercise conditional r0 merge in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers:
+  - Protected delivery authority requires separate Product Owner approval.
+- id: CAP-027
+  name: Persistent maintenance objectives
+  category: Maintenance
+  purpose: Retain authorized responsibility across restarts
+  product_objective: Autonomous product maintenance
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-001
+  - CAP-017
+  target_milestone: F1-S5-M
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable persistent maintenance objectives contract, negative and regression checks pass on
+      an exact candidate.
+    real: Exercise persistent maintenance objectives in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-028
+  name: Project health monitoring
+  category: Maintenance
+  purpose: Ingest periodic and event-driven project signals
+  product_objective: Autonomous product maintenance
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-027
+  target_milestone: F1-S5-M
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable project health monitoring contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise project health monitoring in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-029
+  name: Incident diagnosis and Action creation
+  category: Maintenance
+  purpose: Deduplicate incidents and route corrective work into Campaigns
+  product_objective: Autonomous product maintenance
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-028
+  - CAP-003
+  target_milestone: F1-S5-M
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable incident diagnosis and action creation contract, negative and regression checks pass
+      on an exact candidate.
+    real: Exercise incident diagnosis and action creation in a genuine authorized project journey and independently
+      verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-030
+  name: Maintenance outcome measurement
+  category: Maintenance
+  purpose: Check whether intervention improved the observed condition
+  product_objective: Autonomous product maintenance
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-029
+  - CAP-007
+  target_milestone: F1-S5-M
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable maintenance outcome measurement contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise maintenance outcome measurement in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-031
+  name: Stable-controller self-development
+  category: Self-development
+  purpose: Run candidate Factory B under stable controller A
+  product_objective: Guarded self-development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-007
+  - CAP-026
+  target_milestone: F1-S6
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable stable-controller self-development contract, negative and regression checks pass on
+      an exact candidate.
+    real: Exercise stable-controller self-development in a genuine authorized project journey and independently
+      verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers:
+  - Stable-controller isolation and promotion authority require protected approval.
+- id: CAP-032
+  name: Promotion and rollback
+  category: Self-development
+  purpose: Separate verified deployment from repository merge
+  product_objective: Guarded self-development
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-031
+  target_milestone: F1-S6
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable promotion and rollback contract, negative and regression checks pass on an exact candidate.
+    real: Exercise promotion and rollback in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers:
+  - Stable-controller isolation and promotion authority require protected approval.
+- id: CAP-033
+  name: Portfolio Manager
+  category: Portfolio
+  purpose: Prioritize authorized work across projects
+  product_objective: Persistent portfolio improvement
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-027
+  target_milestone: F1-S7
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable portfolio manager contract, negative and regression checks pass on an exact candidate.
+    real: Exercise portfolio manager in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-034
+  name: Resource Governor
+  category: Portfolio
+  purpose: Reserve and allocate development maintenance and evaluation capacity
+  product_objective: Persistent portfolio improvement
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-033
+  target_milestone: F1-S7
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable resource governor contract, negative and regression checks pass on an exact candidate.
+    real: Exercise resource governor in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-035
+  name: Durable maintenance scheduling
+  category: Maintenance
+  purpose: Resume recurring work after interruption without continuous LLM polling
+  product_objective: Persistent portfolio improvement
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-027
+  - CAP-028
+  - CAP-034
+  target_milestone: F1-S7
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable durable maintenance scheduling contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise durable maintenance scheduling in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-036
+  name: Adaptive Model Router
+  category: Models
+  purpose: Choose eligible certified provider-runtime routes with explicit fallback
+  product_objective: Reliable efficient autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-017
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable adaptive model router contract, negative and regression checks pass on an exact candidate.
+    real: Exercise adaptive model router in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-037
+  name: Model evaluation and route promotion
+  category: Models
+  purpose: Measure quality latency cost and promote only eligible routes
+  product_objective: Reliable efficient autonomy
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-036
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable model evaluation and route promotion contract, negative and regression checks pass
+      on an exact candidate.
+    real: Exercise model evaluation and route promotion in a genuine authorized project journey and independently
+      verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-038
+  name: Skill Registry and admission
+  category: Skills
+  purpose: Version inspect scope revoke and evaluate external procedures
+  product_objective: Safe extensibility
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-008
+  - CAP-017
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable skill registry and admission contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise skill registry and admission in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-039
+  name: Remote Workers
+  category: Runtime
+  purpose: Execute fenced work on authenticated remote capacity
+  product_objective: Scalable execution
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-004
+  - CAP-008
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable remote workers contract, negative and regression checks pass on an exact candidate.
+    real: Exercise remote workers in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-040
+  name: Extended Factory Office
+  category: Product
+  purpose: Expose planning maintenance portfolio and agent activity
+  product_objective: Observable operation
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-033
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable extended factory office contract, negative and regression checks pass on an exact
+      candidate.
+    real: Exercise extended factory office in a genuine authorized project journey and independently verify the
+      outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-041
+  name: Reliability analytics
+  category: Evaluation
+  purpose: Track first-pass success repairs interventions and real acceptance
+  product_objective: Measurable improvement
+  decision_status: proposed
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-012
+  - CAP-030
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable reliability analytics contract, negative and regression checks pass on an exact candidate.
+    real: Exercise reliability analytics in a genuine authorized project journey and independently verify the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-042
+  name: Optional context integrations
+  category: Knowledge
+  purpose: Evaluate Serena Graphify Engram and Headroom against simple baselines
+  product_objective: Efficient context
+  decision_status: deferred
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-023
+  target_milestone: LATER
+  refs:
+    adr: []
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Applicable optional context integrations contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise optional context integrations in a genuine authorized project journey and independently verify
+      the outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations: []
+  blockers: []
+- id: CAP-043
+  name: Autonomous product development
+  category: Product mode
+  purpose: Product Owner objectives become independently accepted engineering changes
+  product_objective: Autonomous product development
+  decision_status: approved
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-003
+  - CAP-007
+  target_milestone: F1-S4-D
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0016-dual-mode-autonomous-engineering.md
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Core refuses unauthorized scope, invalid budgets and self-approving model decisions.
+    real: An owner-authorized objective completes the shared Action/Campaign pipeline with independent acceptance;
+      maintenance additionally survives restart and verifies intervention outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Approved product objective; future implementation design and protected permissions require separate decisions.
+  blockers: []
+- id: CAP-044
+  name: Autonomous product maintenance and evolution
+  category: Product mode
+  purpose: Authorized projects are monitored improved and governed across restarts
+  product_objective: Autonomous product maintenance and evolution
+  decision_status: approved
+  implementation_status: not_implemented
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-043
+  - CAP-027
+  target_milestone: F1-S5-M
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0016-dual-mode-autonomous-engineering.md
+    contract: []
+    source: []
+    test: []
+  acceptance:
+    deterministic: Core refuses unauthorized scope, invalid budgets and self-approving model decisions.
+    real: An owner-authorized objective completes the shared Action/Campaign pipeline with independent acceptance;
+      maintenance additionally survives restart and verifies intervention outcome.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Approved product objective; future implementation design and protected permissions require separate decisions.
+  blockers: []

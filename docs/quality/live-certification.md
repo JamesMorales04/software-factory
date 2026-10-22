@@ -6,6 +6,15 @@ workflows, quality integration or external-project execution.
 
 ## Evidence levels
 
+The machine-checkable companion format is described by
+[`certification-manifests.schema.json`](certification-manifests.schema.json),
+and validated with `python3 scripts/validate-live-certification.py`. A passing
+validator means that repository evidence is structurally complete and its
+identities agree. It does **not** independently prove that a provider session,
+browser interaction, verifier, reviewer or cleanup event actually occurred;
+those observations still require corroboration from the recorded runtime and
+an independent review. The validator must never upgrade evidence levels.
+
 ### DETERMINISTIC_VERIFIED
 
 Real functional, negative, regression, security and concurrency oracles pass
@@ -50,6 +59,13 @@ the owner's manual acceptance on their behalf.
   `LIVE_NOT_TESTED` or `LIVE_BLOCKED`. The campaign may be reported
   `MERGE-READY` only with an explicit, recorded Product Owner exception.
 - Simulated records and real records remain distinguishable in evidence.
+- A REAL_PASEO_E2E_VERIFIED record must identify its source evidence and bind
+  implementation SHA, Project, Action, frozen spec, Campaign, Run, Attempt,
+  model session and frozen candidate. Browser observations, independent
+  verifier and reviewer results, Quality Gate decision, and cleanup state are
+  checked against that source. Simulation evidence cannot satisfy the live
+  level. A subsequent runtime change invalidates the certification unless its
+  impact is assessed and a new candidate-bound certification is recorded.
 - This policy does not certify SEC-01 isolation, authorize unsafe sandbox
   modes, or grant delivery/merge authority.
 
