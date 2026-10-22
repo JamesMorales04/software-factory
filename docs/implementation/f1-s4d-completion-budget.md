@@ -6,8 +6,10 @@ authorization and it starts no provider session.
 
 ## Candidate and route
 
-- Factory candidate: the exact clean `git rev-parse HEAD` at execution time.
-  The runner must refuse a dirty worktree or a SHA mismatch.
+- Product code candidate: `153177932031ec754985af012a62ac665e76e96c`. Execution must pin the exact clean
+  `git rev-parse HEAD` at that time; the runner must refuse a dirty worktree or
+  a SHA mismatch. A later docs-only commit is behaviorally identical but must
+  still be the exact pinned clean HEAD.
 - Core/Worker/Verifier/Reviewer/Office: built from that candidate.
 - Provider/model/mode: `opencode` / `opencode-go/deepseek-v4.1-flash` / `build`.
 - No fallback provider or route substitution is allowed.
