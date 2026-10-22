@@ -217,6 +217,35 @@ func TestRegistryRejectsInvalidGovernanceClaims(t *testing.T) {
 			r.Capabilities[0].TargetMilestone = "F1-S2"
 			r.Milestones = append(r.Milestones, milestone{ID: "F1-S2", Title: "Second", DecisionStatus: "proposed", Deliverables: []string{"One"}, Exclusions: []string{"One"}, Risks: []string{"One"}, DeterministicAcceptance: []string{"One"}, RealAcceptance: []string{"One"}, OwnerDecisions: []string{"One"}})
 		}, "target_milestone does not match"},
+		{"milestone self cycle", func(r *registry) { r.Milestones[0].Dependencies = []string{"F1-S1"} }, "milestone dependency cycle: F1-S1 -> F1-S1"},
+		{"milestone cycle chain", func(r *registry) {
+			second := secondMilestone("F1-S2", "F1-S1")
+			r.Milestones[0].Dependencies = []string{"F1-S2"}
+			r.Milestones = append(r.Milestones, second)
+		}, "milestone dependency cycle: F1-S1 -> F1-S2 -> F1-S1"},
+		{"milestone dependency ordered later", func(r *registry) {
+			r.Milestones[0].Dependencies = []string{"F1-S2"}
+			r.Milestones = append(r.Milestones, secondMilestone("F1-S2"))
+		}, "milestone F1-S1 depends on F1-S2 which is not scheduled earlier"},
+		{"capability self cycle", func(r *registry) { r.Capabilities[0].Dependencies = []string{"CAP-001"} }, "capability dependency cycle: CAP-001 -> CAP-001"},
+		{"capability cycle chain", func(r *registry) {
+			second := r.Capabilities[0]
+			second.ID = "CAP-002"
+			second.Dependencies = []string{"CAP-001"}
+			r.Capabilities[0].Dependencies = []string{"CAP-002"}
+			r.Milestones[0].CapabilityIDs = append(r.Milestones[0].CapabilityIDs, "CAP-002")
+			r.Capabilities = append(r.Capabilities, second)
+		}, "capability dependency cycle: CAP-001 -> CAP-002 -> CAP-001"},
+		{"capability dependency targets later milestone", func(r *registry) {
+			second := r.Capabilities[0]
+			second.ID = "CAP-002"
+			second.TargetMilestone = "F1-S2"
+			second.Dependencies = nil
+			r.Capabilities[0].Dependencies = []string{"CAP-002"}
+			r.Milestones = append(r.Milestones, secondMilestone("F1-S2"))
+			r.Milestones[1].CapabilityIDs = []string{"CAP-002"}
+			r.Capabilities = append(r.Capabilities, second)
+		}, "capability CAP-001 depends on CAP-002 scheduled in later milestone F1-S2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -230,6 +259,10 @@ func TestRegistryRejectsInvalidGovernanceClaims(t *testing.T) {
 	}
 }
 
+func secondMilestone(id string, dependencies ...string) milestone {
+	return milestone{ID: id, Title: "Second", DecisionStatus: "proposed", Dependencies: dependencies, Deliverables: []string{"One"}, Exclusions: []string{"One"}, Risks: []string{"One"}, DeterministicAcceptance: []string{"One"}, RealAcceptance: []string{"One"}, OwnerDecisions: []string{"One"}}
+}
+
 func TestRoadmapGenerationIsDeterministic(t *testing.T) {
 	_, data := validFixture(t)
 	first := renderRoadmap(data)
@@ -237,8 +270,8 @@ func TestRoadmapGenerationIsDeterministic(t *testing.T) {
 	if first != second {
 		t.Fatal("roadmap generation changed between runs")
 	}
-	if !strings.Contains(first, "CAP-001") {
-		t.Fatal("generated roadmap omitted capability ID")
+	if !strings.Contains(first, "CAP-001 — Feature (approved, implemented)") {
+		t.Fatal("generated roadmap omitted readable capability identity and status")
 	}
 }
 

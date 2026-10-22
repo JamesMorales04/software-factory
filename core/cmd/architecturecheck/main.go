@@ -257,7 +257,8 @@ func validate(root string, data registry) error {
 	}
 	capabilities := map[string]bool{}
 	milestones := map[string]bool{}
-	for _, m := range data.Milestones {
+	milestoneOrder := map[string]int{}
+	for index, m := range data.Milestones {
 		if !validID(m.ID) {
 			problems = append(problems, "invalid milestone id: "+m.ID)
 		}
@@ -265,6 +266,7 @@ func validate(root string, data registry) error {
 			problems = append(problems, "duplicate milestone id: "+m.ID)
 		}
 		milestones[m.ID] = true
+		milestoneOrder[m.ID] = index
 		if m.Title == "" || !validDecision(m.DecisionStatus) {
 			problems = append(problems, "milestone "+m.ID+" requires title and valid decision_status")
 		}
@@ -282,6 +284,10 @@ func validate(root string, data registry) error {
 			problems = append(problems, "duplicate capability id: "+c.ID)
 		}
 		capabilities[c.ID] = true
+	}
+	capabilityByID := make(map[string]capability, len(data.Capabilities))
+	for _, c := range data.Capabilities {
+		capabilityByID[c.ID] = c
 	}
 	membership := map[string][]string{}
 	for _, m := range data.Milestones {
@@ -311,6 +317,13 @@ func validate(root string, data registry) error {
 		for _, dep := range c.Dependencies {
 			if !capabilities[dep] {
 				problems = append(problems, prefix+"references unknown dependency "+dep)
+				continue
+			}
+			dependency := capabilityByID[dep]
+			if targetIndex, targetOK := milestoneOrder[c.TargetMilestone]; targetOK {
+				if dependencyIndex, dependencyOK := milestoneOrder[dependency.TargetMilestone]; dependencyOK && dependencyIndex > targetIndex {
+					problems = append(problems, prefix+"depends on "+dep+" scheduled in later milestone "+dependency.TargetMilestone)
+				}
 			}
 		}
 		for _, ref := range append(append(append([]string{}, c.Refs.ADR...), c.Refs.Contract...), append(c.Refs.Source, c.Refs.Test...)...) {
@@ -375,6 +388,10 @@ func validate(root string, data registry) error {
 		for _, dep := range m.Dependencies {
 			if !milestones[dep] {
 				problems = append(problems, "milestone "+m.ID+" references unknown dependency "+dep)
+				continue
+			}
+			if milestoneOrder[dep] >= milestoneOrder[m.ID] {
+				problems = append(problems, "milestone "+m.ID+" depends on "+dep+" which is not scheduled earlier")
 			}
 		}
 		for _, id := range m.CapabilityIDs {
@@ -383,9 +400,90 @@ func validate(root string, data registry) error {
 			}
 		}
 	}
+	if cycle := dependencyCycle(milestoneIDs(data.Milestones), milestoneEdges(data.Milestones)); len(cycle) > 0 {
+		problems = append(problems, "milestone dependency cycle: "+strings.Join(cycle, " -> "))
+	}
+	if cycle := dependencyCycle(capabilityIDs(data.Capabilities), capabilityEdges(data.Capabilities)); len(cycle) > 0 {
+		problems = append(problems, "capability dependency cycle: "+strings.Join(cycle, " -> "))
+	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
 		return fmt.Errorf("validation failed:\n - %s", strings.Join(problems, "\n - "))
+	}
+	return nil
+}
+
+func milestoneIDs(values []milestone) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	return ids
+}
+
+func capabilityIDs(values []capability) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	return ids
+}
+
+func milestoneEdges(values []milestone) map[string][]string {
+	edges := make(map[string][]string, len(values))
+	for _, value := range values {
+		edges[value.ID] = value.Dependencies
+	}
+	return edges
+}
+
+func capabilityEdges(values []capability) map[string][]string {
+	edges := make(map[string][]string, len(values))
+	for _, value := range values {
+		edges[value.ID] = value.Dependencies
+	}
+	return edges
+}
+
+// dependencyCycle returns a deterministic cycle path, including the repeated
+// start node, so diagnostics identify the dependency chain that must be fixed.
+func dependencyCycle(nodes []string, edges map[string][]string) []string {
+	const (
+		unvisited = iota
+		visiting
+		visited
+	)
+	state := make(map[string]int, len(nodes))
+	stack := make([]string, 0, len(nodes))
+	position := make(map[string]int, len(nodes))
+	var cycle []string
+	var visit func(string) bool
+	visit = func(node string) bool {
+		state[node] = visiting
+		position[node] = len(stack)
+		stack = append(stack, node)
+		dependencies := append([]string(nil), edges[node]...)
+		sort.Strings(dependencies)
+		for _, dependency := range dependencies {
+			if state[dependency] == visiting {
+				cycle = append(append([]string(nil), stack[position[dependency]:]...), dependency)
+				return true
+			}
+			if state[dependency] == unvisited && visit(dependency) {
+				return true
+			}
+		}
+		stack = stack[:len(stack)-1]
+		delete(position, node)
+		state[node] = visited
+		return false
+	}
+	sortedNodes := append([]string(nil), nodes...)
+	sort.Strings(sortedNodes)
+	for _, node := range sortedNodes {
+		if state[node] == unvisited && visit(node) {
+			return cycle
+		}
 	}
 	return nil
 }
@@ -553,11 +651,15 @@ func asString(value any) string {
 
 func renderRoadmap(data registry) string {
 	var out strings.Builder
+	capabilities := make(map[string]capability, len(data.Capabilities))
+	for _, c := range data.Capabilities {
+		capabilities[c.ID] = c
+	}
 	out.WriteString("# Software Factory Roadmap\n\nThis page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `scripts/check-architecture-consistency --write-roadmap`.\n")
 	for _, m := range data.Milestones {
 		fmt.Fprintf(&out, "\n## %s — %s\n\nDecision: `%s`\n\n", m.ID, m.Title, m.DecisionStatus)
 		writeList(&out, "Dependencies", m.Dependencies)
-		writeList(&out, "Capabilities", m.CapabilityIDs)
+		writeCapabilities(&out, m.CapabilityIDs, capabilities)
 		writeList(&out, "Deliverables", m.Deliverables)
 		writeList(&out, "Exclusions", m.Exclusions)
 		writeList(&out, "Risks", m.Risks)
@@ -566,6 +668,23 @@ func renderRoadmap(data registry) string {
 		writeList(&out, "Product Owner decisions", m.OwnerDecisions)
 	}
 	return strings.TrimRight(out.String(), "\n") + "\n"
+}
+
+func writeCapabilities(out *strings.Builder, ids []string, capabilities map[string]capability) {
+	fmt.Fprintf(out, "### Capabilities\n\n")
+	if len(ids) == 0 {
+		out.WriteString("- None specified.\n\n")
+		return
+	}
+	for _, id := range ids {
+		c, ok := capabilities[id]
+		if !ok {
+			fmt.Fprintf(out, "- %s — [missing capability definition]\n", id)
+			continue
+		}
+		fmt.Fprintf(out, "- %s — %s (%s, %s)\n", c.ID, c.Name, c.DecisionStatus, c.Implementation)
+	}
+	out.WriteString("\n")
 }
 
 func writeList(out *strings.Builder, title string, values []string) {

@@ -12,18 +12,18 @@ Decision: `approved`
 
 ### Capabilities
 
-- CAP-001
-- CAP-002
-- CAP-003
-- CAP-004
-- CAP-005
-- CAP-006
-- CAP-007
-- CAP-008
-- CAP-009
-- CAP-010
-- CAP-011
-- CAP-012
+- CAP-001 — Registered projects (approved, implemented)
+- CAP-002 — Action and frozen specification (approved, implemented)
+- CAP-003 — Campaign orchestration (approved, implemented)
+- CAP-004 — Worker and Paseo integration (approved, implemented)
+- CAP-005 — Candidate revision lineage (approved, implemented)
+- CAP-006 — Independent verification and review (approved, implemented)
+- CAP-007 — Deterministic Quality Gate (approved, implemented)
+- CAP-008 — Scoped capability grants (approved, implemented)
+- CAP-009 — Factory-managed browser capability (approved, implemented)
+- CAP-010 — Bounded deterministic recovery (approved, implemented)
+- CAP-011 — Factory Office (approved, implemented)
+- CAP-012 — Durable events and telemetry (approved, implemented)
 
 ### Deliverables
 
@@ -67,12 +67,12 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-013
-- CAP-014
-- CAP-015
-- CAP-016
-- CAP-017
-- CAP-043
+- CAP-013 — Intelligent Lead (proposed, not_implemented)
+- CAP-014 — Intent and semantic assessment (proposed, not_implemented)
+- CAP-015 — Frozen executable planning (proposed, not_implemented)
+- CAP-016 — Dependency-aware WorkGraph (proposed, not_implemented)
+- CAP-017 — Standing delegation contract (proposed, not_implemented)
+- CAP-043 — Autonomous product development (approved, not_implemented)
 
 ### Deliverables
 
@@ -118,12 +118,12 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-018
-- CAP-019
-- CAP-020
-- CAP-021
-- CAP-022
-- CAP-023
+- CAP-018 — Agent Composer (proposed, not_implemented)
+- CAP-019 — Operation Supervisor (proposed, not_implemented)
+- CAP-020 — Specialist agent roles (proposed, not_implemented)
+- CAP-021 — Independent semantic Reviewer (proposed, not_implemented)
+- CAP-022 — Parallel WorkUnits (proposed, not_implemented)
+- CAP-023 — Context and knowledge resolver (proposed, not_implemented)
 
 ### Deliverables
 
@@ -169,9 +169,9 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-024
-- CAP-025
-- CAP-026
+- CAP-024 — GitHub PR delivery (proposed, not_implemented)
+- CAP-025 — CI and review reconciliation (proposed, not_implemented)
+- CAP-026 — Conditional R0 merge (proposed, not_implemented)
 
 ### Deliverables
 
@@ -217,11 +217,11 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-027
-- CAP-028
-- CAP-029
-- CAP-030
-- CAP-044
+- CAP-027 — Persistent maintenance objectives (proposed, not_implemented)
+- CAP-028 — Project health monitoring (proposed, not_implemented)
+- CAP-029 — Incident diagnosis and Action creation (proposed, not_implemented)
+- CAP-030 — Maintenance outcome measurement (proposed, not_implemented)
+- CAP-044 — Autonomous product maintenance and evolution (approved, not_implemented)
 
 ### Deliverables
 
@@ -271,8 +271,8 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-031
-- CAP-032
+- CAP-031 — Stable-controller self-development (proposed, not_implemented)
+- CAP-032 — Promotion and rollback (proposed, not_implemented)
 
 ### Deliverables
 
@@ -316,9 +316,9 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-033
-- CAP-034
-- CAP-035
+- CAP-033 — Portfolio Manager (proposed, not_implemented)
+- CAP-034 — Resource Governor (proposed, not_implemented)
+- CAP-035 — Durable maintenance scheduling (proposed, not_implemented)
 
 ### Deliverables
 
@@ -364,13 +364,13 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-036
-- CAP-037
-- CAP-038
-- CAP-039
-- CAP-040
-- CAP-041
-- CAP-042
+- CAP-036 — Adaptive Model Router (proposed, not_implemented)
+- CAP-037 — Model evaluation and route promotion (proposed, not_implemented)
+- CAP-038 — Skill Registry and admission (proposed, not_implemented)
+- CAP-039 — Remote Workers (proposed, not_implemented)
+- CAP-040 — Extended Factory Office (proposed, not_implemented)
+- CAP-041 — Reliability analytics (proposed, not_implemented)
+- CAP-042 — Optional context integrations (deferred, not_implemented)
 
 ### Deliverables
 
