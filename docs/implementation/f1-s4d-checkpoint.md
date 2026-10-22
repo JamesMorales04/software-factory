@@ -8,6 +8,27 @@ resolve the final SHA with `git rev-parse HEAD`. The prior S4-C real-Paseo
 evidence remains bound to Factory head `9567bc5` / runtime `14133cb7`; it does
 not verify S4-D.
 
+## Resume status (2026-10-22, after PR #16 lint failure)
+
+The interrupted session's PR head `5907a25` failed pinned `golangci-lint`
+v2.5.0 with 32 findings. Repair commits on `f1-s4-d-intelligent-lead` fixed
+them at source; the pinned command now reports 0 issues. On lint-repaired
+product code candidate `602d2352f90f66abd0819de78aa48e905c3689b0`,
+gofmt/gofumpt, vet, full tests, race, Office checks, architecture consistency
+and deterministic S4-A/B/C passed; S4-C recorded 51/51 checks in
+[f1-s4d-s4c-regression-pass-602d235.json](../evidence/f1-s4d-s4c-regression-pass-602d235.json).
+Commit `5a14c24` adds S4-D to the paid-entrypoint guard (24 cases, zero Paseo
+calls) and changes no product code.
+
+Independent review found no P0/P1; all P2 findings were fixed, including
+cleanup evidence corruption and compact-fallback coverage. An independent
+verifier reproduced the pinned lint, full/race Go checks, targeted S4-D checks,
+default-closed S4-D live preflight and architecture consistency on `559a68d`;
+it did not rerun S4-A/B/C end-to-end. No lint rule, threshold, tool version or
+test was removed. No paid or live model session was started, and live
+authorization remains closed. The sections below preserve the pre-repair
+`be592`/`5907a25` record as historical evidence.
+
 ## Current state
 
 Core contains Lead intake, one-use standing delegations, MODEL assessment,
@@ -118,23 +139,26 @@ reload and explicit start without contacting Core, Paseo or a model provider.
 
 | Order | Task | Owner | Dependency / done when |
 | --- | --- | --- | --- |
-| 1 | Commit docs/evidence follow-up | Release owner | Evidence/registry/roadmap consistent; commit documentation changes |
-| 2 | Resolve and validate docs-inclusive candidate identity | Release owner | Run `git rev-parse HEAD`; rerun architecture consistency and any required exact-SHA checks; keep code evidence bound to `be592` |
-| 3 | Disposition any non-blocking findings and decide if more independent end-to-end scope is required | Reviewer/verifier | Existing reviewer found no P1 blocker; verifier did not rerun S4-A/B/C |
-| 4 | Decide delegation/paid-use policy and authorize any live session | Product Owner | ADR-0017 reviewed; explicit candidate/route/session envelope; gates alone are insufficient |
-| 5 | Run authorized live journey | Live-run owner | Frozen clean candidate, exact SHA and owner authorization; record outcome and session evidence |
-| 6 | Prepare S4-D PR | Release owner | Candidate checks, review disposition, and required acceptance evidence recorded |
+| 1 | Resolve CI lint blockers | Release owner | DONE: pinned linter reports 0 issues on `602d235` |
+| 2 | Re-run deterministic checks on the lint-repaired candidate | Release owner | DONE: Go/race, Office, architecture consistency and S4-A/B/C; S4-C 51/51 on `602d235` |
+| 3 | Cover S4-D in the paid-entrypoint guard | Release owner | DONE: `5a14c24`; 24 cases and zero Paseo calls |
+| 4 | Decide delegation/paid-use policy and authorize any live session | Product Owner | Pending; ADR-0017 is not ratified and gates are not authorization |
+| 5 | Run authorized live journey | Live-run owner | Blocked pending explicit candidate/route/session envelope; record outcome |
+| 6 | Deliver PR #16 for review | Release owner | Update PR, inspect CI, do not merge without Product Owner review |
 
 ## Limits and known risks
 
 - No S4-D real model result, paid session, Product Owner UAT, deployment or
   isolation certification is claimed. Scoped independent verification passed;
-  no independent S4-A/B/C reruns or live model acceptance are claimed.
+  no independent S4-A/B/C reruns or live model acceptance are claimed. Local
+  S4-A/B/C reruns passed on `602d235`; the final head adds only the S4-D
+  entrypoint guard and documentation.
 - TRUSTED_LOCAL retains broad host access. SEC-01 isolation remains blocked and
   unverified; this work does not change that boundary.
 - SQLite transient lock contention remains open in the reliability register.
 - One WorkUnit does not provide parallel/dependency-aware execution. A
   delegation/session ceiling does not establish provider billing or quota.
-- Final docs-inclusive exact-SHA checks, live authorization and PR remain
-  outstanding. Scoped review found no P1 blocker; it is not a real-model or
-  independently rerun S4-A/B/C certification.
+- CI on the final docs-inclusive head is pending; live authorization and
+  Product Owner decisions remain outstanding. Scoped review found no P1
+  blocker; it is not a real-model or independently rerun S4-A/B/C
+  certification.
