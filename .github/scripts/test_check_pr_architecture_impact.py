@@ -21,6 +21,7 @@ class ImpactClassificationTests(unittest.TestCase):
             "worker/paseo/executor.go",
             ".github/workflows/s1.yml",
             "docs/quality/live-certification.md",
+            "docs/engineering/linting.md",
             "docs/architecture/MASTER.md",
             "docs/product/capabilities.yaml",
         ]
