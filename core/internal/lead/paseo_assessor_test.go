@@ -168,6 +168,21 @@ func TestAssessmentRunFailureEvidenceFitsPersistenceBoundAtMaximumSessionID(t *t
 	if !errors.As(cleaned, &cleanedEvidence) || cleanedEvidence.WorkspaceCleanup != "" {
 		t.Fatalf("successful cleanup added an unnecessary field: %+v", cleaned)
 	}
+	compacted := applyAssessmentWorkspaceCleanup(evidence, errors.New("remove failed"))
+	if len(compacted.Error()) > 560 {
+		t.Fatalf("compacted cleanup evidence exceeds its bound: %d bytes", len(compacted.Error()))
+	}
+	marker = strings.Index(compacted.Error(), "reconciliation=")
+	if marker < 0 {
+		t.Fatalf("compacted cleanup evidence lost its marker: %v", compacted)
+	}
+	var compactedEvidence assessmentRunFailureEvidence
+	if err := json.Unmarshal([]byte(compacted.Error()[marker+len("reconciliation="):]), &compactedEvidence); err != nil {
+		t.Fatalf("compacted cleanup evidence is not valid JSON: %v", err)
+	}
+	if compactedEvidence.SessionReconciliation.Status != "evidence_compacted" || compactedEvidence.WorkspaceCleanup != "failed" {
+		t.Fatalf("compacted cleanup evidence lost its status: %+v", compactedEvidence)
+	}
 }
 
 func TestAssessmentWorkspaceCleanupPreservesFailureEvidence(t *testing.T) {

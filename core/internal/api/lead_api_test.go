@@ -509,6 +509,31 @@ func TestLeadPersistsBoundedMachineReadableSessionReconciliation(t *testing.T) {
 	}
 }
 
+func TestBoundedAssessmentFailurePreservesCompactedCleanupStatus(t *testing.T) {
+	err := errors.New(`lead assessment Paseo run failed; reconciliation={"runCause":"failed","sessionReconciliation":{"status":"evidence_compacted","routeStatus":"unknown","stop":"not_attempted","archive":"not_attempted"},"workspaceArchive":"unknown","workspaceCleanup":"failed"}`)
+	reason := boundedAssessmentFailure(err)
+	if len(reason) > 600 {
+		t.Fatalf("compacted failure reason exceeds its bound: %d", len(reason))
+	}
+	const marker = "reconciliation="
+	index := strings.Index(reason, marker)
+	if index < 0 {
+		t.Fatalf("compacted failure reason lost its marker: %s", reason)
+	}
+	var evidence struct {
+		SessionReconciliation struct {
+			Status string `json:"status"`
+		} `json:"sessionReconciliation"`
+		WorkspaceCleanup string `json:"workspaceCleanup"`
+	}
+	if err := json.Unmarshal([]byte(reason[index+len(marker):]), &evidence); err != nil {
+		t.Fatalf("compacted failure reason is not valid JSON: %v", err)
+	}
+	if evidence.SessionReconciliation.Status != "evidence_compacted" || evidence.WorkspaceCleanup != "failed" {
+		t.Fatalf("compacted failure reason lost its status: %+v", evidence)
+	}
+}
+
 func TestLeadFailsClosedWithoutAssessorOrOnMalformedAssessment(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
