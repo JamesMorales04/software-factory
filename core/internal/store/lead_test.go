@@ -474,6 +474,21 @@ func TestReusableDelegationAccountsRequestsAndSessionsAcrossReservations(t *test
 	if usage.ReservedSessions != 1 {
 		t.Fatalf("assessment session was not released: %+v", usage)
 	}
+	second := "reusable-2"
+	var secondID string
+	if err := db.sql.QueryRowContext(ctx, `SELECT id FROM lead_requests WHERE idempotency_key=?`, second).Scan(&secondID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx, `UPDATE lead_requests SET status='assessing' WHERE id=?`, secondID); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := db.BlockLeadRequest(ctx, secondID, "assessing", "assessment failed after model call"); err != nil || !changed {
+		t.Fatalf("block assessing request: changed=%v err=%v", changed, err)
+	}
+	usage, _ = db.GetDelegationUsage(ctx, grant.ID)
+	if usage.ReservedSessions != 1 {
+		t.Fatalf("consumed assessment session was refunded: %+v", usage)
+	}
 }
 
 func TestReusableDelegationConcurrentRequestsRespectCumulativeCeiling(t *testing.T) {

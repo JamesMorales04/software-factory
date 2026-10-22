@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JamesMorales04/software-factory/core/internal/candidate"
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 )
 
@@ -85,6 +86,20 @@ func TestPrepareSpecWorkspaceSequentialAndIntegration(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(integrated, name)); err != nil {
 			t.Fatalf("integration workspace missing %s: %v", name, err)
 		}
+	}
+	if head := gitTest(t, integrated, "rev-parse", "HEAD"); head != base {
+		t.Fatalf("integration worktree HEAD = %s, want frozen base %s", head, base)
+	}
+	gitTest(t, integrated, "commit", "-qm", "integrated candidate")
+	commit := gitTest(t, integrated, "rev-parse", "HEAD")
+	gitTest(t, integrated, "push", "-q", "origin", "HEAD:refs/factory/candidates/integration")
+	validation, err := candidate.InspectCommit(context.Background(), repo, base, commit,
+		"refs/factory/candidates/integration", []string{"src/api.txt", "src/ui.txt"})
+	if err != nil {
+		t.Fatalf("Core rejected the integrated candidate lineage: %v", err)
+	}
+	if len(validation.ChangedPaths) != 2 {
+		t.Fatalf("integrated candidate changed paths = %v", validation.ChangedPaths)
 	}
 }
 

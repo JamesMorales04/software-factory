@@ -108,3 +108,14 @@ func TestSemanticEvaluationCorpusIsFrozen(t *testing.T) {
 		t.Fatal("CAP-014 corpus changed without a new frozen revision")
 	}
 }
+
+func TestSemanticEvaluationRejectsUnknownFixtureIDs(t *testing.T) {
+	corpus := loadEvaluationCorpus(t)
+	sheet := fullSheet(t, corpus, "model", 2)
+	sheet.Entries = append(sheet.Entries, EvaluationScoreEntry{
+		FixtureID: "S4D-99", Dimension: DimensionIntentRoute, Score: 2,
+	})
+	if _, err := Evaluate(corpus, sheet); err == nil {
+		t.Fatal("unknown fixture ID was silently accepted")
+	}
+}

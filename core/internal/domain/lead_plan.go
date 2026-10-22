@@ -320,7 +320,11 @@ func (p LeadPlanProposal) Validate(g StandingDelegation, project Project, action
 	if err := p.validateWorkUnits(project, g); err != nil {
 		return err
 	}
-	if 1+p.ImplementerTaskCount()*p.Budget.MaxAttempts > p.MaxSessions {
+	implementerAttempts := p.ImplementerTaskCount() * p.Budget.MaxAttempts
+	if implementerAttempts > MaxCampaignImplementerRuns {
+		return fmt.Errorf("work graph requires %d implementer attempts, above the supported campaign ceiling", implementerAttempts)
+	}
+	if 1+implementerAttempts > p.MaxSessions {
 		return errors.New("assessment, work units, integration and repair attempts exceed the planned session ceiling")
 	}
 	return nil

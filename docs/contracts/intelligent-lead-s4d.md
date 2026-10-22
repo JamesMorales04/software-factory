@@ -71,11 +71,13 @@ grant.
 
 Current structural limits are those already enforced by domain contracts:
 Implementer attempts `1..5`, timeout `30..600` seconds, repair cycles `0..3`,
-wall clock `120..7200` seconds, parallelism `1..2`, and sessions `1..48` (the
-existing campaign task/execution ceiling). Values must be supplied explicitly;
-zero does not select a default. The proposal must fit within the grant, and
-`1 + budget.maxAttempts × (maxRepairCycles + 1) ≤ maxSessions`; the leading
-`1` is the single assessment session.
+wall clock `120..7200` seconds, parallelism `1..2`, and per-Campaign sessions
+`1..96`. Campaign implementer attempts are capped at `64`. Values must be
+supplied explicitly; zero does not select a default. The proposal must fit
+within the grant, and
+`1 + implementerTaskCount × budget.maxAttempts ≤ maxSessions`, where
+`implementerTaskCount` includes every WorkUnit, the Core integration node and
+the repair horizon; the leading `1` is the assessment session.
 
 The grant is valid only for its named active registered Project, before
 `expiresAt`, and while `revokedAt` is unset. Its content hash excludes the
@@ -91,8 +93,10 @@ reservation without consuming more authority. Core reserves assessment,
 WorkGraph and repair sessions/attempts atomically and concurrency-safely in the
 same transaction as the request, proposal and freeze transitions. Exhausted
 cumulative authority fails closed; child Actions, Campaigns, delegations or
-replacement sessions cannot evade it. A blocked pre-freeze request releases its
-unused assessment session but not its consumed request count.
+replacement sessions cannot evade it. A `submitted` request that never began
+assessment releases its unused assessment session but not its consumed request
+count. An `assessing`/`planned` request does not refund the session after the
+model boundary may have been crossed.
 
 `autonomousStart` is valid only with a nonempty `autonomousRiskClasses` subset
 of `riskClasses`; only `R0` and `R1` may appear. `R2`/`R3` always require an
@@ -331,12 +335,13 @@ The candidate-bound deterministic lane must reject:
 - malformed/unknown-field assessment JSON, trailing JSON, mismatched identity,
   duplicate/missing evidence references, invalid intent/complexity, unbounded
   notes and executable work proposed for a non-change intent;
-- malformed/missing/cyclic dependency, unknown WorkUnit kind, empty graph or
-  more than one executable unit;
+- malformed, unknown or cyclic dependency, self/multiple-predecessor unit,
+  duplicate IDs, empty graph, more than eight units, or parallel units with
+  overlapping paths;
 - missing profile check coverage, malformed `SpecCheck`, invalid budget,
   assessment plus Implementer attempts above the session ceiling, or any grant
   escalation;
-- second distinct request on a consumed delegation;
+- cumulative request/session/attempt exhaustion across reusable requests;
 - duplicate intake with changed content, duplicate assessment/proposal/plan
   with different identities, and attempts to rewrite frozen links;
 - direct Run execution of a Lead-managed spec, campaign start after revocation,

@@ -67,6 +67,14 @@ func prepareSpecWorkspace(ctx context.Context, spec domain.ActionSpec, run domai
 			return fmt.Errorf("integrate dependency candidate %s: %w", commit, err)
 		}
 	}
+	if len(merges) > 0 {
+		// Candidate identity remains a single-parent commit on the frozen base.
+		// The merge ancestry is represented by the Core-owned dependency
+		// lineage, not by an untrusted multi-parent Git commit.
+		if err := candidateGit(ctx, workDir, "reset", "--soft", base); err != nil {
+			return fmt.Errorf("stage integrated candidate on base: %w", err)
+		}
+	}
 	return nil
 }
 

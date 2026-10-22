@@ -95,9 +95,16 @@ func Evaluate(corpus EvaluationCorpus, sheet EvaluationScoreSheet) (EvaluationRe
 	if len(corpus.Fixtures) != 11 {
 		return EvaluationResult{}, fmt.Errorf("CAP-014 corpus must contain 11 fixtures, got %d", len(corpus.Fixtures))
 	}
+	corpusIDs := map[string]bool{}
+	for _, fixture := range corpus.Fixtures {
+		corpusIDs[fixture.ID] = true
+	}
 	byFixture := map[string]map[EvaluationDimension]EvaluationScoreEntry{}
 	critical := []string{}
 	for _, entry := range sheet.Entries {
+		if !corpusIDs[entry.FixtureID] {
+			return EvaluationResult{}, fmt.Errorf("score sheet contains unknown fixture %s", entry.FixtureID)
+		}
 		if entry.Score < 0 || entry.Score > 2 {
 			return EvaluationResult{}, fmt.Errorf("fixture %s dimension %s score %d is outside 0..2", entry.FixtureID, entry.Dimension, entry.Score)
 		}

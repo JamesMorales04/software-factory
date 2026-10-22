@@ -869,9 +869,9 @@ func requireFrozenCandidateTx(ctx context.Context, tx *sql.Tx, run domain.Run, a
 func confirmCandidateForAttemptTx(ctx context.Context, tx *sql.Tx, run domain.Run, attempt domain.Attempt, candidateID, workerID, correlationID string, now time.Time) ([]domain.Event, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT c.id FROM candidates c JOIN runs r ON r.id=c.implementer_run_id
-		 WHERE c.action_id=? AND c.id<>? AND c.state=? AND r.status=?
+		 WHERE c.action_id=? AND c.spec_id=? AND c.id<>? AND c.state=? AND r.status=?
 		 ORDER BY c.frozen_at ASC, c.id ASC`,
-		run.ActionID, candidateID, string(domain.CandidateFrozen), string(domain.RunSucceeded))
+		run.ActionID, run.SpecID, candidateID, string(domain.CandidateFrozen), string(domain.RunSucceeded))
 	if err != nil {
 		return nil, err
 	}

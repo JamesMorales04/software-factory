@@ -798,6 +798,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
@@ -892,6 +893,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []

@@ -18,13 +18,16 @@
     {"name": "TestLeadAutonomousRevocationContainsRunningCampaign", "pass": true},
     {"name": "TestWorkGraphSequentialBaseChaining", "pass": true},
     {"name": "TestWorkGraphParallelFanInIntegration", "pass": true},
+    {"name": "TestWorkGraphParallelUnitCompletionDoesNotInvalidateSiblingCandidate", "pass": true},
     {"name": "TestWorkGraphDependencyFailureStopsDownstreamDispatch", "pass": true},
     {"name": "TestWorkGraphRestartPreservesDependencyAndDispatchIdempotency", "pass": true},
     {"name": "TestPrepareSpecWorkspaceSequentialAndIntegration", "pass": true},
     {"name": "TestPrepareSpecWorkspaceRejectsIntegrationConflict", "pass": true},
+    {"name": "integrated candidate InspectCommit lineage", "pass": true, "detail": "single-parent commit on frozen base; both dependency paths accepted"},
     {"name": "TestSemanticEvaluationScoresAndComparesBlindedSheets", "pass": true},
     {"name": "TestSemanticEvaluationFailsClosedOnMissingScoresAndThresholds", "pass": true},
     {"name": "TestSemanticEvaluationCorpusIsFrozen", "pass": true},
+    {"name": "TestSemanticEvaluationRejectsUnknownFixtureIDs", "pass": true},
     {"name": "Office typecheck/lint/build", "pass": true},
     {"name": "mocked S4-D Office journey", "pass": true, "detail": "12/12"},
     {"name": "architecture consistency", "pass": true},
@@ -39,6 +42,15 @@
     "CAP-017": {"deterministic": "verified", "live": "blocked"},
     "CAP-043": {"implementation": "in_progress"}
   },
+  "reviewFindingsFixed": [
+    "Integration candidates are staged on the frozen base before final commit, so Core accepts them.",
+    "Successful sibling unit candidates are not superseded across different frozen unit specs.",
+    "Assessment sessions are not refunded after the model boundary may have been crossed.",
+    "Automatic-start status and audit event are written atomically.",
+    "Campaign attempt caps are validated before freeze.",
+    "Revocation invokes coordinator process cleanup for contained campaigns.",
+    "CAP-014 rejects unknown fixture IDs."
+  ],
   "limits": [
     "No real model, paid provider session, UAT, deployment or isolation certification.",
     "Multi-unit live execution runner is preflight-only and not authorized.",

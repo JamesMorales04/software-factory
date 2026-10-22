@@ -144,7 +144,14 @@ func (s *Server) handleRevokeDelegation(w http.ResponseWriter, r *http.Request) 
 		s.log.Info("delegation revocation contained campaigns",
 			"delegationId", grant.ID, "campaigns", len(campaignIDs))
 	}
-	if changed && s.campaigns != nil {
+	if s.campaigns != nil {
+		for _, campaignID := range campaignIDs {
+			if err := s.campaigns.CancelCampaign(r.Context(), campaignID, "delegation revoked",
+				telemetry.CorrelationIDFrom(r.Context())); err != nil {
+				s.log.Warn("delegation revocation process cleanup failed",
+					"delegationId", grant.ID, "campaignId", campaignID, "error", err.Error())
+			}
+		}
 		s.campaigns.Wake()
 	}
 	if changed {
@@ -703,15 +710,14 @@ func (s *Server) maybeAutoStartLeadRequest(ctx context.Context, requestID string
 	if !replayed && s.campaigns != nil {
 		s.campaigns.Wake()
 	}
-	updated, changed, err := s.db.AdvanceLeadRequest(ctx, request.ID, "ready", "running", store.LeadRequestLinks{})
+	updated, event, changed, err := s.db.AdvanceLeadRequestAutoStarted(ctx, request.ID,
+		request.CampaignID, request.DelegationID, string(proposal.Proposal.RiskClass))
 	if err != nil {
 		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start projection failed: "+boundedReason(err))
 		return
 	}
 	if changed {
-		if event, eerr := s.db.RecordLeadAutoStart(ctx, updated.ID, updated.CampaignID, updated.DelegationID, string(proposal.Proposal.RiskClass)); eerr == nil {
-			s.hub.Publish(event.Projected())
-		}
+		s.hub.Publish(event.Projected())
 		s.log.Info("lead request started autonomously", "requestId", updated.ID,
 			"campaignId", updated.CampaignID, "delegationId", updated.DelegationID,
 			"riskClass", proposal.Proposal.RiskClass)

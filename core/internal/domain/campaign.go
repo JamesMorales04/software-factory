@@ -67,7 +67,7 @@ const (
 	MaxCampaignParallel        = 2
 	MaxCampaignTasks           = 32
 	MaxCampaignTaskExecutions  = 3
-	MaxCampaignImplementerRuns = 24
+	MaxCampaignImplementerRuns = 64
 	DefaultCampaignAttempts    = 1
 )
 

@@ -60,14 +60,15 @@ authorization remains closed. The sections below preserve the pre-repair
 
 ## Current state
 
-Core contains Lead intake, one-use standing delegations, MODEL assessment,
-typed one-unit proposal validation, immutable plan/spec binding, and reuse of
-the existing Campaign lifecycle. One delegation reserves one distinct request;
-idempotent replay returns that request. Its session ceiling includes one
-assessment session plus the bounded Implementer attempt horizon. It is not a
-provider cost cap. `CreateLeadAction` atomically creates the Action, appends its
-creation event, and binds it to the reserved request; retries cannot leave an
-unowned Action.
+Core contains Lead intake, reusable standing delegations, MODEL assessment,
+typed multi-unit WorkGraph validation, immutable per-unit plan/spec binding,
+Core-generated integration, and reuse of the existing Campaign lifecycle.
+Cumulative reservations cover requests, sessions and attempts across all
+requests under the grant; idempotent replay returns the same request. The
+Campaign ceiling covers assessment, every WorkUnit, integration and the bounded
+repair horizon, and is not a provider cost cap. `CreateLeadAction` atomically
+creates the Action, appends its creation event, and binds it to the reserved
+request; retries cannot leave an unowned Action.
 
 Office submits the Project, objective and required delegation ID; renders the
 assessment, uncertainty, risks, proposal checks/budget, immutable base/profile/
@@ -94,15 +95,16 @@ then checks Run, Attempt, frozen candidate, verification, review, Gate and
 observed route/session count on success. It has not been run, so this is test
 logic only, not a live result.
 
-S4-D supports exactly one implementation WorkUnit. CAP-013/015/017 bounded
-deterministic behavior is verified on the code candidate. CAP-014 schema and
-context fixtures are partial evidence; its original deterministic acceptance
-requires scored comparison against a deterministic baseline, so verification
-is blocked. CAP-016's single-unit fixtures are also partial evidence; its
-original dependency-aware WorkGraph acceptance is not met, so verification is
-blocked and implementation remains in progress. CAP-043 remains an approved
-product objective in progress, not a completed capability. ADR-0017 and
-standing-delegation policy remain proposed pending Product Owner review.
+S4-D now supports a bounded 1–8 unit dependency graph with per-unit frozen
+specs and Core-generated integration. CAP-013/015/017 bounded deterministic
+behavior is verified on the completion code candidate. CAP-014's schema and
+context fixtures plus the new blinded scoring harness are prepared, but its
+deterministic acceptance still requires scored model-versus-baseline outputs,
+so verification remains blocked. CAP-016 deterministic execution, dependency
+chaining, fan-in integration, restart idempotency and conflict handling are
+verified; real model/Paseo execution remains blocked. CAP-043 remains an
+approved product objective in progress, not a completed capability. ADR-0017
+and standing-delegation policy remain proposed pending Product Owner review.
 
 ## Open reviewer finding
 

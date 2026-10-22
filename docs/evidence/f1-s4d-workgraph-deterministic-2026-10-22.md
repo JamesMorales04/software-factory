@@ -45,18 +45,30 @@ No paid or live model/Paseo session was started.
 | `TestLeadAutonomousRevocationContainsRunningCampaign` | PASS |
 | `TestWorkGraphSequentialBaseChaining` | PASS |
 | `TestWorkGraphParallelFanInIntegration` | PASS |
+| `TestWorkGraphParallelUnitCompletionDoesNotInvalidateSiblingCandidate` | PASS |
 | `TestWorkGraphDependencyFailureStopsDownstreamDispatch` | PASS |
 | `TestWorkGraphRestartPreservesDependencyAndDispatchIdempotency` | PASS |
 | `TestPrepareSpecWorkspaceSequentialAndIntegration` | PASS |
 | `TestPrepareSpecWorkspaceRejectsIntegrationConflict` | PASS |
+| Integrated candidate `candidate.InspectCommit` lineage | PASS; single parent on frozen base, both unit paths accepted |
 | `TestSemanticEvaluationScoresAndComparesBlindedSheets` | PASS |
 | `TestSemanticEvaluationFailsClosedOnMissingScoresAndThresholds` | PASS |
 | `TestSemanticEvaluationCorpusIsFrozen` | PASS |
+| `TestSemanticEvaluationRejectsUnknownFixtureIDs` | PASS |
 | Office `npm run typecheck`, `npm run lint`, `npm run build` | PASS |
 | Mocked `office/e2e-browser/s4d-journey.mjs` | PASS; 12/12 checks |
 | `scripts/check-architecture-consistency` | PASS |
 | `scripts/test-live-e2e-entrypoints.py` | PASS; 27 cases, zero Paseo calls |
 | `scripts/e2e_s4d_graph_live.py` default preflight | PREFLIGHT_SAFE; zero provider calls |
+
+## Review findings repaired
+
+Independent review found and the candidate now fixes: integration candidates
+being rejected for multi-parent Git lineage; sibling unit candidate
+supersession under parallel completion; assessment-session refund after the
+model boundary; non-atomic autonomous-start audit recording; campaign attempt
+cap inconsistent with the 1–8 unit bound; missing coordinator process cleanup
+on revocation; and CAP-014 silently accepting unknown fixture IDs.
 
 ## Capability status
 

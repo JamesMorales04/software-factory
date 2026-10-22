@@ -173,6 +173,96 @@ func driveGraphUnit(t *testing.T, db *DB, fixture graphFixture, task domain.Camp
 	return domain.CandidateRevision{}, domain.Run{}
 }
 
+func driveGraphRunOnly(t *testing.T, db *DB, fixture graphFixture, task domain.CampaignTask, seq int) (domain.CandidateRevision, domain.Run, string) {
+	t.Helper()
+	ctx := context.Background()
+	_, run, _, err := db.DispatchImplementer(ctx, fixture.campaign.ID, task.ID, "unit "+task.Key, "graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerWorker(t, db, "graph-worker")
+	claimed, attempt, found, _, err := db.ClaimNextRun(ctx, "graph-worker", "graph")
+	if err != nil || !found || claimed.ID != run.ID {
+		t.Fatalf("claim graph run: found=%v err=%v", found, err)
+	}
+	if _, _, err := db.HeartbeatLease(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.IntendPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.BindPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "ws-"+task.Key, "sess-"+task.Key, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.ClosePaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "graph"); err != nil {
+		t.Fatal(err)
+	}
+	node, _ := fixture.campaign.Plan.TaskPlan(task.Key)
+	spec, err := db.GetActionSpec(node.SpecID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := claimed.WorkloadInput["baseRevision"].(string)
+	parent, _ := claimed.WorkloadInput["parentCandidateId"].(string)
+	candidate, _, err := db.CreateCandidate(ctx, domain.CandidateRevision{
+		ProjectID: spec.ProjectID, ActionID: spec.ActionID, SpecID: spec.ID,
+		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
+		BaseRevision: base, CommitSHA: fmt.Sprintf("%040x", seq),
+		TreeSHA: fmt.Sprintf("%040x", seq+100), ContentDigest: fmt.Sprintf("%064x", seq),
+		CandidateRef:      fmt.Sprintf("refs/factory/candidates/graph-%d", seq),
+		ParentCandidateID: parent, Repository: spec.Repository,
+		ImplementerRunID: claimed.ID, ImplementerAttemptID: attempt.ID,
+		ImplementerGeneration: attempt.LeaseGeneration, ImplementerWorkerID: "graph-worker",
+		ExecutionMode: claimed.ExecutionMode, Provider: claimed.Provider, Model: claimed.Model,
+		PaseoMode: claimed.PaseoMode, ChangedPaths: spec.AllowedPaths, RiskClass: domain.RiskR0,
+	}, "graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := db.ReportAttempt(ctx, "graph-worker", claimed.ID, attempt.ID,
+		attempt.LeaseGeneration, domain.OutcomeCompleted, map[string]any{}, "", "graph"); err != nil {
+		t.Fatal(err)
+	}
+	current := taskByKey(t, db, fixture.campaign.ID, task.Key)
+	return candidate, claimed, current.DispatchToken
+}
+
+func TestWorkGraphParallelUnitCompletionDoesNotInvalidateSiblingCandidate(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	fixture := createGraphCampaign(t, db, scopeUnits("api", "ui"), 0, 2)
+	if _, _, _, err := db.StartCampaign(ctx, fixture.campaign.ID, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	apiTask := taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("api"))
+	uiTask := taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("ui"))
+	apiCandidate, _, apiToken := driveGraphRunOnly(t, db, fixture, apiTask, 1)
+	uiCandidate, _, uiToken := driveGraphRunOnly(t, db, fixture, uiTask, 2)
+	apiStored, err := db.GetCandidate(apiCandidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiStored.State != domain.CandidateFrozen {
+		t.Fatalf("parallel sibling success invalidated api candidate: %s", apiStored.State)
+	}
+	if _, _, _, err := db.CompleteCampaignTask(ctx, fixture.campaign.ID, apiTask.ID, "", apiToken, "graph"); err != nil {
+		t.Fatalf("complete api unit after sibling success: %v", err)
+	}
+	if _, _, _, err := db.CompleteCampaignTask(ctx, fixture.campaign.ID, uiTask.ID, "", uiToken, "graph"); err != nil {
+		t.Fatalf("complete ui unit: %v", err)
+	}
+	if _, err := db.PromoteReadyTasks(ctx, fixture.campaign.ID, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	integration := taskByKey(t, db, fixture.campaign.ID, domain.IntegrationTaskKey)
+	if integration.Status != domain.TaskReady {
+		t.Fatalf("integration status = %s", integration.Status)
+	}
+	if uiCandidate.SpecID == apiCandidate.SpecID {
+		t.Fatal("parallel units shared a spec unexpectedly")
+	}
+}
+
 func TestWorkGraphSequentialBaseChaining(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
