@@ -27,7 +27,7 @@ For contradictory normative text, stop claiming compliance, open an Action/ADR a
 
 ## Documentation update rules
 
-- **Every code PR** assesses docs, tests, examples, instrumentation and compatibility impact. If no architecture impact exists, state so in the PR.
+- **Every PR** runs the governance entry check. Protected runtime, policy, evidence, skill, CI and normative documentation changes require a PR-scoped architectural impact declaration bound to the actual base and head; an independent reviewer assesses its meaning. Ordinary application changes receive an explicit no-assessment classification. Code changes still assess relevant docs, tests, examples, instrumentation and compatibility.
 - **Material design decisions:** Action → proposed ADR with alternatives and consequences → risk/authority approval → update MASTER/contracts/quality/tests/diagrams together → independent review.
 - **Accepted ADRs are append-only in meaning:** supersede them explicitly with a new ADR and mark old records `Superseded` without rewriting their original rationale.
 - Security, credential boundaries, merge policies, Quality Gate, evidence acceptance and Core updates have protected approval paths.

@@ -1,6 +1,6 @@
-# Exact paths changed in the F1-GOV-01 documentation review, with the change
-# and product impact recorded separately. Future protected documentation
-# changes must add exact-path entries in the same PR.
+# Historical exact-path impact record for the F1-GOV-01 documentation review.
+# Future protected changes use the PR-scoped declaration checked by
+# .github/scripts/check-pr-architecture-impact.py; do not append routine PRs here.
 entries:
   - id: GOV01-AGENTS
     paths: [AGENTS.md]

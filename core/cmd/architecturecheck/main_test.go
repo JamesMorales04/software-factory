@@ -295,39 +295,8 @@ func TestRunRejectsStaleRoadmap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, roadmapPath), []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err = run(root, registryPath, roadmapPath, false, "", "")
+	err = run(root, registryPath, roadmapPath, false, "")
 	if err == nil || !strings.Contains(err.Error(), "roadmap is stale") {
 		t.Fatalf("expected stale roadmap failure, got %v", err)
-	}
-}
-
-func TestContractImpactRequiresMetadataOnlyForProtectedPaths(t *testing.T) {
-	impact := impactFile{Entries: []impactEntry{{ID: "GOV-01", Paths: []string{"docs/architecture/decisions/ADR.md"}, Change: "Updated the architecture decision for campaign testing.", Impact: "Keeps architectural records current with the campaign scope."}}}
-	if err := validateImpact([]string{"core/internal/feature.go"}, impact, "docs/architecture/contract-impact.yaml"); err != nil {
-		t.Fatalf("ordinary code change unexpectedly required metadata: %v", err)
-	}
-	impact.Entries = append(impact.Entries, impactEntry{ID: "GOV-02", Paths: []string{"docs/architecture/contract-impact.yaml"}, Change: "Added exact metadata for this documentation change.", Impact: "Requires later architecture changes to record concrete effect."})
-	if err := validateImpact([]string{"docs/architecture/decisions/ADR.md", "docs/architecture/contract-impact.yaml"}, impact, "docs/architecture/contract-impact.yaml"); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateImpact([]string{"docs/quality/baseline.md", "docs/architecture/contract-impact.yaml"}, impact, "docs/architecture/contract-impact.yaml"); err == nil || !strings.Contains(err.Error(), "metadata missing") {
-		t.Fatalf("expected missing metadata error, got %v", err)
-	}
-	if err := validateImpact([]string{"docs/quality/baseline.md"}, impact, "docs/architecture/contract-impact.yaml"); err == nil || !strings.Contains(err.Error(), "without updating") {
-		t.Fatalf("expected impact file update requirement, got %v", err)
-	}
-	impact.Entries[0].Paths = []string{"docs/quality/*"}
-	if err := validateImpact([]string{"docs/quality/baseline.md", "docs/architecture/contract-impact.yaml"}, impact, "docs/architecture/contract-impact.yaml"); err == nil || !strings.Contains(err.Error(), "exact path") {
-		t.Fatalf("expected broad pattern rejection, got %v", err)
-	}
-	impact.Entries[0].Paths = []string{"docs/quality/baseline.md"}
-	impact.Entries[0].Change = "updated"
-	if err := validateImpact([]string{"docs/quality/baseline.md", "docs/architecture/contract-impact.yaml"}, impact, "docs/architecture/contract-impact.yaml"); err == nil || !strings.Contains(err.Error(), "substantive") {
-		t.Fatalf("expected weak impact description rejection, got %v", err)
-	}
-	impact.Entries[0].Change = "Updated the architecture decision for campaign testing."
-	impact.Entries = append(impact.Entries, impactEntry{ID: "GOV-03", Paths: []string{"docs/quality/baseline.md"}, Change: "Changed certification policy text and references.", Impact: "Keeps quality guidance aligned with current acceptance rules."})
-	if err := validateImpact([]string{"docs/quality/baseline.md", "docs/architecture/contract-impact.yaml"}, impact, "docs/architecture/contract-impact.yaml"); err == nil || !strings.Contains(err.Error(), "duplicate entries") {
-		t.Fatalf("expected duplicate impact path rejection, got %v", err)
 	}
 }

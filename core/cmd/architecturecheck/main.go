@@ -85,17 +85,6 @@ type evidence struct {
 	Isolation     []string `yaml:"isolation"`
 }
 
-type impactFile struct {
-	Entries []impactEntry `yaml:"entries"`
-}
-
-type impactEntry struct {
-	ID     string   `yaml:"id"`
-	Paths  []string `yaml:"paths"`
-	Change string   `yaml:"change"`
-	Impact string   `yaml:"impact"`
-}
-
 var (
 	idPattern      = regexp.MustCompile(`^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$`)
 	fullSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -113,17 +102,16 @@ func main() {
 	registryPath := flag.String("registry", "docs/product/capabilities.yaml", "capability registry path")
 	roadmapPath := flag.String("roadmap", "docs/roadmap/ROADMAP.md", "generated roadmap path")
 	writeRoadmap := flag.Bool("write-roadmap", false, "write the roadmap generated from the registry")
-	baseRef := flag.String("base-ref", "", "git base ref; enforce contract impact metadata for protected changed paths")
-	impactPath := flag.String("contract-impact", "docs/architecture/contract-impact.yaml", "contract impact metadata path")
+	baseRef := flag.String("base-ref", "", "git base ref; enforce stable IDs and accepted ADR history")
 	flag.Parse()
 
-	if err := run(*root, *registryPath, *roadmapPath, *writeRoadmap, *baseRef, *impactPath); err != nil {
+	if err := run(*root, *registryPath, *roadmapPath, *writeRoadmap, *baseRef); err != nil {
 		fmt.Fprintln(os.Stderr, "architecturecheck:", err)
 		os.Exit(1)
 	}
 }
 
-func run(root, registryPath, roadmapPath string, writeRoadmap bool, baseRef, impactPath string) error {
+func run(root, registryPath, roadmapPath string, writeRoadmap bool, baseRef string) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return err
@@ -165,23 +153,6 @@ func run(root, registryPath, roadmapPath string, writeRoadmap bool, baseRef, imp
 		}
 		if !bytes.Equal(actual, []byte(generated)) {
 			return fmt.Errorf("roadmap is stale; run scripts/check-architecture-consistency --write-roadmap")
-		}
-	}
-	if baseRef != "" {
-		paths, err := changedPaths(root, baseRef)
-		if err != nil {
-			return err
-		}
-		var impacts impactFile
-		content, err := os.ReadFile(filepath.Join(root, impactPath))
-		if err != nil {
-			return fmt.Errorf("contract impact metadata required: %w", err)
-		}
-		if err := yaml.Unmarshal(content, &impacts); err != nil {
-			return fmt.Errorf("parse contract impact metadata: %w", err)
-		}
-		if err := validateImpact(paths, impacts, impactPath); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -697,82 +668,4 @@ func writeList(out *strings.Builder, title string, values []string) {
 		fmt.Fprintf(out, "- %s\n", v)
 	}
 	out.WriteString("\n")
-}
-
-func changedPaths(root, baseRef string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", baseRef, "HEAD")
-	cmd.Dir = root
-	data, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git diff against %s: %w", baseRef, err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return nil, nil
-	}
-	return lines, nil
-}
-
-func validateImpact(changed []string, data impactFile, metadataPath string) error {
-	var missing []string
-	protectedChanged := false
-	metadataChanged := false
-	for _, path := range changed {
-		if protectedPath(path) {
-			protectedChanged = true
-		}
-		if path == metadataPath {
-			metadataChanged = true
-		}
-	}
-	if protectedChanged && !metadataChanged {
-		return fmt.Errorf("protected documentation changed without updating %s", metadataPath)
-	}
-	seen := map[string]bool{}
-	covered := map[string]bool{}
-	for _, entry := range data.Entries {
-		if entry.ID == "" || seen[entry.ID] {
-			return fmt.Errorf("contract impact entries require unique non-empty IDs")
-		}
-		seen[entry.ID] = true
-		if len(entry.Paths) != 1 || strings.TrimSpace(entry.Change) == "" || strings.TrimSpace(entry.Impact) == "" {
-			return fmt.Errorf("contract impact entry %s requires one exact path, change, and impact", entry.ID)
-		}
-		if strings.ContainsAny(entry.Paths[0], "*?[\\") || len(strings.TrimSpace(entry.Change)) < 20 || len(strings.TrimSpace(entry.Impact)) < 20 {
-			return fmt.Errorf("contract impact entry %s must identify one exact path and provide substantive change and impact descriptions", entry.ID)
-		}
-		if covered[entry.Paths[0]] {
-			return fmt.Errorf("contract impact path %s has duplicate entries", entry.Paths[0])
-		}
-		covered[entry.Paths[0]] = true
-	}
-	for _, path := range changed {
-		if !protectedPath(path) {
-			continue
-		}
-		if !covered[path] {
-			missing = append(missing, path)
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		return fmt.Errorf("contract impact metadata missing for protected changed paths: %s", strings.Join(missing, ", "))
-	}
-	return nil
-}
-
-func protectedPath(p string) bool {
-	if p == "AGENTS.md" {
-		return true
-	}
-	if !strings.HasPrefix(p, "docs/") {
-		return false
-	}
-	for _, prefix := range []string{"docs/architecture/", "docs/contracts/", "docs/quality/", "docs/product/", "docs/roadmap/", "docs/observability/", "docs/implementation/"} {
-		if strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	relative := strings.TrimPrefix(p, "docs/")
-	return !strings.Contains(relative, "/") && strings.HasSuffix(p, ".md")
 }
