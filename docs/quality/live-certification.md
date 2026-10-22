@@ -8,12 +8,23 @@ workflows, quality integration or external-project execution.
 
 The machine-checkable companion format is described by
 [`certification-manifests.schema.json`](certification-manifests.schema.json),
-and validated with `python3 scripts/validate-live-certification.py`. A passing
-validator means that repository evidence is structurally complete and its
-identities agree. It does **not** independently prove that a provider session,
-browser interaction, verifier, reviewer or cleanup event actually occurred;
-those observations still require corroboration from the recorded runtime and
-an independent review. The validator must never upgrade evidence levels.
+and validated with `python3 scripts/validate-live-certification.py` after
+installing `scripts/requirements-certification.txt`. The validator applies the
+Draft 2020-12 JSON Schema and then checks semantic identity and evidence
+correlation. Its output reports schema validity and repository correlation
+separately from optional external candidate Git verification and independent
+provider/runtime observation. A manifest never proves an external event by
+itself, and the validator must never upgrade evidence levels.
+
+Manifest schema version 1 preserves the historical C-07 browser shape.
+Version 2 supports capability-specific acceptance. The validator reads
+capabilities from the source record for the frozen ActionSpec, correlates its
+spec and binding identities, and checks those capabilities against the Run.
+Browser requirements apply only when that frozen spec includes `browser`.
+Non-browser Actions must have executable acceptance criteria in their frozen
+spec and a passing corresponding Quality Gate check. A recovery claim requires
+both a failed earlier Implementer execution and a distinct recorded corrective
+Run. Manifest labels cannot choose or weaken the profile.
 
 ### DETERMINISTIC_VERIFIED
 
@@ -42,12 +53,13 @@ not a hidden retry: each Run, failure class, recovery authorization and new
 candidate is recorded. Additional paid sessions beyond the approved budget
 require explicit Product Owner approval.
 
-The repository manifest validator checks identity consistency against the
-recorded C-07 evidence and confirms the Factory implementation commit is
-available in this repository. It cannot independently retrieve the external
-fixture candidate Git object in a generic CI checkout, or prove an external
-model session from JSON. Those observations require the clean-checkout
-verifier and retained external runtime receipts; report that limit explicitly.
+The repository manifest validator confirms the Factory implementation commit
+is available locally and checks identities against source records. When the
+external candidate repository is available, pass `--candidate-repo PATH` to
+check its exact candidate commit and tree. A generic CI checkout may not have
+that object. Provider/session observations still need independent runtime
+corroboration; a clean-checkout verifier and a repository JSON record are not
+provider receipts.
 
 ### PRODUCT_OWNER_UAT_VERIFIED
 
@@ -66,13 +78,14 @@ the owner's manual acceptance on their behalf.
   `LIVE_NOT_TESTED` or `LIVE_BLOCKED`. The campaign may be reported
   `MERGE-READY` only with an explicit, recorded Product Owner exception.
 - Simulated records and real records remain distinguishable in evidence.
-- A REAL_PASEO_E2E_VERIFIED record must identify its source evidence and bind
-  implementation SHA, Project, Action, frozen spec, Campaign, Run, Attempt,
-  model session and frozen candidate. Browser observations, independent
-  verifier and reviewer results, Quality Gate decision, and cleanup state are
-  checked against that source. Simulation evidence cannot satisfy the live
-  level. A subsequent runtime change invalidates the certification unless its
-  impact is assessed and a new candidate-bound certification is recorded.
+- A REAL_PASEO_E2E_VERIFIED record must bind implementation SHA, Project,
+  Action, frozen spec, Campaign, Run, Attempt, frozen candidate, independent
+  verifier and reviewer, Quality Gate decision, and explicit cleanup. Provider,
+  model, mode and session identities are required when the source Run used a
+  model session. Capability-specific observations are checked against the
+  frozen ActionSpec. Simulation evidence cannot satisfy the live level. A
+  subsequent runtime change invalidates the certification unless its impact is
+  assessed and a new candidate-bound certification is recorded.
 - This policy does not certify SEC-01 isolation, authorize unsafe sandbox
   modes, or grant delivery/merge authority.
 

@@ -25,18 +25,102 @@ def set_path(obj, path, value):
 class CertificationManifestTests(unittest.TestCase):
     def setUp(self):
         self.manifest = json.loads((ROOT / "docs/evidence/f1-s4c-07-certification-manifest.json").read_text())
+        self.source = json.loads((ROOT / "docs/evidence/f1-s4c-07-live-2026-10-21.json").read_text())
         self.invalid_cases = json.loads((ROOT / "scripts/fixtures/live-certification-invalid-cases.json").read_text())
 
-    def validate_manifest(self, manifest):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "manifest.json"
-            path.write_text(json.dumps(manifest))
-            return validator.validate(path, ROOT)
+    def validate_manifest(self, manifest, source=None):
+        if source is None:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "manifest.json"
+                path.write_text(json.dumps(manifest))
+                return validator.validate(path, ROOT)
+        with tempfile.TemporaryDirectory(prefix=".certification-test-", dir=ROOT) as directory:
+            temp = Path(directory)
+            (temp / "source.json").write_text(json.dumps(source))
+            candidate = copy.deepcopy(manifest)
+            candidate["source_evidence"] = str((temp / "source.json").relative_to(ROOT))
+            manifest_path = temp / "manifest.json"
+            manifest_path.write_text(json.dumps(candidate))
+            return validator.validate(manifest_path, ROOT)
 
-    def test_existing_c07_evidence_is_structurally_valid(self):
+    def _non_browser_campaign(self):
+        manifest = copy.deepcopy(self.manifest)
+        source = copy.deepcopy(self.source)
+        manifest["schema_version"] = 2
+        manifest.pop("browser")
+        profile = source["preflight"]["frozen-spec-contracts"]["detail"]
+        profile["capabilities"].remove("browser")
+        run = source["runs"][0]["run"]
+        run["capabilities"].remove("browser")
+        run["result"].pop("browserInvoked")
+        run["result"].pop("browserSuccessfulCommands")
+        run["result"].pop("testServerManaged")
+        run["result"].pop("testServerEndpoint")
+        source.pop("browser_certification")
+        candidate_evidence = source["candidate_evidence"][manifest["candidate_id"]]
+        candidate_evidence["spec"]["capabilities"].remove("browser")
+        candidate_evidence["spec"].pop("browserEndpoints")
+        candidate_evidence["spec"].pop("browserTestServer")
+        criteria = candidate_evidence["spec"]["acceptanceCriteria"]
+        criteria[:] = [criterion for criterion in criteria if criterion["kind"] != "browser"]
+        source["decision"]["checks"][:] = [check for check in source["decision"]["checks"] if check["kind"] != "capability"]
+        source["candidate_evidence"][manifest["candidate_id"]]["decision"]["checks"][:] = [
+            check for check in source["candidate_evidence"][manifest["candidate_id"]]["decision"]["checks"]
+            if check["kind"] != "capability"
+        ]
+        return manifest, source
+
+    def test_existing_c07_evidence_remains_valid(self):
         self.assertEqual([], self.validate_manifest(self.manifest))
 
-    def test_deliberately_invalid_fixtures_are_rejected(self):
+    def test_non_browser_cli_campaign_uses_frozen_spec_acceptance(self):
+        manifest, source = self._non_browser_campaign()
+        self.assertEqual([], self.validate_manifest(manifest, source))
+
+    def test_browser_campaign_missing_required_interaction_is_rejected(self):
+        source = copy.deepcopy(self.source)
+        source["browser_certification"]["successful_commands"] = ["snapshot"]
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+
+    def test_non_browser_manifest_cannot_claim_browser_certification(self):
+        manifest, source = self._non_browser_campaign()
+        manifest["browser"] = {"successful_commands": ["open", "snapshot"], "managed_test_server": True}
+        self.assertTrue(self.validate_manifest(manifest, source))
+
+    def test_missing_or_mismatched_frozen_capability_profile_is_rejected(self):
+        source = copy.deepcopy(self.source)
+        source["preflight"]["frozen-spec-contracts"]["detail"]["capabilities"].remove("browser")
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+        source = copy.deepcopy(self.source)
+        source["preflight"].pop("frozen-spec-contracts")
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+
+    def test_claimed_recovery_requires_failed_run_and_corrective_run(self):
+        manifest = copy.deepcopy(self.manifest)
+        manifest["schema_version"] = 2
+        manifest.pop("browser")
+        manifest["recovery"] = {"claimed": True, "corrective_run_id": "some-corrective-run"}
+        self.assertTrue(self.validate_manifest(manifest, self.source))
+
+    def test_rejected_gate_cannot_be_reported_as_accepted(self):
+        source = copy.deepcopy(self.source)
+        source["decision"]["status"] = "REJECTED"
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+
+    def test_identity_and_cleanup_mismatches_are_rejected(self):
+        source = copy.deepcopy(self.source)
+        source["candidate_evidence"].pop(self.manifest["candidate_id"])
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+        source = copy.deepcopy(self.source)
+        source["cleanup"]["workspace_active"] = ["still-active"]
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+
+    def test_simulation_cannot_be_represented_as_real(self):
+        source = copy.deepcopy(self.source)
+        source["paseo_mode"] = "simulated"
+        self.assertTrue(self.validate_manifest(self.manifest, source))
+
+    def test_invalid_fixtures_are_rejected(self):
         self.assertGreaterEqual(len(self.invalid_cases), 12)
         for case in self.invalid_cases:
             with self.subTest(case=case["name"]):
@@ -44,15 +128,18 @@ class CertificationManifestTests(unittest.TestCase):
                 set_path(changed, case["path"], case["value"])
                 self.assertTrue(self.validate_manifest(changed), case["name"])
 
-    def test_missing_required_candidate_run_correlation_is_rejected(self):
-        changed = copy.deepcopy(self.manifest)
-        changed["run_id"] = "unknown-run"
-        self.assertTrue(self.validate_manifest(changed))
-
-    def test_invalidation_cannot_claim_verified(self):
-        changed = copy.deepcopy(self.manifest)
-        changed["invalidated_by"] = "runtime change after tested head"
-        self.assertIn("verified status contradicts invalidated_by", self.validate_manifest(changed))
+    def test_json_schema_enforces_nested_and_length_constraints(self):
+        schema = json.loads((ROOT / "docs/quality/certification-manifests.schema.json").read_text())
+        for mutate in (
+            lambda m: m.update(certification_id=""),
+            lambda m: m["verifier"].pop("status"),
+            lambda m: m["reviewer"].update(unexpected=True),
+            lambda m: m["cleanup"].update(contradictions="none"),
+            lambda m: m["browser"].update(successful_commands=[]),
+        ):
+            changed = copy.deepcopy(self.manifest)
+            mutate(changed)
+            self.assertTrue(validator._schema_errors(changed, schema))
 
     def test_optional_candidate_repository_checks_commit_and_tree(self):
         with tempfile.TemporaryDirectory() as directory:

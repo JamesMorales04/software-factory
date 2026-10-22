@@ -18,8 +18,10 @@ delivery authority, or acceptance authority.
   claims. They cannot establish that a real provider session or model-mediated
   interaction occurred.
 - `REAL_PASEO_E2E_VERIFIED` is bound to the Factory implementation SHA, frozen
-  spec, Project, Campaign, Run/Attempt, provider/model session, frozen candidate
-  and independent acceptance records.
+  spec, Project, Campaign, Run/Attempt, any required provider/model session,
+  frozen candidate and independent acceptance records. Apply browser, CLI,
+  backend and recovery requirements from the frozen ActionSpec; do not infer
+  them from a manifest label.
 - Product Owner UAT is a separate owner attestation. It does not prove runtime
   security, deployment readiness, or SEC-01 isolation.
 - The manifest validator checks repository-recorded structure and identity
@@ -53,14 +55,18 @@ delivery authority, or acceptance authority.
    Never run a paid lane unless its exact budget and objective are authorized.
 5. **Observe the real lifecycle.** Preserve the generated sanitized evidence
    file. Check that it identifies Project, Action, frozen ActionSpec/Campaign,
-   Run, Attempt, Worker, Paseo workspace/session, provider/model/mode and exact
-   candidate SHA. Confirm the actual Implementer model-mediated browser commands
-   when browser capability is required. An unrelated local browser run is not
-   evidence for the Implementer capability.
+   Run, Attempt, Worker, any required Paseo workspace/session and
+   provider/model/mode, and exact candidate SHA. Read the capabilities and
+   executable acceptance criteria from the frozen ActionSpec. If it requires
+   browser capability, confirm the actual Implementer model-mediated browser
+   commands and managed server. CLI/backend Actions need their specified real
+   command, build, API or service observations; they do not inherit browser
+   requirements. A recovery claim needs a failed Attempt and a separate
+   corrective Run with a newly accepted candidate.
 6. **Require independent candidate acceptance.** Confirm that the verifier
-   used a clean candidate checkout and passed the required functional and
-   protected browser oracles; the independent reviewer approved the same
-   candidate/spec; and the Core Quality Gate accepted that candidate. A
+   used a clean candidate checkout and passed the functional and capability
+   oracles required by the frozen spec; the independent reviewer approved the
+   same candidate/spec; and the Core Quality Gate accepted that candidate. A
    reviewer opinion cannot override a rejected gate. Preserve identities and
    status for each decision.
 7. **Check lifecycle cleanup.** Verify the managed server stopped, its port is
@@ -70,16 +76,18 @@ delivery authority, or acceptance authority.
 8. **Freeze and validate.** Confirm the implementation SHA still matches the
    tested head. Create or update a manifest conforming to
    `docs/quality/certification-manifests.schema.json`, with a path to the raw
-   sanitized source evidence. Run:
+   sanitized source evidence. Install the pinned Python dependency and run:
 
    ```sh
+   python3 -m pip install -r scripts/requirements-certification.txt
    python3 scripts/validate-live-certification.py docs/evidence/<manifest>.json
    ```
 
    The built-in positive example is the historical C-07 Vlog manifest. The
-   validator's `STRUCTURALLY_VALID` output is not independent proof of the
-   external observations. Retain independent runtime observation/review in the
-   campaign record.
+   validator output distinguishes schema validity and repository correlation
+   from exact external candidate Git checks and provider observation. It is not
+   independent proof of an external session. Retain independent runtime
+   observation/review in the campaign record.
 9. **Assess freshness.** Any change to the affected runtime after the tested
    implementation SHA invalidates the live result for that runtime. Reassess
    whether the change is documentation-only or affects execution; if affected,
