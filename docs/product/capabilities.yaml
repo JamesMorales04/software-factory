@@ -803,7 +803,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Verified scope is the bounded S4-D one-request planning path and its deterministic contract; no semantic quality or real model outcome is established.
+  - Verified scope is deterministic reusable delegation, autonomous-start policy, and bounded multi-WorkUnit planning/execution; no semantic quality or real model outcome is established.
   blockers:
   - No paid/live model session is authorized; live assessment, Product Owner UAT and independent acceptance remain blocked.
 - id: CAP-014
@@ -833,6 +833,8 @@ capabilities:
     - core/internal/lead/paseo_assessor.go
     test:
     - core/internal/lead/paseo_assessor_test.go
+    - core/internal/lead/evaluation_test.go
+    - core/cmd/s4d-evaluate/main.go
   acceptance:
     deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
       compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
@@ -848,7 +850,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Deterministic schema, context and bounded judgment fixture checks pass, but they do not satisfy the full acceptance criterion without a scored model-versus-baseline semantic comparison.
+  - A frozen machine corpus, blinded score-sheet validator and threshold harness are prepared; they do not satisfy the full acceptance criterion without independently scored real model-versus-baseline outputs.
   blockers:
   - Semantic quality versus a deterministic baseline is not scored; no paid/live model session is authorized and independent acceptance remains blocked.
 - id: CAP-015
@@ -895,7 +897,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Verified scope is immutable Project-bound one-WorkUnit planning and ActionSpec/Campaign linkage; no live model plan was produced.
+  - Verified scope is immutable Project-bound multi-WorkUnit planning, per-unit specification freezing, integration planning, and ActionSpec/Campaign linkage; no live model plan was produced.
   blockers:
   - No paid/live model session is authorized; Product Owner approval and independent acceptance remain pending.
 - id: CAP-016
@@ -904,9 +906,9 @@ capabilities:
   purpose: Validate WorkUnits dependencies and coverage before dispatch
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: in_progress
+  implementation_status: implemented
   verification:
-    deterministic: blocked
+    deterministic: verified
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -922,8 +924,13 @@ capabilities:
     - docs/contracts/intelligent-lead-s4d.md
     source:
     - core/internal/domain/lead_plan.go
+    - core/internal/domain/campaign.go
+    - core/internal/store/campaigns.go
+    - core/cmd/factory-worker/candidate.go
     test:
     - core/internal/domain/lead_plan_test.go
+    - core/internal/store/graph_test.go
+    - core/cmd/factory-worker/candidate_workspace_test.go
   acceptance:
     deterministic: Applicable dependency-aware workgraph contract, negative and regression checks pass on an exact
       candidate.
@@ -931,15 +938,15 @@ capabilities:
       outcome.
   evidence:
     deterministic:
-    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Current S4-D graph accepts exactly one implementation WorkUnit; parallel dependency-aware planning is not implemented.
+  - Deterministic graph execution, dependency chaining, parallel fan-in integration, restart idempotency and conflict handling are verified; a real model/Paseo multi-unit journey is not.
   blockers:
-  - No paid/live model session is authorized; independent acceptance remains pending.
+  - No paid/live model session is authorized; independent real acceptance remains pending.
 - id: CAP-017
   name: Standing delegation contract
   category: Authority
@@ -972,17 +979,17 @@ capabilities:
     - core/internal/store/lead_test.go
     - core/internal/api/lead_api_test.go
   acceptance:
-    deterministic: Reject a second distinct request under one grant, expired/revoked grants, scope expansion, and assessment plus Implementer sessions above the explicit ceiling on an exact candidate.
-    real: Exercise one owner-authorized request under a single-use delegation and independently verify the outcome; paid use requires separate owner authorization.
+    deterministic: Atomic reusable cumulative request/session/attempt accounting, expired/revoked grants, autonomous-risk policy, scope expansion and in-flight revocation containment pass on an exact candidate.
+    real: Exercise reusable owner-authorized requests and autonomous start in a genuine authorized journey and independently verify the outcome; paid use requires separate owner authorization.
   evidence:
     deterministic:
-    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Verified scope is the explicit bounded one-request grant contract; the ADR remains proposed and does not establish Product Owner authorization or paid-use approval.
+  - Verified scope is explicit reusable cumulative grants with autonomous R0/R1 policy and revocation containment; the ADR remains proposed and does not establish Product Owner authorization or paid-use approval.
   blockers:
   - Product Owner decision, paid/live authorization, UAT and independent acceptance remain pending.
   - Issuer identity, accepted risk classes, paid-use accounting and in-flight revocation policy remain proposed; no paid/live model session is authorized.

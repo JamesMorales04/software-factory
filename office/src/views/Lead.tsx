@@ -297,6 +297,27 @@ export function Lead() {
                   {leadRequest.authorizationState ?? "Not provided by Core"}
                 </strong>
               </p>
+              <p>
+                Start mode:{" "}
+                <strong>
+                  {leadRequest.startMode ?? "Not provided by Core"}
+                </strong>
+              </p>
+              {leadRequest.delegationUsage && (
+                <p className="muted">
+                  Delegation usage:{" "}
+                  {leadRequest.delegationUsage.reservedRequests ?? 0} requests,{" "}
+                  {leadRequest.delegationUsage.reservedSessions ?? 0} sessions,{" "}
+                  {leadRequest.delegationUsage.reservedAttempts ?? 0} attempts
+                  reserved.
+                </p>
+              )}
+              {leadRequest.startMode === "autonomous" && (
+                <p className="muted">
+                  Core started this Campaign automatically under the active
+                  delegation and autonomous risk policy.
+                </p>
+              )}
               {leadRequest.authorizationState !== "permitted" && (
                 <p className="muted">No authority to start is recorded.</p>
               )}

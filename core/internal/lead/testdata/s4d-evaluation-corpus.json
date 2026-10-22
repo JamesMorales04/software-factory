@@ -1,0 +1,16 @@
+{
+  "id": "S4D-SEMANTIC-1",
+  "fixtures": [
+    {"id":"S4D-01","category":"small-obvious-change","plan":false,"estimate":false},
+    {"id":"S4D-02","category":"read-only-audit","plan":false,"estimate":false},
+    {"id":"S4D-03","category":"ambiguous-broad","plan":true,"estimate":false},
+    {"id":"S4D-04","category":"multi-step-feature","plan":true,"estimate":false},
+    {"id":"S4D-05","category":"ambiguous-estimate","plan":true,"estimate":true},
+    {"id":"S4D-06","category":"conflicting-requirements","plan":true,"estimate":false},
+    {"id":"S4D-07","category":"bounded-estimate","plan":true,"estimate":true},
+    {"id":"S4D-08","category":"diagnosis","plan":false,"estimate":false},
+    {"id":"S4D-09","category":"cross-service-refactor","plan":true,"estimate":false},
+    {"id":"S4D-10","category":"security-hidden-risk","plan":true,"estimate":false},
+    {"id":"S4D-11","category":"superficially-large-estimate","plan":true,"estimate":true}
+  ]
+}

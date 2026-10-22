@@ -23,6 +23,13 @@ const readyRequest = {
   delegationId: "fixture-delegation",
   status: "ready",
   authorizationState: "permitted",
+  startMode: "awaiting_owner_or_autonomous_policy",
+  delegationUsage: {
+    delegationId: "fixture-delegation",
+    reservedRequests: 1,
+    reservedSessions: 4,
+    reservedAttempts: 2,
+  },
   assessment: {
     schemaRevision: 1,
     intent: "change",
@@ -79,12 +86,20 @@ const readyRequest = {
     maxRepairCycles: 0,
     maxWallClockSecs: 600,
     maxParallel: 1,
-    maxSessions: 1,
+    maxSessions: 4,
     workUnits: [
       {
-        id: "implement",
+        id: "backend",
         kind: "implementation",
+        description: "Add the bounded search query.",
         allowedPaths: ["src/search.ts"],
+      },
+      {
+        id: "ui",
+        kind: "implementation",
+        description: "Render search results in the existing view.",
+        dependsOn: ["backend"],
+        allowedPaths: ["src/view.ts"],
       },
     ],
   },

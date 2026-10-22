@@ -1,9 +1,11 @@
 # Proposed contract: Intelligent Lead planning (F1-S4-D)
 
-**Status:** Proposed; current implementation shape, not a Product Owner grant or
-acceptance claim. **Version:** `1` (experimental, pre-release). **Owner:** Core.
-This contract does not authorize paid model use. TRUSTED_LOCAL only; this is not
-SEC-01 isolation certification.
+**Status:** Proposed revision 2; current implementation shape, not a Product
+Owner grant or acceptance claim. **Version:** `2` (experimental, pre-release).
+**Owner:** Core. This contract does not authorize paid model use. TRUSTED_LOCAL
+only; this is not SEC-01 isolation certification. Revision 2 implements the
+Product Owner-directed standing-autonomy and bounded WorkGraph design in
+ADR-0017; issuer/risk/revocation ratification remains separate.
 
 ## 1. Scope and authority
 
@@ -53,8 +55,10 @@ assessment and plan-freeze boundaries.
 ```text
 id, principalId, auditId, projectId, revision, contentHash,
 objectiveClasses, allowedPaths, capabilities, riskClasses,
+autonomousRiskClasses, autonomousStart,
 provider, model, paseoMode, maxAttempts, maxTimeoutSecs,
 maxRepairCycles, maxWallClockSecs, maxParallel, maxSessions,
+maxRequests, maxCumulativeSessions, maxCumulativeAttempts,
 expiresAt, revokedAt?
 ```
 
@@ -80,14 +84,23 @@ must define grant issuer identity, revision rules, allowed classes/risk,
 renewal, paid-use accounting and in-flight revocation semantics before this
 contract can be treated as approved authority.
 
-Each delegation can reserve one distinct Lead request. Replaying that same
+A delegation is reusable across multiple distinct Lead requests up to
+`maxRequests`, `maxCumulativeSessions` and `maxCumulativeAttempts`. Replaying a
 request with its original idempotency key and content returns the existing
-reservation; a second distinct request under the consumed delegation is
-rejected. The owner must issue another explicit delegation for another
-objective.
+reservation without consuming more authority. Core reserves assessment,
+WorkGraph and repair sessions/attempts atomically and concurrency-safely in the
+same transaction as the request, proposal and freeze transitions. Exhausted
+cumulative authority fails closed; child Actions, Campaigns, delegations or
+replacement sessions cannot evade it. A blocked pre-freeze request releases its
+unused assessment session but not its consumed request count.
 
-`maxSessions` counts the single assessment session plus the proposal's bounded
-Implementer attempt horizon. It is not provider billing evidence or a monetary
+`autonomousStart` is valid only with a nonempty `autonomousRiskClasses` subset
+of `riskClasses`; only `R0` and `R1` may appear. `R2`/`R3` always require an
+explicit owner start. Existing persisted grants that lack these fields fail
+closed and must be reissued.
+
+`maxSessions` is the per-Campaign ceiling; the cumulative fields bound all
+requests under the grant. Neither is provider billing evidence or a monetary
 spend cap. Unknown cost and quota remain unknown.
 
 The paid-assessment authorization gate is closed by default. Core requires all
@@ -183,13 +196,28 @@ negative checks, quality profile, risk class, `SpecBudget`, exact provider /
 model / Paseo mode, campaign repair/wall-clock/parallel/session limits and
 `workUnits`.
 
-S4-D accepts exactly one WorkUnit with kind `implementation`. It has a bounded
-slug ID, `dependsOn`, safe `allowedPaths`, and closed `capabilities`. Since the
-graph has one node, dependencies are unsupported: self-reference is reported
-as a cycle and any other reference is missing. Zero or multiple units, other
-roles, path escape, missing quality-profile capabilities, project/grant
-capability expansion, unsupported risk/class/route, invalid checks, stale
-bindings and budget overflow are rejected before spec or Campaign creation.
+S4-D accepts `1..8` implementation WorkUnits. Each has a bounded slug ID, an
+optional bounded description, at most one `dependsOn` predecessor, safe
+`allowedPaths`, and closed `capabilities`. Core adds one integration node for
+multi-unit graphs; fan-in is represented by the integration node rather than
+arbitrary multi-parent units. Core rejects duplicate IDs, self/unknown
+references, cycles, multiple implementation dependencies, parallel units with
+overlapping paths, path escape, missing quality-profile capabilities,
+project/grant capability expansion, unsupported risk/class/route, invalid
+checks, stale bindings and budget overflow before spec or Campaign creation.
+The session ceiling covers the assessment, every WorkUnit, integration and the
+bounded repair horizon.
+
+Each WorkUnit receives its own frozen ActionSpec with the unit's path and
+capability scope. A multi-unit Campaign's `specId` is the Core-derived
+integration spec; unit spec IDs are frozen in the immutable Campaign plan.
+Sequential units start from the prerequisite candidate commit. Independent
+units start from the campaign base. The integration unit consumes all terminal
+dependency candidate commits with Git merges and produces one integrated
+candidate. Final independent Verifier, Reviewer and Quality Gate acceptance
+apply to that integrated candidate; intermediate unit success is not
+acceptance. A merge conflict fails the integration unit without fabricating a
+candidate.
 
 Quality profile must equal the registered Project profile. The proposal's
 acceptance and negative checks must satisfy the existing profile-required
@@ -221,12 +249,23 @@ submitted → assessing → planned → frozen → ready → running
      └──────────────┴────────┴────────┴────────┴────→ blocked
 ```
 
-Submitting an objective can produce a `ready` plan but never starts its
-Campaign. The Office renders the plan/spec projection before the owner invokes
-the authenticated start transition. That transition rechecks current
-delegation and Project binding; a plan becoming ready is not execution
-authorization. No additional model prompts are inserted among the existing
-Implementer, Verifier, Reviewer or Gate participants.
+Submitting an objective can produce a `ready` plan. Core starts it
+automatically only when the delegation is active, the frozen bindings match,
+the proposal risk class is in `autonomousRiskClasses`, and cumulative
+reservation succeeds. Core records a `LeadRequestAutoStarted` event naming the
+delegation and risk class, and the projection reports `startMode:
+"autonomous"`. A risk class outside the autonomous policy remains `ready` for
+the explicit authenticated owner start. A changed, expired or revoked
+delegation blocks with the exact missing authority; it does not insert a
+generic approval request. Manual start remains available and rechecks current
+delegation and Project binding. No additional model prompts are inserted among
+the existing Implementer, Verifier, Reviewer or Gate participants.
+
+Revocation prevents new reservations and dispatch immediately, blocks open
+Lead requests, terminates pending/running Campaigns, cancels active
+implementer Runs through the existing fencing path and cancels open tasks.
+Unresolved external sessions remain truthfully unresolved; no termination is
+fabricated.
 
 The GET projection includes the request, assessment, model observation,
 proposal under `plan`, frozen `planHash`, Action/ActionSpec/Campaign links,

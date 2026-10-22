@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ func createLeadFixture(t *testing.T, db *DB) (domain.Project, domain.Action, dom
 		Provider:         "opencode", Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build",
 		MaxAttempts: 1, MaxTimeoutSecs: 120, MaxRepairCycles: 1,
 		MaxWallClockSecs: 1800, MaxParallel: 1, MaxSessions: 2,
+		MaxRequests: 1, MaxCumulativeSessions: 2, MaxCumulativeAttempts: 2,
 		ExpiresAt: db.now().Add(time.Hour),
 	}
 	storedGrant, _, err := db.CreateStandingDelegation(ctx, grant, "grant-key-1")
@@ -232,7 +234,7 @@ func TestLeadRequestRejectsRevokedOrStaleDelegation(t *testing.T) {
 	if _, _, err := db.CreateLeadRequest(ctx, NewLeadRequest{
 		ProjectID: project.ID, Objective: "Second campaign", RequestJSON: `{"objective":"Second campaign"}`,
 		IdempotencyKey: "second-grant-request", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
-	}); !errors.Is(err, domain.ErrConflict) {
+	}); !errors.Is(err, domain.ErrConflict) && !errors.Is(err, domain.ErrBudgetExhausted) {
 		t.Fatalf("grant must not authorize a second request: %v", err)
 	}
 	if _, changed, err := db.RevokeStandingDelegation(ctx, grant.ID, db.now()); err != nil || !changed {
@@ -403,5 +405,144 @@ func TestLeadAssessmentProposalAndPlanPersistIdentity(t *testing.T) {
 	delegationEvents, err := reopened.ListAggregateEvents(domain.AggregateDelegation, grant.ID)
 	if err != nil || len(delegationEvents) != 1 || delegationEvents[0].EventType != domain.EventDelegationIssued {
 		t.Fatalf("delegation issuance history did not survive restart: %+v err=%v", delegationEvents, err)
+	}
+}
+
+func reusableGrantFixture(t *testing.T, db *DB, maxRequests, maxSessions, maxAttempts int) (domain.Project, domain.StandingDelegation) {
+	t.Helper()
+	project, _, _ := createLeadFixture(t, db)
+	grant := domain.StandingDelegation{
+		ID: strings.Repeat("e", 32), PrincipalID: "owner", AuditID: "approval-reusable",
+		ProjectID: project.ID, Revision: 2,
+		ObjectiveClasses: []domain.LeadObjectiveClass{domain.LeadFeature},
+		AllowedPaths:     []string{"src"},
+		Capabilities:     []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain},
+		RiskClasses:      []domain.RiskClass{domain.RiskR0},
+		Provider:         "opencode", Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build",
+		MaxAttempts: 1, MaxTimeoutSecs: 120, MaxRepairCycles: 1,
+		MaxWallClockSecs: 1800, MaxParallel: 1, MaxSessions: maxSessions,
+		MaxRequests: maxRequests, MaxCumulativeSessions: maxSessions,
+		MaxCumulativeAttempts: maxAttempts, ExpiresAt: db.now().Add(time.Hour),
+	}
+	stored, _, err := db.CreateStandingDelegation(context.Background(), grant, "reusable-grant-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project, stored
+}
+
+func TestReusableDelegationAccountsRequestsAndSessionsAcrossReservations(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	project, grant := reusableGrantFixture(t, db, 2, 2, 2)
+	first, replayed, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+		ProjectID: project.ID, Objective: "First reusable request", RequestJSON: `{"objective":"First reusable request"}`,
+		IdempotencyKey: "reusable-1", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	})
+	if err != nil || replayed {
+		t.Fatalf("first reservation: replayed=%v err=%v", replayed, err)
+	}
+	if _, replayed, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+		ProjectID: project.ID, Objective: "First reusable request", RequestJSON: `{"objective":"First reusable request"}`,
+		IdempotencyKey: "reusable-1", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	}); err != nil || !replayed {
+		t.Fatalf("idempotent replay: replayed=%v err=%v", replayed, err)
+	}
+	if _, _, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+		ProjectID: project.ID, Objective: "Second reusable request", RequestJSON: `{"objective":"Second reusable request"}`,
+		IdempotencyKey: "reusable-2", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	}); err != nil {
+		t.Fatalf("second distinct request should consume reusable authority: %v", err)
+	}
+	if _, _, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+		ProjectID: project.ID, Objective: "Third reusable request", RequestJSON: `{"objective":"Third reusable request"}`,
+		IdempotencyKey: "reusable-3", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	}); !errors.Is(err, domain.ErrBudgetExhausted) {
+		t.Fatalf("third request exceeded cumulative authority: %v", err)
+	}
+	usage, err := db.GetDelegationUsage(ctx, grant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.ReservedRequests != 2 || usage.ReservedSessions != 2 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if _, changed, err := db.BlockLeadRequest(ctx, first.ID, "submitted", "test release"); err != nil || !changed {
+		t.Fatalf("block first request: changed=%v err=%v", changed, err)
+	}
+	usage, _ = db.GetDelegationUsage(ctx, grant.ID)
+	if usage.ReservedSessions != 1 {
+		t.Fatalf("assessment session was not released: %+v", usage)
+	}
+}
+
+func TestReusableDelegationConcurrentRequestsRespectCumulativeCeiling(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	project, grant := reusableGrantFixture(t, db, 2, 2, 2)
+	var wg sync.WaitGroup
+	results := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+				ProjectID: project.ID, Objective: fmt.Sprintf("Concurrent reusable %d", i),
+				RequestJSON:    fmt.Sprintf(`{"objective":"Concurrent reusable %d"}`, i),
+				IdempotencyKey: fmt.Sprintf("concurrent-reusable-%d", i), DelegationID: grant.ID,
+				ProjectConfigHash: project.ConfigHash,
+			})
+			results <- err
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 2 {
+		t.Fatalf("concurrent reusable reservations = %d, want 2", successes)
+	}
+	usage, err := db.GetDelegationUsage(ctx, grant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.ReservedRequests != 2 || usage.ReservedSessions != 2 {
+		t.Fatalf("concurrent usage = %+v", usage)
+	}
+}
+
+func TestReusableDelegationMigrationRemovesUniqueConstraint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reusable-migration.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, grant := reusableGrantFixture(t, db, 2, 2, 2)
+	if _, _, err := db.CreateLeadRequest(context.Background(), NewLeadRequest{
+		ProjectID: project.ID, Objective: "Legacy first request", RequestJSON: `{"objective":"Legacy first request"}`,
+		IdempotencyKey: "legacy-first", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`CREATE UNIQUE INDEX legacy_delegation_unique ON lead_requests(delegation_id)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if _, _, err := reopened.CreateLeadRequest(context.Background(), NewLeadRequest{
+		ProjectID: project.ID, Objective: "Reusable second request", RequestJSON: `{"objective":"Reusable second request"}`,
+		IdempotencyKey: "reusable-second", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	}); err != nil {
+		t.Fatalf("reopened database still enforced one request per delegation: %v", err)
 	}
 }

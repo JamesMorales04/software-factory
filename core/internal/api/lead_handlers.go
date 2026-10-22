@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,22 +26,27 @@ func leadID() string {
 }
 
 type delegationRequest struct {
-	ProjectID        string                      `json:"projectId"`
-	Revision         int                         `json:"revision"`
-	ObjectiveClasses []domain.LeadObjectiveClass `json:"objectiveClasses"`
-	AllowedPaths     []string                    `json:"allowedPaths"`
-	Capabilities     []domain.Capability         `json:"capabilities"`
-	RiskClasses      []domain.RiskClass          `json:"riskClasses"`
-	Provider         string                      `json:"provider"`
-	Model            string                      `json:"model"`
-	PaseoMode        string                      `json:"paseoMode"`
-	MaxAttempts      int                         `json:"maxAttempts"`
-	MaxTimeoutSecs   int                         `json:"maxTimeoutSecs"`
-	MaxRepairCycles  int                         `json:"maxRepairCycles"`
-	MaxWallClockSecs int                         `json:"maxWallClockSecs"`
-	MaxParallel      int                         `json:"maxParallel"`
-	MaxSessions      int                         `json:"maxSessions"`
-	ExpiresAt        time.Time                   `json:"expiresAt"`
+	ProjectID             string                      `json:"projectId"`
+	Revision              int                         `json:"revision"`
+	ObjectiveClasses      []domain.LeadObjectiveClass `json:"objectiveClasses"`
+	AllowedPaths          []string                    `json:"allowedPaths"`
+	Capabilities          []domain.Capability         `json:"capabilities"`
+	RiskClasses           []domain.RiskClass          `json:"riskClasses"`
+	Provider              string                      `json:"provider"`
+	Model                 string                      `json:"model"`
+	PaseoMode             string                      `json:"paseoMode"`
+	MaxAttempts           int                         `json:"maxAttempts"`
+	MaxTimeoutSecs        int                         `json:"maxTimeoutSecs"`
+	MaxRepairCycles       int                         `json:"maxRepairCycles"`
+	MaxWallClockSecs      int                         `json:"maxWallClockSecs"`
+	MaxParallel           int                         `json:"maxParallel"`
+	MaxSessions           int                         `json:"maxSessions"`
+	MaxRequests           int                         `json:"maxRequests"`
+	MaxCumulativeSessions int                         `json:"maxCumulativeSessions"`
+	MaxCumulativeAttempts int                         `json:"maxCumulativeAttempts"`
+	AutonomousStart       bool                        `json:"autonomousStart"`
+	AutonomousRiskClasses []domain.RiskClass          `json:"autonomousRiskClasses"`
+	ExpiresAt             time.Time                   `json:"expiresAt"`
 }
 
 func (s *Server) handleCreateDelegation(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +66,11 @@ func (s *Server) handleCreateDelegation(w http.ResponseWriter, r *http.Request) 
 		Provider: req.Provider, Model: req.Model, PaseoMode: req.PaseoMode,
 		MaxAttempts: req.MaxAttempts, MaxTimeoutSecs: req.MaxTimeoutSecs,
 		MaxRepairCycles: req.MaxRepairCycles, MaxWallClockSecs: req.MaxWallClockSecs,
-		MaxParallel: req.MaxParallel, MaxSessions: req.MaxSessions, ExpiresAt: req.ExpiresAt,
+		MaxParallel: req.MaxParallel, MaxSessions: req.MaxSessions,
+		MaxRequests: req.MaxRequests, MaxCumulativeSessions: req.MaxCumulativeSessions,
+		MaxCumulativeAttempts: req.MaxCumulativeAttempts,
+		AutonomousStart:       req.AutonomousStart, AutonomousRiskClasses: req.AutonomousRiskClasses,
+		ExpiresAt: req.ExpiresAt,
 	}
 	project, err := s.db.GetProject(grant.ProjectID)
 	if err != nil {
@@ -100,7 +110,12 @@ func (s *Server) handleGetDelegation(w http.ResponseWriter, r *http.Request) {
 		mapDomainError(w, err, s.log, "get delegation")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"delegation": grant})
+	usage, err := s.db.GetDelegationUsage(r.Context(), grant.ID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "get delegation usage")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"delegation": grant, "usage": usage})
 }
 
 func (s *Server) handleRevokeDelegation(w http.ResponseWriter, r *http.Request) {
@@ -116,13 +131,31 @@ func (s *Server) handleRevokeDelegation(w http.ResponseWriter, r *http.Request) 
 	if !changed {
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
+	events, campaignIDs, err := s.db.ContainDelegationRevocation(r.Context(), grant.ID,
+		"delegation revoked", telemetry.CorrelationIDFrom(r.Context()))
+	if err != nil {
+		mapDomainError(w, err, s.log, "contain delegation revocation")
+		return
+	}
+	for _, event := range events {
+		s.hub.Publish(event.Projected())
+	}
+	if len(campaignIDs) > 0 {
+		s.log.Info("delegation revocation contained campaigns",
+			"delegationId", grant.ID, "campaigns", len(campaignIDs))
+	}
 	if changed && s.campaigns != nil {
 		s.campaigns.Wake()
 	}
 	if changed {
 		s.publishLeadEvent(r.Context(), domain.AggregateDelegation, grant.ID, domain.EventDelegationRevoked)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"delegation": grant})
+	usage, uerr := s.db.GetDelegationUsage(r.Context(), grant.ID)
+	if uerr != nil {
+		mapDomainError(w, uerr, s.log, "get delegation usage")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"delegation": grant, "usage": usage})
 }
 
 type createLeadRequest struct {
@@ -292,23 +325,29 @@ func (s *Server) processLeadRequest(ctx context.Context, request store.LeadReque
 	if !planReplayed {
 		s.publishLeadEvent(ctx, domain.AggregateLeadRequest, request.ID, domain.EventLeadPlanFrozen)
 	}
-	spec, err := s.freezeLeadSpec(ctx, project, action, assessment.Proposal)
+	campaignSpec, unitSpecs, err := s.freezeLeadSpecs(ctx, project, action, assessment.Proposal)
 	if err != nil {
 		block("frozen", "ActionSpec freeze rejected: "+boundedReason(err))
 		return
 	}
+	graphPlan, err := domain.BuildLeadCampaignPlan(assessment.Proposal, unitSpecs, campaignSpec.ID)
+	if err != nil {
+		block("frozen", "WorkGraph plan rejected: "+boundedReason(err))
+		return
+	}
 	if _, _, err := s.db.AdvanceLeadRequest(ctx, request.ID, "frozen", "frozen", store.LeadRequestLinks{
-		SpecID: spec.ID,
+		SpecID: campaignSpec.ID,
 	}); err != nil {
 		block("frozen", "ActionSpec identity could not be linked")
 		return
 	}
 	campaign, campaignReplayed, campaignEvents, err := s.db.CreateCampaign(ctx, domain.NewCampaignParams{
-		SpecID: spec.ID, MaxRepairCycles: assessment.Proposal.MaxRepairCycles,
+		SpecID: campaignSpec.ID, MaxRepairCycles: assessment.Proposal.MaxRepairCycles,
 		MaxWallClockSecs:       assessment.Proposal.MaxWallClockSecs,
 		MaxParallel:            assessment.Proposal.MaxParallel,
-		MaxImplementerAttempts: assessment.Proposal.Budget.MaxAttempts * (assessment.Proposal.MaxRepairCycles + 1),
+		MaxImplementerAttempts: assessment.Proposal.ImplementerTaskCount() * assessment.Proposal.Budget.MaxAttempts,
 		IdempotencyKey:         "lead-campaign-" + request.ID,
+		Plan:                   &graphPlan,
 	}, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		block("frozen", "Campaign creation rejected: "+boundedReason(err))
@@ -320,11 +359,13 @@ func (s *Server) processLeadRequest(ctx context.Context, request store.LeadReque
 		}
 	}
 	_, _, err = s.db.AdvanceLeadRequest(ctx, request.ID, "frozen", "ready", store.LeadRequestLinks{
-		FrozenPlanID: plan.ID, SpecID: spec.ID, CampaignID: campaign.ID,
+		FrozenPlanID: plan.ID, SpecID: campaignSpec.ID, CampaignID: campaign.ID,
 	})
 	if err != nil {
 		block("frozen", "Lead projection could not be advanced")
+		return
 	}
+	s.maybeAutoStartLeadRequest(ctx, request.ID)
 }
 
 func (s *Server) publishLeadEvent(ctx context.Context, aggregateType, aggregateID, eventType string) {
@@ -423,26 +464,48 @@ func leadContext(ctx context.Context, repository, base string) (map[string]strin
 	return map[string]string{"repository-files": bounded.String()}, nil
 }
 
-func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, action domain.Action, plan domain.LeadPlanProposal) (domain.ActionSpec, error) {
-	unit := plan.WorkUnits[0]
+func (s *Server) freezeLeadSpecs(ctx context.Context, project domain.Project, action domain.Action, plan domain.LeadPlanProposal) (domain.ActionSpec, map[string]string, error) {
 	inspected, err := projectreg.Inspect(ctx, project.RepositoryPath, project.BaseRefs)
 	if err != nil {
-		return domain.ActionSpec{}, err
+		return domain.ActionSpec{}, nil, err
 	}
 	if inspected.Identity != project.RepositoryIdentity {
-		return domain.ActionSpec{}, fmt.Errorf("repository identity changed")
+		return domain.ActionSpec{}, nil, fmt.Errorf("repository identity changed")
 	}
 	if err := projectreg.ValidateBase(inspected, plan.BaseRevision); err != nil {
-		return domain.ActionSpec{}, err
+		return domain.ActionSpec{}, nil, err
 	}
-	capabilities := make([]string, len(unit.Capabilities))
-	for i, capability := range unit.Capabilities {
+	unitSpecs := make(map[string]string, len(plan.WorkUnits))
+	for _, unit := range plan.WorkUnits {
+		spec, err := s.freezeLeadSpec(ctx, project, action, plan, unit.Goal(plan.Objective), unit.AllowedPaths, unit.Capabilities)
+		if err != nil {
+			return domain.ActionSpec{}, nil, fmt.Errorf("work unit %q: %w", unit.ID, err)
+		}
+		unitSpecs[unit.ID] = spec.ID
+	}
+	if len(plan.WorkUnits) == 1 {
+		spec, err := s.db.GetActionSpec(unitSpecs[plan.WorkUnits[0].ID])
+		return spec, unitSpecs, err
+	}
+	paths, capabilities := unionUnitScope(plan.WorkUnits)
+	spec, err := s.freezeLeadSpec(ctx, project, action, plan,
+		truncateGoal(plan.Objective+"\n\nIntegrate all WorkUnits into one candidate and keep the frozen acceptance oracle green."),
+		paths, capabilities)
+	if err != nil {
+		return domain.ActionSpec{}, nil, fmt.Errorf("integration spec: %w", err)
+	}
+	return spec, unitSpecs, nil
+}
+
+func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, action domain.Action, plan domain.LeadPlanProposal, goal string, allowedPaths []string, unitCapabilities []domain.Capability) (domain.ActionSpec, error) {
+	capabilities := make([]string, len(unitCapabilities))
+	for i, capability := range unitCapabilities {
 		capabilities[i] = string(capability)
 	}
 	spec, err := (domain.NewActionSpecParams{
-		ProjectID: project.ID, ActionID: action.ID, Goal: plan.Objective,
+		ProjectID: project.ID, ActionID: action.ID, Goal: goal,
 		Repository: project.RepositoryPath, BaseRevision: plan.BaseRevision,
-		AllowedPaths: unit.AllowedPaths, AcceptanceCriteria: plan.AcceptanceCriteria,
+		AllowedPaths: allowedPaths, AcceptanceCriteria: plan.AcceptanceCriteria,
 		NegativeCases: plan.NegativeCases, RiskClass: string(plan.RiskClass),
 		QualityProfile: string(plan.QualityProfile), Budget: plan.Budget,
 		ExecutionMode: string(domain.ExecTrustedLocal), Provider: plan.Provider,
@@ -459,6 +522,37 @@ func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, act
 	}
 	stored, _, _, err := s.db.CreateActionSpec(ctx, spec, telemetry.CorrelationIDFrom(ctx))
 	return stored, err
+}
+
+func unionUnitScope(units []domain.LeadWorkUnit) ([]string, []domain.Capability) {
+	paths := map[string]bool{}
+	capabilities := map[domain.Capability]bool{}
+	for _, unit := range units {
+		for _, path := range unit.AllowedPaths {
+			paths[path] = true
+		}
+		for _, capability := range unit.Capabilities {
+			capabilities[capability] = true
+		}
+	}
+	outPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		outPaths = append(outPaths, path)
+	}
+	sort.Strings(outPaths)
+	outCapabilities := make([]domain.Capability, 0, len(capabilities))
+	for capability := range capabilities {
+		outCapabilities = append(outCapabilities, capability)
+	}
+	sort.Slice(outCapabilities, func(i, j int) bool { return outCapabilities[i] < outCapabilities[j] })
+	return outPaths, outCapabilities
+}
+
+func truncateGoal(goal string) string {
+	if len(goal) > domain.MaxSpecGoalChars {
+		return goal[:domain.MaxSpecGoalChars]
+	}
+	return goal
 }
 
 func (s *Server) handleGetLeadRequest(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +595,34 @@ func (s *Server) writeLeadRequest(w http.ResponseWriter, r *http.Request, id str
 	if gerr == nil && perr == nil && grant.Validate(time.Now().UTC()) == nil && project.ConfigHash == request.ProjectConfigHash && project.Active() {
 		projection["authorizationState"] = "permitted"
 	}
+	if usage, uerr := s.db.GetDelegationUsage(r.Context(), request.DelegationID); uerr == nil {
+		projection["delegationUsage"] = usage
+	}
+	if request.CampaignID != "" {
+		if applicable, authorized, aerr := s.db.CheckLeadCampaignAuthorization(r.Context(), request.CampaignID); aerr == nil && applicable {
+			if authorized {
+				projection["authorizationState"] = "permitted"
+			} else {
+				projection["authorizationState"] = "denied"
+			}
+		}
+	}
+	startMode := ""
+	if events, eerr := s.db.ListAggregateEvents(domain.AggregateLeadRequest, request.ID); eerr == nil {
+		for _, event := range events {
+			if event.EventType == domain.EventLeadRequestAutoStarted {
+				startMode = "autonomous"
+				break
+			}
+		}
+	}
+	if startMode == "" && request.Status == "running" {
+		startMode = "manual"
+	}
+	if startMode == "" && request.Status == "ready" {
+		startMode = "awaiting_owner_or_autonomous_policy"
+	}
+	projection["startMode"] = startMode
 	if request.AssessmentID != "" {
 		if assessment, aerr := s.db.GetLeadAssessment(r.Context(), request.AssessmentID); aerr == nil {
 			var body any
@@ -539,6 +661,77 @@ func (s *Server) writeLeadRequest(w http.ResponseWriter, r *http.Request, id str
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, map[string]any{"request": projection})
+}
+
+// maybeAutoStartLeadRequest applies the Product Owner's standing-autonomy
+// policy. A risk class outside the autonomous grant is left ready for the
+// explicit owner start; a broken or revoked authority blocks with the exact
+// reason instead of inserting a generic approval request.
+func (s *Server) maybeAutoStartLeadRequest(ctx context.Context, requestID string) {
+	request, err := s.db.GetLeadRequest(ctx, requestID)
+	if err != nil || request.Status != "ready" {
+		return
+	}
+	grant, err := s.db.GetStandingDelegation(ctx, request.DelegationID)
+	if err != nil || !grant.AutonomousStart {
+		return
+	}
+	proposal, err := s.db.GetLeadProposal(ctx, request.ProposalID)
+	if err != nil {
+		return
+	}
+	if !containsAutonomousRisk(grant.AutonomousRiskClasses, proposal.Proposal.RiskClass) {
+		return
+	}
+	applicable, authorized, err := s.db.CheckLeadCampaignAuthorization(ctx, request.CampaignID)
+	if err != nil {
+		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start authorization check failed: "+boundedReason(err))
+		return
+	}
+	if !applicable || !authorized {
+		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start denied: frozen plan is outside the active delegation")
+		return
+	}
+	_, replayed, events, err := s.db.StartCampaign(ctx, request.CampaignID, telemetry.CorrelationIDFrom(ctx))
+	if err != nil {
+		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic Campaign start rejected: "+boundedReason(err))
+		return
+	}
+	for _, event := range events {
+		s.hub.Publish(event)
+	}
+	if !replayed && s.campaigns != nil {
+		s.campaigns.Wake()
+	}
+	updated, changed, err := s.db.AdvanceLeadRequest(ctx, request.ID, "ready", "running", store.LeadRequestLinks{})
+	if err != nil {
+		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start projection failed: "+boundedReason(err))
+		return
+	}
+	if changed {
+		if event, eerr := s.db.RecordLeadAutoStart(ctx, updated.ID, updated.CampaignID, updated.DelegationID, string(proposal.Proposal.RiskClass)); eerr == nil {
+			s.hub.Publish(event.Projected())
+		}
+		s.log.Info("lead request started autonomously", "requestId", updated.ID,
+			"campaignId", updated.CampaignID, "delegationId", updated.DelegationID,
+			"riskClass", proposal.Proposal.RiskClass)
+	}
+}
+
+func (s *Server) blockLeadAfterAutoStartFailure(ctx context.Context, requestID, reason string) {
+	_, changed, err := s.db.BlockLeadRequest(ctx, requestID, "ready", reason)
+	if err == nil && changed {
+		s.publishLeadEvent(ctx, domain.AggregateLeadRequest, requestID, domain.EventLeadRequestBlocked)
+	}
+}
+
+func containsAutonomousRisk(values []domain.RiskClass, candidate domain.RiskClass) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleStartLeadRequest(w http.ResponseWriter, r *http.Request) {

@@ -344,7 +344,15 @@ func (s *Server) handleWorkerCandidate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "unauthorized", "specification does not authorize this Run")
 		return
 	}
-	validation, err := candidate.InspectCommit(ctx, spec.Repository, spec.BaseRevision,
+	baseRevision := spec.BaseRevision
+	if value, ok := run.WorkloadInput["baseRevision"].(string); ok && strings.TrimSpace(value) != "" {
+		baseRevision = strings.TrimSpace(value)
+	}
+	parentCandidateID := ""
+	if value, ok := run.WorkloadInput["parentCandidateId"].(string); ok {
+		parentCandidateID = strings.TrimSpace(value)
+	}
+	validation, err := candidate.InspectCommit(ctx, spec.Repository, baseRevision,
 		strings.TrimSpace(req.CommitSHA), strings.TrimSpace(req.CandidateRef), spec.AllowedPaths)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", "candidate rejected: "+err.Error())
@@ -353,8 +361,9 @@ func (s *Server) handleWorkerCandidate(w http.ResponseWriter, r *http.Request) {
 	record := domain.CandidateRevision{
 		ProjectID: spec.ProjectID, ActionID: spec.ActionID, SpecID: spec.ID,
 		SpecHash: spec.ContentHash, PolicyRevision: spec.PolicyRevision,
-		BaseRevision: spec.BaseRevision, CommitSHA: validation.CommitSHA,
-		TreeSHA: validation.TreeSHA, ContentDigest: validation.ContentDigest,
+		BaseRevision: baseRevision, CommitSHA: validation.CommitSHA,
+		ParentCandidateID: parentCandidateID,
+		TreeSHA:           validation.TreeSHA, ContentDigest: validation.ContentDigest,
 		CandidateRef:     strings.TrimSpace(req.CandidateRef),
 		Repository:       spec.Repository,
 		ImplementerRunID: run.ID, ImplementerAttemptID: attempt.ID,

@@ -86,7 +86,7 @@ func leadFixture(t *testing.T) (*Server, string, string) {
 		Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build", MaxSessions: 2,
 	})
 	expires, _ := json.Marshal(time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano))
-	grantBody := fmt.Sprintf(`{"projectId":"leadfixture","revision":1,"objectiveClasses":["feature"],"allowedPaths":["add.js"],"capabilities":["repository-edit","node-toolchain"],"riskClasses":["R0"],"provider":"opencode","model":"opencode-go/deepseek-v4.1-flash","paseoMode":"build","maxAttempts":1,"maxTimeoutSecs":120,"maxRepairCycles":0,"maxWallClockSecs":600,"maxParallel":1,"maxSessions":2,"expiresAt":%s}`, expires)
+	grantBody := fmt.Sprintf(`{"projectId":"leadfixture","revision":1,"objectiveClasses":["feature"],"allowedPaths":["add.js"],"capabilities":["repository-edit","node-toolchain"],"riskClasses":["R0"],"provider":"opencode","model":"opencode-go/deepseek-v4.1-flash","paseoMode":"build","maxAttempts":1,"maxTimeoutSecs":120,"maxRepairCycles":0,"maxWallClockSecs":600,"maxParallel":1,"maxSessions":2,"maxRequests":1,"maxCumulativeSessions":2,"maxCumulativeAttempts":2,"autonomousStart":false,"autonomousRiskClasses":[],"expiresAt":%s}`, expires)
 	req := authed("POST", "/api/v1/delegations", grantBody, testToken)
 	req.Header.Set("Idempotency-Key", "lead-fixture-auth")
 	rec = httptest.NewRecorder()
@@ -413,7 +413,9 @@ func TestLeadBoundActionCannotCreateOrStartCampaignBeforeLeadLink(t *testing.T) 
 			Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain},
 		}},
 	}
-	spec, err := srv.freezeLeadSpec(ctx, project, action, proposal)
+	unit := proposal.WorkUnits[0]
+	spec, err := srv.freezeLeadSpec(ctx, project, action, proposal, unit.Goal(proposal.Objective),
+		unit.AllowedPaths, unit.Capabilities)
 	if err != nil {
 		t.Fatalf("freeze fixture spec: %v", err)
 	}
@@ -609,11 +611,199 @@ func TestLeadRevocationPreventsDispatch(t *testing.T) {
 		t.Fatalf("repeated revoke published duplicate live events: %#v", repeatEvents)
 	}
 	rec = serveRun(t, h, "POST", "/api/v1/lead/requests/"+out.Request.ID+"/start", `{}`, testToken)
-	if rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusConflict && rec.Code != http.StatusForbidden {
 		t.Fatalf("revoked request started: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = serveRun(t, h, "POST", "/api/v1/campaigns/"+out.Request.CampaignID+"/start", `{}`, testToken)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("revoked Campaign started directly: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+type multiUnitAssessor struct{ calls int }
+
+func (a *multiUnitAssessor) Assess(_ context.Context, input lead.Input) (lead.Assessment, lead.Observation, error) {
+	a.calls++
+	assessment := lead.Assessment{
+		SchemaRevision: 1, ProjectID: input.ProjectID, ActionID: input.ActionID, RequestID: input.RequestID,
+		EvidenceRefs: []string{"repository-files"}, Intent: "change", Complexity: "medium",
+		EffortEstimate: lead.EffortEstimate{
+			Status: "estimated", Unit: "person-hours", MinPersonHours: 2, MaxPersonHours: 6,
+			Assumptions: []string{"Two independent bounded units plus integration."},
+		},
+		ValidationNeeds:     []string{"Run the frozen acceptance oracle on the integrated candidate."},
+		Uncertainty:         []string{"Integration conflict risk is bounded by disjoint unit paths."},
+		SuggestedNextAction: "Start the authorized multi-unit Campaign.",
+		Proposal: domain.LeadPlanProposal{
+			ProjectID: input.ProjectID, ActionID: input.ActionID, BaseRevision: input.BaseRevision,
+			ProjectConfigHash: input.Project.ConfigHash, Objective: input.Objective, Class: domain.LeadFeature,
+			Assumptions: []string{"Units modify disjoint paths."}, Risks: []string{"Integration may expose contract mismatch."},
+			AcceptanceCriteria: []domain.SpecCheck{
+				{ID: "format", Kind: domain.CheckFormat, Description: "format", Command: []string{"node", "--check", "add.js"}},
+				{ID: "test", Kind: domain.CheckTest, Description: "test", Command: []string{"node", "--test"}},
+				{ID: "functional", Kind: domain.CheckFunctional, Description: "functional", Command: []string{"node", "-e", "0"}},
+			},
+			NegativeCases:  []domain.SpecCheck{{ID: "negative", Kind: domain.CheckNegative, Description: "negative", Command: []string{"node", "-e", "1"}, ExpectExit: 1}},
+			QualityProfile: input.Project.QualityProfile, RiskClass: domain.RiskR0,
+			Budget:   domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120},
+			Provider: input.Grant.Provider, Model: input.Grant.Model, PaseoMode: input.Grant.PaseoMode,
+			MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 2, MaxSessions: 6,
+			WorkUnits: []domain.LeadWorkUnit{
+				{ID: "api", Kind: "implementation", Description: "Implement the API unit.", AllowedPaths: []string{"src/api"}, Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}},
+				{ID: "ui", Kind: "implementation", Description: "Implement the UI unit.", AllowedPaths: []string{"src/ui"}, Capabilities: []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}},
+			},
+		},
+	}
+	return assessment, lead.Observation{
+		Mechanism: "MODEL", Provider: input.Grant.Provider, Model: input.Grant.Model,
+		Mode: input.Grant.PaseoMode, SessionID: "fixture-session", InputBytes: 100, OutputBytes: 100,
+	}, nil
+}
+
+func autonomousLeadFixture(t *testing.T) (*Server, string, string) {
+	t.Helper()
+	srv, _ := newQualityTestServer(t)
+	repo, base := qualityRepo(t)
+	if out, err := exec.Command("git", "-C", repo, "branch", "-M", "main").CombinedOutput(); err != nil {
+		t.Fatalf("name fixture branch: %v %s", err, out)
+	}
+	body := fmt.Sprintf(`{"id":"leadfixture","name":"Lead fixture","repositoryPath":%q,"baseRefs":["main"],"qualityProfile":"node-basic","workspaceScope":".","capabilities":["repository-edit","node-toolchain"],"executionMode":"trusted-local"}`, repo)
+	rec := serveRun(t, srv.Handler(), "POST", "/api/v1/projects", body, testToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register project: %d %s", rec.Code, rec.Body.String())
+	}
+	srv.WithLeadPaidSessionAuthorization(LeadPaidSessionAuthorization{
+		AuthorizationID: "lead-autonomous-auth", ProjectID: "leadfixture", BaseRevision: base, Provider: "opencode",
+		Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build", MaxSessions: 8,
+	})
+	expires, _ := json.Marshal(time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano))
+	grantBody := fmt.Sprintf(`{"projectId":"leadfixture","revision":1,"objectiveClasses":["feature"],"allowedPaths":["src"],"capabilities":["repository-edit","node-toolchain"],"riskClasses":["R0"],"provider":"opencode","model":"opencode-go/deepseek-v4.1-flash","paseoMode":"build","maxAttempts":1,"maxTimeoutSecs":120,"maxRepairCycles":0,"maxWallClockSecs":600,"maxParallel":2,"maxSessions":6,"maxRequests":2,"maxCumulativeSessions":8,"maxCumulativeAttempts":8,"autonomousStart":true,"autonomousRiskClasses":["R0"],"expiresAt":%s}`, expires)
+	req := authed("POST", "/api/v1/delegations", grantBody, testToken)
+	req.Header.Set("Idempotency-Key", "lead-autonomous-auth")
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create autonomous delegation: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Delegation domain.StandingDelegation `json:"delegation"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return srv, result.Delegation.ID, repo
+}
+
+func TestLeadAutonomousStartBuildsMultiUnitGraph(t *testing.T) {
+	srv, grantID, _ := autonomousLeadFixture(t)
+	fake := &multiUnitAssessor{}
+	srv.WithLeadAssessor(fake)
+	rec := submitLead(t, srv.Handler(), grantID, "multi-unit-auto")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("multi-unit intake: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Request struct {
+			ID              string                  `json:"id"`
+			Status          string                  `json:"status"`
+			StartMode       string                  `json:"startMode"`
+			CampaignID      string                  `json:"campaignId"`
+			Plan            domain.LeadPlanProposal `json:"plan"`
+			DelegationUsage store.DelegationUsage   `json:"delegationUsage"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Request.Status != "running" || out.Request.StartMode != "autonomous" {
+		t.Fatalf("autonomous start projection = status %s mode %s body %s", out.Request.Status, out.Request.StartMode, rec.Body.String())
+	}
+	if len(out.Request.Plan.WorkUnits) != 2 {
+		t.Fatalf("multi-unit plan = %+v", out.Request.Plan.WorkUnits)
+	}
+	if out.Request.DelegationUsage.ReservedRequests != 1 || out.Request.DelegationUsage.ReservedSessions != 6 {
+		t.Fatalf("delegation usage = %+v", out.Request.DelegationUsage)
+	}
+	campaign, err := srv.db.GetCampaign(out.Request.CampaignID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.Status != domain.CampaignRunning {
+		t.Fatalf("campaign status = %s", campaign.Status)
+	}
+	keys := map[string]bool{}
+	for _, task := range campaign.Plan.Tasks {
+		keys[task.Key] = true
+	}
+	for _, want := range []string{domain.LeadUnitTaskKey("api"), domain.LeadUnitTaskKey("ui"), domain.IntegrationTaskKey, "gate-0"} {
+		if !keys[want] {
+			t.Fatalf("multi-unit plan missing %s: %+v", want, keys)
+		}
+	}
+	events, err := srv.db.ListAggregateEvents(domain.AggregateLeadRequest, out.Request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auto := false
+	for _, event := range events {
+		if event.EventType == domain.EventLeadRequestAutoStarted {
+			auto = true
+		}
+	}
+	if !auto {
+		t.Fatal("autonomous start event missing")
+	}
+}
+
+func TestLeadAutonomousRevocationContainsRunningCampaign(t *testing.T) {
+	srv, grantID, _ := autonomousLeadFixture(t)
+	srv.WithLeadAssessor(&multiUnitAssessor{})
+	rec := submitLead(t, srv.Handler(), grantID, "multi-unit-revoke")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("intake: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Request struct {
+			ID         string `json:"id"`
+			CampaignID string `json:"campaignId"`
+			Status     string `json:"status"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Request.Status != "running" {
+		t.Fatalf("campaign did not auto-start: %s", rec.Body.String())
+	}
+	rec = serveRun(t, srv.Handler(), "POST", "/api/v1/delegations/"+grantID+"/revoke", `{}`, testToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", rec.Code, rec.Body.String())
+	}
+	campaign, err := srv.db.GetCampaign(out.Request.CampaignID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.Status != domain.CampaignCancelled {
+		t.Fatalf("revocation did not cancel running campaign: %s", campaign.Status)
+	}
+	tasks, err := srv.db.CampaignTasks(out.Request.CampaignID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if !task.Status.Terminal() {
+			t.Fatalf("revocation left task %s in %s", task.Key, task.Status)
+		}
+	}
+	request, err := srv.db.GetLeadRequest(context.Background(), out.Request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Status != "blocked" {
+		t.Fatalf("revocation left Lead request %s", request.Status)
+	}
+	rec = submitLead(t, srv.Handler(), grantID, "multi-unit-revoke-second")
+	if rec.Code != http.StatusConflict && rec.Code != http.StatusForbidden {
+		t.Fatalf("revoked delegation accepted new work: %d %s", rec.Code, rec.Body.String())
 	}
 }

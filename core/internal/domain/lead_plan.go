@@ -20,13 +20,24 @@ const (
 	LeadRefactor    LeadObjectiveClass = "refactor"
 )
 
-// LeadWorkUnitKind is intentionally closed. S4-D accepts one implementation
-// unit and delegates its execution to the existing ActionSpec/Campaign path.
+// LeadWorkUnitKind is intentionally closed. S4-D executes implementation
+// units through the existing ActionSpec/Campaign path and lets Core add one
+// integration node when a graph has more than one unit.
 type LeadWorkUnitKind string
 
 const LeadImplementationUnit LeadWorkUnitKind = "implementation"
 
-const MaxLeadSessions = MaxCampaignTasks * MaxCampaignTaskExecutions
+const (
+	MaxLeadWorkUnits            = 8
+	MaxLeadWorkUnitIDChars      = 32
+	MaxLeadUnitDescriptionChars = 2000
+	MaxLeadGraphTasks           = 32
+	MaxDelegationRequests       = 16
+	MaxCumulativeLeadSessions   = 256
+	MaxCumulativeLeadAttempts   = 512
+)
+
+const MaxLeadSessions = MaxLeadGraphTasks * MaxCampaignTaskExecutions
 
 // StandingDelegation is an immutable, owner-issued bound on Lead planning.
 // Core persistence owns issuance and revocation; this type only validates
@@ -51,8 +62,17 @@ type StandingDelegation struct {
 	MaxWallClockSecs int                  `json:"maxWallClockSecs"`
 	MaxParallel      int                  `json:"maxParallel"`
 	MaxSessions      int                  `json:"maxSessions"`
-	ExpiresAt        time.Time            `json:"expiresAt"`
-	RevokedAt        time.Time            `json:"revokedAt,omitempty"`
+	// Reusable cumulative authority. Per-Campaign ceilings remain above;
+	// these ceilings bound all requests and Campaigns issued under the grant.
+	MaxRequests           int  `json:"maxRequests"`
+	MaxCumulativeSessions int  `json:"maxCumulativeSessions"`
+	MaxCumulativeAttempts int  `json:"maxCumulativeAttempts"`
+	AutonomousStart       bool `json:"autonomousStart"`
+	// AutonomousRiskClasses is a subset of RiskClasses. R2/R3 can never be
+	// autonomous under this revision.
+	AutonomousRiskClasses []RiskClass `json:"autonomousRiskClasses"`
+	ExpiresAt             time.Time   `json:"expiresAt"`
+	RevokedAt             time.Time   `json:"revokedAt,omitempty"`
 }
 
 // ComputeContentHash returns the immutable grant identity. The persisted
@@ -116,14 +136,49 @@ func (g StandingDelegation) Validate(now time.Time) error {
 		g.MaxParallel < 1 || g.MaxParallel > MaxCampaignParallel || g.MaxSessions < 1 || g.MaxSessions > MaxLeadSessions {
 		return errors.New("delegation budgets must be explicit and within supported bounds")
 	}
+	if g.MaxRequests < 1 || g.MaxRequests > MaxDelegationRequests ||
+		g.MaxCumulativeSessions < g.MaxSessions || g.MaxCumulativeSessions > MaxCumulativeLeadSessions ||
+		g.MaxCumulativeAttempts < g.MaxAttempts || g.MaxCumulativeAttempts > MaxCumulativeLeadAttempts {
+		return errors.New("delegation cumulative limits must be explicit, ordered, and within supported bounds")
+	}
+	autonomous, err := validateAutonomousRiskClasses(g.AutonomousRiskClasses, g.RiskClasses)
+	if err != nil {
+		return err
+	}
+	if g.AutonomousStart != (len(autonomous) > 0) {
+		return errors.New("autonomousStart must exactly match a nonempty autonomous risk-class list")
+	}
 	return nil
 }
 
-// LeadWorkUnit is a proposed graph node. Only one implementation node is
-// executable in S4-D; later slices may define additional closed unit kinds.
+func validateAutonomousRiskClasses(values, granted []RiskClass) (map[RiskClass]bool, error) {
+	valid, err := validateRiskClasses([]RiskClass{RiskR0, RiskR1})
+	if err != nil {
+		return nil, err
+	}
+	grantedSet, err := validateRiskClasses(granted)
+	if err != nil {
+		return nil, err
+	}
+	out := map[RiskClass]bool{}
+	for _, value := range values {
+		if !valid[value] {
+			return nil, fmt.Errorf("autonomous risk class %q is not permitted", value)
+		}
+		if !grantedSet[value] {
+			return nil, fmt.Errorf("autonomous risk class %q is outside the delegation", value)
+		}
+		out[value] = true
+	}
+	return out, nil
+}
+
+// LeadWorkUnit is a proposed implementation node. Core adds the integration
+// node for multi-unit graphs; models cannot create arbitrary roles.
 type LeadWorkUnit struct {
 	ID           string       `json:"id"`
 	Kind         string       `json:"kind"`
+	Description  string       `json:"description,omitempty"`
 	DependsOn    []string     `json:"dependsOn"`
 	AllowedPaths []string     `json:"allowedPaths"`
 	Capabilities []Capability `json:"capabilities"`
@@ -131,6 +186,21 @@ type LeadWorkUnit struct {
 
 // LeadPlanProposal is advisory model output bound to one current Action and
 // Project snapshot. It is not itself execution authority.
+// Goal returns the bounded per-unit instruction derived from the objective
+// and the model's unit description. The description is advisory; Core scope
+// remains the frozen spec.
+func (u LeadWorkUnit) Goal(objective string) string {
+	description := strings.TrimSpace(u.Description)
+	if description == "" {
+		return objective
+	}
+	goal := objective + "\n\nWorkUnit " + u.ID + ": " + description
+	if len(goal) > MaxSpecGoalChars {
+		goal = goal[:MaxSpecGoalChars]
+	}
+	return goal
+}
+
 type LeadPlanProposal struct {
 	ProjectID          string             `json:"projectId"`
 	ActionID           string             `json:"actionId"`
@@ -244,56 +314,154 @@ func (p LeadPlanProposal) Validate(g StandingDelegation, project Project, action
 		p.MaxSessions < 1 || p.MaxSessions > g.MaxSessions || p.MaxSessions > MaxLeadSessions {
 		return errors.New("campaign budgets exceed the delegation or supported bounds")
 	}
-	if 1+p.Budget.MaxAttempts*(p.MaxRepairCycles+1) > p.MaxSessions {
-		return errors.New("assessment and campaign attempts exceed the planned session ceiling")
-	}
-	if len(p.WorkUnits) != 1 {
-		return errors.New("S4-D requires exactly one implementation work unit")
+	if len(p.WorkUnits) < 1 || len(p.WorkUnits) > MaxLeadWorkUnits {
+		return fmt.Errorf("work graph requires 1..%d implementation units", MaxLeadWorkUnits)
 	}
 	if err := p.validateWorkUnits(project, g); err != nil {
 		return err
 	}
+	if 1+p.ImplementerTaskCount()*p.Budget.MaxAttempts > p.MaxSessions {
+		return errors.New("assessment, work units, integration and repair attempts exceed the planned session ceiling")
+	}
 	return nil
 }
 
+// ImplementerTaskCount returns the maximum number of implementer/integration
+// task executions the frozen plan can dispatch: work units, one Core-owned
+// integration node for multi-unit graphs, and the bounded repair horizon.
+func (p LeadPlanProposal) ImplementerTaskCount() int {
+	count := len(p.WorkUnits) + p.MaxRepairCycles
+	if len(p.WorkUnits) > 1 {
+		count++
+	}
+	return count
+}
+
 func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDelegation) error {
-	unit := p.WorkUnits[0]
-	if unit.ID == "" || len(unit.ID) > 64 || !isSlug(unit.ID) {
-		return errors.New("work unit id is invalid")
-	}
-	if LeadWorkUnitKind(unit.Kind) != LeadImplementationUnit {
-		return fmt.Errorf("unsupported S4-D work unit kind %q", unit.Kind)
-	}
-	if len(unit.DependsOn) > 0 {
-		return errors.New("work unit dependencies are not supported")
-	}
-	paths, err := normalizeAllowedPaths(unit.AllowedPaths)
-	if err != nil {
-		return fmt.Errorf("work unit allowedPaths: %w", err)
-	}
+	byID := make(map[string]LeadWorkUnit, len(p.WorkUnits))
+	pathsByID := make(map[string][]string, len(p.WorkUnits))
 	grantPaths, err := normalizeAllowedPaths(grant.AllowedPaths)
 	if err != nil {
 		return fmt.Errorf("delegation allowedPaths: %w", err)
 	}
-	for _, path := range paths {
-		if !pathCoveredBy(path, grantPaths) {
-			return fmt.Errorf("work unit path %q is outside the delegation", path)
+	required, _ := RequiredCapabilities(p.QualityProfile)
+	for _, unit := range p.WorkUnits {
+		if unit.ID == "" || len(unit.ID) > MaxLeadWorkUnitIDChars || !isSlug(unit.ID) {
+			return errors.New("work unit id is invalid or exceeds its bound")
+		}
+		if _, exists := byID[unit.ID]; exists {
+			return fmt.Errorf("duplicate work unit id %q", unit.ID)
+		}
+		byID[unit.ID] = unit
+		if LeadWorkUnitKind(unit.Kind) != LeadImplementationUnit {
+			return fmt.Errorf("unsupported S4-D work unit kind %q", unit.Kind)
+		}
+		if len(unit.Description) > MaxLeadUnitDescriptionChars {
+			return fmt.Errorf("work unit %q description exceeds its bound", unit.ID)
+		}
+		if len(unit.DependsOn) > 1 {
+			return fmt.Errorf("work unit %q has multiple dependencies; use the Core integration node for fan-in", unit.ID)
+		}
+		paths, err := normalizeAllowedPaths(unit.AllowedPaths)
+		if err != nil {
+			return fmt.Errorf("work unit %q allowedPaths: %w", unit.ID, err)
+		}
+		for _, path := range paths {
+			if !pathCoveredBy(path, grantPaths) {
+				return fmt.Errorf("work unit %q path %q is outside the delegation", unit.ID, path)
+			}
+		}
+		if err := SpecsWithinWorkspaceScope(project.WorkspaceScope, paths); err != nil {
+			return fmt.Errorf("work unit %q: %w", unit.ID, err)
+		}
+		if !CapabilitiesSatisfied(project.Capabilities, unit.Capabilities) || !CapabilitiesSatisfied(grant.Capabilities, unit.Capabilities) {
+			return fmt.Errorf("work unit %q capability is outside the project or delegation", unit.ID)
+		}
+		if missing := MissingCapabilities(unit.Capabilities, required); len(missing) > 0 {
+			return fmt.Errorf("work unit %q omits required capabilities %v", unit.ID, missing)
+		}
+		if _, err := NormalizeCapabilities(capabilityStrings(unit.Capabilities)); err != nil {
+			return fmt.Errorf("work unit %q capabilities: %w", unit.ID, err)
+		}
+		pathsByID[unit.ID] = paths
+	}
+	for _, unit := range p.WorkUnits {
+		seen := map[string]bool{}
+		for _, dep := range unit.DependsOn {
+			if dep == unit.ID {
+				return fmt.Errorf("work unit %q depends on itself", unit.ID)
+			}
+			if _, exists := byID[dep]; !exists {
+				return fmt.Errorf("work unit %q depends on unknown unit %q", unit.ID, dep)
+			}
+			if seen[dep] {
+				return fmt.Errorf("work unit %q repeats dependency %q", unit.ID, dep)
+			}
+			seen[dep] = true
 		}
 	}
-	if err := SpecsWithinWorkspaceScope(project.WorkspaceScope, paths); err != nil {
-		return err
+	visiting := map[string]bool{}
+	visited := map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return fmt.Errorf("work graph dependency cycle at %q", id)
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dep := range byID[id].DependsOn {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
 	}
-	if !CapabilitiesSatisfied(project.Capabilities, unit.Capabilities) || !CapabilitiesSatisfied(grant.Capabilities, unit.Capabilities) {
-		return errors.New("work unit capability is outside the project or delegation")
+	for id := range byID {
+		if err := visit(id); err != nil {
+			return err
+		}
 	}
-	required, _ := RequiredCapabilities(p.QualityProfile)
-	if missing := MissingCapabilities(unit.Capabilities, required); len(missing) > 0 {
-		return fmt.Errorf("work unit omits required capabilities %v", missing)
-	}
-	if _, err := NormalizeCapabilities(capabilityStrings(unit.Capabilities)); err != nil {
-		return fmt.Errorf("work unit capabilities: %w", err)
+	for i, left := range p.WorkUnits {
+		for _, right := range p.WorkUnits[i+1:] {
+			if p.unitIsAncestor(left.ID, right.ID, map[string]bool{}) || p.unitIsAncestor(right.ID, left.ID, map[string]bool{}) {
+				continue
+			}
+			for _, a := range pathsByID[left.ID] {
+				for _, b := range pathsByID[right.ID] {
+					if pathsOverlap(a, b) {
+						return fmt.Errorf("work units %q and %q can run concurrently with overlapping path %q", left.ID, right.ID, a)
+					}
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func (p LeadPlanProposal) unitIsAncestor(ancestor, node string, seen map[string]bool) bool {
+	if seen[node] {
+		return false
+	}
+	seen[node] = true
+	for _, unit := range p.WorkUnits {
+		if unit.ID != node {
+			continue
+		}
+		for _, dep := range unit.DependsOn {
+			if dep == ancestor || p.unitIsAncestor(ancestor, dep, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func pathCoveredBy(candidate string, grants []string) bool {

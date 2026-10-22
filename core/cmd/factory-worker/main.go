@@ -339,7 +339,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 			return
 		}
 		actionSpec = &fetched
-		if perr := prepareSpecWorkspace(execCtx, fetched, workDir); perr != nil {
+		if perr := prepareSpecWorkspace(execCtx, fetched, run, workDir); perr != nil {
 			cancel()
 			<-hbDone
 			retainWorkDir = true

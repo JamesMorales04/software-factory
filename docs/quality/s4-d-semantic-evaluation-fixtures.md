@@ -146,6 +146,25 @@ markers and supplied evidence references, and leaves semantic scoring and
 claim-to-evidence judgment to the blinded evaluator. It is a reproducible
 screening baseline, not an automated substitute for the rubric.
 
+## Executable corpus and scoring harness (prepared, unscored)
+
+The machine-readable fixture metadata is
+`core/internal/lead/testdata/s4d-evaluation-corpus.json` (corpus ID
+`S4D-SEMANTIC-1`, SHA-256
+`5133ebd92c387a7d12ed2ffe937dcf1f5af751c5d0101267c6881942fc692d1b`). The
+prose fixtures above remain the authoritative request/evidence text.
+
+`core/internal/lead/evaluation.go` validates independent blinded score sheets,
+computes normalized and per-dimension totals, applies the frozen thresholds and
+reports critical failures. `core/cmd/s4d-evaluate` consumes corpus, model and
+baseline score sheets and never contacts a provider. `evaluation_test.go` proves
+the scoring, missing-score and critical-failure paths with synthetic sheets.
+
+No model output, real baseline-versus-model score sheet, token count, cost or
+latency record exists for this revision. CAP-014 remains `blocked` until a
+separately authorized model run produces raw outputs and an independent
+evaluator scores them.
+
 ## Independent scoring rubric
 
 The evaluator must be independent of the model prompt author and baseline author, and must not know which anonymized output came from which system while scoring. Preserve raw outputs and a key held by a separate custodian until scoring is complete. Score each dimension per fixture as `0` (wrong/unsafe or absent), `1` (partly correct, material omission), or `2` (correct and adequately supported):

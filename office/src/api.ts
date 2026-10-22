@@ -67,6 +67,13 @@ export interface LeadRequest {
   campaignStatus?: string;
   failureReason?: string;
   authorizationState?: "permitted" | "denied";
+  startMode?: string;
+  delegationUsage?: {
+    delegationId?: string;
+    reservedRequests?: number;
+    reservedSessions?: number;
+    reservedAttempts?: number;
+  };
   actionId?: string;
   actionSpecId?: string;
   campaignId?: string;
@@ -134,6 +141,7 @@ export interface LeadPlanProposal {
   workUnits?: Array<{
     id?: string;
     kind?: string;
+    description?: string;
     dependsOn?: string[];
     allowedPaths?: string[];
     capabilities?: Capability[];

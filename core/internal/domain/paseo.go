@@ -85,15 +85,15 @@ func ValidatePaseoRoute(provider, model, mode string) (PaseoRoute, error) {
 		provider, model, mode)
 }
 
-// validatePaseoTaskInput bounds the operator-supplied coding task. Only the
-// task key is accepted; routing lives in top-level Run fields so it stays
-// queryable and fenced.
+// validatePaseoTaskInput bounds the Core-supplied coding task and the
+// dependency lineage used by multi-WorkUnit execution. Routing lives in
+// top-level Run fields so it stays queryable and fenced.
 func validatePaseoTaskInput(input map[string]any) (map[string]any, error) {
 	if input == nil {
 		return nil, errors.New("workloadInput is required")
 	}
-	if len(input) > 1 {
-		return nil, errors.New("paseo-task workloadInput carries only the task key")
+	if len(input) > 5 {
+		return nil, errors.New("paseo-task workloadInput carries too many keys")
 	}
 	raw, ok := input["task"]
 	if !ok {
@@ -107,12 +107,67 @@ func validatePaseoTaskInput(input map[string]any) (map[string]any, error) {
 	if len(task) > MaxPaseoTaskChars {
 		return nil, fmt.Errorf("workloadInput.task exceeds %d characters", MaxPaseoTaskChars)
 	}
-	for k := range input {
-		if k != "task" {
-			return nil, fmt.Errorf("unknown workloadInput key %q", k)
+	out := map[string]any{"task": task}
+	if raw, ok := input["baseRevision"]; ok {
+		base, _ := raw.(string)
+		base = strings.TrimSpace(base)
+		if !isGitObjectID(base) {
+			return nil, errors.New("workloadInput.baseRevision must be a full git object id")
+		}
+		out["baseRevision"] = base
+	}
+	if raw, ok := input["parentCandidateId"]; ok {
+		parent, _ := raw.(string)
+		parent = strings.TrimSpace(parent)
+		if len(parent) != 32 || !isLowerHex(parent) {
+			return nil, errors.New("workloadInput.parentCandidateId must be a 32-character lowercase hex id")
+		}
+		out["parentCandidateId"] = parent
+	}
+	if raw, ok := input["unitId"]; ok {
+		unit, _ := raw.(string)
+		unit = strings.TrimSpace(unit)
+		if len(unit) > 64 || !isSlug(unit) {
+			return nil, errors.New("workloadInput.unitId must be a bounded slug")
+		}
+		out["unitId"] = unit
+	}
+	if raw, ok := input["mergeCandidates"]; ok {
+		values, ok := raw.([]any)
+		if !ok {
+			if typed, typedOK := raw.([]string); typedOK {
+				values = make([]any, len(typed))
+				for i, value := range typed {
+					values[i] = value
+				}
+			} else {
+				return nil, errors.New("workloadInput.mergeCandidates must be an array")
+			}
+		}
+		if len(values) == 0 || len(values) > 8 {
+			return nil, errors.New("workloadInput.mergeCandidates must contain 1..8 commits")
+		}
+		seen := map[string]bool{}
+		normalized := make([]any, 0, len(values))
+		for _, value := range values {
+			commit, _ := value.(string)
+			commit = strings.TrimSpace(commit)
+			if !isGitObjectID(commit) || seen[commit] {
+				return nil, errors.New("workloadInput.mergeCandidates must contain unique full git object ids")
+			}
+			seen[commit] = true
+			normalized = append(normalized, commit)
+		}
+		out["mergeCandidates"] = normalized
+	}
+	for key := range input {
+		switch key {
+		case "task", "baseRevision", "parentCandidateId", "unitId", "mergeCandidates":
+		default:
+			return nil, fmt.Errorf("unknown workloadInput key %q", key)
 		}
 	}
-	return map[string]any{"task": task}, nil
+	return out, nil
 }
 
 // Paseo session binding lifecycle. intended/active are non-terminal;

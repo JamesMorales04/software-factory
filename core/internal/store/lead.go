@@ -72,6 +72,14 @@ type LeadProposalRecord struct {
 	CreatedAt      time.Time               `json:"createdAt"`
 }
 
+type DelegationUsage struct {
+	DelegationID     string    `json:"delegationId"`
+	ReservedRequests int       `json:"reservedRequests"`
+	ReservedSessions int       `json:"reservedSessions"`
+	ReservedAttempts int       `json:"reservedAttempts"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
 type FrozenLeadPlanRecord struct {
 	ID                    string    `json:"id"`
 	RequestID             string    `json:"requestId"`
@@ -161,6 +169,9 @@ func (db *DB) CreateLeadRequest(ctx context.Context, input NewLeadRequest) (Lead
 	if err := delegation.Validate(db.now()); err != nil {
 		return LeadRequest{}, false, fmt.Errorf("%w: %v", domain.ErrUnauthorized, err)
 	}
+	if err := reserveDelegationTx(ctx, tx, delegation, 1, 1, 0); err != nil {
+		return LeadRequest{}, false, err
+	}
 	now := db.now()
 	request := LeadRequest{
 		ID: newID(), ProjectID: input.ProjectID, Objective: input.Objective,
@@ -177,7 +188,7 @@ func (db *DB) CreateLeadRequest(ctx context.Context, input NewLeadRequest) (Lead
 		request.IdempotencyKey, request.Status, request.DelegationID, request.ProjectConfigHash,
 		stamp(now), stamp(now)); err != nil {
 		if isUniqueViolation(err) {
-			return LeadRequest{}, false, fmt.Errorf("%w: lead request identity already exists", domain.ErrConflict)
+			return LeadRequest{}, false, fmt.Errorf("%w: lead request identity or idempotency key already exists", domain.ErrConflict)
 		}
 		return LeadRequest{}, false, err
 	}
@@ -312,6 +323,10 @@ func (db *DB) BlockLeadRequest(ctx context.Context, id, expectedStatus, reason s
 		return LeadRequest{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var delegationID, frozenPlanID string
+	_ = tx.QueryRowContext(ctx,
+		`SELECT delegation_id, frozen_plan_id FROM lead_requests WHERE id=? AND status=?`,
+		strings.TrimSpace(id), expectedStatus).Scan(&delegationID, &frozenPlanID)
 	result, err := tx.ExecContext(ctx,
 		`UPDATE lead_requests SET status='blocked', failure_reason=?, updated_at=? WHERE id=? AND status=?`,
 		reason, stamp(db.now()), strings.TrimSpace(id), expectedStatus)
@@ -323,6 +338,11 @@ func (db *DB) BlockLeadRequest(ctx context.Context, id, expectedStatus, reason s
 		return LeadRequest{}, false, err
 	}
 	if changed == 1 {
+		if frozenPlanID == "" && delegationID != "" {
+			if err := releaseDelegationTx(ctx, tx, delegationID, 1, 0); err != nil {
+				return LeadRequest{}, false, err
+			}
+		}
 		if _, err := appendLeadEvent(ctx, tx, domain.EventLeadRequestBlocked, domain.AggregateLeadRequest,
 			strings.TrimSpace(id), ActorLocalOperator, map[string]any{
 				"requestId": strings.TrimSpace(id), "status": "blocked",
@@ -466,8 +486,32 @@ func (db *DB) AdvanceLeadRequest(ctx context.Context, id, expected, next string,
 	return updated, true, nil
 }
 
-// CreateStandingDelegation persists a Core-authorized immutable grant. The
-// only subsequent mutation is one-way revocation.
+// RecordLeadAutoStart durably records the delegation and risk basis for an
+// automatic transition. Execution authority remains the frozen plan and the
+// active delegation, not this audit event.
+func (db *DB) RecordLeadAutoStart(ctx context.Context, requestID, campaignID, delegationID, riskClass string) (domain.Event, error) {
+	requestID = strings.TrimSpace(requestID)
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := db.now()
+	event, err := appendLeadEvent(ctx, tx, domain.EventLeadRequestAutoStarted, domain.AggregateLeadRequest,
+		requestID, ActorLocalOperator, map[string]any{
+			"requestId": requestID, "campaignId": strings.TrimSpace(campaignID),
+			"delegationId": strings.TrimSpace(delegationID), "riskClass": strings.TrimSpace(riskClass),
+			"status": "running",
+		}, now)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Event{}, err
+	}
+	return event, nil
+}
+
 func (db *DB) CreateStandingDelegation(ctx context.Context, input domain.StandingDelegation, idempotencyKey string) (domain.StandingDelegation, bool, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" || len(idempotencyKey) > domain.MaxIdempotencyKeyChars {
@@ -543,6 +587,12 @@ func (db *DB) CreateStandingDelegation(ctx context.Context, input domain.Standin
 		}
 		return domain.StandingDelegation{}, false, err
 	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO standing_delegation_usage(delegation_id, reserved_requests, reserved_sessions,
+		 reserved_attempts, updated_at) VALUES(?,0,0,0,?)
+		 ON CONFLICT(delegation_id) DO NOTHING`, input.ID, stamp(now)); err != nil {
+		return domain.StandingDelegation{}, false, err
+	}
 	if _, err := appendLeadEvent(ctx, tx, domain.EventDelegationIssued, domain.AggregateDelegation,
 		input.ID, ActorLocalOperator, map[string]any{
 			"delegationId": input.ID, "projectId": input.ProjectID, "contentHash": input.ContentHash,
@@ -559,6 +609,71 @@ func (db *DB) CreateStandingDelegation(ctx context.Context, input domain.Standin
 func (db *DB) GetStandingDelegation(ctx context.Context, id string) (domain.StandingDelegation, error) {
 	return scanStandingDelegationState(db.sql.QueryRowContext(ctx,
 		`SELECT delegation_json, revoked_at FROM standing_delegations WHERE id=?`, strings.TrimSpace(id)))
+}
+
+func (db *DB) GetDelegationUsage(ctx context.Context, id string) (DelegationUsage, error) {
+	var usage DelegationUsage
+	var updated string
+	err := db.sql.QueryRowContext(ctx,
+		`SELECT delegation_id, reserved_requests, reserved_sessions, reserved_attempts, updated_at
+		 FROM standing_delegation_usage WHERE delegation_id=?`, strings.TrimSpace(id)).Scan(
+		&usage.DelegationID, &usage.ReservedRequests, &usage.ReservedSessions,
+		&usage.ReservedAttempts, &updated)
+	if err == sql.ErrNoRows {
+		return DelegationUsage{DelegationID: strings.TrimSpace(id)}, nil
+	}
+	if err != nil {
+		return DelegationUsage{}, err
+	}
+	usage.UpdatedAt = parseStamp(updated)
+	return usage, nil
+}
+
+func reserveDelegationTx(ctx context.Context, tx *sql.Tx, grant domain.StandingDelegation, requests, sessions, attempts int) error {
+	if requests < 0 || sessions < 0 || attempts < 0 {
+		return fmt.Errorf("%w: delegation reservation must not be negative", domain.ErrInvalidInput)
+	}
+	now := stamp(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO standing_delegation_usage(delegation_id, reserved_requests, reserved_sessions,
+		 reserved_attempts, updated_at) VALUES(?,0,0,0,?) ON CONFLICT(delegation_id) DO NOTHING`,
+		grant.ID, now); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE standing_delegation_usage
+		 SET reserved_requests=reserved_requests+?, reserved_sessions=reserved_sessions+?,
+		     reserved_attempts=reserved_attempts+?, updated_at=?
+		 WHERE delegation_id=?
+		   AND reserved_requests+? <= ? AND reserved_sessions+? <= ? AND reserved_attempts+? <= ?`,
+		requests, sessions, attempts, now, grant.ID,
+		requests, grant.MaxRequests, sessions, grant.MaxCumulativeSessions,
+		attempts, grant.MaxCumulativeAttempts)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%w: delegation cumulative request, session or attempt limit is exhausted", domain.ErrBudgetExhausted)
+	}
+	return nil
+}
+
+func releaseDelegationTx(ctx context.Context, tx *sql.Tx, delegationID string, sessions, attempts int) error {
+	if sessions <= 0 && attempts <= 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx,
+		`UPDATE standing_delegation_usage
+		 SET reserved_sessions=CASE WHEN reserved_sessions>=? THEN reserved_sessions-? ELSE 0 END,
+		     reserved_attempts=CASE WHEN reserved_attempts>=? THEN reserved_attempts-? ELSE 0 END,
+		     updated_at=?
+		 WHERE delegation_id=?`,
+		sessions, sessions, attempts, attempts, stamp(time.Now().UTC()), delegationID)
+	return err
 }
 
 func (db *DB) RevokeStandingDelegation(ctx context.Context, id string, at time.Time) (domain.StandingDelegation, bool, error) {
@@ -599,6 +714,79 @@ func (db *DB) RevokeStandingDelegation(ctx context.Context, id string, at time.T
 		return domain.StandingDelegation{}, false, err
 	}
 	return grant, changed, nil
+}
+
+// ContainDelegationRevocation immediately blocks open Lead requests and
+// terminates their nonterminal Campaigns, cancelling active implementer Runs
+// through the existing fencing path. Immutable evidence is retained.
+func (db *DB) ContainDelegationRevocation(ctx context.Context, delegationID, reason, correlationID string) ([]domain.Event, []string, error) {
+	reason = domain.SanitizeReason(reason)
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := db.now()
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, status FROM lead_requests WHERE delegation_id=?
+		 AND status IN ('submitted','assessing','planned','frozen','ready','running')`,
+		strings.TrimSpace(delegationID))
+	if err != nil {
+		return nil, nil, err
+	}
+	type openRequest struct{ id, status string }
+	var requests []openRequest
+	for rows.Next() {
+		var request openRequest
+		if err := rows.Scan(&request.id, &request.status); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		requests = append(requests, request)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	var events []domain.Event
+	var campaignIDs []string
+	for _, request := range requests {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE lead_requests SET status='blocked', failure_reason=?, updated_at=? WHERE id=? AND status=?`,
+			reason, stamp(now), request.id, request.status)
+		if err != nil {
+			return nil, nil, err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return nil, nil, err
+		}
+		if changed == 1 {
+			event, err := appendLeadEvent(ctx, tx, domain.EventLeadRequestBlocked, domain.AggregateLeadRequest,
+				request.id, ActorLocalOperator, map[string]any{"requestId": request.id, "status": "blocked"}, now)
+			if err != nil {
+				return nil, nil, err
+			}
+			events = append(events, event)
+		}
+		var campaignID string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT campaign_id FROM lead_requests WHERE id=?`, request.id).Scan(&campaignID); err == nil && campaignID != "" {
+			campaignIDs = append(campaignIDs, campaignID)
+		}
+	}
+	for _, campaignID := range campaignIDs {
+		_, campaignEvents, ferr := finishCampaignTx(ctx, tx, campaignID, domain.CampaignCancelled,
+			reason, domain.EventCampaignFinished, correlationID, now)
+		if ferr != nil {
+			return nil, nil, ferr
+		}
+		events = append(events, campaignEvents...)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return events, campaignIDs, nil
 }
 
 func (db *DB) CreateLeadAssessment(ctx context.Context, requestID, mechanism, assessmentJSON, routeJSON, idempotencyKey string) (LeadAssessmentRecord, bool, error) {
@@ -815,6 +1003,14 @@ func (db *DB) FreezeLeadPlan(ctx context.Context, requestID, proposalID, idempot
 	if err := proposal.Proposal.Validate(grant, project, action, db.now()); err != nil {
 		return FrozenLeadPlanRecord{}, false, fmt.Errorf("%w: proposal failed freeze validation: %v", domain.ErrInvalidInput, err)
 	}
+	additionalSessions := proposal.Proposal.MaxSessions - 1
+	additionalAttempts := proposal.Proposal.ImplementerTaskCount() * proposal.Proposal.Budget.MaxAttempts
+	if additionalSessions < 0 {
+		return FrozenLeadPlanRecord{}, false, fmt.Errorf("%w: plan session ceiling is invalid", domain.ErrInvalidInput)
+	}
+	if err := reserveDelegationTx(ctx, tx, grant, 0, additionalSessions, additionalAttempts); err != nil {
+		return FrozenLeadPlanRecord{}, false, err
+	}
 	identity := struct {
 		RequestID, ProjectID, ProposalHash, GrantHash, ProjectConfigHash string
 		ProjectConfigRevision                                            int
@@ -952,6 +1148,22 @@ func (db *DB) CheckLeadCampaignAuthorization(ctx context.Context, campaignID str
 	if err := spec.ValidateProjectBinding(project); err != nil {
 		return true, false, nil
 	}
+	if err := campaign.Plan.Validate(); err != nil || campaign.Plan.Hash() != campaign.PlanHash {
+		return true, false, nil
+	}
+	for _, node := range campaign.Plan.Tasks {
+		if node.SpecID == "" || node.SpecID == spec.ID {
+			continue
+		}
+		unitSpec, serr := db.GetActionSpec(node.SpecID)
+		if serr != nil || unitSpec.ActionID != action.ID || unitSpec.ProjectID != project.ID ||
+			unitSpec.ProjectConfigRevision != plan.ProjectConfigRevision {
+			return true, false, nil
+		}
+		if err := unitSpec.ValidateProjectBinding(project); err != nil {
+			return true, false, nil
+		}
+	}
 	if err := proposal.Proposal.Validate(grant, project, action, db.now()); err != nil {
 		return true, false, nil
 	}
@@ -975,10 +1187,12 @@ func (db *DB) CheckLeadCampaignAuthorization(ctx context.Context, campaignID str
 // LeadSpecManaged reports whether a frozen ActionSpec belongs to a Lead
 // request and therefore must execute through its authorized Campaign.
 func (db *DB) LeadSpecManaged(ctx context.Context, specID string) (bool, error) {
-	var count int
+	var managed bool
 	err := db.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM lead_requests WHERE spec_id=?`, strings.TrimSpace(specID)).Scan(&count)
-	return count > 0, err
+		`SELECT EXISTS(
+			SELECT 1 FROM action_specs s JOIN lead_requests r ON r.action_id=s.action_id
+			WHERE s.id=?)`, strings.TrimSpace(specID)).Scan(&managed)
+	return managed, err
 }
 
 // LeadActionManaged reports whether a reserved Lead request has claimed this

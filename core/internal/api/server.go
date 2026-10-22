@@ -62,7 +62,7 @@ func (a LeadPaidSessionAuthorization) allows(projectID, baseRevision string, gra
 		strings.TrimSpace(a.PaseoMode) != "" &&
 		a.MaxSessions > 0 && a.ProjectID == projectID && a.BaseRevision == baseRevision &&
 		a.Provider == grant.Provider && a.Model == grant.Model && a.PaseoMode == grant.PaseoMode &&
-		grant.MaxSessions <= a.MaxSessions
+		grant.MaxSessions <= a.MaxSessions && grant.MaxCumulativeSessions <= a.MaxSessions
 }
 
 // New builds a Server. Token must be non-empty; startup refuses to run
@@ -351,7 +351,7 @@ func mapDomainError(w http.ResponseWriter, err error, log *slog.Logger, msg stri
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
-	case errors.Is(err, domain.ErrConflict):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrBudgetExhausted):
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "conflict", err.Error())

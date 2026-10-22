@@ -34,8 +34,9 @@ type candidateRegistration struct {
 }
 
 // prepareSpecWorkspace clones the authorized repository at the frozen base
-// revision into the disposable Attempt workspace.
-func prepareSpecWorkspace(ctx context.Context, spec domain.ActionSpec, workDir string) error {
+// revision and, for a dependent or integration task, fetches and consumes the
+// Core-authorized dependency candidate commits.
+func prepareSpecWorkspace(ctx context.Context, spec domain.ActionSpec, run domain.Run, workDir string) error {
 	ctx, cancel := context.WithTimeout(ctx, candidatePushTimeout)
 	defer cancel()
 	clone := exec.CommandContext(ctx, "git", "clone", "--quiet", spec.Repository, workDir)
@@ -45,10 +46,45 @@ func prepareSpecWorkspace(ctx context.Context, spec domain.ActionSpec, workDir s
 	if err := clone.Run(); err != nil {
 		return fmt.Errorf("clone authorized repository: %s", truncate(strings.TrimSpace(stderr.String())))
 	}
-	if err := candidateGit(ctx, workDir, "checkout", "--quiet", "--detach", spec.BaseRevision); err != nil {
+	base := spec.BaseRevision
+	if value, ok := run.WorkloadInput["baseRevision"].(string); ok && strings.TrimSpace(value) != "" {
+		base = strings.TrimSpace(value)
+	}
+	merges := workloadStrings(run.WorkloadInput["mergeCandidates"])
+	if base != spec.BaseRevision || len(merges) > 0 {
+		if err := candidateGit(ctx, workDir, "fetch", "--quiet", "origin",
+			"+refs/factory/candidates/*:refs/factory/candidates/*"); err != nil {
+			return fmt.Errorf("fetch dependency candidates: %w", err)
+		}
+	}
+	if err := candidateGit(ctx, workDir, "checkout", "--quiet", "--detach", base); err != nil {
 		return err
 	}
+	for _, commit := range merges {
+		if err := candidateGit(ctx, workDir,
+			"-c", "user.name=factory-worker", "-c", "user.email=worker@factory.local",
+			"merge", "--quiet", "--no-ff", "--no-edit", commit); err != nil {
+			return fmt.Errorf("integrate dependency candidate %s: %w", commit, err)
+		}
+	}
 	return nil
+}
+
+func workloadStrings(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // finalizeCandidate commits the exact Paseo-modified worktree and pushes

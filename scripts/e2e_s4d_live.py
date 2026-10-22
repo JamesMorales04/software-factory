@@ -197,14 +197,18 @@ def main_live():
             "riskClasses": ["R0"], "provider": PROVIDER, "model": MODEL, "paseoMode": MODE,
             "maxAttempts": ATTEMPTS, "maxTimeoutSecs": 120, "maxRepairCycles": REPAIRS,
             "maxWallClockSecs": 1200, "maxParallel": PARALLEL, "maxSessions": SESSIONS,
-            "expiresAt": expires}, idem=AUTHORIZATION_ID)
+            "maxRequests": 1, "maxCumulativeSessions": SESSIONS,
+            "maxCumulativeAttempts": ATTEMPTS, "autonomousStart": False,
+            "autonomousRiskClasses": [], "expiresAt": expires}, idem=AUTHORIZATION_ID)
         check(status in (200, 201), f"grant issue failed: {payload}")
         grant = payload["delegation"]
         check(grant.get("projectId") == PROJECT and grant.get("provider") == PROVIDER
               and grant.get("model") == MODEL and grant.get("paseoMode") == MODE
               and grant.get("allowedPaths") == PATHS and grant.get("maxSessions") == SESSIONS
               and grant.get("maxAttempts") == ATTEMPTS and grant.get("maxRepairCycles") == REPAIRS
-              and grant.get("maxParallel") == PARALLEL,
+              and grant.get("maxParallel") == PARALLEL
+              and grant.get("maxCumulativeSessions") == SESSIONS
+              and grant.get("maxRequests") == 1,
               "Core grant does not match the exact authorized bounds")
         evidence["grant"] = {k: grant.get(k) for k in ("id", "revision", "contentHash", "expiresAt", "maxSessions")}
 

@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +26,9 @@ func validLeadInputs() (StandingDelegation, Project, Action, LeadPlanProposal, t
 		AllowedPaths: []string{"src"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain},
 		RiskClasses: []RiskClass{RiskR0, RiskR1}, Provider: "opencode", Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build",
 		MaxAttempts: 2, MaxTimeoutSecs: 300, MaxRepairCycles: 1, MaxWallClockSecs: 900,
-		MaxParallel: 2, MaxSessions: 4, ExpiresAt: now.Add(time.Hour),
+		MaxParallel: 2, MaxSessions: 4, MaxRequests: 2, MaxCumulativeSessions: 8,
+		MaxCumulativeAttempts: 8, AutonomousStart: true,
+		AutonomousRiskClasses: []RiskClass{RiskR0}, ExpiresAt: now.Add(time.Hour),
 	}
 	grant.ContentHash = grant.ComputeContentHash()
 	proposal := LeadPlanProposal{
@@ -141,4 +145,130 @@ func TestLeadPlanRequiresActiveRegisteredProjectAndLiveAction(t *testing.T) {
 	if err := proposal.Validate(grant, project, action, now); err == nil {
 		t.Fatal("terminal Action accepted new planning")
 	}
+}
+
+func TestLeadPlanAcceptsSequentialParallelAndFanInGraphs(t *testing.T) {
+	cases := []struct {
+		name  string
+		units []LeadWorkUnit
+	}{
+		{name: "sequential", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), Description: "Add backend behavior.", AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), Description: "Consume the backend behavior.", DependsOn: []string{"api"}, AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "parallel", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "fan-in", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "docs", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/docs"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			grant, project, action, proposal, now := validLeadInputs()
+			proposal.WorkUnits = tc.units
+			proposal.MaxSessions = 16
+			grant.MaxSessions = 16
+			grant.MaxCumulativeSessions = 32
+			grant.MaxCumulativeAttempts = 32
+			grant.ContentHash = grant.ComputeContentHash()
+			if err := proposal.Validate(grant, project, action, now); err != nil {
+				t.Fatalf("valid %s graph rejected: %v", tc.name, err)
+			}
+			unitSpecs := map[string]string{}
+			for _, unit := range tc.units {
+				unitSpecs[unit.ID] = testSpecID("spec-" + unit.ID)
+			}
+			plan, err := BuildLeadCampaignPlan(proposal, unitSpecs, testSpecID("integration"))
+			if err != nil {
+				t.Fatalf("build %s graph: %v", tc.name, err)
+			}
+			if err := plan.Validate(); err != nil {
+				t.Fatalf("validate %s graph: %v", tc.name, err)
+			}
+			if _, ok := plan.TaskPlan(IntegrationTaskKey); !ok {
+				t.Fatalf("%s graph has no integration task", tc.name)
+			}
+			gate, ok := plan.TaskPlan(CycleKey(RoleQualityGate, 0))
+			if !ok || gate.SourceKey != IntegrationTaskKey {
+				t.Fatalf("%s gate source = %+v", tc.name, gate)
+			}
+			repair, ok := plan.TaskPlan(CycleKey(RoleImplementer, 1))
+			if !ok || repair.UnitKind != LeadUnitKindRepair || repair.SpecID != testSpecID("integration") {
+				t.Fatalf("%s repair task = %+v", tc.name, repair)
+			}
+		})
+	}
+}
+
+func TestLeadPlanRejectsInvalidGraphShapesAndParallelOverlap(t *testing.T) {
+	base := []LeadWorkUnit{
+		{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+	}
+	cases := []struct {
+		name  string
+		units []LeadWorkUnit
+	}{
+		{name: "unknown dependency", units: []LeadWorkUnit{base[0], {ID: "ui", Kind: string(LeadImplementationUnit), DependsOn: []string{"missing"}, AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}}}},
+		{name: "self dependency", units: []LeadWorkUnit{{ID: "api", Kind: string(LeadImplementationUnit), DependsOn: []string{"api"}, AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}}}},
+		{name: "cycle", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), DependsOn: []string{"ui"}, AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), DependsOn: []string{"api"}, AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "multiple dependencies", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "docs", Kind: string(LeadImplementationUnit), DependsOn: []string{"api", "ui"}, AllowedPaths: []string{"src/docs"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "parallel path overlap", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "unauthorized path", units: []LeadWorkUnit{{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"outside"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}}}},
+		{name: "duplicate ids", units: []LeadWorkUnit{base[0], base[0]}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			grant, project, action, proposal, now := validLeadInputs()
+			proposal.WorkUnits = tc.units
+			proposal.MaxSessions = 16
+			grant.MaxSessions = 16
+			grant.MaxCumulativeSessions = 32
+			grant.MaxCumulativeAttempts = 32
+			grant.ContentHash = grant.ComputeContentHash()
+			if err := proposal.Validate(grant, project, action, now); err == nil {
+				t.Fatal("invalid graph was accepted")
+			}
+		})
+	}
+}
+
+func TestStandingDelegationRequiresExplicitAutonomousPolicy(t *testing.T) {
+	grant, _, _, _, now := validLeadInputs()
+	grant.AutonomousStart = true
+	grant.AutonomousRiskClasses = nil
+	grant.ContentHash = grant.ComputeContentHash()
+	if err := grant.Validate(now); err == nil {
+		t.Fatal("autonomous start without risk classes was accepted")
+	}
+	grant.AutonomousRiskClasses = []RiskClass{RiskR2}
+	grant.ContentHash = grant.ComputeContentHash()
+	if err := grant.Validate(now); err == nil {
+		t.Fatal("R2 autonomous authority was accepted")
+	}
+	grant.AutonomousRiskClasses = []RiskClass{RiskR0}
+	grant.MaxCumulativeSessions = grant.MaxSessions - 1
+	grant.ContentHash = grant.ComputeContentHash()
+	if err := grant.Validate(now); err == nil {
+		t.Fatal("cumulative session ceiling below per-campaign ceiling was accepted")
+	}
+}
+
+func testSpecID(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:16])
 }

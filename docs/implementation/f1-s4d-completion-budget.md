@@ -1,0 +1,89 @@
+# F1-S4-D completion certification envelope
+
+**Status:** prepared, not authorized, not executed. **Date:** 2026-10-22.
+This document requests a numeric Product Owner decision; it is not an
+authorization and it starts no provider session.
+
+## Candidate and route
+
+- Factory candidate: the exact clean `git rev-parse HEAD` at execution time.
+  The runner must refuse a dirty worktree or a SHA mismatch.
+- Core/Worker/Verifier/Reviewer/Office: built from that candidate.
+- Provider/model/mode: `opencode` / `opencode-go/deepseek-v4.1-flash` / `build`.
+- No fallback provider or route substitution is allowed.
+- Execution mode: TRUSTED_LOCAL. This is not SEC-01 isolation.
+
+## Fixture
+
+Disposable external Project `factory-fixture-s4d-graph` with two dependent
+engineering units and browser-testable behavior:
+
+1. backend unit: add an HTTP endpoint and API tests;
+2. frontend unit: consume the endpoint and render the result;
+3. Core-generated integration unit: integrate both candidate commits;
+4. independent Verifier runs build/API/browser acceptance on the integrated
+   candidate; Reviewer and deterministic Quality Gate decide acceptance.
+
+The fixture must fail if the agent only implements one unit, if dependency
+order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
+
+## Numeric ceilings requested
+
+| Item | Ceiling |
+| --- | --- |
+| Lead assessment sessions | 1 |
+| Unit implementer sessions | 2 |
+| Integration implementer sessions | 1 |
+| Total Factory sessions | **4** |
+| Implementer attempt budget | 3 (one per implementer/integration task) |
+| Repair cycles | 0 |
+| Maximum parallel implementation tasks | 2 |
+| Maximum wall clock | 1800 seconds |
+| Runner wall-clock deadline | 2400 seconds |
+| Concurrency | one Core, one Worker, one current Campaign |
+| Retry policy | no automatic retry beyond the frozen attempt budget |
+| Monetary/token ceiling | not observable in current Core; unknown, not claimed |
+
+CAP-014 semantic evaluation is a **separate** envelope: 11 assessment sessions,
+no implementer sessions, no more than 11 provider sessions, same route. It must
+not be combined with this E2E envelope without a new numeric decision.
+
+## Stop and cleanup conditions
+
+Stop and preserve evidence if any of the following occurs:
+
+- route/session count exceeds the ceiling or an unbound session is observed;
+- a session cannot be inspected or its provider/model/mode differs;
+- wall-clock deadline or attempt budget is exhausted;
+- integration conflict, unresolved external session, or Gate non-acceptance;
+- the Factory worktree is dirty or the candidate SHA changes.
+
+On stop or completion, inspect, stop and archive every discovered session;
+terminate Core/Worker/participants; remove the disposable fixture repository;
+record external-session cleanup results and any unresolved session truthfully.
+Never fabricate termination or acceptance.
+
+## Independent oracles
+
+- deterministic API/browser tests against the integrated candidate;
+- independent Verifier evidence bound to the exact integrated candidate SHA;
+- independent Reviewer verdict;
+- deterministic Quality Gate decision;
+- Office projection/event reload and exact-SHA evidence;
+- a bounded negative path proving expired authority, invalid graph or
+  exhausted budget prevents dispatch.
+
+## Required authorization decision
+
+The Product Owner must explicitly authorize:
+
+1. the exact candidate SHA;
+2. the exact route above;
+3. the 4-session E2E ceiling and the 11-session CAP-014 ceiling (separately or
+   together);
+4. the fixture Project and authorized paths/capabilities;
+5. the stop/cleanup conditions above.
+
+Until that decision is recorded, `scripts/e2e_s4d_graph_live.py` remains
+default-closed and cannot execute live work. No authorization is inferred from
+a successful deterministic suite.

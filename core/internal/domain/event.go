@@ -68,6 +68,7 @@ const (
 const (
 	EventLeadRequestCreated     = "LeadRequestCreated"
 	EventLeadRequestStarted     = "LeadRequestStarted"
+	EventLeadRequestAutoStarted = "LeadRequestAutoStarted"
 	EventLeadAssessmentRecorded = "LeadAssessmentRecorded"
 	EventLeadPlanFrozen         = "LeadPlanFrozen"
 	EventLeadRequestBlocked     = "LeadRequestBlocked"
@@ -149,8 +150,8 @@ func (e Event) Validate() error {
 		EventCampaignImplementerRecoveryAuthorized,
 		EventCampaignFinished, EventCampaignCancelled,
 		EventProjectRegistered, EventProjectUpdated, EventProjectStatusChanged:
-	case EventLeadRequestCreated, EventLeadRequestStarted, EventLeadAssessmentRecorded,
-		EventLeadPlanFrozen, EventLeadRequestBlocked:
+	case EventLeadRequestCreated, EventLeadRequestStarted, EventLeadRequestAutoStarted,
+		EventLeadAssessmentRecorded, EventLeadPlanFrozen, EventLeadRequestBlocked:
 		if e.AggregateType != AggregateLeadRequest {
 			return errors.New("lead request event must use the lead_request aggregate")
 		}
@@ -195,6 +196,8 @@ func validateLeadEventPayload(eventType string, payload map[string]any) error {
 		keys = []string{"requestId", "projectId", "requestHash", "delegationId", "projectConfigHash", "status"}
 	case EventLeadRequestStarted:
 		keys = []string{"requestId", "actionId", "status"}
+	case EventLeadRequestAutoStarted:
+		keys = []string{"requestId", "campaignId", "delegationId", "riskClass", "status"}
 	case EventLeadAssessmentRecorded:
 		keys = []string{"requestId", "assessmentId", "assessmentHash", "mechanism", "status"}
 	case EventLeadPlanFrozen:

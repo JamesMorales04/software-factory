@@ -352,17 +352,31 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 	}
 
 	var priorID string
-	err = tx.QueryRowContext(ctx,
-		`SELECT c.id FROM candidates c JOIN runs r ON r.id=c.implementer_run_id
-		 WHERE c.action_id=? AND c.state IN (?,?) AND r.status=?
-		 ORDER BY c.frozen_at DESC, c.id DESC LIMIT 1`,
-		candidate.ActionID, string(domain.CandidateFrozen), string(domain.CandidateSuperseded),
-		string(domain.RunSucceeded)).Scan(&priorID)
-	if err != nil && err != sql.ErrNoRows {
-		return domain.CandidateRevision{}, nil, err
-	}
-	if err == sql.ErrNoRows {
-		priorID = ""
+	if candidate.ParentCandidateID != "" {
+		var parentAction, parentProject, parentState string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT action_id, project_id, state FROM candidates WHERE id=?`,
+			candidate.ParentCandidateID).Scan(&parentAction, &parentProject, &parentState); err != nil {
+			return domain.CandidateRevision{}, nil, fmt.Errorf("%w: dependency candidate is unavailable", domain.ErrInvalidTransition)
+		}
+		if parentAction != candidate.ActionID || parentProject != candidate.ProjectID ||
+			(parentState != string(domain.CandidateFrozen) && parentState != string(domain.CandidateSuperseded)) {
+			return domain.CandidateRevision{}, nil, fmt.Errorf("%w: dependency candidate is not a valid parent", domain.ErrUnauthorized)
+		}
+		priorID = candidate.ParentCandidateID
+	} else {
+		err = tx.QueryRowContext(ctx,
+			`SELECT c.id FROM candidates c JOIN runs r ON r.id=c.implementer_run_id
+			 WHERE c.action_id=? AND c.spec_id=? AND c.state IN (?,?) AND r.status=?
+			 ORDER BY c.frozen_at DESC, c.id DESC LIMIT 1`,
+			candidate.ActionID, candidate.SpecID, string(domain.CandidateFrozen), string(domain.CandidateSuperseded),
+			string(domain.RunSucceeded)).Scan(&priorID)
+		if err != nil && err != sql.ErrNoRows {
+			return domain.CandidateRevision{}, nil, err
+		}
+		if err == sql.ErrNoRows {
+			priorID = ""
+		}
 	}
 	candidate.ParentCandidateID = priorID
 	changed, err := json.Marshal(candidate.ChangedPaths)

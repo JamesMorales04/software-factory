@@ -8,6 +8,35 @@ resolve the final SHA with `git rev-parse HEAD`. The prior S4-C real-Paseo
 evidence remains bound to Factory head `9567bc5` / runtime `14133cb7`; it does
 not verify S4-D.
 
+## Completion campaign resume (2026-10-22)
+
+The Product Owner directed goal-level autonomy, reusable standing authority,
+real multi-WorkUnit execution and CAP-014 completion. ADR-0017 and the S4-D
+contract were revised accordingly. The implementation now has:
+
+- reusable delegation with atomic cumulative request/session/attempt accounting
+  and a migration removing the legacy one-request uniqueness constraint;
+- autonomous start for explicitly delegated R0/R1 risk, with audit event and
+  projection, while risky or insufficient authority remains manual/blocked;
+- immediate revocation containment for open requests and pending/running
+  Campaigns;
+- a bounded 1–8 unit dependency graph, per-unit frozen specs, Core-generated
+  integration, candidate lineage, Git workspace chaining/merge and final
+  integrated acceptance;
+- a frozen CAP-014 corpus and blinded scoring/threshold harness (no model run).
+
+Deterministic evidence is recorded in
+[f1-s4d-workgraph-deterministic-2026-10-22.md](../evidence/f1-s4d-workgraph-deterministic-2026-10-22.md).
+The multi-unit live envelope is prepared in
+[f1-s4d-completion-budget.md](../implementation/f1-s4d-completion-budget.md);
+`scripts/e2e_s4d_graph_live.py` is default-closed and does not execute live
+work. No paid/live model session was started.
+
+Still required: explicit numeric Product Owner authorization, a reviewed
+multi-unit execution runner, independently scored CAP-014 model outputs and
+independent final-SHA review. CAP-014 remains blocked and CAP-043 remains in
+progress.
+
 ## Resume status (2026-10-22, after PR #16 lint failure)
 
 The interrupted session's PR head `5907a25` failed pinned `golangci-lint`
