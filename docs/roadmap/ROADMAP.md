@@ -78,6 +78,7 @@ Decision: `proposed`
 
 - Intent interpretation
 - bounded semantic assessment
+- decision-mechanism selection contract
 - frozen plan
 - WorkGraph validation
 - standing authorization contract
@@ -98,10 +99,12 @@ Decision: `proposed`
 - invalid dependencies
 - budget overflow
 - stale authorization and unsupported model routes
+- Compare CAP-014 judgments with a reasonable deterministic baseline on representative tasks, including ambiguous engineering-effort estimates
 
 ### Real acceptance
 
 - Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role orchestration
+- Independently demonstrate better practical semantic decision quality than the deterministic baseline without granting model output Core authority
 
 ### Product Owner decisions
 

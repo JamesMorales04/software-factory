@@ -44,6 +44,7 @@ milestones:
   deliverables:
   - Intent interpretation
   - bounded semantic assessment
+  - decision-mechanism selection contract
   - frozen plan
   - WorkGraph validation
   - standing authorization contract
@@ -65,9 +66,11 @@ milestones:
   - invalid dependencies
   - budget overflow
   - stale authorization and unsupported model routes
+  - Compare CAP-014 judgments with a reasonable deterministic baseline on representative tasks, including ambiguous engineering-effort estimates
   real_acceptance:
   - Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role
     orchestration
+  - Independently demonstrate better practical semantic decision quality than the deterministic baseline without granting model output Core authority
   owner_decisions:
   - Approve the frozen Action and standing-delegation limits before implementation
 - id: F1-S4-E
@@ -797,7 +800,7 @@ capabilities:
 - id: CAP-014
   name: Intent and semantic assessment
   category: Planning
-  purpose: Produce typed evidence-bound advisory judgments
+  purpose: Select and produce typed, evidence-bound semantic judgments when they improve practical decision quality
   product_objective: Autonomous product development
   decision_status: proposed
   implementation_status: not_implemented
@@ -817,10 +820,12 @@ capabilities:
     source: []
     test: []
   acceptance:
-    deterministic: Applicable intent and semantic assessment contract, negative and regression checks pass on an
-      exact candidate.
-    real: Exercise intent and semantic assessment in a genuine authorized project journey and independently verify
-      the outcome.
+    deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
+      compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
+      engineering-effort estimates, on an exact candidate.
+    real: In a genuine authorized project journey, independently demonstrate better practical semantic decision quality
+      than the deterministic baseline while Core retains authority; reuse sufficient agent context rather than requiring
+      a separate long-running session for each small judgment.
   evidence:
     deterministic: []
     live_agent: []

@@ -16,6 +16,7 @@
 - **Concurrency:** make ownership, lifecycle, leases, locks and cancellation explicit; avoid shared mutable state, implicit background workers and unbounded fan-out.
 - **Security:** minimum capabilities, sandbox-aware execution, explicit egress, no host secret access, observable authorization boundaries.
 - **Performance:** measure before optimizing. Avoid premature cleverness, unbounded caches, excessive requests, unnecessary model calls and large context payloads.
+- **Decision mechanism:** document whether a meaningful inference or decision uses `DETERMINISTIC`, `MODEL` or `HYBRID` control and why its reliability, accuracy, latency, token cost, complexity and maintenance fit the task. Do not grow fragile keyword, regex or heuristic expert systems merely to avoid bounded semantic reasoning. Do not call a model for simple verifiable facts or stable policy checks. Reuse sufficient agent context for small structured judgments before creating another model session; independently validate model-informed effects under Core authority.
 
 ## Architecture boundaries, not ceremonial Clean Architecture
 
@@ -32,6 +33,7 @@ The TypeScript Paseo adapter should translate SDK interactions to a small, versi
 - Did an internal contract change leave dead code, deprecation paths or unsupported compatibility glue?
 - Were relevant formatters, linters, analyzers, tests and real-user journeys run on the exact candidate?
 - Did any lint suppression or dependency bypass reduce the quality baseline without a governed decision?
+- Is the chosen decision mechanism explicit and supported by representative evidence, including a deterministic baseline where semantic judgment is proposed?
 
 **Avoid:** god objects, duplicate validation/authorization logic, cyclic module dependencies, clever generics, unnecessary interfaces, premature plugin abstractions, long parameter lists with implicit behavior, silent retries, undocumented magic values, broad `any`/type assertions, ignored errors, and unused fallbacks.
 
