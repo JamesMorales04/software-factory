@@ -31,10 +31,12 @@ jobs:
           cache-dependency-path: core/go.sum
       - name: Test PR impact gate
         run: python3 .github/scripts/test_check_pr_architecture_impact.py
+      - name: Test live E2E authorization preflight with fixtures
+        run: python3 scripts/test-live-e2e-authorization.py
       - name: Run checker tests
         working-directory: core
         run: go test ./cmd/architecturecheck
-      - name: Validate registry, roadmap, and contract impact
+      - name: Validate capability registry and generated roadmap
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
