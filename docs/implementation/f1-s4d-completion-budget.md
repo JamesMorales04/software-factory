@@ -6,7 +6,7 @@ authorization and it starts no provider session.
 
 ## Candidate and route
 
-- Product code candidate: `153177932031ec754985af012a62ac665e76e96c`. Execution must pin the exact clean
+- Product code candidate: `fa0c2f3e8cecfc78e64e94fa8ce536280e03db3e`. Execution must pin the exact clean
   `git rev-parse HEAD` at that time; the runner must refuse a dirty worktree or
   a SHA mismatch. A later docs-only commit is behaviorally identical but must
   still be the exact pinned clean HEAD.
