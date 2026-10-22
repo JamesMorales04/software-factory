@@ -47,6 +47,11 @@ class CertificationManifestTests(unittest.TestCase):
         manifest = copy.deepcopy(self.manifest)
         source = copy.deepcopy(self.source)
         manifest["schema_version"] = 2
+        manifest["authorization"] = {
+            "campaign_id": manifest["campaign_id"],
+            "max_sessions": 2,
+            "route": {"provider": manifest["provider"], "model": manifest["model"]},
+        }
         manifest.pop("browser")
         profile = source["preflight"]["frozen-spec-contracts"]["detail"]
         profile["capabilities"].remove("browser")
@@ -77,6 +82,21 @@ class CertificationManifestTests(unittest.TestCase):
         manifest, source = self._non_browser_campaign()
         self.assertEqual([], self.validate_manifest(manifest, source))
 
+    def test_v2_model_execution_requires_campaign_budget_and_exact_route(self):
+        manifest, source = self._non_browser_campaign()
+        missing_auth = copy.deepcopy(manifest)
+        missing_auth.pop("authorization")
+        self.assertTrue(self.validate_manifest(missing_auth, source))
+        wrong_route = copy.deepcopy(manifest)
+        wrong_route["authorization"]["route"]["model"] = "unauthorized/model"
+        self.assertTrue(self.validate_manifest(wrong_route, source))
+        missing_spend = copy.deepcopy(source)
+        missing_spend.pop("paid_sessions_spent")
+        self.assertTrue(self.validate_manifest(manifest, missing_spend))
+        missing_source_budget = copy.deepcopy(source)
+        missing_source_budget["authorization"].pop("max_paid_implementer_sessions")
+        self.assertTrue(self.validate_manifest(manifest, missing_source_budget))
+
     def test_browser_campaign_missing_required_interaction_is_rejected(self):
         source = copy.deepcopy(self.source)
         source["browser_certification"]["successful_commands"] = ["snapshot"]
@@ -98,9 +118,88 @@ class CertificationManifestTests(unittest.TestCase):
     def test_claimed_recovery_requires_failed_run_and_corrective_run(self):
         manifest = copy.deepcopy(self.manifest)
         manifest["schema_version"] = 2
-        manifest.pop("browser")
-        manifest["recovery"] = {"claimed": True, "corrective_run_id": "some-corrective-run"}
+        manifest["authorization"] = {
+            "campaign_id": manifest["campaign_id"],
+            "max_sessions": 2,
+            "route": {"provider": manifest["provider"], "model": manifest["model"]},
+        }
+        manifest["recovery"] = {
+            "claimed": True,
+            "failed_run_id": "missing-failed-run",
+            "failed_attempt_id": "missing-failed-attempt",
+            "corrective_run_id": manifest["run_id"],
+        }
         self.assertTrue(self.validate_manifest(manifest, self.source))
+
+    def test_recovery_validates_failed_attempt_and_distinct_successful_corrective_run(self):
+        manifest = copy.deepcopy(self.manifest)
+        source = copy.deepcopy(self.source)
+        manifest["schema_version"] = 2
+        manifest["authorization"] = {
+            "campaign_id": manifest["campaign_id"],
+            "max_sessions": 2,
+            "route": {"provider": manifest["provider"], "model": manifest["model"]},
+        }
+        failed_run_id = "failed-initial-run"
+        failed_attempt_id = "failed-initial-attempt"
+        manifest["recovery"] = {
+            "claimed": True,
+            "failed_run_id": failed_run_id,
+            "failed_attempt_id": failed_attempt_id,
+            "corrective_run_id": manifest["run_id"],
+        }
+        source["paid_sessions_spent"] = 2
+        source["failed_implementer_runs"] = [failed_run_id]
+        source["recoveries"] = [{
+            "id": "recovery-record",
+            "campaignId": manifest["campaign_id"],
+            "previousRunId": failed_run_id,
+            "previousAttemptId": failed_attempt_id,
+            "newRunId": manifest["run_id"],
+            "failureClass": "RECOVERABLE_IMPLEMENTATION_FAILURE",
+            "reason": "initial implementation attempt failed",
+        }]
+        source["runs"].append({
+            "run": {
+                "id": failed_run_id,
+                "projectId": manifest["project_id"],
+                "actionId": manifest["action_id"],
+                "specId": manifest["spec_id"],
+                "specBindingHash": manifest["spec_binding_hash"],
+                "status": "failed",
+                "workloadKind": "paseo-task",
+                "provider": manifest["provider"],
+                "model": manifest["model"],
+                "paseoMode": manifest["mode"],
+                "result": {
+                    "provider": manifest["provider"],
+                    "model": manifest["model"],
+                    "paseoMode": manifest["mode"],
+                    "sessionId": "failed-provider-session",
+                    "workspaceId": "failed-workspace",
+                },
+            },
+            "attempts": [{"id": failed_attempt_id, "runId": failed_run_id, "status": "failed"}],
+        })
+        source["session_bindings"].append({
+            "sessionId": "failed-provider-session",
+            "runId": failed_run_id,
+            "attemptId": failed_attempt_id,
+            "workspaceId": "failed-workspace",
+            "provider": manifest["provider"],
+            "model": manifest["model"],
+            "mode": manifest["mode"],
+            "status": "failed",
+            "runStatus": "failed",
+        })
+        source["cleanup"]["session_cleanup"].append({
+            "sessionId": "failed-provider-session", "archived": True, "status": "closed",
+        })
+        self.assertEqual([], self.validate_manifest(manifest, source))
+
+        forged = copy.deepcopy(source)
+        forged["runs"][-1]["attempts"][0]["status"] = "succeeded"
+        self.assertTrue(self.validate_manifest(manifest, forged))
 
     def test_rejected_gate_cannot_be_reported_as_accepted(self):
         source = copy.deepcopy(self.source)

@@ -268,6 +268,26 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
             errors.append("manifest provider differs from the source campaign route")
         if source.get("model") and source.get("model") != manifest.get("model"):
             errors.append("manifest model differs from the source campaign route")
+        if manifest["schema_version"] == 2:
+            authorization = manifest.get("authorization")
+            if authorization is None:
+                errors.append("version 2 model execution requires explicit campaign authorization")
+            else:
+                route = authorization.get("route", {})
+                if authorization.get("campaign_id") != manifest.get("campaign_id"):
+                    errors.append("authorization campaign identity does not match manifest")
+                if route.get("provider") != manifest.get("provider") or route.get("model") != manifest.get("model"):
+                    errors.append("authorized provider/model route does not match manifest")
+                if route.get("provider") != source.get("provider") or route.get("model") != source.get("model"):
+                    errors.append("authorized route does not match source campaign route")
+                if not isinstance(recorded_budget, int) or recorded_budget <= 0:
+                    errors.append("source campaign authorization has no positive session budget")
+                elif authorization.get("max_sessions", 0) > recorded_budget:
+                    errors.append("manifest authorized budget exceeds source campaign authorization")
+                if not isinstance(spent, int) or spent < 0:
+                    errors.append("source campaign does not record session spend")
+                elif spent > authorization.get("max_sessions", 0):
+                    errors.append("recorded session use exceeds manifest authorized budget")
     elif any(manifest.get(k) for k in ("provider", "model", "mode", "session_id", "workspace_id")):
         errors.append("manifest claims a model session absent from the source Run")
 
@@ -328,7 +348,7 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
         errors.append("source certification does not record gate acceptance")
 
     authorization = manifest.get("authorization")
-    if authorization:
+    if authorization and manifest["schema_version"] == 1:
         recorded_authorization = source.get("authorization", {})
         route = authorization.get("route", {})
         if authorization.get("campaign_id") != manifest.get("campaign_id"):
@@ -342,16 +362,43 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
 
     recovery = manifest.get("recovery")
     if recovery and recovery.get("claimed"):
-        failures = source.get("failed_implementer_runs", [])
-        corrective = source.get("recoveries", [])
-        if not failures or not corrective:
-            errors.append("recovery claim lacks a failed initial Attempt and separately recorded corrective Run")
-        else:
-            recovery_run_ids = {item.get("runId") for item in corrective}
-            if not any(item.get("id") in recovery_run_ids for item in source.get("runs", [])):
-                errors.append("recovery claim lacks a distinct corrective Run")
-            if recovery.get("corrective_run_id") not in recovery_run_ids:
-                errors.append("recovery manifest identity does not match source recovery record")
+        failed_run_id = recovery.get("failed_run_id")
+        failed_attempt_id = recovery.get("failed_attempt_id")
+        corrective_run_id = recovery.get("corrective_run_id")
+        wrappers = {item.get("run", {}).get("id"): item for item in source.get("runs", [])}
+        failed_wrapper = wrappers.get(failed_run_id, {})
+        failed_attempt = next((a for a in failed_wrapper.get("attempts", []) if a.get("id") == failed_attempt_id), None)
+        if failed_run_id == corrective_run_id or failed_run_id not in source.get("failed_implementer_runs", []):
+            errors.append("recovery claim does not identify a distinct failed Implementer Run")
+        if not failed_attempt or failed_attempt.get("runId") != failed_run_id or failed_attempt.get("status") != "failed":
+            errors.append("recovery claim lacks the identified failed Attempt")
+        failed_run = failed_wrapper.get("run", {})
+        if failed_run.get("status") != "failed":
+            errors.append("recovery claim's earlier Run is not recorded as failed")
+        if any(failed_run.get(field) != expected for field, expected in (
+            ("projectId", manifest["project_id"]), ("actionId", manifest["action_id"]),
+            ("specId", manifest["spec_id"]), ("specBindingHash", manifest["spec_binding_hash"]),
+        )):
+            errors.append("failed Run is outside the certified project/Action/frozen spec")
+        recovery_row = next((item for item in source.get("recoveries", [])
+                             if item.get("previousRunId") == failed_run_id), None)
+        if not recovery_row or recovery_row.get("previousAttemptId") != failed_attempt_id:
+            errors.append("source recovery record does not bind the failed Run and Attempt")
+        if not recovery_row or recovery_row.get("newRunId") != corrective_run_id:
+            errors.append("source recovery record does not identify the corrective Run")
+        if recovery_row and recovery_row.get("campaignId") != manifest["campaign_id"]:
+            errors.append("source recovery record belongs to another Campaign")
+        if recovery_row and recovery_row.get("failureClass") not in {
+            "RECOVERABLE_IMPLEMENTATION_FAILURE", "RECOVERABLE_EXECUTION_FAILURE",
+        }:
+            errors.append("source recovery record has a non-recoverable failure class")
+        corrective_wrapper = wrappers.get(corrective_run_id, {})
+        corrective_run = corrective_wrapper.get("run", {})
+        if corrective_run_id != manifest.get("run_id") or corrective_run.get("status") != "succeeded":
+            errors.append("recovery claim does not identify the accepted corrective Run")
+        if not corrective_wrapper or not any(a.get("runId") == corrective_run_id and a.get("status") == "succeeded"
+                                             for a in corrective_wrapper.get("attempts", [])):
+            errors.append("corrective Run has no successful Attempt record")
     return errors
 
 

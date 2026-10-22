@@ -20,11 +20,15 @@ Manifest schema version 1 preserves the historical C-07 browser shape.
 Version 2 supports capability-specific acceptance. The validator reads
 capabilities from the source record for the frozen ActionSpec, correlates its
 spec and binding identities, and checks those capabilities against the Run.
+For a model-backed version 2 record, explicit authorization binds the campaign,
+exact provider/model route and positive session ceiling to the source
+authorization and recorded spend. Version 1 remains the historical C-07 format.
 Browser requirements apply only when that frozen spec includes `browser`.
 Non-browser Actions must have executable acceptance criteria in their frozen
 spec and a passing corresponding Quality Gate check. A recovery claim requires
-both a failed earlier Implementer execution and a distinct recorded corrective
-Run. Manifest labels cannot choose or weaken the profile.
+the failed Implementer Attempt, its matching Campaign recovery record, and a
+distinct successful corrective Run that produced the accepted candidate.
+Manifest labels cannot choose or weaken the profile.
 
 ### DETERMINISTIC_VERIFIED
 

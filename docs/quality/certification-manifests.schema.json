@@ -77,7 +77,12 @@
     },
     "recovery": {
       "type": "object", "required": ["claimed"],
-      "properties": {"claimed": {"type": "boolean"}, "corrective_run_id": {"type": "string", "minLength": 1}},
+      "properties": {
+        "claimed": {"type": "boolean"},
+        "failed_run_id": {"type": "string", "minLength": 1},
+        "failed_attempt_id": {"type": "string", "minLength": 1},
+        "corrective_run_id": {"type": "string", "minLength": 1}
+      },
       "additionalProperties": false
     }
   },
@@ -97,7 +102,18 @@
     },
     {
       "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
-      "then": {}
+      "then": {
+        "allOf": [
+          {
+            "if": {"properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
+            "then": {"required": ["provider", "model", "mode", "session_id", "workspace_id", "authorization"]}
+          },
+          {
+            "if": {"properties": {"recovery": {"properties": {"claimed": {"const": true}}, "required": ["claimed"]}}, "required": ["recovery"]},
+            "then": {"properties": {"recovery": {"required": ["failed_run_id", "failed_attempt_id", "corrective_run_id"]}}}
+          }
+        ]
+      }
     }
   ],
   "additionalProperties": false
