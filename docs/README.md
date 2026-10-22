@@ -11,7 +11,7 @@ All normative software architecture and engineering guidance is maintained **in 
 5. [Security](security/isolation.md), [SEC-01 spike](security/paseo-sandbox-spike.md) and [2026-10-18 results](security/SEC-01-results-2026-10-18.md).
 6. [Observability](observability/telemetry.md) — durable events, traces, metrics, logging.
 7. [Factory Office](product/factory-office.md) — F1 UI and event projections.
-8. [F0/F1 plan](implementation/f0-f1-plan.md), [F1-S4-A acceptance](implementation/f1-s4a-acceptance.md), [F1-S4-B acceptance](implementation/f1-s4b-acceptance.md), [F1-S4-C acceptance](implementation/f1-s4c-acceptance.md), [F1-S4-C-04 diagnosis](implementation/f1-s4c-04-diagnosis.md), [C-06 server lifecycle](implementation/f1-s4c-06-server-lifecycle.md), [C-07 live certification](implementation/f1-s4c-07-live-certification.md) and [campaign brief](implementation/campaign-prompt.md).
+8. [Capability registry](product/capabilities.yaml), [generated roadmap](roadmap/ROADMAP.md), [AEH assessment](architecture/AEH-CAPABILITY-ASSESSMENT.md) and [reliability debt](quality/reliability-debt.md) — canonical status, future slices and open risks. [F0/F1 plan](implementation/f0-f1-plan.md) remains historical implementation context; see [S4-C acceptance](implementation/f1-s4c-acceptance.md) and [C-07 live certification](implementation/f1-s4c-07-live-certification.md) for exact evidence.
 9. [Browser automation](engineering/browser-automation.md) — pinned agent-native Playwright CLI, Factory-managed Implementer capability, verifier boundary and MCP disposition.
 10. [Decision records](architecture/decisions/README.md) — decisions, trade-offs, and supersession.
 
@@ -21,13 +21,13 @@ All normative software architecture and engineering guidance is maintained **in 
 2. Accepted ADRs record significant decisions; applicable versioned contracts and policies define testable behavior.
 3. [MASTER](architecture/MASTER.md) summarizes the agreed product design; it must remain consistent with ADRs and contracts.
 4. `AGENTS.md` is a **short operational entry point**, not a second complete architecture specification.
-5. Roadmaps, prompts, generated diagrams, skill text and agent recommendations are advisory unless incorporated through governed changes.
+5. The capability registry and generated roadmap record approved objectives and proposed implementation slices; roadmap entries, prompts, skills and agent recommendations do not grant execution authority.
 
 For contradictory normative text, stop claiming compliance, open an Action/ADR and reconcile; do not silently select the permissive interpretation.
 
 ## Documentation update rules
 
-- **Every code PR** assesses docs, tests, examples, instrumentation and compatibility impact. If no architecture impact exists, state so in the PR.
+- **Every PR** runs the governance entry check. Protected runtime, policy, evidence, skill, CI and normative documentation changes require a PR-scoped architectural impact declaration bound to the actual base and head; an independent reviewer assesses its meaning. Ordinary application changes receive an explicit no-assessment classification. Code changes still assess relevant docs, tests, examples, instrumentation and compatibility.
 - **Material design decisions:** Action → proposed ADR with alternatives and consequences → risk/authority approval → update MASTER/contracts/quality/tests/diagrams together → independent review.
 - **Accepted ADRs are append-only in meaning:** supersede them explicitly with a new ADR and mark old records `Superseded` without rewriting their original rationale.
 - Security, credential boundaries, merge policies, Quality Gate, evidence acceptance and Core updates have protected approval paths.

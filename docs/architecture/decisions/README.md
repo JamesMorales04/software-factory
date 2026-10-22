@@ -19,3 +19,4 @@ Statuses: `Proposed`, `Accepted`, `Rejected`, `Superseded`, `Deprecated`. Preser
 - [ADR-0013 — Bounded autonomous Implementer recovery](ADR-0013-bounded-autonomous-recovery.md) — accepted; deterministic failure classes, fenced new Runs, immutable failed identity, protected oracle and explicit attempt budgets.
 - [ADR-0014 — Same-session capability completion](ADR-0014-same-session-capability-completion.md) — accepted; one bounded continuation in the same Paseo session when a required browser interaction is missing.
 - [ADR-0015 — Worker-managed browser test server](ADR-0015-worker-managed-browser-test-server.md) — accepted; declarative test-server lifecycle, ownership and infrastructure-failure boundary.
+- [ADR-0016 — Dual-mode autonomous engineering](ADR-0016-dual-mode-autonomous-engineering.md) — accepted product objectives and shared Core authority; future implementation and protected decisions remain separate.

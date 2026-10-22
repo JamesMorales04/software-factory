@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://software-factory.local/schemas/certification-manifest-v1-v2.json",
+  "title": "Software Factory real campaign certification manifest",
+  "description": "Version 1 preserves the historical browser-specific C-07 shape. Version 2 uses universal campaign evidence and derives capability requirements from the correlated frozen ActionSpec.",
+  "type": "object",
+  "required": ["schema_version", "certification_id", "level", "status", "implementation_sha", "project_id", "campaign_id", "action_id", "spec_id", "spec_binding_hash", "run_id", "attempt_id", "candidate_id", "candidate_sha", "verifier", "reviewer", "quality_gate", "cleanup", "source_evidence", "external_observation_assurance"],
+  "properties": {
+    "schema_version": {"enum": [1, 2]},
+    "certification_id": {"type": "string", "minLength": 1},
+    "level": {"const": "REAL_PASEO_E2E_VERIFIED"},
+    "status": {"const": "verified"},
+    "implementation_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "project_id": {"type": "string", "minLength": 1},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "action_id": {"type": "string", "minLength": 1},
+    "spec_id": {"type": "string", "minLength": 1},
+    "spec_binding_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_id": {"type": "string", "minLength": 1},
+    "attempt_id": {"type": "string", "minLength": 1},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "candidate_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "provider": {"type": ["string", "null"], "minLength": 1},
+    "model": {"type": ["string", "null"], "minLength": 1},
+    "mode": {"type": ["string", "null"], "minLength": 1},
+    "session_id": {"type": ["string", "null"], "minLength": 1},
+    "workspace_id": {"type": ["string", "null"], "minLength": 1},
+    "browser": {
+      "type": "object",
+      "required": ["successful_commands", "managed_test_server"],
+      "properties": {
+        "successful_commands": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 2},
+        "managed_test_server": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "verifier": {
+      "type": "object", "required": ["id", "independent", "status"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "independent": {"const": true},
+        "status": {"const": "passed"}
+      },
+      "additionalProperties": false
+    },
+    "reviewer": {
+      "type": "object", "required": ["id", "verdict"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "verdict": {"const": "APPROVE"}},
+      "additionalProperties": false
+    },
+    "quality_gate": {
+      "type": "object", "required": ["id", "status"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "status": {"const": "ACCEPTED"}},
+      "additionalProperties": false
+    },
+    "cleanup": {
+      "type": "object", "required": ["status", "contradictions"],
+      "properties": {
+        "status": {"enum": ["confirmed", "incomplete", "unknown"]},
+        "contradictions": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "source_evidence": {"type": "string", "minLength": 1},
+    "external_observation_assurance": {"const": "repository_recorded_not_independently_corroborated"},
+    "invalidated_by": {"type": ["string", "null"]},
+    "authorization": {
+      "type": "object", "required": ["campaign_id", "max_sessions", "route"],
+      "properties": {
+        "campaign_id": {"type": "string", "minLength": 1},
+        "max_sessions": {"type": "integer", "minimum": 1},
+        "route": {"type": "object", "required": ["provider", "model"], "properties": {
+          "provider": {"type": "string", "minLength": 1}, "model": {"type": "string", "minLength": 1}
+        }, "additionalProperties": false}
+      },
+      "additionalProperties": false
+    },
+    "recovery": {
+      "type": "object", "required": ["claimed"],
+      "properties": {
+        "claimed": {"type": "boolean"},
+        "failed_run_id": {"type": "string", "minLength": 1},
+        "failed_attempt_id": {"type": "string", "minLength": 1},
+        "corrective_run_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"schema_version": {"const": 1}}, "required": ["schema_version"]},
+      "then": {
+        "required": ["provider", "model", "mode", "session_id", "workspace_id", "browser"],
+        "properties": {
+          "provider": {"type": "string", "minLength": 1},
+          "model": {"type": "string", "minLength": 1},
+          "mode": {"type": "string", "minLength": 1},
+          "session_id": {"type": "string", "minLength": 1},
+          "workspace_id": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": 2}}, "required": ["schema_version"]},
+      "then": {
+        "required": ["provider", "model", "mode", "session_id", "workspace_id", "authorization"],
+        "properties": {
+          "provider": {"type": "string", "pattern": "^\\S+$"},
+          "model": {"type": "string", "pattern": "^\\S+$"},
+          "mode": {"type": "string", "pattern": "^\\S+$"},
+          "session_id": {"type": "string", "pattern": "^\\S+$"},
+          "workspace_id": {"type": "string", "pattern": "^\\S+$"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"recovery": {"properties": {"claimed": {"const": true}}, "required": ["claimed"]}}, "required": ["recovery"]},
+            "then": {"properties": {"recovery": {"required": ["failed_run_id", "failed_attempt_id", "corrective_run_id"]}}}
+          }
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}

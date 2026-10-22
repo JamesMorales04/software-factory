@@ -46,16 +46,16 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Lint | Format/lint/static-analysis gates for every active implementation language | Agreed; ADR-0008 |
 | Self-development | Stable controller A supervises isolated candidate B | Agreed safety boundary |
 
-### Proposed technology choices (not yet ratified)
+### Implemented technology choices and remaining proposals
 
-- **Core + local Worker:** **Go, ratified** for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). TypeScript remains the Paseo SDK adapter language. This selection does not certify provider credential isolation (SEC-01).
-- **Persistence:** Core-owned SQLite WAL with one logical writer initially; Postgres only when a real scale constraint warrants it.
-- **Paseo:** a TypeScript adapter around the actual supported `@getpaseo/client`/CLI behavior; keep SDK types out of Core domain contracts.
-- **Web UI:** React and TypeScript over authenticated HTTP + event stream (SSE/WebSocket to be empirically selected).
+- **Core + local Worker:** Go is ratified and implemented for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). This does not certify provider credential isolation (SEC-01).
+- **Persistence:** Core-owned SQLite WAL is implemented. The observed transient lock error remains open in the [reliability register](../quality/reliability-debt.md); Postgres is only a future option if a measured scale constraint warrants it.
+- **Paseo:** the implemented Go adapter invokes the installed Paseo CLI and checks observed session identity (`core/internal/paseo/adapter.go`). Keep runtime details out of Core domain contracts.
+- **Web UI:** React and TypeScript Office is implemented over authenticated HTTP and SSE with replay. Future visualization remains proposed.
 - **Sandbox:** rootless OCI/Podman, with no unauthorized host execution fallback; alternative confinement if proven appropriate.
-- **Observability:** durable event ledger, structured redacted logs, OpenTelemetry for traces/metrics, local-first export and optional OTLP.
+- **Observability:** a durable event ledger, structured redacted logs and OpenTelemetry tracing path are implemented. Full metrics coverage remains proposed; see [telemetry](../observability/telemetry.md).
 
-None of these proposed technologies overrides F0 security or acceptance blockers.
+No technology choice overrides security or acceptance blockers.
 
 ## 4. System responsibilities and boundaries
 
@@ -107,7 +107,9 @@ A completed Run is *not* an accepted Action; an accepted Action is *not* a merge
 
 Available responsibilities: Director, Planner/Architect, Explorer, Librarian, Spec Manager, Implementer, Reviewer, Repairer and Incident Analyst. Roles are activated as required; they are not nine always-running agents. Agent Composer selects the minimum viable set of roles, concrete skills, tools, provider routes, independent review constraints and per-participant budgets.
 
-Semantic Assessment handles intent, complexity, stack, knowledge gap, failure diagnosis, change impact, validation need and spec ambiguity only when deterministic logic is insufficient. Every model judgment is scoped, evidence-bound, typed, budgeted, validated, uncertainty-aware and **advisory**. A policy check or test result must never depend on an LLM's unsupported claim.
+**Decision-mechanism invariant:** classify each meaningful classification, inference, routing, estimation, diagnosis or decision as `DETERMINISTIC`, `MODEL` or `HYBRID`. Deterministic logic handles mechanically observable facts, stable invariants, authorization, lifecycle, security and acceptance. Model reasoning handles semantic interpretation, ambiguity, engineering complexity, effort estimation and open-ended diagnosis. Hybrid execution uses bounded model judgments to inform actions that independent evidence validates and Core policy constrains. Select a mechanism by demonstrated reliability, accuracy, latency, token cost, implementation complexity and long-term maintenance, rather than by whether deterministic code is technically possible.
+
+Future Semantic Assessment covers intent, complexity, stack, knowledge gaps, failure diagnosis, change impact, validation needs and specification ambiguity. Its judgments are scoped, evidence-bound, typed, budgeted, validated, uncertainty-aware and **advisory**. Prefer an existing agent with sufficient context for a small structured judgment; a separate long-running participant is justified only by work ownership, substantial additional context or lifecycle needs. The deterministic Core remains authoritative for privileges, budgets, tools, delivery and Quality Gate acceptance. A policy check or test result must never depend on an LLM's unsupported claim. CAP-014 and F1-S4-D must compare practical semantic decision quality against a reasonable deterministic baseline on representative tasks, including ambiguous engineering-effort estimates, before implementation acceptance; this policy does not claim Semantic Assessment is implemented today.
 
 Model Router uses `ECONOMY`, `BALANCED`, `REASONING` and `CRITICAL_REVIEW` logical profiles. Eligibility (runtime, schemas, capabilities, safety, independence and quota) precedes quality/latency/resource optimization. Certify exact provider–model–runtime combinations through real probes. All fallback decisions are explicit and traceable; unknown availability cannot authorize degradation. Promotion compares reproducible Champion/Challenger evaluations and affects only future eligible assignments; freeze selected routes per Run.
 
@@ -133,6 +135,14 @@ capability tied to the Run, not a prompt claim. This is **control-plane
 authorization, not OS isolation**: TRUSTED_LOCAL retains broad host access and
 cross-project confidentiality is never claimed. See [ADR-0012](decisions/ADR-0012-project-registry-and-capabilities.md)
 and the [S4-C contract](../contracts/multi-project-s4c.md).
+
+The Product Owner ratified both autonomous development and persistent
+maintenance/evolution as product operating modes in
+[ADR-0016](decisions/ADR-0016-dual-mode-autonomous-engineering.md). They share
+the existing Core and Action/Campaign path; Lead planning, maintenance event
+processing, governed delivery and stable-controller promotion remain future
+capabilities. The [registry](../product/capabilities.yaml) and [roadmap](../roadmap/ROADMAP.md)
+carry their distinct decision, implementation and verification states.
 
 **SEC-01 disposition is mode-specific (see [ADR-0009](decisions/ADR-0009-trusted-local-execution.md)):** a host Paseo agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Historical FAIL/NOT TESTED findings remain valid observations and are never rewritten to PASS. SEC-01-STRICT is **not required for TRUSTED_LOCAL** (owner risk acceptance); SEC-01-ISOLATED is available-only-where-verified. Product owner paused further spike experiments and authorized S1, credential-free S2 prototypes, and S3-TRUSTED_LOCAL under its entry conditions; S3-ISOLATED, credential-bearing untrusted execution under an isolation claim, and privileged autonomous effects remain blocked. Never fall back to a privileged host process. Never call TRUSTED_LOCAL isolated or certified. See [security](../security/isolation.md), [trusted-local policy](../security/trusted-local.md), [spike plan](../security/paseo-sandbox-spike.md) and [observed results](../security/SEC-01-results-2026-10-18.md).
 

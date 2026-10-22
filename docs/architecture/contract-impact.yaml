@@ -1,0 +1,68 @@
+# Historical exact-path impact record for the F1-GOV-01 documentation review.
+# Future protected changes use the PR-scoped declaration checked by
+# .github/scripts/check-pr-architecture-impact.py; do not append routine PRs here.
+entries:
+  - id: GOV01-AGENTS
+    paths: [AGENTS.md]
+    change: "Updated contributor governance to point at the canonical registry and current evidence boundaries."
+    impact: "Keeps future contributors aligned with the approved operating model and exact S4-C certification limits."
+  - id: GOV01-README
+    paths: [README.md]
+    change: "Reconciled the repository overview with the current product state and campaign governance."
+    impact: "Prevents the top-level product description from overstating current autonomy or delivery readiness."
+  - id: GOV01-DOCS-README
+    paths: [docs/README.md]
+    change: "Added durable navigation to the canonical capability and roadmap documents."
+    impact: "Gives maintainers one discoverable source for capability decisions and milestone status."
+  - id: GOV01-MASTER
+    paths: [docs/architecture/MASTER.md]
+    change: "Reconciled architecture baseline statements against merged code and recorded evidence."
+    impact: "Keeps normative architecture aligned with current implementation and security boundaries."
+  - id: GOV01-ADR-INDEX
+    paths: [docs/architecture/decisions/README.md]
+    change: "Registered the dual-mode autonomy decision in the accepted and proposed decision index."
+    impact: "Makes the new product architecture discoverable without changing prior ADR history."
+  - id: GOV01-ADR-0016
+    paths: [docs/architecture/decisions/ADR-0016-dual-mode-autonomous-engineering.md]
+    change: "Recorded the ratified development and maintenance product modes and proposed shared architecture."
+    impact: "Sets durable authority and orchestration boundaries while preserving protected delivery decisions."
+  - id: GOV01-CONTRACT-IMPACT
+    paths: [docs/architecture/contract-impact.yaml]
+    change: "Added exact-path impact records for the documentation reconciliation in this campaign."
+    impact: "Makes future protected documentation edits state their concrete change and product impact."
+  - id: GOV01-CONTRACTS
+    paths: [docs/contracts/README.md]
+    change: "Reconciled contract navigation and documented the current scope of implemented contracts."
+    impact: "Prevents planned product behavior from being mistaken for a currently enforced contract."
+  - id: GOV01-IMPLEMENTATION-PLAN
+    paths: [docs/implementation/f0-f1-plan.md]
+    change: "Marked the historical implementation plan against the merged S4-C evidence boundary."
+    impact: "Preserves historical context while directing future planning to the canonical roadmap."
+  - id: GOV01-TELEMETRY
+    paths: [docs/observability/telemetry.md]
+    change: "Aligned telemetry descriptions with instrumentation present in the current Factory code."
+    impact: "Improves operational evidence interpretation without claiming unverified runtime behavior."
+  - id: GOV01-LIVE-CERTIFICATION
+    paths: [docs/quality/live-certification.md]
+    change: "Defined distinct evidence dimensions and the required live acceptance process."
+    impact: "Prevents simulated checks and repository records from being reported as real certification."
+  - id: GOV01-CERTIFICATION-SCHEMA
+    paths: [docs/quality/certification-manifests.schema.json]
+    change: "Added a strict schema for repository-owned certification manifests and evidence dimensions."
+    impact: "Makes incomplete or contradictory certification claims mechanically rejectable in CI."
+  - id: GOV01-RELIABILITY
+    paths: [docs/quality/reliability-debt.md]
+    change: "Recorded unresolved concurrency, repair, and isolation reliability findings with closure criteria."
+    impact: "Keeps material reliability gaps visible until their specific evidence-based closure conditions pass."
+  - id: GOV01-CAPABILITIES
+    paths: [docs/product/capabilities.yaml]
+    change: "Added the versioned canonical machine-readable catalog of approved and proposed capabilities."
+    impact: "Separates product decisions, implementation state, and evidence status for roadmap governance."
+  - id: GOV01-ROADMAP
+    paths: [docs/roadmap/ROADMAP.md]
+    change: "Generated milestone descriptions from the canonical capability registry."
+    impact: "Prevents roadmap status from drifting away from capability decisions and acceptance criteria."
+  - id: GOV01-AEH-ASSESSMENT
+    paths: [docs/architecture/AEH-CAPABILITY-ASSESSMENT.md]
+    change: "Added source-backed predecessor capability findings with explicit disposition recommendations."
+    impact: "Preserves useful lessons without treating inherited capabilities as automatically approved."

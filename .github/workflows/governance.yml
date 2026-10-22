@@ -1,0 +1,62 @@
+name: Governance consistency
+
+on:
+  pull_request:
+    # Intentionally has no path filter. The entry gate must run for every PR;
+    # repository-wide governance cannot be protected by a path-filtered job.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches: [main]
+
+jobs:
+  architecture-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Assess PR architecture impact
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python3 .github/scripts/check-pr-architecture-impact.py
+      - name: Install certification validator dependencies
+        run: python3 -m pip install -r scripts/requirements-certification.txt
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - name: Test PR impact gate
+        run: python3 .github/scripts/test_check_pr_architecture_impact.py
+      - name: Test live E2E authorization preflight with fixtures
+        run: python3 scripts/test-live-e2e-authorization.py
+      - name: Prove live entrypoints make no provider call by default or without authorization
+        run: python3 -u scripts/test-live-e2e-entrypoints.py
+      - name: Run checker tests
+        working-directory: core
+        run: go test ./cmd/architecturecheck
+      - name: Validate capability registry and generated roadmap
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ] && [ "$BASE_REF" != "0000000000000000000000000000000000000000" ]; then
+            scripts/check-architecture-consistency --base-ref "$BASE_REF"
+          else
+            scripts/check-architecture-consistency
+          fi
+      - name: Test certification manifest validator
+        run: python3 -m unittest scripts/test_validate_live_certification.py
+      - name: Validate every recorded live certification manifest
+        run: |
+          shopt -s nullglob
+          manifests=(docs/evidence/*certification-manifest.json)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No live certification manifests found" >&2
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            python3 scripts/validate-live-certification.py "$manifest"
+          done

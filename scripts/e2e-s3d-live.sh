@@ -9,6 +9,15 @@
 # session is touched and the shared daemon is never restarted.
 set -euo pipefail
 
+LIVE="${FACTORY_S3D_LIVE:-0}"
+if [[ "$LIVE" != "0" && "$LIVE" != "1" ]]; then
+  echo "[BLOCKED] FACTORY_S3D_LIVE must be 0 or 1"; exit 2
+fi
+if [[ "$LIVE" != "1" ]]; then
+  echo "[SKIP] S3-D live lane disabled; no provider session requested"
+  exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/factory-s3d-live-XXXXXX")"
 TOKEN="s3dlive-api-$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -20,7 +29,11 @@ BIN_WORKER="$TMP/factory-worker"
 DB="$TMP/factory.db"
 PROVIDER="${S3D_LIVE_PROVIDER:-opencode}"
 MODEL="${S3D_LIVE_MODEL:-opencode-go/deepseek-v4.1-flash}"
-PASEO_MODE="${S3D_LIVE_MODE:-build}"
+PASEO_MODE="build"
+python3 "$ROOT/scripts/live-e2e-authorization.py" \
+  --campaign F1-S3-D --project default --max-sessions 1 \
+  --route opencode/opencode-go/deepseek-v4.1-flash \
+  --requested-route "$PROVIDER/$MODEL"
 CORE_PID=""
 WORKER_PID=""
 RECOVERY_PID=""

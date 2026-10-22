@@ -11,7 +11,7 @@
 #   s5 stub-success full lifecycle -> succeeded run, succeeded binding,
 #      verified evidence (routing, diff, tests), cleanup verified
 #   s6 synthetic-echo regression (restricted default, no binding)
-# Live lane (LIVE=1, default; set FACTORY_S3B_LIVE=0 to skip):
+# Live lane (disabled by default; explicit authorization required):
 #   one real Paseo session per allowlisted route through the Factory Worker,
 #   with effective provider/model/mode/Cwd asserted from session evidence,
 #   a real git diff, passing format/tests, truthful terminal settlement and
@@ -32,7 +32,10 @@ CORE_LOG="$TMP/core.log"
 WORKER_LOG="$TMP/worker.log"
 CORE_PID=""
 WORKER_PID=""
-LIVE="${FACTORY_S3B_LIVE:-1}"
+LIVE="${FACTORY_S3B_LIVE:-0}"
+if [[ "$LIVE" != "0" && "$LIVE" != "1" ]]; then
+  echo "[BLOCKED] FACTORY_S3B_LIVE must be 0 or 1"; exit 2
+fi
 STUBBIN="$TMP/stubbin"
 STUB_CONF="$TMP/stub.conf"
 TASK_TEXT="Append a pure function multiply(a, b) with a JSDoc comment to add.js and export it alongside add (keep add unchanged)."
@@ -289,6 +292,14 @@ fi
 echo
 echo "== live lane: one real Paseo session per allowlisted route (paid, bounded) =="
 echo "Cost guard: exactly one session per route, maxAttempts=1, one nudge max."
+python3 "$ROOT/scripts/live-e2e-authorization.py" \
+  --campaign F1-S3-B --project default --max-sessions 3 \
+  --route codex/gpt-6-luna \
+  --route opencode/opencode-go/muse-spark-1.3-contributor \
+  --route opencode/opencode-go/deepseek-v4.1-flash \
+  --requested-route codex/gpt-6-luna \
+  --requested-route opencode/opencode-go/muse-spark-1.3-contributor \
+  --requested-route opencode/opencode-go/deepseek-v4.1-flash
 start_worker
 
 live_route() { # provider model mode

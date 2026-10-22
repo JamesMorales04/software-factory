@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "certification_id": "F1-S4-C-07-VLOG-REAL-PASEO",
+  "level": "REAL_PASEO_E2E_VERIFIED",
+  "status": "verified",
+  "implementation_sha": "9567bc5c144235bef341524adc44277d377f6167",
+  "project_id": "factory-fixture-vlog",
+  "campaign_id": "bd245745efa4d5ae26d67f77f1933f57",
+  "action_id": "44ff7a007e10bc3da84bbe06f6891124",
+  "spec_id": "95bd9216ee0d58ba8a83c2e9462e2048",
+  "spec_binding_hash": "ecddb4f7488f5f15790748f44cdb36ac2a5529aa2c217d4d33645eff682dab1d",
+  "run_id": "b72a6f10726ff072f69e032110da0dfa",
+  "attempt_id": "575e2a639632b91adb5cf44e3abbc227",
+  "candidate_id": "a7c96bbe7ab17568c72b026e726afaf1",
+  "candidate_sha": "e49f62df32c26e185c840b262435f7a21fea07fd",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "mode": "build",
+  "session_id": "73dd6dd2-2843-4292-9879-fe4469414fcf",
+  "workspace_id": "wks_69356fdd7fd71c4e",
+  "browser": {
+    "successful_commands": ["open", "snapshot", "click", "snapshot", "click", "snapshot"],
+    "managed_test_server": true
+  },
+  "verifier": {
+    "id": "021053b640b62dbe38059dd644525fae",
+    "independent": true,
+    "status": "passed"
+  },
+  "reviewer": {
+    "id": "e6de3ef18f13dcaefef2a6cfda82e1f2",
+    "verdict": "APPROVE"
+  },
+  "quality_gate": {
+    "id": "ba5b0ba58359c3d3771c1fbd41e07caf",
+    "status": "ACCEPTED"
+  },
+  "cleanup": {
+    "status": "confirmed",
+    "contradictions": []
+  },
+  "source_evidence": "docs/evidence/f1-s4c-07-live-2026-10-21.json",
+  "external_observation_assurance": "repository_recorded_not_independently_corroborated",
+  "invalidated_by": null
+}

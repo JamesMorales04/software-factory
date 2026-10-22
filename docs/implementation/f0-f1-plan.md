@@ -75,7 +75,7 @@ reconciliation and the S3-D replacement gate. See the
 [ADR-0011](../architecture/decisions/ADR-0011-native-campaign-orchestration.md)
 and [acceptance matrix](f1-s4b-acceptance.md).
 
-## F1-S4-C multi-project and capability scoping (implemented; live certification pending)
+## F1-S4-C multi-project and capability scoping (implemented; bounded Vlog live path certified)
 
 S4-C extends the S1 Project into a registered local-Git binding with canonical
 repository identity, base-ref policy, Quality Profile, workspace scope,
@@ -92,7 +92,9 @@ adds deterministic failure classification and bounded pre-candidate recovery
 (ADR-0013), with explicit campaign attempt budgets, immutable failed Run
 identities and protected-oracle discipline. Real-Paseo evidence is governed by
 the [live certification policy](../quality/live-certification.md) and is not
-claimed until the final runtime passes. See the [contract](../contracts/multi-project-s4c.md) and
+claimed for other S4-C paths without their own final-runtime evidence. The C-07
+Vlog path passed on tested head `9567bc5` / runtime `14133cb7`; corrective
+repair was not exercised. See the [contract](../contracts/multi-project-s4c.md) and
 [ADR-0012](../architecture/decisions/ADR-0012-project-registry-and-capabilities.md).
 
 ## Mode-specific S2/S3 disposition (per [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md))
