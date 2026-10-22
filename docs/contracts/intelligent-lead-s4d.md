@@ -245,10 +245,12 @@ is implemented fail-closed behavior; Product Owner policy for work already
 running remains to be ratified.
 
 The intake endpoint processes the assessment inline and synchronously in the
-HTTP request. The current uncommitted tree sets Core `WriteTimeout` to 300
-seconds and the live runner's Lead POST timeout to 360 seconds. This gives
-headroom beyond bounded assessment/session work; exact-candidate verification
-remains pending. Retries use the same idempotency key. Before assessment,
+HTTP request. Code candidate `be592770b77ca81c491e5021913e1d23d5a228b7` sets
+Core `WriteTimeout` to 300 seconds and the live runner's Lead POST timeout to
+360 seconds. This gives headroom beyond bounded assessment/session work;
+candidate deterministic checks passed. These checks do not provide live
+session evidence or certification. Retries use the same idempotency key.
+Before assessment,
 `CreateLeadAction` atomically creates the Action, appends `ActionCreated`, and
 binds the Action ID to the reserved Lead request in one transaction; replay
 cannot leave an unowned Action. A missing assessor, non-change intent, invalid
@@ -316,8 +318,9 @@ session with the Implementer Run's durable session bindings, then validating
 the exact Run, Attempt, frozen candidate, verification, review, Gate decision,
 session count and observed routes. The runner has not been executed; this is
 prepared checking logic, not evidence of a successful run. No paid session was
-run or authorized by this contract-writing work. The current implementation
-and Office changes are uncommitted and have no live model result or
+run or authorized by this contract-writing work. The implementation and Office
+changes are committed in code candidate
+`be592770b77ca81c491e5021913e1d23d5a228b7`; they have no live model result or
 certification.
 
 ## 10. Compatibility

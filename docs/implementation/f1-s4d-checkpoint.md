@@ -1,9 +1,12 @@
 # F1-S4-D resume checkpoint
 
-**Checkpoint:** 2026-10-22. **Branch HEAD/base:** `102d7ba29295554bd61ae71956347a025d219d7b`.
-S4-D changes are uncommitted. There is no frozen S4-D candidate SHA and no
-S4-D PR. The prior S4-C real-Paseo evidence remains bound to Factory head
-`9567bc5` / runtime `14133cb7`; it does not verify these changes.
+**Checkpoint:** 2026-10-22. **Code candidate:**
+`be592770b77ca81c491e5021913e1d23d5a228b7`. S4-D code is committed. At this
+checkpoint capture, the evidence/report and registry follow-up were pending a
+docs-only commit; no docs-inclusive SHA is recorded here. After committing,
+resolve the final SHA with `git rev-parse HEAD`. The prior S4-C real-Paseo
+evidence remains bound to Factory head `9567bc5` / runtime `14133cb7`; it does
+not verify S4-D.
 
 ## Current state
 
@@ -33,76 +36,105 @@ durable grant. The separate live runner requires `FACTORY_S4D_LIVE=1`, matching
 exact frozen Factory SHA. These guards are not live authorization; no paid run
 has occurred.
 
-Synchronous intake timeout changes have landed in the uncommitted tree: Core
-`WriteTimeout=300s`; live runner Lead POST timeout `360s`. These provide headroom
-for bounded assessment work but still need exact-candidate verification. The
+Synchronous intake timeout changes are in the code candidate: Core
+`WriteTimeout=300s`; live runner Lead POST timeout `360s`. The candidate suites
+pass; the independent reviewer reported no P1 blocker on clean `be592`. The
 prepared live runner reconciles assessment and Implementer session identities,
 then checks Run, Attempt, frozen candidate, verification, review, Gate and
 observed route/session count on success. It has not been run, so this is test
 logic only, not a live result.
 
-S4-D supports exactly one implementation WorkUnit. CAP-013–017 remain proposed
-pending Product Owner review of ADR-0017 and delegation semantics. CAP-014's
-semantic comparison has no scored results. CAP-043 is an approved product
-objective in progress, not a completed capability.
+S4-D supports exactly one implementation WorkUnit. CAP-013/015/017 bounded
+deterministic behavior is verified on the code candidate. CAP-014 schema and
+context fixtures are partial evidence; its original deterministic acceptance
+requires scored comparison against a deterministic baseline, so verification
+is blocked. CAP-016's single-unit fixtures are also partial evidence; its
+original dependency-aware WorkGraph acceptance is not met, so verification is
+blocked and implementation remains in progress. CAP-043 remains an approved
+product objective in progress, not a completed capability. ADR-0017 and
+standing-delegation policy remain proposed pending Product Owner review.
 
 ## Open reviewer finding
 
 The reviewer found that the contract's assessment example omitted the
-runtime-required `effortEstimate` object. Current working-tree edits add the
-required fields, status rules, and deterministic request trigger to the
-contract, and add typed `unit` rendering to the Office projection and fixture.
-Office `npm run typecheck` and `npm run lint` pass on this uncommitted tree.
-Keep this finding open until the Core/Office owners report completion and the
-reviewer confirms the contract and projection match the implementation.
-Other independent review findings are pending recheck; no review certification
-is claimed.
+runtime-required `effortEstimate` object. The schema, rules and deterministic
+request trigger were corrected; Office now types and displays `unit`. These
+changes are included in the code candidate and pass the listed Office checks.
+Formal reviewer recheck and independent review/verifier on the final clean
+code candidate `be592` completed: reviewer reported no P1 blocker; independent
+verifier passed the scoped checks below. This does not establish independently
+rerun S4-A/B/C end-to-end suites or live/model acceptance, or review of a future
+docs-inclusive SHA.
+
+## S4-C C17 browser regression
+
+The first exact-candidate S4-C run at `3ad4836` failed C17 after 15 seconds
+waiting for the Projects heading. Its durable result is
+[f1-s4d-s4c-first-failure-3ad4836.json](../evidence/f1-s4d-s4c-first-failure-3ad4836.json).
+A focused reproduction traced the React crash to the
+legacy `Default Project` projection returning `browserEndpoints: null` while
+Office unconditionally called `.join()`. Office now types this field as
+nullable and renders it safely. Typecheck, lint and build pass.
+
+The first post-fix focused C17 attempt reached Project registration, Action,
+ActionSpec and Campaign start, then stopped because the ad hoc Worker omitted
+the browser environment required by the harness. Its durable result is
+[f1-s4d-s4c-focused-incomplete-worker-env.json](../evidence/f1-s4d-s4c-focused-incomplete-worker-env.json).
+The fixed code candidate `be592` then passed the full S4-C deterministic suite
+(51 checks), including C17, in
+[f1-s4d-s4c-regression-pass-be592770.json](../evidence/f1-s4d-s4c-regression-pass-be592770.json).
+That suite used a deterministic Paseo stub, not a provider.
 
 ## Ownership and validation
 
 | Area | Owner / status |
 | --- | --- |
-| Core Lead implementation and Go tests | Core implementer; targeted and full Go unit suite results below |
-| Office and S4-D docs/registry | Office/docs implementer; changes remain uncommitted |
-| Independent verification and review | Separate verifier/reviewer; not run |
+| Core Lead implementation and Go tests | Core implementer; full candidate Go checks passed |
+| Office and S4-D docs/registry | Office/docs implementer; code is in candidate; docs follow-up was pending commit at checkpoint capture |
+| Independent verification and review | Separate verifier/reviewer; final clean `be592` review and scoped verification complete |
 | Paid/live model journey | Product Owner authorization required; not authorized |
 
-Reported on the current uncommitted tree: `go test ./...` **PASS**;
-`go vet ./...` **PASS**; targeted race check
-`go test -race ./internal/domain ./internal/store ./internal/api ./internal/lead ./internal/orchestrator`
-**PASS**. These results are not frozen-candidate evidence. Broad race coverage,
-`golangci-lint`, exact-SHA consolidated checks and prior S1–S4-C acceptance
-workflows remain pending. The timeout changes are implemented on this
-uncommitted tree but exact-candidate verification remains pending; callers
-should retry intake with the same idempotency key if the response is lost.
+On code candidate `be592770b77ca81c491e5021913e1d23d5a228b7`:
+`go test ./...`, `go vet ./...`, and `go test -race ./...` **PASS**; gofmt,
+Office typecheck/lint/build and architecture consistency **PASS**. The
+candidate-bound S4-A, S4-B and full S4-C deterministic scripts also **PASS**.
+Evidence and limitations are summarized in
+[f1-s4d-deterministic-2026-10-22.md](../evidence/f1-s4d-deterministic-2026-10-22.md).
+Independent review of clean `be592` reported no P1 blocker. Independent
+verification passed targeted Go/race/vet, 10 race-enabled grant reservation
+attempts, API no-spec guard, Office typecheck/lint/build, and Chromium null
+fixture. It did not independently rerun S4-A/B/C end-to-end or perform live
+model acceptance. After committing the docs follow-up, resolve final HEAD with
+`git rev-parse HEAD` and record that docs-inclusive SHA; the test results above
+remain bound to the code candidate `be592`. An interrupted intake caller must
+retry with the same idempotency key.
 
 Office `npm run typecheck`, `npm run lint`, and `npm run build` **PASS**. The
 mocked `office/e2e-browser/s4d-journey.mjs` **PASS** on loopback Vite with all
 API traffic intercepted; it exercised submit, projection, event snapshot,
 reload and explicit start without contacting Core, Paseo or a model provider.
-`scripts/check-architecture-consistency --write-roadmap` and the read-only
-consistency check **PASS**.
 
 ## Next tasks, in dependency order
 
 | Order | Task | Owner | Dependency / done when |
 | --- | --- | --- | --- |
-| 1 | Finish Core changes; repair findings | Core implementer | Rerun affected tests |
-| 2 | Reconcile assessment schema and Office projection | Office/docs + Core | Office typecheck/lint pass; Core owner confirms schema and reviewer rechecks the matching contract/projection |
-| 3 | Freeze/check candidate; rerun S1–S4-C | Release owner | Steps 1–2 done; SHA/results recorded |
-| 4 | Recheck independent findings and assess security | Independent reviewer | Fixes landed; review all findings on frozen candidate; no certification until disposition |
-| 5 | Decide remaining delegation/paid-use policy and authorize any live session | Product Owner | ADR-0017 reviewed; explicit candidate/route/session envelope; gates alone are insufficient |
-| 6 | Run authorized live journey | Live-run owner | Frozen clean candidate, exact SHA and owner authorization; record outcome and session evidence |
-| 7 | Prepare S4-D PR | Release owner | Candidate checks, review disposition, and required acceptance evidence recorded |
+| 1 | Commit docs/evidence follow-up | Release owner | Evidence/registry/roadmap consistent; commit documentation changes |
+| 2 | Resolve and validate docs-inclusive candidate identity | Release owner | Run `git rev-parse HEAD`; rerun architecture consistency and any required exact-SHA checks; keep code evidence bound to `be592` |
+| 3 | Disposition any non-blocking findings and decide if more independent end-to-end scope is required | Reviewer/verifier | Existing reviewer found no P1 blocker; verifier did not rerun S4-A/B/C |
+| 4 | Decide delegation/paid-use policy and authorize any live session | Product Owner | ADR-0017 reviewed; explicit candidate/route/session envelope; gates alone are insufficient |
+| 5 | Run authorized live journey | Live-run owner | Frozen clean candidate, exact SHA and owner authorization; record outcome and session evidence |
+| 6 | Prepare S4-D PR | Release owner | Candidate checks, review disposition, and required acceptance evidence recorded |
 
 ## Limits and known risks
 
-- No S4-D real model result, paid session, independent verification, Product
-  Owner UAT, deployment or isolation certification is claimed.
+- No S4-D real model result, paid session, Product Owner UAT, deployment or
+  isolation certification is claimed. Scoped independent verification passed;
+  no independent S4-A/B/C reruns or live model acceptance are claimed.
 - TRUSTED_LOCAL retains broad host access. SEC-01 isolation remains blocked and
   unverified; this work does not change that boundary.
 - SQLite transient lock contention remains open in the reliability register.
 - One WorkUnit does not provide parallel/dependency-aware execution. A
   delegation/session ceiling does not establish provider billing or quota.
-- Exact-candidate checks, independent review, live authorization and PR remain
-  outstanding.
+- Final docs-inclusive exact-SHA checks, live authorization and PR remain
+  outstanding. Scoped review found no P1 blocker; it is not a real-model or
+  independently rerun S4-A/B/C certification.

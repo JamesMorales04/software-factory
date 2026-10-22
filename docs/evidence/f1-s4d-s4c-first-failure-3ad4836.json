@@ -1,0 +1,17 @@
+{
+  "implementationSha": "3ad483631300f5041779fc039c8ba2c61b0665d1",
+  "checks": [
+    {
+      "name": "C17 Office journey; register Project A, Action, spec, Campaign",
+      "pass": false
+    },
+    {
+      "name": "C17 journey identifiers",
+      "pass": false
+    }
+  ],
+  "failures": [
+    "C17 Office journey; register Project A, Action, spec, Campaign",
+    "C17 journey identifiers"
+  ]
+}

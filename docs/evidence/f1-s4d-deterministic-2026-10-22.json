@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "slice": "F1-S4-D",
+  "recordedAt": "2026-10-22",
+  "codeCandidate": "be592770b77ca81c491e5021913e1d23d5a228b7",
+  "result": "PASS: candidate deterministic checks passed",
+  "candidateStatus": "candidate-bound deterministic checks passed; scoped independent review and verification completed",
+  "checks": [
+    { "name": "go test ./...", "status": "PASS" },
+    { "name": "go vet ./...", "status": "PASS" },
+    { "name": "go test -race ./...", "status": "PASS" },
+    { "name": "gofmt", "status": "PASS" },
+    { "name": "Office typecheck, lint, build", "status": "PASS" },
+    { "name": "architecture consistency", "status": "PASS" },
+    {
+      "name": "scripts/e2e-s4a.sh",
+      "status": "PASS",
+      "artifacts": ["docs/evidence/f1-s4d-s4a-office-browser.json", "docs/evidence/f1-s4d-s4a-run-browser.json"]
+    },
+    {
+      "name": "scripts/e2e-s4b.sh",
+      "status": "PASS",
+      "artifacts": ["docs/evidence/f1-s4d-s4b-browser.json"]
+    },
+    {
+      "name": "scripts/e2e-s4c.sh",
+      "status": "PASS",
+      "checksPassed": 51,
+      "implementationSha": "be592770b77ca81c491e5021913e1d23d5a228b7",
+      "artifact": "docs/evidence/f1-s4d-s4c-regression-pass-be592770.json"
+    }
+  ],
+  "s4cProjectsRegression": {
+    "firstFailure": {
+      "implementationSha": "3ad483631300f5041779fc039c8ba2c61b0665d1",
+      "symptom": "C17 timed out waiting for the Projects heading",
+      "cause": "The API returned browserEndpoints:null for the legacy Default Project; Office called .join() unconditionally.",
+      "artifact": "docs/evidence/f1-s4d-s4c-first-failure-3ad4836.json"
+    },
+    "incompleteFocusedAttempt": {
+      "cause": "Ad hoc Worker omitted browser harness environment; browser capability was unavailable.",
+      "artifact": "docs/evidence/f1-s4d-s4c-focused-incomplete-worker-env.json"
+    },
+    "fix": "Office Project type permits null browserEndpoints and renders it safely.",
+    "fixedCandidateResult": "The full S4-C deterministic suite passed on be592; no product failure remained."
+  },
+  "independentReview": {
+    "candidate": "be592770b77ca81c491e5021913e1d23d5a228b7",
+    "status": "completed",
+    "result": "No P1 blocker reported.",
+    "scopeLimit": "This does not assert independent reruns of the S4-A, S4-B or S4-C end-to-end suites, nor live/model acceptance."
+  },
+  "independentVerification": {
+    "candidate": "be592770b77ca81c491e5021913e1d23d5a228b7",
+    "status": "PASS",
+    "checks": [
+      "Targeted Go tests, vet and race checks",
+      "10 race-enabled grant reservation attempts",
+      "API no-spec guard",
+      "Office typecheck, lint and build",
+      "Chromium legacy null-browserEndpoints fixture"
+    ],
+    "scopeLimit": "The verifier did not independently run S4-A, S4-B or S4-C end-to-end suites and did not produce a real model result."
+  },
+  "scope": {
+    "capabilities": {
+      "CAP-013": "Bounded Lead intake, projection and owner-controlled Campaign start",
+      "CAP-014": "Schema/context fixture checks pass as partial evidence; full deterministic acceptance is blocked because model-versus-baseline semantic comparison is unscored",
+      "CAP-015": "Immutable Project-bound one-WorkUnit plan and ActionSpec/Campaign linkage",
+      "CAP-016": "Single-WorkUnit schema validation is partial evidence only; full dependency-aware WorkGraph acceptance is blocked and parallel execution is not implemented",
+      "CAP-017": "Explicit one-request grant and deterministic scope/session ceiling enforcement",
+      "CAP-043": "Bounded deterministic authorization/planning subset only; approved product objective remains in progress"
+    },
+    "limitations": [
+      "CAP-014's original deterministic acceptance still requires a scored model-versus-baseline semantic comparison; schema/context fixture checks are partial evidence only.",
+      "CAP-016's original dependency-aware WorkGraph deterministic acceptance is not met by the supported one-unit form; partial validation fixtures are not certification.",
+      "No real model result or real Paseo session.",
+      "No paid/live session, Product Owner UAT, deployment, or isolation certification.",
+      "The verifier did not independently rerun S4-A/B/C end-to-end suites or produce a real model result.",
+      "TRUSTED_LOCAL remains broad host access; SEC-01 isolation is blocked.",
+      "Provider spend/quota is not established by session ceilings; SQLite lock contention remains open."
+    ]
+  },
+  "evidenceArtifacts": [
+    "docs/evidence/f1-s4d-s4a-office-browser.json",
+    "docs/evidence/f1-s4d-s4a-run-browser.json",
+    "docs/evidence/f1-s4d-s4b-browser.json",
+    "docs/evidence/f1-s4d-s4c-first-failure-3ad4836.json",
+    "docs/evidence/f1-s4d-s4c-focused-incomplete-worker-env.json",
+    "docs/evidence/f1-s4d-s4c-regression-pass-be592770.json"
+  ]
+}

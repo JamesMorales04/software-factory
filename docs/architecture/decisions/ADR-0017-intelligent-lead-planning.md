@@ -12,12 +12,14 @@ verification/review and a deterministic Quality Gate. A planning step must
 connect an owner request to that path without allowing model output to create
 authority or a second execution lifecycle.
 
-The current uncommitted implementation adds domain validation for a typed
-Lead proposal, a structured advisory assessment, durable request/grant records
-and a route through the existing ActionSpec and Campaign machinery. The Office
-renders the Core projection and exposes an explicit authenticated start action
-after the plan/spec are visible for owner review. Implementation presence is
-not acceptance evidence or Product Owner approval to use paid model sessions.
+Code candidate `be592770b77ca81c491e5021913e1d23d5a228b7` adds domain
+validation for a typed Lead proposal, a structured advisory assessment,
+durable request/grant records and a route through the existing ActionSpec and
+Campaign machinery. The Office renders the Core projection and exposes an
+explicit authenticated start action after the plan/spec are visible for owner
+review. Candidate deterministic checks pass. Independent review of clean
+`be592` reported no P1 blocker; Product Owner approval to use paid model
+sessions remains outstanding.
 
 ## Decision drivers
 
@@ -101,7 +103,8 @@ The live S4-D runner separately requires `FACTORY_S4D_LIVE=1` and
 also requires the owner authorization envelope and an exact clean frozen
 Factory SHA. These code-level gates do not supply Product Owner authorization
 by themselves. No live or paid run is authorized by this ADR. Independent
-review of these controls and the current candidate remains pending.
+review of clean `be592` reported no P1 blocker; this does not authorize paid
+use or replace Product Owner approval.
 
 ## Consequences and limitations
 
@@ -117,24 +120,27 @@ review of these controls and the current candidate remains pending.
   control-plane scope do not establish OS isolation or credential confinement.
 - An interrupted `assessing` request is blocked on Core restart because the
   external session outcome may be ambiguous; it is not automatically retried.
-- Intake performs assessment synchronously in the HTTP request. The current
-  uncommitted tree sets Core `WriteTimeout` to 300 seconds and the live runner's
+- Intake performs assessment synchronously in the HTTP request. Code candidate
+  `be592` sets Core `WriteTimeout` to 300 seconds and the live runner's
   Lead POST timeout to 360 seconds. This leaves response headroom beyond the
-  bounded assessment/session work; both changes still need exact-candidate
-  verification. Retries must use the same idempotency key.
+  bounded assessment/session work; the final docs-inclusive checkout still
+  needs verification. Retries must use the same idempotency key.
 - Revocation, expiry and project/spec drift prevent plan freeze or Campaign
   progress. The exact owner policy for work already in flight remains open.
 - No live or paid model session was run as part of this ADR or contract work.
 
 ## Verification required before acceptance
 
-The proposed S4-D contract's deterministic negative cases, API/state lifecycle,
-restart handling, idempotency and real authorized user journey must be exercised
-on one frozen candidate. Semantic assessment quality must be compared with a
-reasonable deterministic baseline on representative requests, including
-ambiguous effort estimates. Independent verification and Product Owner UAT are
-separate evidence. A green deterministic suite alone does not authorize paid
-use or certify a live workflow.
+The S4-D code candidate's deterministic negative cases, API/state lifecycle,
+restart handling, idempotency and S1–S4-C regression suites pass at
+`be592770b77ca81c491e5021913e1d23d5a228b7`. The docs-inclusive candidate still
+requires independent review and verification. Semantic assessment quality
+must be compared with a reasonable deterministic baseline on representative
+requests, including ambiguous effort estimates. The scoped independent
+review/verifier checks on `be592` passed; the verifier did not rerun S4-A/B/C
+end-to-end or produce a real model result. Product Owner UAT and live
+authorization are separate evidence. A green deterministic suite alone does
+not authorize paid use or certify a live workflow.
 
 ## Supersession
 

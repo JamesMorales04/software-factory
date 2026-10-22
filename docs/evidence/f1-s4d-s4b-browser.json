@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "campaignId": "688d7b3fcddb15750b3da662c85f95d6",
+  "actionId": "c6c3974bec61cc84f282486b395309fd",
+  "specId": "683bb23f92be56234e9f244c0825601d",
+  "candidateId": "57187cbaa054d6a429518ec0197b860d",
+  "candidateSha": "4cee00a7160a74de5290036081f2e401918eca5c",
+  "verifier": "verifier-688d7b3f-0",
+  "reviewer": "reviewer-688d7b3f-0",
+  "decision": "ACCEPTED",
+  "taskCount": 4,
+  "accepted": true,
+  "checks": [
+    {
+      "name": "browser created and started a campaign",
+      "pass": true,
+      "detail": "688d7b3fcddb15750b3da662c85f95d6"
+    },
+    {
+      "name": "campaign reaches ACCEPTED from the browser journey",
+      "pass": true,
+      "detail": "accepted"
+    },
+    {
+      "name": "campaign is bound to the authorized Action and frozen spec",
+      "pass": true
+    },
+    {
+      "name": "all four native role tasks completed",
+      "pass": true,
+      "detail": "[[\"implementer-0\",\"succeeded\"],[\"verifier-0\",\"succeeded\"],[\"reviewer-0\",\"succeeded\"],[\"gate-0\",\"succeeded\"]]"
+    },
+    {
+      "name": "browser shows distinct Factory-assigned participant identities",
+      "pass": true
+    },
+    {
+      "name": "Quality Gate accepted the exact frozen candidate",
+      "pass": true
+    },
+    {
+      "name": "browser renders the candidate SHA and ACCEPTED gate",
+      "pass": true
+    },
+    {
+      "name": "browser renders independent verifier/reviewer actors",
+      "pass": true,
+      "detail": "verifier verifier-688d7b3f-0 · reviewer reviewer-688d7b3f-0:APPROVE"
+    },
+    {
+      "name": "browser renders the real task graph row",
+      "pass": true,
+      "detail": "implementer-0\timplementer\t0\tsucceeded\t— da7b9d6d\t57187cba\t4cee00a7160a74de5290036081f2e401918eca5c"
+    },
+    {
+      "name": "campaign state survives reload without invention",
+      "pass": true
+    },
+    {
+      "name": "browser journey produced no console errors",
+      "pass": true
+    }
+  ],
+  "consoleErrors": [],
+  "finishedAt": "2026-10-22T15:33:13.086Z"
+}

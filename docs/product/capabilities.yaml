@@ -273,7 +273,7 @@ capabilities:
   decision_status: approved
   implementation_status: implemented
   verification:
-    deterministic: verified
+    deterministic: blocked
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -771,7 +771,7 @@ capabilities:
   decision_status: proposed
   implementation_status: implemented
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -796,15 +796,16 @@ capabilities:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Verified scope is the bounded S4-D one-request planning path and its deterministic contract; no semantic quality or real model outcome is established.
   blockers:
-  - Targeted implementation tests are reported passing, but consolidated candidate-bound deterministic verification is pending.
-  - No paid/live model session is authorized; live assessment and independent acceptance remain blocked.
+  - No paid/live model session is authorized; live assessment, Product Owner UAT and independent acceptance remain blocked.
 - id: CAP-014
   name: Intent and semantic assessment
   category: Planning
@@ -813,7 +814,7 @@ capabilities:
   decision_status: proposed
   implementation_status: implemented
   verification:
-    deterministic: not_tested
+    deterministic: blocked
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -840,15 +841,16 @@ capabilities:
       than the deterministic baseline while Core retains authority; reuse sufficient agent context rather than requiring
       a separate long-running session for each small judgment.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Deterministic schema, context and bounded judgment fixture checks pass, but they do not satisfy the full acceptance criterion without a scored model-versus-baseline semantic comparison.
   blockers:
-  - Consolidated candidate-bound deterministic verification is pending.
-  - Semantic quality versus a deterministic baseline is not scored; no paid/live model session is authorized.
+  - Semantic quality versus a deterministic baseline is not scored; no paid/live model session is authorized and independent acceptance remains blocked.
 - id: CAP-015
   name: Frozen executable planning
   category: Planning
@@ -857,7 +859,7 @@ capabilities:
   decision_status: proposed
   implementation_status: implemented
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -886,14 +888,16 @@ capabilities:
     real: Exercise frozen executable planning in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Verified scope is immutable Project-bound one-WorkUnit planning and ActionSpec/Campaign linkage; no live model plan was produced.
   blockers:
-  - Targeted implementation tests are reported passing, but consolidated candidate-bound deterministic verification is pending; no paid/live model session is authorized.
+  - No paid/live model session is authorized; Product Owner approval and independent acceptance remain pending.
 - id: CAP-016
   name: Dependency-aware WorkGraph
   category: Planning
@@ -902,7 +906,7 @@ capabilities:
   decision_status: proposed
   implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: blocked
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -926,7 +930,8 @@ capabilities:
     real: Exercise dependency-aware workgraph in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
@@ -934,7 +939,7 @@ capabilities:
   limitations:
   - Current S4-D graph accepts exactly one implementation WorkUnit; parallel dependency-aware planning is not implemented.
   blockers:
-  - Targeted implementation tests are reported passing, but consolidated candidate-bound deterministic verification is pending; no paid/live model session is authorized.
+  - No paid/live model session is authorized; independent acceptance remains pending.
 - id: CAP-017
   name: Standing delegation contract
   category: Authority
@@ -943,7 +948,7 @@ capabilities:
   decision_status: proposed
   implementation_status: implemented
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -970,14 +975,16 @@ capabilities:
     deterministic: Reject a second distinct request under one grant, expired/revoked grants, scope expansion, and assessment plus Implementer sessions above the explicit ceiling on an exact candidate.
     real: Exercise one owner-authorized request under a single-use delegation and independently verify the outcome; paid use requires separate owner authorization.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Verified scope is the explicit bounded one-request grant contract; the ADR remains proposed and does not establish Product Owner authorization or paid-use approval.
   blockers:
-  - Targeted implementation tests are reported passing, but consolidated candidate-bound deterministic verification is pending.
+  - Product Owner decision, paid/live authorization, UAT and independent acceptance remain pending.
   - Issuer identity, accepted risk classes, paid-use accounting and in-flight revocation policy remain proposed; no paid/live model session is authorized.
 - id: CAP-018
   name: Agent Composer
@@ -1857,7 +1864,7 @@ capabilities:
   decision_status: approved
   implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: blocked
     uat: not_tested
     deployment: not_tested
@@ -1882,15 +1889,16 @@ capabilities:
     real: An owner-authorized objective completes the shared Action/Campaign pipeline with independent acceptance;
       maintenance additionally survives restart and verifies intervention outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Approved product objective; future implementation design and protected permissions require separate decisions.
+  - Verification covers only the bounded S4-D authorization and planning subset. Product development is not end-to-end complete; maintenance, broader autonomous operations, and live acceptance remain unimplemented or unverified.
   blockers:
-  - Autonomous product development is incomplete; S4-D has no candidate-bound deterministic verification or authorized live journey.
+  - No authorized live journey, independent acceptance or Product Owner UAT; the broader approved objective remains in progress.
 - id: CAP-044
   name: Autonomous product maintenance and evolution
   category: Product mode

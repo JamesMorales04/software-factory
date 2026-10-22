@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "acceptedRun": "4633b6a790a7caea5feca27224f3c93d",
+  "acceptedCandidate": "922707a68d1c6eea85f5d4bf58ed0b79",
+  "acceptedSha": "eff07c2148b44eba6809deb5e41b1805d84d1648",
+  "rejectedRun": "75b8021fc211be53b80c6d23ca6de623",
+  "rejectedCandidate": "9736c358770428e19d6e50f2e53ddcc4",
+  "rejectedSha": "2c071fb55599d72112542e7db0339353a049ad2a",
+  "acceptedGate": "ACCEPTED Core-owned · core-quality-gate · 22/10/2026, 10:33:42 a.m. Gate checks (12)",
+  "rejectedGate": "REPAIR_REQUIRED Core-owned · core-quality-gate · 22/10/2026, 10:33:38 a.m. failing check: browser Gate checks (12)",
+  "checks": [
+    {
+      "name": "accepted run renders the exact frozen candidate SHA",
+      "pass": true,
+      "detail": "eff07c2148b44eba6809deb5e41b1805d84d1648"
+    },
+    {
+      "name": "accepted candidate shows ACCEPTED from the Core gate",
+      "pass": true,
+      "detail": "ACCEPTED Core-owned · core-quality-gate · 22/10/2026, 10:33:42 a.m.\n\nGate checks (12)"
+    },
+    {
+      "name": "independent verifier browser check is PASS",
+      "pass": true,
+      "detail": "browser browser\tPASS\t0\tchromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true"
+    },
+    {
+      "name": "independent functional check is PASS",
+      "pass": true,
+      "detail": "functional functional\tPASS\t0\texit 0 as expected"
+    },
+    {
+      "name": "independent reviewer verdict is APPROVE",
+      "pass": true,
+      "detail": "APPROVE"
+    },
+    {
+      "name": "frozen spec identity and policy are visible",
+      "pass": true,
+      "detail": "Spec\n551f595f53de65b74e5e494ee528cff1\nContent hash\n77c7480ac6da10d1b09b1c7719a5c4384760c756ee3c27d611ca575c772a98a8\nPolicy\nquality-baseline-s4a-v1\nGoal\nAppend a correct multiply(a,b) export to add.js "
+    },
+    {
+      "name": "candidate state survives browser reload without invention",
+      "pass": true,
+      "detail": "eff07c2148b44eba6809deb5e41b1805d84d1648"
+    },
+    {
+      "name": "Quality Gate decision survives browser reload",
+      "pass": true,
+      "detail": "ACCEPTED Core-owned · core-quality-gate · 22/10/2026, 10:33:42 a.m.\n\nGate checks (12)"
+    },
+    {
+      "name": "rejected run renders its own candidate SHA",
+      "pass": true,
+      "detail": "2c071fb55599d72112542e7db0339353a049ad2a"
+    },
+    {
+      "name": "rejected candidate has a different identity from accepted",
+      "pass": true
+    },
+    {
+      "name": "rejected candidate shows REPAIR_REQUIRED",
+      "pass": true,
+      "detail": "REPAIR_REQUIRED Core-owned · core-quality-gate · 22/10/2026, 10:33:38 a.m.\n\nfailing check: browser\nGate checks (12)"
+    },
+    {
+      "name": "browser regression is visible as FAIL",
+      "pass": true,
+      "detail": "browser browser\tFAIL\t1\texit 1, expected 0; browser check completed (no structured metadata retained)"
+    },
+    {
+      "name": "reviewer APPROVE did not override a failing mandatory check",
+      "pass": true,
+      "detail": "APPROVE"
+    },
+    {
+      "name": "UI accepted state matches Core decision",
+      "pass": true
+    },
+    {
+      "name": "UI rejected state matches Core decision",
+      "pass": true
+    },
+    {
+      "name": "browser journey produced no console errors",
+      "pass": true
+    }
+  ],
+  "consoleErrors": [],
+  "finishedAt": "2026-10-22T15:34:00.438Z"
+}
