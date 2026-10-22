@@ -257,9 +257,28 @@ def cleanup_operator(sessions: list[dict], workspaces: list[str],
 
 
 def main() -> int:
-    if os.environ.get("FACTORY_S4C_LIVE") != "1":
+    live = os.environ.get("FACTORY_S4C_LIVE", "0")
+    if live not in {"0", "1"}:
+        print("[BLOCKED] FACTORY_S4C_LIVE must be 0 or 1", file=sys.stderr)
+        return 2
+    if live != "1":
         print("Set FACTORY_S4C_LIVE=1 to authorize the single bounded C-07 Vlog campaign.")
         return 0
+    authorization = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "live-e2e-authorization.py"),
+            "--campaign", "F1-S4-C-07",
+            "--project", PROJECT_ID,
+            "--max-sessions", str(MAX_ATTEMPTS),
+            "--route", f"{PROVIDER}/{MODEL}",
+            "--requested-route", f"{PROVIDER}/{MODEL}",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if authorization.returncode != 0:
+        return authorization.returncode
 
     tmp = Path(tempfile.mkdtemp(prefix="factory-s4c07-live-"))
     port = int(os.environ.get("FACTORY_S4C07_PORT", "8497"))

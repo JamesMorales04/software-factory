@@ -5,7 +5,12 @@
 # TRUSTED_LOCAL only; never isolated or certified. No retry loop.
 set -euo pipefail
 
-if [[ "${FACTORY_S4B_LIVE:-0}" != "1" ]]; then
+LIVE="${FACTORY_S4B_LIVE:-0}"
+if [[ "$LIVE" != "0" && "$LIVE" != "1" ]]; then
+  echo "[BLOCKED] FACTORY_S4B_LIVE must be 0 or 1"
+  exit 2
+fi
+if [[ "$LIVE" != "1" ]]; then
   echo "Set FACTORY_S4B_LIVE=1 to authorize one real Paseo session (paid)."
   exit 0
 fi
@@ -20,7 +25,11 @@ PORT="${FACTORY_S4B_LIVE_PORT:-8496}"
 BASE="http://127.0.0.1:${PORT}"
 PROVIDER="${S4B_LIVE_PROVIDER:-opencode}"
 MODEL="${S4B_LIVE_MODEL:-opencode-go/deepseek-v4.1-flash}"
-PASEO_MODE="${S4B_LIVE_MODE:-build}"
+PASEO_MODE="build"
+python3 "$ROOT/scripts/live-e2e-authorization.py" \
+  --campaign F1-S4-B --project default --max-sessions 1 \
+  --route opencode/opencode-go/deepseek-v4.1-flash \
+  --requested-route "$PROVIDER/$MODEL"
 CHROMIUM_EXE="${CHROMIUM_EXE:-$HOME/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome}"
 PLAYWRIGHT_CORE="${FACTORY_PLAYWRIGHT_CORE:-$ROOT/office/e2e-browser/node_modules/playwright-core}"
 CORE_PID=""
