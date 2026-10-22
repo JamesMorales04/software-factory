@@ -9,3 +9,11 @@ A regression runner invoked `bash scripts/e2e-s3b.sh` without `FACTORY_S3B_LIVE=
 - Later S3-B regression was rerun with `FACTORY_S3B_LIVE=0` and passed the deterministic lane. No further paid tests are authorized by this deviation.
 
 The script default is tracked as [REL-005](../quality/reliability-debt.md). The first live session is not tied to GOV-01's certification manifest, frozen GOV-01 ActionSpec, independent verifier or Quality Gate and must not be counted toward GOV-01 acceptance.
+
+## Read-only reconciliation on 2026-10-21 (America/Bogota)
+
+The persisted SQLite database at `/tmp/factory-s3b-81g1HH/factory.db` was opened read-only with `PRAGMA query_only=ON`. Run `20cb71cbfc660a116953d90b3dc25a1f` still reports `running` with one Attempt. Its Paseo binding remains `intended`, with no workspace or session ID; the final recorded event is `PaseoSessionIntended` at `2026-10-22T00:04:24.983Z`.
+
+Read-only `paseo ls -g -a --json` and `paseo inspect` found external session `1df6d6b7-db9e-40b9-bce4-2dac6ac5f84a`, titled `factory-s3d:20cb71cbfc660a116953d90b3dc25a1f:g1`. Paseo reports it **closed and archived** at `2026-10-22T00:04:46.065Z`, with `LastUsage: null`. No active external resource for that Run was found. This later observation resolves the orphaned external-session concern; it does not establish whether a provider charge occurred. Factory's persisted Run and binding remain unreconciled.
+
+No cleanup, state mutation, new session or retroactive authorization was performed. An operator still needs to inspect provider billing, decide how to reconcile the stale Factory Run through an authorized procedure, and acknowledge the campaign authorization deviation. This record is incident evidence, not GOV-01 certification.
