@@ -262,7 +262,7 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
                 errors.append("session binding is not terminal-success")
         recorded_budget = source.get("authorization", {}).get("max_paid_implementer_sessions")
         spent = source.get("paid_sessions_spent")
-        if isinstance(recorded_budget, int) and isinstance(spent, int) and spent > recorded_budget:
+        if type(recorded_budget) is int and type(spent) is int and spent > recorded_budget:
             errors.append("recorded session use exceeds source campaign authorization")
         if source.get("provider") and source.get("provider") != manifest.get("provider"):
             errors.append("manifest provider differs from the source campaign route")
@@ -280,11 +280,11 @@ def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None =
                     errors.append("authorized provider/model route does not match manifest")
                 if route.get("provider") != source.get("provider") or route.get("model") != source.get("model"):
                     errors.append("authorized route does not match source campaign route")
-                if not isinstance(recorded_budget, int) or recorded_budget <= 0:
+                if type(recorded_budget) is not int or recorded_budget <= 0:
                     errors.append("source campaign authorization has no positive session budget")
                 elif authorization.get("max_sessions", 0) > recorded_budget:
                     errors.append("manifest authorized budget exceeds source campaign authorization")
-                if not isinstance(spent, int) or spent < 0:
+                if type(spent) is not int or spent < 0:
                     errors.append("source campaign does not record session spend")
                 elif spent > authorization.get("max_sessions", 0):
                     errors.append("recorded session use exceeds manifest authorized budget")

@@ -97,6 +97,21 @@ class CertificationManifestTests(unittest.TestCase):
         missing_source_budget["authorization"].pop("max_paid_implementer_sessions")
         self.assertTrue(self.validate_manifest(manifest, missing_source_budget))
 
+    def test_v2_source_budget_and_spend_reject_booleans_and_malformed_values(self):
+        manifest, source = self._non_browser_campaign()
+        bool_budget = copy.deepcopy(source)
+        bool_budget["authorization"]["max_paid_implementer_sessions"] = True
+        self.assertTrue(self.validate_manifest(manifest, bool_budget))
+        bool_spend = copy.deepcopy(source)
+        bool_spend["paid_sessions_spent"] = True
+        self.assertTrue(self.validate_manifest(manifest, bool_spend))
+        negative_spend = copy.deepcopy(source)
+        negative_spend["paid_sessions_spent"] = -1
+        self.assertTrue(self.validate_manifest(manifest, negative_spend))
+        malformed_budget = copy.deepcopy(source)
+        malformed_budget["authorization"]["max_paid_implementer_sessions"] = "2"
+        self.assertTrue(self.validate_manifest(manifest, malformed_budget))
+
     def test_browser_campaign_missing_required_interaction_is_rejected(self):
         source = copy.deepcopy(self.source)
         source["browser_certification"]["successful_commands"] = ["snapshot"]
