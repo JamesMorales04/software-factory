@@ -23,7 +23,8 @@ delivery authority, or acceptance authority.
 - Product Owner UAT is a separate owner attestation. It does not prove runtime
   security, deployment readiness, or SEC-01 isolation.
 - The manifest validator checks repository-recorded structure and identity
-  correlation. It cannot independently corroborate an external model session.
+  correlation. It cannot independently corroborate an external model session
+  or the candidate Git object in an external Project repository.
 - TRUSTED_LOCAL is broad host access. Never describe it as isolated or
   SEC-01-certified.
 

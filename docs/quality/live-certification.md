@@ -42,6 +42,13 @@ not a hidden retry: each Run, failure class, recovery authorization and new
 candidate is recorded. Additional paid sessions beyond the approved budget
 require explicit Product Owner approval.
 
+The repository manifest validator checks identity consistency against the
+recorded C-07 evidence and confirms the Factory implementation commit is
+available in this repository. It cannot independently retrieve the external
+fixture candidate Git object in a generic CI checkout, or prove an external
+model session from JSON. Those observations require the clean-checkout
+verifier and retained external runtime receipts; report that limit explicitly.
+
 ### PRODUCT_OWNER_UAT_VERIFIED
 
 The Product Owner personally exercised the intended workflow and accepted the

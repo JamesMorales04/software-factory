@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,21 @@ class CertificationManifestTests(unittest.TestCase):
         changed = copy.deepcopy(self.manifest)
         changed["invalidated_by"] = "runtime change after tested head"
         self.assertIn("verified status contradicts invalidated_by", self.validate_manifest(changed))
+
+    def test_optional_candidate_repository_checks_commit_and_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_repo = Path(directory)
+            subprocess.run(["git", "init", "-q", str(candidate_repo)], check=True)
+            subprocess.run(["git", "-C", str(candidate_repo), "config", "user.name", "Certification Test"], check=True)
+            subprocess.run(["git", "-C", str(candidate_repo), "config", "user.email", "certification@example.invalid"], check=True)
+            (candidate_repo / "fixture.txt").write_text("candidate\n")
+            subprocess.run(["git", "-C", str(candidate_repo), "add", "fixture.txt"], check=True)
+            subprocess.run(["git", "-C", str(candidate_repo), "commit", "-qm", "candidate"], check=True)
+            commit = subprocess.run(["git", "-C", str(candidate_repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(candidate_repo), "rev-parse", "HEAD^{tree}"], check=True, capture_output=True, text=True).stdout.strip()
+            self.assertEqual([], validator.validate_candidate_git(candidate_repo, commit, tree))
+            self.assertTrue(validator.validate_candidate_git(candidate_repo, commit, "0" * 40))
+            self.assertTrue(validator.validate_candidate_git(candidate_repo, "1" * 40, tree))
 
 
 if __name__ == "__main__":

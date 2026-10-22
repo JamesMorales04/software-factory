@@ -88,7 +88,31 @@ def _is_type(value: Any, typ: type[Any] | None) -> bool:
     return isinstance(value, typ)
 
 
-def validate(manifest_path: Path, repo_root: Path) -> list[str]:
+def validate_candidate_git(candidate_repo: Path, candidate_sha: str, expected_tree_sha: str) -> list[str]:
+    """Check an external Project candidate commit and its tree when available."""
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=candidate_repo, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", f"{candidate_sha}^{{commit}}"], cwd=top, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        tree = subprocess.run(
+            ["git", "rev-parse", f"{candidate_sha}^{{tree}}"], cwd=top, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return [f"candidate commit is unavailable in candidate repository: {exc}"]
+    if commit != candidate_sha:
+        return ["candidate repository resolved a different commit SHA"]
+    if tree != expected_tree_sha:
+        return ["candidate commit tree does not match source evidence treeSha"]
+    return []
+
+
+def validate(manifest_path: Path, repo_root: Path, candidate_repo: Path | None = None) -> list[str]:
     errors: list[str] = []
     schema_path = repo_root / "docs/quality/certification-manifests.schema.json"
     schema = _load(schema_path, errors, "certification schema")
@@ -96,9 +120,15 @@ def validate(manifest_path: Path, repo_root: Path) -> list[str]:
     if errors:
         return errors
     errors.extend(_schema_errors(manifest, schema))
+    if errors:
+        return errors
 
     if manifest.get("status") == "verified" and manifest.get("invalidated_by"):
         errors.append("verified status contradicts invalidated_by")
+    if manifest.get("level") != LIVE_LEVEL:
+        errors.append(f"this validator accepts only {LIVE_LEVEL} manifests")
+    if manifest.get("status") != "verified":
+        errors.append("this validator accepts only verified live certification manifests")
     if manifest.get("level") != LIVE_LEVEL or manifest.get("status") != "verified":
         return errors
 
@@ -158,6 +188,8 @@ def validate(manifest_path: Path, repo_root: Path) -> list[str]:
         errors.append("candidate is not frozen")
     if candidate.get("supersededAt") != "0001-01-01T00:00:00Z":
         errors.append("candidate is superseded")
+    if candidate_repo is not None:
+        errors.extend(validate_candidate_git(candidate_repo, manifest.get("candidate_sha", ""), candidate.get("treeSha", "")))
 
     runs = source.get("runs", [])
     matched_run = next((entry for entry in runs if entry.get("run", {}).get("id") == manifest.get("run_id")), None)
@@ -199,11 +231,15 @@ def validate(manifest_path: Path, repo_root: Path) -> list[str]:
 
     evidence = source.get("candidate_evidence", {}).get(manifest.get("candidate_id"), {})
     verification = next((v for v in evidence.get("verifications", []) if v.get("id") == manifest.get("verifier", {}).get("id")), None)
+    if manifest.get("verifier", {}).get("independent") is not True or manifest.get("verifier", {}).get("status") != "passed":
+        errors.append("manifest falsely claims independent verifier success")
     if not verification or verification.get("status") != "passed" or not verification.get("independent"):
         errors.append("independent verifier evidence is missing, failed, or mismatched")
     elif verification.get("candidateSha") != manifest.get("candidate_sha") or verification.get("specId") != manifest.get("spec_id"):
         errors.append("verifier is not bound to the manifest candidate/spec")
     review = next((r for r in evidence.get("reviews", []) if r.get("id") == manifest.get("reviewer", {}).get("id")), None)
+    if manifest.get("reviewer", {}).get("verdict") != "APPROVE":
+        errors.append("manifest reviewer verdict is not APPROVE")
     if not review or review.get("verdict") != "APPROVE":
         errors.append("independent reviewer approval is missing, failed, or mismatched")
     elif review.get("candidateSha") != manifest.get("candidate_sha") or review.get("specId") != manifest.get("spec_id"):
@@ -242,18 +278,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", nargs="?", default="docs/evidence/f1-s4c-07-certification-manifest.json")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--candidate-repo", type=Path, help="optional checkout of the Project repository containing the frozen candidate")
     args = parser.parse_args()
     root = args.root.resolve()
     path = Path(args.manifest)
     if not path.is_absolute():
         path = root / path
-    errors = validate(path, root)
+    errors = validate(path, root, args.candidate_repo)
     if errors:
         print("INVALID certification manifest:")
         for error in errors:
             print(f"- {error}")
         return 1
-    print("STRUCTURALLY_VALID repository certification evidence; external runtime observations remain uncorroborated")
+    candidate_note = (
+        "candidate commit and tree checked in supplied Project repository"
+        if args.candidate_repo
+        else "candidate Git object not corroborated (supply --candidate-repo PATH)"
+    )
+    print(f"STRUCTURALLY_VALID repository certification evidence; {candidate_note}; external runtime observations remain uncorroborated")
     return 0
 
 

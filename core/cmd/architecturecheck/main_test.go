@@ -20,7 +20,10 @@ func validFixture(t *testing.T) (string, registry) {
 		}
 		content := []byte("fixture")
 		if path == "docs/evidence/live.json" {
-			content = []byte(`{"candidate_sha":"0123456789abcdef0123456789abcdef01234567"}`)
+			content = []byte(`{"evidence_level":"PRODUCT_OWNER_UAT_VERIFIED","status":"VERIFIED"}`)
+		}
+		if path == "docs/evidence/unit.json" {
+			content = []byte(`{"checks":[{"pass":true}]}`)
 		}
 		if path == "docs/evidence/f1-certification-manifest.json" {
 			content = []byte(`{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}`)
@@ -35,6 +38,61 @@ func validFixture(t *testing.T) (string, registry) {
 		Capabilities:  []capability{{ID: "CAP-001", Name: "Feature", Category: "runtime", Purpose: "Do work", ProductObjective: "Objective", DecisionStatus: "approved", Implementation: "implemented", Verification: verification{Deterministic: "verified", LiveAgent: "verified", UAT: "accepted", Deployment: "not_tested", Isolation: "not_tested"}, Owner: "Core", TargetMilestone: "F1-S1", Refs: references{ADR: []string{"docs/architecture/ADR-0001.md"}, Contract: []string{"docs/contracts/contract.md"}, Source: []string{"src/feature.go"}, Test: []string{"tests/feature_test.go"}}, Acceptance: acceptance{Deterministic: "Test it", Real: "Run it"}, Evidence: evidence{Deterministic: []string{"docs/evidence/unit.json"}, LiveAgent: []string{"docs/evidence/f1-certification-manifest.json"}, UAT: []string{"docs/evidence/live.json"}}}},
 	}
 	return root, data
+}
+
+func TestCheckRefRejectsPathsOutsideRepository(t *testing.T) {
+	root, _ := validFixture(t)
+	outside := filepath.Join(filepath.Dir(root), "architecturecheck-outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, ref, want string }{
+		{"parent traversal", "../outside.txt", "forbidden parent traversal"},
+		{"internal parent traversal", "docs/evidence/../contracts/contract.md", "forbidden parent traversal"},
+		{"absolute path", outside, "absolute"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := checkRef(root, tt.ref); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("want %q rejection, got %v", tt.want, err)
+			}
+		})
+	}
+	link := filepath.Join(root, "docs/evidence/escape.json")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRef(root, "docs/evidence/escape.json"); err == nil || !strings.Contains(err.Error(), "outside repository root") {
+		t.Fatalf("expected symlink escape rejection, got %v", err)
+	}
+}
+
+func TestEvidenceDimensionsRequireTypedPassingRecords(t *testing.T) {
+	root, _ := validFixture(t)
+	tests := []struct{ name, dimension, ref, content, want string }{
+		{"deterministic requires recorded passing result", "deterministic", "docs/evidence/unit.json", `{"checks":[{"pass":false}]}`, "no recorded passing result"},
+		{"UAT requires owner attestation", "uat", "docs/evidence/live.json", `{"evidence_level":"REAL_PASEO_E2E_VERIFIED","status":"verified"}`, "PRODUCT_OWNER_UAT_VERIFIED"},
+		{"deployment requires own level", "deployment", "docs/evidence/live.json", `{"evidence_level":"REAL_PASEO_E2E_VERIFIED","status":"verified"}`, "DEPLOYMENT_VERIFIED"},
+		{"isolation requires own level", "isolation", "docs/evidence/live.json", `{"evidence_level":"DEPLOYMENT_VERIFIED","status":"verified"}`, "SEC_01_ISOLATION_VERIFIED"},
+		{"evidence must live under evidence directory", "deterministic", "docs/architecture/ADR-0001.md", `{"result":"PASS"}`, "under docs/evidence"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(root, tt.ref), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := validateEvidenceDimension(root, tt.dimension, []string{tt.ref})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("want error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs/evidence/live.json"), []byte(`{"evidence_level":"PRODUCT_OWNER_UAT_VERIFIED","status":"VERIFIED"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEvidenceDimension(root, "uat", []string{"docs/evidence/live.json"}); err != nil {
+		t.Fatalf("valid UAT attestation rejected: %v", err)
+	}
 }
 
 func TestAcceptedADRHistoryCannotBeRewritten(t *testing.T) {

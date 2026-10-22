@@ -340,20 +340,30 @@ func validate(root string, data registry) error {
 		}
 		if c.Verification.Deterministic == "verified" && len(c.Evidence.Deterministic) == 0 {
 			problems = append(problems, prefix+"deterministic verified without evidence")
+		} else if c.Verification.Deterministic == "verified" {
+			if err := validateEvidenceDimension(root, "deterministic", c.Evidence.Deterministic); err != nil {
+				problems = append(problems, prefix+err.Error())
+			}
 		}
 		if c.Verification.LiveAgent == "verified" {
 			if err := validateLiveEvidence(root, c.Evidence.LiveAgent); err != nil {
 				problems = append(problems, prefix+err.Error())
 			}
 		}
-		if c.Verification.UAT == "accepted" && len(c.Evidence.UAT) == 0 {
-			problems = append(problems, prefix+"UAT accepted without evidence")
+		if c.Verification.UAT == "accepted" {
+			if err := validateEvidenceDimension(root, "uat", c.Evidence.UAT); err != nil {
+				problems = append(problems, prefix+err.Error())
+			}
 		}
-		if c.Verification.Deployment == "verified" && len(c.Evidence.Deployment) == 0 {
-			problems = append(problems, prefix+"deployment verified without evidence")
+		if c.Verification.Deployment == "verified" {
+			if err := validateEvidenceDimension(root, "deployment", c.Evidence.Deployment); err != nil {
+				problems = append(problems, prefix+err.Error())
+			}
 		}
-		if c.Verification.Isolation == "verified" && len(c.Evidence.Isolation) == 0 {
-			problems = append(problems, prefix+"isolation verified without evidence")
+		if c.Verification.Isolation == "verified" {
+			if err := validateEvidenceDimension(root, "isolation", c.Evidence.Isolation); err != nil {
+				problems = append(problems, prefix+err.Error())
+			}
 		}
 		for _, dimension := range evidenceDimensions(c.Verification, c.Evidence) {
 			if dimension.state == "not_tested" && len(dimension.records) > 0 {
@@ -445,11 +455,100 @@ func checkRef(root, ref string) error {
 	if path == "" {
 		return fmt.Errorf("has empty reference")
 	}
-	info, err := os.Stat(filepath.Join(root, path))
+	if filepath.IsAbs(path) {
+		return fmt.Errorf("reference %q is absolute; repository-relative paths are required", path)
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return fmt.Errorf("reference %q contains forbidden parent traversal", path)
+		}
+	}
+	cleanPath := filepath.Clean(path)
+	if cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("reference %q escapes repository root", path)
+	}
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve repository root: %w", err)
+	}
+	targetReal, err := filepath.EvalSymlinks(filepath.Join(rootReal, cleanPath))
+	if err != nil {
+		return fmt.Errorf("references missing file %q", path)
+	}
+	rel, err := filepath.Rel(rootReal, targetReal)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("reference %q resolves outside repository root", path)
+	}
+	info, err := os.Stat(targetReal)
 	if err != nil || info.IsDir() {
 		return fmt.Errorf("references missing file %q", path)
 	}
 	return nil
+}
+
+func validateEvidenceDimension(root, dimension string, references []string) error {
+	if len(references) == 0 {
+		return fmt.Errorf("%s verified without evidence", dimension)
+	}
+	for _, ref := range references {
+		path := strings.SplitN(ref, "#", 2)[0]
+		if !strings.HasPrefix(path, "docs/evidence/") || !strings.HasSuffix(strings.ToLower(path), ".json") {
+			return fmt.Errorf("%s evidence must reference a JSON file under docs/evidence", dimension)
+		}
+		content, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			return fmt.Errorf("%s evidence %q: %w", dimension, path, err)
+		}
+		var record map[string]any
+		if err := json.Unmarshal(content, &record); err != nil {
+			return fmt.Errorf("%s evidence %q is invalid JSON: %w", dimension, path, err)
+		}
+		switch dimension {
+		case "deterministic":
+			if !hasRecordedPass(record) {
+				return fmt.Errorf("deterministic evidence %q has no recorded passing result", path)
+			}
+		case "uat":
+			if !hasEvidenceLevel(record, "PRODUCT_OWNER_UAT_VERIFIED") {
+				return fmt.Errorf("UAT evidence %q must be a PRODUCT_OWNER_UAT_VERIFIED attestation with verified status", path)
+			}
+		case "deployment":
+			if !hasEvidenceLevel(record, "DEPLOYMENT_VERIFIED") {
+				return fmt.Errorf("deployment evidence %q must have DEPLOYMENT_VERIFIED level and verified status", path)
+			}
+		case "isolation":
+			if !hasEvidenceLevel(record, "SEC_01_ISOLATION_VERIFIED") {
+				return fmt.Errorf("isolation evidence %q must have SEC_01_ISOLATION_VERIFIED level and verified status", path)
+			}
+		}
+	}
+	return nil
+}
+
+func hasEvidenceLevel(record map[string]any, level string) bool {
+	return record["evidence_level"] == level && strings.EqualFold(asString(record["status"]), "verified")
+}
+
+func hasRecordedPass(record map[string]any) bool {
+	if result := strings.ToUpper(asString(record["result"])); strings.HasPrefix(result, "PASS") {
+		return true
+	}
+	checks, ok := record["checks"].([]any)
+	if !ok || len(checks) == 0 {
+		return false
+	}
+	for _, item := range checks {
+		check, ok := item.(map[string]any)
+		if !ok || check["pass"] != true {
+			return false
+		}
+	}
+	return true
+}
+
+func asString(value any) string {
+	str, _ := value.(string)
+	return str
 }
 
 func renderRoadmap(data registry) string {
