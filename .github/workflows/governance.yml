@@ -2,25 +2,9 @@ name: Governance consistency
 
 on:
   pull_request:
-    paths:
-      - "core/cmd/architecturecheck/**"
-      - "scripts/check-architecture-consistency"
-      - "docs/product/capabilities.yaml"
-      - "docs/roadmap/ROADMAP.md"
-      - "docs/architecture/contract-impact.yaml"
-      - "docs/architecture/**"
-      - "docs/contracts/**"
-      - "docs/quality/**"
-      - "docs/implementation/**"
-      - "docs/observability/**"
-      - "docs/*.md"
-      - "README.md"
-      - "scripts/validate-live-certification.py"
-      - "scripts/test_validate_live_certification.py"
-      - "scripts/fixtures/live-certification-invalid-cases.json"
-      - "docs/evidence/**"
-      - "AGENTS.md"
-      - ".github/workflows/governance.yml"
+    # Intentionally has no path filter. The entry gate must run for every PR;
+    # repository-wide governance cannot be protected by a path-filtered job.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   push:
     branches: [main]
 
@@ -31,13 +15,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Assess PR architecture impact
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: python3 .github/scripts/check-pr-architecture-impact.py
+      - name: Install certification validator dependencies
+        run: python3 -m pip install -r scripts/requirements-certification.txt
       - uses: actions/setup-go@v5
         with:
           go-version-file: core/go.mod
           cache-dependency-path: core/go.sum
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+      - name: Test PR impact gate
+        run: python3 .github/scripts/test_check_pr_architecture_impact.py
       - name: Run checker tests
         working-directory: core
         run: go test ./cmd/architecturecheck
