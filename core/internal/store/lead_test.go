@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -132,6 +133,76 @@ func TestCreateLeadActionAtomicallyBindsReservation(t *testing.T) {
 	events, err = db.ListAggregateEvents(domain.AggregateAction, action.ID)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("idempotent replay appended another Action event: events=%+v err=%v", events, err)
+	}
+}
+
+func TestConcurrentLeadRequestsCannotBothConsumeOneDelegation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	project, _, grant := createLeadFixture(t, db)
+	inputs := []NewLeadRequest{
+		{ProjectID: project.ID, Objective: "Concurrent request A", RequestJSON: `{"objective":"Concurrent request A"}`,
+			IdempotencyKey: "concurrent-lead-a", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash},
+		{ProjectID: project.ID, Objective: "Concurrent request B", RequestJSON: `{"objective":"Concurrent request B"}`,
+			IdempotencyKey: "concurrent-lead-b", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash},
+	}
+	type result struct {
+		request  LeadRequest
+		replayed bool
+		err      error
+	}
+	start := make(chan struct{})
+	results := make(chan result, len(inputs))
+	var wg sync.WaitGroup
+	for _, input := range inputs {
+		input := input
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			request, replayed, err := db.CreateLeadRequest(ctx, input)
+			results <- result{request: request, replayed: replayed, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	winners := make([]result, 0, 1)
+	losers := make([]result, 0, 1)
+	for result := range results {
+		if result.err == nil && !result.replayed {
+			winners = append(winners, result)
+		} else {
+			losers = append(losers, result)
+		}
+	}
+	if len(winners) != 1 || len(losers) != 1 || losers[0].err == nil {
+		t.Fatalf("one distinct reservation must win and one fail closed: winners=%+v losers=%+v", winners, losers)
+	}
+	winner := winners[0].request
+	if winner.Status != "submitted" || winner.ActionID != "" {
+		t.Fatalf("winning reservation must remain unassessed and unbound until serialized processing: %+v", winner)
+	}
+	var reserved, assessments int
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM lead_requests WHERE delegation_id=?`, grant.ID).Scan(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM lead_assessments WHERE request_id=?`, winner.ID).Scan(&assessments); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 1 || assessments != 0 {
+		t.Fatalf("delegation reservation allowed duplicate/assessment: reserved=%d assessments=%d", reserved, assessments)
+	}
+	var winnerInput NewLeadRequest
+	for _, input := range inputs {
+		if input.IdempotencyKey == winner.IdempotencyKey {
+			winnerInput = input
+		}
+	}
+	replay, replayed, err := db.CreateLeadRequest(ctx, winnerInput)
+	if err != nil || !replayed || replay.ID != winner.ID {
+		t.Fatalf("same-key retry must replay winning reservation: replay=%+v replayed=%v err=%v", replay, replayed, err)
 	}
 }
 

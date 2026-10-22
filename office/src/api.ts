@@ -30,7 +30,7 @@ export interface Project {
   qualityProfile: string;
   workspaceScope: string;
   capabilities: Capability[];
-  browserEndpoints: string[];
+  browserEndpoints: string[] | null;
   browserTestServer?: BrowserTestServer;
   executionMode: string;
   securityLabel: string;

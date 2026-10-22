@@ -427,6 +427,21 @@ func TestLeadBoundActionCannotCreateOrStartCampaignBeforeLeadLink(t *testing.T) 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("unlinked Lead spec dispatched directly: %d %s", rec.Code, rec.Body.String())
 	}
+	beforeRuns, err := srv.db.ListRuns(domain.RunStatus(""), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = serveRun(t, h, "POST", "/api/v1/runs", fmt.Sprintf(`{"actionId":%q,"projectId":%q,"workloadKind":"paseo-task","executionMode":"trusted-local"}`, action.ID, project.ID), testToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Lead-bound Action dispatched directly without specId: %d %s", rec.Code, rec.Body.String())
+	}
+	afterRuns, err := srv.db.ListRuns(domain.RunStatus(""), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterRuns) != len(beforeRuns) {
+		t.Fatalf("direct Lead Run was persisted: before=%d after=%d", len(beforeRuns), len(afterRuns))
+	}
 }
 
 func TestLeadPersistsBoundedMachineReadableSessionReconciliation(t *testing.T) {

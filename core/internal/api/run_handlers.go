@@ -53,15 +53,17 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			mapDomainError(w, err, s.log, "create run spec")
 			return
 		}
-		if managed, err := s.db.LeadActionManaged(r.Context(), spec.ActionID); err != nil {
+		if err := applySpecToRunRequest(&req, spec); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid", err.Error())
+			return
+		}
+	}
+	if actionID := strings.TrimSpace(req.ActionID); actionID != "" {
+		if managed, err := s.db.LeadActionManaged(r.Context(), actionID); err != nil {
 			mapDomainError(w, err, s.log, "lead action ownership")
 			return
 		} else if managed {
 			writeError(w, http.StatusForbidden, "unauthorized", "Lead-bound Actions execute only through their authorized Campaign")
-			return
-		}
-		if err := applySpecToRunRequest(&req, spec); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid", err.Error())
 			return
 		}
 	}
