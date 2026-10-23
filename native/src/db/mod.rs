@@ -25,6 +25,8 @@ pub enum Error {
     Constraint(String),
     #[error("database is busy; retry the operation")]
     Busy,
+    #[error("delegation validation: {0}")]
+    Delegation(String),
     #[error("invalid project repository: {0}")]
     Repository(String),
     #[error("invalid request: {0}")]
@@ -274,6 +276,12 @@ impl Database {
     }
 }
 
+impl From<crate::lead::LeadError> for Error {
+    fn from(error: crate::lead::LeadError) -> Self {
+        Self::Delegation(error.to_string())
+    }
+}
+
 impl From<sqlx::Error> for Error {
     fn from(error: sqlx::Error) -> Self {
         match &error {
@@ -431,6 +439,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+mod delegations;
 mod lifecycle;
 mod projects;
 mod quality;

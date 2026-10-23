@@ -167,7 +167,7 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
 
 fn api_error(error: Error) -> Response {
     let status = match error {
-        Error::Invalid(_) | Error::Repository(_) => StatusCode::BAD_REQUEST,
+        Error::Invalid(_) | Error::Repository(_) | Error::Delegation(_) => StatusCode::BAD_REQUEST,
         Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
