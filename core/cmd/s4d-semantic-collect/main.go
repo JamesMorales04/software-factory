@@ -49,18 +49,31 @@ func requireAuthorization() (string, error) {
 	if os.Getenv("FACTORY_S4D_SEMANTIC_LIVE") != "1" {
 		return "", fmt.Errorf("FACTORY_S4D_SEMANTIC_LIVE=1 is required")
 	}
+	if os.Getenv("FACTORY_LIVE_MODE") != "1" {
+		return "", fmt.Errorf("FACTORY_LIVE_MODE=1 is required")
+	}
 	if os.Getenv("FACTORY_LIVE_AUTHORIZATION") != "APPROVED" {
 		return "", fmt.Errorf("FACTORY_LIVE_AUTHORIZATION=APPROVED is required")
 	}
+	if os.Getenv("FACTORY_LIVE_AUTH_CAMPAIGN") != "F1-S4-D-SEMANTIC" ||
+		os.Getenv("FACTORY_LIVE_AUTH_PROJECT") != "factory-fixture-s4d-semantic" {
+		return "", fmt.Errorf("owner envelope campaign/project does not match CAP-014")
+	}
+	if os.Getenv("FACTORY_LIVE_AUTH_ROUTES") != routeProvider+"/"+routeModel+"/"+routeMode {
+		return "", fmt.Errorf("owner envelope route does not match the frozen route")
+	}
 	authorizationID := strings.TrimSpace(os.Getenv("FACTORY_S4D_SEMANTIC_AUTHORIZATION_ID"))
-	if authorizationID == "" {
-		return "", fmt.Errorf("FACTORY_S4D_SEMANTIC_AUTHORIZATION_ID is required")
+	if authorizationID != "s4d-semantic-owner-auth-1" {
+		return "", fmt.Errorf("FACTORY_S4D_SEMANTIC_AUTHORIZATION_ID must match the campaign authorization")
 	}
 	if budget := strings.TrimSpace(os.Getenv("FACTORY_LIVE_AUTH_SESSION_BUDGET")); budget != "11" {
 		return "", fmt.Errorf("FACTORY_LIVE_AUTH_SESSION_BUDGET must be 11")
 	}
 	if route := os.Getenv("FACTORY_S4D_SEMANTIC_ROUTE"); route != routeProvider+"/"+routeModel+"/"+routeMode {
 		return "", fmt.Errorf("authorized route must be exactly %s/%s/%s", routeProvider, routeModel, routeMode)
+	}
+	if paseoBin := strings.TrimSpace(os.Getenv("PASEO_BIN")); paseoBin != "" && filepath.Base(paseoBin) != "paseo" {
+		return "", fmt.Errorf("PASEO_BIN must name the installed paseo CLI")
 	}
 	head, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -157,20 +170,31 @@ func main() {
 		started := time.Now()
 		assessment, observation, assessErr := lead.NewPaseoAssessor().Assess(context.Background(), input)
 		entry := manifestEntry{FixtureID: fixture.ID, ElapsedMS: time.Since(started).Milliseconds()}
+		entry.SessionID = observation.SessionID
+		entry.ElapsedMS = observation.Elapsed.Milliseconds()
+		entry.InputBytes, entry.OutputBytes = observation.InputBytes, observation.OutputBytes
+		if len(observation.RawOutput) > 0 {
+			if werr := os.WriteFile(filepath.Join(*outDir, fixture.ID+".raw.json"), observation.RawOutput, 0o600); werr != nil {
+				entry.Status = "failed"
+				entry.Error = "raw output write failed: " + werr.Error()
+			}
+		}
 		if assessErr != nil {
 			entry.Status = "failed"
 			entry.Error = assessErr.Error()
 		} else {
 			entry.Status = "captured"
-			entry.SessionID = observation.SessionID
-			entry.ElapsedMS = observation.Elapsed.Milliseconds()
-			entry.InputBytes, entry.OutputBytes = observation.InputBytes, observation.OutputBytes
 			body, _ := json.MarshalIndent(assessment, "", "  ")
-			_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".assessment.json"), append(body, '\n'), 0o600)
-			_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".raw.json"), observation.RawOutput, 0o600)
+			if werr := os.WriteFile(filepath.Join(*outDir, fixture.ID+".assessment.json"), append(body, '\n'), 0o600); werr != nil {
+				entry.Status = "failed"
+				entry.Error = "assessment write failed: " + werr.Error()
+			}
 		}
 		observed, _ := json.MarshalIndent(observation, "", "  ")
-		_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".observation.json"), append(observed, '\n'), 0o600)
+		if werr := os.WriteFile(filepath.Join(*outDir, fixture.ID+".observation.json"), append(observed, '\n'), 0o600); werr != nil && entry.Status == "captured" {
+			entry.Status = "failed"
+			entry.Error = "observation write failed: " + werr.Error()
+		}
 		if entry.SessionID != "" {
 			paseoBin := strings.TrimSpace(os.Getenv("PASEO_BIN"))
 			if paseoBin == "" {
@@ -193,7 +217,10 @@ func main() {
 		manifest["sessionsUsed"] = used
 		manifest["entries"] = entries
 		encoded, _ := json.MarshalIndent(manifest, "", "  ")
-		_ = os.WriteFile(filepath.Join(*outDir, "manifest.json"), append(encoded, '\n'), 0o600)
+		if werr := os.WriteFile(filepath.Join(*outDir, "manifest.json"), append(encoded, '\n'), 0o600); werr != nil {
+			fmt.Fprintln(os.Stderr, "manifest write failed:", werr)
+			os.Exit(2)
+		}
 		fmt.Fprintf(os.Stderr, "[%d/%d] %s %s\n", used, maxSessions, fixture.ID, entry.Status)
 		if assessErr != nil && strings.Contains(strings.ToLower(assessErr.Error()), "session") &&
 			strings.Contains(strings.ToLower(assessErr.Error()), "discovery") {

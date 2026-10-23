@@ -168,10 +168,16 @@ func (a *PaseoAssessor) Assess(ctx context.Context, input Input) (assessment Ass
 		prompt,
 	)
 	cancel()
+	observation = Observation{
+		Mechanism: "MODEL", Provider: provider, Model: model, Mode: mode,
+		Elapsed: time.Since(started), InputBytes: len(prompt), OutputBytes: len(raw),
+		RawOutput: append([]byte(nil), raw...),
+	}
 	var sessionID string
 	var identityErr error
 	if runErr == nil {
 		sessionID, identityErr = a.discoverAndVerifySession(ctx, input.RequestID, provider, model, mode)
+		observation.SessionID = sessionID
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), assessmentCleanupTimeout)
 	var reconciliation sessionReconciliation
@@ -187,7 +193,7 @@ func (a *PaseoAssessor) Assess(ctx context.Context, input Input) (assessment Ass
 			archiveStatus = "failed"
 		}
 		cleanupCancel()
-		return Assessment{}, Observation{}, assessmentRunFailureEvidence{
+		return Assessment{}, observation, assessmentRunFailureEvidence{
 			RunCause: runFailureKind(runErr), SessionReconciliation: reconciliation, WorkspaceArchive: archiveStatus,
 		}
 	}
@@ -197,28 +203,18 @@ func (a *PaseoAssessor) Assess(ctx context.Context, input Input) (assessment Ass
 		if archiveErr != nil {
 			archiveStatus = "failed"
 		}
-		return Assessment{}, Observation{}, assessmentRunFailureEvidence{
+		return Assessment{}, observation, assessmentRunFailureEvidence{
 			RunCause: "identity_failed", SessionReconciliation: reconciliation, WorkspaceArchive: archiveStatus,
 		}
 	}
 	if archiveErr != nil {
-		return Assessment{}, Observation{}, fmt.Errorf("lead assessment workspace cleanup failed: %w", archiveErr)
+		return Assessment{}, observation, fmt.Errorf("lead assessment workspace cleanup failed: %w", archiveErr)
 	}
 	assessment, err = DecodeAssessment(raw, input)
 	if err != nil {
-		return Assessment{}, Observation{}, err
+		return Assessment{}, observation, err
 	}
-	return assessment, Observation{
-		Mechanism:   "MODEL",
-		Provider:    provider,
-		Model:       model,
-		Mode:        mode,
-		SessionID:   sessionID,
-		Elapsed:     time.Since(started),
-		InputBytes:  len(prompt),
-		OutputBytes: len(raw),
-		RawOutput:   append([]byte(nil), raw...),
-	}, nil
+	return assessment, observation, nil
 }
 
 func (a *PaseoAssessor) reconcileFailedRun(ctx context.Context, requestID, provider, model, mode string) sessionReconciliation {

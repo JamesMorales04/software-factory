@@ -173,12 +173,26 @@ def browser_phase(env, phase, result_file, extra=None):
     child.update({"PHASE": phase, "RESULT_FILE": str(result_file)})
     if extra:
         child.update(extra)
+    process = subprocess.Popen(
+        ["node", "office/e2e-browser/s4d-graph-live.mjs"], cwd=ROOT, env=child,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+    )
     try:
-        cmd(["node", "office/e2e-browser/s4d-graph-live.mjs"], env=child, timeout=400)
+        output, _ = process.communicate(timeout=400)
     except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
         if Path(result_file).exists():
-            return json.loads(Path(result_file).read_text())
-        return {"phase": phase, "ok": False, "error": "browser phase timed out"}
+            result = json.loads(Path(result_file).read_text())
+            result.setdefault("timeoutOutput", output[-1500:])
+            return result
+        return {"phase": phase, "ok": False, "error": "browser phase timed out", "output": output[-1500:]}
+    if process.returncode != 0 and not Path(result_file).exists():
+        return {"phase": phase, "ok": False, "error": f"browser phase exited {process.returncode}", "output": output[-1500:]}
     return json.loads(Path(result_file).read_text())
 
 
@@ -285,14 +299,14 @@ def main() -> int:
             "--lead-paid-provider", PROVIDER, "--lead-paid-model", MODEL,
             "--lead-paid-paseo-mode", MODE, "--lead-paid-max-sessions", str(SESSIONS),
             "--lead-paid-authorization-id", AUTHORIZATION_ID,
-        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT))
+        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         api = API(base, ids["api"])
         wait_health(api)
         worker_id = "s4d-graph-worker-" + secrets.token_hex(4)
         processes.append(subprocess.Popen([
             str(bins["worker"]), "--core", base, "--worker-id", worker_id,
             "--exec-mode", "local", "--max-concurrent", "2", "--recovery-interval", "0",
-        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT))
+        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         wait_worker(api, worker_id)
 
         status, payload = api.call("POST", "/api/v1/projects", {
@@ -329,6 +343,9 @@ def main() -> int:
         request_id = submit["requestId"]
         evidence["requestId"] = request_id
         lead = wait_lead(api, request_id, RUNNER_DEADLINE_SECS)
+        campaign_id = lead.get("campaignId") or ""
+        if os.environ.get("FACTORY_S4D_GRAPH_FAIL_AFTER_RUN") == "1":
+            raise RuntimeError("injected post-run failure for cleanup verification")
         evidence["lead"] = {
             "status": lead.get("status"), "startMode": lead.get("startMode"),
             "authorizationState": lead.get("authorizationState"),
@@ -339,7 +356,6 @@ def main() -> int:
             raise RuntimeError(f"Lead did not reach accepted: {lead.get('status')} {lead.get('failureReason')}")
         if lead.get("startMode") != "autonomous":
             raise RuntimeError(f"Campaign did not start autonomously: {lead.get('startMode')}")
-        campaign_id = lead.get("campaignId") or ""
         plan = lead.get("plan") or {}
         units = plan.get("workUnits") or []
         if len(units) != 2:
@@ -414,7 +430,7 @@ def main() -> int:
             "--lead-paid-provider", PROVIDER, "--lead-paid-model", MODEL,
             "--lead-paid-paseo-mode", MODE, "--lead-paid-max-sessions", str(SESSIONS),
             "--lead-paid-authorization-id", AUTHORIZATION_ID,
-        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+        ], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         wait_health(api)
         status, after_restart = api.call("GET", f"/api/v1/lead/requests/{request_id}")
         if status != 200 or after_restart["request"].get("status") != "accepted":
@@ -435,6 +451,8 @@ def main() -> int:
             if api is not None and request_id:
                 status, payload = api.call("GET", f"/api/v1/lead/requests/{request_id}")
                 if status == 200:
+                    if not campaign_id:
+                        campaign_id = payload["request"].get("campaignId") or ""
                     session_id = (payload["request"].get("modelObservation") or {}).get("sessionId")
                     if session_id:
                         bound.add(session_id)
@@ -474,6 +492,8 @@ def main() -> int:
                 status, orphaned = api.call("GET", "/api/v1/sessions/orphaned")
                 if status == 200:
                     evidence["orphanedSessions"] = orphaned.get("sessions", [])
+                else:
+                    discovery_errors.append(f"orphaned-session check failed: status {status}")
             cleaned, failed = session_cleanup(evidence.get("sessions", []), paseo_bin)
             evidence["cleanup"]["sessions"] = cleaned
             evidence["cleanup"]["failedSessions"] = failed
@@ -483,11 +503,17 @@ def main() -> int:
             unbound = []
         for proc in processes:
             if proc.poll() is None:
-                proc.terminate()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     proc.wait(timeout=8)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     proc.wait(timeout=5)
         evidence["cleanup"]["servicesStopped"] = all(p.poll() is not None for p in processes)
         log.close()
@@ -506,6 +532,9 @@ def main() -> int:
         if not evidence["cleanup"].get("servicesStopped"):
             evidence["status"] = "INCOMPLETE"
             evidence["failure"] = (evidence.get("failure") or "") + " services not stopped"
+        if not evidence["cleanup"].get("fixtureRemoved"):
+            evidence["status"] = "INCOMPLETE"
+            evidence["failure"] = (evidence.get("failure") or "") + " fixture not removed"
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         if evidence_path.exists():
             raise RuntimeError(f"evidence path already exists: {evidence_path}")
