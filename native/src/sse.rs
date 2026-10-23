@@ -3,6 +3,7 @@
 //! This parses framing only. It does not provide reconnect behavior or imply
 //! that the event stream is a durable log.
 
+use serde_json::Value;
 use std::fmt;
 
 /// One complete SSE event. Events without a `data` field are not dispatched.
@@ -15,8 +16,22 @@ pub struct SseEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SseError {
-    RecordTooLarge { limit: usize },
+    RecordTooLarge {
+        limit: usize,
+    },
     InvalidUtf8,
+    InvalidEventJson,
+    MissingEventType,
+    InvalidEventProperties,
+    MissingSessionIdentity,
+    SessionIdentityMismatch {
+        expected: String,
+        found: String,
+    },
+    SessionPayloadMismatch {
+        session_id: String,
+        payload_id: String,
+    },
 }
 
 impl fmt::Display for SseError {
@@ -26,11 +41,90 @@ impl fmt::Display for SseError {
                 write!(f, "SSE record exceeds configured limit of {limit} bytes")
             }
             Self::InvalidUtf8 => f.write_str("SSE field is not valid UTF-8"),
+            Self::InvalidEventJson => f.write_str("OpenCode SSE data is not JSON"),
+            Self::MissingEventType => f.write_str("OpenCode SSE event has no type"),
+            Self::InvalidEventProperties => {
+                f.write_str("OpenCode SSE event properties are invalid")
+            }
+            Self::MissingSessionIdentity => {
+                f.write_str("OpenCode SSE event has no session identity")
+            }
+            Self::SessionIdentityMismatch { expected, found } => write!(
+                f,
+                "OpenCode SSE session identity mismatch: expected {expected}, found {found}"
+            ),
+            Self::SessionPayloadMismatch {
+                session_id,
+                payload_id,
+            } => write!(
+                f,
+                "OpenCode SSE session payload identity mismatch: event {session_id}, payload {payload_id}"
+            ),
         }
     }
 }
 
 impl std::error::Error for SseError {}
+
+/// The stable identity envelope shared by OpenCode session events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeEvent {
+    pub kind: String,
+    pub session_id: Option<String>,
+}
+
+impl OpenCodeEvent {
+    pub fn parse(data: &str) -> Result<Self, SseError> {
+        let value: Value = serde_json::from_str(data).map_err(|_| SseError::InvalidEventJson)?;
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or(SseError::MissingEventType)?
+            .to_owned();
+        let properties = value.get("properties");
+        let session_id = match properties {
+            Some(Value::Object(properties)) => properties
+                .get("sessionID")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or(SseError::InvalidEventProperties)
+                })
+                .transpose()?,
+            Some(Value::Null) | None => None,
+            Some(_) => return Err(SseError::InvalidEventProperties),
+        };
+        if let (Some(session_id), Some(payload_id)) = (
+            session_id.as_deref(),
+            properties
+                .and_then(|properties| properties.get("info"))
+                .and_then(|info| info.get("id"))
+                .and_then(Value::as_str),
+        ) && session_id != payload_id
+        {
+            return Err(SseError::SessionPayloadMismatch {
+                session_id: session_id.to_owned(),
+                payload_id: payload_id.to_owned(),
+            });
+        }
+        Ok(Self { kind, session_id })
+    }
+
+    pub fn require_session(&self, expected: &str) -> Result<(), SseError> {
+        let found = self
+            .session_id
+            .as_deref()
+            .ok_or(SseError::MissingSessionIdentity)?;
+        if found != expected {
+            return Err(SseError::SessionIdentityMismatch {
+                expected: expected.to_owned(),
+                found: found.to_owned(),
+            });
+        }
+        Ok(())
+    }
+}
 
 /// Incrementally parses SSE bytes. `max_record_bytes` bounds the current line
 /// and accumulated fields for a single event; emitted events are returned to
@@ -205,5 +299,57 @@ mod tests {
         let mut parser = SseParser::new(8);
         let error = parser.push(b"data: 12345\n").unwrap_err();
         assert_eq!(error, SseError::RecordTooLarge { limit: 8 });
+    }
+
+    #[test]
+    fn parses_session_event_identity_and_payload_identity() {
+        let event = OpenCodeEvent::parse(
+            r#"{"id":"evt_1","type":"session.created","properties":{"sessionID":"ses_1","info":{"id":"ses_1"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.kind, "session.created");
+        assert_eq!(event.session_id.as_deref(), Some("ses_1"));
+        event.require_session("ses_1").unwrap();
+    }
+
+    #[test]
+    fn rejects_session_event_for_different_expected_identity() {
+        let event = OpenCodeEvent::parse(
+            r#"{"type":"session.deleted","properties":{"sessionID":"ses_other","info":{"id":"ses_other"}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            event.require_session("ses_expected"),
+            Err(SseError::SessionIdentityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_disagreeing_session_and_payload_ids() {
+        assert!(matches!(
+            OpenCodeEvent::parse(
+                r#"{"type":"session.updated","properties":{"sessionID":"ses_event","info":{"id":"ses_payload"}}}"#,
+            ),
+            Err(SseError::SessionPayloadMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn global_connection_event_does_not_claim_session_identity() {
+        let event = OpenCodeEvent::parse(r#"{"type":"server.connected"}"#).unwrap();
+        assert_eq!(event.session_id, None);
+        assert_eq!(
+            event.require_session("ses_1"),
+            Err(SseError::MissingSessionIdentity)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_untyped_event_data() {
+        assert_eq!(
+            OpenCodeEvent::parse("not json"),
+            Err(SseError::InvalidEventJson)
+        );
+        assert_eq!(OpenCodeEvent::parse("{}"), Err(SseError::MissingEventType));
     }
 }

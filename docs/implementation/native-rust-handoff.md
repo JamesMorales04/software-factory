@@ -56,3 +56,42 @@ At campaign entry, only PR #16 was open: `f1-s4-d-intelligent-lead` head `19cb49
 **Security and budget blockers:** no isolated sandbox or credential confinement tested; no production-safe execution; no paid-provider budget specified; no delivery/merge authority. No provider work turn or protected delivery effect was created. A Codex thread object was created in the no-turn experiment and its durable cleanup remains unresolved as recorded above. Never mark these PASS from unit tests or preflight probes.
 
 **DeepSeek V4.1 Flash continuation:** check out this branch, read `AGENTS.md`, ADR-0018, `native/README.md`, this handoff, and `native-rust-progress.json`; run `git status`, `git rev-parse HEAD`, the pinned Rust gates, then inspect the two local provider schemas. Continue from task 1 above. Preserve explicit non-dispatch until Core authority, sandbox and budget are implemented. Keep all statements candidate-bound and update this handoff/progress file with every coherent commit. Do not resume the S4-D campaign, spend provider usage without a bounded grant, merge PR #16, or claim cutover based on this bootstrap.
+
+
+## Current uncommitted slice handoff (2026-10-23; supersedes earlier provisional notes above)
+
+The code tree described below is committed on this branch. Run `git log -1 --format=%H` for the exact candidate SHA; this text cannot embed its own commit. Evidence was rerun at that tree before commit and remains author-run until independent review. The dated evidence above for `f255f0c` remains historical and does not describe this slice.
+
+The intended cutover layout remains to move the staged Rust backend from `native/` into `core/` after verified Go deletion. The migration matrix is [native-rust-migration-matrix.md](native-rust-migration-matrix.md); all rows remain incomplete and legacy deletion is not yet ready. The Rust implementation is still additive beside the active Go Core/Worker and old Office integration.
+
+### Current implementation and evidence
+
+- Core now persists immutable versioned ActionSpecs with digest validation, blocked Campaigns, and durable Run/Attempt identities. Worker registration uses a bootstrap secret and a per-Worker session credential; the registration-key verifier is HMAC-derived rather than stored in plaintext. Fixture-only lease/fencing flows exist. Public claim/dispatch remains disabled and returns no assignment.
+- Workspace code allocates per-Attempt Git worktrees and validates CandidateRevision parentage. Rootless Podman fixture code has an ownership ledger and orphan reconciliation; the optional ignored Alpine fixture passes locally in 12.55 s (author run). A same-UID pathname race remains unresolved. No provider has run inside a sandbox, so required isolation and credential confinement remain **BLOCKED**.
+- Codex has a fixture-only typed thread/turn lifecycle with response/event correlation, permission denial, timeout interrupt requests, and terminal event validation. No live turn was started. The earlier Codex pre-turn thread remains unresolved: a new App Server process did not find it in its indexed state DB, which does not establish ownership or cleanup by the original process.
+- OpenCode’s no-paid probe passed for the expanded health/OpenAPI/SSE/session inspection and cleanup path, including matching `session.created`, session status/messages, workspace binding, DELETE, and subsequent absence. No prompt or provider work was submitted. Both providers remain `LIVE_NOT_TESTED` for coding-work compatibility; no paid turns were authorized or run.
+- A pure deterministic Quality evaluator exists with typed evidence and explicit outcomes. It is not connected to authenticated durable receipt ingestion or separate verifier/reviewer processes, so the Rust system has no operational independent Quality Gate.
+- The native architecture checker is only a partial governance port. Rust CI is wired for all PR changes, including docs/config, but the Go workflows and prior governance checker remain active. The whole-tree hygiene audit reports **313 findings** and strict hygiene fails; no legacy deletion has occurred. The Office still targets the former backend.
+
+Provisional local results for this uncommitted combined slice: **62 library tests, 4 architecture-check tests, 7 hygiene tests, and 2 binary tests passed**. Formatter, strict Clippy, binary build, dependency audit, and no-paid provider probes passed. The optional ignored Podman fixture passed locally in 12.55 s (author run). These results are author-run, not independent acceptance; rerun all applicable checks after commit. No paid provider turns were performed. No Core-authorized Worker dispatch, candidate-producing execution, independent verification/review journey, or Rust-backed Office journey has been exercised.
+
+### Completion gates at this handoff
+
+| Gate | Status | Current evidence / outstanding work |
+|---|---|---|
+| G1 Architecture | **INCOMPLETE** | Rust remains additive beside the legacy Go Core/Worker. |
+| G2 Runtime | **INCOMPLETE** | Codex lifecycle is fixture-only; OpenCode is a no-paid probe only; no live coding turn. |
+| G3 Cleanup | **INCOMPLETE** | Legacy Go/runtime tree remains active; hygiene audit reports 313 findings. |
+| G4 Governance | **INCOMPLETE** | Native workflow and partial checker exist; Go workflows/checker remain; hygiene gate fails. |
+| G5 Functional execution | **BLOCKED / INCOMPLETE** | Public dispatch is disabled; Worker does not execute a provider-backed Action or create a candidate. |
+| G6 Quality | **INCOMPLETE** | Pure evaluator only; no authenticated durable evidence ingestion or independent verifier/reviewer processes. |
+| G7 Office | **INCOMPLETE** | Office still targets the former backend; Rust journey and restart/reload are unverified. |
+| G8 Security | **BLOCKED** | Podman fixture passes locally; same-UID path race unresolved; provider credential isolation and in-sandbox provider execution untested. |
+| G9 Evidence | **NOT SATISFIED** | Current results are provisional uncommitted evidence; no paid provider work or full user journey. |
+| G10 Review | **NOT SATISFIED** | Independent review of the full tracked tree and exact PR diff remains outstanding. |
+
+### Next executable task and continuation
+
+Resolve the Podman fixture timeout and same-UID pathname race, then have Luna independently review the ownership ledger, orphan reconciliation, provider lifecycle fixtures, HMAC registration binding, and the whole-tree migration matrix. Keep dispatch disabled while security and Core authorization remain incomplete. Next implement durable authenticated evidence ingestion and independent verifier/reviewer processes, followed by the provider-backed Worker lifecycle and Rust Office journey. Only after replacement behavior and acceptance are demonstrated should legacy files/workflows be removed. Commit coherent work and update this handoff with exact SHA-bound outcomes.
+
+**DeepSeek V4.1 Flash continuation:** inspect `git status`, `git rev-parse HEAD`, PR #17 and the matrix. Treat this combined slice’s results as provisional until rerun at its committed SHA. Keep PR #17 draft and public dispatch disabled. Do not claim any G1–G10 gate PASS, coding-provider compatibility, sandbox certification, or completed replacement. No paid provider work is authorized by this handoff.

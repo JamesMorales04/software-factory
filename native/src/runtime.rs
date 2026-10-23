@@ -15,8 +15,11 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::protocol::{JsonRpc, RpcError};
-use crate::sse::SseParser;
+use crate::protocol::{
+    JsonRpc, RpcError, ThreadListParams, ThreadLoadedListParams, ThreadSummary,
+    TurnCompletedParams, TurnWaitOutcome,
+};
+use crate::sse::{OpenCodeEvent, SseParser};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,6 +47,204 @@ pub struct ProbeResult {
     pub session_lifecycle_tested: bool,
     pub session_cleanup_confirmed: Option<bool>,
     pub sse_handshake_tested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "classification", rename_all = "snake_case")]
+pub enum CodexThreadReconciliation {
+    LoadedAndReadableInProbeServer { thread: ThreadSummary },
+    IndexedButNotLoadedInProbeServer { thread: ThreadSummary },
+    LoadedInProbeServerButNotIndexed,
+    NotFoundInStateDbIndex { loaded_in_probe_server: bool },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CodexTurnAwait {
+    Terminal(TurnCompletedParams),
+    InterruptRequestedAfterTimeout { response: serde_json::Value },
+}
+
+/// Waits for the terminal notification for an exact turn identity. On timeout it requests
+/// interruption with that same identity, but does not classify the turn as terminal.
+pub async fn await_codex_turn<R, W>(
+    rpc: &mut JsonRpc<R, W>,
+    thread_id: &str,
+    turn_id: &str,
+    timeout: Duration,
+) -> Result<CodexTurnAwait, RpcError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match rpc
+        .wait_for_turn_or_interrupt_on_timeout(thread_id, turn_id, timeout)
+        .await?
+    {
+        TurnWaitOutcome::Completed(turn) => Ok(CodexTurnAwait::Terminal(turn)),
+        TurnWaitOutcome::TimeoutInterruptRequested { interrupt_response } => {
+            Ok(CodexTurnAwait::InterruptRequestedAfterTimeout {
+                response: interrupt_response,
+            })
+        }
+    }
+}
+
+/// Reads Codex App Server thread metadata only. This never resumes a thread or starts a turn.
+/// Loaded state refers only to the newly spawned probe server. It cannot establish whether
+/// another App Server still owns the thread. Index absence is not proof of cleanup.
+pub async fn reconcile_codex_thread(
+    workspace: &Path,
+    thread_id: &str,
+) -> Result<CodexThreadReconciliation, Error> {
+    let mut child = Command::new("codex")
+        .arg("app-server")
+        .arg("--listen")
+        .arg("stdio://")
+        .current_dir(workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let outcome = async {
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Incompatible("Codex stdin unavailable".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Incompatible("Codex stdout unavailable".into()))?;
+        let mut rpc = JsonRpc::new(stdout, stdin);
+        time::timeout(Duration::from_secs(15), async {
+            let initialized = rpc
+                .request(
+                    "initialize",
+                    json!({
+                        "clientInfo":{"name":"software_factory_readonly","title":"Software Factory read-only reconciliation","version":"0.1.0"},
+                        "capabilities":{}
+                    }),
+                )
+                .await?;
+            if !initialized.is_object() {
+                return Err(RpcError::Protocol("unexpected initialize response".into()));
+            }
+            rpc.notify("initialized", json!({})).await?;
+
+            let loaded = collect_loaded_threads(&mut rpc, thread_id).await?;
+            let indexed = collect_indexed_thread(&mut rpc, thread_id).await?;
+            match (indexed, loaded) {
+                (Some(thread), false) => {
+                    Ok(CodexThreadReconciliation::IndexedButNotLoadedInProbeServer {
+                        thread,
+                    })
+                }
+                (Some(_), true) => {
+                    let read = rpc.read_thread(thread_id, false).await?;
+                    Ok(CodexThreadReconciliation::LoadedAndReadableInProbeServer {
+                        thread: read.thread,
+                    })
+                }
+                (None, true) => Ok(CodexThreadReconciliation::LoadedInProbeServerButNotIndexed),
+                (None, false) => Ok(CodexThreadReconciliation::NotFoundInStateDbIndex {
+                    loaded_in_probe_server: false,
+                }),
+            }
+        })
+        .await
+        .map_err(|_| Error::Timeout)?
+        .map_err(Error::Rpc)
+    }
+    .await;
+    finish_probe(&mut child, outcome).await
+}
+
+async fn collect_loaded_threads<R, W>(
+    rpc: &mut JsonRpc<R, W>,
+    thread_id: &str,
+) -> Result<bool, RpcError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut cursor = None;
+    for _ in 0..100 {
+        let page = rpc
+            .list_loaded_threads(ThreadLoadedListParams {
+                cursor: cursor.clone(),
+                limit: Some(100),
+            })
+            .await?;
+        if page.data.iter().any(|id| id == thread_id) {
+            return Ok(true);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(false);
+        }
+    }
+    Err(RpcError::Protocol(
+        "thread/loaded/list exceeded 100 pages".into(),
+    ))
+}
+
+async fn collect_indexed_thread<R, W>(
+    rpc: &mut JsonRpc<R, W>,
+    thread_id: &str,
+) -> Result<Option<ThreadSummary>, RpcError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    for archived in [false, true] {
+        if let Some(thread) = find_indexed_thread(rpc, thread_id, archived).await? {
+            return Ok(Some(thread));
+        }
+    }
+    Ok(None)
+}
+
+async fn find_indexed_thread<R, W>(
+    rpc: &mut JsonRpc<R, W>,
+    thread_id: &str,
+    archived: bool,
+) -> Result<Option<ThreadSummary>, RpcError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    const SOURCE_KINDS: &[&str] = &[
+        "cli",
+        "vscode",
+        "exec",
+        "appServer",
+        "subAgent",
+        "subAgentReview",
+        "subAgentCompact",
+        "subAgentThreadSpawn",
+        "subAgentOther",
+        "unknown",
+    ];
+    let mut cursor = None;
+    for _ in 0..100 {
+        let page = rpc
+            .list_threads(ThreadListParams {
+                cursor: cursor.clone(),
+                limit: Some(100),
+                archived,
+                source_kinds: SOURCE_KINDS.to_vec(),
+                use_state_db_only: true,
+            })
+            .await?;
+        if let Some(thread) = page.data.into_iter().find(|thread| thread.id == thread_id) {
+            return Ok(Some(thread));
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            return Ok(None);
+        }
+    }
+    Err(RpcError::Protocol("thread/list exceeded 100 pages".into()))
 }
 
 pub async fn probe_codex(workspace: &Path) -> Result<ProbeResult, Error> {
@@ -220,11 +421,9 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
                     .push(&chunk)
                     .map_err(|error| Error::Incompatible(error.to_string()))?
                 {
-                    let body: serde_json::Value = serde_json::from_str(&event.data)
-                        .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
-                    if body.get("type").and_then(serde_json::Value::as_str)
-                        == Some("server.connected")
-                    {
+                    let body = OpenCodeEvent::parse(&event.data)
+                        .map_err(|error| Error::Incompatible(error.to_string()))?;
+                    if body.kind == "server.connected" {
                         return Ok(());
                     }
                 }
@@ -258,6 +457,20 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
             .query(&[("directory", &workspace)])
             .send()
             .await;
+        let status = client
+            .get(format!("http://127.0.0.1:{port}/session/status"))
+            .basic_auth("opencode", Some(&password))
+            .query(&[("directory", &workspace)])
+            .send()
+            .await;
+        let messages = client
+            .get(format!("{item_url}/message"))
+            .basic_auth("opencode", Some(&password))
+            .query(&[("directory", &workspace)])
+            .send()
+            .await;
+        let session_created_event =
+            wait_for_session_created_event(&mut stream, &mut parser, &session_id).await;
         let deleted = client
             .delete(&item_url)
             .basic_auth("opencode", Some(&password))
@@ -274,22 +487,25 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
                 "OpenCode session {session_id} cleanup unconfirmed"
             )));
         }
+        let after_delete = client
+            .get(&item_url)
+            .basic_auth("opencode", Some(&password))
+            .query(&[("directory", &workspace)])
+            .send()
+            .await?;
+        validate_deleted_session_status(after_delete.status())?;
         let inspected: serde_json::Value = inspected?.error_for_status()?.json().await?;
-        if inspected.get("id").and_then(serde_json::Value::as_str) != Some(&session_id) {
-            return Err(Error::Incompatible(
-                "OpenCode session inspection identity mismatch".into(),
-            ));
-        }
-        if created.get("directory").and_then(serde_json::Value::as_str) != Some(workspace.as_str())
-            || inspected
-                .get("directory")
-                .and_then(serde_json::Value::as_str)
-                != Some(workspace.as_str())
-        {
-            return Err(Error::Incompatible(
-                "OpenCode session workspace identity mismatch".into(),
-            ));
-        }
+        let status: serde_json::Value = status?.error_for_status()?.json().await?;
+        let messages: serde_json::Value = messages?.error_for_status()?.json().await?;
+        validate_session_inspection(
+            &session_id,
+            &workspace,
+            &created,
+            &inspected,
+            &status,
+            &messages,
+        )?;
+        session_created_event?;
         Ok::<_, Error>((reported_version, sha256_hex(&schema_bytes)))
     }
     .await;
@@ -297,7 +513,8 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
     Ok(ProbeResult {
         provider: "opencode".into(),
         version: reported_version,
-        protocol: "HTTP basic-auth health/OpenAPI/SSE/session".into(),
+        protocol: "HTTP basic-auth health/OpenAPI/SSE/session status/messages/delete verification"
+            .into(),
         healthy: true,
         paid_turn_tested: false,
         cleanup_confirmed: true,
@@ -306,6 +523,94 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
         session_cleanup_confirmed: Some(true),
         sse_handshake_tested: true,
     })
+}
+
+async fn wait_for_session_created_event<S, B, E>(
+    stream: &mut S,
+    parser: &mut SseParser,
+    session_id: &str,
+) -> Result<(), Error>
+where
+    S: futures_util::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    time::timeout(Duration::from_secs(5), async {
+        for _ in 0..128 {
+            let chunk = stream
+                .next()
+                .await
+                .ok_or_else(|| {
+                    Error::Incompatible("OpenCode SSE ended before session event".into())
+                })?
+                .map_err(|error| {
+                    Error::Incompatible(format!("OpenCode SSE read failed: {error}"))
+                })?;
+            for event in parser
+                .push(chunk.as_ref())
+                .map_err(|error| Error::Incompatible(error.to_string()))?
+            {
+                let parsed = OpenCodeEvent::parse(&event.data)
+                    .map_err(|error| Error::Incompatible(error.to_string()))?;
+                if parsed.kind == "session.created"
+                    && parsed.session_id.as_deref() == Some(session_id)
+                {
+                    parsed
+                        .require_session(session_id)
+                        .map_err(|error| Error::Incompatible(error.to_string()))?;
+                    return Ok(());
+                }
+            }
+        }
+        Err(Error::Incompatible(
+            "OpenCode SSE session.created event not found within 128 chunks".into(),
+        ))
+    })
+    .await
+    .map_err(|_| Error::Timeout)?
+}
+
+fn validate_session_inspection(
+    session_id: &str,
+    workspace: &str,
+    created: &serde_json::Value,
+    inspected: &serde_json::Value,
+    status: &serde_json::Value,
+    messages: &serde_json::Value,
+) -> Result<(), Error> {
+    for (label, session) in [("created", created), ("inspected", inspected)] {
+        if session.get("id").and_then(serde_json::Value::as_str) != Some(session_id) {
+            return Err(Error::Incompatible(format!(
+                "OpenCode session {label} identity mismatch"
+            )));
+        }
+        if session.get("directory").and_then(serde_json::Value::as_str) != Some(workspace) {
+            return Err(Error::Incompatible(format!(
+                "OpenCode session {label} workspace identity mismatch"
+            )));
+        }
+    }
+    if !status.is_object() {
+        return Err(Error::Incompatible(
+            "OpenCode /session/status response is not an object".into(),
+        ));
+    }
+    if !messages.is_array() {
+        return Err(Error::Incompatible(
+            "OpenCode session message response is not an array".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_deleted_session_status(status: reqwest::StatusCode) -> Result<(), Error> {
+    if status == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(Error::Incompatible(format!(
+            "OpenCode deleted session remained inspectable: HTTP {status}"
+        )))
+    }
 }
 
 async fn finish_probe<T>(child: &mut Child, outcome: Result<T, Error>) -> Result<T, Error> {
@@ -346,4 +651,170 @@ async fn binary_version(binary: &str) -> Result<String, Error> {
     }
     String::from_utf8(output.stdout)
         .map_err(|_| Error::Incompatible("version output encoding".into()))
+}
+
+#[cfg(test)]
+mod codex_reconciliation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn codex_turn_wait_correlates_thread_and_turn_completion() {
+        let input = b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turn\":{\"id\":\"turn-1\",\"status\":\"failed\",\"items\":[]}}}\n";
+        let mut rpc = JsonRpc::new(&input[..], Vec::new());
+        let result = await_codex_turn(&mut rpc, "thread-1", "turn-1", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            CodexTurnAwait::Terminal(TurnCompletedParams {
+                turn: crate::protocol::TurnSummary {
+                    status: crate::protocol::TurnStatus::Failed,
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn indexed_thread_lookup_follows_opaque_cursor() {
+        let input = concat!(
+            "{\"id\":1,\"result\":{\"data\":[{\"id\":\"first\"}],\"nextCursor\":\"opaque-cursor\"}}\n",
+            "{\"method\":\"thread/status/changed\",\"params\":{}}\n",
+            "{\"id\":2,\"result\":{\"data\":[{\"id\":\"target\",\"status\":{\"type\":\"idle\"}}],\"nextCursor\":null}}\n"
+        );
+        let mut rpc = JsonRpc::new(input.as_bytes(), Vec::new());
+        let found = find_indexed_thread(&mut rpc, "target", false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, "target");
+        assert_eq!(found.status.unwrap().kind, "idle");
+    }
+
+    #[tokio::test]
+    async fn indexed_thread_lookup_checks_archived_partition() {
+        let input = concat!(
+            "{\"id\":1,\"result\":{\"data\":[],\"nextCursor\":null}}\n",
+            "{\"id\":2,\"result\":{\"data\":[{\"id\":\"target\"}],\"nextCursor\":null}}\n"
+        );
+        let mut rpc = JsonRpc::new(input.as_bytes(), Vec::new());
+        let found = collect_indexed_thread(&mut rpc, "target")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, "target");
+    }
+
+    #[tokio::test]
+    async fn loaded_list_follows_cursor_before_classifying_target() {
+        let input = concat!(
+            "{\"id\":1,\"result\":{\"data\":[\"other\"],\"nextCursor\":\"opaque-cursor\"}}\n",
+            "{\"id\":2,\"result\":{\"data\":[\"target\"],\"nextCursor\":null}}\n"
+        );
+        let mut rpc = JsonRpc::new(input.as_bytes(), Vec::new());
+        assert!(collect_loaded_threads(&mut rpc, "target").await.unwrap());
+    }
+
+    #[test]
+    fn index_absence_classification_does_not_claim_cleanup() {
+        let result = CodexThreadReconciliation::NotFoundInStateDbIndex {
+            loaded_in_probe_server: false,
+        };
+        let encoded = serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["classification"], "not_found_in_state_db_index");
+        assert_eq!(encoded["loaded_in_probe_server"], false);
+        assert!(encoded.get("cleanup_confirmed").is_none());
+    }
+
+    #[test]
+    fn validates_no_prompt_session_inspection_shapes_and_identity() {
+        let created = json!({"id":"ses_1","directory":"/tmp"});
+        let inspected = json!({"id":"ses_1","directory":"/tmp"});
+        validate_session_inspection(
+            "ses_1",
+            "/tmp",
+            &created,
+            &inspected,
+            &json!({}),
+            &json!([]),
+        )
+        .unwrap();
+        assert!(
+            validate_session_inspection(
+                "ses_1",
+                "/tmp",
+                &created,
+                &json!({"id":"ses_other","directory":"/tmp"}),
+                &json!({}),
+                &json!([]),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_session_inspection(
+                "ses_1",
+                "/tmp",
+                &created,
+                &inspected,
+                &json!([]),
+                &json!([]),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_session_inspection(
+                "ses_1",
+                "/tmp",
+                &created,
+                &inspected,
+                &json!({}),
+                &json!({}),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn confirms_session_cleanup_only_after_not_found_response() {
+        validate_deleted_session_status(reqwest::StatusCode::NOT_FOUND).unwrap();
+        assert!(validate_deleted_session_status(reqwest::StatusCode::OK).is_err());
+    }
+
+    #[tokio::test]
+    async fn observes_matching_session_created_event_from_sse_fixture() {
+        let frame = "data: {\"id\":\"evt_1\",\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_1\",\"info\":{\"id\":\"ses_1\"}}}\n\n";
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        wait_for_session_created_event(&mut stream, &mut parser, "ses_1")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignores_other_session_events_until_matching_creation() {
+        let frame = concat!(
+            "data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_other\",\"info\":{\"id\":\"ses_other\"}}}\n\n",
+            "data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_expected\",\"info\":{\"id\":\"ses_expected\"}}}\n\n"
+        );
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        wait_for_session_created_event(&mut stream, &mut parser, "ses_expected")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_to_treat_connection_event_as_session_identity() {
+        let frame = "data: {\"type\":\"server.connected\"}\n\n";
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        let error = wait_for_session_created_event(&mut stream, &mut parser, "ses_1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("session event"));
+    }
 }

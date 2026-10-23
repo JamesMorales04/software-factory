@@ -243,6 +243,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
