@@ -1,35 +1,43 @@
 use super::*;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
+use sqlx::SqliteConnection;
 use std::path::Path;
 use uuid::Uuid;
 
 impl Database {
-    pub fn record_candidate(
+    pub async fn record_candidate(
         &self,
         input: &NewCandidate,
         now_ms: i64,
     ) -> Result<CandidateRecord, Error> {
         validate_candidate_input(input)?;
-        let context = self.candidate_context(&input.attempt_id)?;
+        let context = {
+            let mut connection = self.pool.acquire().await?;
+            candidate_context(&mut connection, &input.attempt_id).await?
+        };
         require_live_lease(&context, &input.worker_id, input.generation, now_ms)?;
         if context.spec_sha256 != input.action_spec_sha256 {
             return Err(Error::Forbidden(
                 "candidate ActionSpec hash does not match the frozen spec".into(),
             ));
         }
-        let verified = verify_candidate_commit(
-            Path::new(&context.repository),
-            &context.base_commit,
-            &input.commit_sha,
-            &input.tree_sha,
-        )
+        let repository = context.repository.clone();
+        let base_commit = context.base_commit.clone();
+        let commit_sha = input.commit_sha.clone();
+        let tree_sha = input.tree_sha.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            verify_candidate_commit(Path::new(&repository), &base_commit, &commit_sha, &tree_sha)
+        })
+        .await
+        .map_err(|error| {
+            Error::Forbidden(format!("candidate lineage verification failed: {error}"))
+        })?
         .map_err(|error| Error::Forbidden(format!("candidate lineage rejected: {error}")))?;
 
-        let mut connection = self.0.lock().expect("database mutex poisoned");
-        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let current = candidate_context(&tx, &input.attempt_id)?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let current = candidate_context(&mut transaction, &input.attempt_id).await?;
         require_live_lease(&current, &input.worker_id, input.generation, now_ms)?;
         if current.spec_sha256 != input.action_spec_sha256
             || current.repository != context.repository
@@ -39,14 +47,16 @@ impl Database {
                 "attempt binding changed during candidate validation",
             ));
         }
-        if let Some(existing) = load_candidate_for_attempt(&tx, &input.attempt_id)? {
+        if let Some(existing) =
+            load_candidate_for_attempt(&mut transaction, &input.attempt_id).await?
+        {
             if existing.action_spec_sha256 == input.action_spec_sha256
                 && existing
                     .commit_sha
                     .eq_ignore_ascii_case(&verified.commit_sha)
                 && existing.tree_sha.eq_ignore_ascii_case(&verified.tree_sha)
             {
-                tx.commit()?;
+                transaction.commit().await?;
                 return Ok(existing);
             }
             return Err(Error::Conflict(
@@ -62,204 +72,89 @@ impl Database {
             implementer_id: input.worker_id.clone(),
             created_at: Utc::now().to_rfc3339(),
         };
-        tx.execute(
-            "INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                candidate.id,
-                candidate.attempt_id,
-                candidate.action_spec_sha256,
-                candidate.commit_sha,
-                candidate.tree_sha,
-                candidate.implementer_id,
-                candidate.created_at
-            ],
-        )?;
-        let changed = tx.execute(
+        sqlx::query("INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)")
+            .bind(&candidate.id)
+            .bind(&candidate.attempt_id)
+            .bind(&candidate.action_spec_sha256)
+            .bind(&candidate.commit_sha)
+            .bind(&candidate.tree_sha)
+            .bind(&candidate.implementer_id)
+            .bind(&candidate.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        let changed = sqlx::query(
             "UPDATE attempts SET status='CANDIDATE_READY' WHERE id=?1 AND status='LEASED'",
-            [&candidate.attempt_id],
-        )?;
+        )
+        .bind(&candidate.attempt_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
         if changed != 1 {
             return Err(Error::Conflict("attempt is no longer leased"));
         }
         record_event(
-            &tx,
+            &mut transaction,
             &candidate.id,
             "candidate.recorded",
             &format!(
                 "attempt={} commit={} tree={}",
                 candidate.attempt_id, candidate.commit_sha, candidate.tree_sha
             ),
-        )?;
-        tx.commit()?;
+        )
+        .await?;
+        transaction.commit().await?;
         Ok(candidate)
     }
 
-    pub fn record_quality_receipt(
+    pub async fn record_quality_receipt(
         &self,
         candidate_id: &str,
         role: QualityRole,
         input: &QualityReceiptInput,
     ) -> Result<QualityIngestResult, Error> {
         validate_receipt_input(input)?;
-        let mut connection = self.0.lock().expect("database mutex poisoned");
-        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let candidate = load_candidate(&tx, candidate_id)?;
-        if input.action_spec_sha256 != candidate.action_spec_sha256
-            || !input.commit_sha.eq_ignore_ascii_case(&candidate.commit_sha)
-            || !input.tree_sha.eq_ignore_ascii_case(&candidate.tree_sha)
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let candidate = validate_receipt_binding(&mut transaction, candidate_id, input).await?;
+        if let Some(receipt) = replayed_receipt(&mut transaction, candidate_id, role, input).await?
         {
-            return Err(Error::Forbidden(
-                "receipt is not bound to the exact candidate and ActionSpec".into(),
-            ));
+            let gate = load_gate(&mut transaction, candidate_id).await?;
+            transaction.commit().await?;
+            return Ok(QualityIngestResult { receipt, gate });
         }
-        if input.principal_id == candidate.implementer_id {
-            return Err(Error::Forbidden(
-                "implementer cannot provide independent quality evidence".into(),
-            ));
-        }
-        if let Some(existing) = load_receipt_by_id(&tx, &input.receipt_id)? {
-            if existing.candidate_id == candidate_id
-                && existing.role == role
-                && receipt_matches(&existing, input)
-            {
-                let gate = load_gate(&tx, candidate_id)?;
-                tx.commit()?;
-                return Ok(QualityIngestResult {
-                    receipt: existing,
-                    gate,
-                });
-            }
-            return Err(Error::Conflict("receipt id reused with different evidence"));
-        }
-        if load_receipt_by_role(&tx, candidate_id, role)?.is_some() {
-            return Err(Error::Conflict(
-                "candidate already has a receipt for this independent role",
-            ));
-        }
-        let other_role = match role {
-            QualityRole::Verifier => QualityRole::Reviewer,
-            QualityRole::Reviewer => QualityRole::Verifier,
-        };
-        if let Some(other) = load_receipt_by_role(&tx, candidate_id, other_role)?
-            && other.principal_id == input.principal_id
-        {
-            return Err(Error::Forbidden(
-                "verifier and reviewer must be independent principals".into(),
-            ));
-        }
-        let receipt = QualityReceiptRecord {
-            receipt_id: input.receipt_id.clone(),
-            candidate_id: candidate_id.to_owned(),
-            role,
-            principal_id: input.principal_id.clone(),
-            action_spec_sha256: input.action_spec_sha256.clone(),
-            commit_sha: candidate.commit_sha.clone(),
-            tree_sha: candidate.tree_sha.clone(),
-            result: input.result,
-            evidence: input.evidence,
-            received_at: Utc::now().to_rfc3339(),
-        };
-        tx.execute(
-            "INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![
-                receipt.receipt_id,
-                receipt.candidate_id,
-                role.as_str(),
-                receipt.principal_id,
-                receipt.action_spec_sha256,
-                receipt.commit_sha,
-                receipt.tree_sha,
-                receipt_result_str(receipt.result),
-                evidence_kind_str(receipt.evidence),
-                receipt.received_at
-            ],
-        )?;
-        record_event(
-            &tx,
-            candidate_id,
-            "quality.receipt_recorded",
-            &format!(
-                "role={} receipt={} principal={} result={:?} evidence={:?}",
-                role.as_str(),
-                receipt.receipt_id,
-                receipt.principal_id,
-                receipt.result,
-                receipt.evidence
-            ),
-        )?;
-
-        let verifier = load_receipt_by_role(&tx, candidate_id, QualityRole::Verifier)?;
-        let reviewer = load_receipt_by_role(&tx, candidate_id, QualityRole::Reviewer)?;
-        let gate = if let (Some(verifier), Some(reviewer)) = (&verifier, &reviewer) {
-            let policy = load_gate_policy(&tx, candidate_id)?;
-            let decision = evaluate_quality_gate(
-                &FrozenActionSpec {
-                    hash: candidate.action_spec_sha256.clone(),
-                },
-                &crate::quality::CandidateRevision {
-                    commit_sha: candidate.commit_sha.clone(),
-                    tree_sha: candidate.tree_sha.clone(),
-                    action_spec_hash: candidate.action_spec_sha256.clone(),
-                },
-                &candidate.implementer_id,
-                Some(&to_verifier_receipt(verifier)),
-                Some(&to_reviewer_receipt(reviewer)),
-                policy,
-            );
-            let gate = GateRecord {
-                candidate_id: candidate_id.to_owned(),
-                outcome: decision.outcome,
-                reasons: decision.reasons,
-                decided_at: Utc::now().to_rfc3339(),
-            };
-            let reasons_json =
-                serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
-            tx.execute(
-                "INSERT INTO gate_decisions VALUES (?1,?2,?3,?4)",
-                params![
-                    gate.candidate_id,
-                    gate_outcome_str(gate.outcome),
-                    reasons_json,
-                    gate.decided_at
-                ],
-            )?;
-            record_event(
-                &tx,
-                candidate_id,
-                "quality.gate_decided",
-                &format!("outcome={:?}", gate.outcome),
-            )?;
-            Some(gate)
-        } else {
-            None
-        };
-        tx.commit()?;
+        ensure_receipt_available(&mut transaction, candidate_id, role, input).await?;
+        let receipt =
+            insert_receipt(&mut transaction, candidate_id, role, input, &candidate).await?;
+        let gate = decide_gate(&mut transaction, candidate_id, &candidate).await?;
+        transaction.commit().await?;
         Ok(QualityIngestResult { receipt, gate })
     }
 
-    pub fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        load_candidate(&connection, id)
+    pub async fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_candidate(&mut connection, id).await
     }
 
-    pub fn gate_for_candidate(&self, candidate_id: &str) -> Result<Option<GateRecord>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        load_gate(&connection, candidate_id)
+    pub async fn gate_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<GateRecord>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_gate(&mut connection, candidate_id).await
     }
 
-    pub fn quality_receipts(&self, candidate_id: &str) -> Result<Vec<QualityReceiptRecord>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        let mut statement = connection.prepare(
+    pub async fn quality_receipts(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Vec<QualityReceiptRecord>, Error> {
+        let rows: Vec<ReceiptColumns> = sqlx::query_as(
             "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
-        )?;
-        let rows = statement.query_map([candidate_id], receipt_row)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
-    }
-
-    fn candidate_context(&self, attempt_id: &str) -> Result<CandidateContext, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        candidate_context(&connection, attempt_id)
+        )
+        .bind(candidate_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(receipt_from_columns).collect()
     }
 }
 
@@ -275,35 +170,55 @@ struct CandidateContext {
     spec_sha256: String,
 }
 
-fn candidate_context(connection: &Connection, attempt_id: &str) -> Result<CandidateContext, Error> {
-    let context = connection
-        .query_row(
-            "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256
-             FROM attempts a
-             JOIN runs r ON r.id=a.run_id
-             JOIN campaigns c ON c.id=r.campaign_id
-             JOIN actions ac ON ac.id=c.action_id
-             JOIN projects p ON p.id=ac.project_id
-             JOIN action_specs s ON s.action_id=ac.id
-             LEFT JOIN worker_leases l ON l.attempt_id=a.id
-             WHERE a.id=?1",
-            [attempt_id],
-            |row| {
-                Ok(CandidateContext {
-                    worker_id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                    generation: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    expires_at_ms: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    attempt_status: row.get(3)?,
-                    campaign_status: row.get(4)?,
-                    repository: row.get(5)?,
-                    base_commit: row.get(6)?,
-                    spec_sha256: row.get(7)?,
-                })
-            },
-        )
-        .optional()?
-        .ok_or(Error::NotFound)?;
-    Ok(context)
+type CandidateContextRow = (
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+async fn candidate_context(
+    connection: &mut SqliteConnection,
+    attempt_id: &str,
+) -> Result<CandidateContext, Error> {
+    let row: Option<CandidateContextRow> = sqlx::query_as(
+        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256
+         FROM attempts a
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         JOIN actions ac ON ac.id=c.action_id
+         JOIN projects p ON p.id=ac.project_id
+         JOIN action_specs s ON s.action_id=ac.id
+         LEFT JOIN worker_leases l ON l.attempt_id=a.id
+         WHERE a.id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(connection)
+    .await?;
+    let (
+        worker_id,
+        generation,
+        expires_at_ms,
+        attempt_status,
+        campaign_status,
+        repository,
+        base_commit,
+        spec_sha256,
+    ) = row.ok_or(Error::NotFound)?;
+    Ok(CandidateContext {
+        worker_id: worker_id.unwrap_or_default(),
+        generation: generation.unwrap_or(0),
+        expires_at_ms: expires_at_ms.unwrap_or(0),
+        attempt_status,
+        campaign_status,
+        repository,
+        base_commit,
+        spec_sha256,
+    })
 }
 
 fn require_live_lease(
@@ -362,92 +277,287 @@ fn is_git_oid(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateRecord> {
-    Ok(CandidateRecord {
-        id: row.get(0)?,
-        attempt_id: row.get(1)?,
-        action_spec_sha256: row.get(2)?,
-        commit_sha: row.get(3)?,
-        tree_sha: row.get(4)?,
-        implementer_id: row.get(5)?,
-        created_at: row.get(6)?,
-    })
+async fn validate_receipt_binding(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    input: &QualityReceiptInput,
+) -> Result<CandidateRecord, Error> {
+    let candidate = load_candidate(connection, candidate_id).await?;
+    if input.action_spec_sha256 != candidate.action_spec_sha256
+        || !input.commit_sha.eq_ignore_ascii_case(&candidate.commit_sha)
+        || !input.tree_sha.eq_ignore_ascii_case(&candidate.tree_sha)
+    {
+        return Err(Error::Forbidden(
+            "receipt is not bound to the exact candidate and ActionSpec".into(),
+        ));
+    }
+    if input.principal_id == candidate.implementer_id {
+        return Err(Error::Forbidden(
+            "implementer cannot provide independent quality evidence".into(),
+        ));
+    }
+    Ok(candidate)
 }
 
-fn load_candidate(connection: &Connection, id: &str) -> Result<CandidateRecord, Error> {
-    Ok(connection.query_row(
+async fn replayed_receipt(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    role: QualityRole,
+    input: &QualityReceiptInput,
+) -> Result<Option<QualityReceiptRecord>, Error> {
+    let Some(existing) = load_receipt_by_id(connection, &input.receipt_id).await? else {
+        return Ok(None);
+    };
+    if existing.candidate_id == candidate_id
+        && existing.role == role
+        && receipt_matches(&existing, input)
+    {
+        return Ok(Some(existing));
+    }
+    Err(Error::Conflict("receipt id reused with different evidence"))
+}
+
+async fn ensure_receipt_available(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    role: QualityRole,
+    input: &QualityReceiptInput,
+) -> Result<(), Error> {
+    if load_receipt_by_role(connection, candidate_id, role)
+        .await?
+        .is_some()
+    {
+        return Err(Error::Conflict(
+            "candidate already has a receipt for this independent role",
+        ));
+    }
+    let other_role = match role {
+        QualityRole::Verifier => QualityRole::Reviewer,
+        QualityRole::Reviewer => QualityRole::Verifier,
+    };
+    if let Some(other) = load_receipt_by_role(connection, candidate_id, other_role).await?
+        && other.principal_id == input.principal_id
+    {
+        return Err(Error::Forbidden(
+            "verifier and reviewer must be independent principals".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn insert_receipt(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    role: QualityRole,
+    input: &QualityReceiptInput,
+    candidate: &CandidateRecord,
+) -> Result<QualityReceiptRecord, Error> {
+    let receipt = QualityReceiptRecord {
+        receipt_id: input.receipt_id.clone(),
+        candidate_id: candidate_id.to_owned(),
+        role,
+        principal_id: input.principal_id.clone(),
+        action_spec_sha256: input.action_spec_sha256.clone(),
+        commit_sha: candidate.commit_sha.clone(),
+        tree_sha: candidate.tree_sha.clone(),
+        result: input.result,
+        evidence: input.evidence,
+        received_at: Utc::now().to_rfc3339(),
+    };
+    sqlx::query("INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
+        .bind(&receipt.receipt_id)
+        .bind(&receipt.candidate_id)
+        .bind(role.as_str())
+        .bind(&receipt.principal_id)
+        .bind(&receipt.action_spec_sha256)
+        .bind(&receipt.commit_sha)
+        .bind(&receipt.tree_sha)
+        .bind(receipt_result_str(receipt.result))
+        .bind(evidence_kind_str(receipt.evidence))
+        .bind(&receipt.received_at)
+        .execute(&mut *connection)
+        .await?;
+    record_event(
+        connection,
+        candidate_id,
+        "quality.receipt_recorded",
+        &format!(
+            "role={} receipt={} principal={} result={:?} evidence={:?}",
+            role.as_str(),
+            receipt.receipt_id,
+            receipt.principal_id,
+            receipt.result,
+            receipt.evidence
+        ),
+    )
+    .await?;
+    Ok(receipt)
+}
+
+async fn decide_gate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    candidate: &CandidateRecord,
+) -> Result<Option<GateRecord>, Error> {
+    let verifier = load_receipt_by_role(connection, candidate_id, QualityRole::Verifier).await?;
+    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
+    let (Some(verifier), Some(reviewer)) = (&verifier, &reviewer) else {
+        return Ok(None);
+    };
+    let policy = load_gate_policy(connection, candidate_id).await?;
+    let decision = evaluate_quality_gate(
+        &FrozenActionSpec {
+            hash: candidate.action_spec_sha256.clone(),
+        },
+        &crate::quality::CandidateRevision {
+            commit_sha: candidate.commit_sha.clone(),
+            tree_sha: candidate.tree_sha.clone(),
+            action_spec_hash: candidate.action_spec_sha256.clone(),
+        },
+        &candidate.implementer_id,
+        Some(&to_verifier_receipt(verifier)),
+        Some(&to_reviewer_receipt(reviewer)),
+        policy,
+    );
+    let gate = GateRecord {
+        candidate_id: candidate_id.to_owned(),
+        outcome: decision.outcome,
+        reasons: decision.reasons,
+        decided_at: Utc::now().to_rfc3339(),
+    };
+    let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
+    sqlx::query("INSERT INTO gate_decisions VALUES (?1,?2,?3,?4)")
+        .bind(&gate.candidate_id)
+        .bind(gate_outcome_str(gate.outcome))
+        .bind(reasons_json)
+        .bind(&gate.decided_at)
+        .execute(&mut *connection)
+        .await?;
+    record_event(
+        connection,
+        candidate_id,
+        "quality.gate_decided",
+        &format!("outcome={:?}", gate.outcome),
+    )
+    .await?;
+    Ok(Some(gate))
+}
+
+type CandidateColumns = (String, String, String, String, String, String, String);
+
+fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
+    let (id, attempt_id, action_spec_sha256, commit_sha, tree_sha, implementer_id, created_at) =
+        columns;
+    CandidateRecord {
+        id,
+        attempt_id,
+        action_spec_sha256,
+        commit_sha,
+        tree_sha,
+        implementer_id,
+        created_at,
+    }
+}
+
+async fn load_candidate(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<CandidateRecord, Error> {
+    let row: Option<CandidateColumns> = sqlx::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
          FROM candidates WHERE id=?1",
-        [id],
-        candidate_row,
-    )?)
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await?;
+    row.map(candidate_from_columns).ok_or(Error::NotFound)
 }
 
-fn load_candidate_for_attempt(
-    connection: &Connection,
+async fn load_candidate_for_attempt(
+    connection: &mut SqliteConnection,
     attempt_id: &str,
 ) -> Result<Option<CandidateRecord>, Error> {
-    Ok(connection
-        .query_row(
-            "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
-             FROM candidates WHERE attempt_id=?1",
-            [attempt_id],
-            candidate_row,
-        )
-        .optional()?)
+    let row: Option<CandidateColumns> = sqlx::query_as(
+        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+         FROM candidates WHERE attempt_id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(connection)
+    .await?;
+    Ok(row.map(candidate_from_columns))
 }
 
-fn receipt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QualityReceiptRecord> {
-    let role: String = row.get(2)?;
-    let result: String = row.get(7)?;
-    let evidence: String = row.get(8)?;
+type ReceiptColumns = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn receipt_from_columns(columns: ReceiptColumns) -> Result<QualityReceiptRecord, Error> {
+    let (
+        receipt_id,
+        candidate_id,
+        role,
+        principal_id,
+        action_spec_sha256,
+        commit_sha,
+        tree_sha,
+        result,
+        evidence,
+        received_at,
+    ) = columns;
     Ok(QualityReceiptRecord {
-        receipt_id: row.get(0)?,
-        candidate_id: row.get(1)?,
-        role: parse_role(&role).map_err(|_| {
-            rusqlite::Error::InvalidColumnType(2, "role".into(), rusqlite::types::Type::Text)
-        })?,
-        principal_id: row.get(3)?,
-        action_spec_sha256: row.get(4)?,
-        commit_sha: row.get(5)?,
-        tree_sha: row.get(6)?,
-        result: parse_receipt_result(&result).ok_or_else(|| {
-            rusqlite::Error::InvalidColumnType(7, "result".into(), rusqlite::types::Type::Text)
-        })?,
-        evidence: parse_evidence_kind(&evidence).ok_or_else(|| {
-            rusqlite::Error::InvalidColumnType(8, "evidence".into(), rusqlite::types::Type::Text)
-        })?,
-        received_at: row.get(9)?,
+        receipt_id,
+        candidate_id,
+        role: parse_role(&role)
+            .map_err(|()| Error::Invalid("stored quality receipt role is invalid"))?,
+        principal_id,
+        action_spec_sha256,
+        commit_sha,
+        tree_sha,
+        result: parse_receipt_result(&result)
+            .ok_or(Error::Invalid("stored quality receipt result is invalid"))?,
+        evidence: parse_evidence_kind(&evidence)
+            .ok_or(Error::Invalid("stored quality receipt evidence is invalid"))?,
+        received_at,
     })
 }
 
-fn load_receipt_by_id(
-    connection: &Connection,
+async fn load_receipt_by_id(
+    connection: &mut SqliteConnection,
     receipt_id: &str,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    Ok(connection
-        .query_row(
-            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
-             FROM quality_receipts WHERE receipt_id=?1",
-            [receipt_id],
-            receipt_row,
-        )
-        .optional()?)
+    let row: Option<ReceiptColumns> = sqlx::query_as(
+        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+         FROM quality_receipts WHERE receipt_id=?1",
+    )
+    .bind(receipt_id)
+    .fetch_optional(connection)
+    .await?;
+    row.map(receipt_from_columns).transpose()
 }
 
-fn load_receipt_by_role(
-    connection: &Connection,
+async fn load_receipt_by_role(
+    connection: &mut SqliteConnection,
     candidate_id: &str,
     role: QualityRole,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    Ok(connection
-        .query_row(
-            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
-             FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
-            params![candidate_id, role.as_str()],
-            receipt_row,
-        )
-        .optional()?)
+    let row: Option<ReceiptColumns> = sqlx::query_as(
+        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+         FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
+    )
+    .bind(candidate_id)
+    .bind(role.as_str())
+    .fetch_optional(connection)
+    .await?;
+    row.map(receipt_from_columns).transpose()
 }
 
 fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {
@@ -459,14 +569,16 @@ fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput)
         && existing.evidence == input.evidence
 }
 
-fn load_gate(connection: &Connection, candidate_id: &str) -> Result<Option<GateRecord>, Error> {
-    let row: Option<(String, String, String)> = connection
-        .query_row(
-            "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
-            [candidate_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
+async fn load_gate(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<Option<GateRecord>, Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(connection)
+    .await?;
     row.map(|(outcome, reasons, decided_at)| {
         Ok(GateRecord {
             candidate_id: candidate_id.to_owned(),
@@ -480,20 +592,22 @@ fn load_gate(connection: &Connection, candidate_id: &str) -> Result<Option<GateR
     .transpose()
 }
 
-fn load_gate_policy(connection: &Connection, candidate_id: &str) -> Result<GatePolicy, Error> {
-    let (campaign_status, risk): (String, String) = connection
-        .query_row(
-            "SELECT c.status,ac.risk FROM candidates cd
-             JOIN attempts a ON a.id=cd.attempt_id
-             JOIN runs r ON r.id=a.run_id
-             JOIN campaigns c ON c.id=r.campaign_id
-             JOIN actions ac ON ac.id=c.action_id
-             WHERE cd.id=?1",
-            [candidate_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?
-        .ok_or(Error::NotFound)?;
+async fn load_gate_policy(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+) -> Result<GatePolicy, Error> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT c.status,ac.risk FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         JOIN actions ac ON ac.id=c.action_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(connection)
+    .await?;
+    let (campaign_status, risk) = row.ok_or(Error::NotFound)?;
     let authorization = match campaign_status.as_str() {
         "AUTHORIZED" => AuthorizationStatus::Authorized,
         "BLOCKED_AUTHORIZATION" => AuthorizationStatus::HumanApprovalRequired,

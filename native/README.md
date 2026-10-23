@@ -2,13 +2,14 @@
 
 This is an incomplete Rust replacement branch. It supports local Project/Action intake, frozen ActionSpec storage, blocked Campaign identity, and provider protocol preflight. It has **no authorized agent dispatch**, campaign execution, accepted CandidateRevision, independent verification, Quality Gate, or Office connection. Do not use it as an engineering controller yet.
 
-Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Run from repository root:
+Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 with SQLite and versioned migrations in `../migrations`. Run from repository root:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo build --bins
+cargo sqlx migrate run --source migrations   # disposable DATABASE_URL; CI check
 ```
 
 Core requires distinct `FACTORY_OPERATOR_TOKEN`, `FACTORY_WORKER_BOOTSTRAP_TOKEN`, `FACTORY_VERIFIER_TOKEN` and `FACTORY_REVIEWER_TOKEN`; role tokens are at least 32 bytes. It optionally accepts `FACTORY_DATABASE` and loopback `FACTORY_BIND`, and refuses non-loopback binding. The Worker requires `FACTORY_WORKER_BOOTSTRAP_TOKEN`, a stable `FACTORY_WORKER_ID`, `FACTORY_WORKER_REGISTRATION_KEY`, and optionally a loopback `FACTORY_CORE_URL`. Registration mints a Worker session token; Core stores only its digest and binds it to the Worker ID. Keep these values out of Git and logs.

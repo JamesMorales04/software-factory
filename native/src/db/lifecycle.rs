@@ -1,28 +1,28 @@
 use super::*;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
+use sqlx::SqliteConnection;
 use uuid::Uuid;
 
 impl Database {
-    pub fn create_campaign(&self, action_id: &str, key: &str) -> Result<Campaign, Error> {
+    pub async fn create_campaign(&self, action_id: &str, key: &str) -> Result<Campaign, Error> {
         let digest = sha256_hex(
             serde_json::to_string(&(action_id, "campaign-v1"))
-                .unwrap()
+                .expect("campaign digest serializes")
                 .as_bytes(),
         );
-        let mut connection = self.0.lock().expect("database mutex poisoned");
-        let tx = connection.transaction()?;
-        if let Some(id) = replay(&tx, key, "create_campaign", &digest)? {
-            let value = load_campaign(&tx, &id)?;
-            tx.commit()?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        if let Some(id) = replay(&mut transaction, key, "create_campaign", &digest).await? {
+            let value = load_campaign(&mut transaction, &id).await?;
+            transaction.commit().await?;
             return Ok(value);
         }
-        let exists = tx
-            .query_row("SELECT 1 FROM actions WHERE id=?1", [action_id], |_| Ok(()))
-            .optional()?
-            .is_some();
-        if !exists {
+        let action: Option<(String,)> = sqlx::query_as("SELECT id FROM actions WHERE id=?1")
+            .bind(action_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        if action.is_none() {
             return Err(Error::NotFound);
         }
         let value = Campaign {
@@ -31,46 +31,49 @@ impl Database {
             status: "BLOCKED_AUTHORIZATION".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        tx.execute(
-            "INSERT INTO campaigns VALUES (?1,?2,?3,?4)",
-            params![value.id, value.action_id, value.status, value.created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO idempotency VALUES (?1,?2,?3,?4)",
-            params![key, "create_campaign", digest, value.id],
-        )?;
+        sqlx::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
+            .bind(&value.id)
+            .bind(&value.action_id)
+            .bind(&value.status)
+            .bind(&value.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+            .bind(key)
+            .bind("create_campaign")
+            .bind(&digest)
+            .bind(&value.id)
+            .execute(&mut *transaction)
+            .await?;
         record_event(
-            &tx,
+            &mut transaction,
             &value.id,
             "campaign.created",
             "blocked pending explicit authorization",
-        )?;
-        tx.commit()?;
+        )
+        .await?;
+        transaction.commit().await?;
         Ok(value)
     }
 
-    pub fn create_run(&self, campaign_id: &str, key: &str) -> Result<Run, Error> {
+    pub async fn create_run(&self, campaign_id: &str, key: &str) -> Result<Run, Error> {
         let digest = sha256_hex(
             serde_json::to_string(&(campaign_id, "run-v1"))
-                .unwrap()
+                .expect("run digest serializes")
                 .as_bytes(),
         );
-        let mut connection = self.0.lock().expect("database mutex poisoned");
-        let tx = connection.transaction()?;
-        if let Some(id) = replay(&tx, key, "create_run", &digest)? {
-            let value = load_run(&tx, &id)?;
-            tx.commit()?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        if let Some(id) = replay(&mut transaction, key, "create_run", &digest).await? {
+            let value = load_run(&mut transaction, &id).await?;
+            transaction.commit().await?;
             return Ok(value);
         }
-        let authorized: bool = tx
-            .query_row(
-                "SELECT status='AUTHORIZED' FROM campaigns WHERE id=?1",
-                [campaign_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or(Error::NotFound)?;
-        if !authorized {
+        let status: Option<(String,)> = sqlx::query_as("SELECT status FROM campaigns WHERE id=?1")
+            .bind(campaign_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        if status.as_ref().map(|(status,)| status.as_str()) != Some("AUTHORIZED") {
             return Err(Error::Invalid(
                 "campaign lacks explicit execution authorization",
             ));
@@ -81,41 +84,43 @@ impl Database {
             status: "QUEUED".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        tx.execute(
-            "INSERT INTO runs VALUES (?1,?2,?3,?4)",
-            params![value.id, value.campaign_id, value.status, value.created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO idempotency VALUES (?1,?2,?3,?4)",
-            params![key, "create_run", digest, value.id],
-        )?;
-        record_event(&tx, &value.id, "run.created", "queued")?;
-        tx.commit()?;
+        sqlx::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+            .bind(&value.id)
+            .bind(&value.campaign_id)
+            .bind(&value.status)
+            .bind(&value.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+            .bind(key)
+            .bind("create_run")
+            .bind(&digest)
+            .bind(&value.id)
+            .execute(&mut *transaction)
+            .await?;
+        record_event(&mut transaction, &value.id, "run.created", "queued").await?;
+        transaction.commit().await?;
         Ok(value)
     }
 
-    pub fn create_attempt(&self, run_id: &str, key: &str) -> Result<Attempt, Error> {
+    pub async fn create_attempt(&self, run_id: &str, key: &str) -> Result<Attempt, Error> {
         let digest = sha256_hex(
             serde_json::to_string(&(run_id, "attempt-v1"))
-                .unwrap()
+                .expect("attempt digest serializes")
                 .as_bytes(),
         );
-        let mut connection = self.0.lock().expect("database mutex poisoned");
-        let tx = connection.transaction()?;
-        if let Some(id) = replay(&tx, key, "create_attempt", &digest)? {
-            let value = load_attempt(&tx, &id)?;
-            tx.commit()?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        if let Some(id) = replay(&mut transaction, key, "create_attempt", &digest).await? {
+            let value = load_attempt(&mut transaction, &id).await?;
+            transaction.commit().await?;
             return Ok(value);
         }
-        let exists = tx
-            .query_row(
-                "SELECT 1 FROM runs WHERE id=?1 AND status='QUEUED'",
-                [run_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !exists {
+        let queued: Option<(String,)> = sqlx::query_as("SELECT status FROM runs WHERE id=?1")
+            .bind(run_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        if queued.as_ref().map(|(status,)| status.as_str()) != Some("QUEUED") {
             return Err(Error::Invalid("run is not queued"));
         }
         let value = Attempt {
@@ -124,115 +129,130 @@ impl Database {
             status: "QUEUED".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        tx.execute(
-            "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)",
-            params![value.id, value.run_id, value.status, value.created_at],
-        )?;
-        tx.execute(
-            "INSERT INTO idempotency VALUES (?1,?2,?3,?4)",
-            params![key, "create_attempt", digest, value.id],
-        )?;
+        sqlx::query("INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)")
+            .bind(&value.id)
+            .bind(&value.run_id)
+            .bind(&value.status)
+            .bind(&value.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+            .bind(key)
+            .bind("create_attempt")
+            .bind(&digest)
+            .bind(&value.id)
+            .execute(&mut *transaction)
+            .await?;
         record_event(
-            &tx,
+            &mut transaction,
             &value.id,
             "attempt.created",
             "queued; no worker assignment",
-        )?;
-        tx.commit()?;
+        )
+        .await?;
+        transaction.commit().await?;
         Ok(value)
     }
 
-    pub fn campaigns(&self) -> Result<Vec<Campaign>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        let mut statement = connection.prepare(
+    pub async fn campaigns(&self) -> Result<Vec<Campaign>, Error> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT id,action_id,status,created_at FROM campaigns ORDER BY created_at,id",
-        )?;
-        Ok(statement
-            .query_map([], |row| {
-                Ok(Campaign {
-                    id: row.get(0)?,
-                    action_id: row.get(1)?,
-                    status: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, action_id, status, created_at)| Campaign {
+                id,
+                action_id,
+                status,
+                created_at,
+            })
+            .collect())
     }
 
-    pub fn runs(&self) -> Result<Vec<Run>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        let mut statement = connection
-            .prepare("SELECT id,campaign_id,status,created_at FROM runs ORDER BY created_at,id")?;
-        Ok(statement
-            .query_map([], |r| {
-                Ok(Run {
-                    id: r.get(0)?,
-                    campaign_id: r.get(1)?,
-                    status: r.get(2)?,
-                    created_at: r.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
+    pub async fn runs(&self) -> Result<Vec<Run>, Error> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT id,campaign_id,status,created_at FROM runs ORDER BY created_at,id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, campaign_id, status, created_at)| Run {
+                id,
+                campaign_id,
+                status,
+                created_at,
+            })
+            .collect())
     }
 
-    pub fn attempts(&self) -> Result<Vec<Attempt>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        let mut statement = connection
-            .prepare("SELECT id,run_id,status,created_at FROM attempts ORDER BY created_at,id")?;
-        Ok(statement
-            .query_map([], |r| {
-                Ok(Attempt {
-                    id: r.get(0)?,
-                    run_id: r.get(1)?,
-                    status: r.get(2)?,
-                    created_at: r.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
+    pub async fn attempts(&self) -> Result<Vec<Attempt>, Error> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT id,run_id,status,created_at FROM attempts ORDER BY created_at,id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, run_id, status, created_at)| Attempt {
+                id,
+                run_id,
+                status,
+                created_at,
+            })
+            .collect())
     }
 }
 
-pub(super) fn load_campaign(connection: &Connection, id: &str) -> Result<Campaign, Error> {
-    Ok(connection.query_row(
-        "SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1",
-        [id],
-        |r| {
-            Ok(Campaign {
-                id: r.get(0)?,
-                action_id: r.get(1)?,
-                status: r.get(2)?,
-                created_at: r.get(3)?,
-            })
-        },
-    )?)
+pub(super) async fn load_campaign(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<Campaign, Error> {
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1")
+            .bind(id)
+            .fetch_optional(connection)
+            .await?;
+    let (id, action_id, status, created_at) = row.ok_or(Error::NotFound)?;
+    Ok(Campaign {
+        id,
+        action_id,
+        status,
+        created_at,
+    })
 }
 
-pub(super) fn load_run(connection: &Connection, id: &str) -> Result<Run, Error> {
-    Ok(connection.query_row(
-        "SELECT id,campaign_id,status,created_at FROM runs WHERE id=?1",
-        [id],
-        |r| {
-            Ok(Run {
-                id: r.get(0)?,
-                campaign_id: r.get(1)?,
-                status: r.get(2)?,
-                created_at: r.get(3)?,
-            })
-        },
-    )?)
+pub(super) async fn load_run(connection: &mut SqliteConnection, id: &str) -> Result<Run, Error> {
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("SELECT id,campaign_id,status,created_at FROM runs WHERE id=?1")
+            .bind(id)
+            .fetch_optional(connection)
+            .await?;
+    let (id, campaign_id, status, created_at) = row.ok_or(Error::NotFound)?;
+    Ok(Run {
+        id,
+        campaign_id,
+        status,
+        created_at,
+    })
 }
 
-pub(super) fn load_attempt(connection: &Connection, id: &str) -> Result<Attempt, Error> {
-    Ok(connection.query_row(
-        "SELECT id,run_id,status,created_at FROM attempts WHERE id=?1",
-        [id],
-        |r| {
-            Ok(Attempt {
-                id: r.get(0)?,
-                run_id: r.get(1)?,
-                status: r.get(2)?,
-                created_at: r.get(3)?,
-            })
-        },
-    )?)
+pub(super) async fn load_attempt(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<Attempt, Error> {
+    let row: Option<(String, String, String, String)> =
+        sqlx::query_as("SELECT id,run_id,status,created_at FROM attempts WHERE id=?1")
+            .bind(id)
+            .fetch_optional(connection)
+            .await?;
+    let (id, run_id, status, created_at) = row.ok_or(Error::NotFound)?;
+    Ok(Attempt {
+        id,
+        run_id,
+        status,
+        created_at,
+    })
 }

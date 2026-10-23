@@ -1,8 +1,11 @@
-use std::{fs::OpenOptions, path::Path, sync::Mutex, time::Duration};
+use std::{fs::OpenOptions, path::Path, sync::Arc, time::Duration};
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+};
 
 use crate::quality::{
     AuthorizationStatus, EvidenceKind, FrozenActionSpec, GateOutcome, GatePolicy, ReceiptResult,
@@ -13,9 +16,15 @@ use crate::workspace::verify_candidate_commit;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("database error: {0}")]
-    Sql(#[from] rusqlite::Error),
+    Sqlx(sqlx::Error),
+    #[error("database migration error: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("database file error: {0}")]
     File(#[from] std::io::Error),
+    #[error("database constraint: {0}")]
+    Constraint(String),
+    #[error("database is busy; retry the operation")]
+    Busy,
     #[error("invalid project repository: {0}")]
     Repository(String),
     #[error("invalid request: {0}")]
@@ -202,138 +211,91 @@ pub struct QualityIngestResult {
     pub gate: Option<GateRecord>,
 }
 
-pub struct Database(Mutex<Connection>);
+#[derive(Clone)]
+pub struct Database {
+    pool: SqlitePool,
+    /// SQLite permits one writer. Serialize write transactions through an
+    /// async gate so callers never hold a blocking lock or a connection mutex
+    /// across an await. Reads continue under WAL.
+    write_lock: Arc<tokio::sync::Mutex<()>>,
+}
 
 impl Database {
-    pub fn open(path: &Path) -> Result<Self, Error> {
+    /// Open or create the database through versioned migrations. Existing
+    /// experimental rows are adopted by `0001_initial.sql`; an incompatible
+    /// schema fails with a database error instead of being recreated.
+    pub async fn open(path: &Path) -> Result<Self, Error> {
         prepare_database_file(path)?;
-        let connection = Connection::open(path)?;
-        connection.busy_timeout(Duration::from_secs(5))?;
-        let existing_projects: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')",
-            [],
-            |row| row.get(0),
-        )?;
-        let schema_version: i64 =
-            connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if existing_projects && schema_version != 1 {
-            return Err(Error::Invalid(
-                "unsupported experimental database schema; preserve this database and use a new file",
-            ));
-        }
-        connection.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
-             CREATE TABLE IF NOT EXISTS projects (
-               id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE,
-               base_commit TEXT NOT NULL, created_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS actions (
-               id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
-               objective TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-               risk TEXT NOT NULL, status TEXT NOT NULL, objective_sha256 TEXT NOT NULL,
-               created_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS action_specs (
-               action_id TEXT PRIMARY KEY REFERENCES actions(id),
-               spec_json TEXT NOT NULL, spec_sha256 TEXT NOT NULL
-             );
-             CREATE TRIGGER IF NOT EXISTS action_specs_immutable_update
-             BEFORE UPDATE ON action_specs BEGIN SELECT RAISE(ABORT, 'ActionSpec is immutable'); END;
-             CREATE TRIGGER IF NOT EXISTS action_specs_immutable_delete
-             BEFORE DELETE ON action_specs BEGIN SELECT RAISE(ABORT, 'ActionSpec is immutable'); END;
-             CREATE TABLE IF NOT EXISTS campaigns (
-               id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES actions(id),
-               status TEXT NOT NULL, created_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS runs (
-               id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL REFERENCES campaigns(id),
-               status TEXT NOT NULL, created_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS attempts (
-               id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id),
-               status TEXT NOT NULL, created_at TEXT NOT NULL,
-               sandbox_ready INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE TABLE IF NOT EXISTS worker_leases (
-               attempt_id TEXT PRIMARY KEY REFERENCES attempts(id),
-               worker_id TEXT NOT NULL, generation INTEGER NOT NULL,
-               expires_at_ms INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS worker_receipts (
-               receipt_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
-               attempt_id TEXT NOT NULL REFERENCES attempts(id), recorded_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS worker_sessions (
-               worker_id TEXT PRIMARY KEY, token_sha256 TEXT NOT NULL,
-               updated_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS candidates (
-               id TEXT PRIMARY KEY,
-               attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id),
-               action_spec_sha256 TEXT NOT NULL,
-               commit_sha TEXT NOT NULL, tree_sha TEXT NOT NULL,
-               implementer_id TEXT NOT NULL, created_at TEXT NOT NULL
-             );
-             CREATE TRIGGER IF NOT EXISTS candidates_immutable_update
-             BEFORE UPDATE ON candidates BEGIN SELECT RAISE(ABORT, 'candidate is immutable'); END;
-             CREATE TRIGGER IF NOT EXISTS candidates_immutable_delete
-             BEFORE DELETE ON candidates BEGIN SELECT RAISE(ABORT, 'candidate is immutable'); END;
-             CREATE TABLE IF NOT EXISTS quality_receipts (
-               receipt_id TEXT PRIMARY KEY,
-               candidate_id TEXT NOT NULL REFERENCES candidates(id),
-               role TEXT NOT NULL, principal_id TEXT NOT NULL,
-               action_spec_sha256 TEXT NOT NULL,
-               commit_sha TEXT NOT NULL, tree_sha TEXT NOT NULL,
-               result TEXT NOT NULL, evidence TEXT NOT NULL,
-               received_at TEXT NOT NULL,
-               UNIQUE(candidate_id, role)
-             );
-             CREATE TRIGGER IF NOT EXISTS quality_receipts_immutable_update
-             BEFORE UPDATE ON quality_receipts BEGIN SELECT RAISE(ABORT, 'quality receipt is immutable'); END;
-             CREATE TRIGGER IF NOT EXISTS quality_receipts_immutable_delete
-             BEFORE DELETE ON quality_receipts BEGIN SELECT RAISE(ABORT, 'quality receipt is immutable'); END;
-             CREATE TABLE IF NOT EXISTS gate_decisions (
-               candidate_id TEXT PRIMARY KEY REFERENCES candidates(id),
-               outcome TEXT NOT NULL, reasons_json TEXT NOT NULL,
-               decided_at TEXT NOT NULL
-             );
-             CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_update
-             BEFORE UPDATE ON gate_decisions BEGIN SELECT RAISE(ABORT, 'gate decision is immutable'); END;
-             CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_delete
-             BEFORE DELETE ON gate_decisions BEGIN SELECT RAISE(ABORT, 'gate decision is immutable'); END;
-             CREATE TABLE IF NOT EXISTS events (
-               sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-               subject_id TEXT NOT NULL, kind TEXT NOT NULL,
-               detail TEXT NOT NULL, recorded_at TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS idempotency (
-               key TEXT PRIMARY KEY, operation TEXT NOT NULL,
-               request_digest TEXT NOT NULL, resource_id TEXT NOT NULL
-             );",
-        )?;
-        if !existing_projects {
-            connection.pragma_update(None, "user_version", 1)?;
-        }
-        Ok(Self(Mutex::new(connection)))
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .min_connections(0)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(options)
+            .await?;
+        sqlx::migrate!("../migrations").run(&pool).await?;
+        // Fail closed if an unrelated/older schema was present and the
+        // migrations could not establish the expected columns.
+        sqlx::query("SELECT id,repository,base_commit,created_at FROM projects LIMIT 0")
+            .execute(&pool)
+            .await?;
+        Ok(Self {
+            pool,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        })
     }
 
-    pub fn events(&self) -> Result<Vec<Event>, Error> {
-        let connection = self.0.lock().expect("database mutex poisoned");
-        let mut statement = connection.prepare(
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
+    pub async fn events(&self) -> Result<Vec<Event>, Error> {
+        let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
             "SELECT sequence,subject_id,kind,detail,recorded_at FROM events ORDER BY sequence",
-        )?;
-        Ok(statement
-            .query_map([], |row| {
-                Ok(Event {
-                    sequence: row.get(0)?,
-                    subject_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    detail: row.get(3)?,
-                    recorded_at: row.get(4)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(sequence, subject_id, kind, detail, recorded_at)| Event {
+                sequence,
+                subject_id,
+                kind,
+                detail,
+                recorded_at,
+            })
+            .collect())
+    }
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(error: sqlx::Error) -> Self {
+        match &error {
+            sqlx::Error::Database(database) => {
+                if database.is_unique_violation() {
+                    return Self::Conflict("duplicate record");
+                }
+                if database.is_foreign_key_violation() {
+                    return Self::Constraint("foreign key violation".into());
+                }
+                if database.code().as_deref() == Some("5")
+                    || database
+                        .message()
+                        .to_ascii_lowercase()
+                        .contains("database is locked")
+                {
+                    return Self::Busy;
+                }
+                Self::Sqlx(error)
+            }
+            _ => Self::Sqlx(error),
+        }
     }
 }
 
@@ -395,45 +357,42 @@ fn prepare_database_file(path: &Path) -> Result<(), Error> {
     }
 }
 
-fn record_event(
-    connection: &Connection,
+async fn record_event(
+    connection: &mut sqlx::SqliteConnection,
     subject_id: &str,
     kind: &str,
     detail: &str,
 ) -> Result<(), Error> {
-    connection.execute(
-        "INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,?3,?4)",
-        params![subject_id, kind, detail, Utc::now().to_rfc3339()],
-    )?;
+    sqlx::query("INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,?3,?4)")
+        .bind(subject_id)
+        .bind(kind)
+        .bind(detail)
+        .bind(Utc::now().to_rfc3339())
+        .execute(connection)
+        .await?;
     Ok(())
 }
 
-fn replay(
-    connection: &Connection,
+async fn replay(
+    connection: &mut sqlx::SqliteConnection,
     key: &str,
     operation: &str,
     request_digest: &str,
 ) -> Result<Option<String>, Error> {
-    let existing = connection
-        .query_row(
-            "SELECT operation,request_digest,resource_id FROM idempotency WHERE key=?1",
-            [key],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()?;
+    let existing: Option<(String, String, String)> =
+        sqlx::query_as("SELECT operation,request_digest,resource_id FROM idempotency WHERE key=?1")
+            .bind(key)
+            .fetch_optional(connection)
+            .await?;
     match existing {
         Some((saved_operation, saved_digest, id))
             if saved_operation == operation && saved_digest == request_digest =>
         {
             Ok(Some(id))
         }
-        Some(_) => Err(Error::Invalid("idempotency key reused for another request")),
+        Some(_) => Err(Error::Conflict(
+            "idempotency key reused for another request",
+        )),
         None => Ok(None),
     }
 }

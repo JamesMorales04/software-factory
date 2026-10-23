@@ -25,6 +25,15 @@ jobs:
         run: cargo +1.90.0 install cargo-audit --version 0.22.2 --locked
       - name: Audit locked dependencies
         run: cargo +1.90.0 audit --file Cargo.lock
+      - name: Install pinned SQLx CLI
+        run: cargo +1.90.0 install sqlx-cli --version 0.8.6 --no-default-features --features sqlite --locked
+      - name: Verify migrations from a clean database
+        run: |
+          export DATABASE_URL="sqlite:$RUNNER_TEMP/factory-migration-check.sqlite"
+          rm -f "$RUNNER_TEMP/factory-migration-check.sqlite"
+          cargo +1.90.0 sqlx database create
+          cargo +1.90.0 sqlx migrate run --source migrations
+          cargo +1.90.0 sqlx migrate info --source migrations
       - name: Format
         run: cargo +1.90.0 fmt --all -- --check
       - name: Clippy

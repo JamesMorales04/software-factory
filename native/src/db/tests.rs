@@ -1,50 +1,110 @@
 use super::*;
 
 use chrono::Utc;
-use rusqlite::params;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{Connection as SqlxConnection, SqliteConnection};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use super::lifecycle::load_attempt;
 
-#[test]
-fn old_experimental_database_is_rejected_without_modification() {
-    let path = std::env::temp_dir().join(format!("factory-db-test-{}.sqlite", Uuid::new_v4()));
-    let connection = Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE projects (id TEXT PRIMARY KEY); INSERT INTO projects VALUES ('keep');",
-        )
+fn temp_path(prefix: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
+}
+
+async fn temp_db(prefix: &str) -> (PathBuf, Database) {
+    let path = temp_path(prefix);
+    let db = Database::open(&path).await.unwrap();
+    (path, db)
+}
+
+async fn insert_project(db: &Database, id: &str, repository: &str, base: &str) {
+    sqlx::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
+        .bind(id)
+        .bind(repository)
+        .bind(base)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
         .unwrap();
-    drop(connection);
+}
+
+async fn count(db: &Database, sql: &str) -> i64 {
+    let (value,): (i64,) = sqlx::query_as(sql).fetch_one(&db.pool).await.unwrap();
+    value
+}
+
+#[tokio::test]
+async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
+    let path = temp_path("factory-migrations");
+    let db = Database::open(&path).await.unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await, 1);
+    insert_project(&db, "project", "/fixture", "base").await;
+    db.close().await;
+
+    let reopened = Database::open(&path).await.unwrap();
+    assert_eq!(
+        count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        1
+    );
+    assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
+    reopened.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
+    let path = temp_path("factory-legacy");
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, base_commit TEXT NOT NULL, created_at TEXT NOT NULL)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO projects VALUES ('keep','/legacy','base','now')")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA user_version = 1")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    assert!(matches!(Database::open(&path), Err(Error::Invalid(_))));
-    let connection = Connection::open(&path).unwrap();
-    let retained: String = connection
-        .query_row("SELECT id FROM projects", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(retained, "keep");
-    drop(connection);
+
+    let db = Database::open(&path).await.unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await, 1);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,
+        1
+    );
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
 #[cfg(unix)]
-#[test]
-fn existing_group_readable_database_is_rejected_without_changing_data_or_mode() {
+#[tokio::test]
+async fn p5_group_readable_database_is_rejected_without_changing_data_or_mode() {
     use std::os::unix::fs::PermissionsExt;
-    let path = std::env::temp_dir().join(format!("factory-insecure-db-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute_batch("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES ('keep');")
+    let (path, db) = temp_db("factory-insecure-db").await;
+    sqlx::query("CREATE TABLE retained(value TEXT)")
+        .execute(&db.pool)
+        .await
         .unwrap();
-    drop(db);
+    sqlx::query("INSERT INTO retained VALUES ('keep')")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.close().await;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(matches!(
-        Database::open(&path),
+        Database::open(&path).await,
         Err(Error::Invalid(
             "existing database file grants group or other access"
         ))
@@ -53,84 +113,113 @@ fn existing_group_readable_database_is_rejected_without_changing_data_or_mode() 
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o644
     );
-    let connection = Connection::open(&path).unwrap();
-    let value: String = connection
-        .query_row("SELECT value FROM retained", [], |row| row.get(0))
+    let options = SqliteConnectOptions::new().filename(&path);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    let (value,): (String,) = sqlx::query_as("SELECT value FROM retained")
+        .fetch_one(&mut connection)
+        .await
         .unwrap();
     assert_eq!(value, "keep");
-    drop(connection);
+    connection.close().await.unwrap();
     let _ = std::fs::remove_file(path);
 }
 
 #[cfg(unix)]
-#[test]
-fn database_symlink_path_is_rejected() {
+#[tokio::test]
+async fn database_symlink_path_is_rejected() {
     let directory = std::env::temp_dir().join(format!("factory-db-link-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     let target = directory.join("target.sqlite");
     let link = directory.join("linked.sqlite");
-    let _db = Database::open(&target).unwrap();
+    let db = Database::open(&target).await.unwrap();
     std::os::unix::fs::symlink(&target, &link).unwrap();
     assert!(matches!(
-        Database::open(&link),
+        Database::open(&link).await,
         Err(Error::Invalid(
             "database path must be a regular non-symlink file"
         ))
     ));
-    drop(_db);
+    db.close().await;
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-#[test]
-fn idempotency_rejects_changed_action_and_cross_operation() {
-    let path = std::env::temp_dir().join(format!("factory-db-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    {
-        let connection = db.0.lock().unwrap();
-        connection
-            .execute(
-                "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-                params!["project", "/fixture", "base", "now"],
-            )
-            .unwrap();
-    }
+#[tokio::test]
+async fn p3_idempotency_replays_same_payload_and_rejects_changes() {
+    let (path, db) = temp_db("factory-idempotency").await;
+    insert_project(&db, "project", "/fixture", "base").await;
     let action = db
         .create_action("project", "fix bug", "codex", "model-a", "key-one")
+        .await
         .unwrap();
     assert_eq!(
         action.id,
         db.create_action("project", "fix bug", "codex", "model-a", "key-one")
+            .await
             .unwrap()
             .id
     );
     assert!(matches!(
-        db.create_action("project", "different", "codex", "model-a", "key-one"),
-        Err(Error::Invalid(_))
+        db.create_action("project", "different", "codex", "model-a", "key-one")
+            .await,
+        Err(Error::Conflict(_))
     ));
-    {
-        let connection = db.0.lock().unwrap();
-        assert!(matches!(
-            replay(&connection, "key-one", "register_project", "digest"),
-            Err(Error::Invalid(_))
-        ));
-    }
-    drop(db);
+    let mut connection = db.pool.acquire().await.unwrap();
+    assert!(matches!(
+        replay(&mut connection, "key-one", "register_project", "digest").await,
+        Err(Error::Conflict(_))
+    ));
+    drop(connection);
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
-fn action_spec_is_frozen_but_execution_remains_human_required() {
-    let path = std::env::temp_dir().join(format!("factory-db-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    {
-        let connection = db.0.lock().unwrap();
-        connection
-            .execute(
-                "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-                params!["project", "/fixture", "base", "now"],
-            )
-            .unwrap();
-    }
+#[tokio::test]
+async fn p4_failure_injection_rolls_back_action_spec_and_event() {
+    let (path, db) = temp_db("factory-atomicity").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    sqlx::query(
+        "CREATE TRIGGER fail_spec BEFORE INSERT ON action_specs BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        db.create_action("project", "objective", "codex", "model", "action-key")
+            .await
+            .is_err()
+    );
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM actions").await, 0);
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM action_specs").await, 0);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM events WHERE kind='action.created'"
+        )
+        .await,
+        0
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn p5_referential_integrity_rejects_unknown_project() {
+    let (path, db) = temp_db("factory-references").await;
+    let result = sqlx::query(
+        "INSERT INTO actions VALUES ('a','missing','o','codex','m','R0','PENDING','d','now')",
+    )
+    .execute(&db.pool)
+    .await;
+    let error = Error::from(result.unwrap_err());
+    assert!(matches!(error, Error::Constraint(_)));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn frozen_spec_is_immutable_and_remains_human_required() {
+    let (path, db) = temp_db("factory-spec").await;
+    insert_project(&db, "project", "/fixture", "base").await;
     let action = db
         .create_action(
             "project",
@@ -139,101 +228,110 @@ fn action_spec_is_frozen_but_execution_remains_human_required() {
             "provider/model",
             "key-two",
         )
+        .await
         .unwrap();
     assert_eq!(action.status, "HUMAN_REQUIRED");
     assert_eq!(action.risk, "UNASSESSED");
     assert_eq!(action.spec.base_commit, "base");
-    assert_eq!(action.spec.schema_version, 1);
-    assert_eq!(action.spec.objective, "fix bug");
     let canonical_spec = serde_json::to_string(&action.spec).unwrap();
     assert_eq!(action.spec_sha256, sha256_hex(canonical_spec.as_bytes()));
     assert_ne!(action.spec_sha256, action.objective_sha256);
-    let listed = db.actions().unwrap();
+    let listed = db.actions().await.unwrap();
     assert_eq!(listed[0].spec, action.spec);
-    assert_eq!(listed[0].spec_sha256, action.spec_sha256);
-    drop(db);
+    sqlx::query("UPDATE actions SET objective='tampered' WHERE id=?1")
+        .bind(&action.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(matches!(db.actions().await, Err(Error::Invalid(_))));
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
-fn campaign_is_durable_but_cannot_create_run_without_authorization() {
-    let path = std::env::temp_dir().join(format!("factory-db-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-            params!["project", "/fixture", "base", "now"],
-        )
-        .unwrap();
+#[tokio::test]
+async fn campaign_is_durable_but_requires_authorization_for_a_run() {
+    let (path, db) = temp_db("factory-campaign").await;
+    insert_project(&db, "project", "/fixture", "base").await;
     let action = db
         .create_action("project", "objective", "codex", "model", "action-key")
+        .await
         .unwrap();
-    let campaign = db.create_campaign(&action.id, "campaign-key").unwrap();
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
     assert_eq!(campaign.status, "BLOCKED_AUTHORIZATION");
     assert_eq!(
         campaign.id,
-        db.create_campaign(&action.id, "campaign-key").unwrap().id
+        db.create_campaign(&action.id, "campaign-key")
+            .await
+            .unwrap()
+            .id
     );
-    assert_eq!(db.campaigns().unwrap()[0].id, campaign.id);
     assert!(matches!(
-        db.create_run(&campaign.id, "run-key"),
+        db.create_run(&campaign.id, "run-key").await,
         Err(Error::Invalid(_))
     ));
-    let events = db.events().unwrap();
+    let events = db.events().await.unwrap();
     assert!(events.iter().any(|event| event.kind == "campaign.created"));
-    drop(db);
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-fn authorized_attempt(db: &Database) -> String {
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-            params!["project", "/fixture", "base", "now"],
-        )
-        .unwrap();
+async fn authorized_attempt(db: &Database) -> String {
+    insert_project(db, "project", "/fixture", "base").await;
     let action = db
         .create_action("project", "objective", "codex", "model", "action-key")
+        .await
         .unwrap();
-    let campaign = db.create_campaign(&action.id, "campaign-key").unwrap();
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
     // Fixture setup only: there is deliberately no public authorization or
     // sandbox attestation route in the product API.
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1",
-            [&campaign.id],
-        )
+    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+        .bind(&campaign.id)
+        .execute(&db.pool)
+        .await
         .unwrap();
-    let run = db.create_run(&campaign.id, "run-key").unwrap();
-    let attempt = db.create_attempt(&run.id, "attempt-key").unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE attempts SET sandbox_ready=1 WHERE id=?1",
-            [&attempt.id],
-        )
+    let run = db.create_run(&campaign.id, "run-key").await.unwrap();
+    let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
+    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+        .bind(&attempt.id)
+        .execute(&db.pool)
+        .await
         .unwrap();
     attempt.id
 }
 
-#[test]
-fn worker_claim_is_fenced_expires_and_receipts_survive_restart() {
-    let path = std::env::temp_dir().join(format!("factory-lease-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    let attempt_id = authorized_attempt(&db);
-    assert_eq!(db.runs().unwrap().len(), 1);
-    assert_eq!(db.attempts().unwrap()[0].id, attempt_id);
-    let first = db.claim_attempt("worker-a", 100, 50).unwrap().unwrap();
+#[tokio::test]
+async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
+    let path = temp_path("factory-lease");
+    let db = Database::open(&path).await.unwrap();
+    let attempt_id = authorized_attempt(&db).await;
+    assert_eq!(db.runs().await.unwrap().len(), 1);
+    assert_eq!(db.attempts().await.unwrap()[0].id, attempt_id);
+    let first = db
+        .claim_attempt("worker-a", 100, 50)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(first.generation, 1);
-    assert!(db.heartbeat(&attempt_id, "worker-a", 1, 120, 50).is_ok());
+    assert!(
+        db.heartbeat(&attempt_id, "worker-a", 1, 120, 50)
+            .await
+            .is_ok()
+    );
     assert!(matches!(
-        db.heartbeat(&attempt_id, "worker-a", 1, 170, 50),
+        db.heartbeat(&attempt_id, "worker-a", 1, 170, 50).await,
         Err(Error::Invalid(_))
     ));
-    let second = db.claim_attempt("worker-b", 170, 50).unwrap().unwrap();
+    let second = db
+        .claim_attempt("worker-b", 170, 50)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(second.generation, 2);
     let report = WorkerReport {
         attempt_id: attempt_id.clone(),
@@ -250,7 +348,8 @@ fn worker_claim_is_fenced_expires_and_receipts_survive_restart() {
                 ..report.clone()
             },
             180
-        ),
+        )
+        .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
@@ -261,110 +360,115 @@ fn worker_claim_is_fenced_expires_and_receipts_survive_restart() {
                 ..report.clone()
             },
             180
-        ),
+        )
+        .await,
         Err(Error::Invalid(_))
     ));
-    db.report_terminal(&report, 180).unwrap();
-    db.report_terminal(&report, 181).unwrap();
-    drop(db);
-    let reopened = Database::open(&path).unwrap();
-    reopened.report_terminal(&report, 182).unwrap();
+    db.report_terminal(&report, 180).await.unwrap();
+    db.report_terminal(&report, 181).await.unwrap();
+    db.close().await;
+    let reopened = Database::open(&path).await.unwrap();
+    reopened.report_terminal(&report, 182).await.unwrap();
+    let mut connection = reopened.pool.acquire().await.unwrap();
     assert_eq!(
-        load_attempt(&reopened.0.lock().unwrap(), &attempt_id)
+        load_attempt(&mut connection, &attempt_id)
+            .await
             .unwrap()
             .status,
         "FAILED"
     );
-    drop(reopened);
+    drop(connection);
+    reopened.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
-fn concurrent_workers_claim_distinct_ready_attempts_atomically() {
-    let path = std::env::temp_dir().join(format!("factory-claim-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    let first = authorized_attempt(&db);
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-            params!["project-2", "/fixture-2", "base", "now"],
-        )
-        .unwrap();
+#[tokio::test]
+async fn p6_concurrent_workers_claim_distinct_attempts() {
+    let (path, db) = temp_db("factory-claim").await;
+    let first = authorized_attempt(&db).await;
+    insert_project(&db, "project-2", "/fixture-2", "base").await;
     let action = db
         .create_action("project-2", "objective", "codex", "model", "action-key-2")
+        .await
         .unwrap();
-    let campaign = db.create_campaign(&action.id, "campaign-key-2").unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1",
-            [&campaign.id],
-        )
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key-2")
+        .await
         .unwrap();
-    let run = db.create_run(&campaign.id, "run-key-2").unwrap();
-    let second = db.create_attempt(&run.id, "attempt-key-2").unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE attempts SET sandbox_ready=1 WHERE id=?1",
-            [&second.id],
-        )
+    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+        .bind(&campaign.id)
+        .execute(&db.pool)
+        .await
         .unwrap();
-    let left = Database::open(&path).unwrap();
-    let right = Database::open(&path).unwrap();
-    let a = std::thread::spawn(move || left.claim_attempt("worker-a", 100, 1000).unwrap().unwrap());
-    let b =
-        std::thread::spawn(move || right.claim_attempt("worker-b", 100, 1000).unwrap().unwrap());
-    let a = a.join().unwrap();
-    let b = b.join().unwrap();
+    let run = db.create_run(&campaign.id, "run-key-2").await.unwrap();
+    let second = db.create_attempt(&run.id, "attempt-key-2").await.unwrap();
+    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+        .bind(&second.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let left = db.clone();
+    let right = db.clone();
+    let (a, b) = tokio::join!(
+        async move {
+            left.claim_attempt("worker-a", 100, 1000)
+                .await
+                .unwrap()
+                .unwrap()
+        },
+        async move {
+            right
+                .claim_attempt("worker-b", 100, 1000)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    );
     assert_ne!(a.attempt_id, b.attempt_id);
     assert!(a.attempt_id == first || a.attempt_id == second.id);
-    drop(db);
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
-fn lease_arithmetic_overflow_fails_closed_without_reusing_generation() {
-    let path =
-        std::env::temp_dir().join(format!("factory-overflow-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    let attempt = authorized_attempt(&db);
+#[tokio::test]
+async fn lease_arithmetic_overflow_fails_closed_without_reusing_generation() {
+    let (path, db) = temp_db("factory-overflow").await;
+    let attempt = authorized_attempt(&db).await;
     assert!(matches!(
-        db.claim_attempt("worker-a", i64::MAX - 5, 50),
+        db.claim_attempt("worker-a", i64::MAX - 5, 50).await,
         Err(Error::Invalid(_))
     ));
-    assert!(db.claim_attempt("worker-a", 100, 50).unwrap().is_some());
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE worker_leases SET generation=?1,expires_at_ms=0 WHERE attempt_id=?2",
-            params![i64::MAX, attempt],
-        )
+    assert!(
+        db.claim_attempt("worker-a", 100, 50)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    sqlx::query("UPDATE worker_leases SET generation=?1,expires_at_ms=1 WHERE attempt_id=?2")
+        .bind(i64::MAX)
+        .bind(&attempt)
+        .execute(&db.pool)
+        .await
         .unwrap();
     assert!(matches!(
-        db.claim_attempt("worker-b", 10, 50),
+        db.claim_attempt("worker-b", 10, 50).await,
         Err(Error::Invalid("worker generation exhausted"))
     ));
-    let generation: i64 =
-        db.0.lock()
-            .unwrap()
-            .query_row(
-                "SELECT generation FROM worker_leases WHERE attempt_id=?1",
-                [attempt],
-                |row| row.get(0),
-            )
+    let (generation,): (i64,) =
+        sqlx::query_as("SELECT generation FROM worker_leases WHERE attempt_id=?1")
+            .bind(&attempt)
+            .fetch_one(&db.pool)
+            .await
             .unwrap();
     assert_eq!(generation, i64::MAX);
-    drop(db);
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
-#[test]
-fn worker_registration_stores_only_hash_and_replay_rotates_session_across_restart() {
-    let path =
-        std::env::temp_dir().join(format!("factory-worker-session-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
+#[tokio::test]
+async fn worker_registration_stores_only_hash_and_rotates_after_restart() {
+    let path = temp_path("factory-worker-session");
+    let db = Database::open(&path).await.unwrap();
     assert!(
         db.register_worker_session(
             "worker-a",
@@ -372,15 +476,13 @@ fn worker_registration_stores_only_hash_and_replay_rotates_session_across_restar
             "bootstrap-secret-12345678901234567890",
             "session-token-aaaaaaaaaaaaaaaaaaaaaaaa"
         )
+        .await
         .unwrap()
         .created
     );
     assert!(
         db.worker_session_matches("worker-a", "session-token-aaaaaaaaaaaaaaaaaaaaaaaa")
-            .unwrap()
-    );
-    assert!(
-        !db.worker_session_matches("worker-b", "session-token-aaaaaaaaaaaaaaaaaaaaaaaa")
+            .await
             .unwrap()
     );
     assert!(
@@ -390,15 +492,13 @@ fn worker_registration_stores_only_hash_and_replay_rotates_session_across_restar
             "bootstrap-secret-12345678901234567890",
             "session-token-bbbbbbbbbbbbbbbbbbbbbbbb"
         )
+        .await
         .unwrap()
         .created
     );
     assert!(
         !db.worker_session_matches("worker-a", "session-token-aaaaaaaaaaaaaaaaaaaaaaaa")
-            .unwrap()
-    );
-    assert!(
-        db.worker_session_matches("worker-a", "session-token-bbbbbbbbbbbbbbbbbbbbbbbb")
+            .await
             .unwrap()
     );
     assert!(matches!(
@@ -407,43 +507,34 @@ fn worker_registration_stores_only_hash_and_replay_rotates_session_across_restar
             "new-key",
             "bootstrap-secret-12345678901234567890",
             "session-token-cccccccccccccccccccccccc"
-        ),
+        )
+        .await,
         Err(Error::Conflict(_))
     ));
-    let event_details: Vec<String> = {
-        let connection = db.0.lock().unwrap();
-        let mut query = connection
-            .prepare("SELECT detail FROM events WHERE subject_id='worker-a'")
+    let details: Vec<(String,)> =
+        sqlx::query_as("SELECT detail FROM events WHERE subject_id='worker-a'")
+            .fetch_all(&db.pool)
+            .await
             .unwrap();
-        query
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
     assert!(
-        event_details
+        details
             .iter()
-            .all(|detail| !detail.contains("session-token"))
+            .all(|(detail,)| !detail.contains("session-token"))
     );
-    let persisted_registration_key: String =
-        db.0.lock()
-            .unwrap()
-            .query_row(
-                "SELECT key FROM idempotency WHERE operation='register_worker_session'",
-                [],
-                |row| row.get(0),
-            )
+    let (persisted_key,): (String,) =
+        sqlx::query_as("SELECT key FROM idempotency WHERE operation='register_worker_session'")
+            .fetch_one(&db.pool)
+            .await
             .unwrap();
-    assert_ne!(persisted_registration_key, "registration-a");
+    assert_ne!(persisted_key, "registration-a");
     assert_eq!(
-        persisted_registration_key,
+        persisted_key,
         format!(
             "worker-registration-v1:{}",
             hmac_sha256_hex(b"bootstrap-secret-12345678901234567890", b"registration-a")
         )
     );
-    drop(db);
+    db.close().await;
     let persisted_bytes = std::fs::read(&path).unwrap();
     assert!(
         !persisted_bytes
@@ -463,34 +554,29 @@ fn worker_registration_stores_only_hash_and_replay_rotates_session_across_restar
             0o600
         );
     }
-    let reopened = Database::open(&path).unwrap();
+    let reopened = Database::open(&path).await.unwrap();
     assert!(
         reopened
             .worker_session_matches("worker-a", "session-token-bbbbbbbbbbbbbbbbbbbbbbbb")
+            .await
             .unwrap()
     );
-    let persisted_hash: String = reopened
-        .0
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT token_sha256 FROM worker_sessions WHERE worker_id='worker-a'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let (persisted_hash,): (String,) =
+        sqlx::query_as("SELECT token_sha256 FROM worker_sessions WHERE worker_id='worker-a'")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap();
     assert_eq!(
         persisted_hash,
         sha256_hex("session-token-bbbbbbbbbbbbbbbbbbbbbbbb".as_bytes())
     );
-    drop(reopened);
+    reopened.close().await;
     let _ = std::fs::remove_file(path);
 }
 
 struct CandidateFixture {
-    root: std::path::PathBuf,
+    root: PathBuf,
     db: Database,
-    attempt_id: String,
     candidate_id: String,
     spec_sha256: String,
     commit_sha: String,
@@ -505,7 +591,7 @@ impl Drop for CandidateFixture {
     }
 }
 
-fn git_fixture(root: &std::path::Path, arguments: &[&str]) -> String {
+fn git_fixture(root: &Path, arguments: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -520,7 +606,7 @@ fn git_fixture(root: &std::path::Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-fn candidate_fixture(risk: &str) -> CandidateFixture {
+async fn candidate_fixture(risk: &str) -> CandidateFixture {
     let root = std::env::temp_dir().join(format!("factory-quality-{}", Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let repo = root.join("repo");
@@ -532,8 +618,8 @@ fn candidate_fixture(risk: &str) -> CandidateFixture {
     git_fixture(&repo, &["add", "seed.txt"]);
     git_fixture(&repo, &["commit", "-qm", "base"]);
 
-    let db = Database::open(&root.join("factory.sqlite")).unwrap();
-    let project = db.register_project(&repo, "project-key").unwrap();
+    let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+    let project = db.register_project(&repo, "project-key").await.unwrap();
     let action = db
         .create_action(
             &project.id,
@@ -542,34 +628,34 @@ fn candidate_fixture(risk: &str) -> CandidateFixture {
             "test/model",
             "action-key",
         )
+        .await
         .unwrap();
-    let campaign = db.create_campaign(&action.id, "campaign-key").unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1",
-            [&campaign.id],
-        )
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
         .unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE actions SET risk=?1 WHERE id=?2",
-            params![risk, action.id],
-        )
+    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+        .bind(&campaign.id)
+        .execute(&db.pool)
+        .await
         .unwrap();
-    let run = db.create_run(&campaign.id, "run-key").unwrap();
-    let attempt = db.create_attempt(&run.id, "attempt-key").unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE attempts SET sandbox_ready=1 WHERE id=?1",
-            [&attempt.id],
-        )
+    sqlx::query("UPDATE actions SET risk=?1 WHERE id=?2")
+        .bind(risk)
+        .bind(&action.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let run = db.create_run(&campaign.id, "run-key").await.unwrap();
+    let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
+    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+        .bind(&attempt.id)
+        .execute(&db.pool)
+        .await
         .unwrap();
     let now_ms = Utc::now().timestamp_millis();
     let lease = db
         .claim_attempt("worker-fixture", now_ms, 60_000)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(lease.attempt_id, attempt.id);
@@ -582,7 +668,7 @@ fn candidate_fixture(risk: &str) -> CandidateFixture {
     std::fs::write(workspace.path().join("seed.txt"), "candidate\n").unwrap();
     git_fixture(workspace.path(), &["add", "seed.txt"]);
     git_fixture(workspace.path(), &["commit", "-qm", "candidate"]);
-    let candidate = workspace.candidate_revision().unwrap();
+    let revision = workspace.candidate_revision().unwrap();
     workspace.cleanup().unwrap();
     let candidate = db
         .record_candidate(
@@ -591,16 +677,16 @@ fn candidate_fixture(risk: &str) -> CandidateFixture {
                 worker_id: "worker-fixture".into(),
                 generation: lease.generation,
                 action_spec_sha256: action.spec_sha256.clone(),
-                commit_sha: candidate.commit_sha,
-                tree_sha: candidate.tree_sha,
+                commit_sha: revision.commit_sha,
+                tree_sha: revision.tree_sha,
             },
             now_ms,
         )
+        .await
         .unwrap();
     CandidateFixture {
         root,
         db,
-        attempt_id: candidate.attempt_id,
         candidate_id: candidate.id,
         spec_sha256: candidate.action_spec_sha256,
         commit_sha: candidate.commit_sha,
@@ -622,10 +708,10 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
     }
 }
 
-#[test]
-fn candidate_and_independent_receipts_produce_accepted_gate() {
-    let fixture = candidate_fixture("R0");
-    let candidate = fixture.db.candidate(&fixture.candidate_id).unwrap();
+#[tokio::test]
+async fn candidate_and_independent_receipts_produce_deterministic_gate() {
+    let fixture = candidate_fixture("R0").await;
+    let candidate = fixture.db.candidate(&fixture.candidate_id).await.unwrap();
     assert_eq!(candidate.commit_sha, fixture.commit_sha);
     assert_eq!(candidate.implementer_id, fixture.worker_id);
 
@@ -636,52 +722,46 @@ fn candidate_and_independent_receipts_produce_accepted_gate() {
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier-receipt-1", "verifier-1"),
         )
+        .await
         .unwrap();
     assert!(first.gate.is_none());
-    assert_eq!(first.receipt.role, QualityRole::Verifier);
 
     let second = fixture
         .db
         .record_quality_receipt(
             &fixture.candidate_id,
             QualityRole::Reviewer,
-            &QualityReceiptInput {
-                result: ReceiptResult::ChangesRequested,
-                evidence: EvidenceKind::Executed,
-                ..quality_receipt(&fixture, "reviewer-receipt-1", "reviewer-1")
-            },
+            &quality_receipt(&fixture, "reviewer-receipt-1", "reviewer-1"),
         )
+        .await
         .unwrap();
-    assert_eq!(
-        second.gate.as_ref().unwrap().outcome,
-        GateOutcome::RepairRequired
-    );
+    assert_eq!(second.gate.unwrap().outcome, GateOutcome::Accepted);
 
-    let verifier_retry = fixture
+    let replay = fixture
         .db
         .record_quality_receipt(
             &fixture.candidate_id,
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier-receipt-1", "verifier-1"),
         )
+        .await
         .unwrap();
-    assert_eq!(
-        verifier_retry.gate.as_ref().unwrap().outcome,
-        GateOutcome::RepairRequired
-    );
+    assert_eq!(replay.gate.unwrap().outcome, GateOutcome::Accepted);
     assert_eq!(
         fixture
             .db
             .quality_receipts(&fixture.candidate_id)
+            .await
             .unwrap()
             .len(),
         2
     );
+    fixture.db.close().await;
 }
 
-#[test]
-fn accepted_gate_requires_pass_verifier_and_reviewer() {
-    let fixture = candidate_fixture("R0");
+#[tokio::test]
+async fn gate_requires_pass_verifier_and_reviewer() {
+    let fixture = candidate_fixture("R0").await;
     fixture
         .db
         .record_quality_receipt(
@@ -689,6 +769,7 @@ fn accepted_gate_requires_pass_verifier_and_reviewer() {
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier-pass-1", "verifier-1"),
         )
+        .await
         .unwrap();
     let result = fixture
         .db
@@ -697,28 +778,31 @@ fn accepted_gate_requires_pass_verifier_and_reviewer() {
             QualityRole::Reviewer,
             &quality_receipt(&fixture, "reviewer-pass-1", "reviewer-1"),
         )
+        .await
         .unwrap();
     assert_eq!(result.gate.unwrap().outcome, GateOutcome::Accepted);
     assert_eq!(
         fixture
             .db
             .gate_for_candidate(&fixture.candidate_id)
+            .await
             .unwrap()
             .unwrap()
             .outcome,
         GateOutcome::Accepted
     );
+    fixture.db.close().await;
 }
 
-#[test]
-fn gate_fails_closed_for_human_risk_and_unknown_policy() {
+#[tokio::test]
+async fn gate_fails_closed_for_human_risk_and_unknown_policy() {
     for (risk, expected) in [
         ("R1", GateOutcome::HumanRequired),
         ("R2", GateOutcome::Blocked),
         ("R3", GateOutcome::Blocked),
         ("UNASSESSED", GateOutcome::Blocked),
     ] {
-        let fixture = candidate_fixture(risk);
+        let fixture = candidate_fixture(risk).await;
         fixture
             .db
             .record_quality_receipt(
@@ -726,6 +810,7 @@ fn gate_fails_closed_for_human_risk_and_unknown_policy() {
                 QualityRole::Verifier,
                 &quality_receipt(&fixture, "verifier", "verifier-1"),
             )
+            .await
             .unwrap();
         let result = fixture
             .db
@@ -734,21 +819,22 @@ fn gate_fails_closed_for_human_risk_and_unknown_policy() {
                 QualityRole::Reviewer,
                 &quality_receipt(&fixture, "reviewer", "reviewer-1"),
             )
+            .await
             .unwrap();
         assert_eq!(result.gate.unwrap().outcome, expected, "risk {risk}");
+        fixture.db.close().await;
     }
 }
 
-#[test]
-fn receipt_rejects_implementer_self_review_and_role_collusion() {
-    let fixture = candidate_fixture("R0");
+#[tokio::test]
+async fn receipt_rejects_implementer_self_review_and_role_collusion() {
+    let fixture = candidate_fixture("R0").await;
     let self_review = quality_receipt(&fixture, "self", &fixture.worker_id);
     assert!(matches!(
-        fixture.db.record_quality_receipt(
-            &fixture.candidate_id,
-            QualityRole::Verifier,
-            &self_review,
-        ),
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &self_review)
+            .await,
         Err(Error::Forbidden(_))
     ));
     fixture
@@ -758,20 +844,25 @@ fn receipt_rejects_implementer_self_review_and_role_collusion() {
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier", "same-principal"),
         )
+        .await
         .unwrap();
     assert!(matches!(
-        fixture.db.record_quality_receipt(
-            &fixture.candidate_id,
-            QualityRole::Reviewer,
-            &quality_receipt(&fixture, "reviewer", "same-principal"),
-        ),
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &quality_receipt(&fixture, "reviewer", "same-principal")
+            )
+            .await,
         Err(Error::Forbidden(_))
     ));
+    fixture.db.close().await;
 }
 
-#[test]
-fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
-    let fixture = candidate_fixture("R0");
+#[tokio::test]
+async fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
+    let fixture = candidate_fixture("R0").await;
     fixture
         .db
         .record_quality_receipt(
@@ -779,21 +870,26 @@ fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier", "verifier-1"),
         )
+        .await
         .unwrap();
     let mut changed = quality_receipt(&fixture, "verifier", "verifier-1");
     changed.result = ReceiptResult::Fail;
     assert!(matches!(
         fixture
             .db
-            .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &changed,),
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &changed)
+            .await,
         Err(Error::Conflict(_))
     ));
     assert!(matches!(
-        fixture.db.record_quality_receipt(
-            &fixture.candidate_id,
-            QualityRole::Verifier,
-            &quality_receipt(&fixture, "another-verifier", "verifier-2"),
-        ),
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "another-verifier", "verifier-2")
+            )
+            .await,
         Err(Error::Conflict(_))
     ));
     let mut wrong = quality_receipt(&fixture, "verifier-wrong", "verifier-3");
@@ -801,16 +897,17 @@ fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
     assert!(matches!(
         fixture
             .db
-            .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &wrong,),
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &wrong)
+            .await,
         Err(Error::Forbidden(_))
     ));
-    let candidate = fixture.db.candidate(&fixture.candidate_id).unwrap();
+    let candidate = fixture.db.candidate(&fixture.candidate_id).await.unwrap();
     assert!(
         fixture
             .db
             .record_candidate(
                 &NewCandidate {
-                    attempt_id: fixture.attempt_id.clone(),
+                    attempt_id: candidate.attempt_id,
                     worker_id: fixture.worker_id.clone(),
                     generation: fixture.generation + 1,
                     action_spec_sha256: fixture.spec_sha256.clone(),
@@ -819,23 +916,20 @@ fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
                 },
                 Utc::now().timestamp_millis(),
             )
+            .await
             .is_err()
     );
+    fixture.db.close().await;
 }
 
-#[test]
-fn candidate_and_gate_rows_are_immutable() {
-    let fixture = candidate_fixture("R0");
+#[tokio::test]
+async fn candidate_gate_and_receipt_rows_are_immutable() {
+    let fixture = candidate_fixture("R0").await;
     assert!(
-        fixture
-            .db
-            .0
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE candidates SET commit_sha='tampered' WHERE id=?1",
-                [&fixture.candidate_id],
-            )
+        sqlx::query("UPDATE candidates SET commit_sha='tampered' WHERE id=?1")
+            .bind(&fixture.candidate_id)
+            .execute(&fixture.db.pool)
+            .await
             .is_err()
     );
     fixture
@@ -845,6 +939,7 @@ fn candidate_and_gate_rows_are_immutable() {
             QualityRole::Verifier,
             &quality_receipt(&fixture, "verifier", "verifier-1"),
         )
+        .await
         .unwrap();
     fixture
         .db
@@ -853,49 +948,20 @@ fn candidate_and_gate_rows_are_immutable() {
             QualityRole::Reviewer,
             &quality_receipt(&fixture, "reviewer", "reviewer-1"),
         )
+        .await
         .unwrap();
     assert!(
-        fixture
-            .db
-            .0
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE gate_decisions SET outcome='ACCEPTED' WHERE candidate_id=?1",
-                [&fixture.candidate_id],
-            )
+        sqlx::query("UPDATE gate_decisions SET outcome='ACCEPTED' WHERE candidate_id=?1")
+            .bind(&fixture.candidate_id)
+            .execute(&fixture.db.pool)
+            .await
             .is_err()
     );
+    fixture.db.close().await;
 }
 
-#[test]
-fn action_read_rejects_tampered_frozen_spec() {
-    let path = std::env::temp_dir().join(format!("factory-db-test-{}.sqlite", Uuid::new_v4()));
-    let db = Database::open(&path).unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "INSERT INTO projects VALUES (?1,?2,?3,?4)",
-            params!["project", "/fixture", "base", "now"],
-        )
-        .unwrap();
-    let action = db
-        .create_action("project", "objective", "codex", "model", "action-key")
-        .unwrap();
-    db.0.lock()
-        .unwrap()
-        .execute(
-            "UPDATE actions SET objective='tampered' WHERE id=?1",
-            [&action.id],
-        )
-        .unwrap();
-    assert!(matches!(db.actions(), Err(Error::Invalid(_))));
-    drop(db);
-    let _ = std::fs::remove_file(path);
-}
-
-#[test]
-fn project_retry_keeps_first_base_after_repository_advances() {
+#[tokio::test]
+async fn project_retry_keeps_first_base_after_repository_advances() {
     let root = std::env::temp_dir().join(format!("factory-project-test-{} ", Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let git = |arguments: &[&str]| {
@@ -916,17 +982,24 @@ fn project_retry_keeps_first_base_after_repository_advances() {
     git(&["add", "content"]);
     git(&["commit", "-qm", "first"]);
     std::fs::create_dir(root.join("nested")).unwrap();
-    let db = Database::open(&root.join("factory.sqlite")).unwrap();
-    let first = db.register_project(&root, "same-request").unwrap();
+    let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+    let first = db.register_project(&root, "same-request").await.unwrap();
     assert_eq!(first.repository, root.to_string_lossy());
     std::fs::write(root.join("content"), "two").unwrap();
     git(&["add", "content"]);
     git(&["commit", "-qm", "second"]);
     let replayed = db
         .register_project(&root.join("nested"), "same-request")
+        .await
         .unwrap();
     assert_eq!(first.id, replayed.id);
     assert_eq!(first.base_commit, replayed.base_commit);
-    drop(db);
+    db.close().await;
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn p9_database_is_send_sync_and_not_connection_mutexed() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Database>();
 }

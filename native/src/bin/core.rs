@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("remote binding requires a separate authenticated transport design".into());
     }
     let app = Arc::new(App {
-        db: Database::open(Path::new(&database))?,
+        db: Database::open(Path::new(&database)).await?,
         operator_token,
         worker_bootstrap_token,
         verifier_token,
@@ -168,10 +168,11 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
 fn api_error(error: Error) -> Response {
     let status = match error {
         Error::Invalid(_) | Error::Repository(_) => StatusCode::BAD_REQUEST,
-        Error::Conflict(_) => StatusCode::CONFLICT,
+        Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
-        Error::Sql(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
+        Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, Json(json!({"error":error.to_string()}))).into_response()
 }
@@ -190,6 +191,7 @@ async fn register_project(
     match app
         .db
         .register_project(Path::new(&input.repository), &input.idempotency_key)
+        .await
     {
         Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
         Err(error) => api_error(error),
@@ -199,7 +201,7 @@ async fn projects(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.projects())
+    result_list(app.db.projects().await)
 }
 async fn create_action(
     State(app): State<Arc<App>>,
@@ -212,13 +214,17 @@ async fn create_action(
     if input.idempotency_key.is_empty() {
         return api_error(Error::Invalid("idempotency key"));
     }
-    match app.db.create_action(
-        &input.project_id,
-        &input.objective,
-        &input.provider,
-        &input.model,
-        &input.idempotency_key,
-    ) {
+    match app
+        .db
+        .create_action(
+            &input.project_id,
+            &input.objective,
+            &input.provider,
+            &input.model,
+            &input.idempotency_key,
+        )
+        .await
+    {
         Ok(action) => (StatusCode::CREATED, Json(action)).into_response(),
         Err(error) => api_error(error),
     }
@@ -227,7 +233,7 @@ async fn actions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.actions())
+    result_list(app.db.actions().await)
 }
 async fn create_campaign(
     State(app): State<Arc<App>>,
@@ -243,6 +249,7 @@ async fn create_campaign(
     match app
         .db
         .create_campaign(&input.action_id, &input.idempotency_key)
+        .await
     {
         Ok(campaign) => (StatusCode::CREATED, Json(campaign)).into_response(),
         Err(error) => api_error(error),
@@ -252,25 +259,25 @@ async fn campaigns(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.campaigns())
+    result_list(app.db.campaigns().await)
 }
 async fn runs(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.runs())
+    result_list(app.db.runs().await)
 }
 async fn attempts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.attempts())
+    result_list(app.db.attempts().await)
 }
 async fn events(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.events())
+    result_list(app.db.events().await)
 }
 async fn register_worker(
     State(app): State<Arc<App>>,
@@ -285,7 +292,7 @@ async fn register_worker(
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    match app.db.register_worker_session(&input.worker_id,&input.registration_key,&app.worker_bootstrap_token,&session_token) {
+    match app.db.register_worker_session(&input.worker_id,&input.registration_key,&app.worker_bootstrap_token,&session_token).await {
         Ok(session)=>Json(json!({"worker_id":session.worker_id,"session_token":session_token,"created":session.created,"dispatch_supported":false})).into_response(),
         Err(error)=>api_error(error),
     }
@@ -295,7 +302,7 @@ async fn worker_claim(
     headers: HeaderMap,
     Json(input): Json<Claim>,
 ) -> Response {
-    if !worker_session_authorized(&app, &headers, &input.worker_id) {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if input.worker_id.trim().is_empty() {
@@ -310,16 +317,20 @@ async fn worker_heartbeat(
     headers: HeaderMap,
     Json(input): Json<Heartbeat>,
 ) -> Response {
-    if !worker_session_authorized(&app, &headers, &input.worker_id) {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.heartbeat(
-        &input.attempt_id,
-        &input.worker_id,
-        input.generation,
-        chrono::Utc::now().timestamp_millis(),
-        15_000,
-    ) {
+    match app
+        .db
+        .heartbeat(
+            &input.attempt_id,
+            &input.worker_id,
+            input.generation,
+            chrono::Utc::now().timestamp_millis(),
+            15_000,
+        )
+        .await
+    {
         Ok(lease) => Json(lease).into_response(),
         Err(error) => api_error(error),
     }
@@ -329,12 +340,13 @@ async fn worker_report(
     headers: HeaderMap,
     Json(input): Json<WorkerReport>,
 ) -> Response {
-    if !worker_session_authorized(&app, &headers, &input.worker_id) {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app
         .db
         .report_terminal(&input, chrono::Utc::now().timestamp_millis())
+        .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => api_error(error),
@@ -346,12 +358,13 @@ async fn worker_candidate(
     headers: HeaderMap,
     Json(input): Json<NewCandidate>,
 ) -> Response {
-    if !worker_session_authorized(&app, &headers, &input.worker_id) {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app
         .db
         .record_candidate(&input, chrono::Utc::now().timestamp_millis())
+        .await
     {
         Ok(candidate) => (StatusCode::CREATED, Json(candidate)).into_response(),
         Err(error) => api_error(error),
@@ -384,6 +397,7 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
     match app
         .db
         .record_quality_receipt(&input.candidate_id, role, &receipt)
+        .await
     {
         Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
         Err(error) => api_error(error),
@@ -398,7 +412,7 @@ async fn quality_candidate(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.candidate(&id) {
+    match app.db.candidate(&id).await {
         Ok(candidate) => Json(candidate).into_response(),
         Err(error) => api_error(error),
     }
@@ -412,7 +426,7 @@ async fn quality_receipts(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.quality_receipts(&id))
+    result_list(app.db.quality_receipts(&id).await)
 }
 
 async fn quality_gate(
@@ -423,7 +437,7 @@ async fn quality_gate(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.gate_for_candidate(&id) {
+    match app.db.gate_for_candidate(&id).await {
         Ok(Some(gate)) => Json(gate).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => api_error(error),
@@ -454,7 +468,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) -> bool {
+async fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) -> bool {
     let token = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -463,6 +477,7 @@ fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) ->
         Some(token) => app
             .db
             .worker_session_matches(worker_id, token)
+            .await
             .unwrap_or(false),
         None => false,
     }
@@ -479,17 +494,18 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    #[test]
-    fn worker_session_is_bound_to_registered_json_identity() {
+    #[tokio::test]
+    async fn worker_session_is_bound_to_registered_json_identity() {
         let path =
             std::env::temp_dir().join(format!("factory-core-auth-{}.sqlite", uuid::Uuid::new_v4()));
-        let db = Database::open(&path).unwrap();
+        let db = Database::open(&path).await.unwrap();
         db.register_worker_session(
             "worker-a",
             "registration-a",
             "bootstrap-secret-12345678901234567890",
             "session-token-aaaaaaaaaaaaaaaaaaaaaaaa",
         )
+        .await
         .unwrap();
         let app = App {
             db,
@@ -503,13 +519,13 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer session-token-aaaaaaaaaaaaaaaaaaaaaaaa"),
         );
-        assert!(worker_session_authorized(&app, &headers, "worker-a"));
-        assert!(!worker_session_authorized(&app, &headers, "worker-b"));
+        assert!(worker_session_authorized(&app, &headers, "worker-a").await);
+        assert!(!worker_session_authorized(&app, &headers, "worker-b").await);
         headers.insert(
             "authorization",
             HeaderValue::from_static("Bearer session-token-bbbbbbbbbbbbbbbbbbbbbbbb"),
         );
-        assert!(!worker_session_authorized(&app, &headers, "worker-a"));
+        assert!(!worker_session_authorized(&app, &headers, "worker-a").await);
         drop(app);
         let _ = std::fs::remove_file(path);
     }
@@ -522,7 +538,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let app = Arc::new(App {
-            db: Database::open(&path).unwrap(),
+            db: Database::open(&path).await.unwrap(),
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -565,14 +581,14 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn quality_role_requires_exact_distinct_role_tokens() {
+    #[tokio::test]
+    async fn quality_role_requires_exact_distinct_role_tokens() {
         let path = std::env::temp_dir().join(format!(
             "factory-core-quality-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let app = App {
-            db: Database::open(&path).unwrap(),
+            db: Database::open(&path).await.unwrap(),
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),

@@ -217,17 +217,41 @@ Every long-lived task has:
 - Treat all provider, web, tool and model output as untrusted input. Model output never grants privileges, budgets, tools or acceptance.
 - Validate content hashes and identities at trust boundaries; do not trust a caller-supplied SHA, risk class or independence claim.
 
-## 11. Database transactions
+## 11. Persistence, SQLx and transactions
 
-- Core owns durable state. All authoritative transitions are transactional and idempotent by operation and payload identity.
-- SQLite runs in WAL mode with a bounded busy timeout and explicit transaction boundaries. Do not leave a transaction open while awaiting network or provider work.
-- Use `BEGIN IMMEDIATE` for claim/reservation paths that must serialize writers and avoid upgrade deadlocks.
-- A transaction either commits the full invariant (state, event, idempotency record, budget debit) or rolls back. Never emit an event or debit a budget outside the transition that justifies it.
-- Idempotency keys are bound to the operation and a canonical payload digest. The same key with a different payload is a conflict, not a replay.
-- Migrations are append-only and versioned. Do not rewrite persisted history or silently reinterpret old rows. A breaking schema change requires an explicit migration decision and test.
-- Use checked arithmetic for generations, counters and budgets; reject overflow rather than wrapping.
-- Read models may be derived, but the authoritative decision comes from normalized state and immutable evidence.
-- Test concurrent claims, duplicate receipts, stale generations, restart recovery and rollback behavior against the real SQLite engine.
+**Canonical toolkit:** SQLx 0.8.x with SQLite, Tokio runtime integration, versioned SQLx migrations and explicit parameterized SQL. Do not introduce a full ORM, a custom query DSL, PostgreSQL or a second database stack without a measured requirement and an approved decision.
+
+### 11.1 Repository organization
+
+- Core owns authoritative persistence. Persistence modules map durable records and execute transactions; they do not own authorization, scheduling or domain policy.
+- Organize persistence by aggregate/change reason (projects, actions, lifecycle, workers/leases, quality/evidence, events), not one growing `db.rs`. A module may span related tables when they participate in the same transaction.
+- Keep SQLx pool types, row structs and query macros out of the domain layer. Use persistence-local row types and convert to domain types at the boundary.
+- Prefer concrete repository functions over a trait per entity. A trait needs a genuine test seam or second implementation.
+- Use runtime-typed `query_as` for dynamic or conditional SQL. Use `query!`/`query_as!`/`query_file_as!` for stable, integrity-critical queries where compile-time validation is meaningful.
+
+### 11.2 Migrations and query metadata
+
+- All schema changes are versioned files under `migrations/`. Startup runs SQLx migrations or fails with a diagnostic; never recreate a damaged or incompatible database silently.
+- Migrations are deterministic, tracked in Git and append-only once shared. Experimental internal schemas may break under ADR-0006, but persisted user data requires an explicit migration decision.
+- Commit SQLx offline query metadata (`.sqlx/`) whenever compile-time query macros are used. Provide a reproducible preparation command and verify it in CI.
+- Schema, migration history and query metadata must not silently diverge. A schema change reruns migration tests and query preparation.
+
+### 11.3 Transactions, concurrency and pooling
+
+- SQLite runs in WAL mode with foreign keys enabled, a bounded busy timeout and an appropriately bounded pool. WAL still allows only one writer; do not assume a larger pool increases write throughput.
+- Serialize Core write transactions through a bounded async write gate or an equivalent explicit serialization strategy. Never hold a blocking connection mutex across `.await`.
+- Keep transactions short: no provider call, Git operation, process wait or model execution inside a transaction. Read context, perform external validation, then revalidate invariants inside the write transaction.
+- Use conditional updates and affected-row checks for claims and transitions. A stale generation affects zero rows and receives a typed refusal.
+- Use `BEGIN IMMEDIATE` or equivalent earliest-write acquisition where supported; otherwise serialize writers explicitly and document the approach. Classify busy/locked outcomes accurately and retry only safely repeatable operations.
+- A transaction either commits the full invariant (state, event, idempotency record, budget/counter debit, evidence identity) or rolls back. Never emit an event or debit a budget outside the transition that justifies it.
+- Idempotency keys bind the operation and a canonical payload digest. Same payload returns the recorded result; different payload or operation is a conflict.
+- Enforce uniqueness, foreign keys, checks and immutability in the database as well as in domain validation.
+- Use checked arithmetic for generations, counters and budgets; reject overflow.
+- Test fresh migrations, repeated startup, legacy adoption, rollback under injected failure, referential integrity, concurrent claims, fencing, restart recovery and non-blocking async behavior.
+
+### 11.4 Error classification
+
+Distinguish unique/conflict, foreign-key/constraint, busy/retryable, not-found, validation, migration and unexpected storage errors. Do not collapse them into an opaque database error that changes HTTP status, retry behavior or evidence.
 
 ## 12. Serialization and external protocol boundaries
 
@@ -324,12 +348,15 @@ cargo test --workspace --locked
 cargo build --workspace --locked
 cargo doc --workspace --no-deps --locked
 cargo audit --file Cargo.lock
+cargo sqlx migrate run --source migrations   # against a disposable DATABASE_URL
+cargo sqlx prepare --check --workspace       # when compile-time query metadata is used
 ```
 
 - Keep the exact commands, tool versions, dependency count and advisory database commit in evidence.
 - Clippy: start from the default `warn`/`-D warnings` posture and `clippy::all`. Add `correctness`, `suspicious` and selected `pedantic`/`restriction` lints only when they catch real defects. Do not blanket-enable `pedantic` or `restriction`, and do not disable a warning category to green CI.
 - A scoped `#[allow(...)]` needs a reason, owner and, if persistent, a review reference. Never add a crate-wide blanket allow.
-- `cargo-nextest` and `cargo-deny` may be evaluated for adoption; do not install or require them without a measured benefit and CI pinning.
+- `cargo-nextest` and `cargo-deny` may be evaluated for adoption; do not install or require them without a measured benefit and CI pinning. Pin the SQLx CLI used for migration/offline metadata checks.
+- CI validates migrations and (when used) offline query metadata from the committed schema; it must not depend on a developer database or hidden local state.
 - Formatting and Clippy are automated gates. Architectural cleanliness, naming, module cohesion and domain modeling remain review obligations; do not pretend a line-count lint enforces them.
 - Maintainability reports may flag implementation files over roughly 800–1,000 lines or functions over roughly 100 lines. They are review inputs, not hard failures; every flag needs a cohesion assessment, not an automatic split.
 
