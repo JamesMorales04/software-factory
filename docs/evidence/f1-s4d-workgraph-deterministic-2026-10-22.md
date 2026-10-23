@@ -1,6 +1,6 @@
 # F1-S4-D standing autonomy and WorkGraph deterministic evidence
 
-**Recorded:** 2026-10-22. **Code candidate:** `349a289d54609b69c9372379d13af1ff8aaf38ce`. This evidence is
+**Recorded:** 2026-10-22. **Code candidate:** `e94ab079e58bc1026bd4e689350e6ec4b1b578e1`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
 No paid or live model/Paseo session was started.
 
@@ -72,7 +72,7 @@ No paid or live model/Paseo session was started.
 | `scripts/test-live-e2e-entrypoints.py` | PASS; 30 cases, zero Paseo calls |
 | `scripts/e2e_s4d_graph_live.py` default preflight | PREFLIGHT_SAFE; zero provider calls |
 | `scripts/e2e_s4d_semantic_live.py` default preflight | PREFLIGHT_SAFE; zero provider calls |
-| CAP-014 collector direct authorization/corpus guards | Enforced in code; default preflight and negative checks pass |
+| CAP-014 collector direct authorization/corpus guards | Enforced in code, including trusted `paseo` resolution and raw-output write failure status |
 
 ## Review findings repaired
 
