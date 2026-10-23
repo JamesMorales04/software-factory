@@ -440,6 +440,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 mod delegations;
+mod lead;
 mod lifecycle;
 mod projects;
 mod quality;

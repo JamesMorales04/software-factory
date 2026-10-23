@@ -197,52 +197,67 @@ impl Database {
         if grant.expires_at <= now {
             return Err(Error::Forbidden("delegation is expired".into()));
         }
-        let (current_requests, current_sessions, current_attempts): (i64, i64, i64) =
-            sqlx::query_as::query_as(
-                "SELECT requests,sessions,attempts FROM delegation_usage WHERE delegation_id=?1",
-            )
-            .bind(id)
-            .fetch_one(&mut *transaction)
-            .await?;
-        let next_requests = checked_usage(current_requests, requests)?;
-        let next_sessions = checked_usage(current_sessions, sessions)?;
-        let next_attempts = checked_usage(current_attempts, attempts)?;
-        if next_requests > i64::from(grant.max_requests)
-            || next_sessions > i64::from(grant.max_cumulative_sessions)
-            || next_attempts > i64::from(grant.max_cumulative_attempts)
-        {
-            return Err(Error::Forbidden(
-                "delegation cumulative ceiling is exhausted".into(),
-            ));
-        }
-        sqlx::query::query(
-            "UPDATE delegation_usage
-             SET requests=?1,sessions=?2,attempts=?3 WHERE delegation_id=?4",
-        )
-        .bind(next_requests)
-        .bind(next_sessions)
-        .bind(next_attempts)
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
+        let usage =
+            reserve_usage_in_tx(&mut transaction, &grant, requests, sessions, attempts).await?;
         record_event(
             &mut transaction,
             id,
             "delegation.reserved",
-            &format!("requests={next_requests} sessions={next_sessions} attempts={next_attempts}"),
+            &format!(
+                "requests={} sessions={} attempts={}",
+                usage.requests, usage.sessions, usage.attempts
+            ),
         )
         .await?;
         transaction.commit().await?;
-        Ok(DelegationUsage {
-            delegation_id: id.to_owned(),
-            requests: u32::try_from(next_requests)
-                .map_err(|_| Error::Constraint("usage overflow".into()))?,
-            sessions: u32::try_from(next_sessions)
-                .map_err(|_| Error::Constraint("usage overflow".into()))?,
-            attempts: u32::try_from(next_attempts)
-                .map_err(|_| Error::Constraint("usage overflow".into()))?,
-        })
+        Ok(usage)
     }
+}
+
+pub(super) async fn reserve_usage_in_tx(
+    connection: &mut SqliteConnection,
+    grant: &StandingDelegation,
+    requests: u32,
+    sessions: u32,
+    attempts: u32,
+) -> Result<DelegationUsage, Error> {
+    let (current_requests, current_sessions, current_attempts): (i64, i64, i64) =
+        sqlx::query_as::query_as(
+            "SELECT requests,sessions,attempts FROM delegation_usage WHERE delegation_id=?1",
+        )
+        .bind(&grant.id)
+        .fetch_one(&mut *connection)
+        .await?;
+    let next_requests = checked_usage(current_requests, requests)?;
+    let next_sessions = checked_usage(current_sessions, sessions)?;
+    let next_attempts = checked_usage(current_attempts, attempts)?;
+    if next_requests > i64::from(grant.max_requests)
+        || next_sessions > i64::from(grant.max_cumulative_sessions)
+        || next_attempts > i64::from(grant.max_cumulative_attempts)
+    {
+        return Err(Error::Forbidden(
+            "delegation cumulative ceiling is exhausted".into(),
+        ));
+    }
+    sqlx::query::query(
+        "UPDATE delegation_usage
+         SET requests=?1,sessions=?2,attempts=?3 WHERE delegation_id=?4",
+    )
+    .bind(next_requests)
+    .bind(next_sessions)
+    .bind(next_attempts)
+    .bind(&grant.id)
+    .execute(&mut *connection)
+    .await?;
+    Ok(DelegationUsage {
+        delegation_id: grant.id.clone(),
+        requests: u32::try_from(next_requests)
+            .map_err(|_| Error::Constraint("usage overflow".into()))?,
+        sessions: u32::try_from(next_sessions)
+            .map_err(|_| Error::Constraint("usage overflow".into()))?,
+        attempts: u32::try_from(next_attempts)
+            .map_err(|_| Error::Constraint("usage overflow".into()))?,
+    })
 }
 
 fn checked_usage(current: i64, added: u32) -> Result<i64, Error> {
@@ -251,7 +266,7 @@ fn checked_usage(current: i64, added: u32) -> Result<i64, Error> {
         .ok_or(Error::Constraint("delegation usage overflow".into()))
 }
 
-async fn load_delegation(
+pub(super) async fn load_delegation(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<StandingDelegation, Error> {
