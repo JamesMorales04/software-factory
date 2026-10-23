@@ -73,6 +73,9 @@ RUN cargo install sqlx-cli \
         --no-default-features \
         --features rustls,sqlite
 
+# Pin the security audit tool used by `cargo xtask check`.
+RUN cargo install cargo-audit --version 0.22.2 --locked
+
 # Reuse the exact Node version from .nvmrc. The build context is the repository
 # root, and this check fails the build if the two pins drift.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node

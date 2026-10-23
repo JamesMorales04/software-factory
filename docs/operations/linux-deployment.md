@@ -1,6 +1,6 @@
 # Linux deployment direction
 
-**Status:** Target design from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). No deployment, Quadlet unit, service, image or end-to-end container journey has been run. This guide is not a tested runbook and does not certify isolation or credential confinement.
+**Status:** Target design from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The development-container image was built and its Rust gates passed locally; no application runtime image, Quadlet unit, service or end-to-end container journey has been run. This guide is not a tested runbook and does not certify isolation or credential confinement.
 
 ## Scope
 
@@ -70,7 +70,7 @@ The development container described in [Container-first development](../engineer
 | Provider server | `LEVEL B` host process or `LEVEL C` trusted container | Own provider credential only; no GitHub, Core or delivery token | `NOT_IMPLEMENTED` |
 | Application runtime service | `LEVEL C` persistent container | Trusted service; minimal image; scoped credentials | `NOT_IMPLEMENTED` |
 | Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | `BLOCKED` until independently verified |
-| Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Configuration `IMPLEMENTED`; run `NOT_TESTED` |
+| Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Configuration `IMPLEMENTED`; image + in-container Rust gates `LOCALLY_VERIFIED` with host-network caveat; Office build and default networking `NOT_TESTED` |
 
 The [service placement policy](../architecture/service-placement-policy.md) remains authoritative. A container or Pod does not create a trust boundary, and `LEVEL C` is not a security upgrade.
 

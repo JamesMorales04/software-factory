@@ -1,6 +1,6 @@
 # Container-first development
 
-**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The `.devcontainer` configuration exists; the image has **not** been built, no container has been run, and no Windows host has been exercised. All unified `factory` CLI commands are `NOT_IMPLEMENTED`. This guide does not certify a development environment, application runtime or execution sandbox.
+**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The `.devcontainer` image was built locally and `cargo xtask check`, `cargo xtask migrate` and `cargo xtask e2e recovery` passed inside it on 2026-10-23, using `podman build/run --network=host` because the author host's default rootless networking lacked `/dev/net/tun` (pasta failure). Default container networking, the Office build inside the container, Windows 11/Podman Machine, runtime images, Quadlet and the unified `factory` CLI are **not tested or not implemented**. This guide does not certify a development environment, application runtime or execution sandbox.
 
 ## Purpose and non-goals
 
@@ -22,10 +22,10 @@ Running code from an untrusted pull request or model-directed code inside this c
 | Item | Status | Notes |
 |---|---|---|
 | `.devcontainer/devcontainer.json` and `.devcontainer/Containerfile` | `IMPLEMENTED` as configuration | Files are present in this change |
-| Development image build | `NOT_TESTED` | No image was built |
-| Development container run on Linux | `NOT_TESTED` | No container was started |
+| Development image build | `LOCALLY_VERIFIED` with caveat | `podman build --network=host` succeeded; image `4e4e407f0c7a` (author host). Default build network `BLOCKED` by host pasta `/dev/net/tun`; see below. |
+| Development container run on Linux | `LOCALLY_VERIFIED` with caveat | `cargo xtask check`, `migrate` and `e2e recovery` passed with `--network=host`; default container networking `NOT_TESTED`/environment-blocked |
 | Development container run on Windows 11 / WSL2 | `NOT_TESTED`; Windows verification `BLOCKED` | No Windows host was available |
-| Repository gates inside the container | `NOT_TESTED` | Only host-side repository documentation was inspected |
+| Repository gates inside the container | `LOCALLY_VERIFIED` | Full `cargo xtask check` (fmt, Clippy, 107 tests, build, docs, audit) passed; Office build inside the container `NOT_TESTED` |
 | Unified `factory` CLI and `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists in the Cargo workspace |
 | Untrusted execution in this container | Forbidden; sandbox path `BLOCKED` | SEC-01 remains paused and uncertified |
 | Independent verification | None | No independent verifier ran this change |
@@ -102,10 +102,10 @@ Every command named in this guide is listed in the table below with an explicit 
 | `cargo test --workspace --locked` | `IMPLEMENTED` | Repository gate; not run in this change |
 | `cargo build --bins` | `IMPLEMENTED` | Repository build; not run in this change |
 | `cargo sqlx migrate run --source migrations` | `IMPLEMENTED` | Documented repository workflow; requires `DATABASE_URL`; SQLx CLI 0.8.6 is installed by the image; not run in this change |
-| `cargo audit --file Cargo.lock` | `NOT_IMPLEMENTED` in this image | Required repository gate, but `cargo-audit` is not installed by the Containerfile |
+| `cargo audit --file Cargo.lock` | `IMPLEMENTED` and run in the container | `cargo-audit` 0.22.2 is installed by the Containerfile; `cargo xtask check` passed |
 | `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists; intended host preflight |
 | `factory <subcommand>` | `NOT_IMPLEMENTED` | Every unified CLI command, including lifecycle and diagnostics |
-| `podman build` / `podman run` for this configuration | `NOT_IMPLEMENTED` as Factory automation; `NOT_TESTED` | Podman 6.1.4 rootless was observed in the author environment, but no build or run was performed |
+| `podman build` / `podman run` for this configuration | `LOCALLY_VERIFIED` with host-network caveat; not Factory automation | Author run on Podman 6.1.4 rootless: default build network failed (`pasta failed ... /dev/net/tun`), `--network=host` succeeded; container also run with `--network=host` |
 
 No `go` command is part of this container or the supported workflow.
 
@@ -124,7 +124,7 @@ The Dev Containers CLI and editor integration are external tools. No Factory com
 
 The following are open and must not be reported as passing:
 
-- The image was not built, so base-image availability, package installation and SQLx CLI compilation are unverified.
+- The image built and the in-container Rust gates passed only with the `--network=host` workaround on this host; default rootless container networking remains unverified and is `BLOCKED` here. Base images are tag-pinned, not digest-pinned. The Office build, application runtime image, Quadlet and Windows path were not exercised.
 - The non-root user, workspace ownership and UID/GID mapping with rootless Podman are unverified.
 - The `.nvmrc` build-time check has not executed.
 - Base images are tag-pinned rather than digest-pinned, and apt packages are not snapshot-pinned.
