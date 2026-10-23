@@ -65,6 +65,9 @@ type Observation struct {
 	Elapsed     time.Duration `json:"elapsed"`
 	InputBytes  int           `json:"inputBytes"`
 	OutputBytes int           `json:"outputBytes"`
+	// RawOutput preserves the exact provider response for independent
+	// evaluation. It is deliberately excluded from API projections.
+	RawOutput []byte `json:"-"`
 }
 
 type Assessor interface {

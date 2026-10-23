@@ -217,6 +217,7 @@ func (a *PaseoAssessor) Assess(ctx context.Context, input Input) (assessment Ass
 		Elapsed:     time.Since(started),
 		InputBytes:  len(prompt),
 		OutputBytes: len(raw),
+		RawOutput:   append([]byte(nil), raw...),
 	}, nil
 }
 

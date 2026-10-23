@@ -11,7 +11,7 @@ authorization and it starts no provider session.
   a SHA mismatch. A later docs-only commit is behaviorally identical but must
   still be the exact pinned clean HEAD.
 - Core/Worker/Verifier/Reviewer/Office: built from that candidate.
-- Provider/model/mode: `opencode` / `opencode-go/deepseek-v4.1-flash` / `build`.
+- Provider/model/mode: `opencode` / `opencode-go/deepseek-v4.1-flash` / `build` (the authorization envelope binds the full triple).
 - No fallback provider or route substitution is allowed.
 - Execution mode: TRUSTED_LOCAL. This is not SEC-01 isolation.
 
@@ -20,11 +20,13 @@ authorization and it starts no provider session.
 Disposable external Project `factory-fixture-s4d-graph` with two dependent
 engineering units and browser-testable behavior:
 
-1. backend unit: add an HTTP endpoint and API tests;
-2. frontend unit: consume the endpoint and render the result;
-3. Core-generated integration unit: integrate both candidate commits;
-4. independent Verifier runs build/API/browser acceptance on the integrated
-   candidate; Reviewer and deterministic Quality Gate decide acceptance.
+1. backend unit: implement `src/greeting.js` with validation and unit checks;
+2. frontend unit: wire the greeting into `src/app.js` with unit checks;
+3. Core-generated deterministic integration: merge both candidate commits
+   without a provider session; a conflict fails closed without paid recovery;
+4. independent Verifier runs the global format/test/functional/browser
+   acceptance on the integrated candidate; Reviewer and deterministic Quality
+   Gate decide acceptance.
 
 The fixture must fail if the agent only implements one unit, if dependency
 order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
@@ -35,8 +37,9 @@ order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
 | --- | --- |
 | Lead assessment sessions | 1 |
 | Unit implementer sessions | 2 |
-| Integration implementer sessions | 1 |
-| Total Factory sessions | **4** |
+| Deterministic integration sessions | 0 provider sessions |
+| Expected actual provider sessions | **3** |
+| Authorized maximum Factory sessions | **4** |
 | Implementer attempt budget | 3 (one per implementer/integration task) |
 | Repair cycles | 0 |
 | Maximum parallel implementation tasks | 2 |

@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CAMPAIGN = "F1-S4-D-GRAPH-LIVE"
 PROJECT = "factory-fixture-s4d-graph"
 PROVIDER, MODEL, MODE = "opencode", "opencode-go/deepseek-v4.1-flash", "build"
-ROUTE = f"{PROVIDER}/{MODEL}"
+ROUTE = f"{PROVIDER}/{MODEL}/{MODE}"
 AUTHORIZATION_ID = "s4d-graph-owner-auth-1"
 SESSIONS = 4
 ATTEMPTS = 3
@@ -182,6 +182,25 @@ def browser_phase(env, phase, result_file, extra=None):
     return json.loads(Path(result_file).read_text())
 
 
+def discover_labeled_sessions(paseo_bin, label):
+    result = cmd([paseo_bin, "ls", "-g", "-a", "--json", "--label", label], timeout=60, check=False)
+    if result.returncode != 0:
+        return [], f"paseo ls failed for {label}: exit {result.returncode}"
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return [], f"paseo ls returned invalid JSON for {label}"
+    if not isinstance(payload, list):
+        return [], f"paseo ls returned a non-list for {label}"
+    ids = []
+    for item in payload:
+        if isinstance(item, dict):
+            sid = str(item.get("id") or item.get("agentId") or "").strip()
+            if sid:
+                ids.append(sid)
+    return ids, ""
+
+
 def session_cleanup(session_ids, paseo_bin):
     cleaned, failed = [], []
     for session_id in sorted(set(session_ids)):
@@ -219,6 +238,7 @@ def main() -> int:
     }
     api = None
     request_id = ""
+    campaign_id = ""
     paseo_bin = "paseo"
     try:
         for name, binary in bins.items():
@@ -319,6 +339,7 @@ def main() -> int:
             raise RuntimeError(f"Lead did not reach accepted: {lead.get('status')} {lead.get('failureReason')}")
         if lead.get("startMode") != "autonomous":
             raise RuntimeError(f"Campaign did not start autonomously: {lead.get('startMode')}")
+        campaign_id = lead.get("campaignId") or ""
         plan = lead.get("plan") or {}
         units = plan.get("workUnits") or []
         if len(units) != 2:
@@ -372,8 +393,8 @@ def main() -> int:
                 for session in payload.get("sessions", []):
                     sessions.append(session.get("sessionId"))
         sessions = sorted(set(s for s in sessions if s))
-        if len(sessions) > SESSIONS or len(sessions) < 3:
-            raise RuntimeError(f"unexpected provider session count: {len(sessions)} {sessions}")
+        if len(sessions) != 3:
+            raise RuntimeError(f"expected exactly three provider sessions, got {len(sessions)} {sessions}")
         evidence["sessions"] = sessions
         evidence["runs"] = runs
         evidence["candidates"] = candidate_details
@@ -409,22 +430,57 @@ def main() -> int:
         evidence["failure"] = str(exc)
         print(f"[FAIL] {exc}", file=sys.stderr)
     finally:
+        unbound, discovery_errors, bound = [], [], set(evidence.get("sessions", []))
         try:
             if api is not None and request_id:
                 status, payload = api.call("GET", f"/api/v1/lead/requests/{request_id}")
                 if status == 200:
                     session_id = (payload["request"].get("modelObservation") or {}).get("sessionId")
                     if session_id:
-                        evidence["sessions"] = sorted(set(evidence.get("sessions", [])) | {session_id})
-                    for task in payload["request"].get("tasks", []) or []:
-                        pass
+                        bound.add(session_id)
+                if campaign_id:
+                    status, projection = api.call("GET", f"/api/v1/campaigns/{campaign_id}")
+                    if status == 200:
+                        for task in projection.get("tasks") or []:
+                            if not task.get("runId"):
+                                continue
+                            status, sessions_payload = api.call("GET", f"/api/v1/runs/{task['runId']}/sessions")
+                            if status == 200:
+                                for session in sessions_payload.get("sessions", []):
+                                    sid = session.get("sessionId")
+                                    if sid:
+                                        bound.add(sid)
+            labels = []
+            if request_id:
+                labels.append(f"factory-lead-request={request_id}")
+            if campaign_id:
+                status, projection = api.call("GET", f"/api/v1/campaigns/{campaign_id}")
+                if status == 200:
+                    for task in projection.get("tasks") or []:
+                        if task.get("role") == "implementer" and task.get("runId"):
+                            labels.append(f"factory.run={task['runId']}")
+            for label in sorted(set(labels)):
+                discovered, error = discover_labeled_sessions(paseo_bin, label)
+                if error:
+                    discovery_errors.append(error)
+                for sid in discovered:
+                    if sid not in bound:
+                        unbound.append(sid)
+                    bound.add(sid)
+            evidence["sessions"] = sorted(bound)
+            evidence["unboundSessions"] = sorted(set(unbound))
+            evidence["sessionDiscoveryErrors"] = discovery_errors
+            if api is not None:
+                status, orphaned = api.call("GET", "/api/v1/sessions/orphaned")
+                if status == 200:
+                    evidence["orphanedSessions"] = orphaned.get("sessions", [])
             cleaned, failed = session_cleanup(evidence.get("sessions", []), paseo_bin)
             evidence["cleanup"]["sessions"] = cleaned
             evidence["cleanup"]["failedSessions"] = failed
-            evidence["cleanup"]["servicesStopped"] = True
-            evidence["cleanup"]["fixtureRemoved"] = False
         except Exception as exc:
             evidence["cleanup"] = {"error": str(exc)}
+            failed = [{"error": str(exc)}]
+            unbound = []
         for proc in processes:
             if proc.poll() is None:
                 proc.terminate()
@@ -433,6 +489,7 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
+        evidence["cleanup"]["servicesStopped"] = all(p.poll() is not None for p in processes)
         log.close()
         keep_root = os.environ.get("FACTORY_S4D_GRAPH_KEEP") == "1" or evidence["status"] != "ACCEPTED_AND_VERIFIED"
         if keep_root:
@@ -440,7 +497,18 @@ def main() -> int:
         else:
             shutil.rmtree(root, ignore_errors=True)
             evidence["cleanup"]["fixtureRemoved"] = not root.exists()
+        if evidence.get("unboundSessions") or evidence.get("sessionDiscoveryErrors") or evidence.get("orphanedSessions"):
+            evidence["status"] = "INCOMPLETE"
+            evidence["failure"] = (evidence.get("failure") or "") + " unbound/orphaned session evidence present"
+        if evidence["cleanup"].get("failedSessions"):
+            evidence["status"] = "INCOMPLETE"
+            evidence["failure"] = (evidence.get("failure") or "") + " session cleanup failed"
+        if not evidence["cleanup"].get("servicesStopped"):
+            evidence["status"] = "INCOMPLETE"
+            evidence["failure"] = (evidence.get("failure") or "") + " services not stopped"
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        if evidence_path.exists():
+            raise RuntimeError(f"evidence path already exists: {evidence_path}")
         evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
         print(f"evidence: {evidence_path}")
     return 0 if evidence["status"] == "ACCEPTED_AND_VERIFIED" else 2

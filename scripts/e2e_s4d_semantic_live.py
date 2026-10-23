@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CAMPAIGN = "F1-S4-D-SEMANTIC"
 PROJECT = "factory-fixture-s4d-semantic"
 PROVIDER, MODEL, MODE = "opencode", "opencode-go/deepseek-v4.1-flash", "build"
-ROUTE = f"{PROVIDER}/{MODEL}"
+ROUTE = f"{PROVIDER}/{MODEL}/{MODE}"
 AUTHORIZATION_ID = "s4d-semantic-owner-auth-1"
 SESSIONS = 11
 

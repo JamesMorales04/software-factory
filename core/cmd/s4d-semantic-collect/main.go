@@ -25,6 +25,7 @@ const (
 	routeProvider = "opencode"
 	routeModel    = "opencode-go/deepseek-v4.1-flash"
 	routeMode     = "build"
+	corpusDigest  = "e199c14445a6da6efad98513b42136b2116560fb8bcd62a5e1d21387e4b020b4"
 )
 
 type manifestEntry struct {
@@ -48,6 +49,9 @@ func requireAuthorization() (string, error) {
 	if os.Getenv("FACTORY_S4D_SEMANTIC_LIVE") != "1" {
 		return "", fmt.Errorf("FACTORY_S4D_SEMANTIC_LIVE=1 is required")
 	}
+	if os.Getenv("FACTORY_LIVE_AUTHORIZATION") != "APPROVED" {
+		return "", fmt.Errorf("FACTORY_LIVE_AUTHORIZATION=APPROVED is required")
+	}
 	authorizationID := strings.TrimSpace(os.Getenv("FACTORY_S4D_SEMANTIC_AUTHORIZATION_ID"))
 	if authorizationID == "" {
 		return "", fmt.Errorf("FACTORY_S4D_SEMANTIC_AUTHORIZATION_ID is required")
@@ -57,6 +61,18 @@ func requireAuthorization() (string, error) {
 	}
 	if route := os.Getenv("FACTORY_S4D_SEMANTIC_ROUTE"); route != routeProvider+"/"+routeModel+"/"+routeMode {
 		return "", fmt.Errorf("authorized route must be exactly %s/%s/%s", routeProvider, routeModel, routeMode)
+	}
+	head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD: %w", err)
+	}
+	frozen := strings.TrimSpace(os.Getenv("FACTORY_LIVE_AUTH_FACTORY_SHA"))
+	if len(frozen) != 40 || frozen != strings.TrimSpace(string(head)) {
+		return "", fmt.Errorf("FACTORY_LIVE_AUTH_FACTORY_SHA must match the exact clean HEAD")
+	}
+	status, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil || strings.TrimSpace(string(status)) != "" {
+		return "", fmt.Errorf("factory worktree must be clean")
 	}
 	return authorizationID, nil
 }
@@ -77,6 +93,11 @@ func main() {
 	raw, err := os.ReadFile(*corpusPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "corpus:", err)
+		os.Exit(2)
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != corpusDigest {
+		fmt.Fprintln(os.Stderr, "corpus digest does not match the frozen CAP-014 revision")
 		os.Exit(2)
 	}
 	var corpus lead.EvaluationCorpus
@@ -107,6 +128,10 @@ func main() {
 			break
 		}
 		used++
+		if !strings.HasPrefix(fixture.ID, "S4D-") || len(fixture.ID) != 6 {
+			fmt.Fprintln(os.Stderr, "invalid fixture identity")
+			os.Exit(2)
+		}
 		requestID := idFor("request:" + fixture.ID)
 		input := lead.Input{
 			ProjectID: "factory-fixture-s4d-semantic", ActionID: idFor("action:" + fixture.ID),
@@ -142,12 +167,17 @@ func main() {
 			entry.InputBytes, entry.OutputBytes = observation.InputBytes, observation.OutputBytes
 			body, _ := json.MarshalIndent(assessment, "", "  ")
 			_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".assessment.json"), append(body, '\n'), 0o600)
+			_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".raw.json"), observation.RawOutput, 0o600)
 		}
 		observed, _ := json.MarshalIndent(observation, "", "  ")
 		_ = os.WriteFile(filepath.Join(*outDir, fixture.ID+".observation.json"), append(observed, '\n'), 0o600)
 		if entry.SessionID != "" {
-			stop := exec.Command("paseo", "stop", entry.SessionID)
-			archive := exec.Command("paseo", "archive", entry.SessionID)
+			paseoBin := strings.TrimSpace(os.Getenv("PASEO_BIN"))
+			if paseoBin == "" {
+				paseoBin = "paseo"
+			}
+			stop := exec.Command(paseoBin, "stop", entry.SessionID)
+			archive := exec.Command(paseoBin, "archive", entry.SessionID)
 			if err := stop.Run(); err == nil {
 				entry.StopExit = 0
 			} else {
@@ -177,7 +207,7 @@ func main() {
 	}
 	failed := 0
 	for _, entry := range entries {
-		if entry.Status != "captured" {
+		if entry.Status != "captured" || entry.StopExit != 0 || entry.ArchiveExit != 0 {
 			failed++
 		}
 	}
