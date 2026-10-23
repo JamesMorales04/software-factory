@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "7b30918a2987f1c17fd94a6b764d9303e9df9b0c",
+  "verified_code_commit_sha": "5edfc46c5a60f39197ba7bb232948b8a81b9500c",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -29,7 +29,11 @@
     "Host-native factory doctor/status CLI with explicit NOT_IMPLEMENTED lifecycle commands",
     "schemars-generated Lead assessment JSON Schema with jsonschema validation and provider compatibility gate",
     "Lead assessment persistence records the model-output schema digest; migration 0005",
-    "Dependency-selection and structured-model-output doctrines, skills and evaluation record"
+    "Dependency-selection and structured-model-output doctrines, skills and evaluation record",
+    "Authenticated loopback Sandbox Supervisor candidate with allowlisted rootless Podman fixture execution and orphan reconciliation",
+    "Explicit FACTORY_CONTAINER_MODE bind mode for Core and a minimal multi-stage Core OCI image",
+    "Functional factory start/stop/logs/status with rootless Podman, loopback publication, read-only root, dropped capabilities and private tokens",
+    "Process-level negative dispatch E2E for scope, failing checks, unauthorized runs and stale lease fencing"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -48,18 +52,22 @@
   },
   "provider_paid_turns": 0,
   "local_unit_tests_passed": 75,
-  "current_test_inventory": "Author-run at 7b30918: 136 passed, 1 ignored (99 library, 4 architecture, 4 Core binary, 7 hygiene, 6 verifier, 13 factory CLI, 1 Worker, 2 E2E integration tests). Office typecheck/lint/build PASS. Five migrations apply. Exact-SHA CI and independent acceptance pending.",
+  "current_test_inventory": "Author-run at 5edfc46: 164 passed, 1 ignored (99 library, 4 architecture, 5 Core, 7 hygiene, 7 supervisor, 6 verifier, 29 factory CLI, 1 Worker, 1 recovery E2E, 4 negative dispatch E2E, 1 fixture dispatch E2E). Office typecheck/lint/build PASS. Five migrations apply. Exact-SHA CI pending.",
   "author_verification_at_code_sha": {
-    "sha": "7b30918a2987f1c17fd94a6b764d9303e9df9b0c",
+    "sha": "5edfc46c5a60f39197ba7bb232948b8a81b9500c",
     "binding": "COMMITTED_CANDIDATE_AUTHOR_RUN",
     "cargo_fmt_check": "PASS",
     "strict_clippy": "PASS",
-    "cargo_test": "PASS: 136 passed, 1 ignored",
+    "cargo_test": "PASS: 164 passed, 1 ignored",
     "cargo_audit": "PASS (257 dependencies)",
-    "xtask_check": "PASS at 35687a3; rerun pending after schema changes",
+    "xtask_check": "PASS",
     "xtask_migrate": "PASS with five migrations",
+    "xtask_e2e_dispatch": "PASS",
+    "xtask_e2e_negatives": "PASS (4)",
     "office_typecheck_lint_build": "PASS",
-    "container_build": "LOCALLY_VERIFIED at 5ca9e6d; not rerun",
+    "core_image_build": "PASS (image edf267bbc475)",
+    "core_container_health": "PASS with --network=none and joined netns",
+    "factory_start": "BLOCKED on host: pasta /dev/net/tun missing",
     "windows_runtime": "NOT_TESTED",
     "provider_paid_turns": 0
   },
@@ -76,7 +84,7 @@
   "delivery_status": "NOT_MERGED_NOT_DEPLOYED",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Run cargo xtask check at 7b30918, then implement provider structured-output adapters and deterministic fixtures, or the Sandbox Supervisor/runtime image and factory start. Add negative dispatch E2E coverage before stronger G5/G6 claims.",
+  "next_task": "Rerun exact-head CI after push, fix host/portable rootless networking or document the environment blocker, and implement deterministic Codex/OpenCode work-lifecycle fixtures. Keep provider/ISOLATED execution fail-closed.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
@@ -114,7 +122,9 @@
     "office": "Single Rust-backed Office views; legacy client/views removed; browser E2E not migrated",
     "factory_cli": "doctor/status implemented; lifecycle NOT_IMPLEMENTED",
     "structured_outputs": "Lead assessment schema generated from Rust, validated with jsonschema, provider keyword gate, schema digest persisted with assessment",
-    "dependencies": "schemars/jsonschema adopted; Git/Podman CLI retained after evaluation; octocrab/cap-std/rustix/tokio-util/cargo-deny evaluated or deferred"
+    "dependencies": "schemars/jsonschema adopted; Git/Podman CLI retained after evaluation; octocrab/cap-std/rustix/tokio-util/cargo-deny evaluated or deferred",
+    "supervisor": "Authenticated loopback supervisor candidate; rootless Podman fixture execution + reconciliation; not isolation-certified",
+    "container": "Core container mode and minimal OCI image; health verified in isolated netns; factory start blocked by host network"
   },
   "completion_gates": {
     "G1": "INCOMPLETE: Rust remains additive beside legacy Go core until cutover",
@@ -124,7 +134,7 @@
     "G5": "PARTIAL: deterministic authorized dispatch works; provider-backed execution and public risk policy remain blocked",
     "G6": "PARTIAL: independent verifier process and durable gate work; reviewer is still a receipt client, not a separate semantic process",
     "G7": "PARTIAL: Rust-backed Office views build; browser journey and Lead/delegation views absent",
-    "G8": "BLOCKED: no certified isolation/credential confinement; same-UID race unresolved",
+    "G8": "BLOCKED: supervisor candidate exists but same-UID race, credential confinement, live Podman isolation and provider-in-sandbox remain unverified",
     "G9": "NOT_SATISFIED: author-run deterministic evidence only; no independent acceptance or authorized live provider result",
     "G10": "NOT_SATISFIED: independent review of the current candidate and full diff outstanding"
   },

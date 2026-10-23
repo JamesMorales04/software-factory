@@ -288,7 +288,36 @@ orphan cleanup, absolute lease limits, project-scoped Worker capability,
 provider lifecycle, runtime image/Quadlet, `factory start`, browser E2E and
 Windows verification remain open. No paid provider or Windows run is claimed.
 
-**Next executable task:** rerun `cargo xtask check` at `7b30918`, then implement
-provider structured-output adapters with deterministic fixtures, or the trusted
-Sandbox Supervisor/runtime image and `factory start`. Add lease-expiry/cleanup
-negative dispatch E2E before stronger G5/G6 claims.
+**Next executable task (completed increments):** through
+`5edfc46c5a60f39197ba7bb232948b8a81b9500c` the branch now has a sandbox
+supervisor candidate, a Core OCI image, functional `factory start/stop/logs`
+and negative dispatch coverage.
+
+- `factory-supervisor` is an authenticated loopback service that validates a
+  direct-child workspace, exact image allowlist, bounded argv/timeout and
+  delegates to hardened rootless Podman; it returns fixture results and can
+  reconcile orphans. It is **not** isolation-certified; same-UID races,
+  credential confinement and provider-in-sandbox remain blockers.
+- Core accepts a non-loopback bind only with `FACTORY_CONTAINER_MODE=1` and an
+  IPv4 unspecified address. The host CLI publishes only `127.0.0.1`.
+- `deploy/Containerfile.core` builds a minimal non-root runtime image
+  (`edf267bbc475` locally). `/health` was verified in an isolated `--network=none`
+  container joined by an Alpine network namespace.
+- `factory start/stop/logs/status` are implemented with rootless checks,
+  private generated tokens, read-only root, dropped capabilities, no host
+  network and no Podman socket. Full `factory start` is **blocked on this host**
+  because rootless Podman networking requires `/dev/net/tun`
+  (`pasta failed ... No such device`).
+- Negative dispatch E2E covers out-of-scope candidates, failing frozen checks
+  (`REPAIR_REQUIRED`), unauthorized runs and stale lease fencing.
+
+Author-run at `5edfc46`: 164 tests + 1 ignored, `cargo xtask check`, five
+migrations, `e2e dispatch`, `e2e negatives`, Office typecheck/lint/build, Core
+image build, container `/health` and audit pass. Exact-head CI, independent
+acceptance, provider lifecycle, browser E2E, same-UID isolation, Windows and
+portable container networking remain open.
+
+**Next executable task:** push `5edfc46`, verify exact-head CI and PR impact,
+then implement deterministic Codex/OpenCode work-lifecycle fixtures or a
+portable rootless-network path for `factory start`. Keep provider/ISOLATED
+execution fail-closed.
