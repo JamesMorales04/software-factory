@@ -2,12 +2,15 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factory_native::db::{Database, Error, WorkerReport};
+use factory_native::db::{
+    Database, Error, NewCandidate, QualityReceiptInput, QualityRole, WorkerReport,
+};
+use factory_native::quality::{EvidenceKind, ReceiptResult};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -15,6 +18,8 @@ struct App {
     db: Database,
     operator_token: String,
     worker_bootstrap_token: String,
+    verifier_token: String,
+    reviewer_token: String,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +67,22 @@ struct Heartbeat {
     generation: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QualityReceiptRequest {
+    candidate_id: String,
+    receipt_id: String,
+    principal_id: String,
+    #[serde(rename = "actionSpecSha256")]
+    action_spec_sha256: String,
+    #[serde(rename = "commitSha")]
+    commit_sha: String,
+    #[serde(rename = "treeSha")]
+    tree_sha: String,
+    result: ReceiptResult,
+    evidence: EvidenceKind,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -72,11 +93,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::var("FACTORY_OPERATOR_TOKEN").map_err(|_| "FACTORY_OPERATOR_TOKEN required")?;
     let worker_bootstrap_token = env::var("FACTORY_WORKER_BOOTSTRAP_TOKEN")
         .map_err(|_| "FACTORY_WORKER_BOOTSTRAP_TOKEN required")?;
+    let verifier_token =
+        env::var("FACTORY_VERIFIER_TOKEN").map_err(|_| "FACTORY_VERIFIER_TOKEN required")?;
+    let reviewer_token =
+        env::var("FACTORY_REVIEWER_TOKEN").map_err(|_| "FACTORY_REVIEWER_TOKEN required")?;
+    let tokens = [
+        operator_token.as_str(),
+        worker_bootstrap_token.as_str(),
+        verifier_token.as_str(),
+        reviewer_token.as_str(),
+    ];
     if operator_token.is_empty()
         || worker_bootstrap_token.len() < 32
-        || operator_token == worker_bootstrap_token
+        || verifier_token.len() < 32
+        || reviewer_token.len() < 32
+        || tokens
+            .iter()
+            .enumerate()
+            .any(|(index, token)| token.is_empty() || tokens[index + 1..].contains(token))
     {
-        return Err("operator token must be nonempty; Worker bootstrap token must be at least 32 bytes and distinct".into());
+        return Err("operator, Worker bootstrap, verifier and reviewer tokens must be nonempty, at least 32 bytes for role tokens, and distinct".into());
     }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let addr: SocketAddr = bind.parse()?;
@@ -87,6 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: Database::open(Path::new(&database))?,
         operator_token,
         worker_bootstrap_token,
+        verifier_token,
+        reviewer_token,
     });
     let router = Router::new()
         .route(
@@ -103,6 +141,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/worker/claim", post(worker_claim))
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
+        .route("/worker/candidate", post(worker_candidate))
+        .route("/quality/receipts", post(quality_receipt))
+        .route("/quality/candidates/{id}", get(quality_candidate))
+        .route("/quality/candidates/{id}/receipts", get(quality_receipts))
+        .route("/quality/candidates/{id}/gate", get(quality_gate))
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "native Factory Core listening");
@@ -121,6 +164,7 @@ fn api_error(error: Error) -> Response {
     let status = match error {
         Error::Invalid(_) | Error::Repository(_) => StatusCode::BAD_REQUEST,
         Error::Conflict(_) => StatusCode::CONFLICT,
+        Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::Sql(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -292,6 +336,113 @@ async fn worker_report(
     }
 }
 
+async fn worker_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewCandidate>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_candidate(&input, chrono::Utc::now().timestamp_millis())
+    {
+        Ok(candidate) => (StatusCode::CREATED, Json(candidate)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn quality_receipt(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<QualityReceiptRequest>,
+) -> Response {
+    let Some(role) = quality_role(&app, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let receipt = QualityReceiptInput {
+        receipt_id: input.receipt_id,
+        principal_id: input.principal_id,
+        action_spec_sha256: input.action_spec_sha256,
+        commit_sha: input.commit_sha,
+        tree_sha: input.tree_sha,
+        result: input.result,
+        evidence: input.evidence,
+    };
+    match app
+        .db
+        .record_quality_receipt(&input.candidate_id, role, &receipt)
+    {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn quality_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.candidate(&id) {
+        Ok(candidate) => Json(candidate).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn quality_receipts(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.quality_receipts(&id))
+}
+
+async fn quality_gate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.gate_for_candidate(&id) {
+        Ok(Some(gate)) => Json(gate).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn quality_role(app: &App, headers: &HeaderMap) -> Option<QualityRole> {
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))?;
+    if constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes()) {
+        Some(QualityRole::Verifier)
+    } else if constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()) {
+        Some(QualityRole::Reviewer)
+    } else {
+        None
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+        == 0
+}
+
 fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) -> bool {
     let token = headers
         .get("authorization")
@@ -333,6 +484,8 @@ mod tests {
             db,
             operator_token: "operator".into(),
             worker_bootstrap_token: "bootstrap".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -346,6 +499,41 @@ mod tests {
             HeaderValue::from_static("Bearer session-token-bbbbbbbbbbbbbbbbbbbbbbbb"),
         );
         assert!(!worker_session_authorized(&app, &headers, "worker-a"));
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn quality_role_requires_exact_distinct_role_tokens() {
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-quality-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App {
+            db: Database::open(&path).unwrap(),
+            operator_token: "operator".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa"),
+        );
+        assert_eq!(quality_role(&app, &headers), Some(QualityRole::Verifier));
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        assert_eq!(quality_role(&app, &headers), Some(QualityRole::Reviewer));
+        headers.insert("authorization", HeaderValue::from_static("Bearer operator"));
+        assert_eq!(quality_role(&app, &headers), None);
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaab"),
+        );
+        assert_eq!(quality_role(&app, &headers), None);
         drop(app);
         let _ = std::fs::remove_file(path);
     }

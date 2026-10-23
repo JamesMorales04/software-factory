@@ -5,6 +5,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::quality::{
+    AuthorizationStatus, EvidenceKind, FrozenActionSpec, GateOutcome, GatePolicy, ReceiptResult,
+    ReviewerReceipt, RiskStatus, VerifierReceipt, evaluate_quality_gate,
+};
+use crate::workspace::verify_candidate_commit;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("database error: {0}")]
@@ -19,6 +25,8 @@ pub enum Error {
     NotFound,
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +125,84 @@ pub struct Event {
     pub recorded_at: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandidateRecord {
+    pub id: String,
+    pub attempt_id: String,
+    pub action_spec_sha256: String,
+    pub commit_sha: String,
+    pub tree_sha: String,
+    pub implementer_id: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NewCandidate {
+    pub attempt_id: String,
+    pub worker_id: String,
+    pub generation: i64,
+    pub action_spec_sha256: String,
+    pub commit_sha: String,
+    pub tree_sha: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityRole {
+    Verifier,
+    Reviewer,
+}
+
+impl QualityRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Verifier => "verifier",
+            Self::Reviewer => "reviewer",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct QualityReceiptInput {
+    pub receipt_id: String,
+    pub principal_id: String,
+    pub action_spec_sha256: String,
+    pub commit_sha: String,
+    pub tree_sha: String,
+    pub result: ReceiptResult,
+    pub evidence: EvidenceKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityReceiptRecord {
+    pub receipt_id: String,
+    pub candidate_id: String,
+    pub role: QualityRole,
+    pub principal_id: String,
+    pub action_spec_sha256: String,
+    pub commit_sha: String,
+    pub tree_sha: String,
+    pub result: ReceiptResult,
+    pub evidence: EvidenceKind,
+    pub received_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GateRecord {
+    pub candidate_id: String,
+    pub outcome: GateOutcome,
+    pub reasons: Vec<String>,
+    pub decided_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityIngestResult {
+    pub receipt: QualityReceiptRecord,
+    pub gate: Option<GateRecord>,
+}
+
 pub struct Database(Mutex<Connection>);
 
 impl Database {
@@ -183,6 +269,40 @@ impl Database {
                worker_id TEXT PRIMARY KEY, token_sha256 TEXT NOT NULL,
                updated_at TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS candidates (
+               id TEXT PRIMARY KEY,
+               attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id),
+               action_spec_sha256 TEXT NOT NULL,
+               commit_sha TEXT NOT NULL, tree_sha TEXT NOT NULL,
+               implementer_id TEXT NOT NULL, created_at TEXT NOT NULL
+             );
+             CREATE TRIGGER IF NOT EXISTS candidates_immutable_update
+             BEFORE UPDATE ON candidates BEGIN SELECT RAISE(ABORT, 'candidate is immutable'); END;
+             CREATE TRIGGER IF NOT EXISTS candidates_immutable_delete
+             BEFORE DELETE ON candidates BEGIN SELECT RAISE(ABORT, 'candidate is immutable'); END;
+             CREATE TABLE IF NOT EXISTS quality_receipts (
+               receipt_id TEXT PRIMARY KEY,
+               candidate_id TEXT NOT NULL REFERENCES candidates(id),
+               role TEXT NOT NULL, principal_id TEXT NOT NULL,
+               action_spec_sha256 TEXT NOT NULL,
+               commit_sha TEXT NOT NULL, tree_sha TEXT NOT NULL,
+               result TEXT NOT NULL, evidence TEXT NOT NULL,
+               received_at TEXT NOT NULL,
+               UNIQUE(candidate_id, role)
+             );
+             CREATE TRIGGER IF NOT EXISTS quality_receipts_immutable_update
+             BEFORE UPDATE ON quality_receipts BEGIN SELECT RAISE(ABORT, 'quality receipt is immutable'); END;
+             CREATE TRIGGER IF NOT EXISTS quality_receipts_immutable_delete
+             BEFORE DELETE ON quality_receipts BEGIN SELECT RAISE(ABORT, 'quality receipt is immutable'); END;
+             CREATE TABLE IF NOT EXISTS gate_decisions (
+               candidate_id TEXT PRIMARY KEY REFERENCES candidates(id),
+               outcome TEXT NOT NULL, reasons_json TEXT NOT NULL,
+               decided_at TEXT NOT NULL
+             );
+             CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_update
+             BEFORE UPDATE ON gate_decisions BEGIN SELECT RAISE(ABORT, 'gate decision is immutable'); END;
+             CREATE TRIGGER IF NOT EXISTS gate_decisions_immutable_delete
+             BEFORE DELETE ON gate_decisions BEGIN SELECT RAISE(ABORT, 'gate decision is immutable'); END;
              CREATE TABLE IF NOT EXISTS events (
                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                subject_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -793,6 +913,272 @@ impl Database {
         Ok(())
     }
 
+    /// Record a Worker's candidate claim after independently verifying the
+    /// commit/tree objects and single-parent lineage in the registered Git
+    /// repository. The Attempt must hold an unexpired lease for the claimed
+    /// generation, and its Campaign must be explicitly AUTHORIZED. No public
+    /// API can currently authorize a Campaign, so this path cannot enable
+    /// provider dispatch by itself.
+    pub fn record_candidate(
+        &self,
+        input: &NewCandidate,
+        now_ms: i64,
+    ) -> Result<CandidateRecord, Error> {
+        validate_candidate_input(input)?;
+        let context = self.candidate_context(&input.attempt_id)?;
+        require_live_lease(&context, &input.worker_id, input.generation, now_ms)?;
+        if context.spec_sha256 != input.action_spec_sha256 {
+            return Err(Error::Forbidden(
+                "candidate ActionSpec hash does not match the frozen spec".into(),
+            ));
+        }
+        let verified = verify_candidate_commit(
+            Path::new(&context.repository),
+            &context.base_commit,
+            &input.commit_sha,
+            &input.tree_sha,
+        )
+        .map_err(|error| Error::Forbidden(format!("candidate lineage rejected: {error}")))?;
+
+        let mut connection = self.0.lock().expect("database mutex poisoned");
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = candidate_context(&tx, &input.attempt_id)?;
+        require_live_lease(&current, &input.worker_id, input.generation, now_ms)?;
+        if current.spec_sha256 != input.action_spec_sha256
+            || current.repository != context.repository
+            || current.base_commit != context.base_commit
+        {
+            return Err(Error::Conflict(
+                "attempt binding changed during candidate validation",
+            ));
+        }
+        if let Some(existing) = load_candidate_for_attempt(&tx, &input.attempt_id)? {
+            if existing.action_spec_sha256 == input.action_spec_sha256
+                && existing
+                    .commit_sha
+                    .eq_ignore_ascii_case(&verified.commit_sha)
+                && existing.tree_sha.eq_ignore_ascii_case(&verified.tree_sha)
+            {
+                tx.commit()?;
+                return Ok(existing);
+            }
+            return Err(Error::Conflict(
+                "attempt already recorded a different candidate revision",
+            ));
+        }
+        let candidate = CandidateRecord {
+            id: Uuid::new_v4().to_string(),
+            attempt_id: input.attempt_id.clone(),
+            action_spec_sha256: input.action_spec_sha256.clone(),
+            commit_sha: verified.commit_sha.clone(),
+            tree_sha: verified.tree_sha.clone(),
+            implementer_id: input.worker_id.clone(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        tx.execute(
+            "INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                candidate.id,
+                candidate.attempt_id,
+                candidate.action_spec_sha256,
+                candidate.commit_sha,
+                candidate.tree_sha,
+                candidate.implementer_id,
+                candidate.created_at
+            ],
+        )?;
+        let changed = tx.execute(
+            "UPDATE attempts SET status='CANDIDATE_READY' WHERE id=?1 AND status='LEASED'",
+            [&candidate.attempt_id],
+        )?;
+        if changed != 1 {
+            return Err(Error::Conflict("attempt is no longer leased"));
+        }
+        record_event(
+            &tx,
+            &candidate.id,
+            "candidate.recorded",
+            &format!(
+                "attempt={} commit={} tree={}",
+                candidate.attempt_id, candidate.commit_sha, candidate.tree_sha
+            ),
+        )?;
+        tx.commit()?;
+        Ok(candidate)
+    }
+
+    /// Ingest one immutable, independently authenticated quality receipt.
+    /// Role, principal and exact candidate/spec binding are revalidated in the
+    /// transaction. The deterministic gate is persisted once both independent
+    /// receipts exist. Unknown or human-required policy never yields ACCEPTED.
+    pub fn record_quality_receipt(
+        &self,
+        candidate_id: &str,
+        role: QualityRole,
+        input: &QualityReceiptInput,
+    ) -> Result<QualityIngestResult, Error> {
+        validate_receipt_input(input)?;
+        let mut connection = self.0.lock().expect("database mutex poisoned");
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let candidate = load_candidate(&tx, candidate_id)?;
+        if input.action_spec_sha256 != candidate.action_spec_sha256
+            || !input.commit_sha.eq_ignore_ascii_case(&candidate.commit_sha)
+            || !input.tree_sha.eq_ignore_ascii_case(&candidate.tree_sha)
+        {
+            return Err(Error::Forbidden(
+                "receipt is not bound to the exact candidate and ActionSpec".into(),
+            ));
+        }
+        if input.principal_id == candidate.implementer_id {
+            return Err(Error::Forbidden(
+                "implementer cannot provide independent quality evidence".into(),
+            ));
+        }
+        if let Some(existing) = load_receipt_by_id(&tx, &input.receipt_id)? {
+            if existing.candidate_id == candidate_id
+                && existing.role == role
+                && receipt_matches(&existing, input)
+            {
+                let gate = load_gate(&tx, candidate_id)?;
+                tx.commit()?;
+                return Ok(QualityIngestResult {
+                    receipt: existing,
+                    gate,
+                });
+            }
+            return Err(Error::Conflict("receipt id reused with different evidence"));
+        }
+        if load_receipt_by_role(&tx, candidate_id, role)?.is_some() {
+            return Err(Error::Conflict(
+                "candidate already has a receipt for this independent role",
+            ));
+        }
+        let other_role = match role {
+            QualityRole::Verifier => QualityRole::Reviewer,
+            QualityRole::Reviewer => QualityRole::Verifier,
+        };
+        if let Some(other) = load_receipt_by_role(&tx, candidate_id, other_role)?
+            && other.principal_id == input.principal_id
+        {
+            return Err(Error::Forbidden(
+                "verifier and reviewer must be independent principals".into(),
+            ));
+        }
+        let receipt = QualityReceiptRecord {
+            receipt_id: input.receipt_id.clone(),
+            candidate_id: candidate_id.to_owned(),
+            role,
+            principal_id: input.principal_id.clone(),
+            action_spec_sha256: input.action_spec_sha256.clone(),
+            commit_sha: candidate.commit_sha.clone(),
+            tree_sha: candidate.tree_sha.clone(),
+            result: input.result,
+            evidence: input.evidence,
+            received_at: Utc::now().to_rfc3339(),
+        };
+        tx.execute(
+            "INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                receipt.receipt_id,
+                receipt.candidate_id,
+                role.as_str(),
+                receipt.principal_id,
+                receipt.action_spec_sha256,
+                receipt.commit_sha,
+                receipt.tree_sha,
+                receipt_result_str(receipt.result),
+                evidence_kind_str(receipt.evidence),
+                receipt.received_at
+            ],
+        )?;
+        record_event(
+            &tx,
+            candidate_id,
+            "quality.receipt_recorded",
+            &format!(
+                "role={} receipt={} principal={} result={:?} evidence={:?}",
+                role.as_str(),
+                receipt.receipt_id,
+                receipt.principal_id,
+                receipt.result,
+                receipt.evidence
+            ),
+        )?;
+
+        let verifier = load_receipt_by_role(&tx, candidate_id, QualityRole::Verifier)?;
+        let reviewer = load_receipt_by_role(&tx, candidate_id, QualityRole::Reviewer)?;
+        let gate = if let (Some(verifier), Some(reviewer)) = (&verifier, &reviewer) {
+            let policy = load_gate_policy(&tx, candidate_id)?;
+            let decision = evaluate_quality_gate(
+                &FrozenActionSpec {
+                    hash: candidate.action_spec_sha256.clone(),
+                },
+                &crate::quality::CandidateRevision {
+                    commit_sha: candidate.commit_sha.clone(),
+                    tree_sha: candidate.tree_sha.clone(),
+                    action_spec_hash: candidate.action_spec_sha256.clone(),
+                },
+                &candidate.implementer_id,
+                Some(&to_verifier_receipt(verifier)),
+                Some(&to_reviewer_receipt(reviewer)),
+                policy,
+            );
+            let gate = GateRecord {
+                candidate_id: candidate_id.to_owned(),
+                outcome: decision.outcome,
+                reasons: decision.reasons,
+                decided_at: Utc::now().to_rfc3339(),
+            };
+            let reasons_json =
+                serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
+            tx.execute(
+                "INSERT INTO gate_decisions VALUES (?1,?2,?3,?4)",
+                params![
+                    gate.candidate_id,
+                    gate_outcome_str(gate.outcome),
+                    reasons_json,
+                    gate.decided_at
+                ],
+            )?;
+            record_event(
+                &tx,
+                candidate_id,
+                "quality.gate_decided",
+                &format!("outcome={:?}", gate.outcome),
+            )?;
+            Some(gate)
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(QualityIngestResult { receipt, gate })
+    }
+
+    pub fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
+        let connection = self.0.lock().expect("database mutex poisoned");
+        load_candidate(&connection, id)
+    }
+
+    pub fn gate_for_candidate(&self, candidate_id: &str) -> Result<Option<GateRecord>, Error> {
+        let connection = self.0.lock().expect("database mutex poisoned");
+        load_gate(&connection, candidate_id)
+    }
+
+    pub fn quality_receipts(&self, candidate_id: &str) -> Result<Vec<QualityReceiptRecord>, Error> {
+        let connection = self.0.lock().expect("database mutex poisoned");
+        let mut statement = connection.prepare(
+            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+             FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
+        )?;
+        let rows = statement.query_map([candidate_id], receipt_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Error::from)
+    }
+
+    fn candidate_context(&self, attempt_id: &str) -> Result<CandidateContext, Error> {
+        let connection = self.0.lock().expect("database mutex poisoned");
+        candidate_context(&connection, attempt_id)
+    }
+
     pub fn projects(&self) -> Result<Vec<Project>, Error> {
         let connection = self.0.lock().expect("database mutex poisoned");
         let mut statement = connection.prepare(
@@ -1046,6 +1432,343 @@ fn load_attempt(connection: &Connection, id: &str) -> Result<Attempt, Error> {
         },
     )?)
 }
+#[derive(Debug)]
+struct CandidateContext {
+    worker_id: String,
+    generation: i64,
+    expires_at_ms: i64,
+    attempt_status: String,
+    campaign_status: String,
+    repository: String,
+    base_commit: String,
+    spec_sha256: String,
+}
+
+fn candidate_context(connection: &Connection, attempt_id: &str) -> Result<CandidateContext, Error> {
+    let context = connection
+        .query_row(
+            "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN projects p ON p.id=ac.project_id
+             JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN worker_leases l ON l.attempt_id=a.id
+             WHERE a.id=?1",
+            [attempt_id],
+            |row| {
+                Ok(CandidateContext {
+                    worker_id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    generation: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    expires_at_ms: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    attempt_status: row.get(3)?,
+                    campaign_status: row.get(4)?,
+                    repository: row.get(5)?,
+                    base_commit: row.get(6)?,
+                    spec_sha256: row.get(7)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or(Error::NotFound)?;
+    Ok(context)
+}
+
+fn require_live_lease(
+    context: &CandidateContext,
+    worker_id: &str,
+    generation: i64,
+    now_ms: i64,
+) -> Result<(), Error> {
+    if context.campaign_status != "AUTHORIZED" {
+        return Err(Error::Forbidden(
+            "campaign lacks explicit execution authorization".into(),
+        ));
+    }
+    if context.attempt_status != "LEASED"
+        || context.worker_id != worker_id
+        || context.generation != generation
+        || context.expires_at_ms <= now_ms
+    {
+        return Err(Error::Forbidden(
+            "candidate submission requires the current unexpired lease generation".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_candidate_input(input: &NewCandidate) -> Result<(), Error> {
+    if input.attempt_id.trim().is_empty()
+        || input.attempt_id.len() > 128
+        || input.worker_id.trim().is_empty()
+        || input.worker_id.len() > 128
+        || input.generation <= 0
+        || !is_sha256(&input.action_spec_sha256)
+        || !is_git_oid(&input.commit_sha)
+        || !is_git_oid(&input.tree_sha)
+    {
+        return Err(Error::Invalid("candidate submission"));
+    }
+    Ok(())
+}
+
+fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
+    if input.receipt_id.trim().is_empty()
+        || input.receipt_id.len() > 128
+        || input.principal_id.trim().is_empty()
+        || input.principal_id.len() > 128
+        || !is_sha256(&input.action_spec_sha256)
+        || !is_git_oid(&input.commit_sha)
+        || !is_git_oid(&input.tree_sha)
+    {
+        return Err(Error::Invalid("quality receipt"));
+    }
+    Ok(())
+}
+
+fn is_git_oid(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CandidateRecord> {
+    Ok(CandidateRecord {
+        id: row.get(0)?,
+        attempt_id: row.get(1)?,
+        action_spec_sha256: row.get(2)?,
+        commit_sha: row.get(3)?,
+        tree_sha: row.get(4)?,
+        implementer_id: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn load_candidate(connection: &Connection, id: &str) -> Result<CandidateRecord, Error> {
+    Ok(connection.query_row(
+        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+         FROM candidates WHERE id=?1",
+        [id],
+        candidate_row,
+    )?)
+}
+
+fn load_candidate_for_attempt(
+    connection: &Connection,
+    attempt_id: &str,
+) -> Result<Option<CandidateRecord>, Error> {
+    Ok(connection
+        .query_row(
+            "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+             FROM candidates WHERE attempt_id=?1",
+            [attempt_id],
+            candidate_row,
+        )
+        .optional()?)
+}
+
+fn receipt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QualityReceiptRecord> {
+    let role: String = row.get(2)?;
+    let result: String = row.get(7)?;
+    let evidence: String = row.get(8)?;
+    Ok(QualityReceiptRecord {
+        receipt_id: row.get(0)?,
+        candidate_id: row.get(1)?,
+        role: parse_role(&role).map_err(|_| {
+            rusqlite::Error::InvalidColumnType(2, "role".into(), rusqlite::types::Type::Text)
+        })?,
+        principal_id: row.get(3)?,
+        action_spec_sha256: row.get(4)?,
+        commit_sha: row.get(5)?,
+        tree_sha: row.get(6)?,
+        result: parse_receipt_result(&result).ok_or_else(|| {
+            rusqlite::Error::InvalidColumnType(7, "result".into(), rusqlite::types::Type::Text)
+        })?,
+        evidence: parse_evidence_kind(&evidence).ok_or_else(|| {
+            rusqlite::Error::InvalidColumnType(8, "evidence".into(), rusqlite::types::Type::Text)
+        })?,
+        received_at: row.get(9)?,
+    })
+}
+
+fn load_receipt_by_id(
+    connection: &Connection,
+    receipt_id: &str,
+) -> Result<Option<QualityReceiptRecord>, Error> {
+    Ok(connection
+        .query_row(
+            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+             FROM quality_receipts WHERE receipt_id=?1",
+            [receipt_id],
+            receipt_row,
+        )
+        .optional()?)
+}
+
+fn load_receipt_by_role(
+    connection: &Connection,
+    candidate_id: &str,
+    role: QualityRole,
+) -> Result<Option<QualityReceiptRecord>, Error> {
+    Ok(connection
+        .query_row(
+            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+             FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
+            params![candidate_id, role.as_str()],
+            receipt_row,
+        )
+        .optional()?)
+}
+
+fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {
+    existing.principal_id == input.principal_id
+        && existing.action_spec_sha256 == input.action_spec_sha256
+        && existing.commit_sha.eq_ignore_ascii_case(&input.commit_sha)
+        && existing.tree_sha.eq_ignore_ascii_case(&input.tree_sha)
+        && existing.result == input.result
+        && existing.evidence == input.evidence
+}
+
+fn load_gate(connection: &Connection, candidate_id: &str) -> Result<Option<GateRecord>, Error> {
+    let row: Option<(String, String, String)> = connection
+        .query_row(
+            "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
+            [candidate_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    row.map(|(outcome, reasons, decided_at)| {
+        Ok(GateRecord {
+            candidate_id: candidate_id.to_owned(),
+            outcome: parse_gate_outcome(&outcome)
+                .ok_or(Error::Invalid("stored gate outcome is invalid"))?,
+            reasons: serde_json::from_str(&reasons)
+                .map_err(|_| Error::Invalid("stored gate reasons are invalid"))?,
+            decided_at,
+        })
+    })
+    .transpose()
+}
+
+fn load_gate_policy(connection: &Connection, candidate_id: &str) -> Result<GatePolicy, Error> {
+    let (campaign_status, risk): (String, String) = connection
+        .query_row(
+            "SELECT c.status,ac.risk FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             WHERE cd.id=?1",
+            [candidate_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(Error::NotFound)?;
+    let authorization = match campaign_status.as_str() {
+        "AUTHORIZED" => AuthorizationStatus::Authorized,
+        "BLOCKED_AUTHORIZATION" => AuthorizationStatus::HumanApprovalRequired,
+        _ => AuthorizationStatus::Unknown,
+    };
+    let risk = match risk.as_str() {
+        "R0" => RiskStatus::WithinPolicy,
+        "R1" => RiskStatus::HumanApprovalRequired,
+        "R2" | "R3" => RiskStatus::ExceedsPolicy,
+        _ => RiskStatus::Unknown,
+    };
+    Ok(GatePolicy {
+        authorization,
+        risk,
+    })
+}
+
+fn to_verifier_receipt(record: &QualityReceiptRecord) -> VerifierReceipt {
+    VerifierReceipt {
+        receipt_id: record.receipt_id.clone(),
+        principal_id: record.principal_id.clone(),
+        action_spec_hash: record.action_spec_sha256.clone(),
+        candidate_commit_sha: record.commit_sha.clone(),
+        candidate_tree_sha: record.tree_sha.clone(),
+        result: record.result,
+        evidence: record.evidence,
+    }
+}
+
+fn to_reviewer_receipt(record: &QualityReceiptRecord) -> ReviewerReceipt {
+    ReviewerReceipt {
+        receipt_id: record.receipt_id.clone(),
+        principal_id: record.principal_id.clone(),
+        action_spec_hash: record.action_spec_sha256.clone(),
+        candidate_commit_sha: record.commit_sha.clone(),
+        candidate_tree_sha: record.tree_sha.clone(),
+        result: record.result,
+        evidence: record.evidence,
+    }
+}
+
+fn parse_role(value: &str) -> Result<QualityRole, ()> {
+    match value {
+        "verifier" => Ok(QualityRole::Verifier),
+        "reviewer" => Ok(QualityRole::Reviewer),
+        _ => Err(()),
+    }
+}
+
+fn receipt_result_str(value: ReceiptResult) -> &'static str {
+    match value {
+        ReceiptResult::Pass => "PASS",
+        ReceiptResult::Fail => "FAIL",
+        ReceiptResult::ChangesRequested => "CHANGES_REQUESTED",
+        ReceiptResult::NotTested => "NOT_TESTED",
+    }
+}
+
+fn parse_receipt_result(value: &str) -> Option<ReceiptResult> {
+    match value {
+        "PASS" => Some(ReceiptResult::Pass),
+        "FAIL" => Some(ReceiptResult::Fail),
+        "CHANGES_REQUESTED" => Some(ReceiptResult::ChangesRequested),
+        "NOT_TESTED" => Some(ReceiptResult::NotTested),
+        _ => None,
+    }
+}
+
+fn evidence_kind_str(value: EvidenceKind) -> &'static str {
+    match value {
+        EvidenceKind::Executed => "EXECUTED",
+        EvidenceKind::Mocked => "MOCKED",
+        EvidenceKind::Unknown => "UNKNOWN",
+    }
+}
+
+fn parse_evidence_kind(value: &str) -> Option<EvidenceKind> {
+    match value {
+        "EXECUTED" => Some(EvidenceKind::Executed),
+        "MOCKED" => Some(EvidenceKind::Mocked),
+        "UNKNOWN" => Some(EvidenceKind::Unknown),
+        _ => None,
+    }
+}
+
+fn gate_outcome_str(value: GateOutcome) -> &'static str {
+    match value {
+        GateOutcome::Accepted => "ACCEPTED",
+        GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+        GateOutcome::Blocked => "BLOCKED",
+        GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+        GateOutcome::NotTested => "NOT_TESTED",
+    }
+}
+
+fn parse_gate_outcome(value: &str) -> Option<GateOutcome> {
+    match value {
+        "ACCEPTED" => Some(GateOutcome::Accepted),
+        "REPAIR_REQUIRED" => Some(GateOutcome::RepairRequired),
+        "BLOCKED" => Some(GateOutcome::Blocked),
+        "HUMAN_REQUIRED" => Some(GateOutcome::HumanRequired),
+        "NOT_TESTED" => Some(GateOutcome::NotTested),
+        _ => None,
+    }
+}
+
 fn record_event(
     connection: &Connection,
     subject_id: &str,
@@ -1602,6 +2325,393 @@ mod tests {
         );
         drop(reopened);
         let _ = std::fs::remove_file(path);
+    }
+
+    struct CandidateFixture {
+        root: std::path::PathBuf,
+        db: Database,
+        attempt_id: String,
+        candidate_id: String,
+        spec_sha256: String,
+        commit_sha: String,
+        tree_sha: String,
+        worker_id: String,
+        generation: i64,
+    }
+
+    impl Drop for CandidateFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn git_fixture(root: &std::path::Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn candidate_fixture(risk: &str) -> CandidateFixture {
+        let root = std::env::temp_dir().join(format!("factory-quality-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_fixture(&repo, &["init", "-q"]);
+        git_fixture(&repo, &["config", "user.name", "Fixture"]);
+        git_fixture(&repo, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::write(repo.join("seed.txt"), "base\n").unwrap();
+        git_fixture(&repo, &["add", "seed.txt"]);
+        git_fixture(&repo, &["commit", "-qm", "base"]);
+
+        let db = Database::open(&root.join("factory.sqlite")).unwrap();
+        let project = db.register_project(&repo, "project-key").unwrap();
+        let action = db
+            .create_action(
+                &project.id,
+                "bounded objective",
+                "opencode",
+                "test/model",
+                "action-key",
+            )
+            .unwrap();
+        let campaign = db.create_campaign(&action.id, "campaign-key").unwrap();
+        db.0.lock()
+            .unwrap()
+            .execute(
+                "UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1",
+                [&campaign.id],
+            )
+            .unwrap();
+        db.0.lock()
+            .unwrap()
+            .execute(
+                "UPDATE actions SET risk=?1 WHERE id=?2",
+                params![risk, action.id],
+            )
+            .unwrap();
+        let run = db.create_run(&campaign.id, "run-key").unwrap();
+        let attempt = db.create_attempt(&run.id, "attempt-key").unwrap();
+        db.0.lock()
+            .unwrap()
+            .execute(
+                "UPDATE attempts SET sandbox_ready=1 WHERE id=?1",
+                [&attempt.id],
+            )
+            .unwrap();
+        let now_ms = Utc::now().timestamp_millis();
+        let lease = db
+            .claim_attempt("worker-fixture", now_ms, 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.attempt_id, attempt.id);
+
+        let workspace_root = root.join("attempts");
+        let allocator = crate::workspace::WorkspaceAllocator::new(&repo, &workspace_root).unwrap();
+        let mut workspace = allocator
+            .allocate(&attempt.id, &project.base_commit)
+            .unwrap();
+        std::fs::write(workspace.path().join("seed.txt"), "candidate\n").unwrap();
+        git_fixture(workspace.path(), &["add", "seed.txt"]);
+        git_fixture(workspace.path(), &["commit", "-qm", "candidate"]);
+        let candidate = workspace.candidate_revision().unwrap();
+        workspace.cleanup().unwrap();
+        let candidate = db
+            .record_candidate(
+                &NewCandidate {
+                    attempt_id: attempt.id.clone(),
+                    worker_id: "worker-fixture".into(),
+                    generation: lease.generation,
+                    action_spec_sha256: action.spec_sha256.clone(),
+                    commit_sha: candidate.commit_sha,
+                    tree_sha: candidate.tree_sha,
+                },
+                now_ms,
+            )
+            .unwrap();
+        CandidateFixture {
+            root,
+            db,
+            attempt_id: candidate.attempt_id,
+            candidate_id: candidate.id,
+            spec_sha256: candidate.action_spec_sha256,
+            commit_sha: candidate.commit_sha,
+            tree_sha: candidate.tree_sha,
+            worker_id: "worker-fixture".into(),
+            generation: lease.generation,
+        }
+    }
+
+    fn quality_receipt(
+        fixture: &CandidateFixture,
+        id: &str,
+        principal: &str,
+    ) -> QualityReceiptInput {
+        QualityReceiptInput {
+            receipt_id: id.into(),
+            principal_id: principal.into(),
+            action_spec_sha256: fixture.spec_sha256.clone(),
+            commit_sha: fixture.commit_sha.clone(),
+            tree_sha: fixture.tree_sha.clone(),
+            result: ReceiptResult::Pass,
+            evidence: EvidenceKind::Executed,
+        }
+    }
+
+    #[test]
+    fn candidate_and_independent_receipts_produce_accepted_gate() {
+        let fixture = candidate_fixture("R0");
+        let candidate = fixture.db.candidate(&fixture.candidate_id).unwrap();
+        assert_eq!(candidate.commit_sha, fixture.commit_sha);
+        assert_eq!(candidate.implementer_id, fixture.worker_id);
+
+        let first = fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier-receipt-1", "verifier-1"),
+            )
+            .unwrap();
+        assert!(first.gate.is_none());
+        assert_eq!(first.receipt.role, QualityRole::Verifier);
+
+        let second = fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &QualityReceiptInput {
+                    result: ReceiptResult::ChangesRequested,
+                    evidence: EvidenceKind::Executed,
+                    ..quality_receipt(&fixture, "reviewer-receipt-1", "reviewer-1")
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            second.gate.as_ref().unwrap().outcome,
+            GateOutcome::RepairRequired
+        );
+
+        let verifier_retry = fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier-receipt-1", "verifier-1"),
+            )
+            .unwrap();
+        assert_eq!(
+            verifier_retry.gate.as_ref().unwrap().outcome,
+            GateOutcome::RepairRequired
+        );
+        assert_eq!(
+            fixture
+                .db
+                .quality_receipts(&fixture.candidate_id)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn accepted_gate_requires_pass_verifier_and_reviewer() {
+        let fixture = candidate_fixture("R0");
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier-pass-1", "verifier-1"),
+            )
+            .unwrap();
+        let result = fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &quality_receipt(&fixture, "reviewer-pass-1", "reviewer-1"),
+            )
+            .unwrap();
+        assert_eq!(result.gate.unwrap().outcome, GateOutcome::Accepted);
+        assert_eq!(
+            fixture
+                .db
+                .gate_for_candidate(&fixture.candidate_id)
+                .unwrap()
+                .unwrap()
+                .outcome,
+            GateOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn gate_fails_closed_for_human_risk_and_unknown_policy() {
+        for (risk, expected) in [
+            ("R1", GateOutcome::HumanRequired),
+            ("R2", GateOutcome::Blocked),
+            ("R3", GateOutcome::Blocked),
+            ("UNASSESSED", GateOutcome::Blocked),
+        ] {
+            let fixture = candidate_fixture(risk);
+            fixture
+                .db
+                .record_quality_receipt(
+                    &fixture.candidate_id,
+                    QualityRole::Verifier,
+                    &quality_receipt(&fixture, "verifier", "verifier-1"),
+                )
+                .unwrap();
+            let result = fixture
+                .db
+                .record_quality_receipt(
+                    &fixture.candidate_id,
+                    QualityRole::Reviewer,
+                    &quality_receipt(&fixture, "reviewer", "reviewer-1"),
+                )
+                .unwrap();
+            assert_eq!(result.gate.unwrap().outcome, expected, "risk {risk}");
+        }
+    }
+
+    #[test]
+    fn receipt_rejects_implementer_self_review_and_role_collusion() {
+        let fixture = candidate_fixture("R0");
+        let self_review = quality_receipt(&fixture, "self", &fixture.worker_id);
+        assert!(matches!(
+            fixture.db.record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &self_review,
+            ),
+            Err(Error::Forbidden(_))
+        ));
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier", "same-principal"),
+            )
+            .unwrap();
+        assert!(matches!(
+            fixture.db.record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &quality_receipt(&fixture, "reviewer", "same-principal"),
+            ),
+            Err(Error::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
+        let fixture = candidate_fixture("R0");
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier", "verifier-1"),
+            )
+            .unwrap();
+        let mut changed = quality_receipt(&fixture, "verifier", "verifier-1");
+        changed.result = ReceiptResult::Fail;
+        assert!(matches!(
+            fixture.db.record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &changed,
+            ),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            fixture.db.record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "another-verifier", "verifier-2"),
+            ),
+            Err(Error::Conflict(_))
+        ));
+        let mut wrong = quality_receipt(&fixture, "verifier-wrong", "verifier-3");
+        wrong.tree_sha = "0".repeat(40);
+        assert!(matches!(
+            fixture
+                .db
+                .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &wrong,),
+            Err(Error::Forbidden(_))
+        ));
+        let candidate = fixture.db.candidate(&fixture.candidate_id).unwrap();
+        assert!(
+            fixture
+                .db
+                .record_candidate(
+                    &NewCandidate {
+                        attempt_id: fixture.attempt_id.clone(),
+                        worker_id: fixture.worker_id.clone(),
+                        generation: fixture.generation + 1,
+                        action_spec_sha256: fixture.spec_sha256.clone(),
+                        commit_sha: candidate.commit_sha,
+                        tree_sha: candidate.tree_sha,
+                    },
+                    Utc::now().timestamp_millis(),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn candidate_and_gate_rows_are_immutable() {
+        let fixture = candidate_fixture("R0");
+        assert!(
+            fixture
+                .db
+                .0
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE candidates SET commit_sha='tampered' WHERE id=?1",
+                    [&fixture.candidate_id],
+                )
+                .is_err()
+        );
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Verifier,
+                &quality_receipt(&fixture, "verifier", "verifier-1"),
+            )
+            .unwrap();
+        fixture
+            .db
+            .record_quality_receipt(
+                &fixture.candidate_id,
+                QualityRole::Reviewer,
+                &quality_receipt(&fixture, "reviewer", "reviewer-1"),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .db
+                .0
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE gate_decisions SET outcome='ACCEPTED' WHERE candidate_id=?1",
+                    [&fixture.candidate_id],
+                )
+                .is_err()
+        );
     }
 
     #[test]

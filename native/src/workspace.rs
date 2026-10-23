@@ -46,6 +46,91 @@ pub struct CandidateRevision {
     pub tree_sha: String,
 }
 
+/// Independently verified single-parent candidate claim from a registered
+/// repository. The caller still owns ActionSpec, path and evidence checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VerifiedCandidate {
+    pub commit_sha: String,
+    pub tree_sha: String,
+    pub parent_sha: String,
+}
+
+/// Verify a Worker's candidate claim directly against the registered Git
+/// repository. This proves object identity and parentage only; it does not
+/// prove who authored the commit, that it is in scope, or that it passed
+/// quality checks. Multi-parent integrated candidates are rejected here until
+/// the deterministic integration path records an explicit lineage type.
+pub fn verify_candidate_commit(
+    repository: &Path,
+    frozen_base: &str,
+    commit_sha: &str,
+    tree_sha: &str,
+) -> Result<VerifiedCandidate, WorkspaceError> {
+    if !is_object_id(commit_sha) || !is_object_id(tree_sha) {
+        return Err(WorkspaceError::Invalid(
+            "candidate commit and tree must be full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    if !repository.is_dir() {
+        return Err(WorkspaceError::Invalid(
+            "registered repository is not a directory".into(),
+        ));
+    }
+    let base = resolve_commit(&repository, frozen_base)?;
+    let commit = resolve_commit(&repository, commit_sha)?;
+    if commit.eq_ignore_ascii_case(&base) {
+        return Err(WorkspaceError::Invalid(
+            "candidate contains no committed change from the frozen base".into(),
+        ));
+    }
+    let resolved_tree = git(
+        &repository,
+        [
+            OsStr::new("show"),
+            OsStr::new("-s"),
+            OsStr::new("--format=%T"),
+            OsStr::new(&commit),
+        ],
+    )?;
+    let resolved_tree = String::from_utf8(resolved_tree.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 tree ID: {error}")))?;
+    let resolved_tree = resolved_tree.trim();
+    if !resolved_tree.eq_ignore_ascii_case(tree_sha) {
+        return Err(WorkspaceError::Invalid(
+            "candidate tree does not match the claimed commit".into(),
+        ));
+    }
+    let ancestry = git(
+        &repository,
+        [
+            OsStr::new("rev-list"),
+            OsStr::new("--parents"),
+            OsStr::new("-n"),
+            OsStr::new("1"),
+            OsStr::new(&commit),
+        ],
+    )?;
+    let ancestry = String::from_utf8(ancestry.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 ancestry: {error}")))?;
+    let mut ids = ancestry.split_whitespace();
+    let resolved = ids.next().unwrap_or_default();
+    let parent = ids.next();
+    if !resolved.eq_ignore_ascii_case(&commit)
+        || parent.is_none_or(|parent| !parent.eq_ignore_ascii_case(&base))
+        || ids.next().is_some()
+    {
+        return Err(WorkspaceError::Invalid(
+            "candidate must be a single commit whose only parent is the frozen base".into(),
+        ));
+    }
+    Ok(VerifiedCandidate {
+        commit_sha: commit,
+        tree_sha: resolved_tree.to_owned(),
+        parent_sha: base,
+    })
+}
+
 impl WorkspaceAllocator {
     /// Construct an allocator for a registered repository and Factory-owned
     /// workspace directory. The workspace directory must not be inside the
@@ -391,6 +476,8 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use uuid::Uuid;
+
     struct TempRepo(PathBuf);
     impl TempRepo {
         fn new() -> Self {
@@ -496,6 +583,34 @@ mod tests {
         );
         attempt.cleanup().unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verifies_candidate_object_parent_and_tree_identity() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let allocator = WorkspaceAllocator::new(
+            &repo.0,
+            std::env::temp_dir().join(format!("factory-verify-root-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let mut attempt = allocator.allocate("attempt_verify", &base).unwrap();
+        fs::write(attempt.path().join("seed.txt"), "candidate\n").unwrap();
+        git(attempt.path(), ["add", "seed.txt"]).unwrap();
+        git(attempt.path(), ["commit", "-qm", "candidate"]).unwrap();
+        let candidate = attempt.candidate_revision().unwrap();
+        let verified =
+            verify_candidate_commit(&repo.0, &base, &candidate.commit_sha, &candidate.tree_sha)
+                .unwrap();
+        assert_eq!(verified.commit_sha, candidate.commit_sha);
+        assert_eq!(verified.tree_sha, candidate.tree_sha);
+        assert_eq!(verified.parent_sha, base);
+        assert!(
+            verify_candidate_commit(&repo.0, &base, &candidate.commit_sha, &"0".repeat(40))
+                .is_err()
+        );
+        assert!(verify_candidate_commit(&repo.0, &base, &base, &candidate.tree_sha).is_err());
+        attempt.cleanup().unwrap();
     }
 
     #[test]
