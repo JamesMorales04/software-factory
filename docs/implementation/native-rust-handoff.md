@@ -141,8 +141,50 @@ binaries and docs PASS. The ignored Podman fixture was not rerun in this slice;
 its last local run passed at `f79f04f` without certifying isolation. Exact-SHA
 CI and independent review remain outstanding. PR #17 stays draft.
 
-**Next executable task:** add the durable Lead delegation/request/proposal/freeze
+**Next executable task (superseded below by the SQLx/automation checkpoint):** add the durable Lead delegation/request/proposal/freeze
 store and API with autonomous policy closed, or connect Core-owned Campaign
 authorization and Worker dispatch behind an explicit fail-closed isolation
 gate. Do not enable provider execution until the isolation/credential and
 budget boundaries are independently verified. No paid turn is authorized.
+
+## Continuation checkpoint: SQLx, xtask, container-first, and E2E (2026-10-23)
+
+**Candidate:** `22b816418f52258d1e99b066016790a92682701b`. See the
+[E2E migration matrix](e2e-migration-matrix.md), [automation standards](../engineering/automation-standards.md),
+[service placement policy](../architecture/service-placement-policy.md) and
+[ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md).
+
+- Persistence is now SQLx 0.8.6 with SQLite only: `sqlx-core` + `sqlx-sqlite`
+  directly, `sqlx-macros` for embedded migrations. `rusqlite` is removed. A
+  bounded async pool, explicit write serialization, versioned
+  `migrations/0001_initial.sql`, and immutable/trigger-enforced candidate,
+  receipt and gate rows replace the bootstrap schema. P1–P10 tests cover fresh
+  and repeated migrations, legacy adoption, idempotency, rollback injection,
+  referential integrity, concurrent claims, restart, fencing and `Send + Sync`.
+- `cargo xtask` is the canonical engineering entry point: `check`, `test`,
+  `migrate`, `security`, `validate-architecture`, `governance` and
+  `e2e recovery`. The recovery suite starts the real Core binary, creates
+  durable Project/Action state, kills and restarts the process, and verifies
+  the same frozen spec and events. Xtask never starts a paid provider session.
+- The service-placement policy (LEVEL A–E), assessment template and skill are
+  committed. Container-first ADR-0019, the Podman-compatible `.devcontainer`
+  and Linux/Windows operational guides are committed as configuration/docs;
+  the image was **not built**, no container was run and no Windows/Podman
+  Machine path was exercised. The unified `factory` CLI is `NOT_IMPLEMENTED`.
+- `cargo audit` passes for 214 dependencies. The E2E matrix records legacy
+  coverage honestly: many component-level tests are migrated; process-level
+  recovery is verified by the new test; provider live suites, scheduler/
+  WorkGraph, independent roles, Office, recovery/orphan suites and legacy CI
+  remain `NOT_IMPLEMENTED`/`BLOCKED`/`RETAINED`.
+
+Author-run gates at `22b8164`: `cargo xtask check` PASS (formatter, strict
+Clippy, 104 tests + 1 ignored, build, docs, audit); `cargo xtask migrate` PASS;
+`cargo xtask validate-architecture` PASS; `cargo xtask e2e recovery` PASS.
+Independent review, exact-SHA CI, container build, Windows and paid-provider
+evidence remain outstanding. Public dispatch stays disabled.
+
+**Next executable task:** implement Core-owned Campaign authorization and
+Worker dispatch behind a fail-closed isolation gate, or continue S4-D
+persistence/WorkGraph with autonomous policy closed. Validate the development
+container on Linux before claiming container-first support. No paid turn is
+authorized.
