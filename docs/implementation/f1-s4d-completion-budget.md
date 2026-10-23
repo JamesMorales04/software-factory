@@ -42,7 +42,7 @@ order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
 | Authorized maximum Factory sessions | **4** |
 | First attempt used | **1 assessment** (preserved failure) |
 | Remaining retry cap | **3 provider sessions** (assessment + two units) |
-| Implementer attempt budget | 3 (one per implementer/integration task) |
+| Model implementer attempt budget | 2 (one per independent unit); deterministic integration consumes none |
 | Repair cycles | 0 |
 | Maximum parallel implementation tasks | 2 |
 | Maximum wall clock | 1800 seconds |

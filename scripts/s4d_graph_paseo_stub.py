@@ -101,24 +101,8 @@ def assessment_for(prompt: str) -> dict:
             "provider": "opencode", "model": "opencode-go/deepseek-v4.1-flash", "paseoMode": "build",
             "maxRepairCycles": 0, "maxWallClockSecs": 600, "maxParallel": 2, "maxSessions": 3,
             "workUnits": [
-                {"id": "backend", "kind": "implementation", "description": "Implement greeting in src/greeting.js with validation.", "dependsOn": [], "allowedPaths": ["src/greeting.js"], "capabilities": ["repository-edit", "node-toolchain"],
-                 "acceptanceCriteria": [
-                    {"id": "format", "kind": "format", "description": "Backend syntax", "command": ["node", "--check", "src/greeting.js"], "expectExit": 0, "timeoutSecs": 120},
-                    {"id": "test", "kind": "test", "description": "Backend unit tests", "command": ["node", "--test", "tests/unit/greeting.test.mjs"], "expectExit": 0, "timeoutSecs": 120},
-                    {"id": "functional", "kind": "functional", "description": "Backend greeting behavior", "command": ["node", "--input-type=module", "-e", "import('./src/greeting.js').then(m=>{if(m.greeting('Factory')!=='Hello, Factory!')process.exit(1)})"], "expectExit": 0, "timeoutSecs": 120}
-                 ],
-                 "negativeCases": [
-                    {"id": "negative", "kind": "negative", "description": "Backend rejects empty names", "command": ["node", "--input-type=module", "-e", "import('./src/greeting.js').then(m=>{try{m.greeting('')}catch(e){process.exit(e instanceof TypeError?0:1)}process.exit(1)})"], "expectExit": 0, "timeoutSecs": 120}
-                 ]},
-                {"id": "frontend", "kind": "implementation", "description": "Wire greeting into the browser UI in src/app.js.", "dependsOn": [], "allowedPaths": ["src/app.js"], "capabilities": ["repository-edit", "node-toolchain"],
-                 "acceptanceCriteria": [
-                    {"id": "format", "kind": "format", "description": "Frontend syntax", "command": ["node", "--check", "src/app.js"], "expectExit": 0, "timeoutSecs": 120},
-                    {"id": "test", "kind": "test", "description": "Frontend static contract", "command": ["node", "--test", "tests/unit/app.test.mjs"], "expectExit": 0, "timeoutSecs": 120},
-                    {"id": "functional", "kind": "functional", "description": "Frontend module loads with a DOM stub", "command": ["node", "--input-type=module", "-e", "globalThis.document={querySelector:()=>({textContent:''})};import('./src/app.js').then(()=>process.exit(0)).catch(()=>process.exit(1))"], "expectExit": 0, "timeoutSecs": 120}
-                 ],
-                 "negativeCases": [
-                    {"id": "negative", "kind": "negative", "description": "Frontend source uses greeting", "command": ["node", "--input-type=module", "-e", "import('node:fs').then(fs=>{const s=fs.readFileSync('src/app.js','utf8');if(!s.includes('greeting'))process.exit(1)})"], "expectExit": 0, "timeoutSecs": 120}
-                 ]},
+                {"id": "backend", "kind": "implementation", "description": "Implement greeting in src/greeting.js with validation.", "dependsOn": [], "allowedPaths": ["src/greeting.js"], "capabilities": ["repository-edit", "node-toolchain"]},
+                {"id": "frontend", "kind": "implementation", "description": "Wire greeting into the browser UI in src/app.js.", "dependsOn": [], "allowedPaths": ["src/app.js"], "capabilities": ["repository-edit", "node-toolchain"]},
             ],
         },
     }

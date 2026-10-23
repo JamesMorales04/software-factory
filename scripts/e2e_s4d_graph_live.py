@@ -498,6 +498,8 @@ def main() -> int:
                     bound.add(sid)
             evidence["sessions"] = sorted(bound)
             evidence["unboundSessions"] = sorted(set(unbound))
+            if len(bound) > SESSIONS:
+                evidence["sessionCapExceeded"] = True
             evidence["sessionDiscoveryErrors"] = discovery_errors
             if api is not None:
                 status, orphaned = api.call("GET", "/api/v1/sessions/orphaned")
@@ -534,6 +536,9 @@ def main() -> int:
         else:
             shutil.rmtree(root, ignore_errors=True)
             evidence["cleanup"]["fixtureRemoved"] = not root.exists()
+        if evidence.get("sessionCapExceeded") or len(evidence.get("sessions", [])) > SESSIONS:
+            evidence["status"] = "INCOMPLETE"
+            evidence["failure"] = (evidence.get("failure") or "") + " reconciled provider session count exceeds the authorized retry cap"
         if evidence.get("unboundSessions") or evidence.get("sessionDiscoveryErrors") or evidence.get("orphanedSessions"):
             evidence["status"] = "INCOMPLETE"
             evidence["failure"] = (evidence.get("failure") or "") + " unbound/orphaned session evidence present"
