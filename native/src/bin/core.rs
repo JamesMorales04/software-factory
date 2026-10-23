@@ -152,10 +152,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("operator, Worker bootstrap, verifier and reviewer tokens must be nonempty, at least 32 bytes for role tokens, and distinct".into());
     }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
-    let addr: SocketAddr = bind.parse()?;
-    if !addr.ip().is_loopback() {
-        return Err("remote binding requires a separate authenticated transport design".into());
-    }
+    let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
+    let addr: SocketAddr = validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
         db: Database::open(Path::new(&database)).await?,
         operator_token,
@@ -208,6 +206,24 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
         .with_state(app)
+}
+
+fn validate_bind(
+    raw: &str,
+    container_mode: bool,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    let addr: SocketAddr = raw.parse()?;
+    if addr.ip().is_loopback() {
+        return Ok(addr);
+    }
+    if container_mode && addr.ip().is_unspecified() && addr.is_ipv4() {
+        tracing::warn!(
+            %addr,
+            "FACTORY_CONTAINER_MODE=1: binding the container interface; publish only to host loopback"
+        );
+        return Ok(addr);
+    }
+    Err("remote binding requires FACTORY_CONTAINER_MODE=1 with an IPv4 unspecified container bind; publish only host loopback".into())
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -792,6 +808,15 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    #[test]
+    fn bind_mode_requires_explicit_container_opt_in() {
+        assert!(validate_bind("127.0.0.1:8765", false).is_ok());
+        assert!(validate_bind("0.0.0.0:8765", false).is_err());
+        assert!(validate_bind("0.0.0.0:8765", true).is_ok());
+        assert!(validate_bind("[::]:8765", true).is_err());
+        assert!(validate_bind("203.0.113.4:8765", true).is_err());
+    }
 
     #[tokio::test]
     async fn worker_session_is_bound_to_registered_json_identity() {

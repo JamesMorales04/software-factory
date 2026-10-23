@@ -26,7 +26,8 @@ use tokio::{
 };
 use uuid::Uuid;
 
-const MAX_RUNTIME: Duration = Duration::from_secs(30 * 60);
+/// Maximum fixture lifetime accepted by [`RootlessPodman::new`].
+pub const MAX_RUNTIME: Duration = Duration::from_secs(30 * 60);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -210,11 +211,34 @@ impl RootlessPodman {
 
     /// Execute an explicitly supplied argv in an allowlisted, locally cached
     /// image. Only the canonical workspace directory is mounted writable.
+    ///
+    /// Non-zero container exits are returned as [`SandboxError::Failed`].
     pub async fn run_fixture(
         &self,
         workspace: impl AsRef<Path>,
         image: &str,
         argv: &[String],
+    ) -> Result<FixtureResult, SandboxError> {
+        self.execute_fixture(workspace, image, argv, true).await
+    }
+
+    /// Execute a fixture and return its captured result even when the container
+    /// exits non-zero. Other failures remain closed.
+    pub async fn run_fixture_capture(
+        &self,
+        workspace: impl AsRef<Path>,
+        image: &str,
+        argv: &[String],
+    ) -> Result<FixtureResult, SandboxError> {
+        self.execute_fixture(workspace, image, argv, false).await
+    }
+
+    async fn execute_fixture(
+        &self,
+        workspace: impl AsRef<Path>,
+        image: &str,
+        argv: &[String],
+        reject_nonzero: bool,
     ) -> Result<FixtureResult, SandboxError> {
         let _run_guard = self.run_lock.lock().await;
         if !self.allowed_images.contains(image) {
@@ -238,7 +262,7 @@ impl RootlessPodman {
         let workspace_name = requested_workspace
             .file_name()
             .and_then(OsStr::to_str)
-            .filter(|name| valid_workspace_name(name))
+            .filter(|name| is_valid_workspace_name(name))
             .ok_or_else(|| SandboxError::Invalid("invalid workspace directory name".into()))?
             .to_owned();
         let workspace_file =
@@ -323,7 +347,7 @@ impl RootlessPodman {
             stderr_truncated,
         };
         root_mode.restore()?;
-        if !status.success() {
+        if reject_nonzero && !status.success() {
             return Err(SandboxError::Failed {
                 status: status.to_string(),
                 stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
@@ -402,7 +426,7 @@ impl OwnershipLedger {
             .map_err(|_| SandboxError::Ledger("invalid Factory container UUID".into()))?;
         Uuid::parse_str(owner_token)
             .map_err(|_| SandboxError::Ledger("invalid container owner token".into()))?;
-        if !valid_workspace_name(workspace_name) {
+        if !is_valid_workspace_name(workspace_name) {
             return Err(SandboxError::Ledger("invalid workspace identity".into()));
         }
         let (workspace_device, workspace_inode) = file_identity(workspace_metadata)?;
@@ -613,7 +637,8 @@ impl Drop for ContainerGuard {
     }
 }
 
-fn valid_workspace_name(value: &str) -> bool {
+/// Return whether `value` is a safe direct-child workspace directory name.
+pub fn is_valid_workspace_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
@@ -657,7 +682,7 @@ fn validate_record(file_name: &str, record: &ContainerRecord) -> Result<(), Sand
     Uuid::parse_str(&record.owner_token)
         .map_err(|_| SandboxError::Ledger("invalid owner token in ledger".into()))?;
     if record.name != format!("factory-fixture-{id}")
-        || !valid_workspace_name(&record.workspace_name)
+        || !is_valid_workspace_name(&record.workspace_name)
         || record.owner_pid == 0
         || record.owner_start == 0
     {

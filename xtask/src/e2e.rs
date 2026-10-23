@@ -9,6 +9,10 @@ const SUITES: &[(&str, &str)] = &[
         "dispatch",
         "fixture Campaign authorization, Worker lease, candidate, receipts and gate",
     ),
+    (
+        "negatives",
+        "deterministic scope, verification, authorization and lease negatives",
+    ),
 ];
 
 pub(crate) fn list() -> Result<(), String> {
@@ -37,6 +41,16 @@ pub(crate) fn dispatch() -> Result<(), String> {
         "--locked",
         "--test",
         "e2e_fixture_dispatch",
+    ])
+}
+
+pub(crate) fn negatives() -> Result<(), String> {
+    cargo_run(&[
+        "test",
+        "--workspace",
+        "--locked",
+        "--test",
+        "e2e_dispatch_negative",
     ])
 }
 
