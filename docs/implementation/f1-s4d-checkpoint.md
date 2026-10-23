@@ -23,14 +23,14 @@ contract were revised accordingly. The implementation now has:
 - a bounded 1–8 unit dependency graph, per-unit frozen specs, Core-generated
   integration, candidate lineage, Git workspace chaining/merge and final
   integrated acceptance;
-- a frozen CAP-014 corpus and blinded scoring/threshold harness (no model run).
+- a frozen CAP-014 corpus and blinded scoring/threshold harness (no model run at protocol freeze).
 
 Product code candidate: `9e12dcf0871105652160e328980bdec53d4fabd5`. Deterministic evidence is recorded in
 [f1-s4d-workgraph-deterministic-2026-10-22.md](../evidence/f1-s4d-workgraph-deterministic-2026-10-22.md).
-The multi-unit live envelope is prepared in
-[f1-s4d-completion-budget.md](../implementation/f1-s4d-completion-budget.md);
-`scripts/e2e_s4d_graph_live.py` is default-closed and does not execute live
-work. No paid/live model session was started.
+The multi-unit live envelope and runner are documented in
+[f1-s4d-completion-budget.md](../implementation/f1-s4d-completion-budget.md).
+The runner remains default-closed without authorization; the later authorized
+live round is recorded below.
 
 The authorized live round is now recorded in
 [f1-s4d-live-certification-2026-10-22.md](../evidence/f1-s4d-live-certification-2026-10-22.md).
