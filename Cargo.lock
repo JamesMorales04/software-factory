@@ -312,6 +312,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "factory-cli"
+version = "0.1.0"
+
+[[package]]
 name = "factory-native"
 version = "0.1.0"
 dependencies = [

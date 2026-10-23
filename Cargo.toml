@@ -1,3 +1,3 @@
 [workspace]
-members = ["native", "xtask"]
+members = ["factory-cli", "native", "xtask"]
 resolver = "2"
