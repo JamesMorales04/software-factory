@@ -1,4 +1,5 @@
 pub mod db;
+pub mod lead;
 pub mod protocol;
 pub mod quality;
 pub mod runtime;
