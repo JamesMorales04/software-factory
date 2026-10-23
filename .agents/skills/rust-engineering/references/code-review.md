@@ -71,10 +71,20 @@ responsible authority. Do not call a review complete when findings are hidden.
 - Is evidence bound to the exact candidate SHA and environment?
 - Are cleanup, cost and provider identities reported truthfully?
 
-### Complexity
+### Complexity and maintainability
 
 - Is each abstraction justified by a real boundary or second consumer?
 - Is business policy duplicated across handler, worker and UI?
 - Are names clear, modules cohesive and visibility minimal?
+- Does a modified implementation file exceed roughly 600–800 lines, or
+  1,000 lines, and if so does it mix unrelated change reasons? Was a split or a
+  written cohesion justification considered?
+- Does any function over roughly 100 lines mix independent policies, deep
+  nesting, hidden side effects or unrelated error paths?
+- Are transaction, provider/network and projection concerns separated?
+- Are tests discoverable and organized, with large fixtures/scenarios in a
+  dedicated test submodule when that improves navigation?
 - Did the change leave dead code or a compatibility shim with no consumer?
 - Are lint exceptions scoped and documented rather than blanket?
+- Do not demand a split based on line count alone; challenge a small module
+  with poor boundaries or excessive complexity just as strongly.

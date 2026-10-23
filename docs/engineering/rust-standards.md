@@ -58,6 +58,48 @@ Follow Rust conventions without local dialects.
 - Visibility is a design tool: default to private, expose the minimum `pub(crate)`/`pub` surface, and make invariant-bearing fields private with validated constructors.
 - No cyclic module dependencies. If two modules need each other, move the shared policy to a third module or pass a narrow value across the boundary.
 
+Expected responsibility areas include Core domain and authorization, Campaign/WorkGraph orchestration, Run/Attempt lifecycle, Worker dispatch/recovery, provider adapters, workspace/sandbox, persistence, candidate/Git integration, verification/Quality Gate, API/event projection and telemetry. A broad technical category is not a module boundary by itself: do not keep unrelated behavior in one large `runtime.rs`, `db.rs`, `core.rs` or `mod.rs`.
+
+### 3.1 File size as a review heuristic
+
+Rust has no official maximum file length. These ranges are maintainability heuristics, not compilation rules.
+
+| Implementation size | Expectation |
+|---|---|
+| 50–200 lines | Compact, focused module |
+| 200–400 lines | Preferred general working range |
+| 400–600 lines | Acceptable when cohesive |
+| 600–800 lines | Review for separable responsibilities |
+| 800–1,000 lines | Strongly consider modularization |
+| Over 1,000 lines | Explicit cohesion justification and refactoring assessment required |
+
+- Do not split a file solely to satisfy a count. A cohesive 800-line module is better than eight artificially fragmented modules with poor boundaries.
+- Count implementation and test code separately. Inline `#[cfg(test)]` tests are idiomatic; move a large test block into a dedicated test submodule when that improves navigation, not merely to reduce a metric.
+- A measured, documented exception is acceptable for generated code, a dense protocol/state table or a single cohesive algorithm. State why the file remains one unit.
+- Use a CI warning/report for very large implementation files if useful, but never a hard failure based on line count alone.
+
+### 3.2 Function size and complexity
+
+Prefer small functions with one clear responsibility.
+
+| Approximate length | Review expectation |
+|---|---|
+| Under 30 lines | Often appropriate for focused operations |
+| 30–50 lines | Generally reasonable |
+| 50–100 lines | Inspect boundaries, nesting and error paths |
+| Over 100 lines | Explicitly evaluate decomposition |
+
+Function length alone does not determine quality. Inspect nested control flow, independent responsibilities, hidden side effects, error-handling complexity, state transitions, mutable variables, testability and cognitive load. Prefer meaningful private helpers over mechanical extraction into trivial one-line wrappers. `clippy::too_many_lines` may be used as a review signal, not as an architecture rule; do not enable all pedantic/restriction lints blindly.
+
+Refactor when a function mixes genuinely different policies, when a reviewer cannot hold one responsibility in view, or when tests require reaching through unrelated setup. A long, linear data-construction or table-driven validation function may be clearer than premature decomposition.
+
+### 3.3 Refactoring existing modules
+
+- Apply these heuristics to existing code, not only new files. Prioritize modules that are being modified and those mixing unrelated responsibilities.
+- Preserve behavior, public contracts, tests, identity guarantees, authorization boundaries and recovery semantics.
+- Split by cohesion: persistence entities/transactions, worker lifecycle, quality evidence and lifecycle projections are different change reasons even if they all touch SQLite.
+- Do not launch a broad cosmetic rename or move campaign that delays a dependency-ready functional slice.
+
 ## 4. API design
 
 Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) where they apply.
@@ -263,6 +305,9 @@ Review for correctness and invariants before style.
 - Check that concurrency is bounded and supervised, and that no lock or transaction spans an await or network call.
 - Check trust boundaries: validated input, no secrets in logs, no path escape, no host fallback.
 - Check for duplicated policy and for abstractions without a second real consumer.
+- Check module and file cohesion: does the file mix unrelated change reasons, and would a focused module reduce coupling? Is an over-1,000-line implementation justified? Is a small file still excessively complex?
+- Check function boundaries: independent responsibilities, deep nesting, hidden side effects, mutable state and error-path complexity. Evaluate functions over roughly 100 lines explicitly.
+- Check test organization: are tests discoverable, deterministic and separated from unrelated fixtures? A dedicated test submodule is appropriate when inline tests overwhelm the implementation.
 - Check tests for negative behavior, not just happy-path coverage.
 - Refactor when it reduces a demonstrated change cost or risk. Do not invent universal line-count or cyclomatic-complexity thresholds; use review judgment and targeted, measurable lints.
 - Remove dead code and superseded compatibility paths in the same coherent change. Keep Git history for provenance rather than keeping dead branches alive.
@@ -285,7 +330,8 @@ cargo audit --file Cargo.lock
 - Clippy: start from the default `warn`/`-D warnings` posture and `clippy::all`. Add `correctness`, `suspicious` and selected `pedantic`/`restriction` lints only when they catch real defects. Do not blanket-enable `pedantic` or `restriction`, and do not disable a warning category to green CI.
 - A scoped `#[allow(...)]` needs a reason, owner and, if persistent, a review reference. Never add a crate-wide blanket allow.
 - `cargo-nextest` and `cargo-deny` may be evaluated for adoption; do not install or require them without a measured benefit and CI pinning.
-- Formatting and Clippy are automated gates. Architectural cleanliness, naming and domain modeling remain review obligations; do not pretend a line-count lint enforces them.
+- Formatting and Clippy are automated gates. Architectural cleanliness, naming, module cohesion and domain modeling remain review obligations; do not pretend a line-count lint enforces them.
+- Maintainability reports may flag implementation files over roughly 800–1,000 lines or functions over roughly 100 lines. They are review inputs, not hard failures; every flag needs a cohesion assessment, not an automatic split.
 
 ## 20. Exceptions
 

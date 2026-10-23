@@ -23,10 +23,12 @@ merge rights, sandbox exceptions or Quality Gate outcomes.
    behavior: typed state transition, persisted row, emitted event, HTTP/CLI
    result, provider terminal evidence, or failure classification. Include the
    negative cases that could invalidate it.
-4. **Choose the simplest design.** Prefer concrete types, small modules,
-   explicit ownership and composition. Introduce a trait, generic, typestate or
-   newtype only for a real boundary, invariant or second implementation. Do not
-   add a layer for symmetry.
+4. **Choose the simplest design and a cohesive module boundary.** Prefer
+   concrete types, small modules, explicit ownership and composition.
+   Introduce a trait, generic, typestate or newtype only for a real boundary,
+   invariant or second implementation. Do not add a layer for symmetry. Do not
+   put unrelated responsibilities into one large file merely because they share
+   a technical category.
 5. **Implement with strong types and explicit errors.** Parse untrusted input
    once into validated values. Use enums for closed alternatives, checked
    arithmetic for counters and budgets, `Result` with typed errors, and no
@@ -47,10 +49,14 @@ merge rights, sandbox exceptions or Quality Gate outcomes.
    database or provider representations. No second scheduler, policy engine or
    authority path. No obsolete compatibility adapter. Update callers, tests,
    docs and fixtures atomically when an interface changes.
-9. **Review for avoidable complexity.** Remove dead code, speculative
-   abstractions, duplicated policy, unbounded loops, silent fallbacks and
-   evidence claims that exceed what ran. Apply scoped, justified lint
-   exceptions only when the invariant is documented.
+9. **Review for avoidable complexity and maintainability.** Remove dead code,
+   speculative abstractions, duplicated policy, unbounded loops, silent
+   fallbacks and evidence claims that exceed what ran. Inspect modified files
+   for mixed responsibilities and functions over roughly 100 lines. Split only
+   where cohesion improves; document why a large cohesive module remains.
+   Keep large test fixtures and scenario setup out of the implementation path
+   when a dedicated test submodule improves navigation. Apply scoped,
+   justified lint exceptions only when the invariant is documented.
 10. **Produce candidate-bound evidence.** Record the exact commit, commands,
     results, provider/session/workspace identities, cleanup outcome, and what
     remained `NOT_TESTED` or `BLOCKED`. Re-run invalidated checks after any
@@ -75,6 +81,8 @@ Load only what the task needs:
 
 - [Code review](references/code-review.md) — review checklist and severity
   framing.
+- [Maintainability](references/maintainability.md) — file/function size,
+  module boundaries, test organization and refactoring method.
 - [Async and process lifecycle](references/async-process-lifecycle.md) —
   ownership, shutdown, cancellation, cleanup and reconciliation.
 - [State machines](references/state-machines.md) — Core/Worker transitions,
@@ -92,6 +100,7 @@ Load only what the task needs:
 Candidate:  <exact commit SHA>
 Scope:      <behavior and files>
 Commands:   <formatter, clippy, tests, build, doc, audit with versions>
+Maintain:   <file/function cohesion observations or justified large module>
 Real use:   <process/API/provider evidence and exact identities>
 Negatives:  <invalid auth, duplicate, stale lease, timeout, cleanup, ...>
 Cleanup:    <confirmed | unresolved | blocked, with evidence>

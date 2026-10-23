@@ -22,6 +22,8 @@ pub enum WorkspaceError {
     Invalid(String),
     #[error("attempt workspace cleanup failed: {0}")]
     Cleanup(String),
+    #[error("conflict-free integration failed: {0}")]
+    Conflict(String),
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +55,222 @@ pub struct VerifiedCandidate {
     pub commit_sha: String,
     pub tree_sha: String,
     pub parent_sha: String,
+}
+
+/// Exact integrated-candidate identity produced by deterministic, provider-free
+/// Git integration. Parent order is recorded; the first parent is the frozen
+/// base and the remainder are the integrated unit candidates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IntegratedCandidate {
+    pub commit_sha: String,
+    pub tree_sha: String,
+    pub parent_shas: Vec<String>,
+}
+
+/// Integrate independent candidate commits in a Factory-owned temporary
+/// worktree. No model, provider session or shell interpolation is involved.
+/// Arguments are sorted and de-duplicated so scheduling order cannot change the
+/// result. Fixed author/committer dates and an explicit message keep the
+/// integrated commit deterministic for identical inputs.
+pub fn integrate_candidates(
+    repository: &Path,
+    frozen_base: &str,
+    candidates: &[String],
+    workspace_root: &Path,
+) -> Result<IntegratedCandidate, WorkspaceError> {
+    if candidates.len() < 2 {
+        return Err(WorkspaceError::Invalid(
+            "integration requires at least two candidate commits".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let base = resolve_commit(&repository, frozen_base)?;
+    let mut expected = candidates.to_vec();
+    expected.sort();
+    if expected.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(WorkspaceError::Invalid(
+            "integration candidate list contains duplicates".into(),
+        ));
+    }
+    let mut resolved = Vec::with_capacity(expected.len());
+    for candidate in &expected {
+        let commit = resolve_commit(&repository, candidate)?;
+        if commit.eq_ignore_ascii_case(&base) {
+            return Err(WorkspaceError::Invalid(
+                "integration candidate is the frozen base".into(),
+            ));
+        }
+        resolved.push(commit);
+    }
+
+    let allocator = WorkspaceAllocator::new(&repository, workspace_root)?;
+    let attempt_id = format!("integrate-{}", uuid::Uuid::new_v4().simple());
+    let mut workspace = allocator.allocate(&attempt_id, &base)?;
+    let message = format!(
+        "factory: integrate unit candidates\n\n{}",
+        resolved.join(" ")
+    );
+    let mut arguments = vec![
+        "-c".to_owned(),
+        "user.name=Factory Integration".to_owned(),
+        "-c".to_owned(),
+        "user.email=factory-integration@example.invalid".to_owned(),
+        "-c".to_owned(),
+        "commit.gpgsign=false".to_owned(),
+        "merge".to_owned(),
+        "--no-ff".to_owned(),
+        "--no-edit".to_owned(),
+        "-m".to_owned(),
+        message,
+    ];
+    arguments.extend(resolved.iter().cloned());
+    let merge = git_with_dates(workspace.path(), &arguments);
+    if let Err(error) = merge {
+        let _ = git(
+            workspace.path(),
+            [OsStr::new("merge"), OsStr::new("--abort")],
+        );
+        let cleanup = workspace.cleanup();
+        let detail = match cleanup {
+            Ok(()) => format!("merge failed: {error}"),
+            Err(cleanup) => format!("merge failed: {error}; cleanup failed: {cleanup}"),
+        };
+        return Err(WorkspaceError::Conflict(detail));
+    }
+    let identity = git(
+        workspace.path(),
+        [
+            OsStr::new("show"),
+            OsStr::new("-s"),
+            OsStr::new("--format=%H%n%T%n%P"),
+            OsStr::new("HEAD"),
+        ],
+    )?;
+    let identity = String::from_utf8(identity.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 integration: {error}")))?;
+    let mut lines = identity.lines();
+    let commit_sha = lines
+        .next()
+        .ok_or_else(|| WorkspaceError::Invalid("integration produced no commit".into()))?
+        .to_owned();
+    let tree_sha = lines
+        .next()
+        .ok_or_else(|| WorkspaceError::Invalid("integration produced no tree".into()))?
+        .to_owned();
+    let parent_shas: Vec<String> = lines
+        .next()
+        .ok_or_else(|| WorkspaceError::Invalid("integration produced no parents".into()))?
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    workspace.cleanup()?;
+    let mut expected_parents = Vec::with_capacity(resolved.len() + 1);
+    expected_parents.push(base);
+    expected_parents.extend(resolved);
+    if parent_shas != expected_parents {
+        return Err(WorkspaceError::Invalid(format!(
+            "integrated candidate parents {parent_shas:?} do not match {:?}",
+            expected_parents
+        )));
+    }
+    Ok(IntegratedCandidate {
+        commit_sha,
+        tree_sha,
+        parent_shas,
+    })
+}
+
+/// Verify a Worker-supplied integrated candidate claim. Unlike a unit
+/// candidate, an integrated candidate has the frozen base plus every expected
+/// unit candidate as direct parents, in the same deterministic order.
+pub fn verify_integrated_candidate(
+    repository: &Path,
+    frozen_base: &str,
+    commit_sha: &str,
+    tree_sha: &str,
+    expected_candidates: &[String],
+) -> Result<IntegratedCandidate, WorkspaceError> {
+    if expected_candidates.len() < 2 {
+        return Err(WorkspaceError::Invalid(
+            "integrated candidate requires at least two expected candidates".into(),
+        ));
+    }
+    if !is_object_id(commit_sha) || !is_object_id(tree_sha) {
+        return Err(WorkspaceError::Invalid(
+            "integrated commit and tree must be full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let base = resolve_commit(&repository, frozen_base)?;
+    let commit = resolve_commit(&repository, commit_sha)?;
+    let resolved_tree = String::from_utf8(
+        git(
+            &repository,
+            [
+                OsStr::new("show"),
+                OsStr::new("-s"),
+                OsStr::new("--format=%T"),
+                OsStr::new(&commit),
+            ],
+        )?
+        .stdout,
+    )
+    .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 tree ID: {error}")))?;
+    if !resolved_tree.trim().eq_ignore_ascii_case(tree_sha) {
+        return Err(WorkspaceError::Invalid(
+            "integrated tree does not match the claimed commit".into(),
+        ));
+    }
+    let mut expected = expected_candidates.to_vec();
+    expected.sort();
+    let mut resolved = Vec::with_capacity(expected.len());
+    for candidate in &expected {
+        resolved.push(resolve_commit(&repository, candidate)?);
+    }
+    let parents = String::from_utf8(
+        git(
+            &repository,
+            [
+                OsStr::new("show"),
+                OsStr::new("-s"),
+                OsStr::new("--format=%P"),
+                OsStr::new(&commit),
+            ],
+        )?
+        .stdout,
+    )
+    .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 parents: {error}")))?;
+    let parent_shas: Vec<String> = parents.split_whitespace().map(str::to_owned).collect();
+    let mut expected_parents = Vec::with_capacity(resolved.len() + 1);
+    expected_parents.push(base);
+    expected_parents.extend(resolved);
+    if parent_shas != expected_parents {
+        return Err(WorkspaceError::Invalid(
+            "integrated candidate lineage does not match the frozen base and expected units".into(),
+        ));
+    }
+    Ok(IntegratedCandidate {
+        commit_sha: commit,
+        tree_sha: resolved_tree.trim().to_owned(),
+        parent_shas,
+    })
+}
+
+fn git_with_dates(cwd: &Path, args: &[String]) -> Result<Output, WorkspaceError> {
+    let display = format!("git {}", args.join(" "));
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00 +0000")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00 +0000")
+        .output()?;
+    if !output.status.success() {
+        return Err(WorkspaceError::Git {
+            command: display,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+        });
+    }
+    Ok(output)
 }
 
 /// Verify a Worker's candidate claim directly against the registered Git
@@ -611,6 +829,91 @@ mod tests {
         );
         assert!(verify_candidate_commit(&repo.0, &base, &base, &candidate.tree_sha).is_err());
         attempt.cleanup().unwrap();
+    }
+
+    #[test]
+    fn deterministic_integration_merges_independent_candidates_and_records_lineage() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root = std::env::temp_dir().join(format!("factory-integration-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut first = allocator.allocate("unit_a", &base).unwrap();
+        fs::write(first.path().join("a.txt"), "a\n").unwrap();
+        git(first.path(), ["add", "a.txt"]).unwrap();
+        git(first.path(), ["commit", "-qm", "unit a"]).unwrap();
+        let a = first.candidate_revision().unwrap();
+        let mut second = allocator.allocate("unit_b", &base).unwrap();
+        fs::write(second.path().join("b.txt"), "b\n").unwrap();
+        git(second.path(), ["add", "b.txt"]).unwrap();
+        git(second.path(), ["commit", "-qm", "unit b"]).unwrap();
+        let b = second.candidate_revision().unwrap();
+        first.cleanup().unwrap();
+        second.cleanup().unwrap();
+
+        let integrated = integrate_candidates(
+            &repo.0,
+            &base,
+            &[b.commit_sha.clone(), a.commit_sha.clone()],
+            &root,
+        )
+        .unwrap();
+        assert_eq!(integrated.parent_shas.len(), 3);
+        assert_eq!(integrated.parent_shas[0], base);
+        assert!(integrated.parent_shas.contains(&a.commit_sha));
+        assert!(integrated.parent_shas.contains(&b.commit_sha));
+        let verified = verify_integrated_candidate(
+            &repo.0,
+            &base,
+            &integrated.commit_sha,
+            &integrated.tree_sha,
+            &[a.commit_sha.clone(), b.commit_sha.clone()],
+        )
+        .unwrap();
+        assert_eq!(verified, integrated);
+        let again = integrate_candidates(
+            &repo.0,
+            &base,
+            &[a.commit_sha.clone(), b.commit_sha.clone()],
+            &root,
+        )
+        .unwrap();
+        assert_eq!(again.commit_sha, integrated.commit_sha);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deterministic_integration_reports_conflict_and_cleans_up() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root =
+            std::env::temp_dir().join(format!("factory-integration-conflict-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut first = allocator.allocate("conflict_a", &base).unwrap();
+        fs::write(first.path().join("seed.txt"), "a\n").unwrap();
+        git(first.path(), ["add", "seed.txt"]).unwrap();
+        git(first.path(), ["commit", "-qm", "unit a"]).unwrap();
+        let a = first.candidate_revision().unwrap();
+        let mut second = allocator.allocate("conflict_b", &base).unwrap();
+        fs::write(second.path().join("seed.txt"), "b\n").unwrap();
+        git(second.path(), ["add", "seed.txt"]).unwrap();
+        git(second.path(), ["commit", "-qm", "unit b"]).unwrap();
+        let b = second.candidate_revision().unwrap();
+        first.cleanup().unwrap();
+        second.cleanup().unwrap();
+        let result = integrate_candidates(&repo.0, &base, &[a.commit_sha, b.commit_sha], &root);
+        assert!(matches!(result, Err(WorkspaceError::Conflict(_))));
+        let status = git(&repo.0, ["status", "--porcelain"]).unwrap();
+        assert!(status.stdout.is_empty());
+        let worktrees = git(&repo.0, ["worktree", "list", "--porcelain"]).unwrap();
+        assert_eq!(
+            String::from_utf8(worktrees.stdout)
+                .unwrap()
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
