@@ -313,7 +313,10 @@ and negative dispatch coverage.
 
 Author-run at `5edfc46`: 164 tests + 1 ignored, `cargo xtask check`, five
 migrations, `e2e dispatch`, `e2e negatives`, Office typecheck/lint/build, Core
-image build, container `/health` and audit pass. Exact-head CI, independent
+image build, container `/health` and audit pass. The branch was published to
+PR #17; exact-head CI is pending. The legacy governance gate initially failed
+on stale Office capability references and YAML quoting; both were repaired in
+`5d9af40` without restoring removed Paseo views. Exact-head CI, independent
 acceptance, provider lifecycle, browser E2E, same-UID isolation, Windows and
 portable container networking remain open.
 

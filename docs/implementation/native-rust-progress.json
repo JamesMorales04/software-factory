@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "5edfc46c5a60f39197ba7bb232948b8a81b9500c",
+  "verified_code_commit_sha": "5d9af402a8919770fa7e4fc60f7c1aa9275360ba",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -69,7 +69,9 @@
     "core_container_health": "PASS with --network=none and joined netns",
     "factory_start": "BLOCKED on host: pasta /dev/net/tun missing",
     "windows_runtime": "NOT_TESTED",
-    "provider_paid_turns": 0
+    "provider_paid_turns": 0,
+    "pr_published": "YES: origin/native-rust-replacement-20261023 at exact pushed head; exact-head CI pending",
+    "ci": "PENDING; legacy governance initially failed on stale capability references, fixed by 5d9af40. Do not claim CI pass until exact-head checks complete."
   },
   "dependency_audit": {
     "tool": "cargo-audit",
@@ -81,10 +83,10 @@
   },
   "provider_live_status": "LIVE_NOT_TESTED_FOR_CODING_COMPATIBILITY. No provider session or paid turn in this increment. Codex/OpenCode work lifecycle, permissions and recovery remain incomplete.",
   "security_status": "BLOCKED: same-UID workspace race unresolved; no in-sandbox provider/credential confinement; public dispatch disabled; container image and Windows/Podman Machine untested; SEC-01 not certified.",
-  "delivery_status": "NOT_MERGED_NOT_DEPLOYED",
+  "delivery_status": "PR #17 published at exact head; draft; no merge/deploy. CI pending.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Rerun exact-head CI after push, fix host/portable rootless networking or document the environment blocker, and implement deterministic Codex/OpenCode work-lifecycle fixtures. Keep provider/ISOLATED execution fail-closed.",
+  "next_task": "Wait for exact-head CI, fix any remaining gate, then implement deterministic Codex/OpenCode work-lifecycle fixtures or portable rootless networking for factory start. Keep provider/ISOLATED execution fail-closed.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
