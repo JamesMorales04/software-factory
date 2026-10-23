@@ -230,7 +230,36 @@ fmt and strict Clippy pass. Migration/architecture checks are recorded from the
 immediately preceding candidate; re-run `cargo xtask check` at the final
 candidate before stronger claims.
 
-**Next executable task:** add the Lead assessor/provider boundary, or implement
-Core-owned Campaign authorization and Worker dispatch behind a fail-closed
-isolation gate. Verify the Office build and default container networking
-separately. No paid turn is authorized.
+**Next executable task (completed increments):** Campaign authorization,
+Worker dispatch, independent verification and Office unification are now
+committed through `35687a3603ff037a852101b4c15d90b6057f2b45`.
+
+- R0/FIXTURE Campaign authorization, run/attempt APIs, lease assignment,
+  deterministic Worker worktree execution, candidate submission and failure
+  reporting are implemented. Provider/ISOLATED modes remain fail-closed.
+- ActionSpecs now carry frozen allowed paths and argv checks. Core enforces raw
+  changed paths and rejects symlink/gitlink/out-of-scope changes; the
+  independent verifier rechecks identity/scope, runs checks with a cleared
+  environment, bounds output and submits the receipt.
+- `native/tests/e2e_fixture_dispatch.rs` / `cargo xtask e2e dispatch` exercises
+  authorization → run/attempt → Worker → candidate → verifier → reviewer
+  receipt → ACCEPTED gate → Core restart. Author-run only.
+- Office is a single Rust-backed React app for Dashboard, Projects, Actions,
+  Campaigns and Runs. The legacy Paseo client/views and the temporary duplicate
+  Native page were removed. Browser E2E still targets the former API and is not
+  migrated.
+- `factory doctor` and `factory status` are implemented in a host-native Rust
+  CLI. `start/stop/restart/logs/update/dev/install` remain `NOT_IMPLEMENTED`.
+
+Author-run at `35687a3`: 131 tests + 1 ignored, `cargo xtask check`, `migrate`,
+`e2e recovery`, `e2e dispatch`, Office typecheck/lint/build and audit pass. The
+independent review found blocking issues in the first dispatch slice; the
+authorization/path/Git/credential fixes are in `13d4a5e`/`35687a3`, but
+same-UID verification, orphan cleanup, absolute lease limits and project-scoped
+Worker capability remain open. No provider or Windows run is claimed.
+
+**Next executable task:** implement the trusted Sandbox Supervisor/runtime image
+and `factory start/stop`, or complete deterministic provider lifecycle fixtures
+before any paid-provider authorization. Add negative dispatch E2E cases
+(expired/stale lease, out-of-scope/symlink candidate, verifier failure) before
+claiming stronger G5/G6 evidence.

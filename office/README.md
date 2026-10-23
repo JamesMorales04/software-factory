@@ -1,35 +1,36 @@
-# Factory Office (F1-S1 … F1-S3-C)
+# Factory Office
 
-React + TypeScript UI over the Core API and durable event ledger.
-Renders server-authoritative state only: Dashboard, Actions, Runs (queue a
-safe synthetic Run, watch its lifecycle, cancel), Run detail (Attempts,
-per-Attempt Paseo session bindings, bounded evidence and lifecycle
-lineage), Workers (observed liveness only — never fabricated activity),
-and Agents (real recorded Paseo sessions, grouped as pending intent,
-active and historical, with `TRUSTED_LOCAL` labels and explicit
-disconnected/orphaned states).
+React + TypeScript Office backed by the Rust Core API. The legacy Go/Paseo API
+client and Paseo-specific views have been removed. The app renders
+server-authoritative snapshots and polls Core; no live SSE claim is made.
 
-Browser journeys: `office/e2e-browser/journey.mjs` (S1),
-`office/e2e-browser/s2-journey.mjs` (S2 Runs/Workers), and
-`office/e2e-browser/s3c-journey.mjs` (S3-C Agents/Run session
-observability), runnable via their scripts from the repo root.
+Migrated views: Dashboard, Projects, Actions, Campaigns, and Runs. Campaigns
+show candidates and deterministic Quality Gate outcomes; Runs queues Attempts.
+Delegations/Lead and detailed session/evidence views are not yet exposed by the
+Rust API and are not rendered.
 
-## Toolchain (pinned in `package.json` + `package-lock.json`)
+## Toolchain
 
 Node `22.23.2` (`.nvmrc`), Vite `7.3.7`, React `19.3.1`,
 `react-router-dom` `7.18.4`, TypeScript `5.9.3`, Biome `2.5.15`.
+Dependencies are pinned by `package.json` and `package-lock.json`.
 
-## Commands (run from `office/`)
+## Commands (from `office/`)
 
 ```sh
-npm ci            # reproducible install
-npm run typecheck # tsc --noEmit
-npm run lint      # biome check src e2e-browser
-npm run build     # typecheck + production bundle into dist/
-npm run dev       # vite dev server (proxies /api to 127.0.0.1:8471)
+npm ci
+npm run typecheck
+npm run lint
+npm run build
+npm run dev
 ```
 
-The token gate keeps the API token in `sessionStorage` only; the event
-stream resumes from the last `globalSeq` cursor on reconnect (no EventSource:
-`fetch` + `ReadableStream` so the token stays in the header).
-Hash routing is used so the Core static fallback serves deep links.
+The Vite dev server proxies `/core-api` to `http://127.0.0.1:8765` and strips
+the prefix. The operator token stays in `sessionStorage`.
+
+## Status
+
+The Rust-backed views typecheck, lint and build. No Playwright browser journey
+has been migrated to the Rust API yet; the retained `e2e-browser/` scripts
+describe the former API and are historical until replaced. Do not use them as
+evidence for the Rust Office.
