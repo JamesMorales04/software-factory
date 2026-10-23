@@ -26,10 +26,12 @@ var EvaluationDimensions = []EvaluationDimension{
 }
 
 type EvaluationFixture struct {
-	ID       string `json:"id"`
-	Category string `json:"category"`
-	Plan     bool   `json:"plan"`
-	Estimate bool   `json:"estimate"`
+	ID       string            `json:"id"`
+	Category string            `json:"category"`
+	Plan     bool              `json:"plan"`
+	Estimate bool              `json:"estimate"`
+	Request  string            `json:"request"`
+	Evidence map[string]string `json:"evidence"`
 }
 
 type EvaluationCorpus struct {

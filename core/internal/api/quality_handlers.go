@@ -371,7 +371,8 @@ func (s *Server) handleWorkerCandidate(w http.ResponseWriter, r *http.Request) {
 		ImplementerWorkerID:   req.WorkerID,
 		ExecutionMode:         run.ExecutionMode, Provider: run.Provider,
 		Model: run.Model, PaseoMode: run.PaseoMode,
-		ChangedPaths: validation.ChangedPaths, RiskClass: validation.RiskClass,
+		DeterministicIntegration: run.WorkloadKind == domain.GitIntegrationKind,
+		ChangedPaths:             validation.ChangedPaths, RiskClass: validation.RiskClass,
 	}
 	stored, events, err := s.db.CreateCandidate(ctx, record, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {

@@ -104,20 +104,28 @@ Core does not fabricate termination. Immutable evidence is preserved.
 
 S4-D replaces the single-WorkUnit restriction with a bounded DAG:
 
-- stable WorkUnit IDs, descriptions, dependencies, paths and capabilities;
+- stable WorkUnit IDs, descriptions, dependencies, paths, capabilities and
+  optional per-unit acceptance checks;
 - Core validation of unique IDs, unknown references, self-dependencies, cycles,
   unauthorized scope/capabilities, parallel path conflicts and budgets;
-- one Core-generated integration node when more than one unit executes; it
-  consumes dependency candidates and produces the final integrated candidate;
-- per-unit frozen ActionSpecs derived from registered Project configuration;
-- sequential units start from their prerequisite candidate; parallel units
-  start from the campaign base; integration consumes all terminal dependency
-  candidates;
+- bounded multi-predecessor fan-in for ordinary WorkUnits: a unit with
+  multiple predecessors deterministically merges those candidate commits;
+- a Core-generated integration node only when multiple terminal units must be
+  combined; it consumes terminal candidates and produces the final integrated
+  candidate;
+- per-unit frozen ActionSpecs derived from registered Project configuration,
+  with optional per-unit acceptance checks and global checks on the integrated
+  candidate;
+- sequential units start from their prerequisite candidate; independent units
+  start from the campaign base; multi-predecessor units and integration consume
+  dependency candidates deterministically; conflict-free integration requires
+  no model session;
 - the existing Campaign scheduler releases nodes only after every dependency
   succeeds, persists state across restart, and fences stale dispatch;
 - final independent Verifier, Reviewer and deterministic Quality Gate run on
   the integrated candidate. Per-unit verification is not required for this
-  bounded slice because no unit is independently accepted or delivered.
+  bounded slice because no unit is independently accepted or delivered; the
+  final content oracle remains authoritative.
 
 This is not a general workflow DSL. Portfolio scheduling and dynamic specialist
 composition remain S4-E/S7 responsibilities.

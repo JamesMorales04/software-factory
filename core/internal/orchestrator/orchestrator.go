@@ -323,6 +323,11 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 		e.log.Info("implementer task completed", "campaignId", campaign.ID,
 			"taskKey", completed.Key, "candidateId", completed.CandidateID)
 	case domain.RunFailed:
+		if run.WorkloadKind == domain.GitIntegrationKind &&
+			strings.Contains(strings.ToLower(run.Error), "integrate dependency candidate") {
+			e.block(ctx, campaign, "deterministic integration conflict: "+run.Error, correlation)
+			return
+		}
 		spec, serr := e.db.GetActionSpec(campaign.SpecID)
 		if serr != nil {
 			e.block(ctx, campaign, "frozen spec is unavailable during recovery", correlation)

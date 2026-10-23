@@ -1,16 +1,122 @@
 {
   "id": "S4D-SEMANTIC-1",
   "fixtures": [
-    {"id":"S4D-01","category":"small-obvious-change","plan":false,"estimate":false},
-    {"id":"S4D-02","category":"read-only-audit","plan":false,"estimate":false},
-    {"id":"S4D-03","category":"ambiguous-broad","plan":true,"estimate":false},
-    {"id":"S4D-04","category":"multi-step-feature","plan":true,"estimate":false},
-    {"id":"S4D-05","category":"ambiguous-estimate","plan":true,"estimate":true},
-    {"id":"S4D-06","category":"conflicting-requirements","plan":true,"estimate":false},
-    {"id":"S4D-07","category":"bounded-estimate","plan":true,"estimate":true},
-    {"id":"S4D-08","category":"diagnosis","plan":false,"estimate":false},
-    {"id":"S4D-09","category":"cross-service-refactor","plan":true,"estimate":false},
-    {"id":"S4D-10","category":"security-hidden-risk","plan":true,"estimate":false},
-    {"id":"S4D-11","category":"superficially-large-estimate","plan":true,"estimate":true}
+    {
+      "id": "S4D-01",
+      "category": "small-obvious-change",
+      "plan": false,
+      "estimate": false,
+      "request": "In docs/quickstart.md, change the displayed local start command from make serve to make dev. Do not change code or other docs.",
+      "evidence": {
+        "E-01": "The quickstart contains make serve in its Local development section. The repository Makefile defines dev and does not define serve. No other requested files are in scope."
+      }
+    },
+    {
+      "id": "S4D-02",
+      "category": "read-only-audit",
+      "plan": false,
+      "estimate": false,
+      "request": "Review whether the new API key handling could expose credentials. Do not edit anything; give me findings and evidence.",
+      "evidence": {
+        "E-02": "The changed files are api/handler.go and api/handler_test.go. The diff adds a request header read and passes its value to client.SetKey; the supplied diff contains no logging statement. No runtime trace or downstream client implementation is included."
+      }
+    },
+    {
+      "id": "S4D-03",
+      "category": "ambiguous-broad",
+      "plan": true,
+      "estimate": false,
+      "request": "Make the project production-ready before launch.",
+      "evidence": {
+        "E-03": "No launch date, target environment, reliability objective, threat model, supported traffic, or acceptance criteria were supplied."
+      }
+    },
+    {
+      "id": "S4D-04",
+      "category": "multi-step-feature",
+      "plan": true,
+      "estimate": false,
+      "request": "Add a GET /healthz endpoint that reports whether the service can reach its configured database. Keep the response free of credentials. Add tests and update the operator docs.",
+      "evidence": {
+        "E-04a": "The service has http/router.go, storage/db.go, and docs/operations.md. storage.DB.Ping(ctx) exists. The current router has no health endpoint. Tests use the existing httptest helpers.",
+        "E-04b": "The task does not specify response schema, timeout, or whether database failure should change process readiness."
+      }
+    },
+    {
+      "id": "S4D-05",
+      "category": "ambiguous-estimate",
+      "plan": true,
+      "estimate": true,
+      "request": "Estimate the effort to replace the in-memory job queue with durable SQLite storage, including restart recovery and tests.",
+      "evidence": {
+        "E-05a": "The repository has a JobQueue interface and one in-memory implementation. Two callers enqueue jobs and one worker consumes them.",
+        "E-05b": "No persistence package, migration framework, transaction policy, crash/replay semantics, or throughput target is documented. The test suite has queue unit tests but no process-restart harness."
+      }
+    },
+    {
+      "id": "S4D-06",
+      "category": "conflicting-requirements",
+      "plan": true,
+      "estimate": false,
+      "request": "Remove the legacy /v1/export endpoint immediately, but keep all existing integrations working without changes.",
+      "evidence": {
+        "E-06": "Three documented integrations call /v1/export. No replacement endpoint or migration window is specified. The request gives both requirements as mandatory."
+      }
+    },
+    {
+      "id": "S4D-07",
+      "category": "bounded-estimate",
+      "plan": true,
+      "estimate": true,
+      "request": "Estimate the effort to add pagination to the existing GET /projects endpoint, with a default page size of 50, a maximum of 200, stable ordering by project ID, and tests.",
+      "evidence": {
+        "E-07a": "The handler and repository query are in the same Go package. The query currently returns all rows and projects already have immutable IDs.",
+        "E-07b": "There are handler tests and repository tests. No cursor-pagination helper exists. The public API has no compatibility freeze."
+      }
+    },
+    {
+      "id": "S4D-08",
+      "category": "diagnosis",
+      "plan": false,
+      "estimate": false,
+      "request": "The last run stopped making progress. Diagnose the likely cause and recommend the next safe observation.",
+      "evidence": {
+        "E-08a": "The operation trace shows the worker waiting on go test ./... for 11 minutes; no command completion event follows.",
+        "E-08b": "A supervisor snapshot taken 30 seconds later says the worker is active and used 2% additional context. No process table, test output, or later heartbeat is attached."
+      }
+    },
+    {
+      "id": "S4D-09",
+      "category": "cross-service-refactor",
+      "plan": true,
+      "estimate": false,
+      "request": "Refactor request processing so HTTP handlers, storage, retries, and event delivery share a common pipeline across three services.",
+      "evidence": {
+        "E-09a": "Each of the three services has its own HTTP handler, storage adapter, retry loop, and event publisher.",
+        "E-09b": "Retry and event ordering behavior differs between services. No compatibility, migration, or rollout acceptance criteria are supplied."
+      }
+    },
+    {
+      "id": "S4D-10",
+      "category": "security-hidden-risk",
+      "plan": true,
+      "estimate": false,
+      "request": "Add a configurable cache TTL to reduce response latency.",
+      "evidence": {
+        "E-10a": "The shared response cache serves user-specific data. The cache key contains URL and locale but no tenant or user identifier.",
+        "E-10b": "Authorization occurs after the cache lookup. No runtime trace, exploit reproduction, or cache invalidation contract is supplied."
+      }
+    },
+    {
+      "id": "S4D-11",
+      "category": "superficially-large-estimate",
+      "plan": true,
+      "estimate": true,
+      "request": "Estimate the effort to update all 1,024 generated icons to use the standard style.",
+      "evidence": {
+        "E-11a": "All icons are generated by one script from a mapping file. The requested style is represented by one existing token.",
+        "E-11b": "Regeneration changes six tracked files; snapshot tests already cover the generated output. No manual icon editing is required."
+      }
+    }
   ]
 }

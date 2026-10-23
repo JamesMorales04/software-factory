@@ -163,6 +163,30 @@ func (s *Server) handleStartCampaign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "unauthorized", "lead campaign authority is stale or revoked")
 		return
 	}
+	if leadRequest, lerr := s.db.GetLeadRequestByCampaign(ctx, campaign.ID); lerr == nil {
+		_, _, replayed, events, err := s.db.StartLeadCampaign(ctx, leadRequest.ID, "manual",
+			telemetry.CorrelationIDFrom(ctx))
+		if err != nil {
+			mapDomainError(w, err, s.log, "start lead campaign")
+			return
+		}
+		if replayed {
+			w.Header().Set("Idempotent-Replayed", "true")
+		}
+		for _, event := range events {
+			s.hub.Publish(event.Projected())
+		}
+		if !replayed && s.campaigns != nil {
+			s.campaigns.Wake()
+		}
+		projection, perr := s.db.GetCampaignProjection(campaign.ID)
+		if perr != nil {
+			mapDomainError(w, perr, s.log, "campaign projection")
+			return
+		}
+		writeJSON(w, http.StatusOK, projection)
+		return
+	}
 	campaign, replayed, events, err := s.db.StartCampaign(ctx, campaign.ID, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		mapDomainError(w, err, s.log, "start campaign")

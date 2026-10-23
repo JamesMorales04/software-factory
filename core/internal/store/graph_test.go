@@ -52,31 +52,36 @@ func createGraphCampaign(t *testing.T, db *DB, units []domain.LeadWorkUnit, repa
 	if err != nil {
 		t.Fatal(err)
 	}
-	unitSpecs := map[string]domain.ActionSpec{}
-	specIDs := map[string]string{}
-	for _, unit := range units {
-		spec := graphSpec(t, db, action, unit.Goal("graph campaign"), unit.AllowedPaths)
-		unitSpecs[unit.ID] = spec
-		specIDs[unit.ID] = spec.ID
-	}
-	paths := []string{}
-	capabilities := []domain.Capability{domain.CapRepositoryEdit, domain.CapNodeToolchain}
-	for _, unit := range units {
-		paths = append(paths, unit.AllowedPaths...)
-	}
-	integration := graphSpec(t, db, action, "integrate", paths)
-	_ = capabilities
 	proposal := domain.LeadPlanProposal{
 		MaxRepairCycles: repairs, MaxWallClockSecs: 600, MaxParallel: parallel,
 		Budget:    domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120},
 		WorkUnits: units,
 	}
-	plan, err := domain.BuildLeadCampaignPlan(proposal, specIDs, integration.ID)
+	unitSpecs := map[string]domain.ActionSpec{}
+	specIDs := map[string]string{}
+	for _, unit := range units {
+		paths, _ := proposal.UnitScope(unit.ID)
+		spec := graphSpec(t, db, action, unit.Goal("graph campaign"), paths)
+		unitSpecs[unit.ID] = spec
+		specIDs[unit.ID] = spec.ID
+	}
+	paths := []string{}
+	for _, unit := range units {
+		unitPaths, _ := proposal.UnitScope(unit.ID)
+		paths = append(paths, unitPaths...)
+	}
+	integration := graphSpec(t, db, action, "integrate", paths)
+	campaignSpec := integration.ID
+	terminal := proposal.TerminalUnits()
+	if len(terminal) == 1 {
+		campaignSpec = unitSpecs[terminal[0].ID].ID
+	}
+	plan, err := domain.BuildLeadCampaignPlan(proposal, specIDs, campaignSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	campaign, _, _, err := db.CreateCampaign(context.Background(), domain.NewCampaignParams{
-		SpecID: integration.ID, MaxRepairCycles: repairs, MaxWallClockSecs: 600,
+		SpecID: campaignSpec, MaxRepairCycles: repairs, MaxWallClockSecs: 600,
 		MaxParallel: parallel, MaxImplementerAttempts: 8, Plan: &plan,
 	}, "graph")
 	if err != nil {
@@ -120,14 +125,16 @@ func driveGraphUnit(t *testing.T, db *DB, fixture graphFixture, task domain.Camp
 	if _, _, err := db.HeartbeatLease(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.IntendPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := db.BindPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "ws-"+task.Key, "sess-"+task.Key, "graph"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := db.ClosePaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "graph"); err != nil {
-		t.Fatal(err)
+	if claimed.WorkloadKind == domain.PaseoTaskKind {
+		if _, _, _, err := db.IntendPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := db.BindPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "ws-"+task.Key, "sess-"+task.Key, "graph"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := db.ClosePaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "graph"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	node, _ := fixture.campaign.Plan.TaskPlan(task.Key)
 	spec, err := db.GetActionSpec(node.SpecID)
@@ -146,7 +153,8 @@ func driveGraphUnit(t *testing.T, db *DB, fixture graphFixture, task domain.Camp
 		ImplementerRunID: claimed.ID, ImplementerAttemptID: attempt.ID,
 		ImplementerGeneration: attempt.LeaseGeneration, ImplementerWorkerID: "graph-worker",
 		ExecutionMode: claimed.ExecutionMode, Provider: claimed.Provider, Model: claimed.Model,
-		PaseoMode: claimed.PaseoMode, ChangedPaths: spec.AllowedPaths, RiskClass: domain.RiskR0,
+		PaseoMode: claimed.PaseoMode, DeterministicIntegration: claimed.WorkloadKind == domain.GitIntegrationKind,
+		ChangedPaths: spec.AllowedPaths, RiskClass: domain.RiskR0,
 	}, "graph")
 	if err != nil {
 		t.Fatal(err)
@@ -188,14 +196,16 @@ func driveGraphRunOnly(t *testing.T, db *DB, fixture graphFixture, task domain.C
 	if _, _, err := db.HeartbeatLease(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := db.IntendPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := db.BindPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "ws-"+task.Key, "sess-"+task.Key, "graph"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := db.ClosePaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "graph"); err != nil {
-		t.Fatal(err)
+	if claimed.WorkloadKind == domain.PaseoTaskKind {
+		if _, _, _, err := db.IntendPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "graph"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := db.BindPaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "ws-"+task.Key, "sess-"+task.Key, "graph"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := db.ClosePaseoSession(ctx, "graph-worker", claimed.ID, attempt.ID, attempt.LeaseGeneration, "succeeded", "", "graph"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	node, _ := fixture.campaign.Plan.TaskPlan(task.Key)
 	spec, err := db.GetActionSpec(node.SpecID)
@@ -214,7 +224,8 @@ func driveGraphRunOnly(t *testing.T, db *DB, fixture graphFixture, task domain.C
 		ImplementerRunID: claimed.ID, ImplementerAttemptID: attempt.ID,
 		ImplementerGeneration: attempt.LeaseGeneration, ImplementerWorkerID: "graph-worker",
 		ExecutionMode: claimed.ExecutionMode, Provider: claimed.Provider, Model: claimed.Model,
-		PaseoMode: claimed.PaseoMode, ChangedPaths: spec.AllowedPaths, RiskClass: domain.RiskR0,
+		PaseoMode: claimed.PaseoMode, DeterministicIntegration: claimed.WorkloadKind == domain.GitIntegrationKind,
+		ChangedPaths: spec.AllowedPaths, RiskClass: domain.RiskR0,
 	}, "graph")
 	if err != nil {
 		t.Fatal(err)
@@ -320,7 +331,14 @@ func TestWorkGraphParallelFanInIntegration(t *testing.T) {
 	if integration.Status != domain.TaskReady {
 		t.Fatalf("integration status = %s", integration.Status)
 	}
+	if node, _ := fixture.campaign.Plan.TaskPlan(integration.Key); node.UnitKind != domain.LeadUnitKindIntegration {
+		t.Fatalf("integration plan node = %+v", node)
+	}
 	candidate, run := driveGraphUnit(t, db, fixture, integration, 3)
+	if run.WorkloadKind != domain.GitIntegrationKind || run.Provider != "" || run.Model != "" || run.PaseoMode != "" {
+		t.Fatalf("integration used a model route: kind=%s provider=%s model=%s mode=%s",
+			run.WorkloadKind, run.Provider, run.Model, run.PaseoMode)
+	}
 	merges, _ := run.WorkloadInput["mergeCandidates"].([]any)
 	if len(merges) != 2 {
 		t.Fatalf("integration merge candidates = %#v", run.WorkloadInput["mergeCandidates"])
@@ -378,6 +396,60 @@ func TestWorkGraphParallelFanInIntegration(t *testing.T) {
 	}
 }
 
+func TestWorkGraphOrdinaryUnitFanInConsumesBothPrerequisites(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	units := scopeUnits("api", "ui", "wiring")
+	units[2].DependsOn = []string{"api", "ui"}
+	fixture := createGraphCampaign(t, db, units, 0, 2)
+	if _, ok := fixture.campaign.Plan.TaskPlan(domain.IntegrationTaskKey); ok {
+		t.Fatal("single-terminal ordinary fan-in should not need a separate integration node")
+	}
+	if _, _, _, err := db.StartCampaign(ctx, fixture.campaign.ID, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	apiCandidate, _ := driveGraphUnit(t, db, fixture, taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("api")), 1)
+	uiCandidate, _ := driveGraphUnit(t, db, fixture, taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("ui")), 2)
+	if _, err := db.PromoteReadyTasks(ctx, fixture.campaign.ID, "graph"); err != nil {
+		t.Fatal(err)
+	}
+	wiringTask := taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("wiring"))
+	if wiringTask.Status != domain.TaskReady {
+		t.Fatalf("fan-in unit status = %s", wiringTask.Status)
+	}
+	candidate, run := driveGraphUnit(t, db, fixture, wiringTask, 3)
+	merges, _ := run.WorkloadInput["mergeCandidates"].([]any)
+	if len(merges) != 2 {
+		t.Fatalf("fan-in merge candidates = %#v", run.WorkloadInput["mergeCandidates"])
+	}
+	got := map[string]bool{}
+	for _, value := range merges {
+		got[fmt.Sprint(value)] = true
+	}
+	if !got[apiCandidate.CommitSHA] || !got[uiCandidate.CommitSHA] {
+		t.Fatalf("ordinary fan-in did not consume both prerequisite commits: %#v", merges)
+	}
+	node, _ := fixture.campaign.Plan.TaskPlan(wiringTask.Key)
+	spec, err := db.GetActionSpec(node.SpecID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"src/api", "src/ui", "src/wiring"} {
+		found := false
+		for _, allowed := range spec.AllowedPaths {
+			if allowed == path {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("fan-in spec does not cover prerequisite path %s: %v", path, spec.AllowedPaths)
+		}
+	}
+	if candidate.BaseRevision != spec.BaseRevision {
+		t.Fatalf("fan-in base = %s, want campaign base %s", candidate.BaseRevision, spec.BaseRevision)
+	}
+}
+
 func taskByKey(t *testing.T, db *DB, campaignID, key string) domain.CampaignTask {
 	t.Helper()
 	tasks, err := db.CampaignTasks(campaignID)
@@ -419,9 +491,9 @@ func TestWorkGraphDependencyFailureStopsDownstreamDispatch(t *testing.T) {
 	if uiTask.Status != domain.TaskCancelled && uiTask.Status != domain.TaskPending {
 		t.Fatalf("downstream unit advanced after dependency failure: %s", uiTask.Status)
 	}
-	integration := taskByKey(t, db, fixture.campaign.ID, domain.IntegrationTaskKey)
-	if integration.Status != domain.TaskCancelled && integration.Status != domain.TaskPending {
-		t.Fatalf("integration advanced after dependency failure: %s", integration.Status)
+	terminal := taskByKey(t, db, fixture.campaign.ID, domain.LeadUnitTaskKey("ui"))
+	if terminal.Status != domain.TaskCancelled && terminal.Status != domain.TaskPending {
+		t.Fatalf("terminal unit advanced after dependency failure: %s", terminal.Status)
 	}
 	campaign, err := db.GetCampaign(fixture.campaign.ID)
 	if err != nil || campaign.Status != domain.CampaignFailed {

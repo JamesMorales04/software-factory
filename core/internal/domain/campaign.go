@@ -352,16 +352,18 @@ func BuildLeadCampaignPlan(p LeadPlanProposal, unitSpecIDs map[string]string, ca
 			Instruction: unit.Description,
 		})
 	}
-	sourceKey := LeadUnitTaskKey(p.WorkUnits[0].ID)
-	if len(p.WorkUnits) > 1 {
+	terminal := p.TerminalUnits()
+	if len(terminal) == 0 {
+		return CampaignPlan{}, errors.New("work graph has no terminal unit")
+	}
+	sourceKey := LeadUnitTaskKey(terminal[0].ID)
+	if p.NeedsIntegration() {
 		if len(campaignSpecID) != 32 || !isLowerHex(campaignSpecID) {
-			return CampaignPlan{}, errors.New("multi-unit graph requires a frozen integration spec")
+			return CampaignPlan{}, errors.New("multi-terminal graph requires a frozen integration spec")
 		}
-		var terminals []string
-		for _, unit := range p.WorkUnits {
-			if !dependedOn[unit.ID] {
-				terminals = append(terminals, LeadUnitTaskKey(unit.ID))
-			}
+		terminals := make([]string, 0, len(terminal))
+		for _, unit := range terminal {
+			terminals = append(terminals, LeadUnitTaskKey(unit.ID))
 		}
 		tasks = append(tasks, CampaignTaskPlan{
 			Key: IntegrationTaskKey, Role: RoleImplementer, Cycle: 0,
@@ -370,9 +372,10 @@ func BuildLeadCampaignPlan(p LeadPlanProposal, unitSpecIDs map[string]string, ca
 			Instruction: "Integrate the dependency candidates into one candidate and keep the frozen acceptance oracle green.",
 		})
 		sourceKey = IntegrationTaskKey
-	} else if campaignSpecID != unitSpecIDs[p.WorkUnits[0].ID] {
-		return CampaignPlan{}, errors.New("single-unit graph campaign spec must be the unit spec")
+	} else if campaignSpecID != unitSpecIDs[terminal[0].ID] {
+		return CampaignPlan{}, errors.New("single-terminal graph campaign spec must be the terminal unit spec")
 	}
+	_ = dependedOn
 	cycles := p.MaxRepairCycles + 1
 	for cycle := 0; cycle < cycles; cycle++ {
 		if cycle > 0 {

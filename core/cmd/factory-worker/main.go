@@ -290,7 +290,7 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 	}()
 
 	spec, err := fixtureSpec(run, attempt)
-	if err != nil && run.WorkloadKind != domain.PaseoTaskKind {
+	if err != nil && run.WorkloadKind != domain.PaseoTaskKind && run.WorkloadKind != domain.GitIntegrationKind {
 		cancel() // stop the heartbeat loop before waiting for it
 		<-hbDone
 		c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil, "invalid-workload: "+err.Error(), log)
@@ -347,18 +347,20 @@ func (c *client) handleAttempt(ctx context.Context, workerID string, run domain.
 				"spec-workspace: "+truncate(perr.Error()), log)
 			return
 		}
-		if _, berr := prepareBrowserCapability(execCtx, workDir, run.ID, actionSpec, c.runtime.Browser); berr != nil {
-			cancel()
-			<-hbDone
-			retainWorkDir = true
-			c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
-				"capability: "+truncate(berr.Error()), log)
-			return
+		if run.WorkloadKind != domain.GitIntegrationKind {
+			if _, berr := prepareBrowserCapability(execCtx, workDir, run.ID, actionSpec, c.runtime.Browser); berr != nil {
+				cancel()
+				<-hbDone
+				retainWorkDir = true
+				c.bestEffortReport(ctx, workerID, run, attempt, domain.OutcomeFailed, nil,
+					"capability: "+truncate(berr.Error()), log)
+				return
+			}
 		}
 	}
 
 	var testServer *browserserver.Server
-	if actionSpec != nil && actionSpec.BrowserTestServer != nil {
+	if actionSpec != nil && actionSpec.BrowserTestServer != nil && run.WorkloadKind != domain.GitIntegrationKind {
 		if len(actionSpec.BrowserEndpoints) == 0 {
 			cancel()
 			<-hbDone

@@ -66,14 +66,15 @@ const (
 // S4-D Lead events carry identity and digest facts only. They intentionally
 // omit request objectives, model inputs, assessment bodies, and failure text.
 const (
-	EventLeadRequestCreated     = "LeadRequestCreated"
-	EventLeadRequestStarted     = "LeadRequestStarted"
-	EventLeadRequestAutoStarted = "LeadRequestAutoStarted"
-	EventLeadAssessmentRecorded = "LeadAssessmentRecorded"
-	EventLeadPlanFrozen         = "LeadPlanFrozen"
-	EventLeadRequestBlocked     = "LeadRequestBlocked"
-	EventDelegationIssued       = "DelegationIssued"
-	EventDelegationRevoked      = "DelegationRevoked"
+	EventLeadRequestCreated         = "LeadRequestCreated"
+	EventLeadRequestStarted         = "LeadRequestStarted"
+	EventLeadRequestAutoStarted     = "LeadRequestAutoStarted"
+	EventLeadRequestStartAuthorized = "LeadRequestStartAuthorized"
+	EventLeadAssessmentRecorded     = "LeadAssessmentRecorded"
+	EventLeadPlanFrozen             = "LeadPlanFrozen"
+	EventLeadRequestBlocked         = "LeadRequestBlocked"
+	EventDelegationIssued           = "DelegationIssued"
+	EventDelegationRevoked          = "DelegationRevoked"
 )
 
 // S4-B campaign orchestration events. They are recorded on the campaign
@@ -151,7 +152,8 @@ func (e Event) Validate() error {
 		EventCampaignFinished, EventCampaignCancelled,
 		EventProjectRegistered, EventProjectUpdated, EventProjectStatusChanged:
 	case EventLeadRequestCreated, EventLeadRequestStarted, EventLeadRequestAutoStarted,
-		EventLeadAssessmentRecorded, EventLeadPlanFrozen, EventLeadRequestBlocked:
+		EventLeadRequestStartAuthorized, EventLeadAssessmentRecorded, EventLeadPlanFrozen,
+		EventLeadRequestBlocked:
 		if e.AggregateType != AggregateLeadRequest {
 			return errors.New("lead request event must use the lead_request aggregate")
 		}
@@ -197,7 +199,9 @@ func validateLeadEventPayload(eventType string, payload map[string]any) error {
 	case EventLeadRequestStarted:
 		keys = []string{"requestId", "actionId", "status"}
 	case EventLeadRequestAutoStarted:
-		keys = []string{"requestId", "campaignId", "delegationId", "riskClass", "status"}
+		keys = []string{"requestId", "campaignId", "delegationId", "riskClass", "mode", "status"}
+	case EventLeadRequestStartAuthorized:
+		keys = []string{"requestId", "campaignId", "delegationId", "riskClass", "mode", "status"}
 	case EventLeadAssessmentRecorded:
 		keys = []string{"requestId", "assessmentId", "assessmentHash", "mechanism", "status"}
 	case EventLeadPlanFrozen:

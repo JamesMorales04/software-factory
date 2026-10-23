@@ -561,3 +561,98 @@ func TestReusableDelegationMigrationRemovesUniqueConstraint(t *testing.T) {
 		t.Fatalf("reopened database still enforced one request per delegation: %v", err)
 	}
 }
+
+func TestStartLeadCampaignIsAtomicAcrossCrashBoundary(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	project, action, grant := createLeadFixture(t, db)
+	request, _, err := db.CreateLeadRequest(ctx, NewLeadRequest{
+		ProjectID: project.ID, Objective: "Crash-consistent start", RequestJSON: `{"objective":"Crash-consistent start"}`,
+		IdempotencyKey: "crash-consistent-start", DelegationID: grant.ID, ProjectConfigHash: project.ConfigHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.CreateLeadAction(ctx, request.ID, domain.NewActionParams{
+		ProjectID: project.ID, Title: "Crash-consistent start", Description: "Crash-consistent start",
+		IdempotencyKey: "lead-action-" + request.ID,
+	}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	specParams := domain.NewActionSpecParams{
+		ProjectID: project.ID, ActionID: action.ID, Goal: "Crash-consistent start",
+		Repository: project.RepositoryPath, BaseRevision: strings.Repeat("b", 40),
+		AllowedPaths: []string{"src"}, AcceptanceCriteria: []domain.SpecCheck{
+			{ID: "format", Kind: domain.CheckFormat, Description: "format", Command: []string{"node", "--check", "add.js"}},
+			{ID: "test", Kind: domain.CheckTest, Description: "test", Command: []string{"node", "--test"}},
+			{ID: "functional", Kind: domain.CheckFunctional, Description: "functional", Command: []string{"node", "-e", "0"}},
+		},
+		NegativeCases: []domain.SpecCheck{{ID: "negative", Kind: domain.CheckNegative, Description: "negative", Command: []string{"node", "-e", "1"}, ExpectExit: 1}},
+		RiskClass:     "R0", QualityProfile: "node-basic",
+		Budget: domain.SpecBudget{MaxAttempts: 1, TimeoutSecs: 120}, ExecutionMode: "trusted-local",
+		Provider: "opencode", Model: "opencode-go/deepseek-v4.1-flash", PaseoMode: "build",
+		ProjectConfigRevision: project.ConfigRevision, RepositoryIdentity: project.RepositoryIdentity,
+		Capabilities: []string{"repository-edit", "node-toolchain"},
+	}
+	spec, err := specParams.Validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _, _, err = db.CreateActionSpec(ctx, spec, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign, _, _, err := db.CreateCampaign(ctx, domain.NewCampaignParams{
+		SpecID: spec.ID, MaxRepairCycles: 0, MaxWallClockSecs: 600, MaxParallel: 1,
+	}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx,
+		`UPDATE lead_requests SET status='ready', spec_id=?, campaign_id=?, updated_at=? WHERE id=?`,
+		spec.ID, campaign.ID, stamp(db.now()), request.ID); err != nil {
+		t.Fatal(err)
+	}
+	db.hooks.beforeLeadStartCommit = func() error { return errors.New("injected crash before commit") }
+	if _, _, _, _, err := db.StartLeadCampaign(ctx, request.ID, "manual", "crash"); err == nil {
+		t.Fatal("injected crash did not abort the start")
+	}
+	db.hooks.beforeLeadStartCommit = nil
+	afterCrash, err := db.GetLeadRequest(ctx, request.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaignAfterCrash, err := db.GetCampaign(campaign.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterCrash.Status != "ready" || campaignAfterCrash.Status != domain.CampaignPending {
+		t.Fatalf("crash left partial state: request=%s campaign=%s", afterCrash.Status, campaignAfterCrash.Status)
+	}
+	for _, aggregate := range []string{domain.AggregateLeadRequest, domain.AggregateCampaign} {
+		events, _ := db.ListAggregateEvents(aggregate, request.ID)
+		for _, event := range events {
+			if event.EventType == domain.EventLeadRequestStartAuthorized || event.EventType == domain.EventCampaignStarted {
+				t.Fatalf("crash persisted a start event: %s", event.EventType)
+			}
+		}
+	}
+	_, started, replayed, events, err := db.StartLeadCampaign(ctx, request.ID, "manual", "crash")
+	if err != nil || replayed || started.Status != "running" || len(events) < 2 {
+		t.Fatalf("retry after crash: replayed=%v status=%s events=%d err=%v", replayed, started.Status, len(events), err)
+	}
+	_, _, replayed, replayEvents, err := db.StartLeadCampaign(ctx, request.ID, "manual", "crash")
+	if err != nil || !replayed || len(replayEvents) != 0 {
+		t.Fatalf("idempotent replay: replayed=%v events=%d err=%v", replayed, len(replayEvents), err)
+	}
+	leadEvents, _ := db.ListAggregateEvents(domain.AggregateLeadRequest, request.ID)
+	startEvents := 0
+	for _, event := range leadEvents {
+		if event.EventType == domain.EventLeadRequestStartAuthorized {
+			startEvents++
+		}
+	}
+	if startEvents != 1 {
+		t.Fatalf("manual start event count = %d", startEvents)
+	}
+}

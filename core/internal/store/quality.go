@@ -32,8 +32,8 @@ const candidateColumns = `id, project_id, action_id, spec_id, spec_hash, policy_
 	base_revision, commit_sha, tree_sha, content_digest, candidate_ref,
 	parent_candidate_id, repository, implementer_run_id, implementer_attempt_id,
 	implementer_generation, implementer_worker_id, execution_mode, provider,
-	model, paseo_mode, changed_paths, risk_class, spec_binding_hash, state,
-	created_at, frozen_at, superseded_at`
+	model, paseo_mode, deterministic_integration, changed_paths, risk_class,
+	spec_binding_hash, state, created_at, frozen_at, superseded_at`
 
 const verificationColumns = `id, candidate_id, candidate_sha, spec_id, spec_hash,
 	policy_revision, authority, actor, independent, clean_resource, oracle_digest,
@@ -388,9 +388,10 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		 policy_revision, base_revision, commit_sha, tree_sha, content_digest,
 		 candidate_ref, parent_candidate_id, repository, implementer_run_id,
 		 implementer_attempt_id, implementer_generation, implementer_worker_id,
-		 execution_mode, provider, model, paseo_mode, changed_paths, risk_class,
-		 spec_binding_hash, state, created_at, frozen_at, superseded_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 execution_mode, provider, model, paseo_mode, deterministic_integration,
+		 changed_paths, risk_class, spec_binding_hash, state, created_at, frozen_at,
+		 superseded_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		candidate.ID, candidate.ProjectID, candidate.ActionID, candidate.SpecID,
 		candidate.SpecHash, candidate.PolicyRevision, candidate.BaseRevision,
 		candidate.CommitSHA, candidate.TreeSHA, candidate.ContentDigest,
@@ -398,8 +399,9 @@ func (db *DB) CreateCandidate(ctx context.Context, candidate domain.CandidateRev
 		candidate.ImplementerRunID, candidate.ImplementerAttemptID,
 		candidate.ImplementerGeneration, candidate.ImplementerWorkerID,
 		candidate.ExecutionMode, candidate.Provider, candidate.Model,
-		candidate.PaseoMode, string(changed), string(candidate.RiskClass),
-		candidate.SpecBindingHash, string(candidate.State), stamp(now), stamp(now), "",
+		candidate.PaseoMode, candidate.DeterministicIntegration, string(changed),
+		string(candidate.RiskClass), candidate.SpecBindingHash, string(candidate.State),
+		stamp(now), stamp(now), "",
 	); err != nil {
 		return domain.CandidateRevision{}, nil, fmt.Errorf("insert candidate: %w", err)
 	}
@@ -467,16 +469,18 @@ func scanCandidate(row interface {
 ) (domain.CandidateRevision, error) {
 	var c domain.CandidateRevision
 	var changed, risk, state, created, frozen, superseded string
+	var deterministic int
 	if err := row.Scan(
 		&c.ID, &c.ProjectID, &c.ActionID, &c.SpecID, &c.SpecHash,
 		&c.PolicyRevision, &c.BaseRevision, &c.CommitSHA, &c.TreeSHA,
 		&c.ContentDigest, &c.CandidateRef, &c.ParentCandidateID, &c.Repository,
 		&c.ImplementerRunID, &c.ImplementerAttemptID, &c.ImplementerGeneration,
 		&c.ImplementerWorkerID, &c.ExecutionMode, &c.Provider, &c.Model,
-		&c.PaseoMode, &changed, &risk, &c.SpecBindingHash, &state, &created, &frozen, &superseded,
+		&c.PaseoMode, &deterministic, &changed, &risk, &c.SpecBindingHash, &state, &created, &frozen, &superseded,
 	); err != nil {
 		return domain.CandidateRevision{}, err
 	}
+	c.DeterministicIntegration = deterministic != 0
 	if err := json.Unmarshal([]byte(changed), &c.ChangedPaths); err != nil {
 		return domain.CandidateRevision{}, err
 	}

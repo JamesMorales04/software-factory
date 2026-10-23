@@ -15,7 +15,7 @@ TIMEOUT_SECONDS = 90
 LIVE_FLAGS = (
     "FACTORY_S3B_LIVE", "FACTORY_S3D_LIVE", "FACTORY_S4A_LIVE",
     "FACTORY_S4B_LIVE", "FACTORY_S4C_LIVE", "FACTORY_S4D_LIVE",
-    "FACTORY_S4D_GRAPH_LIVE", "FACTORY_LIVE_MODE",
+    "FACTORY_S4D_GRAPH_LIVE", "FACTORY_S4D_SEMANTIC_LIVE", "FACTORY_LIVE_MODE",
     "FACTORY_LIVE_AUTHORIZATION", "FACTORY_LIVE_AUTH_CAMPAIGN",
     "FACTORY_LIVE_AUTH_PROJECT", "FACTORY_LIVE_AUTH_SESSION_BUDGET",
     "FACTORY_LIVE_AUTH_ROUTES",
@@ -114,6 +114,9 @@ def main() -> int:
         ("S4D graph default", [sys.executable, "scripts/e2e_s4d_graph_live.py"], None, False),
         ("S4D graph explicit LIVE=0", [sys.executable, "scripts/e2e_s4d_graph_live.py"], "FACTORY_S4D_GRAPH_LIVE=0", False),
         ("S4D graph live flag without authorization", [sys.executable, "scripts/e2e_s4d_graph_live.py"], "FACTORY_S4D_GRAPH_LIVE=1", False),
+        ("S4D semantic default", [sys.executable, "scripts/e2e_s4d_semantic_live.py"], None, False),
+        ("S4D semantic explicit LIVE=0", [sys.executable, "scripts/e2e_s4d_semantic_live.py"], "FACTORY_S4D_SEMANTIC_LIVE=0", False),
+        ("S4D semantic live flag without authorization", [sys.executable, "scripts/e2e_s4d_semantic_live.py"], "FACTORY_S4D_SEMANTIC_LIVE=1", False),
         ("C-07 Python default", [sys.executable, "scripts/e2e_s4c_07_live.py"], None, False),
         ("C-07 Python explicit LIVE=0", [sys.executable, "scripts/e2e_s4c_07_live.py"], "FACTORY_S4C_LIVE=0", False),
         ("C-07 Python live flag without authorization", [sys.executable, "scripts/e2e_s4c_07_live.py"], "FACTORY_S4C_LIVE=1", False),

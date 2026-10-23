@@ -160,10 +160,15 @@ func TestLeadPlanAcceptsSequentialParallelAndFanInGraphs(t *testing.T) {
 			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 		}},
-		{name: "fan-in", units: []LeadWorkUnit{
+		{name: "parallel-fan-in-integration", units: []LeadWorkUnit{
 			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 			{ID: "docs", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/docs"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+		}},
+		{name: "ordinary-unit-fan-in", units: []LeadWorkUnit{
+			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
+			{ID: "wiring", Kind: string(LeadImplementationUnit), DependsOn: []string{"api", "ui"}, AllowedPaths: []string{"src/wiring"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 		}},
 	}
 	for _, tc := range cases {
@@ -182,22 +187,33 @@ func TestLeadPlanAcceptsSequentialParallelAndFanInGraphs(t *testing.T) {
 			for _, unit := range tc.units {
 				unitSpecs[unit.ID] = testSpecID("spec-" + unit.ID)
 			}
-			plan, err := BuildLeadCampaignPlan(proposal, unitSpecs, testSpecID("integration"))
+			terminal := proposal.TerminalUnits()
+			campaignSpec := testSpecID("integration")
+			if len(terminal) == 1 {
+				campaignSpec = unitSpecs[terminal[0].ID]
+			}
+			plan, err := BuildLeadCampaignPlan(proposal, unitSpecs, campaignSpec)
 			if err != nil {
 				t.Fatalf("build %s graph: %v", tc.name, err)
 			}
 			if err := plan.Validate(); err != nil {
 				t.Fatalf("validate %s graph: %v", tc.name, err)
 			}
-			if _, ok := plan.TaskPlan(IntegrationTaskKey); !ok {
-				t.Fatalf("%s graph has no integration task", tc.name)
+			wantSource := LeadUnitTaskKey(terminal[0].ID)
+			if proposal.NeedsIntegration() {
+				wantSource = IntegrationTaskKey
+				if _, ok := plan.TaskPlan(IntegrationTaskKey); !ok {
+					t.Fatalf("%s graph has no integration task", tc.name)
+				}
+			} else if _, ok := plan.TaskPlan(IntegrationTaskKey); ok {
+				t.Fatalf("%s graph unexpectedly has an integration task", tc.name)
 			}
 			gate, ok := plan.TaskPlan(CycleKey(RoleQualityGate, 0))
-			if !ok || gate.SourceKey != IntegrationTaskKey {
-				t.Fatalf("%s gate source = %+v", tc.name, gate)
+			if !ok || gate.SourceKey != wantSource {
+				t.Fatalf("%s gate source = %+v, want %s", tc.name, gate, wantSource)
 			}
 			repair, ok := plan.TaskPlan(CycleKey(RoleImplementer, 1))
-			if !ok || repair.UnitKind != LeadUnitKindRepair || repair.SpecID != testSpecID("integration") {
+			if !ok || repair.UnitKind != LeadUnitKindRepair || repair.SpecID != campaignSpec {
 				t.Fatalf("%s repair task = %+v", tc.name, repair)
 			}
 		})
@@ -218,11 +234,6 @@ func TestLeadPlanRejectsInvalidGraphShapesAndParallelOverlap(t *testing.T) {
 		{name: "cycle", units: []LeadWorkUnit{
 			{ID: "api", Kind: string(LeadImplementationUnit), DependsOn: []string{"ui"}, AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 			{ID: "ui", Kind: string(LeadImplementationUnit), DependsOn: []string{"api"}, AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
-		}},
-		{name: "multiple dependencies", units: []LeadWorkUnit{
-			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/api"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
-			{ID: "ui", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src/ui"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
-			{ID: "docs", Kind: string(LeadImplementationUnit), DependsOn: []string{"api", "ui"}, AllowedPaths: []string{"src/docs"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},
 		}},
 		{name: "parallel path overlap", units: []LeadWorkUnit{
 			{ID: "api", Kind: string(LeadImplementationUnit), AllowedPaths: []string{"src"}, Capabilities: []Capability{CapRepositoryEdit, CapGenericToolchain}},

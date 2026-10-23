@@ -421,6 +421,21 @@ func (db *DB) StartCampaign(ctx context.Context, campaignID, correlationID strin
 		return domain.Campaign{}, false, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	_, replayed, events, err := startCampaignTx(ctx, tx, campaignID, correlationID, now)
+	if err != nil {
+		return domain.Campaign{}, false, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Campaign{}, false, nil, err
+	}
+	stored, err := db.GetCampaign(campaignID)
+	if err != nil {
+		return domain.Campaign{}, false, nil, err
+	}
+	return stored, replayed, events, nil
+}
+
+func startCampaignTx(ctx context.Context, tx *sql.Tx, campaignID, correlationID string, now time.Time) (domain.Campaign, bool, []domain.Event, error) {
 	campaign, err := scanCampaign(tx.QueryRowContext(ctx,
 		`SELECT `+campaignColumns+` FROM campaigns WHERE id=?`, campaignID))
 	if err == sql.ErrNoRows {
@@ -430,9 +445,6 @@ func (db *DB) StartCampaign(ctx context.Context, campaignID, correlationID strin
 		return domain.Campaign{}, false, nil, err
 	}
 	if campaign.Status != domain.CampaignPending {
-		if err := tx.Commit(); err != nil {
-			return domain.Campaign{}, false, nil, err
-		}
 		if campaign.Status == domain.CampaignRunning {
 			return campaign, true, nil, nil
 		}
@@ -460,10 +472,8 @@ func (db *DB) StartCampaign(ctx context.Context, campaignID, correlationID strin
 		if aerr != nil {
 			return domain.Campaign{}, false, nil, aerr
 		}
-		if cerr := tx.Commit(); cerr != nil {
-			return domain.Campaign{}, false, nil, cerr
-		}
-		current, gerr := db.GetCampaign(campaignID)
+		current, gerr := scanCampaign(tx.QueryRowContext(ctx,
+			`SELECT `+campaignColumns+` FROM campaigns WHERE id=?`, campaignID))
 		if gerr != nil {
 			return domain.Campaign{}, false, nil, gerr
 		}
@@ -489,14 +499,89 @@ func (db *DB) StartCampaign(ctx context.Context, campaignID, correlationID strin
 		return domain.Campaign{}, false, nil, err
 	}
 	events = append(events, readyEvents...)
-	if err := tx.Commit(); err != nil {
-		return domain.Campaign{}, false, nil, err
+	return campaign, false, events, nil
+}
+
+// StartLeadCampaign atomically starts a ready Lead Campaign and advances the
+// Lead projection/audit event. A crash or write failure rolls back both, so a
+// retry cannot create a second Campaign, duplicate start event, or a running
+// Campaign with a ready projection.
+func (db *DB) StartLeadCampaign(ctx context.Context, requestID, mode, correlationID string) (domain.Campaign, LeadRequest, bool, []domain.Event, error) {
+	requestID = strings.TrimSpace(requestID)
+	if mode != "autonomous" && mode != "manual" {
+		return domain.Campaign{}, LeadRequest{}, false, nil, fmt.Errorf("%w: invalid start mode", domain.ErrInvalidInput)
 	}
-	stored, err := db.GetCampaign(campaignID)
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
-		return domain.Campaign{}, false, nil, err
+		return domain.Campaign{}, LeadRequest{}, false, nil, err
 	}
-	return stored, false, events, nil
+	defer func() { _ = tx.Rollback() }()
+	now := db.now()
+	request, err := scanLeadRequest(tx.QueryRowContext(ctx,
+		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE id=?`, requestID))
+	if err != nil {
+		return domain.Campaign{}, LeadRequest{}, false, nil, err
+	}
+	if request.Status != "ready" && request.Status != "running" {
+		return domain.Campaign{}, LeadRequest{}, false, nil, fmt.Errorf("%w: lead request is %s", domain.ErrInvalidTransition, request.Status)
+	}
+	campaign, replayed, events, err := startCampaignTx(ctx, tx, request.CampaignID, correlationID, now)
+	if err != nil {
+		return domain.Campaign{}, LeadRequest{}, false, nil, err
+	}
+	changed := false
+	if request.Status == "ready" {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE lead_requests SET status='running', updated_at=? WHERE id=? AND status='ready'`,
+			stamp(now), requestID)
+		if err != nil {
+			return domain.Campaign{}, LeadRequest{}, false, nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return domain.Campaign{}, LeadRequest{}, false, nil, err
+		}
+		if affected == 1 {
+			changed = true
+			request.Status = "running"
+			request.UpdatedAt = now
+			eventType := domain.EventLeadRequestStartAuthorized
+			if mode == "autonomous" {
+				eventType = domain.EventLeadRequestAutoStarted
+			}
+			payload := map[string]any{
+				"requestId": request.ID, "campaignId": request.CampaignID,
+				"delegationId": request.DelegationID, "mode": mode, "status": "running",
+			}
+			if mode == "autonomous" {
+				proposal, perr := scanLeadProposal(tx.QueryRowContext(ctx,
+					`SELECT `+leadProposalColumns+` FROM lead_proposals WHERE id=? AND request_id=?`,
+					request.ProposalID, request.ID))
+				if perr != nil {
+					return domain.Campaign{}, LeadRequest{}, false, nil, perr
+				}
+				payload["riskClass"] = string(proposal.Proposal.RiskClass)
+				payload["mode"] = "autonomous"
+			} else {
+				payload["riskClass"] = "manual"
+			}
+			event, err := appendLeadEvent(ctx, tx, eventType, domain.AggregateLeadRequest,
+				request.ID, ActorLocalOperator, payload, now)
+			if err != nil {
+				return domain.Campaign{}, LeadRequest{}, false, nil, err
+			}
+			events = append(events, event)
+		}
+	}
+	if db.hooks.beforeLeadStartCommit != nil {
+		if err := db.hooks.beforeLeadStartCommit(); err != nil {
+			return domain.Campaign{}, LeadRequest{}, false, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Campaign{}, LeadRequest{}, false, nil, err
+	}
+	return campaign, request, !changed && replayed, events, nil
 }
 
 // PromoteReadyTasks advances pending tasks whose dependencies are complete
@@ -693,7 +778,8 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	var mergeCandidates []any
 	parentCandidateID := ""
 	switch {
-	case node.UnitKind == domain.LeadUnitKindIntegration && len(deps) > 0:
+	case (node.UnitKind == domain.LeadUnitKindIntegration ||
+		(node.UnitKind == domain.LeadUnitKindImplementation && len(deps) > 1)) && len(deps) > 0:
 		for _, dep := range deps {
 			mergeCandidates = append(mergeCandidates, dep.CommitSHA)
 		}
@@ -734,16 +820,22 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	if node.UnitID != "" {
 		input["unitId"] = node.UnitID
 	}
+	workloadKind := domain.PaseoTaskKind
+	provider, model, paseoMode := spec.Provider, spec.Model, spec.PaseoMode
+	if node.UnitKind == domain.LeadUnitKindIntegration {
+		workloadKind = domain.GitIntegrationKind
+		provider, model, paseoMode = "", "", ""
+	}
 	params, err := domain.NewRunParams{
 		ProjectID: spec.ProjectID, ActionID: spec.ActionID,
-		WorkloadKind:  domain.PaseoTaskKind,
+		WorkloadKind:  workloadKind,
 		WorkloadInput: input,
 		MaxAttempts:   spec.Budget.MaxAttempts, TimeoutSecs: spec.Budget.TimeoutSecs,
-		ExecutionMode: string(domain.ExecTrustedLocal), Provider: spec.Provider,
-		Model: spec.Model, PaseoMode: spec.PaseoMode, SpecID: spec.ID,
+		ExecutionMode: string(domain.ExecTrustedLocal), Provider: provider,
+		Model: model, PaseoMode: paseoMode, SpecID: spec.ID,
 	}.Validate()
 	if err != nil {
-		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: %v", domain.ErrInvalidInput, err)
+		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: kind=%s unitKind=%s: %v", domain.ErrInvalidInput, workloadKind, node.UnitKind, err)
 	}
 	run, runEvent, err := createRunTx(ctx, tx, params, correlationID, now)
 	if err != nil {

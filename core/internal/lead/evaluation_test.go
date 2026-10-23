@@ -103,7 +103,7 @@ func TestSemanticEvaluationCorpusIsFrozen(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(raw)
-	const frozen = "5133ebd92c387a7d12ed2ffe937dcf1f5af751c5d0101267c6881942fc692d1b"
+	const frozen = "e199c14445a6da6efad98513b42136b2116560fb8bcd62a5e1d21387e4b020b4"
 	if hex.EncodeToString(sum[:]) != frozen {
 		t.Fatal("CAP-014 corpus changed without a new frozen revision")
 	}

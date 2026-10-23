@@ -239,6 +239,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	paseo_mode TEXT NOT NULL,
+	deterministic_integration INTEGER NOT NULL DEFAULT 0,
 	changed_paths TEXT NOT NULL,
 	risk_class TEXT NOT NULL,
 	spec_binding_hash TEXT NOT NULL DEFAULT '',
@@ -473,9 +474,10 @@ type DB struct {
 // S2 test hooks. Production code always uses the defaults installed by
 // Open; tests override them for deterministic lease/expiry behavior.
 type testHooks struct {
-	clock        func() time.Time
-	leaseTTL     time.Duration
-	offlineAfter time.Duration
+	clock                 func() time.Time
+	leaseTTL              time.Duration
+	offlineAfter          time.Duration
+	beforeLeadStartCommit func() error
 }
 
 // Open creates the schema, enforces WAL mode and seeds the default project.
@@ -967,6 +969,30 @@ func (db *DB) migrateS4DReusableDelegation() error {
 		reserved_attempts INTEGER NOT NULL DEFAULT 0,
 		updated_at TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("create standing_delegation_usage: %w", err)
+	}
+	candidateRows, err := db.sql.Query(`SELECT name FROM pragma_table_info('candidates')`)
+	if err != nil {
+		return err
+	}
+	hasDeterministic := false
+	for candidateRows.Next() {
+		var name string
+		if err := candidateRows.Scan(&name); err != nil {
+			_ = candidateRows.Close()
+			return err
+		}
+		if name == "deterministic_integration" {
+			hasDeterministic = true
+		}
+	}
+	_ = candidateRows.Close()
+	if err := candidateRows.Err(); err != nil {
+		return err
+	}
+	if !hasDeterministic {
+		if _, err := db.sql.Exec(`ALTER TABLE candidates ADD COLUMN deterministic_integration INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add candidates.deterministic_integration: %w", err)
+		}
 	}
 	rows, err := db.sql.Query(`SELECT il.name, il."unique", ii.name
 		FROM pragma_index_list('lead_requests') il

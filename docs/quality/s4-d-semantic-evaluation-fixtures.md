@@ -151,7 +151,7 @@ screening baseline, not an automated substitute for the rubric.
 The machine-readable fixture metadata is
 `core/internal/lead/testdata/s4d-evaluation-corpus.json` (corpus ID
 `S4D-SEMANTIC-1`, SHA-256
-`5133ebd92c387a7d12ed2ffe937dcf1f5af751c5d0101267c6881942fc692d1b`). The
+`e199c14445a6da6efad98513b42136b2116560fb8bcd62a5e1d21387e4b020b4`). The
 prose fixtures above remain the authoritative request/evidence text.
 
 `core/internal/lead/evaluation.go` validates independent blinded score sheets,

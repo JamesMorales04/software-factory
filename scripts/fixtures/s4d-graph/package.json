@@ -1,0 +1,10 @@
+{
+  "name": "factory-fixture-s4d-graph",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "node --check src/greeting.js && node --check src/app.js",
+    "test": "node --test tests/unit/smoke.test.mjs"
+  }
+}

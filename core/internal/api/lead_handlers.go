@@ -484,27 +484,33 @@ func (s *Server) freezeLeadSpecs(ctx context.Context, project domain.Project, ac
 	}
 	unitSpecs := make(map[string]string, len(plan.WorkUnits))
 	for _, unit := range plan.WorkUnits {
-		spec, err := s.freezeLeadSpec(ctx, project, action, plan, unit.Goal(plan.Objective), unit.AllowedPaths, unit.Capabilities)
+		paths, capabilities := plan.UnitScope(unit.ID)
+		acceptance, negative := plan.AcceptanceCriteria, plan.NegativeCases
+		if len(unit.AcceptanceCriteria) > 0 {
+			acceptance, negative = unit.AcceptanceCriteria, unit.NegativeCases
+		}
+		spec, err := s.freezeLeadSpec(ctx, project, action, plan, unit.Goal(plan.Objective), paths, capabilities, acceptance, negative)
 		if err != nil {
 			return domain.ActionSpec{}, nil, fmt.Errorf("work unit %q: %w", unit.ID, err)
 		}
 		unitSpecs[unit.ID] = spec.ID
 	}
-	if len(plan.WorkUnits) == 1 {
-		spec, err := s.db.GetActionSpec(unitSpecs[plan.WorkUnits[0].ID])
+	terminal := plan.TerminalUnits()
+	if len(terminal) == 1 {
+		spec, err := s.db.GetActionSpec(unitSpecs[terminal[0].ID])
 		return spec, unitSpecs, err
 	}
 	paths, capabilities := unionUnitScope(plan.WorkUnits)
 	spec, err := s.freezeLeadSpec(ctx, project, action, plan,
 		truncateGoal(plan.Objective+"\n\nIntegrate all WorkUnits into one candidate and keep the frozen acceptance oracle green."),
-		paths, capabilities)
+		paths, capabilities, plan.AcceptanceCriteria, plan.NegativeCases)
 	if err != nil {
 		return domain.ActionSpec{}, nil, fmt.Errorf("integration spec: %w", err)
 	}
 	return spec, unitSpecs, nil
 }
 
-func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, action domain.Action, plan domain.LeadPlanProposal, goal string, allowedPaths []string, unitCapabilities []domain.Capability) (domain.ActionSpec, error) {
+func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, action domain.Action, plan domain.LeadPlanProposal, goal string, allowedPaths []string, unitCapabilities []domain.Capability, acceptance, negative []domain.SpecCheck) (domain.ActionSpec, error) {
 	capabilities := make([]string, len(unitCapabilities))
 	for i, capability := range unitCapabilities {
 		capabilities[i] = string(capability)
@@ -512,8 +518,8 @@ func (s *Server) freezeLeadSpec(ctx context.Context, project domain.Project, act
 	spec, err := (domain.NewActionSpecParams{
 		ProjectID: project.ID, ActionID: action.ID, Goal: goal,
 		Repository: project.RepositoryPath, BaseRevision: plan.BaseRevision,
-		AllowedPaths: allowedPaths, AcceptanceCriteria: plan.AcceptanceCriteria,
-		NegativeCases: plan.NegativeCases, RiskClass: string(plan.RiskClass),
+		AllowedPaths: allowedPaths, AcceptanceCriteria: acceptance,
+		NegativeCases: negative, RiskClass: string(plan.RiskClass),
 		QualityProfile: string(plan.QualityProfile), Budget: plan.Budget,
 		ExecutionMode: string(domain.ExecTrustedLocal), Provider: plan.Provider,
 		Model: plan.Model, PaseoMode: plan.PaseoMode,
@@ -621,6 +627,9 @@ func (s *Server) writeLeadRequest(w http.ResponseWriter, r *http.Request, id str
 				startMode = "autonomous"
 				break
 			}
+			if event.EventType == domain.EventLeadRequestStartAuthorized {
+				startMode = "manual"
+			}
 		}
 	}
 	if startMode == "" && request.Status == "running" {
@@ -699,25 +708,19 @@ func (s *Server) maybeAutoStartLeadRequest(ctx context.Context, requestID string
 		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start denied: frozen plan is outside the active delegation")
 		return
 	}
-	_, replayed, events, err := s.db.StartCampaign(ctx, request.CampaignID, telemetry.CorrelationIDFrom(ctx))
+	_, updated, replayed, events, err := s.db.StartLeadCampaign(ctx, request.ID, "autonomous",
+		telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic Campaign start rejected: "+boundedReason(err))
 		return
 	}
 	for _, event := range events {
-		s.hub.Publish(event)
+		s.hub.Publish(event.Projected())
 	}
 	if !replayed && s.campaigns != nil {
 		s.campaigns.Wake()
 	}
-	updated, event, changed, err := s.db.AdvanceLeadRequestAutoStarted(ctx, request.ID,
-		request.CampaignID, request.DelegationID, string(proposal.Proposal.RiskClass))
-	if err != nil {
-		s.blockLeadAfterAutoStartFailure(ctx, request.ID, "Automatic start projection failed: "+boundedReason(err))
-		return
-	}
-	if changed {
-		s.hub.Publish(event.Projected())
+	if !replayed {
 		s.log.Info("lead request started autonomously", "requestId", updated.ID,
 			"campaignId", updated.CampaignID, "delegationId", updated.DelegationID,
 			"riskClass", proposal.Proposal.RiskClass)
@@ -763,7 +766,8 @@ func (s *Server) handleStartLeadRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusForbidden, "unauthorized", "lead authority is stale or revoked")
 		return
 	}
-	_, replayed, events, err := s.db.StartCampaign(r.Context(), request.CampaignID, telemetry.CorrelationIDFrom(r.Context()))
+	_, _, replayed, events, err := s.db.StartLeadCampaign(r.Context(), request.ID, "manual",
+		telemetry.CorrelationIDFrom(r.Context()))
 	if err != nil {
 		mapDomainError(w, err, s.log, "start lead campaign")
 		return
@@ -772,11 +776,10 @@ func (s *Server) handleStartLeadRequest(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Idempotent-Replayed", "true")
 	}
 	for _, event := range events {
-		s.hub.Publish(event)
+		s.hub.Publish(event.Projected())
 	}
 	if !replayed && s.campaigns != nil {
 		s.campaigns.Wake()
 	}
-	_, _, _ = s.db.AdvanceLeadRequest(r.Context(), request.ID, "ready", "running", store.LeadRequestLinks{})
 	s.writeLeadRequest(w, r, request.ID, true)
 }

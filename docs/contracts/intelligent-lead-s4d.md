@@ -201,16 +201,18 @@ model / Paseo mode, campaign repair/wall-clock/parallel/session limits and
 `workUnits`.
 
 S4-D accepts `1..8` implementation WorkUnits. Each has a bounded slug ID, an
-optional bounded description, at most one `dependsOn` predecessor, safe
-`allowedPaths`, and closed `capabilities`. Core adds one integration node for
-multi-unit graphs; fan-in is represented by the integration node rather than
-arbitrary multi-parent units. Core rejects duplicate IDs, self/unknown
-references, cycles, multiple implementation dependencies, parallel units with
-overlapping paths, path escape, missing quality-profile capabilities,
+optional bounded description, up to eight `dependsOn` predecessors, safe
+`allowedPaths`, closed `capabilities`, and optional per-unit
+`acceptanceCriteria`/`negativeCases`. A multi-predecessor unit consumes the
+deterministic merge of its prerequisite candidate commits; Core adds a separate
+integration node only when multiple terminal units must be combined. Core
+rejects duplicate IDs, self/unknown references, cycles, parallel units with
+overlapping effective paths, path escape, missing quality-profile capabilities,
 project/grant capability expansion, unsupported risk/class/route, invalid
 checks, stale bindings and budget overflow before spec or Campaign creation.
-The session ceiling covers the assessment, every WorkUnit, integration and the
-bounded repair horizon.
+The session ceiling covers the assessment, every WorkUnit, any integration node
+and the bounded repair horizon. A unit with no per-unit checks uses the global
+proposal checks; the final integrated candidate always uses the global checks.
 
 Each WorkUnit receives its own frozen ActionSpec with the unit's path and
 capability scope. A multi-unit Campaign's `specId` is the Core-derived
@@ -335,9 +337,9 @@ The candidate-bound deterministic lane must reject:
 - malformed/unknown-field assessment JSON, trailing JSON, mismatched identity,
   duplicate/missing evidence references, invalid intent/complexity, unbounded
   notes and executable work proposed for a non-change intent;
-- malformed, unknown or cyclic dependency, self/multiple-predecessor unit,
-  duplicate IDs, empty graph, more than eight units, or parallel units with
-  overlapping paths;
+- malformed, unknown or cyclic dependency, self-dependency, duplicate IDs,
+  more than eight units or eight predecessors, empty graph, or parallel units
+  with overlapping effective paths;
 - missing profile check coverage, malformed `SpecCheck`, invalid budget,
   assessment plus Implementer attempts above the session ceiling, or any grant
   escalation;

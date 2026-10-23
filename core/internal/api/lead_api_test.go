@@ -415,7 +415,7 @@ func TestLeadBoundActionCannotCreateOrStartCampaignBeforeLeadLink(t *testing.T) 
 	}
 	unit := proposal.WorkUnits[0]
 	spec, err := srv.freezeLeadSpec(ctx, project, action, proposal, unit.Goal(proposal.Objective),
-		unit.AllowedPaths, unit.Capabilities)
+		unit.AllowedPaths, unit.Capabilities, proposal.AcceptanceCriteria, proposal.NegativeCases)
 	if err != nil {
 		t.Fatalf("freeze fixture spec: %v", err)
 	}

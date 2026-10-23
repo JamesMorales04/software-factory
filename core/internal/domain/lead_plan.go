@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,6 +30,7 @@ const LeadImplementationUnit LeadWorkUnitKind = "implementation"
 
 const (
 	MaxLeadWorkUnits            = 8
+	MaxLeadWorkUnitDependencies = 8
 	MaxLeadWorkUnitIDChars      = 32
 	MaxLeadUnitDescriptionChars = 2000
 	MaxLeadGraphTasks           = 32
@@ -176,12 +178,14 @@ func validateAutonomousRiskClasses(values, granted []RiskClass) (map[RiskClass]b
 // LeadWorkUnit is a proposed implementation node. Core adds the integration
 // node for multi-unit graphs; models cannot create arbitrary roles.
 type LeadWorkUnit struct {
-	ID           string       `json:"id"`
-	Kind         string       `json:"kind"`
-	Description  string       `json:"description,omitempty"`
-	DependsOn    []string     `json:"dependsOn"`
-	AllowedPaths []string     `json:"allowedPaths"`
-	Capabilities []Capability `json:"capabilities"`
+	ID                 string       `json:"id"`
+	Kind               string       `json:"kind"`
+	Description        string       `json:"description,omitempty"`
+	DependsOn          []string     `json:"dependsOn"`
+	AllowedPaths       []string     `json:"allowedPaths"`
+	Capabilities       []Capability `json:"capabilities"`
+	AcceptanceCriteria []SpecCheck  `json:"acceptanceCriteria,omitempty"`
+	NegativeCases      []SpecCheck  `json:"negativeCases,omitempty"`
 }
 
 // LeadPlanProposal is advisory model output bound to one current Action and
@@ -330,15 +334,97 @@ func (p LeadPlanProposal) Validate(g StandingDelegation, project Project, action
 	return nil
 }
 
+// TerminalUnits returns units that no other unit depends on.
+func (p LeadPlanProposal) TerminalUnits() []LeadWorkUnit {
+	dependedOn := map[string]bool{}
+	for _, unit := range p.WorkUnits {
+		for _, dep := range unit.DependsOn {
+			dependedOn[dep] = true
+		}
+	}
+	var terminal []LeadWorkUnit
+	for _, unit := range p.WorkUnits {
+		if !dependedOn[unit.ID] {
+			terminal = append(terminal, unit)
+		}
+	}
+	return terminal
+}
+
+// NeedsIntegration reports whether multiple terminal units require a
+// Core-owned integration node.
+func (p LeadPlanProposal) NeedsIntegration() bool { return len(p.TerminalUnits()) > 1 }
+
 // ImplementerTaskCount returns the maximum number of implementer/integration
-// task executions the frozen plan can dispatch: work units, one Core-owned
-// integration node for multi-unit graphs, and the bounded repair horizon.
+// task executions the frozen plan can dispatch: work units, an integration
+// node only when multiple terminal units must be combined, and repairs.
 func (p LeadPlanProposal) ImplementerTaskCount() int {
 	count := len(p.WorkUnits) + p.MaxRepairCycles
-	if len(p.WorkUnits) > 1 {
+	if p.NeedsIntegration() {
 		count++
 	}
 	return count
+}
+
+// UnitScope returns the effective paths and capabilities for one unit. A
+// multi-predecessor unit must be able to carry the merged prerequisite
+// outputs through integration, so its frozen spec covers its transitive
+// dependencies. A single-predecessor unit starts from that candidate and
+// keeps its own scope.
+func (p LeadPlanProposal) UnitScope(unitID string) ([]string, []Capability) {
+	byID := map[string]LeadWorkUnit{}
+	for _, unit := range p.WorkUnits {
+		byID[unit.ID] = unit
+	}
+	paths := map[string]bool{}
+	capabilities := map[Capability]bool{}
+	seen := map[string]bool{}
+	var add func(string)
+	add = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		unit, ok := byID[id]
+		if !ok {
+			return
+		}
+		for _, path := range unit.AllowedPaths {
+			paths[path] = true
+		}
+		for _, capability := range unit.Capabilities {
+			capabilities[capability] = true
+		}
+		for _, dep := range unit.DependsOn {
+			add(dep)
+		}
+	}
+	unit, ok := byID[unitID]
+	if !ok {
+		return nil, nil
+	}
+	for _, path := range unit.AllowedPaths {
+		paths[path] = true
+	}
+	for _, capability := range unit.Capabilities {
+		capabilities[capability] = true
+	}
+	if len(unit.DependsOn) > 1 {
+		for _, dep := range unit.DependsOn {
+			add(dep)
+		}
+	}
+	outPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		outPaths = append(outPaths, path)
+	}
+	sort.Strings(outPaths)
+	outCapabilities := make([]Capability, 0, len(capabilities))
+	for capability := range capabilities {
+		outCapabilities = append(outCapabilities, capability)
+	}
+	sort.Slice(outCapabilities, func(i, j int) bool { return outCapabilities[i] < outCapabilities[j] })
+	return outPaths, outCapabilities
 }
 
 func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDelegation) error {
@@ -349,6 +435,7 @@ func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDeleg
 		return fmt.Errorf("delegation allowedPaths: %w", err)
 	}
 	required, _ := RequiredCapabilities(p.QualityProfile)
+	requiredKinds, _ := p.QualityProfile.RequiredKinds()
 	for _, unit := range p.WorkUnits {
 		if unit.ID == "" || len(unit.ID) > MaxLeadWorkUnitIDChars || !isSlug(unit.ID) {
 			return errors.New("work unit id is invalid or exceeds its bound")
@@ -363,8 +450,8 @@ func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDeleg
 		if len(unit.Description) > MaxLeadUnitDescriptionChars {
 			return fmt.Errorf("work unit %q description exceeds its bound", unit.ID)
 		}
-		if len(unit.DependsOn) > 1 {
-			return fmt.Errorf("work unit %q has multiple dependencies; use the Core integration node for fan-in", unit.ID)
+		if len(unit.DependsOn) > MaxLeadWorkUnitDependencies {
+			return fmt.Errorf("work unit %q exceeds the dependency bound", unit.ID)
 		}
 		paths, err := normalizeAllowedPaths(unit.AllowedPaths)
 		if err != nil {
@@ -386,6 +473,22 @@ func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDeleg
 		}
 		if _, err := NormalizeCapabilities(capabilityStrings(unit.Capabilities)); err != nil {
 			return fmt.Errorf("work unit %q capabilities: %w", unit.ID, err)
+		}
+		if len(unit.AcceptanceCriteria) > 0 || len(unit.NegativeCases) > 0 {
+			acceptance, err := normalizeChecks(unit.AcceptanceCriteria, false)
+			if err != nil {
+				return fmt.Errorf("work unit %q acceptanceCriteria: %w", unit.ID, err)
+			}
+			negative, err := normalizeChecks(unit.NegativeCases, true)
+			if err != nil {
+				return fmt.Errorf("work unit %q negativeCases: %w", unit.ID, err)
+			}
+			if len(acceptance) == 0 || len(negative) == 0 {
+				return fmt.Errorf("work unit %q must provide both acceptance and negative checks", unit.ID)
+			}
+			if err := requireKinds(append(acceptance, negative...), requiredKinds); err != nil {
+				return fmt.Errorf("work unit %q quality profile: %w", unit.ID, err)
+			}
 		}
 		pathsByID[unit.ID] = paths
 	}
@@ -434,8 +537,10 @@ func (p LeadPlanProposal) validateWorkUnits(project Project, grant StandingDeleg
 			if p.unitIsAncestor(left.ID, right.ID, map[string]bool{}) || p.unitIsAncestor(right.ID, left.ID, map[string]bool{}) {
 				continue
 			}
-			for _, a := range pathsByID[left.ID] {
-				for _, b := range pathsByID[right.ID] {
+			leftPaths, _ := p.UnitScope(left.ID)
+			rightPaths, _ := p.UnitScope(right.ID)
+			for _, a := range leftPaths {
+				for _, b := range rightPaths {
 					if pathsOverlap(a, b) {
 						return fmt.Errorf("work units %q and %q can run concurrently with overlapping path %q", left.ID, right.ID, a)
 					}

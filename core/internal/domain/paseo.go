@@ -25,6 +25,11 @@ const (
 // provider/model/mode from the smoke-proven allowlist below.
 const PaseoTaskKind = "paseo-task"
 
+// GitIntegrationKind merges already-frozen dependency candidates
+// deterministically. It never starts a model session; semantic conflict
+// resolution is a separate, explicitly authorized repair.
+const GitIntegrationKind = "git-integration"
+
 // MaxPaseoTaskChars bounds the operator-supplied coding task text.
 const MaxPaseoTaskChars = 2000
 
@@ -163,6 +168,84 @@ func validatePaseoTaskInput(input map[string]any) (map[string]any, error) {
 	for key := range input {
 		switch key {
 		case "task", "baseRevision", "parentCandidateId", "unitId", "mergeCandidates":
+		default:
+			return nil, fmt.Errorf("unknown workloadInput key %q", key)
+		}
+	}
+	return out, nil
+}
+
+func validateGitIntegrationInput(input map[string]any) (map[string]any, error) {
+	if input == nil {
+		return nil, errors.New("workloadInput is required")
+	}
+	out := map[string]any{}
+	if raw, ok := input["task"]; ok {
+		task, _ := raw.(string)
+		if len(strings.TrimSpace(task)) > MaxPaseoTaskChars {
+			return nil, fmt.Errorf("workloadInput.task exceeds %d characters", MaxPaseoTaskChars)
+		}
+		out["task"] = strings.TrimSpace(task)
+	}
+	rawBase, ok := input["baseRevision"]
+	if !ok {
+		return nil, errors.New("workloadInput.baseRevision is required for git-integration")
+	}
+	base, _ := rawBase.(string)
+	base = strings.TrimSpace(base)
+	if !isGitObjectID(base) {
+		return nil, errors.New("workloadInput.baseRevision must be a full git object id")
+	}
+	out["baseRevision"] = base
+	rawMerges, ok := input["mergeCandidates"]
+	if !ok {
+		return nil, errors.New("workloadInput.mergeCandidates is required for git-integration")
+	}
+	values, ok := rawMerges.([]any)
+	if !ok {
+		if typed, typedOK := rawMerges.([]string); typedOK {
+			values = make([]any, len(typed))
+			for i, value := range typed {
+				values[i] = value
+			}
+		} else {
+			return nil, errors.New("workloadInput.mergeCandidates must be an array")
+		}
+	}
+	if len(values) < 1 || len(values) > 8 {
+		return nil, errors.New("workloadInput.mergeCandidates must contain 1..8 commits")
+	}
+	seen := map[string]bool{}
+	normalized := make([]any, 0, len(values))
+	for _, value := range values {
+		commit, _ := value.(string)
+		commit = strings.TrimSpace(commit)
+		if !isGitObjectID(commit) || seen[commit] {
+			return nil, errors.New("workloadInput.mergeCandidates must contain unique full git object ids")
+		}
+		seen[commit] = true
+		normalized = append(normalized, commit)
+	}
+	out["mergeCandidates"] = normalized
+	if raw, ok := input["parentCandidateId"]; ok {
+		parent, _ := raw.(string)
+		parent = strings.TrimSpace(parent)
+		if len(parent) != 32 || !isLowerHex(parent) {
+			return nil, errors.New("workloadInput.parentCandidateId must be a 32-character lowercase hex id")
+		}
+		out["parentCandidateId"] = parent
+	}
+	if raw, ok := input["unitId"]; ok {
+		unit, _ := raw.(string)
+		unit = strings.TrimSpace(unit)
+		if len(unit) > 64 || !isSlug(unit) {
+			return nil, errors.New("workloadInput.unitId must be a bounded slug")
+		}
+		out["unitId"] = unit
+	}
+	for key := range input {
+		switch key {
+		case "task", "baseRevision", "mergeCandidates", "parentCandidateId", "unitId":
 		default:
 			return nil, fmt.Errorf("unknown workloadInput key %q", key)
 		}

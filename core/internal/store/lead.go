@@ -413,6 +413,15 @@ func (db *DB) GetLeadRequest(ctx context.Context, id string) (LeadRequest, error
 		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE id=?`, strings.TrimSpace(id)))
 }
 
+func (db *DB) GetLeadRequestByCampaign(ctx context.Context, campaignID string) (LeadRequest, error) {
+	request, err := scanLeadRequest(db.sql.QueryRowContext(ctx,
+		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE campaign_id=?`, strings.TrimSpace(campaignID)))
+	if err == sql.ErrNoRows {
+		return LeadRequest{}, domain.ErrNotFound
+	}
+	return request, err
+}
+
 type LeadRequestLinks struct {
 	AssessmentID string
 	ProposalID   string
@@ -484,61 +493,6 @@ func (db *DB) AdvanceLeadRequest(ctx context.Context, id, expected, next string,
 		return LeadRequest{}, false, err
 	}
 	return updated, true, nil
-}
-
-// AdvanceLeadRequestAutoStarted atomically records the ready→running
-// projection and its delegation/risk audit event. A crash cannot leave a
-// running request without the automatic-start audit record.
-func (db *DB) AdvanceLeadRequestAutoStarted(ctx context.Context, requestID, campaignID, delegationID, riskClass string) (LeadRequest, domain.Event, bool, error) {
-	requestID = strings.TrimSpace(requestID)
-	tx, err := db.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	request, err := scanLeadRequest(tx.QueryRowContext(ctx,
-		`SELECT `+leadRequestColumns+` FROM lead_requests WHERE id=?`, requestID))
-	if err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	if request.Status == "running" {
-		if err := tx.Commit(); err != nil {
-			return LeadRequest{}, domain.Event{}, false, err
-		}
-		return request, domain.Event{}, false, nil
-	}
-	if request.Status != "ready" {
-		return LeadRequest{}, domain.Event{}, false, fmt.Errorf("%w: lead request is %s", domain.ErrInvalidTransition, request.Status)
-	}
-	now := db.now()
-	result, err := tx.ExecContext(ctx,
-		`UPDATE lead_requests SET status='running', updated_at=? WHERE id=? AND status='ready'`,
-		stamp(now), requestID)
-	if err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	if changed != 1 {
-		return LeadRequest{}, domain.Event{}, false, fmt.Errorf("%w: lead request changed concurrently", domain.ErrConflict)
-	}
-	event, err := appendLeadEvent(ctx, tx, domain.EventLeadRequestAutoStarted, domain.AggregateLeadRequest,
-		requestID, ActorLocalOperator, map[string]any{
-			"requestId": requestID, "campaignId": strings.TrimSpace(campaignID),
-			"delegationId": strings.TrimSpace(delegationID), "riskClass": strings.TrimSpace(riskClass),
-			"status": "running",
-		}, now)
-	if err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return LeadRequest{}, domain.Event{}, false, err
-	}
-	request.Status = "running"
-	request.UpdatedAt = now
-	return request, event, true, nil
 }
 
 func (db *DB) CreateStandingDelegation(ctx context.Context, input domain.StandingDelegation, idempotencyKey string) (domain.StandingDelegation, bool, error) {
