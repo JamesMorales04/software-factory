@@ -720,7 +720,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Native Rust Office migration is partial: Dashboard/Projects/Actions/Campaigns/Runs only; browser E2E and Lead/delegation views remain pending.
+  - "Native Rust Office migration is partial: Dashboard/Projects/Actions/Campaigns/Runs only; browser E2E and Lead/delegation views remain pending."
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
