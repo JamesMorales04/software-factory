@@ -39,3 +39,6 @@ path = "src/bin/repo_hygiene.rs"
 [[bin]]
 name = "factory-architecture-check"
 path = "src/bin/architecture_check.rs"
+
+[dev-dependencies]
+tower = { version = "0.5.2", features = ["util"] }

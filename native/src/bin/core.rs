@@ -2,6 +2,7 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc};
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -126,7 +127,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         verifier_token,
         reviewer_token,
     });
-    let router = Router::new()
+    let router = build_router(app);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "native Factory Core listening");
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+fn build_router(app: Arc<App>) -> Router {
+    Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
@@ -146,11 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
         .route("/quality/candidates/{id}/gate", get(quality_gate))
-        .with_state(app);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "native Factory Core listening");
-    axum::serve(listener, router).await?;
-    Ok(())
+        .with_state(app)
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -353,13 +358,19 @@ async fn worker_candidate(
     }
 }
 
-async fn quality_receipt(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(input): Json<QualityReceiptRequest>,
-) -> Response {
+async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let input: QualityReceiptRequest = match serde_json::from_slice(&body) {
+        Ok(input) => input,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid receipt payload"})),
+            )
+                .into_response();
+        }
     };
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
@@ -500,6 +511,57 @@ mod tests {
         );
         assert!(!worker_session_authorized(&app, &headers, "worker-a"));
         drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn quality_routes_reject_missing_or_cross_role_credentials() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = Arc::new(App {
+            db: Database::open(&path).unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+        });
+        let router = build_router(app);
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .uri("/quality/candidates/missing")
+            .header(
+                "authorization",
+                "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
         let _ = std::fs::remove_file(path);
     }
 

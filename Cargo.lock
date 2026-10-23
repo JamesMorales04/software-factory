@@ -250,6 +250,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
