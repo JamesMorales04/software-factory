@@ -6,7 +6,7 @@ authorization and it starts no provider session.
 
 ## Candidate and route
 
-- Product code candidate: `60bbdc34c27dceb266dfd0f81d0fe7c9ba9506ed`. Execution must pin the exact clean
+- Product code candidate: `8142462cda2aa0ea54e399fc409037aa20017d9d`. Execution must pin the exact clean
   `git rev-parse HEAD` at that time; the runner must refuse a dirty worktree or
   a SHA mismatch. A later docs-only commit is behaviorally identical but must
   still be the exact pinned clean HEAD.
@@ -40,6 +40,8 @@ order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
 | Deterministic integration sessions | 0 provider sessions |
 | Expected actual provider sessions | **3** |
 | Authorized maximum Factory sessions | **4** |
+| First attempt used | **1 assessment** (preserved failure) |
+| Remaining retry cap | **3 provider sessions** (assessment + two units) |
 | Implementer attempt budget | 3 (one per implementer/integration task) |
 | Repair cycles | 0 |
 | Maximum parallel implementation tasks | 2 |

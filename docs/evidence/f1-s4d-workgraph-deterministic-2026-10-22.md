@@ -1,6 +1,6 @@
 # F1-S4-D standing autonomy and WorkGraph deterministic evidence
 
-**Recorded:** 2026-10-22. **Code candidate:** `60bbdc34c27dceb266dfd0f81d0fe7c9ba9506ed`. This evidence is
+**Recorded:** 2026-10-22. **Code candidate:** `8142462cda2aa0ea54e399fc409037aa20017d9d`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
 No paid or live model/Paseo session was started.
 
@@ -95,7 +95,10 @@ the proposal before any Implementer dispatch. The session was stopped and is
 already archived; the runner correctly marked the attempt `INCOMPLETE`.
 Evidence is preserved in
 [f1-s4d-graph-live-4640e30d5ca.json](f1-s4d-graph-live-4640e30d5ca.json).
-No unit or integration session was started, and no budget was expanded.
+No unit or integration session was started. The retry candidate hard-caps
+model-backed implementer attempts so deterministic integration does not
+consume the provider-session budget: the remaining retry envelope is exactly
+three assessment/unit sessions, keeping total provider use at four.
 
 ## Capability status
 

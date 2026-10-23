@@ -25,7 +25,7 @@ contract were revised accordingly. The implementation now has:
   integrated acceptance;
 - a frozen CAP-014 corpus and blinded scoring/threshold harness (no model run).
 
-Product code candidate: `60bbdc34c27dceb266dfd0f81d0fe7c9ba9506ed`. Deterministic evidence is recorded in
+Product code candidate: `8142462cda2aa0ea54e399fc409037aa20017d9d`. Deterministic evidence is recorded in
 [f1-s4d-workgraph-deterministic-2026-10-22.md](../evidence/f1-s4d-workgraph-deterministic-2026-10-22.md).
 The multi-unit live envelope is prepared in
 [f1-s4d-completion-budget.md](../implementation/f1-s4d-completion-budget.md);
