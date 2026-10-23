@@ -38,6 +38,7 @@ pub struct LeadAssessmentRecord {
     pub request_id: String,
     pub mechanism: String,
     pub assessment_json: String,
+    pub schema_sha256: String,
     pub created_at: String,
 }
 
@@ -250,6 +251,9 @@ impl Database {
         assessment.validate(input)?;
         let assessment_json =
             serde_json::to_string(assessment).map_err(|_| Error::Invalid("assessment encoding"))?;
+        crate::model_output::validate_lead_assessment_schema(assessment_json.as_bytes())
+            .map_err(|error| Error::Delegation(error.to_string()))?;
+        let schema_sha256 = crate::model_output::lead_assessment_schema_sha256();
         let digest = sha256_hex(assessment_json.as_bytes());
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -292,16 +296,19 @@ impl Database {
             request_id: request.id.clone(),
             mechanism: mechanism.into(),
             assessment_json,
+            schema_sha256,
             created_at: Utc::now().to_rfc3339(),
         };
         sqlx::query::query(
-            "INSERT INTO lead_assessments (id,request_id,mechanism,assessment_json,created_at)
-             VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO lead_assessments
+             (id,request_id,mechanism,assessment_json,schema_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
         )
         .bind(&record.id)
         .bind(&record.request_id)
         .bind(&record.mechanism)
         .bind(&record.assessment_json)
+        .bind(&record.schema_sha256)
         .bind(&record.created_at)
         .execute(&mut *transaction)
         .await?;
@@ -498,20 +505,24 @@ impl Database {
     }
 
     pub async fn lead_assessment(&self, request_id: &str) -> Result<LeadAssessmentRecord, Error> {
-        let row: Option<(String, String, String, String, String)> = sqlx::query_as::query_as(
-            "SELECT id,request_id,mechanism,assessment_json,created_at
-             FROM lead_assessments WHERE request_id=?1",
-        )
-        .bind(request_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT id,request_id,mechanism,assessment_json,schema_sha256,created_at
+                 FROM lead_assessments WHERE request_id=?1",
+            )
+            .bind(request_id)
+            .fetch_optional(&self.pool)
+            .await?;
         row.map(
-            |(id, request_id, mechanism, assessment_json, created_at)| LeadAssessmentRecord {
-                id,
-                request_id,
-                mechanism,
-                assessment_json,
-                created_at,
+            |(id, request_id, mechanism, assessment_json, schema_sha256, created_at)| {
+                LeadAssessmentRecord {
+                    id,
+                    request_id,
+                    mechanism,
+                    assessment_json,
+                    schema_sha256,
+                    created_at,
+                }
             },
         )
         .ok_or(Error::NotFound)
@@ -668,7 +679,7 @@ async fn load_assessment(
     id: &str,
 ) -> Result<LeadAssessmentRecord, Error> {
     let row = sqlx::query::query(
-        "SELECT id,request_id,mechanism,assessment_json,created_at
+        "SELECT id,request_id,mechanism,assessment_json,schema_sha256,created_at
          FROM lead_assessments WHERE id=?1",
     )
     .bind(id)
@@ -680,6 +691,7 @@ async fn load_assessment(
         request_id: row.try_get("request_id")?,
         mechanism: row.try_get("mechanism")?,
         assessment_json: row.try_get("assessment_json")?,
+        schema_sha256: row.try_get("schema_sha256")?,
         created_at: row.try_get("created_at")?,
     })
 }
