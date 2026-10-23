@@ -258,8 +258,37 @@ authorization/path/Git/credential fixes are in `13d4a5e`/`35687a3`, but
 same-UID verification, orphan cleanup, absolute lease limits and project-scoped
 Worker capability remain open. No provider or Windows run is claimed.
 
-**Next executable task:** implement the trusted Sandbox Supervisor/runtime image
-and `factory start/stop`, or complete deterministic provider lifecycle fixtures
-before any paid-provider authorization. Add negative dispatch E2E cases
-(expired/stale lease, out-of-scope/symlink candidate, verifier failure) before
-claiming stronger G5/G6 evidence.
+**Next executable task (completed increments):** through
+`7b30918a2987f1c17fd94a6b764d9303e9df9b0c` the branch adds negative dispatch
+coverage, a single Rust-backed Office, `factory doctor/status`, and the
+structured-output/dependency doctrines.
+
+- Typed model outputs: `schemars` generates the Lead assessment schema;
+  `jsonschema` validates it; a conservative provider keyword gate fails closed;
+  the schema digest is stored with each assessment (migration 0005). Model
+  output remains advisory.
+- Library decisions are recorded in
+  [dependency-evaluation-2026-10-23.md](../engineering/dependency-evaluation-2026-10-23.md):
+  `schemars`/`jsonschema` adopted; hardened Git CLI retained; Podman CLI
+  retained pending a supervisor endpoint spike; `octocrab` adopt-later;
+  `cap-std`/`rustix` evaluated with the same-UID race still blocking;
+  `cargo-deny` evaluate before adoption.
+- Negative tests reject R1/ISOLATED authorization, out-of-scope candidates and
+  symlink/gitlink changes.
+- Office is one React app backed by the Rust client for Dashboard, Projects,
+  Actions, Campaigns and Runs. Legacy Paseo views/client were removed. Browser
+  E2E still targets the former API and is not migrated.
+- `factory doctor`/`status` are real host-native commands; lifecycle commands
+  remain `NOT_IMPLEMENTED`.
+
+Author-run at `7b30918`: 136 tests + 1 ignored, Office typecheck/lint/build,
+strict Clippy, five migrations and audit pass. `cargo xtask check` must be rerun
+at this exact SHA (last recorded at `35687a3`). Same-UID verifier isolation,
+orphan cleanup, absolute lease limits, project-scoped Worker capability,
+provider lifecycle, runtime image/Quadlet, `factory start`, browser E2E and
+Windows verification remain open. No paid provider or Windows run is claimed.
+
+**Next executable task:** rerun `cargo xtask check` at `7b30918`, then implement
+provider structured-output adapters with deterministic fixtures, or the trusted
+Sandbox Supervisor/runtime image and `factory start`. Add lease-expiry/cleanup
+negative dispatch E2E before stronger G5/G6 claims.
