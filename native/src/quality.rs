@@ -153,7 +153,7 @@ pub fn evaluate_quality_gate(
     if !is_hex(&action.hash, 64) {
         return decision(GateOutcome::Blocked, "frozen ActionSpec hash is invalid");
     }
-    if !is_hex(&candidate.commit_sha, 40) || !is_hex(&candidate.tree_sha, 40) {
+    if !is_object_id(&candidate.commit_sha) || !is_object_id(&candidate.tree_sha) {
         return decision(
             GateOutcome::Blocked,
             "candidate commit or tree identity is invalid",
@@ -269,6 +269,10 @@ pub fn evaluate_quality_gate(
         GateOutcome::Accepted,
         "independent executed evidence accepts exact candidate",
     )
+}
+
+fn is_object_id(value: &str) -> bool {
+    is_hex(value, 40) || is_hex(value, 64)
 }
 
 fn is_hex(value: &str, length: usize) -> bool {

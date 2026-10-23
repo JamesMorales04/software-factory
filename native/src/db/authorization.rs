@@ -80,6 +80,8 @@ impl Database {
             if existing.authorization_id == input.authorization_id
                 && existing.risk_class == input.risk_class
                 && existing.execution_mode == input.execution_mode
+                && existing.actor == input.actor
+                && existing.rationale == input.rationale
                 && existing.authorized_paths == input.authorized_paths
                 && existing.max_attempts == input.max_attempts
             {

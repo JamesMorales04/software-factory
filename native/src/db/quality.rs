@@ -59,12 +59,6 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let current = candidate_context(&mut transaction, &input.attempt_id).await?;
-        require_live_lease(
-            &current,
-            &input.worker_id,
-            input.generation,
-            Utc::now().timestamp_millis(),
-        )?;
         if current.spec_sha256 != input.action_spec_sha256
             || current.repository != context.repository
             || current.base_commit != context.base_commit
@@ -76,7 +70,8 @@ impl Database {
         if let Some(existing) =
             load_candidate_for_attempt(&mut transaction, &input.attempt_id).await?
         {
-            if existing.action_spec_sha256 == input.action_spec_sha256
+            if existing.implementer_id == input.worker_id
+                && existing.action_spec_sha256 == input.action_spec_sha256
                 && existing
                     .commit_sha
                     .eq_ignore_ascii_case(&verified.commit_sha)
@@ -89,6 +84,12 @@ impl Database {
                 "attempt already recorded a different candidate revision",
             ));
         }
+        require_live_lease(
+            &current,
+            &input.worker_id,
+            input.generation,
+            Utc::now().timestamp_millis(),
+        )?;
         let candidate = CandidateRecord {
             id: Uuid::new_v4().to_string(),
             attempt_id: input.attempt_id.clone(),
