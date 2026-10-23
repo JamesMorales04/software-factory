@@ -1,13 +1,13 @@
 # E2E and acceptance-test migration matrix (legacy → native Rust)
 
-**Audit date:** 2026-10-23 UTC. **Worktree:** `/home/james/Escritorio/Development/software-factory-native-rust`. **Audited HEAD:** `038eb9015e8bd72ad12136388d964672ab65f95f`. **Branch:** `native-rust-replacement-20261023`.
+**Audit date:** 2026-10-23 UTC. **Worktree:** `/home/james/Escritorio/Development/software-factory-native-rust`. **Audited HEAD:** `1a62d8242858f76a20226710b7a2734d79dad153`. **Branch:** `native-rust-replacement-20261023`.
 
 This file inventories material legacy E2E, acceptance, security, live-certification and browser suites. It is a test-migration inventory, not a replacement certificate. The broader component inventory is [native-rust-migration-matrix.md](native-rust-migration-matrix.md); S4-D product recovery is [s4d-rust-recovery-matrix.md](s4d-rust-recovery-matrix.md).
 
 ## Audit basis and evidence limits
 
-- **Executed Rust tests:** `cargo test --workspace --locked` was run at audited HEAD `22b8164` on 2026-10-23. Result: **107 passed, 1 ignored** — 91 library, 4 architecture-check, 3 Core binary, 7 repository-hygiene, 1 Worker, and 1 process-level recovery integration test. The ignored test is the rootless-Podman `sandbox::tests::rootless_alpine_fixture_is_confined_and_workspace_is_writable` fixture. This is **author-run deterministic evidence**, not independent verification, not isolation certification and not live/provider evidence.
-- **Automation caveat:** `cargo xtask e2e recovery`, `cargo xtask migrate` and `cargo xtask validate-architecture` were executed at `038eb9`. `cargo xtask check` executed the full format/Clippy/test/build/docs/audit sequence before commit. The container image was not built and no Windows host or Windows/Podman Machine path was exercised.
+- **Executed Rust tests:** `cargo test --workspace --locked` was run at audited HEAD `22b8164` on 2026-10-23. Result: **110 passed, 1 ignored** — 94 library, 4 architecture-check, 3 Core binary, 7 repository-hygiene, 1 Worker, and 1 process-level recovery integration test. The ignored test is the rootless-Podman `sandbox::tests::rootless_alpine_fixture_is_confined_and_workspace_is_writable` fixture. This is **author-run deterministic evidence**, not independent verification, not isolation certification and not live/provider evidence.
+- **Automation caveat:** `cargo xtask e2e recovery`, `cargo xtask migrate` and `cargo xtask validate-architecture` were executed at `1a62d8`. `cargo xtask check` executed the full format/Clippy/test/build/docs/audit sequence before commit. The container image was not built and no Windows host or Windows/Podman Machine path was exercised.
 - **Historical S4-D files:** `scripts/e2e_s4d_*`, `scripts/s4d_budget_ledger.py`, `scripts/test-s4d-budget-ledger.py`, `scripts/s4d_graph_paseo_stub.py`, `office/e2e-browser/s4d-*` and `scripts/fixtures/s4d-graph/**` exist on legacy PR #16 branch `9c6aa4a`, not in this Rust worktree. They were inspected read-only with `git show`. They are historical inputs, not Rust tests.
 - **Legacy E2E scripts target the former Go Core/Worker and Paseo CLI.** They cannot execute against the Rust `factory-core` and `factory-worker` binaries without replacement or adaptation. Their behavioral invariants remain useful oracles; their implementation paths are historical.
 - **Rule:** historical evidence in `docs/evidence/`, PR #16, old CI runs or any green simulator is **never Rust verification**. A row may be `MIGRATED_VERIFIED` only when an equivalent Rust test actually executed at the exact cited candidate. No row claims live/provider certification. No paid provider turn was run for this inventory.
@@ -116,7 +116,7 @@ All files in this section are on legacy branch `9c6aa4a` (PR #16), not in this R
 
 ## 10. Executing Rust sub-invariant coverage
 
-These are **component-level** migrations, not full-suite replacements. Every `MIGRATED_VERIFIED` row below executed in the `cargo test --workspace --locked` run described above at `038eb9`. This does not make the parent legacy suite verified, cannot be used as independent acceptance and does not cover a live provider.
+These are **component-level** migrations, not full-suite replacements. Every `MIGRATED_VERIFIED` row below executed in the `cargo test --workspace --locked` run described above at `1a62d8`. This does not make the parent legacy suite verified, cannot be used as independent acceptance and does not cover a live provider.
 
 | ID | Legacy source | Invariant now covered | Remains applicable | Rust component and executing test | Test type; determinism | Paid? | Status | Remaining gap before retirement | Candidate |
 |---|---|---|---|---|---|---|---|---|---|

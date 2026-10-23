@@ -212,8 +212,17 @@ Container evidence (author-run, Linux only):
   unified `factory` CLI, and isolation/credential confinement. Rootless Podman
   remains a candidate runtime, not certified isolation.
 
-**Next executable task:** add durable Lead request/assessment/proposal/freeze
-persistence with autonomous start closed, or implement Core-owned Campaign
-authorization and Worker dispatch behind a fail-closed isolation gate. Verify
-the Office build and default container networking separately. No paid turn is
-authorized.
+**Next executable task (completed increment):** durable Lead request,
+assessment, proposal and frozen-plan persistence is committed at
+`1a62d8242858f76a20226710b7a2734d79dad153`. It includes idempotent request
+creation with assessment-session reservation, explicit state transitions,
+strict assessment reassembly, validated proposal storage and immutable plan
+freezing. Autonomy, model calls, API exposure and Campaign start remain
+disabled. Author-run tests: 110 passed + 1 ignored; fmt, strict Clippy and the
+full suite pass. Migration CI must be re-run for the third migration in the
+next checkpoint.
+
+**Next executable task:** add the Core API/assessor boundary for Lead requests,
+or implement Core-owned Campaign authorization and Worker dispatch behind a
+fail-closed isolation gate. Verify the Office build and default container
+networking separately. No paid turn is authorized.
