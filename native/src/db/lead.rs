@@ -517,6 +517,30 @@ impl Database {
         .ok_or(Error::NotFound)
     }
 
+    pub async fn lead_proposal(&self, request_id: &str) -> Result<LeadProposalRecord, Error> {
+        let row: Option<(String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT id,request_id,assessment_id,proposal_json,proposal_hash,created_at
+                 FROM lead_proposals WHERE request_id=?1",
+            )
+            .bind(request_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(
+            |(id, request_id, assessment_id, proposal_json, proposal_hash, created_at)| {
+                LeadProposalRecord {
+                    id,
+                    request_id,
+                    assessment_id,
+                    proposal_json,
+                    proposal_hash,
+                    created_at,
+                }
+            },
+        )
+        .ok_or(Error::NotFound)
+    }
+
     pub async fn frozen_lead_plan(&self, request_id: &str) -> Result<FrozenLeadPlanRecord, Error> {
         let row: Option<(String, String, String, String, String, String, String)> =
             sqlx::query_as::query_as(

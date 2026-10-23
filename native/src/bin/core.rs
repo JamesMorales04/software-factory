@@ -11,6 +11,7 @@ use axum::{
 use factory_native::db::{
     Database, Error, NewCandidate, QualityReceiptInput, QualityRole, WorkerReport,
 };
+use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
 use serde::Deserialize;
 use serde_json::json;
@@ -66,6 +67,24 @@ struct Heartbeat {
     attempt_id: String,
     worker_id: String,
     generation: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewDelegation {
+    delegation: StandingDelegation,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewLeadRequest {
+    project_id: String,
+    action_id: String,
+    delegation_id: String,
+    objective: String,
+    project_config_hash: String,
+    idempotency_key: String,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +174,13 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
         .route("/quality/candidates/{id}/gate", get(quality_gate))
+        .route("/delegations", post(create_delegation))
+        .route(
+            "/delegations/{id}",
+            get(get_delegation).post(revoke_delegation),
+        )
+        .route("/lead/requests", post(create_lead_request))
+        .route("/lead/requests/{id}", get(get_lead_request))
         .with_state(app)
 }
 
@@ -404,6 +430,131 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
     }
 }
 
+async fn create_delegation(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewDelegation>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.delegation.autonomous_start {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"autonomous delegation policy is not ratified"})),
+        )
+            .into_response();
+    }
+    match app
+        .db
+        .create_standing_delegation(&input.delegation, &input.idempotency_key)
+        .await
+    {
+        Ok((delegation, created)) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(delegation),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn get_delegation(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.standing_delegation(&id).await {
+        Ok(delegation) => match app.db.delegation_usage(&id).await {
+            Ok(usage) => Json(json!({"delegation":delegation,"usage":usage})).into_response(),
+            Err(error) => api_error(error),
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_delegation(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .revoke_standing_delegation(&id, chrono::Utc::now())
+        .await
+    {
+        Ok(delegation) => Json(delegation).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewLeadRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .create_lead_request(
+            &input.project_id,
+            &input.action_id,
+            &input.delegation_id,
+            &input.objective,
+            &input.project_config_hash,
+            &input.idempotency_key,
+        )
+        .await
+    {
+        Ok((request, created)) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(request),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn get_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let request = match app.db.lead_request(&id).await {
+        Ok(request) => request,
+        Err(error) => return api_error(error),
+    };
+    let assessment = app.db.lead_assessment(&id).await.ok();
+    let proposal = app.db.lead_proposal(&id).await.ok();
+    let plan = app.db.frozen_lead_plan(&id).await.ok();
+    Json(json!({
+        "request": request,
+        "assessment": assessment,
+        "proposal": proposal,
+        "plan": plan
+    }))
+    .into_response()
+}
+
 async fn quality_candidate(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -493,6 +644,7 @@ fn result_list<T: serde::Serialize>(result: Result<Vec<T>, Error>) -> Response {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use serde_json::Value;
 
     #[tokio::test]
     async fn worker_session_is_bound_to_registered_json_identity() {
@@ -528,6 +680,220 @@ mod tests {
         assert!(!worker_session_authorized(&app, &headers, "worker-a").await);
         drop(app);
         let _ = std::fs::remove_file(path);
+    }
+
+    fn delegation_body(autonomous: bool, project_id: &str) -> Vec<u8> {
+        let now = chrono::Utc::now();
+        let mut grant = StandingDelegation {
+            id: "grant-api".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: project_id.into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![
+                factory_native::lead::Capability::RepositoryEdit,
+                factory_native::lead::Capability::GenericToolchain,
+            ],
+            risk_classes: vec![
+                factory_native::lead::RiskClass::R0,
+                factory_native::lead::RiskClass::R1,
+            ],
+            autonomous_start: autonomous,
+            autonomous_risk_classes: if autonomous {
+                vec![factory_native::lead::RiskClass::R0]
+            } else {
+                Vec::new()
+            },
+            route: factory_native::lead::ProviderRoute {
+                provider: "opencode".into(),
+                model: "test/model".into(),
+                mode: "build".into(),
+            },
+            max_attempts: 2,
+            max_timeout_secs: 300,
+            max_repair_cycles: 1,
+            max_wall_clock_secs: 1_800,
+            max_parallel: 1,
+            max_sessions: 4,
+            max_requests: 2,
+            max_cumulative_sessions: 8,
+            max_cumulative_attempts: 16,
+            expires_at: now + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        serde_json::to_vec(&json!({
+            "delegation": grant,
+            "idempotency_key": "delegation-api-key"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delegation_api_requires_operator_and_rejects_autonomy() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-delegation-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::open(&path).await.unwrap();
+        let repository = std::env::temp_dir().join(format!(
+            "factory-core-delegation-repo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&repository).unwrap();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+        for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let project = db
+            .register_project(&repository, "project-key")
+            .await
+            .unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+        });
+        let router = build_router(app);
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/delegations")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(delegation_body(true, &project.id)))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/delegations")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(delegation_body(true, &project.id)))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/delegations")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(delegation_body(false, &project.id)))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+        let request = axum::http::Request::builder()
+            .uri("/delegations/grant-api")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/actions")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({
+                    "project_id": project.id,
+                    "objective": "Implement the API slice.",
+                    "provider": "opencode",
+                    "model": "test/model",
+                    "idempotency_key": "action-api-key"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let action: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/lead/requests")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({
+                    "project_id": project.id,
+                    "action_id": action["id"],
+                    "delegation_id": "grant-api",
+                    "objective": "Implement the API slice.",
+                    "project_config_hash": "a".repeat(64),
+                    "idempotency_key": "lead-api-key"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let lead: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lead["state"], "SUBMITTED");
+        let request = axum::http::Request::builder()
+            .uri(format!("/lead/requests/{}", lead["id"].as_str().unwrap()))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/delegations/grant-api")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(repository);
     }
 
     #[tokio::test]
