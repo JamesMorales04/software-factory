@@ -28,12 +28,7 @@ jobs:
       - name: Install pinned SQLx CLI
         run: cargo +1.90.0 install sqlx-cli --version 0.8.6 --no-default-features --features sqlite --locked
       - name: Verify migrations from a clean database
-        run: |
-          export DATABASE_URL="sqlite:$RUNNER_TEMP/factory-migration-check.sqlite"
-          rm -f "$RUNNER_TEMP/factory-migration-check.sqlite"
-          cargo +1.90.0 sqlx database create
-          cargo +1.90.0 sqlx migrate run --source migrations
-          cargo +1.90.0 sqlx migrate info --source migrations
+        run: cargo +1.90.0 xtask migrate
       - name: Format
         run: cargo +1.90.0 fmt --all -- --check
       - name: Clippy
@@ -42,12 +37,14 @@ jobs:
         run: cargo +1.90.0 test --workspace --locked
       - name: Build
         run: cargo +1.90.0 build --bins --locked
+      - name: Deterministic process-level recovery E2E
+        run: cargo +1.90.0 xtask e2e recovery
       - name: Native architecture consistency
         run: |
           if [ -n "$GITHUB_BASE_REF" ]; then
             cargo +1.90.0 run --locked --bin factory-architecture-check -- --root . --base-ref "origin/$GITHUB_BASE_REF"
           else
-            cargo +1.90.0 run --locked --bin factory-architecture-check -- --root .
+            cargo +1.90.0 xtask validate-architecture
           fi
       - name: Inventory active legacy files
         run: |

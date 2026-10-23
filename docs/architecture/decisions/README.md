@@ -23,3 +23,4 @@ The new target architecture is [ADR-0018](ADR-0018-native-rust-replacement.md). 
 - [ADR-0015 — Worker-managed browser test server](ADR-0015-worker-managed-browser-test-server.md) — accepted; declarative test-server lifecycle, ownership and infrastructure-failure boundary.
 - [ADR-0016 — Dual-mode autonomous engineering](ADR-0016-dual-mode-autonomous-engineering.md) — accepted product objectives and shared Core authority; future implementation and protected decisions remain separate.
 - [ADR-0018 — Native Rust replacement](ADR-0018-native-rust-replacement.md) — accepted target architecture; implementation incomplete.
+- [ADR-0019 — Container-first cross-platform development and runtime](ADR-0019-container-first-cross-platform.md) — approved Linux/Windows-through-Podman-Machine direction; implementation and Windows verification incomplete.
