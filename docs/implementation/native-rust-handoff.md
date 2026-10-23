@@ -191,8 +191,29 @@ committed at `038eb9015e8bd72ad12136388d964672ab65f95f`. Author-run gates:
 revocation and atomic cumulative request/session/attempt reservations with
 three tests; it grants no API or autonomous activation.
 
+**Next executable task (completed increment):** the development-container image
+was built locally and the in-container Rust gates were exercised. Candidate
+`038eb9015e8bd72ad12136388d964672ab65f95f` adds durable sealed standing
+delegations and atomic cumulative reservations; `5ca9e6d40bf94a86430625b2ac3170ff0697dfb4`
+records the container verification and Containerfile audit tool.
+
+Container evidence (author-run, Linux only):
+
+- `podman build --network=host -t factory-devcontainer-test -f .devcontainer/Containerfile .`
+  succeeded, image `4e4e407f0c7a14bb5efb84827cbb5ee0d10f9b4a9d538dcd5783c781faeb27ae`.
+  The default build network failed in this host environment with
+  `pasta failed ... Failed to open() /dev/net/tun`; that is an environment
+  blocker, not a Dockerfile pass.
+- Inside the image with `--network=host` and a mounted worktree:
+  `cargo xtask check` PASS (fmt, strict Clippy, 107 tests + 1 ignored, build,
+  docs, audit), `cargo xtask migrate` PASS, and `cargo xtask e2e recovery` PASS.
+- Not verified: default rootless container networking, Office build inside the
+  container, application runtime image, Quadlet, Windows 11/Podman Machine, the
+  unified `factory` CLI, and isolation/credential confinement. Rootless Podman
+  remains a candidate runtime, not certified isolation.
+
 **Next executable task:** add durable Lead request/assessment/proposal/freeze
 persistence with autonomous start closed, or implement Core-owned Campaign
 authorization and Worker dispatch behind a fail-closed isolation gate. Verify
-the development container on Linux before claiming container-first support.
-No paid turn is authorized.
+the Office build and default container networking separately. No paid turn is
+authorized.
