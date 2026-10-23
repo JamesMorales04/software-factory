@@ -72,8 +72,17 @@ func requireAuthorization() (string, error) {
 	if route := os.Getenv("FACTORY_S4D_SEMANTIC_ROUTE"); route != routeProvider+"/"+routeModel+"/"+routeMode {
 		return "", fmt.Errorf("authorized route must be exactly %s/%s/%s", routeProvider, routeModel, routeMode)
 	}
-	if paseoBin := strings.TrimSpace(os.Getenv("PASEO_BIN")); paseoBin != "" && filepath.Base(paseoBin) != "paseo" {
+	paseoBin := strings.TrimSpace(os.Getenv("PASEO_BIN"))
+	if paseoBin == "" {
 		return "", fmt.Errorf("PASEO_BIN must name the installed paseo CLI")
+	}
+	resolved, err := exec.LookPath("paseo")
+	if err != nil || filepath.Clean(resolved) != filepath.Clean(paseoBin) || filepath.Base(paseoBin) != "paseo" {
+		return "", fmt.Errorf("PASEO_BIN must resolve to the installed paseo CLI")
+	}
+	version, err := exec.Command(paseoBin, "--version").Output()
+	if err != nil || strings.Contains(strings.ToLower(string(version)), "stub") {
+		return "", fmt.Errorf("PASEO_BIN is not a trusted installed paseo CLI")
 	}
 	head, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -173,17 +182,18 @@ func main() {
 		entry.SessionID = observation.SessionID
 		entry.ElapsedMS = observation.Elapsed.Milliseconds()
 		entry.InputBytes, entry.OutputBytes = observation.InputBytes, observation.OutputBytes
+		entry.Status = "captured"
+		if assessErr != nil {
+			entry.Status = "failed"
+			entry.Error = assessErr.Error()
+		}
 		if len(observation.RawOutput) > 0 {
 			if werr := os.WriteFile(filepath.Join(*outDir, fixture.ID+".raw.json"), observation.RawOutput, 0o600); werr != nil {
 				entry.Status = "failed"
 				entry.Error = "raw output write failed: " + werr.Error()
 			}
 		}
-		if assessErr != nil {
-			entry.Status = "failed"
-			entry.Error = assessErr.Error()
-		} else {
-			entry.Status = "captured"
+		if assessErr == nil {
 			body, _ := json.MarshalIndent(assessment, "", "  ")
 			if werr := os.WriteFile(filepath.Join(*outDir, fixture.ID+".assessment.json"), append(body, '\n'), 0o600); werr != nil {
 				entry.Status = "failed"

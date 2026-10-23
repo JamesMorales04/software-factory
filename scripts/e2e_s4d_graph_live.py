@@ -344,14 +344,14 @@ def main() -> int:
         evidence["requestId"] = request_id
         lead = wait_lead(api, request_id, RUNNER_DEADLINE_SECS)
         campaign_id = lead.get("campaignId") or ""
-        if os.environ.get("FACTORY_S4D_GRAPH_FAIL_AFTER_RUN") == "1":
-            raise RuntimeError("injected post-run failure for cleanup verification")
         evidence["lead"] = {
             "status": lead.get("status"), "startMode": lead.get("startMode"),
             "authorizationState": lead.get("authorizationState"),
             "campaignId": lead.get("campaignId"), "planHash": lead.get("planHash"),
             "plan": lead.get("plan"), "delegationUsage": lead.get("delegationUsage"),
         }
+        if os.environ.get("FACTORY_S4D_GRAPH_FAIL_AFTER_RUN") == "1":
+            raise RuntimeError("injected post-run failure for cleanup verification")
         if lead.get("status") != "accepted":
             raise RuntimeError(f"Lead did not reach accepted: {lead.get('status')} {lead.get('failureReason')}")
         if lead.get("startMode") != "autonomous":
