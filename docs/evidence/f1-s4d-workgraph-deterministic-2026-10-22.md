@@ -1,6 +1,6 @@
 # F1-S4-D standing autonomy and WorkGraph deterministic evidence
 
-**Recorded:** 2026-10-22. **Code candidate:** `62df72002cc12fdfbfab2e709c54b6b6ff5e3d7c`. This evidence is
+**Recorded:** 2026-10-22. **Code candidate:** `349a289d54609b69c9372379d13af1ff8aaf38ce`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
 No paid or live model/Paseo session was started.
 
@@ -56,6 +56,7 @@ No paid or live model/Paseo session was started.
 | `TestWorkGraphOrdinaryUnitFanInConsumesBothPrerequisites` | PASS |
 | `TestStartLeadCampaignIsAtomicAcrossCrashBoundary` | PASS |
 | `scripts/e2e_s4d_graph_live.py` dry run | PASS; ACCEPTED_AND_VERIFIED, 3 stub sessions, deterministic integration, restart/reload, cleanup |
+| Failure-injected graph dry run | PASS; INCOMPLETE status, all 3 stub sessions discovered and cleaned, no unbound/orphaned sessions |
 | `TestWorkGraphDependencyFailureStopsDownstreamDispatch` | PASS |
 | `TestWorkGraphRestartPreservesDependencyAndDispatchIdempotency` | PASS |
 | `TestPrepareSpecWorkspaceSequentialAndIntegration` | PASS |
@@ -71,6 +72,7 @@ No paid or live model/Paseo session was started.
 | `scripts/test-live-e2e-entrypoints.py` | PASS; 30 cases, zero Paseo calls |
 | `scripts/e2e_s4d_graph_live.py` default preflight | PREFLIGHT_SAFE; zero provider calls |
 | `scripts/e2e_s4d_semantic_live.py` default preflight | PREFLIGHT_SAFE; zero provider calls |
+| CAP-014 collector direct authorization/corpus guards | Enforced in code; default preflight and negative checks pass |
 
 ## Review findings repaired
 

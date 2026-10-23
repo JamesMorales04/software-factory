@@ -1,5 +1,5 @@
 {
-  "candidateSha": "62df72002cc12fdfbfab2e709c54b6b6ff5e3d7c",
+  "candidateSha": "349a289d54609b69c9372379d13af1ff8aaf38ce",
   "recorded": "2026-10-22",
   "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
   "paidSessions": 0,
@@ -35,7 +35,8 @@
     {"name": "architecture consistency", "pass": true},
     {"name": "paid-entrypoint default-closed guard", "pass": true, "detail": "30 cases, zero Paseo calls"},
     {"name": "multi-unit live preflight", "pass": true, "detail": "PREFLIGHT_SAFE, zero provider calls"},
-    {"name": "graph runner dry run", "pass": true, "detail": "ACCEPTED_AND_VERIFIED, 3 stub sessions, deterministic integration, restart/reload, cleanup"}
+    {"name": "graph runner dry run", "pass": true, "detail": "ACCEPTED_AND_VERIFIED, 3 stub sessions, deterministic integration, restart/reload, cleanup"},
+    {"name": "failure-injected graph dry run", "pass": true, "detail": "INCOMPLETE, all 3 stub sessions discovered and cleaned, no unbound/orphaned sessions"}
   ],
   "capabilities": {
     "CAP-013": {"deterministic": "verified", "live": "blocked"},
