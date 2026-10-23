@@ -57,8 +57,9 @@ cleanup evidence corruption and compact-fallback coverage. An independent
 verifier reproduced the pinned lint, full/race Go checks, targeted S4-D checks,
 default-closed S4-D live preflight and architecture consistency on `559a68d`;
 it did not rerun S4-A/B/C end-to-end. No lint rule, threshold, tool version or
-test was removed. No paid or live model session was started, and live
-authorization remains closed. The sections below preserve the pre-repair
+test was removed. This was the deterministic checkpoint before the later
+authorized live round; the live results are recorded in
+[f1-s4d-live-certification-2026-10-22.md](../evidence/f1-s4d-live-certification-2026-10-22.md). The sections below preserve the pre-repair
 `be592`/`5907a25` record as historical evidence.
 
 ## Current state
@@ -147,7 +148,7 @@ That suite used a deterministic Paseo stub, not a provider.
 | Core Lead implementation and Go tests | Core implementer; full candidate Go checks passed |
 | Office and S4-D docs/registry | Office/docs implementer; code is in candidate; docs follow-up was pending commit at checkpoint capture |
 | Independent verification and review | Separate verifier/reviewer; final clean `be592` review and scoped verification complete |
-| Paid/live model journey | Product Owner authorization required; not authorized |
+| Paid/live model journey | Product Owner authorized; executed; incomplete (2/4 E2E, 11/11 CAP-014) |
 
 On code candidate `be592770b77ca81c491e5021913e1d23d5a228b7`:
 `go test ./...`, `go vet ./...`, and `go test -race ./...` **PASS**; gofmt,
@@ -182,8 +183,10 @@ reload and explicit start without contacting Core, Paseo or a model provider.
 
 ## Limits and known risks
 
-- No S4-D real model result, paid session, Product Owner UAT, deployment or
-  isolation certification is claimed. Scoped independent verification passed;
+- The authorized live round used 2/4 E2E sessions and 11/11 CAP-014 sessions.
+  It produced no completed E2E journey and no independently scored CAP-014
+  result. No Product Owner UAT, deployment or isolation certification is
+  claimed. Scoped independent verification passed;
   no independent S4-A/B/C reruns or live model acceptance are claimed. Local
   S4-A/B/C reruns passed on `602d235`; the final head adds only the S4-D
   entrypoint guard and documentation.

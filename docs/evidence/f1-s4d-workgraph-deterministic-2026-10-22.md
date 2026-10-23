@@ -2,7 +2,7 @@
 
 **Recorded:** 2026-10-22. **Code candidate:** `9e12dcf0871105652160e328980bdec53d4fabd5`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
-No paid or live model/Paseo session was started.
+The deterministic checks and dry runs below used no paid provider session. The appended live section records the later authorized attempts and their incomplete results.
 
 ## Scope verified
 
@@ -32,7 +32,7 @@ No paid or live model/Paseo session was started.
   journey, exercised end-to-end against a deterministic Paseo stub; live
   execution remains a separate authorized step.
 - CAP-014 frozen machine corpus, blinded score-sheet validator, threshold
-  comparison and non-provider `s4d-evaluate` command. No model outputs exist.
+  comparison and non-provider `s4d-evaluate` command. No model outputs existed at protocol freeze; later authorized collection is recorded in the live section.
 
 ## Tests executed
 
@@ -123,8 +123,9 @@ dispatch stopped; the envelope was not expanded.
 
 ## Limits
 
-- No real model output, provider session, monetary/token measurement, Product
-  Owner UAT, deployment or isolation certification is claimed.
+- The authorized live round produced 6 captured / 5 failed CAP-014 outputs and
+  no completed E2E journey. No certification, UAT, deployment or isolation is
+  claimed; monetary/token measurement remains unavailable.
 - The multi-unit live runner is implemented and dry-run verified with a
   deterministic stub; real provider execution is not yet recorded here. The
   Product Owner's numeric authorization and exact-SHA live execution remain

@@ -806,7 +806,7 @@ capabilities:
   limitations:
   - Verified scope is deterministic reusable delegation, autonomous-start policy, and bounded multi-WorkUnit planning/execution; no semantic quality or real model outcome is established.
   blockers:
-  - No paid/live model session is authorized; live assessment, Product Owner UAT and independent acceptance remain blocked.
+  - Live sessions were authorized and executed for certification, but the E2E journey did not complete and live assessment/UAT/independent acceptance remain blocked.
 - id: CAP-014
   name: Intent and semantic assessment
   category: Planning
@@ -901,7 +901,7 @@ capabilities:
   limitations:
   - Verified scope is immutable Project-bound multi-WorkUnit planning, per-unit specification freezing, integration planning, and ActionSpec/Campaign linkage; no live model plan was produced.
   blockers:
-  - No paid/live model session is authorized; Product Owner approval and independent acceptance remain pending.
+  - Live sessions were authorized and executed, but CAP-014 produced only partial outputs and no independent score; Product Owner approval and independent acceptance remain pending.
 - id: CAP-016
   name: Dependency-aware WorkGraph
   category: Planning
@@ -948,7 +948,7 @@ capabilities:
   limitations:
   - Deterministic graph execution, dependency chaining, parallel fan-in integration, restart idempotency and conflict handling are verified; a real model/Paseo multi-unit journey is not.
   blockers:
-  - No paid/live model session is authorized; independent real acceptance remains pending.
+  - Live sessions were authorized and executed, but no complete real multi-unit acceptance exists; independent real acceptance remains pending.
 - id: CAP-017
   name: Standing delegation contract
   category: Authority

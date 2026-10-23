@@ -1,7 +1,9 @@
 # F1-S4-D authorized live certification results
 
-**Date:** 2026-10-22/23 UTC. **Product code candidate:**
-`9e12dcf0871105652160e328980bdec53d4fabd5`. **Route:**
+**Date:** 2026-10-22/23 UTC. **Product code candidate for the completed
+runner and CAP-014 collection:** `9e12dcf0871105652160e328980bdec53d4fabd5`.
+Attempt 1 ran on the preceding code `e94ab07`; attempt 2 and CAP-014 ran on
+`9e12dcf`. **Route:**
 `opencode/opencode-go/deepseek-v4.1-flash/build`. No provider fallback.
 No merge or deployment occurred.
 
@@ -24,8 +26,12 @@ budget was not expanded. CAP-014 exhausted its separate 11-session envelope.
 - The model proposed an invalid per-unit check kind (`syntax`); Core blocked
   the proposal before any WorkUnit dispatch.
 - The session was stopped and is archived. No unit or integration session was
-  started. Evidence:
-  [f1-s4d-graph-live-4640e30d5ca.json](f1-s4d-graph-live-4640e30d5ca.json).
+  started. The original evidence JSON was written by the pre-fix runner and
+  therefore records a historical `unboundSessions`/cleanup-failure
+  classification; independent `paseo inspect` confirms the session is closed
+  and archived, and `orphanedSessions` is empty. The failure work root was
+  intentionally retained under `/tmp` for diagnosis.
+  Evidence: [f1-s4d-graph-live-4640e30d5ca.json](f1-s4d-graph-live-4640e30d5ca.json).
 
 ## S4-D graph E2E attempt 2
 
@@ -34,8 +40,9 @@ budget was not expanded. CAP-014 exhausted its separate 11-session envelope.
 - The assessment provider session was reconciled with the exact requested
   route, but the Paseo run failed (`observedStatus: other`). Core blocked the
   request before plan freeze or any WorkUnit dispatch.
-- The session was stopped and is archived. Evidence:
-  [f1-s4d-graph-live-278f6ca6abf.json](f1-s4d-graph-live-278f6ca6abf.json).
+- The session was stopped and is archived. The failure work root was
+  intentionally retained under `/tmp` for diagnosis.
+  Evidence: [f1-s4d-graph-live-278f6ca6abf.json](f1-s4d-graph-live-278f6ca6abf.json).
 
 No real multi-unit implementation, integration, browser/API acceptance,
 independent Verifier/Reviewer result or Quality Gate acceptance was produced

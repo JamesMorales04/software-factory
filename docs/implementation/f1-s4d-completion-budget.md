@@ -1,6 +1,8 @@
 # F1-S4-D completion certification envelope
 
-**Status:** prepared, not authorized, not executed. **Date:** 2026-10-22.
+**Status:** authorized and partially executed; see
+[f1-s4d-live-certification-2026-10-22.md](../evidence/f1-s4d-live-certification-2026-10-22.md).
+**Date:** 2026-10-22.
 This document requests a numeric Product Owner decision; it is not an
 authorization and it starts no provider session.
 

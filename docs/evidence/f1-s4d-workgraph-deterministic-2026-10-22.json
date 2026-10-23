@@ -2,7 +2,7 @@
   "candidateSha": "9e12dcf0871105652160e328980bdec53d4fabd5",
   "recorded": "2026-10-22",
   "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
-  "paidSessions": 2,
+  "paidSessions": 13,
   "checks": [
     {"name": "pinned golangci-lint", "pass": true, "detail": "0 issues"},
     {"name": "go vet", "pass": true},
@@ -63,8 +63,8 @@
     {"candidate": "278f6ca6abf110c2f921d60a1b34c107cd8cadad", "status": "INCOMPLETE", "sessions": 1, "reason": "assessment provider session reconciled but run failed with observedStatus other; blocked before unit dispatch", "sessionArchived": true}
   ],
   "limits": [
-    "No real model, paid provider session, UAT, deployment or isolation certification.",
-    "Multi-unit live execution runner is dry-run verified with a deterministic stub; real provider execution is not recorded here.",
-    "CAP-014 remains blocked until independent scoring exists."
+    "Authorized live round: E2E 2/4 sessions and CAP-014 11/11 sessions; no completed E2E journey and no independently scored CAP-014 result.",
+    "No UAT, deployment or isolation certification.",
+    "CAP-014 remains blocked; S4-D real certification is incomplete."
   ]
 }

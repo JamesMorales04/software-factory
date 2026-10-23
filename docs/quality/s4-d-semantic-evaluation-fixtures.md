@@ -160,8 +160,10 @@ reports critical failures. `core/cmd/s4d-evaluate` consumes corpus, model and
 baseline score sheets and never contacts a provider. `evaluation_test.go` proves
 the scoring, missing-score and critical-failure paths with synthetic sheets.
 
-No model output, real baseline-versus-model score sheet, token count, cost or
-latency record exists for this revision. CAP-014 remains `blocked` until a
+At protocol freeze, no model output, baseline-versus-model score sheet, token
+count, cost or latency record existed. The later authorized live collection is
+preserved under `docs/evidence/f1-s4d-semantic-live-310add3634a0/`; it captured
+6 of 11 fixtures and did not produce a complete score. CAP-014 remains `blocked` until a
 separately authorized model run produces raw outputs and an independent
 evaluator scores them.
 
