@@ -5,17 +5,20 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "a5f84c5d7a7577de940a8cd0c9f62b03b9fb94fa",
+  "verified_code_commit_sha": "f255f0c348838e36d15555d7db7242e36d10f842",
   "draft_pr": 17,
-  "ci_at_update": "PENDING; first governance run failed because PR impact declaration was added after the event snapshot, and an edited-event rerun is required",
+  "ci_at_update": "PR #17 OPEN/DRAFT. On code head f255f0c348838e36d15555d7db7242e36d10f842 some checks passed and others remained in progress; full exact-head CI not established. Run gh pr view 17 --json headRefOid,statusCheckRollup for current status. No merge.",
   "status": "INCOMPLETE_REPLACEMENT",
   "implemented": [
     "pinned Rust workspace and Cargo.lock",
     "loopback authenticated Rust Core with canonical Git Project and Action intake",
     "SQLite WAL durable Projects, Actions, idempotency, and events",
+    "Project registration canonicalizes nested paths to the Git top-level directory; strips only final LF from git output, tested with a directory ending in a space",
     "separate Worker authentication handshake with dispatch explicitly unavailable",
     "Codex App Server initialize and model/list preflight",
-    "OpenCode password protected loopback health and OpenAPI preflight"
+    "OpenCode authenticated health/OpenAPI, ephemeral loopback port discovery, sse_handshake_tested validates only server.connected, session create/get/delete, canonical workspace binding, and cleanup probe",
+    "Occupied port 4096 negative probe exited 0 on a different server-selected port without connecting to occupied port 4096",
+    "Bounded SSE parser with four unit tests"
   ],
   "not_implemented": [
     "authorized provider-backed attempts",
@@ -28,11 +31,38 @@
   ],
   "provider_versions": {"codex": "0.156.1", "opencode": "1.18.32"},
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 6,
-  "provider_live_status": "LIVE_NOT_TESTED",
+  "local_unit_tests_passed": 10,
+  "current_test_inventory": "10/10 tests passed on code commit f255f0c348838e36d15555d7db7242e36d10f842 (9 library plus 1 Worker), including 4 SSE parser unit tests",
+  "author_verification_at_code_sha": {
+    "sha": "f255f0c348838e36d15555d7db7242e36d10f842",
+    "cargo_fmt_check": "PASS",
+    "strict_clippy": "PASS",
+    "cargo_test": "PASS_10_OF_10",
+    "cargo_build_bins": "PASS",
+    "cargo_audit_0_22_2_192_dependencies": "PASS",
+    "architecture_consistency_against_102d7ba29295554bd61ae71956347a025d219d7b": "PASS",
+    "codex_initialize_model_list_probe": "PASS",
+    "opencode_health_openapi_sse_handshake_session_create_get_delete_probe": "PASS",
+    "paid_provider_turns": 0,
+    "independent_luna_review_of_exact_sha": "PASS_FOR_BOOTSTRAP_PATHS_ONLY; Luna independently ran fmt, strict Clippy with --locked, 10 tests, bin build, and both no-paid probes; no new high-severity issue reported"
+  },
+  "dependency_audit": {
+    "tool": "cargo-audit",
+    "version": "0.22.2",
+    "command": "mise exec rust@1.90.0 -- cargo audit --file Cargo.lock",
+    "local_result": "PASS",
+    "dependency_count": 192,
+    "rustsec_database_head": "84d943a6deeb8cc6c6f632531aaf4f1c62275239",
+    "native_ci_step": "IN_PROGRESS_ON_PR_F255F0C"
+  },
+  "provider_live_status": "LIVE_NOT_TESTED_FOR_CODING_COMPATIBILITY; on f255f0c no-paid OpenCode probe validates authenticated SSE handshake server.connected only, session create/get/delete, canonical workspace binding, and cleanup without submitting work; no progress/reconnect is validated; Codex remains initialize/model-list only and pre-turn thread cleanup was not conclusively confirmed",
   "security_status": "ISOLATION_NOT_TESTED_NO_DISPATCH",
   "delivery_status": "NOT_MERGED_NOT_DEPLOYED",
-  "unresolved_runtime_sessions": "NONE_CREATED_BY_THIS_SLICE",
+  "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360: resume/archive reported no rollout and thread/read reported thread not loaded; durable cleanup not conclusively confirmed. OpenCode probe session create/get/delete completed.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Implement a typed Codex thread/turn lifecycle and OpenCode session/prompt/SSE lifecycle with permission requests, terminal reconciliation, bounded cancellation, and fixture contract tests; then bind to a Core-authorized isolated Attempt."
+  "next_task": "Reconcile Codex thread 01a169da-763d-7240-a953-6937793f8360 with supported inspection/cleanup and document whether it remains unresolved. Then implement and fixture-test the Codex thread/turn lifecycle and extend OpenCode to prompt submission, progress/tool capture, permissions, cancellation, terminal reconciliation, and reconnect recovery; bind execution to a Core-authorized isolated Attempt.",
+  "paid_provider_turns": 0,
+  "prior_handoff_commit_sha": "5812d31121017f1340ae911e84abd18bf2ed0ac0",
+  "independent_review": "Luna found trailing-space identity defect on initial review; author fixed it. Luna independently reviewed exact code commit f255f0c and reran fmt, strict Clippy with --locked, 10 tests, bin build, and both no-paid probes. No independent E2E acceptance or Quality Gate result exists.",
+  "working_tree_status_at_update": "Run git status --short --branch after checking out the latest commit; this documentation commit cannot embed its own SHA"
 }
