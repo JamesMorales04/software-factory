@@ -257,6 +257,7 @@ Distinguish unique/conflict, foreign-key/constraint, busy/retryable, not-found, 
 ## 12. Serialization and external protocol boundaries
 
 - Use explicit transport DTOs. Do not serialize internal domain enums, database rows or provider SDK types directly to external clients unless they are intentionally the contract.
+- Machine-readable model outputs use the [structured model outputs](structured-model-outputs.md) pipeline: Rust-derived JSON Schema, provider compatibility checks, strict decoding and separate domain validation. Schema validity is advisory, never authority.
 - Mark request DTOs `#[serde(deny_unknown_fields)]` where silently accepting extra authority-bearing fields would be dangerous.
 - Validate after deserialization: schema version, required identity, bounds, allowed enum values, digest and cross-field invariants. Deserialization is not authorization.
 - Version external payloads. Unknown versions fail closed with a typed protocol-incompatibility error.
@@ -296,7 +297,7 @@ Test observable behavior and invariants, not private implementation shape.
 
 ## 15. Dependency management
 
-- The workspace is locked (`Cargo.lock`) and built with `--locked` in CI. Do not add a dependency without a real requirement and a review of maintenance, license, transitive size and security posture.
+- The workspace is locked (`Cargo.lock`) and built with `--locked` in CI. Do not add a dependency without a real requirement and a review of maintenance, license, transitive size and security posture. Follow [dependency selection](dependency-selection.md); record infrastructure choices and keep Factory authority outside the library.
 - Prefer the standard library and an existing reviewed dependency over a new crate for trivial functionality.
 - Avoid duplicate crates providing the same capability. Consolidate when practical; document a justified exception.
 - `cargo audit` is a required pinned CI gate. Evaluate `cargo-deny` for source/license policy before adopting it; do not add tools speculatively.

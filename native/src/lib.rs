@@ -1,5 +1,6 @@
 pub mod db;
 pub mod lead;
+pub mod model_output;
 pub mod protocol;
 pub mod quality;
 pub mod runtime;
