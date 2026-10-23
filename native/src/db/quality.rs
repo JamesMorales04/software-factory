@@ -1,7 +1,7 @@
 use super::*;
 
 use chrono::Utc;
-use sqlx::SqliteConnection;
+use sqlx_sqlite::SqliteConnection;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -72,7 +72,7 @@ impl Database {
             implementer_id: input.worker_id.clone(),
             created_at: Utc::now().to_rfc3339(),
         };
-        sqlx::query("INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)")
+        sqlx::query::query("INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .bind(&candidate.id)
             .bind(&candidate.attempt_id)
             .bind(&candidate.action_spec_sha256)
@@ -82,7 +82,7 @@ impl Database {
             .bind(&candidate.created_at)
             .execute(&mut *transaction)
             .await?;
-        let changed = sqlx::query(
+        let changed = sqlx::query::query(
             "UPDATE attempts SET status='CANDIDATE_READY' WHERE id=?1 AND status='LEASED'",
         )
         .bind(&candidate.attempt_id)
@@ -147,7 +147,7 @@ impl Database {
         &self,
         candidate_id: &str,
     ) -> Result<Vec<QualityReceiptRecord>, Error> {
-        let rows: Vec<ReceiptColumns> = sqlx::query_as(
+        let rows: Vec<ReceiptColumns> = sqlx::query_as::query_as(
             "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
         )
@@ -185,7 +185,7 @@ async fn candidate_context(
     connection: &mut SqliteConnection,
     attempt_id: &str,
 ) -> Result<CandidateContext, Error> {
-    let row: Option<CandidateContextRow> = sqlx::query_as(
+    let row: Option<CandidateContextRow> = sqlx::query_as::query_as(
         "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
@@ -364,7 +364,7 @@ async fn insert_receipt(
         evidence: input.evidence,
         received_at: Utc::now().to_rfc3339(),
     };
-    sqlx::query("INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
+    sqlx::query::query("INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
         .bind(&receipt.receipt_id)
         .bind(&receipt.candidate_id)
         .bind(role.as_str())
@@ -426,7 +426,7 @@ async fn decide_gate(
         decided_at: Utc::now().to_rfc3339(),
     };
     let reasons_json = serde_json::to_string(&gate.reasons).expect("gate reasons are serializable");
-    sqlx::query("INSERT INTO gate_decisions VALUES (?1,?2,?3,?4)")
+    sqlx::query::query("INSERT INTO gate_decisions VALUES (?1,?2,?3,?4)")
         .bind(&gate.candidate_id)
         .bind(gate_outcome_str(gate.outcome))
         .bind(reasons_json)
@@ -463,7 +463,7 @@ async fn load_candidate(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<CandidateRecord, Error> {
-    let row: Option<CandidateColumns> = sqlx::query_as(
+    let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
          FROM candidates WHERE id=?1",
     )
@@ -477,7 +477,7 @@ async fn load_candidate_for_attempt(
     connection: &mut SqliteConnection,
     attempt_id: &str,
 ) -> Result<Option<CandidateRecord>, Error> {
-    let row: Option<CandidateColumns> = sqlx::query_as(
+    let row: Option<CandidateColumns> = sqlx::query_as::query_as(
         "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
          FROM candidates WHERE attempt_id=?1",
     )
@@ -534,7 +534,7 @@ async fn load_receipt_by_id(
     connection: &mut SqliteConnection,
     receipt_id: &str,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    let row: Option<ReceiptColumns> = sqlx::query_as(
+    let row: Option<ReceiptColumns> = sqlx::query_as::query_as(
         "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
          FROM quality_receipts WHERE receipt_id=?1",
     )
@@ -549,7 +549,7 @@ async fn load_receipt_by_role(
     candidate_id: &str,
     role: QualityRole,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    let row: Option<ReceiptColumns> = sqlx::query_as(
+    let row: Option<ReceiptColumns> = sqlx::query_as::query_as(
         "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
          FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
     )
@@ -573,7 +573,7 @@ async fn load_gate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
 ) -> Result<Option<GateRecord>, Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
+    let row: Option<(String, String, String)> = sqlx::query_as::query_as(
         "SELECT outcome,reasons_json,decided_at FROM gate_decisions WHERE candidate_id=?1",
     )
     .bind(candidate_id)
@@ -596,7 +596,7 @@ async fn load_gate_policy(
     connection: &mut SqliteConnection,
     candidate_id: &str,
 ) -> Result<GatePolicy, Error> {
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT c.status,ac.risk FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
          JOIN runs r ON r.id=a.run_id

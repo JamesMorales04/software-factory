@@ -44,7 +44,7 @@ impl Database {
                     "registration key belongs to another Worker",
                 ));
             }
-            let changed = sqlx::query(
+            let changed = sqlx::query::query(
                 "UPDATE worker_sessions SET token_sha256=?1,updated_at=?2 WHERE worker_id=?3",
             )
             .bind(&token_hash)
@@ -70,7 +70,7 @@ impl Database {
             });
         }
         let existing: Option<(String,)> =
-            sqlx::query_as("SELECT worker_id FROM worker_sessions WHERE worker_id=?1")
+            sqlx::query_as::query_as("SELECT worker_id FROM worker_sessions WHERE worker_id=?1")
                 .bind(worker_id)
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -79,13 +79,13 @@ impl Database {
                 "Worker identity already registered; reuse its registration key to rotate session",
             ));
         }
-        sqlx::query("INSERT INTO worker_sessions VALUES (?1,?2,?3)")
+        sqlx::query::query("INSERT INTO worker_sessions VALUES (?1,?2,?3)")
             .bind(worker_id)
             .bind(&token_hash)
             .bind(Utc::now().to_rfc3339())
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(&persisted_registration_key)
             .bind("register_worker_session")
             .bind(&digest)
@@ -115,7 +115,7 @@ impl Database {
             return Ok(false);
         }
         let stored: Option<(String,)> =
-            sqlx::query_as("SELECT token_sha256 FROM worker_sessions WHERE worker_id=?1")
+            sqlx::query_as::query_as("SELECT token_sha256 FROM worker_sessions WHERE worker_id=?1")
                 .bind(worker_id)
                 .fetch_optional(&self.pool)
                 .await?;
@@ -135,7 +135,7 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let candidate: Option<(String,)> = sqlx::query_as(
+        let candidate: Option<(String,)> = sqlx::query_as::query_as(
             "SELECT a.id FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
@@ -151,11 +151,12 @@ impl Database {
             transaction.commit().await?;
             return Ok(None);
         };
-        let prior: Option<(String, i64)> =
-            sqlx::query_as("SELECT worker_id,generation FROM worker_leases WHERE attempt_id=?1")
-                .bind(&attempt_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
+        let prior: Option<(String, i64)> = sqlx::query_as::query_as(
+            "SELECT worker_id,generation FROM worker_leases WHERE attempt_id=?1",
+        )
+        .bind(&attempt_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
         let generation = match prior {
             Some((_, generation)) => generation
                 .checked_add(1)
@@ -165,7 +166,7 @@ impl Database {
         let expires_at_ms = now_ms
             .checked_add(lease_ms)
             .ok_or(Error::Invalid("worker lease expiry overflow"))?;
-        sqlx::query(
+        sqlx::query::query(
             "INSERT INTO worker_leases VALUES (?1,?2,?3,?4)
              ON CONFLICT(attempt_id) DO UPDATE SET
                worker_id=excluded.worker_id,
@@ -178,7 +179,7 @@ impl Database {
         .bind(expires_at_ms)
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("UPDATE attempts SET status='LEASED' WHERE id=?1")
+        sqlx::query::query("UPDATE attempts SET status='LEASED' WHERE id=?1")
             .bind(&attempt_id)
             .execute(&mut *transaction)
             .await?;
@@ -211,7 +212,7 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let current: Option<(String, i64, i64, String)> = sqlx::query_as(
+        let current: Option<(String, i64, i64, String)> = sqlx::query_as::query_as(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status
              FROM worker_leases l JOIN attempts a ON a.id=l.attempt_id
              WHERE l.attempt_id=?1",
@@ -229,7 +230,7 @@ impl Database {
         let expires_at_ms = now_ms
             .checked_add(lease_ms)
             .ok_or_else(|| Error::Invalid("worker lease expiry overflow"))?;
-        sqlx::query(
+        sqlx::query::query(
             "UPDATE worker_leases SET expires_at_ms=?1
              WHERE attempt_id=?2 AND worker_id=?3 AND generation=?4",
         )
@@ -265,7 +266,7 @@ impl Database {
         );
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let receipt: Option<(String, String)> = sqlx::query_as(
+        let receipt: Option<(String, String)> = sqlx::query_as::query_as(
             "SELECT request_digest,attempt_id FROM worker_receipts WHERE receipt_id=?1",
         )
         .bind(&report.receipt_id)
@@ -278,7 +279,7 @@ impl Database {
             }
             return Err(Error::Invalid("receipt id reused with different report"));
         }
-        let lease: Option<(String, i64, i64)> = sqlx::query_as(
+        let lease: Option<(String, i64, i64)> = sqlx::query_as::query_as(
             "SELECT worker_id,generation,expires_at_ms FROM worker_leases WHERE attempt_id=?1",
         )
         .bind(&report.attempt_id)
@@ -288,16 +289,17 @@ impl Database {
         if owner != report.worker_id || generation != report.generation || expires_at_ms <= now_ms {
             return Err(Error::Invalid("stale or expired worker lease"));
         }
-        let changed = sqlx::query("UPDATE attempts SET status=?1 WHERE id=?2 AND status='LEASED'")
-            .bind(&report.terminal_status)
-            .bind(&report.attempt_id)
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected();
+        let changed =
+            sqlx::query::query("UPDATE attempts SET status=?1 WHERE id=?2 AND status='LEASED'")
+                .bind(&report.terminal_status)
+                .bind(&report.attempt_id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
         if changed != 1 {
             return Err(Error::Invalid("attempt is not leased"));
         }
-        sqlx::query("INSERT INTO worker_receipts VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO worker_receipts VALUES (?1,?2,?3,?4)")
             .bind(&report.receipt_id)
             .bind(&digest)
             .bind(&report.attempt_id)

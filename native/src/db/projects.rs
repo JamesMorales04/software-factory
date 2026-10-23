@@ -1,7 +1,7 @@
 use super::*;
 
 use chrono::Utc;
-use sqlx::SqliteConnection;
+use sqlx_sqlite::SqliteConnection;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -30,14 +30,14 @@ impl Database {
             base_commit,
             created_at: Utc::now().to_rfc3339(),
         };
-        sqlx::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
             .bind(&project.id)
             .bind(&project.repository)
             .bind(&project.base_commit)
             .bind(&project.created_at)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("register_project")
             .bind(&request_digest)
@@ -111,7 +111,7 @@ impl Database {
             spec: spec.clone(),
             spec_sha256: spec_sha256.clone(),
         };
-        sqlx::query("INSERT INTO actions VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
+        sqlx::query::query("INSERT INTO actions VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)")
             .bind(&action.id)
             .bind(&action.project_id)
             .bind(&action.objective)
@@ -123,13 +123,13 @@ impl Database {
             .bind(&action.created_at)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO action_specs VALUES (?1,?2,?3)")
+        sqlx::query::query("INSERT INTO action_specs VALUES (?1,?2,?3)")
             .bind(&action.id)
             .bind(spec_json)
             .bind(&spec_sha256)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("create_action")
             .bind(&request_digest)
@@ -148,7 +148,7 @@ impl Database {
     }
 
     pub async fn projects(&self) -> Result<Vec<Project>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at FROM projects ORDER BY created_at",
         )
         .fetch_all(&self.pool)
@@ -165,9 +165,10 @@ impl Database {
     }
 
     pub async fn actions(&self) -> Result<Vec<Action>, Error> {
-        let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM actions ORDER BY created_at")
-            .fetch_all(&self.pool)
-            .await?;
+        let ids: Vec<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM actions ORDER BY created_at")
+                .fetch_all(&self.pool)
+                .await?;
         let mut actions = Vec::with_capacity(ids.len());
         for (id,) in ids {
             let mut connection = self.pool.acquire().await?;
@@ -225,11 +226,12 @@ fn resolve_repository(repository: &Path) -> Result<(String, String), Error> {
 }
 
 async fn load_project(connection: &mut SqliteConnection, id: &str) -> Result<Project, Error> {
-    let row: Option<(String, String, String, String)> =
-        sqlx::query_as("SELECT id,repository,base_commit,created_at FROM projects WHERE id=?1")
-            .bind(id)
-            .fetch_optional(connection)
-            .await?;
+    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT id,repository,base_commit,created_at FROM projects WHERE id=?1",
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await?;
     row.map(|(id, repository, base_commit, created_at)| Project {
         id,
         repository,
@@ -239,42 +241,33 @@ async fn load_project(connection: &mut SqliteConnection, id: &str) -> Result<Pro
     .ok_or(Error::NotFound)
 }
 
-#[derive(sqlx::FromRow)]
-struct ActionRow {
-    id: String,
-    project_id: String,
-    objective: String,
-    provider: String,
-    model: String,
-    risk: String,
-    status: String,
-    objective_sha256: String,
-    created_at: String,
-}
+type ActionColumns = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
 
 async fn load_action(connection: &mut SqliteConnection, id: &str) -> Result<Action, Error> {
-    let row: Option<ActionRow> = sqlx::query_as(
+    let row: Option<ActionColumns> = sqlx::query_as::query_as(
         "SELECT id,project_id,objective,provider,model,risk,status,objective_sha256,created_at FROM actions WHERE id=?1",
     )
     .bind(id)
     .fetch_optional(&mut *connection)
     .await?;
-    let ActionRow {
-        id,
-        project_id,
-        objective,
-        provider,
-        model,
-        risk,
-        status,
-        objective_sha256,
-        created_at,
-    } = row.ok_or(Error::NotFound)?;
-    let (spec_json, saved_digest): (String, String) =
-        sqlx::query_as("SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1")
-            .bind(&id)
-            .fetch_one(&mut *connection)
-            .await?;
+    let (id, project_id, objective, provider, model, risk, status, objective_sha256, created_at) =
+        row.ok_or(Error::NotFound)?;
+    let (spec_json, saved_digest): (String, String) = sqlx::query_as::query_as(
+        "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
+    )
+    .bind(&id)
+    .fetch_one(&mut *connection)
+    .await?;
     if sha256_hex(spec_json.as_bytes()) != saved_digest {
         return Err(Error::Invalid("frozen ActionSpec digest mismatch"));
     }

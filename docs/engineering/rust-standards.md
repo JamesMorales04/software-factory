@@ -228,6 +228,7 @@ Every long-lived task has:
 - Keep SQLx pool types, row structs and query macros out of the domain layer. Use persistence-local row types and convert to domain types at the boundary.
 - Prefer concrete repository functions over a trait per entity. A trait needs a genuine test seam or second implementation.
 - Use runtime-typed `query_as` for dynamic or conditional SQL. Use `query!`/`query_as!`/`query_file_as!` for stable, integrity-critical queries where compile-time validation is meaningful.
+- **Current repository decision:** depend on `sqlx-core` + `sqlx-sqlite` directly (aliased as `sqlx`) with `sqlx-macros` only for embedded migrations. This avoids pulling unused MySQL/PostgreSQL backends and their unpatched RSA advisory into the lockfile. Queries are runtime-typed and covered by migration/negative tests. Do not add the `sqlx` meta-crate solely for macros; if compile-time query macros are adopted later, add `.sqlx` metadata, a reproducible prepare command and the CI check atomically.
 
 ### 11.2 Migrations and query metadata
 
@@ -349,7 +350,7 @@ cargo build --workspace --locked
 cargo doc --workspace --no-deps --locked
 cargo audit --file Cargo.lock
 cargo sqlx migrate run --source migrations   # against a disposable DATABASE_URL
-cargo sqlx prepare --check --workspace       # when compile-time query metadata is used
+# cargo sqlx prepare --check --workspace     # only if compile-time metadata is adopted
 ```
 
 - Keep the exact commands, tool versions, dependency count and advisory database commit in evidence.

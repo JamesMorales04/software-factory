@@ -10,7 +10,9 @@ chrono = { version = "0.4.42", features = ["serde"] }
 futures-util = "0.3.31"
 reqwest = { version = "0.12.23", features = ["json", "stream", "rustls-tls"], default-features = false }
 ring = "0.17.14"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+sqlx = { package = "sqlx-core", version = "0.8.6", default-features = false, features = ["_rt-tokio", "migrate"] }
+sqlx-sqlite = { version = "0.8.6", default-features = false, features = ["bundled", "migrate"] }
+sqlx-macros = { version = "0.8.6", default-features = false, features = ["macros", "migrate", "sqlite", "_rt-tokio"] }
 sha2 = "0.10.9"
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = "1.0.145"

@@ -1,7 +1,7 @@
 use super::*;
 
 use chrono::Utc;
-use sqlx::SqliteConnection;
+use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
 impl Database {
@@ -18,10 +18,11 @@ impl Database {
             transaction.commit().await?;
             return Ok(value);
         }
-        let action: Option<(String,)> = sqlx::query_as("SELECT id FROM actions WHERE id=?1")
-            .bind(action_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
+        let action: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM actions WHERE id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
         if action.is_none() {
             return Err(Error::NotFound);
         }
@@ -31,14 +32,14 @@ impl Database {
             status: "BLOCKED_AUTHORIZATION".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        sqlx::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
             .bind(&value.id)
             .bind(&value.action_id)
             .bind(&value.status)
             .bind(&value.created_at)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("create_campaign")
             .bind(&digest)
@@ -69,10 +70,11 @@ impl Database {
             transaction.commit().await?;
             return Ok(value);
         }
-        let status: Option<(String,)> = sqlx::query_as("SELECT status FROM campaigns WHERE id=?1")
-            .bind(campaign_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
+        let status: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT status FROM campaigns WHERE id=?1")
+                .bind(campaign_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
         if status.as_ref().map(|(status,)| status.as_str()) != Some("AUTHORIZED") {
             return Err(Error::Invalid(
                 "campaign lacks explicit execution authorization",
@@ -84,14 +86,14 @@ impl Database {
             status: "QUEUED".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        sqlx::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
             .bind(&value.id)
             .bind(&value.campaign_id)
             .bind(&value.status)
             .bind(&value.created_at)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("create_run")
             .bind(&digest)
@@ -116,10 +118,11 @@ impl Database {
             transaction.commit().await?;
             return Ok(value);
         }
-        let queued: Option<(String,)> = sqlx::query_as("SELECT status FROM runs WHERE id=?1")
-            .bind(run_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
+        let queued: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT status FROM runs WHERE id=?1")
+                .bind(run_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
         if queued.as_ref().map(|(status,)| status.as_str()) != Some("QUEUED") {
             return Err(Error::Invalid("run is not queued"));
         }
@@ -129,14 +132,16 @@ impl Database {
             status: "QUEUED".into(),
             created_at: Utc::now().to_rfc3339(),
         };
-        sqlx::query("INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)")
-            .bind(&value.id)
-            .bind(&value.run_id)
-            .bind(&value.status)
-            .bind(&value.created_at)
-            .execute(&mut *transaction)
-            .await?;
-        sqlx::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)",
+        )
+        .bind(&value.id)
+        .bind(&value.run_id)
+        .bind(&value.status)
+        .bind(&value.created_at)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("create_attempt")
             .bind(&digest)
@@ -155,7 +160,7 @@ impl Database {
     }
 
     pub async fn campaigns(&self) -> Result<Vec<Campaign>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,action_id,status,created_at FROM campaigns ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
@@ -172,7 +177,7 @@ impl Database {
     }
 
     pub async fn runs(&self) -> Result<Vec<Run>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,campaign_id,status,created_at FROM runs ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
@@ -189,7 +194,7 @@ impl Database {
     }
 
     pub async fn attempts(&self) -> Result<Vec<Attempt>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,run_id,status,created_at FROM attempts ORDER BY created_at,id",
         )
         .fetch_all(&self.pool)
@@ -210,11 +215,12 @@ pub(super) async fn load_campaign(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<Campaign, Error> {
-    let row: Option<(String, String, String, String)> =
-        sqlx::query_as("SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1")
-            .bind(id)
-            .fetch_optional(connection)
-            .await?;
+    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1",
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await?;
     let (id, action_id, status, created_at) = row.ok_or(Error::NotFound)?;
     Ok(Campaign {
         id,
@@ -226,7 +232,7 @@ pub(super) async fn load_campaign(
 
 pub(super) async fn load_run(connection: &mut SqliteConnection, id: &str) -> Result<Run, Error> {
     let row: Option<(String, String, String, String)> =
-        sqlx::query_as("SELECT id,campaign_id,status,created_at FROM runs WHERE id=?1")
+        sqlx::query_as::query_as("SELECT id,campaign_id,status,created_at FROM runs WHERE id=?1")
             .bind(id)
             .fetch_optional(connection)
             .await?;
@@ -244,7 +250,7 @@ pub(super) async fn load_attempt(
     id: &str,
 ) -> Result<Attempt, Error> {
     let row: Option<(String, String, String, String)> =
-        sqlx::query_as("SELECT id,run_id,status,created_at FROM attempts WHERE id=?1")
+        sqlx::query_as::query_as("SELECT id,run_id,status,created_at FROM attempts WHERE id=?1")
             .bind(id)
             .fetch_optional(connection)
             .await?;

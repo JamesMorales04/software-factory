@@ -2,9 +2,9 @@ use std::{fs::OpenOptions, path::Path, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+use sqlx_macros::migrate;
+use sqlx_sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
 use crate::quality::{
@@ -239,10 +239,10 @@ impl Database {
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await?;
-        sqlx::migrate!("../migrations").run(&pool).await?;
+        migrate!("../migrations").run(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
         // migrations could not establish the expected columns.
-        sqlx::query("SELECT id,repository,base_commit,created_at FROM projects LIMIT 0")
+        sqlx::query::query("SELECT id,repository,base_commit,created_at FROM projects LIMIT 0")
             .execute(&pool)
             .await?;
         Ok(Self {
@@ -256,7 +256,7 @@ impl Database {
     }
 
     pub async fn events(&self) -> Result<Vec<Event>, Error> {
-        let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+        let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT sequence,subject_id,kind,detail,recorded_at FROM events ORDER BY sequence",
         )
         .fetch_all(&self.pool)
@@ -358,32 +358,35 @@ fn prepare_database_file(path: &Path) -> Result<(), Error> {
 }
 
 async fn record_event(
-    connection: &mut sqlx::SqliteConnection,
+    connection: &mut sqlx_sqlite::SqliteConnection,
     subject_id: &str,
     kind: &str,
     detail: &str,
 ) -> Result<(), Error> {
-    sqlx::query("INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,?3,?4)")
-        .bind(subject_id)
-        .bind(kind)
-        .bind(detail)
-        .bind(Utc::now().to_rfc3339())
-        .execute(connection)
-        .await?;
+    sqlx::query::query(
+        "INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,?3,?4)",
+    )
+    .bind(subject_id)
+    .bind(kind)
+    .bind(detail)
+    .bind(Utc::now().to_rfc3339())
+    .execute(connection)
+    .await?;
     Ok(())
 }
 
 async fn replay(
-    connection: &mut sqlx::SqliteConnection,
+    connection: &mut sqlx_sqlite::SqliteConnection,
     key: &str,
     operation: &str,
     request_digest: &str,
 ) -> Result<Option<String>, Error> {
-    let existing: Option<(String, String, String)> =
-        sqlx::query_as("SELECT operation,request_digest,resource_id FROM idempotency WHERE key=?1")
-            .bind(key)
-            .fetch_optional(connection)
-            .await?;
+    let existing: Option<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT operation,request_digest,resource_id FROM idempotency WHERE key=?1",
+    )
+    .bind(key)
+    .fetch_optional(connection)
+    .await?;
     match existing {
         Some((saved_operation, saved_digest, id))
             if saved_operation == operation && saved_digest == request_digest =>

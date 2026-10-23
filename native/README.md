@@ -2,7 +2,7 @@
 
 This is an incomplete Rust replacement branch. It supports local Project/Action intake, frozen ActionSpec storage, blocked Campaign identity, and provider protocol preflight. It has **no authorized agent dispatch**, campaign execution, accepted CandidateRevision, independent verification, Quality Gate, or Office connection. Do not use it as an engineering controller yet.
 
-Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 with SQLite and versioned migrations in `../migrations`. Run from repository root:
+Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
 
 ```sh
 cargo fmt --all -- --check

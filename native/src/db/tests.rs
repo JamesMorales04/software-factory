@@ -1,8 +1,8 @@
 use super::*;
 
 use chrono::Utc;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::{Connection as SqlxConnection, SqliteConnection};
+use sqlx::connection::Connection as SqlxConnection;
+use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -19,7 +19,7 @@ async fn temp_db(prefix: &str) -> (PathBuf, Database) {
 }
 
 async fn insert_project(db: &Database, id: &str, repository: &str, base: &str) {
-    sqlx::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
+    sqlx::query::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
         .bind(id)
         .bind(repository)
         .bind(base)
@@ -30,7 +30,10 @@ async fn insert_project(db: &Database, id: &str, repository: &str, base: &str) {
 }
 
 async fn count(db: &Database, sql: &str) -> i64 {
-    let (value,): (i64,) = sqlx::query_as(sql).fetch_one(&db.pool).await.unwrap();
+    let (value,): (i64,) = sqlx::query_as::query_as(sql)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     value
 }
 
@@ -59,15 +62,15 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
         .filename(&path)
         .create_if_missing(true);
     let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
-    sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, base_commit TEXT NOT NULL, created_at TEXT NOT NULL)")
+    sqlx::query::query("CREATE TABLE projects (id TEXT PRIMARY KEY, repository TEXT NOT NULL UNIQUE, base_commit TEXT NOT NULL, created_at TEXT NOT NULL)")
         .execute(&mut connection)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO projects VALUES ('keep','/legacy','base','now')")
+    sqlx::query::query("INSERT INTO projects VALUES ('keep','/legacy','base','now')")
         .execute(&mut connection)
         .await
         .unwrap();
-    sqlx::query("PRAGMA user_version = 1")
+    sqlx::query::query("PRAGMA user_version = 1")
         .execute(&mut connection)
         .await
         .unwrap();
@@ -93,11 +96,11 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
 async fn p5_group_readable_database_is_rejected_without_changing_data_or_mode() {
     use std::os::unix::fs::PermissionsExt;
     let (path, db) = temp_db("factory-insecure-db").await;
-    sqlx::query("CREATE TABLE retained(value TEXT)")
+    sqlx::query::query("CREATE TABLE retained(value TEXT)")
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO retained VALUES ('keep')")
+    sqlx::query::query("INSERT INTO retained VALUES ('keep')")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -115,7 +118,7 @@ async fn p5_group_readable_database_is_rejected_without_changing_data_or_mode() 
     );
     let options = SqliteConnectOptions::new().filename(&path);
     let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
-    let (value,): (String,) = sqlx::query_as("SELECT value FROM retained")
+    let (value,): (String,) = sqlx::query_as::query_as("SELECT value FROM retained")
         .fetch_one(&mut connection)
         .await
         .unwrap();
@@ -177,7 +180,7 @@ async fn p3_idempotency_replays_same_payload_and_rejects_changes() {
 async fn p4_failure_injection_rolls_back_action_spec_and_event() {
     let (path, db) = temp_db("factory-atomicity").await;
     insert_project(&db, "project", "/fixture", "base").await;
-    sqlx::query(
+    sqlx::query::query(
         "CREATE TRIGGER fail_spec BEFORE INSERT ON action_specs BEGIN SELECT RAISE(ABORT, 'injected'); END;",
     )
     .execute(&db.pool)
@@ -205,7 +208,7 @@ async fn p4_failure_injection_rolls_back_action_spec_and_event() {
 #[tokio::test]
 async fn p5_referential_integrity_rejects_unknown_project() {
     let (path, db) = temp_db("factory-references").await;
-    let result = sqlx::query(
+    let result = sqlx::query::query(
         "INSERT INTO actions VALUES ('a','missing','o','codex','m','R0','PENDING','d','now')",
     )
     .execute(&db.pool)
@@ -238,7 +241,7 @@ async fn frozen_spec_is_immutable_and_remains_human_required() {
     assert_ne!(action.spec_sha256, action.objective_sha256);
     let listed = db.actions().await.unwrap();
     assert_eq!(listed[0].spec, action.spec);
-    sqlx::query("UPDATE actions SET objective='tampered' WHERE id=?1")
+    sqlx::query::query("UPDATE actions SET objective='tampered' WHERE id=?1")
         .bind(&action.id)
         .execute(&db.pool)
         .await
@@ -290,14 +293,14 @@ async fn authorized_attempt(db: &Database) -> String {
         .unwrap();
     // Fixture setup only: there is deliberately no public authorization or
     // sandbox attestation route in the product API.
-    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
         .bind(&campaign.id)
         .execute(&db.pool)
         .await
         .unwrap();
     let run = db.create_run(&campaign.id, "run-key").await.unwrap();
     let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
-    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
         .bind(&attempt.id)
         .execute(&db.pool)
         .await
@@ -395,14 +398,14 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
         .create_campaign(&action.id, "campaign-key-2")
         .await
         .unwrap();
-    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
         .bind(&campaign.id)
         .execute(&db.pool)
         .await
         .unwrap();
     let run = db.create_run(&campaign.id, "run-key-2").await.unwrap();
     let second = db.create_attempt(&run.id, "attempt-key-2").await.unwrap();
-    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
         .bind(&second.id)
         .execute(&db.pool)
         .await
@@ -444,18 +447,20 @@ async fn lease_arithmetic_overflow_fails_closed_without_reusing_generation() {
             .unwrap()
             .is_some()
     );
-    sqlx::query("UPDATE worker_leases SET generation=?1,expires_at_ms=1 WHERE attempt_id=?2")
-        .bind(i64::MAX)
-        .bind(&attempt)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sqlx::query::query(
+        "UPDATE worker_leases SET generation=?1,expires_at_ms=1 WHERE attempt_id=?2",
+    )
+    .bind(i64::MAX)
+    .bind(&attempt)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     assert!(matches!(
         db.claim_attempt("worker-b", 10, 50).await,
         Err(Error::Invalid("worker generation exhausted"))
     ));
     let (generation,): (i64,) =
-        sqlx::query_as("SELECT generation FROM worker_leases WHERE attempt_id=?1")
+        sqlx::query_as::query_as("SELECT generation FROM worker_leases WHERE attempt_id=?1")
             .bind(&attempt)
             .fetch_one(&db.pool)
             .await
@@ -512,7 +517,7 @@ async fn worker_registration_stores_only_hash_and_rotates_after_restart() {
         Err(Error::Conflict(_))
     ));
     let details: Vec<(String,)> =
-        sqlx::query_as("SELECT detail FROM events WHERE subject_id='worker-a'")
+        sqlx::query_as::query_as("SELECT detail FROM events WHERE subject_id='worker-a'")
             .fetch_all(&db.pool)
             .await
             .unwrap();
@@ -521,11 +526,12 @@ async fn worker_registration_stores_only_hash_and_rotates_after_restart() {
             .iter()
             .all(|(detail,)| !detail.contains("session-token"))
     );
-    let (persisted_key,): (String,) =
-        sqlx::query_as("SELECT key FROM idempotency WHERE operation='register_worker_session'")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+    let (persisted_key,): (String,) = sqlx::query_as::query_as(
+        "SELECT key FROM idempotency WHERE operation='register_worker_session'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
     assert_ne!(persisted_key, "registration-a");
     assert_eq!(
         persisted_key,
@@ -561,11 +567,12 @@ async fn worker_registration_stores_only_hash_and_rotates_after_restart() {
             .await
             .unwrap()
     );
-    let (persisted_hash,): (String,) =
-        sqlx::query_as("SELECT token_sha256 FROM worker_sessions WHERE worker_id='worker-a'")
-            .fetch_one(&reopened.pool)
-            .await
-            .unwrap();
+    let (persisted_hash,): (String,) = sqlx::query_as::query_as(
+        "SELECT token_sha256 FROM worker_sessions WHERE worker_id='worker-a'",
+    )
+    .fetch_one(&reopened.pool)
+    .await
+    .unwrap();
     assert_eq!(
         persisted_hash,
         sha256_hex("session-token-bbbbbbbbbbbbbbbbbbbbbbbb".as_bytes())
@@ -634,12 +641,12 @@ async fn candidate_fixture(risk: &str) -> CandidateFixture {
         .create_campaign(&action.id, "campaign-key")
         .await
         .unwrap();
-    sqlx::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
         .bind(&campaign.id)
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE actions SET risk=?1 WHERE id=?2")
+    sqlx::query::query("UPDATE actions SET risk=?1 WHERE id=?2")
         .bind(risk)
         .bind(&action.id)
         .execute(&db.pool)
@@ -647,7 +654,7 @@ async fn candidate_fixture(risk: &str) -> CandidateFixture {
         .unwrap();
     let run = db.create_run(&campaign.id, "run-key").await.unwrap();
     let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
-    sqlx::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
+    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
         .bind(&attempt.id)
         .execute(&db.pool)
         .await
@@ -926,7 +933,7 @@ async fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
 async fn candidate_gate_and_receipt_rows_are_immutable() {
     let fixture = candidate_fixture("R0").await;
     assert!(
-        sqlx::query("UPDATE candidates SET commit_sha='tampered' WHERE id=?1")
+        sqlx::query::query("UPDATE candidates SET commit_sha='tampered' WHERE id=?1")
             .bind(&fixture.candidate_id)
             .execute(&fixture.db.pool)
             .await
@@ -951,7 +958,7 @@ async fn candidate_gate_and_receipt_rows_are_immutable() {
         .await
         .unwrap();
     assert!(
-        sqlx::query("UPDATE gate_decisions SET outcome='ACCEPTED' WHERE candidate_id=?1")
+        sqlx::query::query("UPDATE gate_decisions SET outcome='ACCEPTED' WHERE candidate_id=?1")
             .bind(&fixture.candidate_id)
             .execute(&fixture.db.pool)
             .await
