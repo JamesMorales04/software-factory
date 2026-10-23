@@ -1,5 +1,5 @@
 {
-  "candidateSha": "fa0c2f3e8cecfc78e64e94fa8ce536280e03db3e",
+  "candidateSha": "62df72002cc12fdfbfab2e709c54b6b6ff5e3d7c",
   "recorded": "2026-10-22",
   "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
   "paidSessions": 0,
@@ -19,6 +19,8 @@
     {"name": "TestWorkGraphSequentialBaseChaining", "pass": true},
     {"name": "TestWorkGraphParallelFanInIntegration", "pass": true},
     {"name": "TestWorkGraphParallelUnitCompletionDoesNotInvalidateSiblingCandidate", "pass": true},
+    {"name": "TestWorkGraphOrdinaryUnitFanInConsumesBothPrerequisites", "pass": true},
+    {"name": "TestStartLeadCampaignIsAtomicAcrossCrashBoundary", "pass": true},
     {"name": "TestWorkGraphDependencyFailureStopsDownstreamDispatch", "pass": true},
     {"name": "TestWorkGraphRestartPreservesDependencyAndDispatchIdempotency", "pass": true},
     {"name": "TestPrepareSpecWorkspaceSequentialAndIntegration", "pass": true},
@@ -31,8 +33,9 @@
     {"name": "Office typecheck/lint/build", "pass": true},
     {"name": "mocked S4-D Office journey", "pass": true, "detail": "12/12"},
     {"name": "architecture consistency", "pass": true},
-    {"name": "paid-entrypoint default-closed guard", "pass": true, "detail": "27 cases, zero Paseo calls"},
-    {"name": "multi-unit live preflight", "pass": true, "detail": "PREFLIGHT_SAFE, zero provider calls"}
+    {"name": "paid-entrypoint default-closed guard", "pass": true, "detail": "30 cases, zero Paseo calls"},
+    {"name": "multi-unit live preflight", "pass": true, "detail": "PREFLIGHT_SAFE, zero provider calls"},
+    {"name": "graph runner dry run", "pass": true, "detail": "ACCEPTED_AND_VERIFIED, 3 stub sessions, deterministic integration, restart/reload, cleanup"}
   ],
   "capabilities": {
     "CAP-013": {"deterministic": "verified", "live": "blocked"},
@@ -49,11 +52,14 @@
     "Automatic-start status and audit event are written atomically.",
     "Campaign attempt caps are validated before freeze.",
     "Revocation invokes coordinator process cleanup for contained campaigns.",
-    "CAP-014 rejects unknown fixture IDs."
+    "CAP-014 rejects unknown fixture IDs.",
+    "Unbound provider sessions are discovered by label, cleaned, and fail the run.",
+    "Semantic collector enforces exact SHA/clean tree, corpus digest, raw output and cleanup.",
+    "Full provider/model/mode route is bound in the authorization envelope."
   ],
   "limits": [
     "No real model, paid provider session, UAT, deployment or isolation certification.",
-    "Multi-unit live execution runner is preflight-only and not authorized.",
+    "Multi-unit live execution runner is dry-run verified with a deterministic stub; real provider execution is not recorded here.",
     "CAP-014 remains blocked until independent scoring exists."
   ]
 }
