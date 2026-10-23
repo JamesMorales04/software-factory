@@ -707,7 +707,7 @@ capabilities:
     source:
     - office/src/App.tsx
     test:
-    - office/src/views/CampaignDetail.tsx
+    - office/src/views/Campaigns.tsx
   acceptance:
     deterministic: Applicable factory office contract, negative and regression checks pass on an exact candidate.
     real: Exercise factory office in a genuine authorized project journey and independently verify the outcome.
@@ -719,7 +719,8 @@ capabilities:
     - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Native Rust Office migration is partial: Dashboard/Projects/Actions/Campaigns/Runs only; browser E2E and Lead/delegation views remain pending.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
