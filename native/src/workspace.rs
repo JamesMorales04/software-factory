@@ -258,12 +258,21 @@ pub fn verify_integrated_candidate(
 
 fn git_with_dates(cwd: &Path, args: &[String]) -> Result<Output, WorkspaceError> {
     let display = format!("git {}", args.join(" "));
-    let output = Command::new("git")
+    let mut command = hardened_git();
+    command
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .args(args)
         .current_dir(cwd)
         .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00 +0000")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00 +0000")
-        .output()?;
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00 +0000");
+    let output = command.output()?;
     if !output.status.success() {
         return Err(WorkspaceError::Git {
             command: display,
@@ -286,30 +295,50 @@ pub fn changed_paths(
         &repository,
         [
             OsStr::new("diff"),
-            OsStr::new("--name-only"),
+            OsStr::new("--raw"),
+            OsStr::new("-z"),
             OsStr::new("--no-renames"),
             OsStr::new(base),
             OsStr::new(commit),
         ],
     )?;
-    let output = String::from_utf8(output.stdout)
-        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 changed paths: {error}")))?;
-    let paths: Vec<String> = output
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect();
-    if paths.is_empty() {
-        return Err(WorkspaceError::Invalid(
-            "candidate contains no changed paths".into(),
-        ));
-    }
-    for path in &paths {
-        if !is_safe_repository_path(path) {
+    let mut parts = output.stdout.split(|byte| *byte == 0);
+    let mut paths = Vec::new();
+    while let Some(metadata) = parts.next() {
+        if metadata.is_empty() {
+            continue;
+        }
+        let path = parts
+            .next()
+            .ok_or_else(|| WorkspaceError::Invalid("raw Git diff is missing a path".into()))?;
+        let metadata = String::from_utf8_lossy(metadata);
+        let fields: Vec<&str> = metadata
+            .trim_start_matches(':')
+            .split_whitespace()
+            .collect();
+        if fields.len() < 2 {
+            return Err(WorkspaceError::Invalid("malformed raw Git diff".into()));
+        }
+        let old_mode = fields[0];
+        let new_mode = fields[1];
+        if matches!(old_mode, "120000" | "160000") || matches!(new_mode, "120000" | "160000") {
+            return Err(WorkspaceError::Invalid(
+                "candidate changes a symlink or gitlink entry".into(),
+            ));
+        }
+        let path = String::from_utf8(path.to_vec())
+            .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 path: {error}")))?;
+        if !is_safe_repository_path(&path) {
             return Err(WorkspaceError::Invalid(format!(
                 "candidate changed an unsafe path: {path:?}"
             )));
         }
+        paths.push(path);
+    }
+    if paths.is_empty() {
+        return Err(WorkspaceError::Invalid(
+            "candidate contains no changed paths".into(),
+        ));
     }
     Ok(paths)
 }
@@ -671,7 +700,19 @@ where
         .map(|a| a.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
-    let output = Command::new("git").args(&args).current_dir(cwd).output()?;
+    let mut command = hardened_git();
+    command
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(&args)
+        .current_dir(cwd);
+    let output = command.output()?;
     if !output.status.success() {
         return Err(WorkspaceError::Git {
             command: display,
@@ -699,6 +740,20 @@ pub fn is_safe_repository_path(path: &str) -> bool {
         && path
             .split('/')
             .all(|component| !component.is_empty() && component != ".." && component != ".")
+}
+
+fn hardened_git() -> Command {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    command
 }
 
 fn is_object_id(value: &str) -> bool {

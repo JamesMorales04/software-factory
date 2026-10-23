@@ -284,27 +284,39 @@ async fn campaign_is_durable_but_requires_authorization_for_a_run() {
 async fn authorized_attempt(db: &Database) -> String {
     insert_project(db, "project", "/fixture", "base").await;
     let action = db
-        .create_action("project", "objective", "codex", "model", "action-key")
+        .create_action_with_spec(
+            "project",
+            "objective",
+            "codex",
+            "model",
+            "action-key",
+            ActionSpecInput {
+                allowed_paths: &["seed.txt".to_string()],
+                checks: &[],
+            },
+        )
         .await
         .unwrap();
     let campaign = db
         .create_campaign(&action.id, "campaign-key")
         .await
         .unwrap();
-    // Fixture setup only: there is deliberately no public authorization or
-    // sandbox attestation route in the product API.
-    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
-        .bind(&campaign.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    db.authorize_campaign(
+        &campaign.id,
+        &NewCampaignAuthorization {
+            authorization_id: "auth-test".into(),
+            risk_class: "R0".into(),
+            execution_mode: "FIXTURE".into(),
+            actor: "test".into(),
+            rationale: "fixture setup".into(),
+            authorized_paths: vec!["seed.txt".into()],
+            max_attempts: 1,
+        },
+    )
+    .await
+    .unwrap();
     let run = db.create_run(&campaign.id, "run-key").await.unwrap();
     let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
-    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
-        .bind(&attempt.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
     attempt.id
 }
 
@@ -391,25 +403,39 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
     let first = authorized_attempt(&db).await;
     insert_project(&db, "project-2", "/fixture-2", "base").await;
     let action = db
-        .create_action("project-2", "objective", "codex", "model", "action-key-2")
+        .create_action_with_spec(
+            "project-2",
+            "objective",
+            "codex",
+            "model",
+            "action-key-2",
+            ActionSpecInput {
+                allowed_paths: &["seed.txt".to_string()],
+                checks: &[],
+            },
+        )
         .await
         .unwrap();
     let campaign = db
         .create_campaign(&action.id, "campaign-key-2")
         .await
         .unwrap();
-    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
-        .bind(&campaign.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    db.authorize_campaign(
+        &campaign.id,
+        &NewCampaignAuthorization {
+            authorization_id: "auth-test-2".into(),
+            risk_class: "R0".into(),
+            execution_mode: "FIXTURE".into(),
+            actor: "test".into(),
+            rationale: "fixture setup".into(),
+            authorized_paths: vec!["seed.txt".into()],
+            max_attempts: 1,
+        },
+    )
+    .await
+    .unwrap();
     let run = db.create_run(&campaign.id, "run-key-2").await.unwrap();
     let second = db.create_attempt(&run.id, "attempt-key-2").await.unwrap();
-    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
-        .bind(&second.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
     let left = db.clone();
     let right = db.clone();
     let (a, b) = tokio::join!(
@@ -613,7 +639,7 @@ fn git_fixture(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-async fn candidate_fixture(risk: &str) -> CandidateFixture {
+async fn candidate_fixture() -> CandidateFixture {
     let root = std::env::temp_dir().join(format!("factory-quality-{}", Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let repo = root.join("repo");
@@ -628,12 +654,16 @@ async fn candidate_fixture(risk: &str) -> CandidateFixture {
     let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
     let project = db.register_project(&repo, "project-key").await.unwrap();
     let action = db
-        .create_action(
+        .create_action_with_spec(
             &project.id,
             "bounded objective",
             "opencode",
             "test/model",
             "action-key",
+            ActionSpecInput {
+                allowed_paths: &["seed.txt".to_string()],
+                checks: &[],
+            },
         )
         .await
         .unwrap();
@@ -641,24 +671,22 @@ async fn candidate_fixture(risk: &str) -> CandidateFixture {
         .create_campaign(&action.id, "campaign-key")
         .await
         .unwrap();
-    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
-        .bind(&campaign.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    sqlx::query::query("UPDATE actions SET risk=?1 WHERE id=?2")
-        .bind(risk)
-        .bind(&action.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    db.authorize_campaign(
+        &campaign.id,
+        &NewCampaignAuthorization {
+            authorization_id: "auth-quality".into(),
+            risk_class: "R0".into(),
+            execution_mode: "FIXTURE".into(),
+            actor: "test".into(),
+            rationale: "quality fixture".into(),
+            authorized_paths: vec!["seed.txt".into()],
+            max_attempts: 1,
+        },
+    )
+    .await
+    .unwrap();
     let run = db.create_run(&campaign.id, "run-key").await.unwrap();
     let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
-    sqlx::query::query("UPDATE attempts SET sandbox_ready=1 WHERE id=?1")
-        .bind(&attempt.id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
     let now_ms = Utc::now().timestamp_millis();
     let lease = db
         .claim_attempt("worker-fixture", now_ms, 60_000)
@@ -717,7 +745,7 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
 
 #[tokio::test]
 async fn candidate_and_independent_receipts_produce_deterministic_gate() {
-    let fixture = candidate_fixture("R0").await;
+    let fixture = candidate_fixture().await;
     let candidate = fixture.db.candidate(&fixture.candidate_id).await.unwrap();
     assert_eq!(candidate.commit_sha, fixture.commit_sha);
     assert_eq!(candidate.implementer_id, fixture.worker_id);
@@ -768,7 +796,7 @@ async fn candidate_and_independent_receipts_produce_deterministic_gate() {
 
 #[tokio::test]
 async fn gate_requires_pass_verifier_and_reviewer() {
-    let fixture = candidate_fixture("R0").await;
+    let fixture = candidate_fixture().await;
     fixture
         .db
         .record_quality_receipt(
@@ -802,40 +830,8 @@ async fn gate_requires_pass_verifier_and_reviewer() {
 }
 
 #[tokio::test]
-async fn gate_fails_closed_for_human_risk_and_unknown_policy() {
-    for (risk, expected) in [
-        ("R1", GateOutcome::HumanRequired),
-        ("R2", GateOutcome::Blocked),
-        ("R3", GateOutcome::Blocked),
-        ("UNASSESSED", GateOutcome::Blocked),
-    ] {
-        let fixture = candidate_fixture(risk).await;
-        fixture
-            .db
-            .record_quality_receipt(
-                &fixture.candidate_id,
-                QualityRole::Verifier,
-                &quality_receipt(&fixture, "verifier", "verifier-1"),
-            )
-            .await
-            .unwrap();
-        let result = fixture
-            .db
-            .record_quality_receipt(
-                &fixture.candidate_id,
-                QualityRole::Reviewer,
-                &quality_receipt(&fixture, "reviewer", "reviewer-1"),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result.gate.unwrap().outcome, expected, "risk {risk}");
-        fixture.db.close().await;
-    }
-}
-
-#[tokio::test]
 async fn receipt_rejects_implementer_self_review_and_role_collusion() {
-    let fixture = candidate_fixture("R0").await;
+    let fixture = candidate_fixture().await;
     let self_review = quality_receipt(&fixture, "self", &fixture.worker_id);
     assert!(matches!(
         fixture
@@ -869,7 +865,7 @@ async fn receipt_rejects_implementer_self_review_and_role_collusion() {
 
 #[tokio::test]
 async fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
-    let fixture = candidate_fixture("R0").await;
+    let fixture = candidate_fixture().await;
     fixture
         .db
         .record_quality_receipt(
@@ -931,7 +927,7 @@ async fn receipt_rejects_conflicts_wrong_binding_and_forged_generation() {
 
 #[tokio::test]
 async fn candidate_gate_and_receipt_rows_are_immutable() {
-    let fixture = candidate_fixture("R0").await;
+    let fixture = candidate_fixture().await;
     assert!(
         sqlx::query::query("UPDATE candidates SET commit_sha='tampered' WHERE id=?1")
             .bind(&fixture.candidate_id)

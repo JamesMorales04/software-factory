@@ -97,7 +97,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
-        match execute_fixture(&assignment, &workspace_root).await {
+        let heartbeat_client = client.clone();
+        let heartbeat_url = core.join("worker/heartbeat")?;
+        let heartbeat_token = session_token.clone();
+        let heartbeat_worker = worker_id.clone();
+        let heartbeat_attempt = assignment.lease.attempt_id.clone();
+        let heartbeat_generation = assignment.lease.generation;
+        let heartbeat = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(20));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let response = heartbeat_client
+                    .post(heartbeat_url.clone())
+                    .bearer_auth(&heartbeat_token)
+                    .json(&json!({
+                        "attempt_id": heartbeat_attempt,
+                        "worker_id": heartbeat_worker,
+                        "generation": heartbeat_generation
+                    }))
+                    .send()
+                    .await;
+                if response
+                    .map(|value| !value.status().is_success())
+                    .unwrap_or(true)
+                {
+                    return;
+                }
+            }
+        });
+        let execution = execute_fixture(&assignment, &workspace_root).await;
+        heartbeat.abort();
+        match execution {
             Ok(candidate) => {
                 let response = client
                     .post(core.join("worker/candidate")?)
@@ -174,10 +205,14 @@ async fn execute_fixture(
             )
         });
         let target = workspace.path().join(&file);
+        reject_symlink_components(workspace.path(), &file)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(target, content)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        use std::io::Write;
+        options.open(&target)?.write_all(content.as_bytes())?;
         run_git(workspace.path(), &["add", &file])?;
         let message = format!("fixture candidate for {}", assignment.action_id);
         run_git(
@@ -206,7 +241,26 @@ async fn execute_fixture(
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("git").args(args).current_dir(cwd).output()?;
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .output()?;
     if !output.status.success() {
         return Err(format!(
             "git {} failed: {}",
@@ -214,6 +268,25 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> 
             String::from_utf8_lossy(&output.stderr).trim()
         )
         .into());
+    }
+    Ok(())
+}
+
+fn reject_symlink_components(
+    root: &Path,
+    relative: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut current = root.to_path_buf();
+    for component in relative.split('/') {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!("fixture path contains symlink: {}", current.display()).into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     Ok(())
 }

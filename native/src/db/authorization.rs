@@ -7,6 +7,8 @@
 
 use super::*;
 
+use crate::workspace::path_covered;
+
 use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 
@@ -91,13 +93,28 @@ impl Database {
         if status != "BLOCKED_AUTHORIZATION" {
             return Err(Error::Conflict("campaign is not awaiting authorization"));
         }
-        let spec: Option<(String,)> =
-            sqlx::query_as::query_as("SELECT action_id FROM action_specs WHERE action_id=?1")
-                .bind(&action_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-        if spec.is_none() {
-            return Err(Error::Conflict("campaign action has no frozen spec"));
+        let spec: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT action_id,spec_json FROM action_specs WHERE action_id=?1",
+        )
+        .bind(&action_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let (_, spec_json) = spec.ok_or(Error::Conflict("campaign action has no frozen spec"))?;
+        let action_spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        if action_spec.allowed_paths.is_empty() {
+            return Err(Error::Forbidden(
+                "campaign action has no frozen allowed-path scope".into(),
+            ));
+        }
+        if let Some(path) = action_spec
+            .allowed_paths
+            .iter()
+            .find(|path| !path_covered(path, &input.authorized_paths))
+        {
+            return Err(Error::Forbidden(format!(
+                "action path {path:?} is outside the campaign authorized paths"
+            )));
         }
         let now = Utc::now().to_rfc3339();
         let record = CampaignAuthorizationRecord {

@@ -59,7 +59,12 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let current = candidate_context(&mut transaction, &input.attempt_id).await?;
-        require_live_lease(&current, &input.worker_id, input.generation, now_ms)?;
+        require_live_lease(
+            &current,
+            &input.worker_id,
+            input.generation,
+            Utc::now().timestamp_millis(),
+        )?;
         if current.spec_sha256 != input.action_spec_sha256
             || current.repository != context.repository
             || current.base_commit != context.base_commit
@@ -261,12 +266,14 @@ struct CandidateContext {
     base_commit: String,
     spec_sha256: String,
     spec_json: String,
+    execution_mode: String,
 }
 
 type CandidateContextRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    String,
     String,
     String,
     String,
@@ -280,13 +287,14 @@ async fn candidate_context(
     attempt_id: &str,
 ) -> Result<CandidateContext, Error> {
     let row: Option<CandidateContextRow> = sqlx::query_as::query_as(
-        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256,s.spec_json
+        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256,s.spec_json,COALESCE(ca.execution_mode,'NONE')
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
          JOIN actions ac ON ac.id=c.action_id
          JOIN projects p ON p.id=ac.project_id
          JOIN action_specs s ON s.action_id=ac.id
+         LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
          LEFT JOIN worker_leases l ON l.attempt_id=a.id
          WHERE a.id=?1",
     )
@@ -303,6 +311,7 @@ async fn candidate_context(
         base_commit,
         spec_sha256,
         spec_json,
+        execution_mode,
     ) = row.ok_or(Error::NotFound)?;
     Ok(CandidateContext {
         worker_id: worker_id.unwrap_or_default(),
@@ -314,6 +323,7 @@ async fn candidate_context(
         base_commit,
         spec_sha256,
         spec_json,
+        execution_mode,
     })
 }
 
@@ -323,9 +333,9 @@ fn require_live_lease(
     generation: i64,
     now_ms: i64,
 ) -> Result<(), Error> {
-    if context.campaign_status != "AUTHORIZED" {
+    if context.campaign_status != "AUTHORIZED" || context.execution_mode != "FIXTURE" {
         return Err(Error::Forbidden(
-            "campaign lacks explicit execution authorization".into(),
+            "campaign lacks an active deterministic execution authorization".into(),
         ));
     }
     if context.attempt_status != "LEASED"
@@ -692,27 +702,27 @@ async fn load_gate_policy(
     connection: &mut SqliteConnection,
     candidate_id: &str,
 ) -> Result<GatePolicy, Error> {
-    let row: Option<(String, String)> = sqlx::query_as::query_as(
-        "SELECT c.status,ac.risk FROM candidates cd
+    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as::query_as(
+        "SELECT c.status,ca.risk_class,ca.execution_mode FROM candidates cd
          JOIN attempts a ON a.id=cd.attempt_id
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
-         JOIN actions ac ON ac.id=c.action_id
+         LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
          WHERE cd.id=?1",
     )
     .bind(candidate_id)
     .fetch_optional(connection)
     .await?;
-    let (campaign_status, risk) = row.ok_or(Error::NotFound)?;
-    let authorization = match campaign_status.as_str() {
-        "AUTHORIZED" => AuthorizationStatus::Authorized,
-        "BLOCKED_AUTHORIZATION" => AuthorizationStatus::HumanApprovalRequired,
-        _ => AuthorizationStatus::Unknown,
+    let (campaign_status, risk, execution_mode) = row.ok_or(Error::NotFound)?;
+    let authorization = match (campaign_status.as_str(), execution_mode.as_deref()) {
+        ("AUTHORIZED", Some("FIXTURE")) => AuthorizationStatus::Authorized,
+        ("BLOCKED_AUTHORIZATION", _) => AuthorizationStatus::HumanApprovalRequired,
+        _ => AuthorizationStatus::Denied,
     };
-    let risk = match risk.as_str() {
-        "R0" => RiskStatus::WithinPolicy,
-        "R1" => RiskStatus::HumanApprovalRequired,
-        "R2" | "R3" => RiskStatus::ExceedsPolicy,
+    let risk = match risk.as_deref() {
+        Some("R0") => RiskStatus::WithinPolicy,
+        Some("R1") => RiskStatus::HumanApprovalRequired,
+        Some("R2" | "R3") => RiskStatus::ExceedsPolicy,
         _ => RiskStatus::Unknown,
     };
     Ok(GatePolicy {

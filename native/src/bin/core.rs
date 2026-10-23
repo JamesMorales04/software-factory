@@ -211,10 +211,11 @@ fn build_router(app: Arc<App>) -> Router {
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
+    let expected = format!("Bearer {token}");
     headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        == Some(format!("Bearer {token}").as_str())
+        .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
 }
 
 fn api_error(error: Error) -> Response {
@@ -349,7 +350,7 @@ async fn register_worker(
         uuid::Uuid::new_v4().simple()
     );
     match app.db.register_worker_session(&input.worker_id,&input.registration_key,&app.worker_bootstrap_token,&session_token).await {
-        Ok(session)=>Json(json!({"worker_id":session.worker_id,"session_token":session_token,"created":session.created,"dispatch_supported":false})).into_response(),
+        Ok(session)=>Json(json!({"worker_id":session.worker_id,"session_token":session_token,"created":session.created,"dispatch_supported":true})).into_response(),
         Err(error)=>api_error(error),
     }
 }

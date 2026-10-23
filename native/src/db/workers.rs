@@ -148,6 +148,20 @@ impl Database {
         else {
             return Ok(None);
         };
+        match self.load_assignment(&lease, &attempt_id).await {
+            Ok(assignment) => Ok(Some(assignment)),
+            Err(error) => {
+                let _ = self.release_claim(&lease, &attempt_id).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn load_assignment(
+        &self,
+        lease: &WorkerLease,
+        attempt_id: &str,
+    ) -> Result<WorkerAssignment, Error> {
         let row = sqlx::query::query(
             "SELECT c.action_id,p.repository,s.spec_json,s.spec_sha256,ca.execution_mode
              FROM attempts a
@@ -159,7 +173,7 @@ impl Database {
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              WHERE a.id=?1",
         )
-        .bind(&attempt_id)
+        .bind(attempt_id)
         .fetch_one(&self.pool)
         .await?;
         use sqlx::row::Row;
@@ -179,14 +193,45 @@ impl Database {
         if sha256_hex(spec_json.as_bytes()) != spec_sha256 {
             return Err(Error::Invalid("stored ActionSpec digest mismatch"));
         }
-        Ok(Some(WorkerAssignment {
-            lease,
+        if spec.allowed_paths.is_empty() {
+            return Err(Error::Forbidden(
+                "assignment has no frozen allowed-path scope".into(),
+            ));
+        }
+        Ok(WorkerAssignment {
+            lease: lease.clone(),
             action_id,
             action_spec: spec,
             action_spec_sha256: spec_sha256,
             repository,
             execution_mode,
-        }))
+        })
+    }
+
+    async fn release_claim(&self, lease: &WorkerLease, attempt_id: &str) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query::query("UPDATE attempts SET status='QUEUED' WHERE id=?1 AND status='LEASED'")
+            .bind(attempt_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query::query(
+            "DELETE FROM worker_leases WHERE attempt_id=?1 AND worker_id=?2 AND generation=?3",
+        )
+        .bind(attempt_id)
+        .bind(&lease.worker_id)
+        .bind(lease.generation)
+        .execute(&mut *transaction)
+        .await?;
+        record_event(
+            &mut transaction,
+            attempt_id,
+            "worker.claim_released",
+            "assignment validation failed before dispatch",
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     async fn claim_candidate(
@@ -207,7 +252,7 @@ impl Database {
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
-             AND (a.sandbox_ready=1 OR ca.execution_mode='FIXTURE')
+             AND ca.execution_mode='FIXTURE'
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
              ORDER BY a.created_at,a.id LIMIT 1",
         )
