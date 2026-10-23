@@ -1,0 +1,9 @@
+{
+  "mechanism": "MODEL",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "mode": "build",
+  "elapsed": 120700833185,
+  "inputBytes": 2257,
+  "outputBytes": 0
+}

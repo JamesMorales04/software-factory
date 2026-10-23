@@ -21,34 +21,38 @@ const (
 // produced by one Implementer Attempt. The Core validates the commit and
 // provenance; Worker assertions are never trusted on their own.
 type CandidateRevision struct {
-	ID                    string         `json:"id"`
-	ProjectID             string         `json:"projectId"`
-	ActionID              string         `json:"actionId"`
-	SpecID                string         `json:"specId"`
-	SpecHash              string         `json:"specHash"`
-	SpecBindingHash       string         `json:"specBindingHash,omitempty"`
-	PolicyRevision        string         `json:"policyRevision"`
-	BaseRevision          string         `json:"baseRevision"`
-	CommitSHA             string         `json:"commitSha"`
-	TreeSHA               string         `json:"treeSha"`
-	ContentDigest         string         `json:"contentDigest"`
-	CandidateRef          string         `json:"candidateRef"`
-	ParentCandidateID     string         `json:"parentCandidateId,omitempty"`
-	Repository            string         `json:"repository"`
-	ImplementerRunID      string         `json:"implementerRunId"`
-	ImplementerAttemptID  string         `json:"implementerAttemptId"`
-	ImplementerGeneration int64          `json:"implementerGeneration"`
-	ImplementerWorkerID   string         `json:"implementerWorkerId"`
-	ExecutionMode         string         `json:"executionMode"`
-	Provider              string         `json:"provider"`
-	Model                 string         `json:"model"`
-	PaseoMode             string         `json:"paseoMode"`
-	ChangedPaths          []string       `json:"changedPaths"`
-	RiskClass             RiskClass      `json:"riskClass"`
-	State                 CandidateState `json:"state"`
-	CreatedAt             time.Time      `json:"createdAt"`
-	FrozenAt              time.Time      `json:"frozenAt"`
-	SupersededAt          time.Time      `json:"supersededAt,omitempty"`
+	ID                    string `json:"id"`
+	ProjectID             string `json:"projectId"`
+	ActionID              string `json:"actionId"`
+	SpecID                string `json:"specId"`
+	SpecHash              string `json:"specHash"`
+	SpecBindingHash       string `json:"specBindingHash,omitempty"`
+	PolicyRevision        string `json:"policyRevision"`
+	BaseRevision          string `json:"baseRevision"`
+	CommitSHA             string `json:"commitSha"`
+	TreeSHA               string `json:"treeSha"`
+	ContentDigest         string `json:"contentDigest"`
+	CandidateRef          string `json:"candidateRef"`
+	ParentCandidateID     string `json:"parentCandidateId,omitempty"`
+	Repository            string `json:"repository"`
+	ImplementerRunID      string `json:"implementerRunId"`
+	ImplementerAttemptID  string `json:"implementerAttemptId"`
+	ImplementerGeneration int64  `json:"implementerGeneration"`
+	ImplementerWorkerID   string `json:"implementerWorkerId"`
+	ExecutionMode         string `json:"executionMode"`
+	Provider              string `json:"provider"`
+	Model                 string `json:"model"`
+	PaseoMode             string `json:"paseoMode"`
+	// DeterministicIntegration marks a candidate produced by Core-authorized
+	// Git integration rather than a model session. Such a candidate must not
+	// claim a provider route.
+	DeterministicIntegration bool           `json:"deterministicIntegration,omitempty"`
+	ChangedPaths             []string       `json:"changedPaths"`
+	RiskClass                RiskClass      `json:"riskClass"`
+	State                    CandidateState `json:"state"`
+	CreatedAt                time.Time      `json:"createdAt"`
+	FrozenAt                 time.Time      `json:"frozenAt"`
+	SupersededAt             time.Time      `json:"supersededAt,omitempty"`
 }
 
 // ValidateCandidateInput carries the Worker's bounded candidate claim. The
@@ -114,7 +118,11 @@ func (c CandidateRevision) Validate() error {
 	if c.ExecutionMode != string(ExecTrustedLocal) {
 		return errors.New("candidate executionMode must be trusted-local (never isolated)")
 	}
-	if _, err := ValidatePaseoRoute(c.Provider, c.Model, c.PaseoMode); err != nil {
+	if c.DeterministicIntegration {
+		if c.Provider != "" || c.Model != "" || c.PaseoMode != "" {
+			return errors.New("deterministic integration candidate must not carry a provider route")
+		}
+	} else if _, err := ValidatePaseoRoute(c.Provider, c.Model, c.PaseoMode); err != nil {
 		return err
 	}
 	if len(c.ChangedPaths) == 0 {

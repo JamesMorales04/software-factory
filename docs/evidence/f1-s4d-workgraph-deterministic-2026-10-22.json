@@ -1,0 +1,70 @@
+{
+  "candidateSha": "9e12dcf0871105652160e328980bdec53d4fabd5",
+  "recorded": "2026-10-22",
+  "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
+  "paidSessions": 13,
+  "checks": [
+    {"name": "pinned golangci-lint", "pass": true, "detail": "0 issues"},
+    {"name": "go vet", "pass": true},
+    {"name": "go test ./...", "pass": true},
+    {"name": "go test -race ./...", "pass": true},
+    {"name": "TestLeadPlanAcceptsSequentialParallelAndFanInGraphs", "pass": true},
+    {"name": "TestLeadPlanRejectsInvalidGraphShapesAndParallelOverlap", "pass": true},
+    {"name": "TestStandingDelegationRequiresExplicitAutonomousPolicy", "pass": true},
+    {"name": "TestReusableDelegationAccountsRequestsAndSessionsAcrossReservations", "pass": true},
+    {"name": "TestReusableDelegationConcurrentRequestsRespectCumulativeCeiling", "pass": true},
+    {"name": "TestReusableDelegationMigrationRemovesUniqueConstraint", "pass": true},
+    {"name": "TestLeadAutonomousStartBuildsMultiUnitGraph", "pass": true},
+    {"name": "TestLeadAutonomousRevocationContainsRunningCampaign", "pass": true},
+    {"name": "TestWorkGraphSequentialBaseChaining", "pass": true},
+    {"name": "TestWorkGraphParallelFanInIntegration", "pass": true},
+    {"name": "TestWorkGraphParallelUnitCompletionDoesNotInvalidateSiblingCandidate", "pass": true},
+    {"name": "TestWorkGraphOrdinaryUnitFanInConsumesBothPrerequisites", "pass": true},
+    {"name": "TestStartLeadCampaignIsAtomicAcrossCrashBoundary", "pass": true},
+    {"name": "TestWorkGraphDependencyFailureStopsDownstreamDispatch", "pass": true},
+    {"name": "TestWorkGraphRestartPreservesDependencyAndDispatchIdempotency", "pass": true},
+    {"name": "TestPrepareSpecWorkspaceSequentialAndIntegration", "pass": true},
+    {"name": "TestPrepareSpecWorkspaceRejectsIntegrationConflict", "pass": true},
+    {"name": "integrated candidate InspectCommit lineage", "pass": true, "detail": "single-parent commit on frozen base; both dependency paths accepted"},
+    {"name": "TestSemanticEvaluationScoresAndComparesBlindedSheets", "pass": true},
+    {"name": "TestSemanticEvaluationFailsClosedOnMissingScoresAndThresholds", "pass": true},
+    {"name": "TestSemanticEvaluationCorpusIsFrozen", "pass": true},
+    {"name": "TestSemanticEvaluationRejectsUnknownFixtureIDs", "pass": true},
+    {"name": "Office typecheck/lint/build", "pass": true},
+    {"name": "mocked S4-D Office journey", "pass": true, "detail": "12/12"},
+    {"name": "architecture consistency", "pass": true},
+    {"name": "paid-entrypoint default-closed guard", "pass": true, "detail": "30 cases, zero Paseo calls"},
+    {"name": "multi-unit live preflight", "pass": true, "detail": "PREFLIGHT_SAFE, zero provider calls"},
+    {"name": "graph runner dry run", "pass": true, "detail": "ACCEPTED_AND_VERIFIED, 3 stub sessions, deterministic integration, restart/reload, cleanup"},
+    {"name": "failure-injected graph dry run", "pass": true, "detail": "INCOMPLETE, all 3 stub sessions discovered and cleaned, no unbound/orphaned sessions"}
+  ],
+  "capabilities": {
+    "CAP-013": {"deterministic": "verified", "live": "blocked"},
+    "CAP-014": {"deterministic": "blocked", "reason": "no independently scored model-versus-baseline outputs"},
+    "CAP-015": {"deterministic": "verified"},
+    "CAP-016": {"deterministic": "verified", "implementation": "implemented"},
+    "CAP-017": {"deterministic": "verified", "live": "blocked"},
+    "CAP-043": {"implementation": "in_progress"}
+  },
+  "reviewFindingsFixed": [
+    "Integration candidates are staged on the frozen base before final commit, so Core accepts them.",
+    "Successful sibling unit candidates are not superseded across different frozen unit specs.",
+    "Assessment sessions are not refunded after the model boundary may have been crossed.",
+    "Automatic-start status and audit event are written atomically.",
+    "Campaign attempt caps are validated before freeze.",
+    "Revocation invokes coordinator process cleanup for contained campaigns.",
+    "CAP-014 rejects unknown fixture IDs.",
+    "Unbound provider sessions are discovered by label, cleaned, and fail the run.",
+    "Semantic collector enforces exact SHA/clean tree, corpus digest, raw output and cleanup.",
+    "Full provider/model/mode route is bound in the authorization envelope."
+  ],
+  "liveAttempts": [
+    {"candidate": "4640e30d5ca58077c6a8c08a77b41996f6423d23", "status": "INCOMPLETE", "sessions": 1, "reason": "model proposed invalid per-unit check kind syntax; blocked before dispatch", "sessionArchived": true},
+    {"candidate": "278f6ca6abf110c2f921d60a1b34c107cd8cadad", "status": "INCOMPLETE", "sessions": 1, "reason": "assessment provider session reconciled but run failed with observedStatus other; blocked before unit dispatch", "sessionArchived": true}
+  ],
+  "limits": [
+    "Authorized live round: E2E 2/4 sessions and CAP-014 11/11 sessions; no completed E2E journey and no independently scored CAP-014 result.",
+    "No UAT, deployment or isolation certification.",
+    "CAP-014 remains blocked; S4-D real certification is incomplete."
+  ]
+}

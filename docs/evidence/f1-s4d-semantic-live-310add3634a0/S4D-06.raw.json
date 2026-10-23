@@ -1,0 +1,72 @@
+{
+  "schemaRevision": 1,
+  "projectId": "factory-fixture-s4d-semantic",
+  "actionId": "8e91b51ce5c7de6a837e573cbf953342",
+  "requestId": "113f3dbb2bc2c5da3d69c18466f5a74b",
+  "evidenceRefs": [
+    "E-06"
+  ],
+  "intent": "ambiguous",
+  "complexity": "unknown",
+  "effortEstimate": {
+    "status": "not_requested",
+    "unit": "",
+    "minPersonHours": 0,
+    "maxPersonHours": 0,
+    "assumptions": [],
+    "unknownReason": ""
+  },
+  "knowledgeGaps": [
+    "Whether a replacement endpoint exists or is planned is not specified.",
+    "No migration window or backward-compatibility mechanism is specified.",
+    "The three documented integrations' owners and test coverage are unknown."
+  ],
+  "changeImpact": [
+    "Removing /v1/export immediately would break the three documented integrations that call it (E-06).",
+    "Keeping integrations unchanged while removing the endpoint requires an unspecified compatibility or replacement mechanism."
+  ],
+  "validationNeeds": [
+    "Clarify the intended compatibility contract before implementation.",
+    "If removal proceeds, verify all three documented integrations still function or are explicitly migrated."
+  ],
+  "assumptions": [
+    "The objective's two requirements are both mandatory and currently conflict, as stated in E-06.",
+    "No replacement endpoint or migration window is available in the supplied evidence."
+  ],
+  "uncertainty": [
+    "The request requires an immediate removal while also requiring unchanged integrations, with no stated replacement or migration path (E-06)."
+  ],
+  "suggestedNextAction": "Ask the requester to resolve the conflict: either permit breaking changes to the three integrations, or specify a replacement endpoint and migration/compatibility plan before implementation.",
+  "proposal": {
+    "projectId": "factory-fixture-s4d-semantic",
+    "actionId": "8e91b51ce5c7de6a837e573cbf953342",
+    "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "projectConfigHash": "b79606fb3afea5bd1609ed40b622142ff309dd9c31fe24b3e594d2f9420419c4",
+    "objective": "Reconcile conflicting requirements for removing /v1/export before any implementation.",
+    "class": "maintenance",
+    "assumptions": [
+      "No executable work is proposed until the contradictory requirements are resolved.",
+      "No replacement endpoint or migration window is specified in E-06."
+    ],
+    "risks": [
+      "Implementing removal as requested would break three documented integrations (E-06).",
+      "Assuming an unstated replacement or migration path could produce an unsupported change."
+    ],
+    "acceptanceCriteria": [],
+    "negativeCases": [],
+    "qualityProfile": "node-basic",
+    "riskClass": "R0",
+    "budget": {
+      "maxAttempts": 1,
+      "timeoutSecs": 120
+    },
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseoMode": "build",
+    "maxRepairCycles": 0,
+    "maxWallClockSecs": 300,
+    "maxParallel": 1,
+    "maxSessions": 1,
+    "workUnits": []
+  }
+}

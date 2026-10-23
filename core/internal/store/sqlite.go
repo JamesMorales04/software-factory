@@ -239,6 +239,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	paseo_mode TEXT NOT NULL,
+	deterministic_integration INTEGER NOT NULL DEFAULT 0,
 	changed_paths TEXT NOT NULL,
 	risk_class TEXT NOT NULL,
 	spec_binding_hash TEXT NOT NULL DEFAULT '',
@@ -381,6 +382,85 @@ CREATE TABLE IF NOT EXISTS campaign_recoveries (
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_recoveries_campaign
 	ON campaign_recoveries(campaign_id, created_at);
+-- S4-D intake reserves request identity before any semantic session. All
+-- grant, assessment, proposal, and plan records are Core-owned and durable.
+CREATE TABLE IF NOT EXISTS standing_delegations (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	revision INTEGER NOT NULL,
+	content_hash TEXT NOT NULL,
+	delegation_json TEXT NOT NULL,
+	revoked_at TEXT NOT NULL DEFAULT '',
+	idempotency_key TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	UNIQUE(project_id, revision)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_standing_delegations_key
+	ON standing_delegations(idempotency_key) WHERE idempotency_key<>'';
+CREATE TABLE IF NOT EXISTS standing_delegation_usage (
+	delegation_id TEXT PRIMARY KEY REFERENCES standing_delegations(id),
+	reserved_requests INTEGER NOT NULL DEFAULT 0,
+	reserved_sessions INTEGER NOT NULL DEFAULT 0,
+	reserved_attempts INTEGER NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lead_requests (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	objective TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	status TEXT NOT NULL,
+	delegation_id TEXT NOT NULL REFERENCES standing_delegations(id),
+	project_config_hash TEXT NOT NULL,
+	action_id TEXT NOT NULL DEFAULT '',
+	failure_reason TEXT NOT NULL DEFAULT '',
+	assessment_id TEXT NOT NULL DEFAULT '',
+	proposal_id TEXT NOT NULL DEFAULT '',
+	frozen_plan_id TEXT NOT NULL DEFAULT '',
+	spec_id TEXT NOT NULL DEFAULT '',
+	campaign_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lead_assessments (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	mechanism TEXT NOT NULL,
+	assessment_json TEXT NOT NULL,
+	route_json TEXT NOT NULL,
+	assessment_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lead_proposals (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	action_id TEXT NOT NULL REFERENCES actions(id),
+	assessment_id TEXT NOT NULL REFERENCES lead_assessments(id),
+	proposal_json TEXT NOT NULL,
+	content_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS frozen_lead_plans (
+	id TEXT PRIMARY KEY,
+	request_id TEXT NOT NULL UNIQUE REFERENCES lead_requests(id),
+	project_id TEXT NOT NULL REFERENCES projects(id),
+	proposal_id TEXT NOT NULL UNIQUE REFERENCES lead_proposals(id),
+	delegation_id TEXT NOT NULL REFERENCES standing_delegations(id),
+	proposal_hash TEXT NOT NULL,
+	delegation_hash TEXT NOT NULL,
+	project_config_revision INTEGER NOT NULL,
+	project_config_hash TEXT NOT NULL,
+	plan_hash TEXT NOT NULL,
+	idempotency_key TEXT UNIQUE,
+	created_at TEXT NOT NULL
+);
 `
 
 // DB is the S2 persistence adapter (S1: actions/events; S2 adds
@@ -394,9 +474,10 @@ type DB struct {
 // S2 test hooks. Production code always uses the defaults installed by
 // Open; tests override them for deterministic lease/expiry behavior.
 type testHooks struct {
-	clock        func() time.Time
-	leaseTTL     time.Duration
-	offlineAfter time.Duration
+	clock                 func() time.Time
+	leaseTTL              time.Duration
+	offlineAfter          time.Duration
+	beforeLeadStartCommit func() error
 }
 
 // Open creates the schema, enforces WAL mode and seeds the default project.
@@ -438,6 +519,10 @@ func Open(path string) (*DB, error) {
 	if err := db.migrateS4C06(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("s4-c-06 migration: %w", err)
+	}
+	if err := db.migrateS4DReusableDelegation(); err != nil {
+		_ = sqldb.Close()
+		return nil, fmt.Errorf("s4-d reusable delegation migration: %w", err)
 	}
 	db.hooks.clock = utcNow
 	db.hooks.leaseTTL = domain.DefaultLeaseTTL
@@ -869,6 +954,117 @@ func (db *DB) migrateS4C06() error {
 				return fmt.Errorf("add %s.browser_test_server: %w", table, err)
 			}
 		}
+	}
+	return nil
+}
+
+// migrateS4DReusableDelegation removes the one-request-per-delegation unique
+// constraint from existing databases and adds cumulative usage accounting.
+// New databases already carry the reusable schema.
+func (db *DB) migrateS4DReusableDelegation() error {
+	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS standing_delegation_usage (
+		delegation_id TEXT PRIMARY KEY REFERENCES standing_delegations(id),
+		reserved_requests INTEGER NOT NULL DEFAULT 0,
+		reserved_sessions INTEGER NOT NULL DEFAULT 0,
+		reserved_attempts INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create standing_delegation_usage: %w", err)
+	}
+	candidateRows, err := db.sql.Query(`SELECT name FROM pragma_table_info('candidates')`)
+	if err != nil {
+		return err
+	}
+	hasDeterministic := false
+	for candidateRows.Next() {
+		var name string
+		if err := candidateRows.Scan(&name); err != nil {
+			_ = candidateRows.Close()
+			return err
+		}
+		if name == "deterministic_integration" {
+			hasDeterministic = true
+		}
+	}
+	_ = candidateRows.Close()
+	if err := candidateRows.Err(); err != nil {
+		return err
+	}
+	if !hasDeterministic {
+		if _, err := db.sql.Exec(`ALTER TABLE candidates ADD COLUMN deterministic_integration INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add candidates.deterministic_integration: %w", err)
+		}
+	}
+	rows, err := db.sql.Query(`SELECT il.name, il."unique", ii.name
+		FROM pragma_index_list('lead_requests') il
+		JOIN pragma_index_info(il.name) ii`)
+	if err != nil {
+		return err
+	}
+	rebuild := false
+	for rows.Next() {
+		var index, column string
+		var unique int
+		if err := rows.Scan(&index, &unique, &column); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if unique == 1 && column == "delegation_id" {
+			rebuild = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !rebuild {
+		return nil
+	}
+	if _, err := db.sql.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() { _, _ = db.sql.Exec(`PRAGMA foreign_keys=ON`) }()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`CREATE TABLE lead_requests_s4d_new (
+		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL REFERENCES projects(id),
+		objective TEXT NOT NULL,
+		request_hash TEXT NOT NULL,
+		request_json TEXT NOT NULL,
+		idempotency_key TEXT UNIQUE,
+		status TEXT NOT NULL,
+		delegation_id TEXT NOT NULL REFERENCES standing_delegations(id),
+		project_config_hash TEXT NOT NULL,
+		action_id TEXT NOT NULL DEFAULT '',
+		failure_reason TEXT NOT NULL DEFAULT '',
+		assessment_id TEXT NOT NULL DEFAULT '',
+		proposal_id TEXT NOT NULL DEFAULT '',
+		frozen_plan_id TEXT NOT NULL DEFAULT '',
+		spec_id TEXT NOT NULL DEFAULT '',
+		campaign_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create reusable lead_requests: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO lead_requests_s4d_new
+		SELECT id, project_id, objective, request_hash, request_json, idempotency_key,
+		 status, delegation_id, project_config_hash, action_id, failure_reason,
+		 assessment_id, proposal_id, frozen_plan_id, spec_id, campaign_id,
+		 created_at, updated_at FROM lead_requests`); err != nil {
+		return fmt.Errorf("copy lead_requests: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE lead_requests`); err != nil {
+		return fmt.Errorf("drop legacy lead_requests: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE lead_requests_s4d_new RENAME TO lead_requests`); err != nil {
+		return fmt.Errorf("rename reusable lead_requests: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }

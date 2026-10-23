@@ -1,0 +1,40 @@
+{
+  "ok": false,
+  "failure": "Campaign reaches ACCEPTED through native orchestration: no online Worker supports required capabilities repository-edit,node-toolchain,browser",
+  "projectId": "vlog",
+  "actionId": "b3450d534187078cefc4faa1399dfbba",
+  "specId": "ceb644142a50318532894e97a5043e32",
+  "campaignId": "34203ef10fd8532d2022a8395eec14e8",
+  "checks": [
+    {
+      "name": "browser registered Project A with a durable configuration",
+      "pass": true,
+      "detail": "1"
+    },
+    {
+      "name": "browser created a Project-bound Action",
+      "pass": true,
+      "detail": "b3450d534187078cefc4faa1399dfbba"
+    },
+    {
+      "name": "browser froze a Project-bound ActionSpec",
+      "pass": true,
+      "detail": "ceb644142a50318532894e97a5043e32"
+    },
+    {
+      "name": "frozen spec records the Project identity and capabilities",
+      "pass": true
+    },
+    {
+      "name": "browser created and started the Campaign",
+      "pass": true,
+      "detail": "34203ef10fd8532d2022a8395eec14e8"
+    },
+    {
+      "name": "Campaign reaches ACCEPTED through native orchestration",
+      "pass": false,
+      "detail": "no online Worker supports required capabilities repository-edit,node-toolchain,browser"
+    }
+  ],
+  "consoleErrors": []
+}

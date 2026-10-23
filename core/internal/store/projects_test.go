@@ -3,11 +3,47 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
 )
+
+func TestProjectConfigHashSurvivesCreateGetAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "project.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := testProject(t, "alpha", domain.ProfileNodeBasic,
+		[]string{"repository-edit", "node-toolchain"}, nil)
+	created, _, err := db.CreateProject(context.Background(), project, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Validate(); err != nil {
+		t.Fatalf("created project config hash did not survive persistence: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	loaded, err := reopened.GetProject(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("reopened project config hash did not survive persistence: %v", err)
+	}
+	if loaded.ConfigHash != project.ConfigHash {
+		t.Fatalf("config hash changed across restart: got %q want %q", loaded.ConfigHash, project.ConfigHash)
+	}
+}
 
 func testProject(t *testing.T, id string, profile domain.QualityProfile, caps []string, endpoints []string) domain.Project {
 	t.Helper()

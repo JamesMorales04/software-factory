@@ -18,10 +18,17 @@ import (
 	"time"
 
 	"github.com/JamesMorales04/software-factory/core/internal/api"
+	"github.com/JamesMorales04/software-factory/core/internal/lead"
 	"github.com/JamesMorales04/software-factory/core/internal/orchestrator"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 )
+
+// Lead assessment can spend up to 30 seconds creating its session, 120 seconds
+// waiting for the assessment, and 20 seconds reconciling/archiving. Leave
+// additional time for Core validation and persistence before closing the HTTP
+// response to the client.
+const coreHTTPWriteTimeout = 300 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -38,6 +45,13 @@ func run() error {
 	reviewerBin := flag.String("reviewer-bin", "", "independent reviewer executable (default: adjacent factory-reviewer or PATH)")
 	campaignInterval := flag.Duration("campaign-interval", 500*time.Millisecond, "campaign scheduler reconcile interval")
 	campaignSlots := flag.Int("campaign-slots", 4, "maximum concurrent verifier/reviewer participants")
+	leadPaidAuthorizationID := flag.String("lead-paid-authorization-id", "", "stable one-grant authorization identity; also required as the delegation Idempotency-Key")
+	leadPaidProject := flag.String("lead-paid-project-id", "", "explicit Project approved for paid Lead assessment sessions")
+	leadPaidBase := flag.String("lead-paid-base-revision", "", "exact full Git revision approved for paid Lead assessment")
+	leadPaidProvider := flag.String("lead-paid-provider", "", "exact provider approved for paid Lead assessment")
+	leadPaidModel := flag.String("lead-paid-model", "", "exact model approved for paid Lead assessment")
+	leadPaidMode := flag.String("lead-paid-paseo-mode", "", "exact Paseo mode approved for paid Lead assessment")
+	leadPaidMaxSessions := flag.Int("lead-paid-max-sessions", 0, "total Factory session ceiling approved for this Lead Project and route")
 	flag.Parse()
 
 	logger := telemetry.NewLogger()
@@ -75,6 +89,13 @@ func run() error {
 		WithVerifierToken(verifierToken).
 		WithReviewerToken(reviewerToken).
 		WithWebDir(*webDir).
+		WithLeadAssessor(lead.NewPaseoAssessor()).
+		WithLeadPaidSessionAuthorization(api.LeadPaidSessionAuthorization{
+			AuthorizationID: *leadPaidAuthorizationID,
+			ProjectID:       *leadPaidProject, BaseRevision: *leadPaidBase,
+			Provider: *leadPaidProvider, Model: *leadPaidModel, PaseoMode: *leadPaidMode,
+			MaxSessions: *leadPaidMaxSessions,
+		}).
 		WithCampaignCoordinator(engine)
 
 	boot, err := db.RecordCoreStarted(ctx, api.Version)
@@ -96,6 +117,13 @@ func run() error {
 	if len(reconciled) > 0 {
 		logger.Info("reconciled runs on boot", "events", len(reconciled))
 	}
+	interruptedLead, err := db.ReconcileLeadRequestsOnBoot(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile lead assessments on boot: %w", err)
+	}
+	if interruptedLead > 0 {
+		logger.Warn("interrupted lead assessments blocked for external session reconciliation", "requests", interruptedLead)
+	}
 
 	// S2 lease sweeper: expiry and Worker liveness are Core-owned. Sweeper
 	// failures are logged, never fatal: telemetry-style degradation must
@@ -110,7 +138,7 @@ func run() error {
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      coreHTTPWriteTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 

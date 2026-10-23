@@ -39,12 +39,27 @@ func (s *Server) handleCreateCampaign(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	specID := strings.TrimSpace(req.SpecID)
+	spec, err := s.db.GetActionSpec(specID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "campaign specification lookup")
+		return
+	}
+	leadManaged, err := s.db.LeadActionManaged(r.Context(), spec.ActionID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "campaign Lead ownership")
+		return
+	}
+	if leadManaged {
+		writeError(w, http.StatusForbidden, "unauthorized", "Lead-bound Actions create Campaigns only through authorized Lead planning")
+		return
+	}
 	repairs := domain.DefaultCampaignRepair
 	if req.MaxRepairCycles != nil {
 		repairs = *req.MaxRepairCycles
 	}
 	params := domain.NewCampaignParams{
-		SpecID:          req.SpecID,
+		SpecID:          specID,
 		MaxRepairCycles: repairs, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
 	}
 	if req.MaxImplementerAttempts != nil {
@@ -130,7 +145,49 @@ func (s *Server) handleStartCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	campaign, replayed, events, err := s.db.StartCampaign(ctx, r.PathValue("id"), telemetry.CorrelationIDFrom(ctx))
+	campaign, err := s.db.GetCampaign(r.PathValue("id"))
+	if err != nil {
+		mapDomainError(w, err, s.log, "campaign Lead ownership")
+		return
+	}
+	leadManaged, err := s.db.LeadActionManaged(ctx, campaign.ActionID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "campaign Lead ownership")
+		return
+	}
+	applicable, authorized, err := s.db.CheckLeadCampaignAuthorization(ctx, campaign.ID)
+	if err != nil {
+		mapDomainError(w, err, s.log, "lead campaign authorization")
+		return
+	} else if (leadManaged && (!applicable || !authorized)) || (applicable && !authorized) {
+		writeError(w, http.StatusForbidden, "unauthorized", "lead campaign authority is stale or revoked")
+		return
+	}
+	if leadRequest, lerr := s.db.GetLeadRequestByCampaign(ctx, campaign.ID); lerr == nil {
+		_, _, replayed, events, err := s.db.StartLeadCampaign(ctx, leadRequest.ID, "manual",
+			telemetry.CorrelationIDFrom(ctx))
+		if err != nil {
+			mapDomainError(w, err, s.log, "start lead campaign")
+			return
+		}
+		if replayed {
+			w.Header().Set("Idempotent-Replayed", "true")
+		}
+		for _, event := range events {
+			s.hub.Publish(event.Projected())
+		}
+		if !replayed && s.campaigns != nil {
+			s.campaigns.Wake()
+		}
+		projection, perr := s.db.GetCampaignProjection(campaign.ID)
+		if perr != nil {
+			mapDomainError(w, perr, s.log, "campaign projection")
+			return
+		}
+		writeJSON(w, http.StatusOK, projection)
+		return
+	}
+	campaign, replayed, events, err := s.db.StartCampaign(ctx, campaign.ID, telemetry.CorrelationIDFrom(ctx))
 	if err != nil {
 		mapDomainError(w, err, s.log, "start campaign")
 		return

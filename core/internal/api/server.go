@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/JamesMorales04/software-factory/core/internal/domain"
+	"github.com/JamesMorales04/software-factory/core/internal/lead"
 	"github.com/JamesMorales04/software-factory/core/internal/store"
 	"github.com/JamesMorales04/software-factory/core/internal/telemetry"
 	"go.opentelemetry.io/otel/trace"
@@ -22,22 +24,65 @@ var Version = "0.1.0-s4c"
 // Operator routes authenticate with the admin token; Worker protocol routes
 // authenticate with a separate scoped worker token that grants nothing else.
 type Server struct {
-	db            *store.DB
-	token         string
-	workerToken   string
-	verifierToken string
-	reviewerToken string
-	log           *slog.Logger
-	tracer        trace.Tracer
-	hub           *Hub
-	webDir        string
-	campaigns     CampaignCoordinator
+	db                           *store.DB
+	token                        string
+	workerToken                  string
+	verifierToken                string
+	reviewerToken                string
+	log                          *slog.Logger
+	tracer                       trace.Tracer
+	hub                          *Hub
+	webDir                       string
+	campaigns                    CampaignCoordinator
+	leadAssessor                 lead.Assessor
+	leadPaidSessionAuthorization LeadPaidSessionAuthorization
+	leadEventMu                  sync.Mutex
+	leadEventIDs                 map[string]struct{}
+}
+
+// LeadPaidSessionAuthorization bounds real Lead assessment sessions to one
+// explicitly approved project, base revision, provider route, and total
+// session ceiling. An empty value is closed.
+type LeadPaidSessionAuthorization struct {
+	AuthorizationID string
+	ProjectID       string
+	BaseRevision    string
+	Provider        string
+	Model           string
+	PaseoMode       string
+	MaxSessions     int
+}
+
+func (a LeadPaidSessionAuthorization) allows(projectID, baseRevision string, grant domain.StandingDelegation) bool {
+	return strings.TrimSpace(a.AuthorizationID) != "" &&
+		strings.TrimSpace(a.ProjectID) != "" &&
+		strings.TrimSpace(a.BaseRevision) != "" &&
+		strings.TrimSpace(a.Provider) != "" &&
+		strings.TrimSpace(a.Model) != "" &&
+		strings.TrimSpace(a.PaseoMode) != "" &&
+		a.MaxSessions > 0 && a.ProjectID == projectID && a.BaseRevision == baseRevision &&
+		a.Provider == grant.Provider && a.Model == grant.Model && a.PaseoMode == grant.PaseoMode &&
+		grant.MaxSessions <= a.MaxSessions && grant.MaxCumulativeSessions <= a.MaxSessions
 }
 
 // New builds a Server. Token must be non-empty; startup refuses to run
 // an unauthenticated Core.
 func New(db *store.DB, token string, logger *slog.Logger, tracer trace.Tracer, hub *Hub) *Server {
 	return &Server{db: db, token: token, log: logger, tracer: tracer, hub: hub}
+}
+
+// WithLeadAssessor enables bounded model-backed planning. An unconfigured
+// assessor fails closed and cannot produce a synthetic semantic success.
+func (s *Server) WithLeadAssessor(assessor lead.Assessor) *Server {
+	s.leadAssessor = assessor
+	return s
+}
+
+// WithLeadPaidSessionAuthorization explicitly enables Lead assessment calls
+// that may contact a paid provider. It is closed by default in every server.
+func (s *Server) WithLeadPaidSessionAuthorization(authorization LeadPaidSessionAuthorization) *Server {
+	s.leadPaidSessionAuthorization = authorization
+	return s
 }
 
 // WithWorkerToken scopes the Worker protocol to a dedicated credential.
@@ -105,6 +150,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/refs", s.handleProjectRefs)
 	mux.HandleFunc("GET /api/v1/projects/{id}/events", s.handleProjectEvents)
 	mux.HandleFunc("GET /api/v1/projects/{id}/config", s.handleProjectConfigRevision)
+	mux.HandleFunc("POST /api/v1/delegations", s.handleCreateDelegation)
+	mux.HandleFunc("GET /api/v1/delegations/{id}", s.handleGetDelegation)
+	mux.HandleFunc("POST /api/v1/delegations/{id}/revoke", s.handleRevokeDelegation)
+	mux.HandleFunc("POST /api/v1/lead/requests", s.handleCreateLeadRequest)
+	mux.HandleFunc("GET /api/v1/lead/requests/{id}", s.handleGetLeadRequest)
+	mux.HandleFunc("GET /api/v1/lead/requests/{id}/events", s.handleLeadRequestEvents)
+	mux.HandleFunc("POST /api/v1/lead/requests/{id}/start", s.handleStartLeadRequest)
 	mux.HandleFunc("POST /api/v1/actions", s.handleCreateAction)
 	mux.HandleFunc("GET /api/v1/actions", s.handleListActions)
 	mux.HandleFunc("GET /api/v1/actions/{id}", s.handleGetAction)
@@ -299,7 +351,7 @@ func mapDomainError(w http.ResponseWriter, err error, log *slog.Logger, msg stri
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
-	case errors.Is(err, domain.ErrConflict):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrBudgetExhausted):
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, domain.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "conflict", err.Error())

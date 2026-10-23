@@ -160,9 +160,11 @@ func ValidateWorkloadInput(kind string, input map[string]any) (map[string]any, e
 		return validateSyntheticInput(input)
 	case PaseoTaskKind:
 		return validatePaseoTaskInput(input)
+	case GitIntegrationKind:
+		return validateGitIntegrationInput(input)
 	default:
-		return nil, fmt.Errorf("unsupported workloadKind %q: only %q and %q are authorized",
-			kind, SyntheticEchoKind, PaseoTaskKind)
+		return nil, fmt.Errorf("unsupported workloadKind %q: only %q, %q and %q are authorized",
+			kind, SyntheticEchoKind, PaseoTaskKind, GitIntegrationKind)
 	}
 }
 
@@ -243,8 +245,8 @@ func (p NewRunParams) Validate() (NewRunParams, error) {
 	if err := ValidateExecutionMode(p.ExecutionMode); err != nil {
 		return p, err
 	}
-	if p.SpecID != "" && p.WorkloadKind != PaseoTaskKind {
-		return p, errors.New("specId requires workloadKind paseo-task")
+	if p.SpecID != "" && p.WorkloadKind != PaseoTaskKind && p.WorkloadKind != GitIntegrationKind {
+		return p, errors.New("specId requires workloadKind paseo-task or git-integration")
 	}
 	switch p.WorkloadKind {
 	case SyntheticEchoKind:
@@ -267,9 +269,17 @@ func (p NewRunParams) Validate() (NewRunParams, error) {
 		p.Provider = route.Provider
 		p.Model = route.Model
 		p.PaseoMode = route.Mode
+	case GitIntegrationKind:
+		if p.ExecutionMode != string(ExecTrustedLocal) {
+			return p, fmt.Errorf("workloadKind %q requires executionMode %q",
+				GitIntegrationKind, ExecTrustedLocal)
+		}
+		if p.Provider != "" || p.Model != "" || p.PaseoMode != "" {
+			return p, errors.New("git-integration must not carry a provider route")
+		}
 	default:
-		return p, fmt.Errorf("unsupported workloadKind %q: only %q and %q are authorized",
-			p.WorkloadKind, SyntheticEchoKind, PaseoTaskKind)
+		return p, fmt.Errorf("unsupported workloadKind %q: only %q, %q and %q are authorized",
+			p.WorkloadKind, SyntheticEchoKind, PaseoTaskKind, GitIntegrationKind)
 	}
 	input, err := ValidateWorkloadInput(p.WorkloadKind, p.WorkloadInput)
 	if err != nil {

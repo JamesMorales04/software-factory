@@ -273,7 +273,7 @@ capabilities:
   decision_status: approved
   implementation_status: implemented
   verification:
-    deterministic: verified
+    deterministic: blocked
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -769,10 +769,10 @@ capabilities:
   purpose: Interpret owner objectives and coordinate bounded engineering
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: implemented
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: verified
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -782,31 +782,41 @@ capabilities:
   - CAP-003
   target_milestone: F1-S4-D
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0017-intelligent-lead-planning.md
+    contract:
+    - docs/contracts/intelligent-lead-s4d.md
+    source:
+    - core/internal/api/lead_handlers.go
+    - core/internal/store/lead.go
+    test:
+    - core/internal/api/lead_api_test.go
+    - core/internal/store/lead_test.go
   acceptance:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Verified scope is deterministic reusable delegation, autonomous-start policy, and bounded multi-WorkUnit planning/execution; no semantic quality or real model outcome is established.
+  blockers:
+  - Live sessions were authorized and executed for certification, but the E2E journey did not complete and live assessment/UAT/independent acceptance remain blocked.
 - id: CAP-014
   name: Intent and semantic assessment
   category: Planning
   purpose: Select and produce typed, evidence-bound semantic judgments when they improve practical decision quality
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: implemented
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: blocked
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -815,10 +825,17 @@ capabilities:
   - CAP-013
   target_milestone: F1-S4-D
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0017-intelligent-lead-planning.md
+    contract:
+    - docs/contracts/intelligent-lead-s4d.md
+    source:
+    - core/internal/lead/assessment.go
+    - core/internal/lead/paseo_assessor.go
+    test:
+    - core/internal/lead/paseo_assessor_test.go
+    - core/internal/lead/evaluation_test.go
+    - core/cmd/s4d-evaluate/main.go
   acceptance:
     deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
       compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
@@ -827,23 +844,26 @@ capabilities:
       than the deterministic baseline while Core retains authority; reuse sufficient agent context rather than requiring
       a separate long-running session for each small judgment.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - A frozen machine corpus, blinded score-sheet validator and threshold harness are prepared; they do not satisfy the full acceptance criterion without independently scored real model-versus-baseline outputs.
+  blockers:
+  - Semantic quality versus a deterministic baseline is not scored; no paid/live model session is authorized and independent acceptance remains blocked.
 - id: CAP-015
   name: Frozen executable planning
   category: Planning
   purpose: Turn intent into an authorized plan and specification
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: implemented
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: verified
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -853,33 +873,45 @@ capabilities:
   - CAP-014
   target_milestone: F1-S4-D
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0017-intelligent-lead-planning.md
+    contract:
+    - docs/contracts/intelligent-lead-s4d.md
+    source:
+    - core/internal/domain/lead_plan.go
+    - core/internal/store/lead.go
+    - core/internal/api/lead_handlers.go
+    test:
+    - core/internal/domain/lead_plan_test.go
+    - core/internal/store/lead_test.go
+    - core/internal/api/lead_api_test.go
   acceptance:
     deterministic: Applicable frozen executable planning contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise frozen executable planning in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Verified scope is immutable Project-bound multi-WorkUnit planning, per-unit specification freezing, integration planning, and ActionSpec/Campaign linkage; no live model plan was produced.
+  blockers:
+  - Live sessions were authorized and executed, but CAP-014 produced only partial outputs and no independent score; Product Owner approval and independent acceptance remain pending.
 - id: CAP-016
   name: Dependency-aware WorkGraph
   category: Planning
   purpose: Validate WorkUnits dependencies and coverage before dispatch
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: implemented
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: verified
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -888,33 +920,45 @@ capabilities:
   - CAP-015
   target_milestone: F1-S4-D
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0017-intelligent-lead-planning.md
+    contract:
+    - docs/contracts/intelligent-lead-s4d.md
+    source:
+    - core/internal/domain/lead_plan.go
+    - core/internal/domain/campaign.go
+    - core/internal/store/campaigns.go
+    - core/cmd/factory-worker/candidate.go
+    test:
+    - core/internal/domain/lead_plan_test.go
+    - core/internal/store/graph_test.go
+    - core/cmd/factory-worker/candidate_workspace_test.go
   acceptance:
     deterministic: Applicable dependency-aware workgraph contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise dependency-aware workgraph in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Deterministic graph execution, dependency chaining, parallel fan-in integration, restart idempotency and conflict handling are verified; a real model/Paseo multi-unit journey is not.
+  blockers:
+  - Live sessions were authorized and executed, but no complete real multi-unit acceptance exists; independent real acceptance remains pending.
 - id: CAP-017
   name: Standing delegation contract
   category: Authority
   purpose: Bound autonomous decisions by owner scope expiry and budgets
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: implemented
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: verified
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -924,23 +968,33 @@ capabilities:
   - CAP-008
   target_milestone: F1-S4-D
   refs:
-    adr: []
-    contract: []
-    source: []
-    test: []
+    adr:
+    - docs/architecture/decisions/ADR-0017-intelligent-lead-planning.md
+    contract:
+    - docs/contracts/intelligent-lead-s4d.md
+    source:
+    - core/internal/domain/lead_plan.go
+    - core/internal/store/lead.go
+    - core/internal/api/lead_handlers.go
+    test:
+    - core/internal/domain/lead_plan_test.go
+    - core/internal/store/lead_test.go
+    - core/internal/api/lead_api_test.go
   acceptance:
-    deterministic: Applicable standing delegation contract contract, negative and regression checks pass on an exact
-      candidate.
-    real: Exercise standing delegation contract in a genuine authorized project journey and independently verify
-      the outcome.
+    deterministic: Atomic reusable cumulative request/session/attempt accounting, expired/revoked grants, autonomous-risk policy, scope expansion and in-flight revocation containment pass on an exact candidate.
+    real: Exercise reusable owner-authorized requests and autonomous start in a genuine authorized journey and independently verify the outcome; paid use requires separate owner authorization.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-workgraph-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Verified scope is explicit reusable cumulative grants with autonomous R0/R1 policy and revocation containment; the ADR remains proposed and does not establish Product Owner authorization or paid-use approval.
+  blockers:
+  - Product Owner decision, paid/live authorization, UAT and independent acceptance remain pending.
+  - Issuer identity, accepted risk classes, paid-use accounting and in-flight revocation policy remain proposed; no paid/live model session is authorized.
 - id: CAP-018
   name: Agent Composer
   category: Planning
@@ -1817,10 +1871,10 @@ capabilities:
   purpose: Product Owner objectives become independently accepted engineering changes
   product_objective: Autonomous product development
   decision_status: approved
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
-    live_agent: not_tested
+    deterministic: verified
+    live_agent: blocked
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -1833,21 +1887,27 @@ capabilities:
     adr:
     - docs/architecture/decisions/ADR-0016-dual-mode-autonomous-engineering.md
     contract: []
-    source: []
-    test: []
+    source:
+    - core/internal/api/lead_handlers.go
+    - core/internal/domain/lead_plan.go
+    test:
+    - core/internal/api/lead_api_test.go
+    - core/internal/domain/lead_plan_test.go
   acceptance:
     deterministic: Core refuses unauthorized scope, invalid budgets and self-approving model decisions.
     real: An owner-authorized objective completes the shared Action/Campaign pipeline with independent acceptance;
       maintenance additionally survives restart and verifies intervention outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/f1-s4d-deterministic-2026-10-22.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Approved product objective; future implementation design and protected permissions require separate decisions.
-  blockers: []
+  - Verification covers only the bounded S4-D authorization and planning subset. Product development is not end-to-end complete; maintenance, broader autonomous operations, and live acceptance remain unimplemented or unverified.
+  blockers:
+  - No authorized live journey, independent acceptance or Product Owner UAT; the broader approved objective remains in progress.
 - id: CAP-044
   name: Autonomous product maintenance and evolution
   category: Product mode

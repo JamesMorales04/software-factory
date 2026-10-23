@@ -323,7 +323,7 @@ export function Projects() {
                 <dt>Capabilities</dt>
                 <dd>{project.capabilities.join(", ") || "—"}</dd>
                 <dt>Browser endpoints</dt>
-                <dd>{project.browserEndpoints.join(", ") || "—"}</dd>
+                <dd>{project.browserEndpoints?.join(", ") || "—"}</dd>
                 <dt>Test server</dt>
                 <dd>
                   {project.browserTestServer

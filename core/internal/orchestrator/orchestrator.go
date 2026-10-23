@@ -198,6 +198,14 @@ func (e *Engine) reconcilePendingActionState(ctx context.Context) {
 
 func (e *Engine) reconcileCampaign(ctx context.Context, campaign domain.Campaign) {
 	correlation := "campaign-tick-" + randomID()
+	if applicable, authorized, aerr := e.db.CheckLeadCampaignAuthorization(ctx, campaign.ID); aerr != nil {
+		e.log.Error("lead authorization check failed", "campaignId", campaign.ID, "error", aerr.Error())
+		return
+	} else if applicable && !authorized {
+		e.cancelCampaignRuns(ctx, campaign, "lead delegation is expired, revoked, or stale", correlation)
+		e.block(ctx, campaign, "lead delegation is expired, revoked, or stale", correlation)
+		return
+	}
 	action, err := e.db.GetAction(campaign.ActionID)
 	if err != nil {
 		e.log.Error("load campaign action failed", "campaignId", campaign.ID, "error", err.Error())
@@ -315,6 +323,11 @@ func (e *Engine) reconcileImplementer(ctx context.Context, campaign domain.Campa
 		e.log.Info("implementer task completed", "campaignId", campaign.ID,
 			"taskKey", completed.Key, "candidateId", completed.CandidateID)
 	case domain.RunFailed:
+		if run.WorkloadKind == domain.GitIntegrationKind &&
+			strings.Contains(strings.ToLower(run.Error), "integrate dependency candidate") {
+			e.block(ctx, campaign, "deterministic integration conflict: "+run.Error, correlation)
+			return
+		}
 		spec, serr := e.db.GetActionSpec(campaign.SpecID)
 		if serr != nil {
 			e.block(ctx, campaign, "frozen spec is unavailable during recovery", correlation)
@@ -455,7 +468,12 @@ func (e *Engine) dispatchReady(ctx context.Context, projection domain.CampaignPr
 }
 
 func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campaign, task domain.CampaignTask) {
-	spec, err := e.db.GetActionSpec(campaign.SpecID)
+	node, _ := campaign.Plan.TaskPlan(task.Key)
+	specID := campaign.SpecID
+	if node.SpecID != "" {
+		specID = node.SpecID
+	}
+	spec, err := e.db.GetActionSpec(specID)
 	if err != nil {
 		e.log.Error("load campaign spec failed", "campaignId", campaign.ID, "error", err.Error())
 		return
@@ -474,9 +492,17 @@ func (e *Engine) dispatchImplementer(ctx context.Context, campaign domain.Campai
 		return
 	}
 	if project.Registered() {
-		if rerr := projectreg.RevalidateBound(ctx, spec.Repository, spec.RepositoryIdentity, spec.BaseRevision); rerr != nil {
-			e.block(ctx, campaign, "repository revalidation failed: "+rerr.Error(), "campaign-dispatch-"+randomID())
-			return
+		if len(node.DependsOn) == 0 {
+			if rerr := projectreg.RevalidateBound(ctx, spec.Repository, spec.RepositoryIdentity, spec.BaseRevision); rerr != nil {
+				e.block(ctx, campaign, "repository revalidation failed: "+rerr.Error(), "campaign-dispatch-"+randomID())
+				return
+			}
+		} else {
+			inspected, rerr := projectreg.Inspect(ctx, spec.Repository, project.BaseRefs)
+			if rerr != nil || inspected.Identity != spec.RepositoryIdentity {
+				e.block(ctx, campaign, "repository identity changed before dependent dispatch", "campaign-dispatch-"+randomID())
+				return
+			}
 		}
 	}
 	eligible, err := e.workerSupports(ctx, spec.Capabilities, spec.ExecutionMode)

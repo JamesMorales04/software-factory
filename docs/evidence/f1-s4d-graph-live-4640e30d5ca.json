@@ -1,0 +1,86 @@
+{
+  "campaign": "F1-S4-D-GRAPH-LIVE",
+  "authorizationId": "s4d-graph-owner-auth-1",
+  "factorySha": "4640e30d5ca58077c6a8c08a77b41996f6423d23",
+  "projectId": "factory-fixture-s4d-graph",
+  "fixture": "s4d-graph",
+  "route": "opencode/opencode-go/deepseek-v4.1-flash/build",
+  "dryRun": false,
+  "budget": {
+    "totalSessions": 4,
+    "attempts": 3,
+    "repairs": 0,
+    "maxParallel": 2,
+    "maxWallClockSecs": 1800
+  },
+  "status": "INCOMPLETE",
+  "sessions": [
+    "e3224b47-cc31-489c-a80e-9fdd1a799a0b"
+  ],
+  "cleanup": {
+    "sessions": [],
+    "failedSessions": [
+      {
+        "sessionId": "e3224b47-cc31-489c-a80e-9fdd1a799a0b",
+        "stopExit": 0,
+        "archiveExit": 1
+      }
+    ],
+    "servicesStopped": true
+  },
+  "fixtureBaseline": "72a166f6f11c58001cba00979e8c0ebc1f618430",
+  "grant": {
+    "id": "f1e4432790ff177361fddbfbfb218c05",
+    "revision": 1,
+    "contentHash": "8b74c3d21fae3d808b793f452182bb59fe288156f94ea2702977d27c80c11f20",
+    "expiresAt": "2026-10-23T05:55:41Z",
+    "maxSessions": 4,
+    "maxCumulativeSessions": 4
+  },
+  "browserSubmit": {
+    "phase": "submit",
+    "ok": true,
+    "checks": [
+      {
+        "name": "UI submitted the objective and bound a request ID",
+        "pass": true,
+        "detail": "cd44afdd699055a4f3c8aea86e1ce4aa"
+      },
+      {
+        "name": "UI reflects an authorized autonomous state",
+        "pass": true,
+        "detail": "Factory Office S4-D\nDashboard\nProjects\nLead\nActions\nCampaigns\nRuns\nWorkers\nAgents\nLock\nLead\n\nSubmit an objective for a server-owned assessment and plan. Core controls authorization and records every resulting state.\n\nLead request submitted."
+      },
+      {
+        "name": "browser produced no console errors",
+        "pass": true
+      }
+    ],
+    "requestId": "cd44afdd699055a4f3c8aea86e1ce4aa",
+    "consoleErrors": [],
+    "timeoutOutput": ""
+  },
+  "requestId": "cd44afdd699055a4f3c8aea86e1ce4aa",
+  "lead": {
+    "status": "blocked",
+    "startMode": "",
+    "authorizationState": "permitted",
+    "campaignId": "",
+    "planHash": null,
+    "plan": null,
+    "delegationUsage": {
+      "delegationId": "f1e4432790ff177361fddbfbfb218c05",
+      "reservedRequests": 1,
+      "reservedSessions": 1,
+      "reservedAttempts": 0,
+      "updatedAt": "2026-10-23T04:55:42.268689638Z"
+    }
+  },
+  "failure": "Lead did not reach accepted: blocked Proposal rejected: work unit \"backend-greeting\" acceptanceCriteria: unknown check kind \"syntax\" unbound/orphaned session evidence present session cleanup failed fixture not removed",
+  "unboundSessions": [
+    "e3224b47-cc31-489c-a80e-9fdd1a799a0b"
+  ],
+  "sessionDiscoveryErrors": [],
+  "orphanedSessions": [],
+  "workRoot": "/tmp/factory-s4d-graph-live-tp1mwpm8"
+}

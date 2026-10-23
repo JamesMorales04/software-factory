@@ -75,6 +75,11 @@ func (c *client) runAttemptWorkload(
 	if run.WorkloadKind == domain.PaseoTaskKind {
 		return runPaseoLifecycle(ctx, c, workerID, run, attempt, workDir, spec, paseo.NewCLIAdapter(log), log)
 	}
+	if run.WorkloadKind == domain.GitIntegrationKind {
+		// prepareSpecWorkspace already staged the deterministic merges on the
+		// frozen base; finalizeCandidate commits that tree.
+		return map[string]any{"mode": "git-integration", "providerSession": false}, nil
+	}
 	result, err := exec.Run(ctx, fixture, workDir, podmanOK)
 	if err != nil {
 		return nil, err

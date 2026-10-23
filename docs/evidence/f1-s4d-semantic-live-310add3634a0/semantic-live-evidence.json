@@ -1,0 +1,155 @@
+{
+  "authorizationId": "s4d-semantic-owner-auth-1",
+  "candidateSha": "310add3634a02da9559e8c1448d2ef0e4cbdd690",
+  "corpus": "S4D-SEMANTIC-1",
+  "corpusSha256": "e199c14445a6da6efad98513b42136b2116560fb8bcd62a5e1d21387e4b020b4",
+  "entries": [
+    {
+      "fixtureId": "S4D-01",
+      "status": "failed",
+      "elapsedMs": 43167,
+      "inputBytes": 2079,
+      "error": "lead assessment Paseo run failed; reconciliation={\"runCause\":\"failed\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"d2209aed-ab39-4baa-a214-0f4b91d655fa\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"other\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"}",
+      "reconciledSessionId": "d2209aed-ab39-4baa-a214-0f4b91d655fa",
+      "reconciledArchived": true
+    },
+    {
+      "fixtureId": "S4D-02",
+      "status": "captured",
+      "sessionId": "fe001f4d-b38e-4c5d-a1b8-a6b4f16df366",
+      "elapsedMs": 42918,
+      "inputBytes": 2152,
+      "outputBytes": 4078,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    },
+    {
+      "fixtureId": "S4D-03",
+      "status": "captured",
+      "sessionId": "358c43df-b42b-41ce-be1c-2f380d07badf",
+      "elapsedMs": 43376,
+      "inputBytes": 1960,
+      "outputBytes": 2637,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    },
+    {
+      "fixtureId": "S4D-04",
+      "status": "failed",
+      "elapsedMs": 22126,
+      "inputBytes": 2285,
+      "error": "lead assessment Paseo run failed; reconciliation={\"runCause\":\"failed\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"1c90e6d9-c8b6-411e-a2f9-5c6d64e1aaa1\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"other\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"}",
+      "reconciledSessionId": "1c90e6d9-c8b6-411e-a2f9-5c6d64e1aaa1",
+      "reconciledArchived": true
+    },
+    {
+      "fixtureId": "S4D-05",
+      "status": "failed",
+      "elapsedMs": 120700,
+      "inputBytes": 2257,
+      "error": "lead assessment Paseo run failed; reconciliation={\"runCause\":\"timeout\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"7eac6e0a-5555-4cd2-b658-211335405378\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"active\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"}",
+      "reconciledSessionId": "7eac6e0a-5555-4cd2-b658-211335405378",
+      "reconciledArchived": true
+    },
+    {
+      "fixtureId": "S4D-06",
+      "status": "captured",
+      "sessionId": "a4d189ed-1620-44d7-a26c-30f69ea07b6a",
+      "elapsedMs": 22793,
+      "inputBytes": 2047,
+      "outputBytes": 2993,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    },
+    {
+      "fixtureId": "S4D-07",
+      "status": "captured",
+      "sessionId": "7d1dd6b1-695f-425a-bae6-541b6bdb9df8",
+      "elapsedMs": 67087,
+      "inputBytes": 2248,
+      "outputBytes": 6500,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    },
+    {
+      "fixtureId": "S4D-08",
+      "status": "captured",
+      "sessionId": "6a1b5001-814b-44c9-a629-7ed14181702c",
+      "elapsedMs": 32045,
+      "inputBytes": 2199,
+      "outputBytes": 3540,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    },
+    {
+      "fixtureId": "S4D-09",
+      "status": "failed",
+      "elapsedMs": 120683,
+      "inputBytes": 2180,
+      "error": "lead assessment Paseo run failed; reconciliation={\"runCause\":\"timeout\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"f5a181d6-66fb-432a-8535-c5f40261d389\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"active\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"}",
+      "reconciledSessionId": "f5a181d6-66fb-432a-8535-c5f40261d389",
+      "reconciledArchived": true
+    },
+    {
+      "fixtureId": "S4D-10",
+      "status": "failed",
+      "elapsedMs": 120676,
+      "inputBytes": 2124,
+      "error": "lead assessment Paseo run failed; reconciliation={\"runCause\":\"timeout\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"8c571e74-9dbe-4c19-9338-79b8fcc9427a\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"active\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"}",
+      "reconciledSessionId": "8c571e74-9dbe-4c19-9338-79b8fcc9427a",
+      "reconciledArchived": true
+    },
+    {
+      "fixtureId": "S4D-11",
+      "status": "captured",
+      "sessionId": "19f9d306-270b-49f9-a26e-14750b03db42",
+      "elapsedMs": 117493,
+      "inputBytes": 2140,
+      "outputBytes": 5511,
+      "archiveExit": 1,
+      "reconciledArchived": true,
+      "archiveNote": "already archived"
+    }
+  ],
+  "maxSessions": 11,
+  "route": "opencode/opencode-go/deepseek-v4.1-flash/build",
+  "sessionsUsed": 11,
+  "factorySha": "310add3634a02da9559e8c1448d2ef0e4cbdd690",
+  "collectorExit": 1,
+  "status": "INCOMPLETE",
+  "failedSessionReconciliation": [
+    "d2209aed-ab39-4baa-a214-0f4b91d655fa",
+    "1c90e6d9-c8b6-411e-a2f9-5c6d64e1aaa1",
+    "7eac6e0a-5555-4cd2-b658-211335405378",
+    "f5a181d6-66fb-432a-8535-c5f40261d389",
+    "8c571e74-9dbe-4c19-9338-79b8fcc9427a"
+  ],
+  "sessionInventory": {
+    "captured": [
+      "fe001f4d-b38e-4c5d-a1b8-a6b4f16df366",
+      "358c43df-b42b-41ce-be1c-2f380d07badf",
+      "a4d189ed-1620-44d7-a26c-30f69ea07b6a",
+      "7d1dd6b1-695f-425a-bae6-541b6bdb9df8",
+      "6a1b5001-814b-44c9-a629-7ed14181702c",
+      "19f9d306-270b-49f9-a26e-14750b03db42"
+    ],
+    "failedReconciled": [
+      "d2209aed-ab39-4baa-a214-0f4b91d655fa",
+      "1c90e6d9-c8b6-411e-a2f9-5c6d64e1aaa1",
+      "7eac6e0a-5555-4cd2-b658-211335405378",
+      "f5a181d6-66fb-432a-8535-c5f40261d389",
+      "8c571e74-9dbe-4c19-9338-79b8fcc9427a"
+    ],
+    "totalSessions": 11
+  },
+  "cleanupVerification": {
+    "failedSessionsClosedArchived": true,
+    "capturedSessionsClosedArchived": true,
+    "allElevenSessionsTerminalArchived": true
+  }
+}

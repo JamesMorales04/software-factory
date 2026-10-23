@@ -65,9 +65,9 @@ const (
 	MaxCampaignWallClockSecs   = 7200
 	DefaultCampaignWallClock   = 1800
 	MaxCampaignParallel        = 2
-	MaxCampaignTasks           = 16
+	MaxCampaignTasks           = 32
 	MaxCampaignTaskExecutions  = 3
-	MaxCampaignImplementerRuns = 24
+	MaxCampaignImplementerRuns = 64
 	DefaultCampaignAttempts    = 1
 )
 
@@ -119,7 +119,23 @@ type CampaignTaskPlan struct {
 	DependsOn     []string `json:"dependsOn"`
 	TimeoutSecs   int      `json:"timeoutSecs"`
 	MaxExecutions int      `json:"maxExecutions"`
+	// S4-D WorkGraph metadata. Legacy S4-B plans leave these empty.
+	UnitID      string `json:"unitId,omitempty"`
+	UnitKind    string `json:"unitKind,omitempty"`
+	SpecID      string `json:"specId,omitempty"`
+	SourceKey   string `json:"sourceKey,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
 }
+
+const (
+	LeadUnitKindImplementation = "implementation"
+	LeadUnitKindIntegration    = "integration"
+	LeadUnitKindRepair         = "repair"
+	IntegrationTaskKey         = "integration-0"
+)
+
+// LeadUnitTaskKey returns the stable plan key for one WorkUnit.
+func LeadUnitTaskKey(unitID string) string { return "unit-" + unitID + "-0" }
 
 // CampaignPlan is the immutable execution graph revision.
 type CampaignPlan struct {
@@ -220,6 +236,9 @@ type NewCampaignParams struct {
 	MaxParallel            int
 	MaxImplementerAttempts int
 	IdempotencyKey         string
+	// Plan is set by Core-owned Lead planning. When nil the legacy S4-B
+	// four-task plan is built deterministically from the budgets.
+	Plan *CampaignPlan
 }
 
 // Validate normalizes campaign creation input and builds the frozen plan.
@@ -250,6 +269,16 @@ func (p NewCampaignParams) Validate() (NewCampaignParams, error) {
 	p.IdempotencyKey = strings.TrimSpace(p.IdempotencyKey)
 	if len(p.IdempotencyKey) > MaxIdempotencyKeyChars {
 		return p, fmt.Errorf("idempotency key exceeds %d characters", MaxIdempotencyKeyChars)
+	}
+	if p.Plan != nil {
+		if err := p.Plan.Validate(); err != nil {
+			return p, fmt.Errorf("campaign plan: %w", err)
+		}
+		if p.Plan.MaxRepairCycles != p.MaxRepairCycles ||
+			p.Plan.WallClockSeconds != p.MaxWallClockSecs ||
+			p.Plan.Parallelism != p.MaxParallel {
+			return p, errors.New("campaign plan budgets do not match campaign parameters")
+		}
 	}
 	return p, nil
 }
@@ -297,6 +326,101 @@ func BuildCampaignPlan(maxRepairCycles, maxWallClockSecs, maxParallel int) Campa
 	}
 }
 
+// BuildLeadCampaignPlan constructs a bounded WorkGraph: implementation units
+// with explicit dependencies, one Core-owned integration node for multi-unit
+// graphs, then the existing verifier/reviewer/gate chain and repair horizon.
+func BuildLeadCampaignPlan(p LeadPlanProposal, unitSpecIDs map[string]string, campaignSpecID string) (CampaignPlan, error) {
+	if len(p.WorkUnits) == 0 || len(p.WorkUnits) > MaxLeadWorkUnits {
+		return CampaignPlan{}, errors.New("work graph has no executable units")
+	}
+	tasks := make([]CampaignTaskPlan, 0, len(p.WorkUnits)+4+p.MaxRepairCycles*4)
+	dependedOn := map[string]bool{}
+	for _, unit := range p.WorkUnits {
+		specID := unitSpecIDs[unit.ID]
+		if len(specID) != 32 || !isLowerHex(specID) {
+			return CampaignPlan{}, fmt.Errorf("work unit %q has no frozen spec", unit.ID)
+		}
+		deps := make([]string, 0, len(unit.DependsOn))
+		for _, dep := range unit.DependsOn {
+			deps = append(deps, LeadUnitTaskKey(dep))
+			dependedOn[dep] = true
+		}
+		tasks = append(tasks, CampaignTaskPlan{
+			Key: LeadUnitTaskKey(unit.ID), Role: RoleImplementer, Cycle: 0,
+			DependsOn: deps, TimeoutSecs: 900, MaxExecutions: 1,
+			UnitID: unit.ID, UnitKind: LeadUnitKindImplementation, SpecID: specID,
+			Instruction: unit.Description,
+		})
+	}
+	terminal := p.TerminalUnits()
+	if len(terminal) == 0 {
+		return CampaignPlan{}, errors.New("work graph has no terminal unit")
+	}
+	sourceKey := LeadUnitTaskKey(terminal[0].ID)
+	if p.NeedsIntegration() {
+		if len(campaignSpecID) != 32 || !isLowerHex(campaignSpecID) {
+			return CampaignPlan{}, errors.New("multi-terminal graph requires a frozen integration spec")
+		}
+		terminals := make([]string, 0, len(terminal))
+		for _, unit := range terminal {
+			terminals = append(terminals, LeadUnitTaskKey(unit.ID))
+		}
+		tasks = append(tasks, CampaignTaskPlan{
+			Key: IntegrationTaskKey, Role: RoleImplementer, Cycle: 0,
+			DependsOn: terminals, TimeoutSecs: 900, MaxExecutions: 1,
+			UnitID: "integration", UnitKind: LeadUnitKindIntegration, SpecID: campaignSpecID,
+			Instruction: "Integrate the dependency candidates into one candidate and keep the frozen acceptance oracle green.",
+		})
+		sourceKey = IntegrationTaskKey
+	} else if campaignSpecID != unitSpecIDs[terminal[0].ID] {
+		return CampaignPlan{}, errors.New("single-terminal graph campaign spec must be the terminal unit spec")
+	}
+	_ = dependedOn
+	cycles := p.MaxRepairCycles + 1
+	for cycle := 0; cycle < cycles; cycle++ {
+		if cycle > 0 {
+			tasks = append(tasks, CampaignTaskPlan{
+				Key: CycleKey(RoleImplementer, cycle), Role: RoleImplementer, Cycle: cycle,
+				DependsOn:   []string{CycleKey(RoleQualityGate, cycle-1)},
+				TimeoutSecs: 900, MaxExecutions: 1, UnitID: "repair", UnitKind: LeadUnitKindRepair,
+				SpecID: campaignSpecID,
+			})
+			sourceKey = CycleKey(RoleImplementer, cycle)
+		}
+		verify := CycleKey(RoleVerifier, cycle)
+		review := CycleKey(RoleReviewer, cycle)
+		gate := CycleKey(RoleQualityGate, cycle)
+		tasks = append(tasks,
+			CampaignTaskPlan{
+				Key: verify, Role: RoleVerifier, Cycle: cycle,
+				DependsOn: []string{sourceKey}, TimeoutSecs: 900, MaxExecutions: 2,
+				SourceKey: sourceKey,
+			},
+			CampaignTaskPlan{
+				Key: review, Role: RoleReviewer, Cycle: cycle,
+				DependsOn: []string{sourceKey}, TimeoutSecs: 600, MaxExecutions: 2,
+				SourceKey: sourceKey,
+			},
+			CampaignTaskPlan{
+				Key: gate, Role: RoleQualityGate, Cycle: cycle,
+				DependsOn: []string{verify, review}, TimeoutSecs: 120, MaxExecutions: 1,
+				SourceKey: sourceKey,
+			},
+		)
+	}
+	plan := CampaignPlan{
+		Revision: 1, MaxRepairCycles: p.MaxRepairCycles, Tasks: tasks,
+		Parallelism: p.MaxParallel, WallClockSeconds: p.MaxWallClockSecs,
+	}
+	if len(plan.Tasks) > MaxCampaignTasks {
+		return CampaignPlan{}, fmt.Errorf("work graph exceeds %d campaign tasks", MaxCampaignTasks)
+	}
+	if err := plan.Validate(); err != nil {
+		return CampaignPlan{}, err
+	}
+	return plan, nil
+}
+
 // Validate checks graph identity and role/dependency invariants.
 func (p CampaignPlan) Validate() error {
 	if p.Revision != 1 {
@@ -314,11 +438,8 @@ func (p CampaignPlan) Validate() error {
 	if len(p.Tasks) == 0 || len(p.Tasks) > MaxCampaignTasks {
 		return errors.New("campaign plan task count is out of range")
 	}
-	expectedCycles := p.MaxRepairCycles + 1
-	if len(p.Tasks) != expectedCycles*4 {
-		return errors.New("campaign plan does not contain one implement/verify/review/gate chain per cycle")
-	}
 	seen := map[string]bool{}
+	byKey := make(map[string]CampaignTaskPlan, len(p.Tasks))
 	cycles := map[string]int{}
 	for _, task := range p.Tasks {
 		if len(task.Key) == 0 || len(task.Key) > 64 || !isSlug(task.Key) {
@@ -328,6 +449,7 @@ func (p CampaignPlan) Validate() error {
 			return fmt.Errorf("duplicate campaign task key %q", task.Key)
 		}
 		seen[task.Key] = true
+		byKey[task.Key] = task
 		cycles[task.Key] = task.Cycle
 		switch task.Role {
 		case RoleImplementer, RoleVerifier, RoleReviewer, RoleQualityGate:
@@ -343,8 +465,36 @@ func (p CampaignPlan) Validate() error {
 		if task.MaxExecutions < 1 || task.MaxExecutions > MaxCampaignTaskExecutions {
 			return fmt.Errorf("campaign task %q execution budget is out of range", task.Key)
 		}
-		if len(task.DependsOn) > 2 {
+		if len(task.DependsOn) > MaxCampaignTasks {
 			return fmt.Errorf("campaign task %q has too many dependencies", task.Key)
+		}
+		if len(task.Instruction) > MaxLeadUnitDescriptionChars {
+			return fmt.Errorf("campaign task %q instruction exceeds its bound", task.Key)
+		}
+		if task.SpecID != "" && (len(task.SpecID) != 32 || !isLowerHex(task.SpecID)) {
+			return fmt.Errorf("campaign task %q spec id is invalid", task.Key)
+		}
+		if task.UnitID != "" {
+			if task.Role != RoleImplementer || len(task.UnitID) > 64 || !isSlug(task.UnitID) {
+				return fmt.Errorf("campaign task %q has invalid unit metadata", task.Key)
+			}
+			switch task.UnitKind {
+			case LeadUnitKindImplementation, LeadUnitKindIntegration:
+				if task.Cycle != 0 {
+					return fmt.Errorf("campaign task %q unit kind must be in cycle zero", task.Key)
+				}
+			case LeadUnitKindRepair:
+				if task.Cycle < 1 {
+					return fmt.Errorf("campaign task %q repair unit must be in a repair cycle", task.Key)
+				}
+			default:
+				return fmt.Errorf("campaign task %q has unknown unit kind %q", task.Key, task.UnitKind)
+			}
+		} else if task.UnitKind != "" {
+			return fmt.Errorf("campaign task %q has a unit kind without a unit id", task.Key)
+		}
+		if task.SourceKey != "" && task.Role != RoleVerifier && task.Role != RoleReviewer && task.Role != RoleQualityGate {
+			return fmt.Errorf("campaign task %q has a candidate source with a non-evidence role", task.Key)
 		}
 		for _, dep := range task.DependsOn {
 			if dep == task.Key {
@@ -361,11 +511,58 @@ func (p CampaignPlan) Validate() error {
 				return fmt.Errorf("campaign task %q depends on a later cycle", task.Key)
 			}
 		}
+		if task.SourceKey != "" {
+			source, ok := byKey[task.SourceKey]
+			if !ok || source.Role != RoleImplementer || source.Cycle != task.Cycle {
+				return fmt.Errorf("campaign task %q candidate source %q is invalid", task.Key, task.SourceKey)
+			}
+		}
+	}
+	for cycle := 0; cycle <= p.MaxRepairCycles; cycle++ {
+		gateKey := CycleKey(RoleQualityGate, cycle)
+		verifyKey := CycleKey(RoleVerifier, cycle)
+		reviewKey := CycleKey(RoleReviewer, cycle)
+		gate, hasGate := byKey[gateKey]
+		if !hasGate {
+			return fmt.Errorf("campaign plan is missing gate task %q", gateKey)
+		}
+		if _, ok := byKey[verifyKey]; !ok {
+			return fmt.Errorf("campaign plan is missing verifier task %q", verifyKey)
+		}
+		if _, ok := byKey[reviewKey]; !ok {
+			return fmt.Errorf("campaign plan is missing reviewer task %q", reviewKey)
+		}
+		if !containsString(gate.DependsOn, verifyKey) || !containsString(gate.DependsOn, reviewKey) {
+			return fmt.Errorf("campaign gate %q must depend on its verifier and reviewer", gateKey)
+		}
+		if cycle > 0 {
+			if task, ok := byKey[CycleKey(RoleImplementer, cycle)]; !ok || task.Role != RoleImplementer {
+				return fmt.Errorf("campaign plan is missing repair implementer %q", CycleKey(RoleImplementer, cycle))
+			}
+		}
+	}
+	cycleZeroImplementers := 0
+	for _, task := range p.Tasks {
+		if task.Role == RoleImplementer && task.Cycle == 0 {
+			cycleZeroImplementers++
+		}
+	}
+	if cycleZeroImplementers == 0 {
+		return errors.New("campaign plan has no cycle-zero implementer")
 	}
 	if err := p.validateDAG(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (p CampaignPlan) validateDAG() error {

@@ -1,0 +1,148 @@
+{
+  "schemaRevision": 1,
+  "projectId": "factory-fixture-s4d-semantic",
+  "actionId": "d733b2d45e1374d23769ba5e62c0fe3d",
+  "requestId": "47307d27e0462797a71fc9b696b2cd29",
+  "evidenceRefs": [
+    "E-11a",
+    "E-11b"
+  ],
+  "intent": "change",
+  "complexity": "small",
+  "effortEstimate": {
+    "status": "estimated",
+    "unit": "person-hours",
+    "minPersonHours": 1,
+    "maxPersonHours": 2,
+    "assumptions": [
+      "One mapping-token update plus one generator run and snapshot verification.",
+      "No manual editing of individual icons and no new test authoring.",
+      "Regeneration remains limited to the six tracked files described in E-11b."
+    ],
+    "unknownReason": ""
+  },
+  "knowledgeGaps": [
+    "The evidence does not name the generator command or the exact standard-style token.",
+    "The evidence does not state whether snapshot baselines require refreshing after the style change."
+  ],
+  "changeImpact": [
+    "All 1,024 generated icons would move to the existing standard style token.",
+    "Six tracked generated files are expected to change; no per-icon manual edits are planned.",
+    "Snapshot tests covering generated output are the main regression check."
+  ],
+  "validationNeeds": [
+    "Run the existing generator and confirm it completes successfully.",
+    "Run the snapshot test suite covering generated output.",
+    "Confirm the diff is limited to the expected six tracked files and has no added or deleted files."
+  ],
+  "assumptions": [
+    "The standard style is already represented by one token in the mapping file.",
+    "One mapping update applies to all 1,024 icons through the existing generator.",
+    "Snapshot tests already validate the generated output.",
+    "The working tree starts clean at the base revision.",
+    "E-11b's six-file count covers the mapping change and regenerated outputs."
+  ],
+  "uncertainty": [
+    "Effort may be at the low end if the token and generator entrypoint are obvious; snapshot refreshes could push it to the high end."
+  ],
+  "suggestedNextAction": "Confirm the generator command and standard-token name, then update the mapping token, regenerate all icons, and verify the six-file diff with the snapshot suite within the supplied R0 bounds.",
+  "proposal": {
+    "projectId": "factory-fixture-s4d-semantic",
+    "actionId": "d733b2d45e1374d23769ba5e62c0fe3d",
+    "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "projectConfigHash": "b79606fb3afea5bd1609ed40b622142ff309dd9c31fe24b3e594d2f9420419c4",
+    "objective": "Update all 1,024 generated icons to the standard style by changing the mapping token, regenerating outputs, and verifying snapshots.",
+    "class": "maintenance",
+    "assumptions": [
+      "The standard-style token exists and can be referenced directly in the mapping file.",
+      "The existing generator and snapshot tests can run under the Node toolchain.",
+      "All 1,024 icons are covered by the single mapping/generator path.",
+      "No manual icon edits are needed or included.",
+      "The repository starts from baseRevision with a clean working tree.",
+      "E-11b's six-file count covers the mapping change and regenerated outputs."
+    ],
+    "risks": [
+      "The exact generator command and token names are not in evidence, so minimal discovery may be needed.",
+      "Snapshot baselines may need a refresh if they encode the previous style.",
+      "The 120-second per-attempt and 300-second wall-clock budgets leave limited room for extra discovery."
+    ],
+    "acceptanceCriteria": [
+      {
+        "id": "regen-icons",
+        "kind": "command",
+        "description": "Regenerate all icons through the existing generator after updating the mapping token.",
+        "command": [
+          "npm",
+          "run",
+          "generate:icons"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      },
+      {
+        "id": "snapshot-tests",
+        "kind": "command",
+        "description": "Run the snapshot suite covering the generated icon output.",
+        "command": [
+          "npm",
+          "test"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      },
+      {
+        "id": "expected-change-set",
+        "kind": "command",
+        "description": "Confirm the change is limited to the six tracked files described in E-11b.",
+        "command": [
+          "bash",
+          "-lc",
+          "test \"$(git diff --name-only | wc -l)\" -eq 6"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 30
+      }
+    ],
+    "negativeCases": [
+      {
+        "id": "no-added-or-deleted-files",
+        "kind": "command",
+        "description": "Confirm the style update adds and deletes no files.",
+        "command": [
+          "bash",
+          "-lc",
+          "test -z \"$(git diff --name-status --diff-filter=AD)\""
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 30
+      }
+    ],
+    "qualityProfile": "node-basic",
+    "riskClass": "R0",
+    "budget": {
+      "maxAttempts": 1,
+      "timeoutSecs": 120
+    },
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseoMode": "build",
+    "maxRepairCycles": 0,
+    "maxWallClockSecs": 300,
+    "maxParallel": 1,
+    "maxSessions": 1,
+    "workUnits": [
+      {
+        "id": "wu-update-generated-icons",
+        "kind": "implementation",
+        "dependsOn": [],
+        "allowedPaths": [
+          "."
+        ],
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain"
+        ]
+      }
+    ]
+  }
+}

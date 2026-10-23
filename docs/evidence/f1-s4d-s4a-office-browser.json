@@ -1,0 +1,50 @@
+{
+  "ok": true,
+  "tool": "playwright-cli",
+  "toolVersion": "0.1.22",
+  "browser": "chromium",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+  "candidateId": "922707a68d1c6eea85f5d4bf58ed0b79",
+  "actionId": "773c527202cbc46cf050fb59bb1810f6",
+  "title": "Agent browser F1-S4-A",
+  "consoleErrors": 0,
+  "failedRequests": [],
+  "screenshot": "/tmp/factory-s4a-6Dy8bw/evidence/agent-browser-office.png",
+  "checks": [
+    {
+      "name": "real Chromium opened the Factory Office token gate",
+      "pass": true
+    },
+    {
+      "name": "agent unlocked Office and reached Dashboard",
+      "pass": true
+    },
+    {
+      "name": "agent created an Action through the real UI form",
+      "pass": true
+    },
+    {
+      "name": "Core-authoritative Action exists with the UI-submitted title",
+      "pass": true,
+      "detail": "773c527202cbc46cf050fb59bb1810f6"
+    },
+    {
+      "name": "agent navigated to the authoritative Action detail",
+      "pass": true
+    },
+    {
+      "name": "no browser console errors during the journey",
+      "pass": true,
+      "detail": "### Result\nTotal messages: 0 (Errors: 0, Warnings: 0)\n\n"
+    },
+    {
+      "name": "no failed application requests during the journey",
+      "pass": true
+    },
+    {
+      "name": "bounded browser screenshot captured",
+      "pass": true
+    }
+  ],
+  "finishedAt": "2026-10-22T15:33:58.863Z"
+}

@@ -1,0 +1,68 @@
+{
+  "schemaRevision": 1,
+  "projectId": "factory-fixture-s4d-semantic",
+  "actionId": "8d0c5218631062d1e1ad42cb17cfafff",
+  "requestId": "4c380223d67187feae3bb85c046539aa",
+  "evidenceRefs": [
+    "E-03"
+  ],
+  "intent": "ambiguous",
+  "complexity": "unknown",
+  "effortEstimate": {
+    "status": "not_requested",
+    "unit": "",
+    "minPersonHours": 0,
+    "maxPersonHours": 0,
+    "assumptions": [],
+    "unknownReason": ""
+  },
+  "knowledgeGaps": [
+    "Launch date is unspecified.",
+    "Target environment is unspecified.",
+    "Reliability objective is unspecified.",
+    "Threat model is unspecified.",
+    "Supported traffic is unspecified.",
+    "Acceptance criteria are unspecified.",
+    "Current repository state and production-readiness baseline were not supplied."
+  ],
+  "changeImpact": [
+    "Unable to assess: no repository state, proposed changes, deployment target, or production-readiness criteria are available in the supplied evidence."
+  ],
+  "validationNeeds": [
+    "Validation cannot be defined until the target environment, reliability and security objectives, traffic assumptions, and acceptance criteria are supplied.",
+    "No executable checks are proposed for this ambiguous request."
+  ],
+  "assumptions": [],
+  "uncertainty": [
+    "The request is too underspecified to determine scope, risk, or whether any change is appropriate; E-03 confirms that all key production-readiness criteria are missing."
+  ],
+  "suggestedNextAction": "Request a scoped change request supplying the launch date, target environment, reliability and security objectives, traffic assumptions, and acceptance criteria, then reassess.",
+  "proposal": {
+    "projectId": "factory-fixture-s4d-semantic",
+    "actionId": "8d0c5218631062d1e1ad42cb17cfafff",
+    "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "projectConfigHash": "b79606fb3afea5bd1609ed40b622142ff309dd9c31fe24b3e594d2f9420419c4",
+    "objective": "Make the project production-ready before launch.",
+    "class": "maintenance",
+    "assumptions": [],
+    "risks": [
+      "Proceeding without scope, environment, threat model, traffic assumptions, or acceptance criteria could cause unbounded, unsafe, or unverifiable changes."
+    ],
+    "acceptanceCriteria": [],
+    "negativeCases": [],
+    "qualityProfile": "node-basic",
+    "riskClass": "R0",
+    "budget": {
+      "maxAttempts": 1,
+      "timeoutSecs": 120
+    },
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseoMode": "build",
+    "maxRepairCycles": 0,
+    "maxWallClockSecs": 300,
+    "maxParallel": 1,
+    "maxSessions": 1,
+    "workUnits": []
+  }
+}

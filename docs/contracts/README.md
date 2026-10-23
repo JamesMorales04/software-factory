@@ -2,6 +2,10 @@
 
 **Status:** S1 through S4-C slice contracts exist and have candidate-bound acceptance evidence. S5 delivery, autonomous planning and maintenance contracts remain proposed; the [capability registry](../product/capabilities.yaml) records current implementation and verification status. This index is a protocol map, not certification by itself.
 
+The [S4-D intelligent Lead contract](intelligent-lead-s4d.md) describes the
+current uncommitted request/assessment/proposal/delegation API shape. It remains
+proposed, has no candidate-bound verification, and grants no paid model use.
+
 ## Frozen for F1 (implemented, review-bound)
 
 | Contract | File | Slice | Covers |

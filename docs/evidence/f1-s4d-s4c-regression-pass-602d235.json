@@ -1,0 +1,332 @@
+{
+  "implementationSha": "602d2352f90f66abd0819de78aa48e905c3689b0",
+  "checks": [
+    {
+      "name": "C17 Office journey; register Project A, Action, spec, Campaign",
+      "pass": true
+    },
+    {
+      "name": "C17 journey identifiers",
+      "pass": true
+    },
+    {
+      "name": "C1 Project A durably registered with repository identity",
+      "pass": true
+    },
+    {
+      "name": "C4 frozen spec records the exact Project configuration revision",
+      "pass": true
+    },
+    {
+      "name": "C5 Implementer produced a candidate from Project A's repository",
+      "pass": true
+    },
+    {
+      "name": "C7 Project A Run received the browser capability",
+      "pass": true
+    },
+    {
+      "name": "D3 Worker-managed test server started in the Attempt workspace",
+      "pass": true,
+      "detail": "{\"testServerManaged\": true, \"testServerReused\": false, \"testServerEndpoint\": \"http://127.0.0.1:4173\"}"
+    },
+    {
+      "name": "C9 Factory-managed Implementer invoked Playwright CLI through the wrapper",
+      "pass": true,
+      "detail": "{\"browserCLIVersion\": \"0.1.22\", \"browserCleanup\": \"ok\", \"browserCommands\": \"open,snapshot,close\", \"browserInvocations\": 3, \"browserInvoked\": true, \"browserSkillDigest\": \"33237bd2c07eb56714664504364d4961a252372c10fa7734d067c58b193e9978\", \"browserSuccessfulCommands\": \"open,snapshot,close\", \"candidateId\": \"9290a7796f98c6b85982df05e30f76c9\", \"capability\": \"browser\", \"capabilityNudges\": 0, \"cleanup\": \"ok\", \"cwd\": \"/tmp/factory-worker-runs-2076654946/attempt-753364952\", \"diffBytes\": 1216, \"diffStat\": \"src/app.js    | 4 ++--\\n src/filter.js | 5 +++--\\n 2 files changed, 5 insertions(+), 4 deletions(-)\", \"formatExit\": 0, \"model\": \"opencode-go/deepseek-v4.1-flash\", \"nudges\": 0, \"paseoMode\": \"build\", \"provider\": \"opencode\", \"sessionId\": \"sess_2\", \"testExit\": 0, \"testServerEndpoint\": \"http://127.0.0.1:4173\", \"testServerManaged\": true, \"testServerReused\": false, \"timelineLines\": 5, \"timelineSteps\": \"Edit:1,Read:1,Shell:2,Text:1\", \"toolSteps\": 4, \"workspaceId\": \"ws_1\"}"
+    },
+    {
+      "name": "C10 Independent verifier ran a real Chromium browser check",
+      "pass": true,
+      "detail": "{\"id\": \"browser\", \"kind\": \"browser\", \"status\": \"PASS\", \"command\": [\"node\", \"tests/acceptance/browser-check.mjs\"], \"exitCode\": 0, \"durationMs\": 727, \"detail\": \"chromium 156.0.8078.4; consoleErrors=0 failedRequests=0 isolatedProfile=true\"}"
+    },
+    {
+      "name": "C13 native orchestration; all four role tasks succeeded without external orchestration",
+      "pass": true
+    },
+    {
+      "name": "C17 terminal Quality Gate decision is ACCEPTED",
+      "pass": true
+    },
+    {
+      "name": "Quality Gate decision is bound to the Project binding hash",
+      "pass": true
+    },
+    {
+      "name": "C2 symlink alias of the same repository identity is rejected",
+      "pass": true,
+      "detail": "409"
+    },
+    {
+      "name": "C2 invalid repository path is rejected",
+      "pass": true,
+      "detail": "400"
+    },
+    {
+      "name": "C1 Project B registered independently",
+      "pass": true
+    },
+    {
+      "name": "C7 Project B spec does not require browser capability",
+      "pass": true
+    },
+    {
+      "name": "C3 Project B completes with its own candidate lineage",
+      "pass": true
+    },
+    {
+      "name": "C5 Project B candidate is bound to its own repository and base",
+      "pass": true
+    },
+    {
+      "name": "C12 Project B did not receive browser capability",
+      "pass": true
+    },
+    {
+      "name": "C12 independent verifier still ran Project B browser acceptance",
+      "pass": true
+    },
+    {
+      "name": "C3/C24 Project evidence remains separate",
+      "pass": true
+    },
+    {
+      "name": "C6 forged Run Project/Action/Spec relationship is rejected",
+      "pass": true,
+      "detail": "400"
+    },
+    {
+      "name": "C6 Project A ActionSpec cannot reference Project B's repository",
+      "pass": true,
+      "detail": "403"
+    },
+    {
+      "name": "C6 cross-project verifier evidence is rejected",
+      "pass": true,
+      "detail": "403"
+    },
+    {
+      "name": "C4 Project config update advances revision without rewriting the frozen spec",
+      "pass": true
+    },
+    {
+      "name": "C4 frozen spec content/binding and accepted evidence are unchanged",
+      "pass": true
+    },
+    {
+      "name": "C8 browser-project clone registered",
+      "pass": true,
+      "detail": "201"
+    },
+    {
+      "name": "C8 no eligible browser Worker produces a truthful BLOCKED campaign",
+      "pass": true,
+      "detail": "no online Worker supports required capabilities repository-edit,node-toolchain,browser"
+    },
+    {
+      "name": "C11 broken UI fails mandatory browser verification",
+      "pass": true
+    },
+    {
+      "name": "C11 Quality Gate does not accept the broken candidate",
+      "pass": true
+    },
+    {
+      "name": "C15 cancellation terminates the Campaign",
+      "pass": true
+    },
+    {
+      "name": "C15 cancellation is scoped to the active Implementer Run",
+      "pass": true,
+      "detail": "{\"id\": \"d263870e4fc80c8ec194021b88433d1d\", \"projectId\": \"calculator\", \"actionId\": \"74aa630adb5dbea7f2f69b024e49d4a5\", \"workloadKind\": \"paseo-task\", \"workloadInput\": {\"task\": \"Correct division by zero. Keep protected files unchanged.\"}, \"status\": \"cancelled\", \"attemptCount\": 0, \"maxAttempts\": 1, \"timeoutSecs\": 600, \"leaseGeneration\": 0, \"leaseExpiresAt\": \"0001-01-01T00:00:00Z\", \"executionMode\": \"trusted-local\", \"provider\": \"opencode\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"paseoMode\": \"build\", \"specId\": \"116cf0df8b79c6f071a716c273f06716\", \"capabilities\": [\"repository-edit\", \"node-toolchain\"], \"specBindingHash\": \"6763dbb00cbbc178d3b82c9490a430e75b188a765fd3c9962c9d2a0ba4100086\", \"createdAt\": \"2026-10-22T17:02:30.419Z\", \"updatedAt\": \"2026-10-22T17:02:30.616Z\"}"
+    },
+    {
+      "name": "C16 Campaign terminal state is reached after Core restart",
+      "pass": true,
+      "detail": "accepted"
+    },
+    {
+      "name": "C16 Project, spec, capability and campaign identities survive restart",
+      "pass": true
+    },
+    {
+      "name": "C16 restart does not duplicate campaign identities",
+      "pass": true,
+      "detail": "3/3"
+    },
+    {
+      "name": "C14 eligible work in both Projects progresses under concurrency",
+      "pass": true
+    },
+    {
+      "name": "R1 recoverable pre-candidate failure does not terminate the Campaign",
+      "pass": true,
+      "detail": "quality gate ACCEPTED"
+    },
+    {
+      "name": "R2 recovery preserves the failed Run identity and creates a new fenced Run",
+      "pass": true,
+      "detail": "[{\"id\": \"d7968814bf9ec9ff309dbfb3f4447f27\", \"campaignId\": \"c5c6fd3e30f8c408740d23468561f5ab\", \"taskId\": \"897171b8f8ac0f70d5fbbff1ba5ff9e0\", \"attemptIndex\": 1, \"failureClass\": \"RECOVERABLE_IMPLEMENTATION_FAILURE\", \"reason\": \"paseo-task verify: no-source-change: agent left no git diff\", \"previousRunId\": \"1c1fb2831b21511b5a1819abdb1e0093\", \"previousAttemptId\": \"2a1c777317ba5d21086cae3b213f8390\", \"newRunId\": \"5b8fd20ecc4c2226e428d1ca2edcbf29\", \"createdAt\": \"2026-10-22T17:03:11.461Z\"}]"
+    },
+    {
+      "name": "R2 recovery consumes bounded campaign attempts",
+      "pass": true,
+      "detail": "attempts=2"
+    },
+    {
+      "name": "R3/R8 corrective execution is native and ends ACCEPTED with a valid candidate",
+      "pass": true,
+      "detail": "[[\"implementer-0\", \"succeeded\"], [\"verifier-0\", \"succeeded\"], [\"reviewer-0\", \"succeeded\"], [\"gate-0\", \"succeeded\"]]"
+    },
+    {
+      "name": "R1/R8 failure history and recovery class remain inspectable",
+      "pass": true
+    },
+    {
+      "name": "R4 genuine acceptance failure creates a new candidate and fresh evidence",
+      "pass": true,
+      "detail": "[[\"frozen\", \"f3302c71a4aa2f486ea06859726ef6136d21bdd5\"], [\"superseded\", \"946bcdd99ad1c693bdac9c21c83b0febc7e5c764\"]]"
+    },
+    {
+      "name": "R5 exhausted budget terminates with a truthful inspectable reason",
+      "pass": true,
+      "detail": "\"implementer Run failed: implementer attempt budget exhausted (2/2): RECOVERABLE_IMPLEMENTATION_FAILURE: paseo-task verify: no-source-change: agent left no git diff\""
+    },
+    {
+      "name": "R6 protected/unauthorized modification remains blocked without retry",
+      "pass": true,
+      "detail": "\"POLICY_OR_SECURITY_BLOCKED: candidate: candidate status 400 (invalid): {\\\"error\\\":{\\\"code\\\":\\\"invalid\\\",\\\"message\\\":\\\"candidate rejected: candidate changed path \\\\\\\"tests/acceptance/browser-check.mjs\\\\\\\" outside the authorized scope\\\"}}\""
+    },
+    {
+      "name": "R7 oracle correction requires a new frozen specification and preserves old evidence",
+      "pass": true,
+      "detail": "{\"bad\": \"fdc03000f0b1caec7143501cf62b6a80fdb921dce577e81ea4248a30808577d3\", \"good\": \"97cf4d383ff9e44cc87c9f3030cce611d3a73cea8abaaa783a078919d6d4d4d5\"}"
+    },
+    {
+      "name": "D1 productive Implementer without browser receives same-session continuation",
+      "pass": true,
+      "detail": "{\"status\": \"accepted\", \"capabilityNudges\": 1, \"commands\": \"open,snapshot,close\"}"
+    },
+    {
+      "name": "D2 failed browser commands cannot be accepted as capability success",
+      "pass": true,
+      "detail": "{\"status\": \"repair_required\", \"successful\": \"\", \"capabilityNudges\": 1}"
+    },
+    {
+      "name": "D4 unrelated endpoint process is not adopted",
+      "pass": true,
+      "detail": "\"INFRASTRUCTURE_BLOCKED: browser-test-server: authorized endpoint is occupied by an unowned process\""
+    },
+    {
+      "name": "D5 bad-server Project registered",
+      "pass": true,
+      "detail": "201"
+    },
+    {
+      "name": "D5 test-server startup failure is diagnosed without a model session",
+      "pass": true,
+      "detail": "\"INFRASTRUCTURE_BLOCKED: browser-test-server: browser-test-server did not become ready within 5s: test-server produced no bounded output\""
+    },
+    {
+      "name": "D6 cancellation cleans up the managed test server",
+      "pass": true,
+      "detail": "portOpen=False registry=0"
+    }
+  ],
+  "failures": [],
+  "projectA": "vlog",
+  "projectB": "calculator",
+  "actionA": "f89d4996f1214fc4bf4b906ceb8f300f",
+  "specA": "7387f84efa7c22a63e77942994a3e39a",
+  "campaignA": "a0e2c8c9153c6e282777314277fe9ee0",
+  "candidateA": "d343e78bc26dd3e9c77a2522c647a76c81e171ad",
+  "baseA": "be6f34c9cfd26e25285cc9cb9fe66ed05ad8ec8f",
+  "actionB": "ccdac25b1694b04b5d4e2620c94d0fe7",
+  "specB": "38d905149f2515c691bc66bf673a3dfe",
+  "campaignB": "9b5bec55ea34f7c6c01df1ac17da213e",
+  "candidateB": "3f7bfc42544cbbb0d7f89157b3cff61f59cd7590",
+  "baseB": "709277f4e2f70e1a4d730a0286cae50da444fb5e",
+  "blockedCampaign": "22855063feffc39b3f2e966adcc9756f",
+  "browserFailureCampaign": "1a5854c4e1eb0600cbbfbfa0d7dfb6f0",
+  "cancelCampaign": "3291387a8eea5e5599a7ebfb61f865a0",
+  "restartCampaign": "84bb66900c1221bc70d6cfb4bc279bb2",
+  "concurrentCampaigns": [
+    "a59a268e888ce0364987ee7b605208b4",
+    "9fdbcd55266bcec6b39b30c9d3dcbd17"
+  ],
+  "recoveryCampaign": "c5c6fd3e30f8c408740d23468561f5ab",
+  "sameSessionCapabilityCampaign": "bec2677490add7bd79797ca3076c04be",
+  "failedBrowserCommandCampaign": "c099f8f2cb9bde094baada7728a20028",
+  "serverBlockedCampaign": "16e1a0c2b20482e20120ee01c755dffe",
+  "serverStartupFailureCampaign": "8b6f22fb7e87e3bbf279b670d0079c88",
+  "serverCancellationCampaign": "fc6aab2bd8bc3fb309920ea95a050389",
+  "recoveryCampaigns": {
+    "recoverable": "c5c6fd3e30f8c408740d23468561f5ab",
+    "qualityRepair": "be5d84a7f58ded8c235986169f4f3175",
+    "budgetExhausted": "45f16b2d015fccb1959f9971ee368090",
+    "securityBlocked": "43e7f78e535b13fbc74d3c51e498eaec",
+    "oracleRevisionOld": "07cabd6f287854aa98428eca544ac92e",
+    "oracleRevisionNew": "94170f17f049aab4b209dd12f9dd509e"
+  },
+  "journey": {
+    "ok": true,
+    "failure": "",
+    "projectId": "vlog",
+    "actionId": "f89d4996f1214fc4bf4b906ceb8f300f",
+    "specId": "7387f84efa7c22a63e77942994a3e39a",
+    "campaignId": "a0e2c8c9153c6e282777314277fe9ee0",
+    "checks": [
+      {
+        "name": "browser registered Project A with a durable configuration",
+        "pass": true,
+        "detail": "1"
+      },
+      {
+        "name": "browser created a Project-bound Action",
+        "pass": true,
+        "detail": "f89d4996f1214fc4bf4b906ceb8f300f"
+      },
+      {
+        "name": "browser froze a Project-bound ActionSpec",
+        "pass": true,
+        "detail": "7387f84efa7c22a63e77942994a3e39a"
+      },
+      {
+        "name": "frozen spec records the Project identity and capabilities",
+        "pass": true
+      },
+      {
+        "name": "browser created and started the Campaign",
+        "pass": true,
+        "detail": "a0e2c8c9153c6e282777314277fe9ee0"
+      },
+      {
+        "name": "Campaign reaches ACCEPTED through native orchestration",
+        "pass": true,
+        "detail": "quality gate ACCEPTED"
+      },
+      {
+        "name": "all native role tasks completed",
+        "pass": true,
+        "detail": "[[\"implementer-0\",\"succeeded\"],[\"verifier-0\",\"succeeded\"],[\"reviewer-0\",\"succeeded\"],[\"gate-0\",\"succeeded\"]]"
+      },
+      {
+        "name": "Quality Gate accepted the exact candidate",
+        "pass": true
+      },
+      {
+        "name": "browser renders the candidate SHA and ACCEPTED gate",
+        "pass": true
+      },
+      {
+        "name": "durable state survives reload",
+        "pass": true
+      },
+      {
+        "name": "no browser console errors in the Office journey",
+        "pass": true
+      }
+    ],
+    "consoleErrors": []
+  }
+}
