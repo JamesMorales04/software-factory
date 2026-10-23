@@ -109,4 +109,40 @@ New normative and recovery artifacts:
 
 S4-D Rust status remains `RUST_NOT_IMPLEMENTED` for semantic assessment, standing delegation, autonomous start/revocation, WorkGraph scheduling, deterministic integration, CAP-014 Rust evaluation and the Rust Office journey. Historical PR #16 evidence is provenance only; it does not certify the Rust branch. ADR-0017 remains Proposed and unratified; no live grant or provider spend is authorized.
 
-**Next executable task:** continue the native execution pipeline with Core-owned authorization/dispatch and durable quality evidence ingestion. Keep public provider dispatch disabled until authority, isolation/credential confinement and budgets are implemented; no paid turn is authorized.
+**Next executable task (superseded below by the quality-evidence checkpoint):** continue the native execution pipeline with Core-owned authorization/dispatch. Keep public provider dispatch disabled until authority, isolation/credential confinement and budgets are implemented; no paid turn is authorized.
+
+## Continuation checkpoint: Lead domain and quality evidence (2026-10-23)
+
+**Candidate:** `b964cc6beff62bc37db4c6b850f7e8acbbe6606a`. **Predecessors:**
+`01bc5272a58b890f40a4acebbb4fe5fbe98d2e57` (Rust standards, skill, S4-D
+recovery matrix), `05828db394e842d05e93eedc09ef158493b24ef4` (typed Lead
+domain) and `706399d422415033ffb586483e067821f3a88479` (candidate/quality
+ingestion). See [native-rust-lead-quality-2026-10-23.md](../evidence/native-rust-lead-quality-2026-10-23.md)
+for candidate-bound evidence.
+
+- `native/src/lead.rs` now holds the typed advisory assessment, immutable
+  delegation snapshot, proposal validation, plan hashing and bounded 1–8 unit
+  WorkGraph validator, with 14 tests ported from the PR #16 oracles. It performs
+  no I/O and grants no authority.
+- Core now verifies a Worker candidate claim against real Git object identity
+  and a frozen-base single parent, persists immutable candidates, requires
+  separate verifier/reviewer bearer tokens, ingests immutable exact-candidate
+  receipts, rejects implementer self-review and role collusion, and writes a
+  deterministic gate once both receipts exist. Quality requests authenticate
+  before JSON parsing.
+- Public Campaign authorization and Attempt sandbox readiness still have no
+  grant path. Worker claim still returns `dispatch_supported=false`. No provider
+  session, paid turn, sandbox certification, independent verifier/reviewer
+  process or Office journey exists.
+
+Author-run gates at `b964cc6`: formatter, strict Clippy, tests (83 library, 4
+architecture, 3 Core binary, 7 hygiene, 1 Worker; 1 ignored Podman fixture),
+binaries and docs PASS. The ignored Podman fixture was not rerun in this slice;
+its last local run passed at `f79f04f` without certifying isolation. Exact-SHA
+CI and independent review remain outstanding. PR #17 stays draft.
+
+**Next executable task:** add the durable Lead delegation/request/proposal/freeze
+store and API with autonomous policy closed, or connect Core-owned Campaign
+authorization and Worker dispatch behind an explicit fail-closed isolation
+gate. Do not enable provider execution until the isolation/credential and
+budget boundaries are independently verified. No paid turn is authorized.
