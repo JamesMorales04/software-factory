@@ -4,36 +4,43 @@ const HELP: &str = "\
 Software Factory CLI
 
 Usage:
-  factory <command>
+  factory <command> [options]
   factory --help
 
-Implemented commands:
-  doctor    Check host runtime prerequisites for the container start path
-  status    Query the Factory Core /health endpoint
+Commands:
+  start            Create or reuse the data volume, start the Core container
+                   and wait for Core /health through the loopback publication
+  stop [--purge]   Stop and remove the Core container; --purge also removes the
+                   data volume after explicit confirmation
+  logs             Follow the Core container logs
+  status           Show container state and Core health
+  doctor           Check host runtime prerequisites for the container start path
 
-NOT_IMPLEMENTED lifecycle commands (exit non-zero):
+NOT_IMPLEMENTED commands (exit non-zero):
   install
-  start
-  stop
   restart
-  logs
   update
   dev
 
 Configuration:
-  FACTORY_CORE_URL  Loopback HTTP origin (default http://127.0.0.1:8765)
-  FACTORY_IMAGE     OCI runtime image (default localhost/software-factory-core:dev)
+  FACTORY_CORE_URL       Loopback HTTP origin (default http://127.0.0.1:8765)
+  FACTORY_IMAGE          OCI runtime image (default localhost/software-factory-core:dev)
+  FACTORY_CONTAINER_NAME Container name (default factory-core)
+  FACTORY_VOLUME         Data volume name (default factory-core-data)
+  FACTORY_ENV_FILE       Private token env file (default
+                         $XDG_CONFIG_HOME/factory/core.env)
 
-Container checks do not certify isolation.
+Security:
+  Start publishes only 127.0.0.1, drops all capabilities, uses a read-only root
+  filesystem, and never mounts the Podman socket. Container checks do not
+  certify isolation. Tokens are generated into the private env file and are
+  never printed.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Lifecycle {
     Install,
-    Start,
-    Stop,
     Restart,
-    Logs,
     Update,
     Dev,
 }
@@ -42,10 +49,7 @@ impl Lifecycle {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "install" => Some(Self::Install),
-            "start" => Some(Self::Start),
-            "stop" => Some(Self::Stop),
             "restart" => Some(Self::Restart),
-            "logs" => Some(Self::Logs),
             "update" => Some(Self::Update),
             "dev" => Some(Self::Dev),
             _ => None,
@@ -55,10 +59,7 @@ impl Lifecycle {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Install => "install",
-            Self::Start => "start",
-            Self::Stop => "stop",
             Self::Restart => "restart",
-            Self::Logs => "logs",
             Self::Update => "update",
             Self::Dev => "dev",
         }
@@ -68,6 +69,9 @@ impl Lifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
     Doctor,
+    Start,
+    Stop { purge: bool },
+    Logs,
     Status,
     Help,
     NotImplemented(Lifecycle),
@@ -100,22 +104,63 @@ where
     let Some(first) = args.first() else {
         return Ok(Command::Help);
     };
-    if args.len() > 1 {
-        return Err(ParseError::new(format!(
-            "unexpected argument '{}'; run 'factory --help'",
-            args[1]
-        )));
-    }
+    let options = &args[1..];
     match first.as_str() {
-        "-h" | "--help" | "help" => Ok(Command::Help),
-        "doctor" => Ok(Command::Doctor),
-        "status" => Ok(Command::Status),
+        "-h" | "--help" | "help" => {
+            require_no_options(options)?;
+            Ok(Command::Help)
+        }
+        "doctor" => {
+            require_no_options(options)?;
+            Ok(Command::Doctor)
+        }
+        "start" => {
+            require_no_options(options)?;
+            Ok(Command::Start)
+        }
+        "stop" => parse_stop(options),
+        "logs" => {
+            require_no_options(options)?;
+            Ok(Command::Logs)
+        }
+        "status" => {
+            require_no_options(options)?;
+            Ok(Command::Status)
+        }
         other => match Lifecycle::parse(other) {
-            Some(command) => Ok(Command::NotImplemented(command)),
+            Some(command) => {
+                require_no_options(options)?;
+                Ok(Command::NotImplemented(command))
+            }
             None => Err(ParseError::new(format!(
                 "unknown command '{other}'; run 'factory --help'"
             ))),
         },
+    }
+}
+
+fn parse_stop(options: &[String]) -> Result<Command, ParseError> {
+    let mut purge = false;
+    for option in options {
+        match option.as_str() {
+            "--purge" if !purge => purge = true,
+            "--purge" => return Err(ParseError::new("duplicate option '--purge'")),
+            other => {
+                return Err(ParseError::new(format!(
+                    "unexpected argument '{other}' for 'factory stop'; usage: factory stop [--purge]"
+                )));
+            }
+        }
+    }
+    Ok(Command::Stop { purge })
+}
+
+fn require_no_options(options: &[String]) -> Result<(), ParseError> {
+    match options.first() {
+        Some(option) => Err(ParseError::new(format!(
+            "unexpected argument '{option}'; run 'factory --help'"
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -130,7 +175,14 @@ mod tests {
     #[test]
     fn parses_implemented_commands() {
         assert_eq!(parse(["doctor"]), Ok(Command::Doctor));
+        assert_eq!(parse(["start"]), Ok(Command::Start));
+        assert_eq!(parse(["logs"]), Ok(Command::Logs));
         assert_eq!(parse(["status"]), Ok(Command::Status));
+        assert_eq!(parse(["stop"]), Ok(Command::Stop { purge: false }));
+        assert_eq!(
+            parse(["stop", "--purge"]),
+            Ok(Command::Stop { purge: true })
+        );
     }
 
     #[test]
@@ -142,13 +194,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_lifecycle_commands_as_not_implemented() {
+    fn parses_unimplemented_lifecycle_commands() {
         for (name, expected) in [
             ("install", Lifecycle::Install),
-            ("start", Lifecycle::Start),
-            ("stop", Lifecycle::Stop),
             ("restart", Lifecycle::Restart),
-            ("logs", Lifecycle::Logs),
             ("update", Lifecycle::Update),
             ("dev", Lifecycle::Dev),
         ] {
@@ -165,5 +214,8 @@ mod tests {
         assert!(parse(["launch"]).is_err());
         assert!(parse(["doctor", "extra"]).is_err());
         assert!(parse(["--help", "extra"]).is_err());
+        assert!(parse(["stop", "--purge", "--purge"]).is_err());
+        assert!(parse(["stop", "--force"]).is_err());
+        assert!(parse(["logs", "extra"]).is_err());
     }
 }

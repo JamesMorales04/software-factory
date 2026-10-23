@@ -61,6 +61,66 @@ pub(crate) fn image_exists(image: &str) -> Result<bool, String> {
     ))
 }
 
+pub(crate) fn container_exists(name: &str) -> Result<bool, String> {
+    exists(
+        &["container".to_owned(), "exists".to_owned(), name.to_owned()],
+        "podman container exists",
+    )
+}
+
+pub(crate) fn container_state(name: &str) -> Result<Option<String>, String> {
+    if !container_exists(name)? {
+        return Ok(None);
+    }
+    let output = Command::new("podman")
+        .args(["inspect", "--format", "{{.State.Status}}", name])
+        .output()
+        .map_err(|error| format!("podman inspect could not run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "podman inspect exited with {}: {}",
+            output.status,
+            diagnostic(&output)
+        ));
+    }
+    let state = first_nonempty(&output.stdout, &output.stderr);
+    if state.is_empty() {
+        return Err("podman inspect returned no container state".to_owned());
+    }
+    Ok(Some(state))
+}
+
+pub(crate) fn volume_exists(name: &str) -> Result<bool, String> {
+    exists(
+        &["volume".to_owned(), "exists".to_owned(), name.to_owned()],
+        "podman volume exists",
+    )
+}
+
+pub(crate) fn run(args: &[String]) -> Result<String, String> {
+    let output = Command::new("podman")
+        .args(args)
+        .output()
+        .map_err(|error| format!("podman {} could not run: {error}", operation(args)))?;
+    if !output.status.success() {
+        return Err(format!(
+            "podman {} exited with {}: {}",
+            operation(args),
+            output.status,
+            diagnostic(&output)
+        ));
+    }
+    Ok(first_nonempty(&output.stdout, &output.stderr))
+}
+
+pub(crate) fn logs_follow(name: &str) -> Result<i32, String> {
+    let status = Command::new("podman")
+        .args(["logs", "--follow", name])
+        .status()
+        .map_err(|error| format!("podman logs could not run: {error}"))?;
+    Ok(status.code().unwrap_or(1))
+}
+
 pub(crate) fn validate_image_reference(image: &str) -> Result<(), String> {
     if image.is_empty() {
         return Err("FACTORY_IMAGE is empty".to_owned());
@@ -75,6 +135,60 @@ pub(crate) fn validate_image_reference(image: &str) -> Result<(), String> {
         return Err("FACTORY_IMAGE must not contain whitespace or control characters".to_owned());
     }
     Ok(())
+}
+
+pub(crate) fn validate_container_name(name: &str) -> Result<(), String> {
+    validate_resource_name("FACTORY_CONTAINER_NAME", name)
+}
+
+pub(crate) fn validate_volume_name(name: &str) -> Result<(), String> {
+    validate_resource_name("FACTORY_VOLUME", name)
+}
+
+fn validate_resource_name(variable: &str, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!("{variable} is empty"));
+    }
+    if name.len() > 255 {
+        return Err(format!("{variable} must be at most 255 characters"));
+    }
+    let mut characters = name.chars();
+    let first = characters.next().expect("non-empty name");
+    if !first.is_ascii_alphanumeric() {
+        return Err(format!(
+            "{variable} must start with an ASCII letter or digit"
+        ));
+    }
+    if characters.any(|character| {
+        !character.is_ascii_alphanumeric() && !matches!(character, '_' | '.' | '-')
+    }) {
+        return Err(format!(
+            "{variable} may contain only ASCII letters, digits, '_', '.' and '-'"
+        ));
+    }
+    Ok(())
+}
+
+fn exists(args: &[String], description: &str) -> Result<bool, String> {
+    let output = Command::new("podman")
+        .args(args)
+        .output()
+        .map_err(|error| format!("{description} could not run: {error}"))?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(format!(
+        "{description} exited with {}: {}",
+        output.status,
+        diagnostic(&output)
+    ))
+}
+
+fn operation(args: &[String]) -> String {
+    args.iter().take(2).cloned().collect::<Vec<_>>().join(" ")
 }
 
 fn first_nonempty(stdout: &[u8], stderr: &[u8]) -> String {
@@ -98,7 +212,7 @@ fn diagnostic(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_image_reference;
+    use super::{validate_container_name, validate_image_reference, validate_volume_name};
 
     #[test]
     fn validates_image_references() {
@@ -107,5 +221,17 @@ mod tests {
         assert!(validate_image_reference("").is_err());
         assert!(validate_image_reference("-rm").is_err());
         assert!(validate_image_reference("core image").is_err());
+    }
+
+    #[test]
+    fn validates_container_and_volume_names() {
+        assert!(validate_container_name("factory-core").is_ok());
+        assert!(validate_container_name("factory_core.dev-1").is_ok());
+        assert!(validate_container_name("").is_err());
+        assert!(validate_container_name("-core").is_err());
+        assert!(validate_container_name("factory core").is_err());
+        assert!(validate_container_name("factory/core").is_err());
+        assert!(validate_volume_name("factory-core-data").is_ok());
+        assert!(validate_volume_name("--force").is_err());
     }
 }

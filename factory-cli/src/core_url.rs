@@ -98,6 +98,18 @@ impl CoreUrl {
         }
     }
 
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) fn is_ipv4_localhost(&self) -> bool {
+        match self.host {
+            Host::Localhost => true,
+            Host::Ip(IpAddr::V4(address)) => address == Ipv4Addr::LOCALHOST,
+            Host::Ip(IpAddr::V6(_)) => false,
+        }
+    }
+
     pub(crate) fn socket_addrs(&self) -> std::io::Result<Vec<SocketAddr>> {
         match self.host {
             Host::Localhost => ("localhost", self.port)
@@ -246,6 +258,32 @@ mod tests {
         assert_eq!(
             CoreUrl::parse("http://127.0.0.1:http"),
             Err(CoreUrlError::InvalidPort)
+        );
+    }
+
+    #[test]
+    fn exposes_the_loopback_publication_port() {
+        let url = CoreUrl::parse("http://127.0.0.1:9123").expect("url");
+        assert_eq!(url.port(), 9123);
+        assert!(url.is_ipv4_localhost());
+        assert!(
+            CoreUrl::parse("http://localhost:9123")
+                .expect("url")
+                .is_ipv4_localhost()
+        );
+    }
+
+    #[test]
+    fn rejects_non_ipv4_localhost_publication_hosts() {
+        assert!(
+            !CoreUrl::parse("http://[::1]:8765")
+                .expect("url")
+                .is_ipv4_localhost()
+        );
+        assert!(
+            !CoreUrl::parse("http://127.0.0.2:8765")
+                .expect("url")
+                .is_ipv4_localhost()
         );
     }
 

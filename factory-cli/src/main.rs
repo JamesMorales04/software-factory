@@ -1,12 +1,18 @@
 mod args;
 mod config;
+mod container;
 mod core_client;
 mod core_url;
 mod doctor;
+mod failure;
+mod logs;
 mod podman;
 mod report;
+mod start;
 mod status;
+mod stop;
 mod text;
+mod tokens;
 
 use std::{env, process::ExitCode};
 
@@ -35,6 +41,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Doctor) => ExitCode::from(doctor::run()),
+        Ok(Command::Start) => ExitCode::from(start::run()),
+        Ok(Command::Stop { purge }) => ExitCode::from(stop::run(purge)),
+        Ok(Command::Logs) => ExitCode::from(logs::run()),
         Ok(Command::Status) => ExitCode::from(status::run()),
         Ok(Command::NotImplemented(command)) => {
             eprintln!("factory {}: NOT_IMPLEMENTED", command.as_str());

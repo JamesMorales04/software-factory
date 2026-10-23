@@ -1,0 +1,66 @@
+# Minimal application-runtime image for the Software Factory Core.
+#
+# This image packages the factory-core binary with a minimal Debian runtime
+# (runtime libraries and CA certificates). It contains no Rust toolchain, no
+# Go, no Node and no build tools, and it bakes no credentials. Build it from
+# the repository root:
+#
+#   podman build --network=host -t localhost/software-factory-core:dev \
+#     -f deploy/Containerfile.core .
+#
+# Runtime contract:
+#   - Core stores its SQLite database under /data (mount a named volume).
+#   - Factory environment tokens are injected at runtime; never bake them in.
+#   - The CLI publishes the container port on host loopback only.
+#   - FACTORY_BIND=0.0.0.0:8765 is required inside the container because
+#     published traffic targets a container interface, not container loopback.
+#   - FACTORY_CONTAINER_MODE=1 is passed by the CLI. The current Core refuses
+#     non-loopback binding, so container start integration is pending Core
+#     support; this image does not change that policy.
+#   - Rootless Podman is a candidate runtime, not certified isolation.
+#
+# Base images are pinned by tag, not digest. Digest pinning is not implemented.
+
+ARG RUST_VERSION=1.90.0
+
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /build
+
+# The workspace manifest references every member. Copy only what is needed to
+# build factory-core; migrations are embedded at compile time by sqlx::migrate!.
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+COPY migrations migrations
+
+RUN cargo build --locked --release -p factory-native --bin factory-core
+
+FROM debian:bookworm-slim AS runtime
+
+# ca-certificates is required for outbound TLS from provider integrations.
+# Debian slim supplies the glibc/libgcc runtime needed by the Rust binary.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /data
+
+COPY --from=builder /build/target/release/factory-core /usr/local/bin/factory-core
+
+# The database path is a safe image default. Tokens have no defaults and Core
+# fails closed when they are absent. FACTORY_BIND is supplied by the CLI.
+ENV FACTORY_DATABASE=/data/factory.sqlite
+
+EXPOSE 8765
+VOLUME ["/data"]
+STOPSIGNAL SIGTERM
+USER factory
+WORKDIR /data
+ENTRYPOINT ["/usr/local/bin/factory-core"]
