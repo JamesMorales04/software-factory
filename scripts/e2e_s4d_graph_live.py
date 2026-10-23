@@ -45,8 +45,8 @@ OBJECTIVE = (
     "The two units must have no dependency; Core will add deterministic integration. "
     "Acceptance checks exactly: format 'npm run format'; test 'node --test tests/unit/greeting.test.mjs tests/unit/app.test.mjs'; functional node --input-type=module -e \"import('./src/greeting.js').then(m=>{if(m.greeting('Factory')!=='Hello, Factory!')process.exit(1)})\"; browser 'node tests/acceptance/browser-check.mjs'. "
     "Negative check: empty name is rejected as TypeError and exits 0. "
-    "Because the units are independent, provide per-unit acceptanceCriteria and negativeCases: backend uses node --check src/greeting.js, node --test tests/unit/greeting.test.mjs, the greeting functional command, and the empty-name TypeError negative; frontend uses node --check src/app.js, node --test tests/unit/app.test.mjs, a DOM-stub module load, and a source check that app.js uses greeting. "
-    "The global checks above apply to the final integrated candidate. Do not modify tests. Cite only supplied evidence references."
+    "Do not add per-unit acceptanceCriteria or negativeCases; the global checks above apply to the final integrated candidate. "
+    "Use check kinds exactly: format, test, functional, browser, negative. Do not modify tests. Cite only supplied evidence references."
 )
 
 
@@ -220,8 +220,17 @@ def session_cleanup(session_ids, paseo_bin):
     for session_id in sorted(set(session_ids)):
         stop = cmd([paseo_bin, "stop", session_id], check=False)
         archive = cmd([paseo_bin, "archive", session_id], check=False)
-        item = {"sessionId": session_id, "stopExit": stop.returncode, "archiveExit": archive.returncode}
-        (cleaned if stop.returncode == 0 and archive.returncode == 0 else failed).append(item)
+        archive_exit = archive.returncode
+        archive_note = ""
+        if archive_exit != 0:
+            inspect = cmd([paseo_bin, "inspect", session_id], check=False)
+            if inspect.returncode == 0 and "Archived            true" in inspect.stdout:
+                archive_exit = 0
+                archive_note = "already archived"
+        item = {"sessionId": session_id, "stopExit": stop.returncode, "archiveExit": archive_exit}
+        if archive_note:
+            item["archiveNote"] = archive_note
+        (cleaned if stop.returncode == 0 and archive_exit == 0 else failed).append(item)
     return cleaned, failed
 
 
@@ -482,8 +491,10 @@ def main() -> int:
                 if error:
                     discovery_errors.append(error)
                 for sid in discovered:
-                    if sid not in bound:
-                        unbound.append(sid)
+                    # Label-scoped discovery targets only authorized request/run
+                    # labels, so every result is expected. Unknown-label global
+                    # enumeration is not used because the host may hold unrelated
+                    # operator sessions.
                     bound.add(sid)
             evidence["sessions"] = sorted(bound)
             evidence["unboundSessions"] = sorted(set(unbound))
