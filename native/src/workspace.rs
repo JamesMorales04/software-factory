@@ -273,6 +273,47 @@ fn git_with_dates(cwd: &Path, args: &[String]) -> Result<Output, WorkspaceError>
     Ok(output)
 }
 
+/// Paths changed by a candidate relative to the frozen base. Renames are
+/// reported explicitly rather than collapsed, and every path must be a safe
+/// repository-relative path.
+pub fn changed_paths(
+    repository: &Path,
+    base: &str,
+    commit: &str,
+) -> Result<Vec<String>, WorkspaceError> {
+    let repository = repository.canonicalize()?;
+    let output = git(
+        &repository,
+        [
+            OsStr::new("diff"),
+            OsStr::new("--name-only"),
+            OsStr::new("--no-renames"),
+            OsStr::new(base),
+            OsStr::new(commit),
+        ],
+    )?;
+    let output = String::from_utf8(output.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 changed paths: {error}")))?;
+    let paths: Vec<String> = output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if paths.is_empty() {
+        return Err(WorkspaceError::Invalid(
+            "candidate contains no changed paths".into(),
+        ));
+    }
+    for path in &paths {
+        if !is_safe_repository_path(path) {
+            return Err(WorkspaceError::Invalid(format!(
+                "candidate changed an unsafe path: {path:?}"
+            )));
+        }
+    }
+    Ok(paths)
+}
+
 /// Verify a Worker's candidate claim directly against the registered Git
 /// repository. This proves object identity and parentage only; it does not
 /// prove who authored the commit, that it is in scope, or that it passed
@@ -640,6 +681,26 @@ where
     Ok(output)
 }
 
+pub fn path_covered(path: &str, allowed: &[String]) -> bool {
+    allowed
+        .iter()
+        .any(|candidate| path == candidate || path.starts_with(&format!("{candidate}/")))
+}
+
+pub fn is_safe_repository_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1_000
+        && !path.starts_with('/')
+        && !path.ends_with('/')
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && path != ".git"
+        && !path.starts_with(".git/")
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != ".." && component != ".")
+}
+
 fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -913,6 +974,27 @@ mod tests {
                 .count(),
             1
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn changed_paths_are_safe_and_scope_coverage_is_exact() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root = std::env::temp_dir().join(format!("factory-paths-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut workspace = allocator.allocate("paths", &base).unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        fs::write(workspace.path().join("src/file.txt"), "content\n").unwrap();
+        git(workspace.path(), ["add", "src/file.txt"]).unwrap();
+        git(workspace.path(), ["commit", "-qm", "candidate"]).unwrap();
+        let candidate = workspace.candidate_revision().unwrap();
+        let paths = changed_paths(&repo.0, &base, &candidate.commit_sha).unwrap();
+        assert_eq!(paths, vec!["src/file.txt".to_string()]);
+        assert!(path_covered("src/file.txt", &["src".to_string()]));
+        assert!(!path_covered("docs/file.txt", &["src".to_string()]));
+        assert!(!path_covered("srcx/file.txt", &["src".to_string()]));
+        workspace.cleanup().unwrap();
         let _ = fs::remove_dir_all(root);
     }
 

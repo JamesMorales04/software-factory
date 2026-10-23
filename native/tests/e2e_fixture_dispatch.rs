@@ -171,7 +171,26 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
             "objective": "fixture dispatch",
             "provider": "opencode",
             "model": "test/model",
-            "idempotency_key": "action-key"
+            "idempotency_key": "action-key",
+            "allowed_paths": ["src"],
+            "checks": [
+                {
+                    "id": "content",
+                    "kind": "functional",
+                    "description": "fixture content",
+                    "command": ["grep", "-q", "fixture candidate", "src/fixture.txt"],
+                    "expectExit": 0,
+                    "timeoutSecs": 30
+                },
+                {
+                    "id": "negative",
+                    "kind": "negative",
+                    "description": "absent content is rejected",
+                    "command": ["grep", "-q", "absent", "src/fixture.txt"],
+                    "expectExit": 1,
+                    "timeoutSecs": 30
+                }
+            ]
         })),
     )
     .await
@@ -289,23 +308,26 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         "fixture candidate"
     );
 
-    let verifier = client
-        .post(format!("{base_url}/quality/receipts"))
-        .bearer_auth(VERIFIER_TOKEN)
-        .json(&json!({
-            "candidate_id": candidate_id,
-            "receipt_id": "verifier-e2e",
-            "principal_id": "verifier-e2e",
-            "actionSpecSha256": spec_sha,
-            "commitSha": commit,
-            "treeSha": tree,
-            "result": "PASS",
-            "evidence": "EXECUTED"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(verifier.status(), StatusCode::CREATED);
+    let verifier_log = File::create(root.join("verifier.log")).unwrap();
+    let verifier_status = Command::new(env!("CARGO_BIN_EXE_factory-verifier"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
+        .env("FACTORY_CANDIDATE_ID", &candidate_id)
+        .env("FACTORY_VERIFIER_PRINCIPAL", "verifier-process-e2e")
+        .env(
+            "FACTORY_VERIFIER_WORKSPACE",
+            root.join("verifier-workspaces"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(verifier_log.try_clone().unwrap()))
+        .stderr(Stdio::from(verifier_log))
+        .status()
+        .expect("verifier");
+    assert!(
+        verifier_status.success(),
+        "verifier failed: {}",
+        std::fs::read_to_string(root.join("verifier.log")).unwrap_or_default()
+    );
     let reviewer = client
         .post(format!("{base_url}/quality/receipts"))
         .bearer_auth(REVIEWER_TOKEN)

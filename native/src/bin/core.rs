@@ -40,6 +40,10 @@ struct NewAction {
     provider: String,
     model: String,
     idempotency_key: String,
+    #[serde(default)]
+    allowed_paths: Vec<String>,
+    #[serde(default)]
+    checks: Vec<factory_native::lead::SpecCheck>,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +191,10 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
         .route("/quality/candidates/{id}/gate", get(quality_gate))
+        .route(
+            "/quality/candidates/{id}/inspection",
+            get(quality_candidate_inspection),
+        )
         .route("/delegations", post(create_delegation))
         .route(
             "/delegations/{id}",
@@ -260,12 +268,16 @@ async fn create_action(
     }
     match app
         .db
-        .create_action(
+        .create_action_with_spec(
             &input.project_id,
             &input.objective,
             &input.provider,
             &input.model,
             &input.idempotency_key,
+            factory_native::db::ActionSpecInput {
+                allowed_paths: &input.allowed_paths,
+                checks: &input.checks,
+            },
         )
         .await
     {
@@ -698,6 +710,20 @@ async fn quality_receipts(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_list(app.db.quality_receipts(&id).await)
+}
+
+async fn quality_candidate_inspection(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) && quality_role(&app, &headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.candidate_inspection(&id).await {
+        Ok(inspection) => Json(inspection).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn quality_gate(

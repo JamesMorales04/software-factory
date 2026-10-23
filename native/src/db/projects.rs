@@ -63,6 +63,37 @@ impl Database {
         model: &str,
         key: &str,
     ) -> Result<Action, Error> {
+        self.create_action_with_spec(
+            project_id,
+            objective,
+            provider,
+            model,
+            key,
+            ActionSpecInput {
+                allowed_paths: &[],
+                checks: &[],
+            },
+        )
+        .await
+    }
+
+    pub async fn create_action_with_spec(
+        &self,
+        project_id: &str,
+        objective: &str,
+        provider: &str,
+        model: &str,
+        key: &str,
+        spec_input: ActionSpecInput<'_>,
+    ) -> Result<Action, Error> {
+        let allowed_paths = spec_input.allowed_paths;
+        let checks = spec_input.checks;
+        if !allowed_paths.is_empty() {
+            crate::lead::validate_repository_paths("allowedPaths", allowed_paths)
+                .map_err(|error| Error::Delegation(error.to_string()))?;
+        }
+        crate::lead::validate_mixed_checks(checks)
+            .map_err(|error| Error::Delegation(error.to_string()))?;
         if objective.trim().is_empty() || objective.len() > 20_000 {
             return Err(Error::Invalid("objective length"));
         }
@@ -73,9 +104,16 @@ impl Database {
             return Err(Error::Invalid("model"));
         }
         let request_digest = sha256_hex(
-            serde_json::to_string(&(project_id, objective, provider, model))
-                .expect("string tuple serializes")
-                .as_bytes(),
+            serde_json::to_string(&(
+                project_id,
+                objective,
+                provider,
+                model,
+                allowed_paths,
+                checks,
+            ))
+            .expect("action digest serializes")
+            .as_bytes(),
         );
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -95,6 +133,8 @@ impl Database {
             objective_sha256: objective_sha256.clone(),
             provider: provider.into(),
             model: model.into(),
+            allowed_paths: allowed_paths.to_vec(),
+            checks: checks.to_vec(),
         };
         let spec_json = serde_json::to_string(&spec).expect("ActionSpec serializes");
         let spec_sha256 = sha256_hex(spec_json.as_bytes());

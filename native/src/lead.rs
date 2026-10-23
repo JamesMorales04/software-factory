@@ -1165,6 +1165,33 @@ fn validate_checks(checks: &[SpecCheck], negative: bool) -> Result<(), LeadError
     Ok(())
 }
 
+/// Validate a mixed ActionSpec check list used by an independent verifier.
+/// Positive checks may expect any bounded exit; negative checks must expect a
+/// nonzero exit. This reuses the same shape rules as Lead proposal checks.
+pub fn validate_mixed_checks(checks: &[SpecCheck]) -> Result<(), LeadError> {
+    if checks.len() > 32 {
+        return Err(LeadError::WorkGraph(
+            "an ActionSpec may declare at most 32 checks".into(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    for check in checks {
+        if check.id.trim().is_empty() || check.id.len() > 64 || !ids.insert(check.id.as_str()) {
+            return Err(LeadError::WorkGraph(
+                "check ids must be unique and bounded".into(),
+            ));
+        }
+    }
+    let (negative, positive): (Vec<&SpecCheck>, Vec<&SpecCheck>) = checks
+        .iter()
+        .partition(|check| check.kind == CheckKind::Negative);
+    let positive: Vec<SpecCheck> = positive.into_iter().cloned().collect();
+    let negative: Vec<SpecCheck> = negative.into_iter().cloned().collect();
+    validate_checks(&positive, false)?;
+    validate_checks(&negative, true)?;
+    Ok(())
+}
+
 fn require_check_kinds<'a>(
     checks: impl Iterator<Item = &'a SpecCheck>,
     required: &[CheckKind],

@@ -31,6 +31,10 @@ name = "factory-worker"
 path = "src/bin/worker.rs"
 
 [[bin]]
+name = "factory-verifier"
+path = "src/bin/verifier.rs"
+
+[[bin]]
 name = "factory-provider-probe"
 path = "src/bin/provider_probe.rs"
 

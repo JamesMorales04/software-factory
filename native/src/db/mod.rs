@@ -7,6 +7,7 @@ use sqlx_sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
+use crate::lead::SpecCheck;
 use crate::quality::{
     AuthorizationStatus, EvidenceKind, FrozenActionSpec, GateOutcome, GatePolicy, ReceiptResult,
     ReviewerReceipt, RiskStatus, VerifierReceipt, evaluate_quality_gate,
@@ -64,6 +65,12 @@ pub struct Action {
     pub spec_sha256: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ActionSpecInput<'a> {
+    pub allowed_paths: &'a [String],
+    pub checks: &'a [SpecCheck],
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionSpec {
@@ -75,6 +82,10 @@ pub struct ActionSpec {
     pub objective_sha256: String,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    #[serde(default)]
+    pub checks: Vec<SpecCheck>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,6 +165,16 @@ pub struct CandidateRecord {
     pub tree_sha: String,
     pub implementer_id: String,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandidateInspection {
+    pub candidate: CandidateRecord,
+    pub action_id: String,
+    pub action_spec: ActionSpec,
+    pub action_spec_sha256: String,
+    pub repository: String,
+    pub base_commit: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

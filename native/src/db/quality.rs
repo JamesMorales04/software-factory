@@ -34,6 +34,27 @@ impl Database {
             Error::Forbidden(format!("candidate lineage verification failed: {error}"))
         })?
         .map_err(|error| Error::Forbidden(format!("candidate lineage rejected: {error}")))?;
+        let spec: ActionSpec = serde_json::from_str(&context.spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        if !spec.allowed_paths.is_empty() {
+            let repository = context.repository.clone();
+            let base_commit = context.base_commit.clone();
+            let commit_sha = verified.commit_sha.clone();
+            let changed = tokio::task::spawn_blocking(move || {
+                crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
+            })
+            .await
+            .map_err(|error| Error::Forbidden(format!("candidate path task failed: {error}")))?
+            .map_err(|error| Error::Forbidden(format!("candidate path check failed: {error}")))?;
+            if let Some(path) = changed
+                .iter()
+                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
+            {
+                return Err(Error::Forbidden(format!(
+                    "candidate path {path:?} is outside the frozen allowed paths"
+                )));
+            }
+        }
 
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
@@ -130,6 +151,45 @@ impl Database {
         Ok(QualityIngestResult { receipt, gate })
     }
 
+    pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
+        let candidate = self.candidate(id).await?;
+        let row = sqlx::query::query(
+            "SELECT c.action_id,p.repository,p.base_commit,s.spec_json,s.spec_sha256
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN projects p ON p.id=ac.project_id
+             JOIN action_specs s ON s.action_id=ac.id
+             WHERE cd.id=?1",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        use sqlx::row::Row;
+        let action_id: String = row.try_get("action_id")?;
+        let repository: String = row.try_get("repository")?;
+        let base_commit: String = row.try_get("base_commit")?;
+        let spec_json: String = row.try_get("spec_json")?;
+        let spec_sha256: String = row.try_get("spec_sha256")?;
+        if candidate.action_spec_sha256 != spec_sha256
+            || sha256_hex(spec_json.as_bytes()) != spec_sha256
+        {
+            return Err(Error::Invalid("candidate ActionSpec binding mismatch"));
+        }
+        let action_spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        Ok(CandidateInspection {
+            candidate,
+            action_id,
+            action_spec,
+            action_spec_sha256: spec_sha256,
+            repository,
+            base_commit,
+        })
+    }
+
     pub async fn candidates(&self) -> Result<Vec<CandidateRecord>, Error> {
         let rows: Vec<(String, String, String, String, String, String, String)> =
             sqlx::query_as::query_as(
@@ -200,12 +260,14 @@ struct CandidateContext {
     repository: String,
     base_commit: String,
     spec_sha256: String,
+    spec_json: String,
 }
 
 type CandidateContextRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    String,
     String,
     String,
     String,
@@ -218,7 +280,7 @@ async fn candidate_context(
     attempt_id: &str,
 ) -> Result<CandidateContext, Error> {
     let row: Option<CandidateContextRow> = sqlx::query_as::query_as(
-        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256
+        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256,s.spec_json
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
@@ -240,6 +302,7 @@ async fn candidate_context(
         repository,
         base_commit,
         spec_sha256,
+        spec_json,
     ) = row.ok_or(Error::NotFound)?;
     Ok(CandidateContext {
         worker_id: worker_id.unwrap_or_default(),
@@ -250,6 +313,7 @@ async fn candidate_context(
         repository,
         base_commit,
         spec_sha256,
+        spec_json,
     })
 }
 
