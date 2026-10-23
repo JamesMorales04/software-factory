@@ -95,3 +95,18 @@ Provisional local results for this uncommitted combined slice: **62 library test
 Resolve the Podman fixture timeout and same-UID pathname race, then have Luna independently review the ownership ledger, orphan reconciliation, provider lifecycle fixtures, HMAC registration binding, and the whole-tree migration matrix. Keep dispatch disabled while security and Core authorization remain incomplete. Next implement durable authenticated evidence ingestion and independent verifier/reviewer processes, followed by the provider-backed Worker lifecycle and Rust Office journey. Only after replacement behavior and acceptance are demonstrated should legacy files/workflows be removed. Commit coherent work and update this handoff with exact SHA-bound outcomes.
 
 **DeepSeek V4.1 Flash continuation:** inspect `git status`, `git rev-parse HEAD`, PR #17 and the matrix. Treat this combined slice’s results as provisional until rerun at its committed SHA. Keep PR #17 draft and public dispatch disabled. Do not claim any G1–G10 gate PASS, coding-provider compatibility, sandbox certification, or completed replacement. No paid provider work is authorized by this handoff.
+
+## Continuation: committed checkpoint and Rust standards (2026-10-23)
+
+The combined slice above is committed at `f79f04f4e0840b795fbea989a029c621e912b16e`. Exact-tree author checks before commit: `cargo fmt --all -- --check` PASS; strict Clippy PASS; `cargo test --workspace --locked` PASS with 62 library + 4 architecture-check + 7 hygiene + 2 binary tests; the ignored rootless Podman Alpine fixture PASSED in 12.55 s when run explicitly; `cargo build --workspace --locked` PASS; `cargo doc --workspace --no-deps --locked` PASS; `cargo audit --file Cargo.lock` PASS for 192 dependencies (RustSec DB loaded 1,351 advisories). These remain author-run.
+
+New normative and recovery artifacts:
+
+- [Rust engineering standards](../engineering/rust-standards.md) — canonical Rust design, ownership, errors, async/process lifecycle, security, transactions, protocols, testing, dependencies, observability, performance and review rules.
+- [Rust engineering skill](../../.agents/skills/rust-engineering/SKILL.md) with six focused references; frontmatter and reference links validated locally. The skill is discoverable under the repository `.agents/skills/` convention and referenced from `AGENTS.md`.
+- [S4-D Rust recovery matrix](s4d-rust-recovery-matrix.md) — every material PR #16 capability is accounted for with source commit/paths, invariants, Rust destination, reusable oracle, adaptations, truthful status and deletion readiness.
+- [Migration matrix](native-rust-migration-matrix.md) updated to link the S4-D inventory and reconcile the 313 hygiene findings and Podman fixture result.
+
+S4-D Rust status remains `RUST_NOT_IMPLEMENTED` for semantic assessment, standing delegation, autonomous start/revocation, WorkGraph scheduling, deterministic integration, CAP-014 Rust evaluation and the Rust Office journey. Historical PR #16 evidence is provenance only; it does not certify the Rust branch. ADR-0017 remains Proposed and unratified; no live grant or provider spend is authorized.
+
+**Next executable task:** continue the native execution pipeline with Core-owned authorization/dispatch and durable quality evidence ingestion. Keep public provider dispatch disabled until authority, isolation/credential confinement and budgets are implemented; no paid turn is authorized.

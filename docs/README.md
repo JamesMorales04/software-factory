@@ -7,7 +7,7 @@ All normative software architecture and engineering guidance is maintained **in 
 ## Reading order
 
 1. [Native Rust decision](architecture/decisions/ADR-0018-native-rust-replacement.md), [native bootstrap](../native/README.md), and [handoff](implementation/native-rust-handoff.md) — active target and implemented scope on this branch.
-2. [Engineering standards](engineering/code-quality.md) and [linting](engineering/linting.md) — clean design and objective static checks.
+2. [Rust engineering standards](engineering/rust-standards.md), [code quality](engineering/code-quality.md) and [linting](engineering/linting.md) — normative Rust design, correctness and objective static checks. The reusable agent workflow is [.agents/skills/rust-engineering](../../.agents/skills/rust-engineering/SKILL.md).
 3. [Quality baseline](quality/baseline.md) — candidate integrity, independent verification, and gate states; its old implementation references are historical.
 4. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
 

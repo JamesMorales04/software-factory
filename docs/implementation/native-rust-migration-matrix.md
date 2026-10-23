@@ -1,6 +1,6 @@
 # Native Rust replacement migration matrix
 
-**Audit basis:** Legacy comparison is PR #17 entry HEAD `21f6136052ad0eba53df57759185145592951c56`; base `origin/main` at `102d7ba29295554bd61ae71956347a025d219d7b`. The current tracked-tree hygiene audit reports 313 findings; strict hygiene is not active. The current Rust slice is committed in this branch, so evidence is candidate-bound to the commit that introduced this file; rerun checks at that exact SHA. This matrix is a migration inventory, not proof of full replacement.
+**Audit basis:** Legacy comparison is PR #17 entry HEAD `21f6136052ad0eba53df57759185145592951c56`; base `origin/main` at `102d7ba29295554bd61ae71956347a025d219d7b`. The current tracked-tree hygiene audit reports 313 findings; strict hygiene is not active. The current Rust slice is committed in this branch, so evidence is candidate-bound to the commit that introduced this file; rerun checks at that exact SHA. This matrix is a migration inventory, not proof of full replacement. S4-D product capabilities from legacy PR #16 are tracked separately in [s4d-rust-recovery-matrix.md](s4d-rust-recovery-matrix.md).
 
 ## Status vocabulary
 
@@ -65,7 +65,7 @@ Recommended deletion sequence: (1) finish Rust domain, policy, persistence, Core
 
 ### Capability disposition beyond the initial replacement
 
-Preserve extension points for Intelligent Lead and semantic assessment (`MODEL` input constrained by `HYBRID` Core policy), dependency-aware WorkGraph and minimal sufficient team composition, goal-level standing delegation, independent semantic review, adaptive model routing, knowledge/skills, autonomous maintenance, governed GitHub delivery, and supervised self-development. These are not established by this bootstrap and must remain unimplemented/proposed until executable Rust evidence exists. Preserve contracts through Rust-native domain interfaces, not former-runtime names, adapters or compatibility shims.
+Preserve extension points for Intelligent Lead and semantic assessment (`MODEL` input constrained by `HYBRID` Core policy), dependency-aware WorkGraph and minimal sufficient team composition, goal-level standing delegation, independent semantic review, adaptive model routing, knowledge/skills, autonomous maintenance, governed GitHub delivery, and supervised self-development. These are not established by this bootstrap and must remain unimplemented/proposed until executable Rust evidence exists. The concrete PR #16 recovery inventory and dependency-ordered plan are in [s4d-rust-recovery-matrix.md](s4d-rust-recovery-matrix.md). Preserve contracts through Rust-native domain interfaces, not former-runtime names, adapters or compatibility shims.
 
 
 ## Current slice evidence and security findings

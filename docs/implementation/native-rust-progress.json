@@ -5,10 +5,10 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": null,
+  "verified_code_commit_sha": "f79f04f4e0840b795fbea989a029c621e912b16e",
   "draft_pr": 17,
-  "ci_at_update": "Native Rust workflow is wired across PR changes, but legacy Go workflows/checker remain; whole-tree hygiene strict check reports 313 findings. PR #17 remains draft; no merge.",
-  "status": "INCOMPLETE_REPLACEMENT_UNCOMMITTED_SLICE",
+  "ci_at_update": "Native Rust workflow runs on all PR changes; legacy Go workflows/checker remain. Whole-tree hygiene audit reports 313 findings and strict mode fails. PR #17 remains draft; no merge.",
+  "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
   "implemented": [
     "Pinned Rust workspace and Cargo.lock, still under native/ beside legacy Go core/",
     "Authenticated loopback Core with SQLite WAL persistence for canonical Projects, idempotency and durable events",
@@ -20,7 +20,9 @@
     "Expanded no-paid OpenCode probe: health/OpenAPI, SSE event correlation, session status/messages, workspace binding, delete and subsequent absence; no prompt or work turn",
     "Pure deterministic quality evaluator with explicit outcomes; not connected to authenticated durable receipt ingestion or independent role processes",
     "Partial native Rust architecture checker and Rust CI workflow configured across PR changes, including docs/config; legacy Go governance remains",
-    "Repository-wide hygiene audit reports 313 findings; strict hygiene check fails and no legacy deletion has occurred"
+    "Repository-wide hygiene audit reports 313 findings; strict hygiene check fails and no legacy deletion has occurred",
+    "Normative Rust engineering standards and reusable rust-engineering skill with six references",
+    "S4-D PR #16 capability recovery matrix with traceable Rust destinations and deletion readiness"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -32,7 +34,8 @@
     "Authenticated durable verifier/reviewer receipt ingestion and independent process roles",
     "Integrated durable Quality Gate operation",
     "Rust-backed Office/API/SSE browser journey and restart/reload verification; Office still targets former backend",
-    "Go/runtime tree cutover, hygiene gate pass, and removal of legacy workflows/checker"
+    "Go/runtime tree cutover, hygiene gate pass, and removal of legacy workflows/checker",
+    "S4-D Rust semantic assessment, standing delegation, autonomous start/revocation, WorkGraph scheduling, deterministic integration and CAP-014 evaluation"
   ],
   "provider_versions": {
     "codex": "0.156.1",
@@ -67,11 +70,11 @@
   "delivery_status": "NOT_MERGED_NOT_DEPLOYED",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Resolve the same-UID pathname race or bind the opened workspace identity into Podman; obtain independent review of sandbox ownership, HMAC registration binding, provider lifecycle fixtures, and the migration matrix. Keep dispatch disabled until Core authorization and isolation are ready. Then implement authenticated durable quality evidence ingestion and independent verifier/reviewer processes.",
+  "next_task": "Implement Core-owned dispatch authorization and durable quality evidence ingestion in Rust, keeping provider dispatch disabled until authority, isolation/credential confinement and budgets exist. Keep PR #17 draft.",
   "paid_provider_turns": 0,
-  "prior_handoff_commit_sha": "5812d31121017f1340ae911e84abd18bf2ed0ac0",
+  "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
-  "working_tree_status_at_update": "Committed candidate; run git log -1 --format=%H. Evidence below is candidate-bound but author-run.",
+  "working_tree_status_at_update": "Committed standards, skill and recovery matrix on top of f79f04f; see current HEAD.",
   "current_slice": {
     "evidence_binding": "COMMITTED_CANDIDATE; run git log -1 --format=%H",
     "action_spec": "Immutable versioned ActionSpec persisted and digest validated",
@@ -114,5 +117,26 @@
   },
   "deepseek_continuation": "Inspect git status, HEAD and PR #17; read this handoff and migration matrix. Keep public dispatch disabled and PR draft. Implement authenticated durable quality evidence and independent verifier/reviewer execution, then the provider-backed Worker lifecycle. Do not claim G1-G10 PASS or completed replacement.",
   "matrix": "docs/implementation/native-rust-migration-matrix.md",
-  "intended_cutover_layout": "After verified Go deletion, move staged Rust backend from native/ into core/, retaining one Cargo workspace with cohesive domain, persistence, provider, workspace, quality, API, and Worker modules. This is an implementation choice, not an edit to accepted ADR-0018; matrix crate paths are illustrative."
+  "intended_cutover_layout": "After verified Go deletion, move staged Rust backend from native/ into core/, retaining one Cargo workspace with cohesive domain, persistence, provider, workspace, quality, API, and Worker modules. This is an implementation choice, not an edit to accepted ADR-0018; matrix crate paths are illustrative.",
+  "rust_engineering": {
+    "standards": "docs/engineering/rust-standards.md",
+    "skill": ".agents/skills/rust-engineering/SKILL.md",
+    "skill_validation": "PASS local frontmatter/name/description/body/reference validation; repository .agents/skills discovery convention",
+    "references": [
+      "code-review",
+      "async-process-lifecycle",
+      "state-machines",
+      "provider-adapters",
+      "persistence-and-transactions",
+      "errors-and-security"
+    ]
+  },
+  "s4d_recovery": {
+    "matrix": "docs/implementation/s4d-rust-recovery-matrix.md",
+    "source_pr": 16,
+    "source_head": "19cb4951f7a3d42a1ca27b1800cf49401c81ecc6",
+    "source_code_candidate": "9e12dcf0871105652160e328980bdec53d4fabd5",
+    "rust_status": "NOT_IMPLEMENTED_OR_PARTIAL; no S4-D capability is Rust-verified",
+    "policy_gate": "ADR-0017 remains Proposed; autonomous authority not activated; no live budget"
+  }
 }
