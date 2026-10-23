@@ -355,15 +355,11 @@ func (p LeadPlanProposal) TerminalUnits() []LeadWorkUnit {
 // Core-owned integration node.
 func (p LeadPlanProposal) NeedsIntegration() bool { return len(p.TerminalUnits()) > 1 }
 
-// ImplementerTaskCount returns the maximum number of implementer/integration
-// task executions the frozen plan can dispatch: work units, an integration
-// node only when multiple terminal units must be combined, and repairs.
+// ImplementerTaskCount returns the maximum number of model-backed implementer
+// executions the frozen plan can dispatch. Deterministic integration is not a
+// model attempt and does not consume the provider session budget.
 func (p LeadPlanProposal) ImplementerTaskCount() int {
-	count := len(p.WorkUnits) + p.MaxRepairCycles
-	if p.NeedsIntegration() {
-		count++
-	}
-	return count
+	return len(p.WorkUnits) + p.MaxRepairCycles
 }
 
 // UnitScope returns the effective paths and capabilities for one unit. A

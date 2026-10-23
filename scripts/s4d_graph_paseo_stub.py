@@ -99,7 +99,7 @@ def assessment_for(prompt: str) -> dict:
             "riskClass": "R0",
             "budget": {"maxAttempts": 1, "timeoutSecs": 600},
             "provider": "opencode", "model": "opencode-go/deepseek-v4.1-flash", "paseoMode": "build",
-            "maxRepairCycles": 0, "maxWallClockSecs": 600, "maxParallel": 2, "maxSessions": 4,
+            "maxRepairCycles": 0, "maxWallClockSecs": 600, "maxParallel": 2, "maxSessions": 3,
             "workUnits": [
                 {"id": "backend", "kind": "implementation", "description": "Implement greeting in src/greeting.js with validation.", "dependsOn": [], "allowedPaths": ["src/greeting.js"], "capabilities": ["repository-edit", "node-toolchain"],
                  "acceptanceCriteria": [

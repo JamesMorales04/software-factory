@@ -753,14 +753,16 @@ func (db *DB) DispatchImplementer(ctx context.Context, campaignID, taskID, taskT
 	if activeImplementers >= campaign.MaxParallel {
 		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign implementer slots are full", domain.ErrConflict)
 	}
-	attemptsUsed, err := campaignAttemptsUsedTx(ctx, tx, campaign.ID)
-	if err != nil {
-		return domain.Campaign{}, domain.Run{}, nil, err
-	}
-	if attemptsUsed >= campaign.MaxAttempts {
-		return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted", domain.ErrBudgetExhausted)
-	}
 	node, _ := campaign.Plan.TaskPlan(task.Key)
+	if node.UnitKind != domain.LeadUnitKindIntegration {
+		attemptsUsed, err := campaignAttemptsUsedTx(ctx, tx, campaign.ID)
+		if err != nil {
+			return domain.Campaign{}, domain.Run{}, nil, err
+		}
+		if attemptsUsed >= campaign.MaxAttempts {
+			return domain.Campaign{}, domain.Run{}, nil, fmt.Errorf("%w: campaign attempt budget exhausted", domain.ErrBudgetExhausted)
+		}
+	}
 	specID := campaign.SpecID
 	if node.SpecID != "" {
 		specID = node.SpecID
@@ -1923,9 +1925,10 @@ func (db *DB) campaignAttemptsUsed(q interface {
 	var used int
 	err := q.QueryRow(
 		`SELECT COALESCE(SUM(r.attempt_count),0) FROM runs r
-		 WHERE r.id IN (SELECT run_id FROM campaign_tasks WHERE campaign_id=? AND role='implementer' AND run_id<>'')
-		    OR r.id IN (SELECT previous_run_id FROM campaign_recoveries WHERE campaign_id=?)
-		    OR r.id IN (SELECT new_run_id FROM campaign_recoveries WHERE campaign_id=? AND new_run_id<>'')`,
+		 WHERE r.workload_kind<>'git-integration' AND (
+		   r.id IN (SELECT run_id FROM campaign_tasks WHERE campaign_id=? AND role='implementer' AND run_id<>'')
+		   OR r.id IN (SELECT previous_run_id FROM campaign_recoveries WHERE campaign_id=?)
+		   OR r.id IN (SELECT new_run_id FROM campaign_recoveries WHERE campaign_id=? AND new_run_id<>''))`,
 		campaignID, campaignID, campaignID).Scan(&used)
 	return used, err
 }
@@ -1934,9 +1937,10 @@ func campaignAttemptsUsedTx(ctx context.Context, tx *sql.Tx, campaignID string) 
 	var used int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(r.attempt_count),0) FROM runs r
-		 WHERE r.id IN (SELECT run_id FROM campaign_tasks WHERE campaign_id=? AND role='implementer' AND run_id<>'')
-		    OR r.id IN (SELECT previous_run_id FROM campaign_recoveries WHERE campaign_id=?)
-		    OR r.id IN (SELECT new_run_id FROM campaign_recoveries WHERE campaign_id=? AND new_run_id<>'')`,
+		 WHERE r.workload_kind<>'git-integration' AND (
+		   r.id IN (SELECT run_id FROM campaign_tasks WHERE campaign_id=? AND role='implementer' AND run_id<>'')
+		   OR r.id IN (SELECT previous_run_id FROM campaign_recoveries WHERE campaign_id=?)
+		   OR r.id IN (SELECT new_run_id FROM campaign_recoveries WHERE campaign_id=? AND new_run_id<>''))`,
 		campaignID, campaignID, campaignID).Scan(&used); err != nil {
 		return 0, err
 	}

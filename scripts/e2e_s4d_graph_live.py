@@ -28,8 +28,8 @@ PROJECT = "factory-fixture-s4d-graph"
 PROVIDER, MODEL, MODE = "opencode", "opencode-go/deepseek-v4.1-flash", "build"
 ROUTE = f"{PROVIDER}/{MODEL}/{MODE}"
 AUTHORIZATION_ID = "s4d-graph-owner-auth-1"
-SESSIONS = 4
-ATTEMPTS = 3
+SESSIONS = 3
+ATTEMPTS = 2
 REPAIRS = 0
 PARALLEL = 2
 MAX_WALL_CLOCK_SECS = 1800
@@ -41,7 +41,7 @@ OBJECTIVE = (
     "Implement the disposable S4-D graph fixture as exactly two independent implementation WorkUnits. "
     "WorkUnit backend updates only src/greeting.js so greeting(name) returns 'Hello, <name>!' and throws TypeError for empty or non-string names. "
     "WorkUnit frontend updates only src/app.js so the browser renders greeting('Factory') in the #greeting element. "
-    "Use class feature, risk R0, node-basic profile, one attempt with a 600-second timeout, zero repair cycles, maximum parallel two, and four total sessions including this assessment. "
+    "Use class feature, risk R0, node-basic profile, one attempt with a 600-second timeout, zero repair cycles, maximum parallel two, and three total sessions including this assessment. "
     "The two units must have no dependency; Core will add deterministic integration. "
     "Acceptance checks exactly: format 'npm run format'; test 'node --test tests/unit/greeting.test.mjs tests/unit/app.test.mjs'; functional node --input-type=module -e \"import('./src/greeting.js').then(m=>{if(m.greeting('Factory')!=='Hello, Factory!')process.exit(1)})\"; browser 'node tests/acceptance/browser-check.mjs'. "
     "Negative check: empty name is rejected as TypeError and exits 0. "
