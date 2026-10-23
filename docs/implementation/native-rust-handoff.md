@@ -222,7 +222,15 @@ disabled. Author-run tests: 110 passed + 1 ignored; fmt, strict Clippy and the
 full suite pass. Migration CI must be re-run for the third migration in the
 next checkpoint.
 
-**Next executable task:** add the Core API/assessor boundary for Lead requests,
-or implement Core-owned Campaign authorization and Worker dispatch behind a
-fail-closed isolation gate. Verify the Office build and default container
-networking separately. No paid turn is authorized.
+**Next executable task (completed increment):** `f707eb533966903ff9f085a1ec5b3ea6ed457da8`
+adds authenticated operator APIs for non-autonomous delegation creation, usage
+reads, revocation and Lead request creation/projection. Autonomous delegation
+creation is rejected while ADR-0017 is unratified. 111 tests pass + 1 ignored;
+fmt and strict Clippy pass. Migration/architecture checks are recorded from the
+immediately preceding candidate; re-run `cargo xtask check` at the final
+candidate before stronger claims.
+
+**Next executable task:** add the Lead assessor/provider boundary, or implement
+Core-owned Campaign authorization and Worker dispatch behind a fail-closed
+isolation gate. Verify the Office build and default container networking
+separately. No paid turn is authorized.
