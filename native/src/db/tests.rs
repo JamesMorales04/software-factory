@@ -1006,3 +1006,162 @@ fn p9_database_is_send_sync_and_not_connection_mutexed() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Database>();
 }
+
+#[tokio::test]
+async fn authorization_rejects_unratified_risk_and_execution_modes() {
+    let (path, db) = temp_db("factory-auth-modes").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "objective",
+            "codex",
+            "model",
+            "action-key",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+            },
+        )
+        .await
+        .unwrap();
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
+    for (risk, mode) in [("R1", "FIXTURE"), ("R0", "ISOLATED")] {
+        let result = db
+            .authorize_campaign(
+                &campaign.id,
+                &NewCampaignAuthorization {
+                    authorization_id: format!("auth-{risk}-{mode}"),
+                    risk_class: risk.into(),
+                    execution_mode: mode.into(),
+                    actor: "test".into(),
+                    rationale: "negative authorization".into(),
+                    authorized_paths: vec!["src".into()],
+                    max_attempts: 1,
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Forbidden(_))));
+    }
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn candidate_outside_scope_and_symlink_are_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!("factory-scope-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let repo = root.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git_fixture(&repo, &["init", "-q"]);
+    git_fixture(&repo, &["config", "user.name", "Scope Test"]);
+    git_fixture(&repo, &["config", "user.email", "scope@example.invalid"]);
+    std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+    std::fs::create_dir(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/keep.txt"), "keep\n").unwrap();
+    git_fixture(&repo, &["add", "."]);
+    git_fixture(&repo, &["commit", "-qm", "base"]);
+    let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+    let project = db.register_project(&repo, "project-key").await.unwrap();
+    let action = db
+        .create_action_with_spec(
+            &project.id,
+            "scope test",
+            "opencode",
+            "test/model",
+            "action-key",
+            ActionSpecInput {
+                allowed_paths: &["src".to_string()],
+                checks: &[],
+            },
+        )
+        .await
+        .unwrap();
+    let campaign = db
+        .create_campaign(&action.id, "campaign-key")
+        .await
+        .unwrap();
+    db.authorize_campaign(
+        &campaign.id,
+        &NewCampaignAuthorization {
+            authorization_id: "auth-scope".into(),
+            risk_class: "R0".into(),
+            execution_mode: "FIXTURE".into(),
+            actor: "test".into(),
+            rationale: "scope negative".into(),
+            authorized_paths: vec!["src".into()],
+            max_attempts: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let run = db.create_run(&campaign.id, "run-key").await.unwrap();
+    let attempt = db.create_attempt(&run.id, "attempt-key").await.unwrap();
+    let now = Utc::now().timestamp_millis();
+    let lease = db
+        .claim_attempt("worker-scope", now, 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let allocator =
+        crate::workspace::WorkspaceAllocator::new(&repo, root.join("attempts")).unwrap();
+    let mut workspace = allocator
+        .allocate(&attempt.id, &project.base_commit)
+        .unwrap();
+    std::fs::write(workspace.path().join("outside.txt"), "outside\n").unwrap();
+    git_fixture(workspace.path(), &["add", "outside.txt"]);
+    git_fixture(workspace.path(), &["commit", "-qm", "outside"]);
+    let outside = workspace.candidate_revision().unwrap();
+    let result = db
+        .record_candidate(
+            &NewCandidate {
+                attempt_id: attempt.id.clone(),
+                worker_id: "worker-scope".into(),
+                generation: lease.generation,
+                action_spec_sha256: action.spec_sha256.clone(),
+                commit_sha: outside.commit_sha,
+                tree_sha: outside.tree_sha,
+            },
+            now,
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Forbidden(_))));
+    workspace.cleanup().unwrap();
+
+    let second = db.create_attempt(&run.id, "attempt-key-2").await.unwrap();
+    let lease = db
+        .claim_attempt("worker-scope", now + 1, 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut workspace = allocator
+        .allocate(&second.id, &project.base_commit)
+        .unwrap();
+    symlink("../seed.txt", workspace.path().join("src/link.txt")).unwrap();
+    git_fixture(workspace.path(), &["add", "src/link.txt"]);
+    git_fixture(workspace.path(), &["commit", "-qm", "symlink"]);
+    let linked = workspace.candidate_revision().unwrap();
+    let result = db
+        .record_candidate(
+            &NewCandidate {
+                attempt_id: second.id.clone(),
+                worker_id: "worker-scope".into(),
+                generation: lease.generation,
+                action_spec_sha256: action.spec_sha256.clone(),
+                commit_sha: linked.commit_sha,
+                tree_sha: linked.tree_sha,
+            },
+            now + 1,
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Forbidden(_))));
+    workspace.cleanup().unwrap();
+    db.close().await;
+    let _ = std::fs::remove_dir_all(root);
+}
