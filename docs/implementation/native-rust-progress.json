@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "22b816418f52258d1e99b066016790a92682701b",
+  "verified_code_commit_sha": "038eb9015e8bd72ad12136388d964672ab65f95f",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -19,7 +19,8 @@
     "Real Core process restart E2E preserving Project, Action, frozen spec and events",
     "Service placement policy/template/skill; container-first ADR/devcontainer/Linux/Windows docs; automation standards and skill",
     "E2E migration matrix covering legacy acceptance suites and honest statuses",
-    "Rust engineering standards, maintainability guidance and rust-engineering skill"
+    "Rust engineering standards, maintainability guidance and rust-engineering skill",
+    "Durable sealed standing-delegation persistence with one-way revocation and atomic cumulative request/session/attempt reservations"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -37,20 +38,17 @@
   },
   "provider_paid_turns": 0,
   "local_unit_tests_passed": 75,
-  "current_test_inventory": "Author-run at 22b8164: 104 passed, 1 ignored (88 library, 4 architecture, 3 Core binary, 7 hygiene, 1 Worker, 1 process recovery E2E); ignored rootless-Podman fixture not rerun. Exact-SHA CI pending.",
+  "current_test_inventory": "Author-run at 038eb9: 107 passed, 1 ignored (91 library, 4 architecture, 3 Core binary, 7 hygiene, 1 Worker, 1 process recovery E2E). Exact-SHA CI and independent review pending.",
   "author_verification_at_code_sha": {
-    "sha": "22b816418f52258d1e99b066016790a92682701b",
+    "sha": "038eb9015e8bd72ad12136388d964672ab65f95f",
     "binding": "COMMITTED_CANDIDATE_AUTHOR_RUN",
     "cargo_fmt_check": "PASS",
     "strict_clippy": "PASS",
-    "cargo_test": "PASS: 104 passed, 1 ignored",
-    "cargo_build_bins": "PASS",
-    "cargo_doc": "PASS",
-    "cargo_audit": "PASS (214 dependencies; RustSec DB loaded)",
-    "xtask_check": "PASS before commit on the committed tree",
-    "xtask_e2e_recovery": "PASS: core_restart_preserves_durable_project_action_and_events",
-    "xtask_migrate": "PASS: initial migration applied to disposable SQLite",
+    "cargo_test": "PASS: 107 passed, 1 ignored",
+    "xtask_e2e_recovery": "PASS",
+    "xtask_migrate": "PASS",
     "xtask_validate_architecture": "PASS",
+    "cargo_audit": "PASS (214 dependencies)",
     "container_build": "NOT_TESTED",
     "windows_runtime": "NOT_TESTED",
     "provider_paid_turns": 0
@@ -68,7 +66,7 @@
   "delivery_status": "NOT_MERGED_NOT_DEPLOYED",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Implement Core-owned Campaign authorization and dispatch behind a fail-closed isolation gate, or continue S4-D persistence/WorkGraph with autonomous policy closed. Verify the development container on Linux; keep Windows/Podman Machine NOT_TESTED. Keep PR #17 draft.",
+  "next_task": "Add durable Lead request/assessment/proposal/freeze persistence with autonomous start closed, or implement Core-owned Campaign authorization/dispatch behind a fail-closed isolation gate. Keep public provider dispatch disabled and PR #17 draft.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
@@ -100,14 +98,15 @@
       "durable_container_workspace_cleanup": "PARTIAL; ledger/reconcile implemented, fixture passes, same-UID race prevents acceptance",
       "legacy_go_ci": "OUTSTANDING"
     },
-    "lead": "Typed domain only: assessment, delegation snapshot, proposal/plan hash, 1-8 unit WorkGraph validation; no persistence or activation"
+    "lead": "Typed domain only: assessment, delegation snapshot, proposal/plan hash, 1-8 unit WorkGraph validation; no persistence or activation",
+    "delegation": "Sealed immutable grant snapshots, one-way revocation and atomic cumulative reservations; no API/activation"
   },
   "completion_gates": {
     "G1": "INCOMPLETE: Rust remains additive beside legacy Go core until cutover",
     "G2": "INCOMPLETE: no direct-provider work lifecycle; probes/fixtures only",
     "G3": "INCOMPLETE: legacy tree remains; hygiene audit 317 findings",
     "G4": "INCOMPLETE: native xtask/architecture/migration checks exist; Go workflows/checker remain",
-    "G5": "BLOCKED_INCOMPLETE: candidate ingestion and process recovery exist; no public Campaign authorization/dispatch",
+    "G5": "BLOCKED_INCOMPLETE: candidate and delegation persistence exist; no public Campaign authorization/dispatch",
     "G6": "INCOMPLETE: durable receipts/gate exist; no independent verifier/reviewer processes",
     "G7": "INCOMPLETE: Office still targets legacy API",
     "G8": "BLOCKED: no certified isolation/credential confinement; same-UID race unresolved",

@@ -183,8 +183,16 @@ Clippy, 104 tests + 1 ignored, build, docs, audit); `cargo xtask migrate` PASS;
 Independent review, exact-SHA CI, container build, Windows and paid-provider
 evidence remain outstanding. Public dispatch stays disabled.
 
-**Next executable task:** implement Core-owned Campaign authorization and
-Worker dispatch behind a fail-closed isolation gate, or continue S4-D
-persistence/WorkGraph with autonomous policy closed. Validate the development
-container on Linux before claiming container-first support. No paid turn is
-authorized.
+**Next executable task (continued):** standing-delegation persistence is now
+committed at `038eb9015e8bd72ad12136388d964672ab65f95f`. Author-run gates:
+107 tests passed + 1 ignored, strict Clippy/formatter/build/docs/audit pass.
+`cargo xtask e2e recovery`, `migrate` and `validate-architecture` pass. The new
+`native/src/db/delegations.rs` stores sealed immutable grants, one-way
+revocation and atomic cumulative request/session/attempt reservations with
+three tests; it grants no API or autonomous activation.
+
+**Next executable task:** add durable Lead request/assessment/proposal/freeze
+persistence with autonomous start closed, or implement Core-owned Campaign
+authorization and Worker dispatch behind a fail-closed isolation gate. Verify
+the development container on Linux before claiming container-first support.
+No paid turn is authorized.
