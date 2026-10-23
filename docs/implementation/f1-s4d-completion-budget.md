@@ -41,7 +41,8 @@ order is ignored, or if a prebuilt candidate bypasses the WorkGraph.
 | Expected actual provider sessions | **3** |
 | Authorized maximum Factory sessions | **4** |
 | First attempt used | **1 assessment** (preserved failure) |
-| Remaining retry cap | **3 provider sessions** (assessment + two units) |
+| Retry attempt used | **1 assessment** (preserved failure) |
+| Total E2E envelope used | **2 of 4**; remaining 2 cannot fund a complete journey |
 | Model implementer attempt budget | 2 (one per independent unit); deterministic integration consumes none |
 | Repair cycles | 0 |
 | Maximum parallel implementation tasks | 2 |

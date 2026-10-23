@@ -1,0 +1,85 @@
+{
+  "campaign": "F1-S4-D-GRAPH-LIVE",
+  "authorizationId": "s4d-graph-owner-auth-1",
+  "factorySha": "278f6ca6abf110c2f921d60a1b34c107cd8cadad",
+  "projectId": "factory-fixture-s4d-graph",
+  "fixture": "s4d-graph",
+  "route": "opencode/opencode-go/deepseek-v4.1-flash/build",
+  "dryRun": false,
+  "budget": {
+    "totalSessions": 3,
+    "attempts": 2,
+    "repairs": 0,
+    "maxParallel": 2,
+    "maxWallClockSecs": 1800
+  },
+  "status": "INCOMPLETE",
+  "sessions": [
+    "a90e1a0a-3a82-44a0-895f-97656132fbcb"
+  ],
+  "cleanup": {
+    "sessions": [
+      {
+        "sessionId": "a90e1a0a-3a82-44a0-895f-97656132fbcb",
+        "stopExit": 0,
+        "archiveExit": 0,
+        "archiveNote": "already archived"
+      }
+    ],
+    "failedSessions": [],
+    "servicesStopped": true
+  },
+  "fixtureBaseline": "782e2327dcad8a4671811944e18199fe4be0789f",
+  "grant": {
+    "id": "f2d9d87611f694812b28e369ec7be121",
+    "revision": 1,
+    "contentHash": "aacc4560901649831b91c108943325baf8df3e52fea2c35ba8e53fb33a64fca6",
+    "expiresAt": "2026-10-23T07:57:03Z",
+    "maxSessions": 3,
+    "maxCumulativeSessions": 3
+  },
+  "browserSubmit": {
+    "phase": "submit",
+    "ok": true,
+    "checks": [
+      {
+        "name": "UI submitted the objective and bound a request ID",
+        "pass": true,
+        "detail": "6802382a54c0f84b029cd3645a24146e"
+      },
+      {
+        "name": "UI reflects an authorized autonomous state",
+        "pass": true,
+        "detail": "Factory Office S4-D\nDashboard\nProjects\nLead\nActions\nCampaigns\nRuns\nWorkers\nAgents\nLock\nLead\n\nSubmit an objective for a server-owned assessment and plan. Core controls authorization and records every resulting state.\n\nLead request submitted."
+      },
+      {
+        "name": "browser produced no console errors",
+        "pass": true
+      }
+    ],
+    "requestId": "6802382a54c0f84b029cd3645a24146e",
+    "consoleErrors": [],
+    "timeoutOutput": ""
+  },
+  "requestId": "6802382a54c0f84b029cd3645a24146e",
+  "lead": {
+    "status": "blocked",
+    "startMode": "",
+    "authorizationState": "permitted",
+    "campaignId": "",
+    "planHash": null,
+    "plan": null,
+    "delegationUsage": {
+      "delegationId": "f2d9d87611f694812b28e369ec7be121",
+      "reservedRequests": 1,
+      "reservedSessions": 1,
+      "reservedAttempts": 0,
+      "updatedAt": "2026-10-23T06:57:04.596241089Z"
+    }
+  },
+  "failure": "Lead did not reach accepted: blocked Lead assessment failed; reconciliation={\"code\":\"assessment_run_failed\",\"sessionReconciliation\":{\"status\":\"session_reconciled\",\"sessionId\":\"a90e1a0a-3a82-44a0-895f-97656132fbcb\",\"requestedProvider\":\"opencode\",\"requestedModel\":\"opencode-go/deepseek-v4.1-flash\",\"requestedMode\":\"build\",\"observedProvider\":\"opencode\",\"observedModel\":\"opencode-go/deepseek-v4.1-flash\",\"observedMode\":\"build\",\"observedStatus\":\"other\",\"routeStatus\":\"verified\",\"stop\":\"ok\",\"archive\":\"ok\"},\"workspaceArchive\":\"ok\"} fixture not removed",
+  "unboundSessions": [],
+  "sessionDiscoveryErrors": [],
+  "orphanedSessions": [],
+  "workRoot": "/tmp/factory-s4d-graph-live-gzdfhggp"
+}

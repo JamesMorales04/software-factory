@@ -100,6 +100,16 @@ model-backed implementer attempts so deterministic integration does not
 consume the provider-session budget: the remaining retry envelope is exactly
 three assessment/unit sessions, keeping total provider use at four.
 
+A second authorized attempt at head `278f6ca` used one assessment session
+(`a90e1a0a-3a82-44a0-895f-97656132fbcb`). The assessment run failed after the
+provider session was reconciled (`observedStatus: other`); Core blocked the
+request before any WorkUnit dispatch. The session was stopped and archived.
+Evidence is preserved in
+[f1-s4d-graph-live-278f6ca6abf.json](f1-s4d-graph-live-278f6ca6abf.json).
+Total provider sessions used by the E2E envelope: **2 of 4**. The remaining
+two sessions cannot fund a complete three-session journey, so paid E2E
+dispatch stopped; the envelope was not expanded.
+
 ## Capability status
 
 - CAP-013/015/017 deterministic scope: verified for the reusable/autonomous and

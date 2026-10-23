@@ -2,7 +2,7 @@
   "candidateSha": "9e12dcf0871105652160e328980bdec53d4fabd5",
   "recorded": "2026-10-22",
   "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
-  "paidSessions": 1,
+  "paidSessions": 2,
   "checks": [
     {"name": "pinned golangci-lint", "pass": true, "detail": "0 issues"},
     {"name": "go vet", "pass": true},
@@ -59,7 +59,8 @@
     "Full provider/model/mode route is bound in the authorization envelope."
   ],
   "liveAttempts": [
-    {"candidate": "4640e30d5ca58077c6a8c08a77b41996f6423d23", "status": "INCOMPLETE", "sessions": 1, "reason": "model proposed invalid per-unit check kind syntax; blocked before dispatch", "sessionArchived": true}
+    {"candidate": "4640e30d5ca58077c6a8c08a77b41996f6423d23", "status": "INCOMPLETE", "sessions": 1, "reason": "model proposed invalid per-unit check kind syntax; blocked before dispatch", "sessionArchived": true},
+    {"candidate": "278f6ca6abf110c2f921d60a1b34c107cd8cadad", "status": "INCOMPLETE", "sessions": 1, "reason": "assessment provider session reconciled but run failed with observedStatus other; blocked before unit dispatch", "sessionArchived": true}
   ],
   "limits": [
     "No real model, paid provider session, UAT, deployment or isolation certification.",
