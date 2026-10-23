@@ -25,6 +25,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy,rustfmt
+      - name: Install pinned cargo-audit
+        run: cargo +1.90.0 install cargo-audit --version 0.22.2 --locked
+      - name: Audit locked dependencies
+        run: cargo +1.90.0 audit --file Cargo.lock
       - name: Format
         run: cargo +1.90.0 fmt --all -- --check
       - name: Clippy

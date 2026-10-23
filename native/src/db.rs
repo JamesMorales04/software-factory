@@ -86,16 +86,34 @@ impl Database {
         if !canonical.is_dir() {
             return Err(Error::Repository("not a directory".into()));
         }
-        let output = std::process::Command::new("git")
+        let top_level = std::process::Command::new("git")
             .args([
                 "-C",
                 canonical
                     .to_str()
                     .ok_or(Error::Invalid("repository path encoding"))?,
                 "rev-parse",
-                "--verify",
-                "HEAD",
+                "--show-toplevel",
             ])
+            .output()
+            .map_err(|error| Error::Repository(error.to_string()))?;
+        if !top_level.status.success() {
+            return Err(Error::Repository(
+                "path is not inside a Git worktree".into(),
+            ));
+        }
+        let root = String::from_utf8(top_level.stdout)
+            .map_err(|_| Error::Invalid("repository path encoding"))?;
+        let root = root
+            .strip_suffix('\n')
+            .ok_or(Error::Invalid("Git top-level output terminator"))?;
+        let root = Path::new(root)
+            .canonicalize()
+            .map_err(|error| Error::Repository(error.to_string()))?;
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["rev-parse", "--verify", "HEAD"])
             .output()
             .map_err(|error| Error::Repository(error.to_string()))?;
         if !output.status.success() {
@@ -105,7 +123,7 @@ impl Database {
             .map_err(|_| Error::Invalid("commit encoding"))?
             .trim()
             .to_string();
-        let repository = canonical.to_string_lossy().to_string();
+        let repository = root.to_string_lossy().to_string();
         let request_digest = sha256_hex(repository.as_bytes());
         let mut connection = self.0.lock().expect("database mutex poisoned");
         let transaction = connection.transaction()?;
@@ -407,7 +425,7 @@ mod tests {
 
     #[test]
     fn project_retry_keeps_first_base_after_repository_advances() {
-        let root = std::env::temp_dir().join(format!("factory-project-test-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("factory-project-test-{} ", Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let git = |arguments: &[&str]| {
             assert!(
@@ -426,12 +444,16 @@ mod tests {
         std::fs::write(root.join("content"), "one").unwrap();
         git(&["add", "content"]);
         git(&["commit", "-qm", "first"]);
+        std::fs::create_dir(root.join("nested")).unwrap();
         let db = Database::open(&root.join("factory.sqlite")).unwrap();
         let first = db.register_project(&root, "same-request").unwrap();
+        assert_eq!(first.repository, root.to_string_lossy());
         std::fs::write(root.join("content"), "two").unwrap();
         git(&["add", "content"]);
         git(&["commit", "-qm", "second"]);
-        let replayed = db.register_project(&root, "same-request").unwrap();
+        let replayed = db
+            .register_project(&root.join("nested"), "same-request")
+            .unwrap();
         assert_eq!(first.id, replayed.id);
         assert_eq!(first.base_commit, replayed.base_commit);
         drop(db);

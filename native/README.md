@@ -22,4 +22,4 @@ cargo run --bin factory-provider-probe -- codex
 cargo run --bin factory-provider-probe -- opencode
 ```
 
-These start and stop provider servers but do not create paid turns. The OpenCode probe uses a generated per-process password on loopback and hashes the served OpenAPI schema. Probe results are preflight observations, not a provider execution certificate.
+These start and stop provider servers but do not create paid turns. The Codex probe checks initialization and model discovery only. The OpenCode probe uses a generated per-process password on loopback, reads the server's own bound address, hashes its OpenAPI schema, checks the first SSE `server.connected` event, and creates, inspects, then deletes one session bound to the canonical workspace. This does not test prompt progress, completion, reconnect, or real coding. Probe results are preflight observations, not a provider execution certificate.
