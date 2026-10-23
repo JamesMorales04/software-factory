@@ -64,6 +64,17 @@ pub(crate) fn migrate() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn office() -> Result<(), String> {
+    for script in ["typecheck", "lint", "build"] {
+        let mut command = Command::new("npm");
+        command.args(["run", script]).current_dir("office");
+        run(command).map_err(|error| {
+            format!("{error}\nInstall Office dependencies with `npm ci` in office/.")
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn security() -> Result<(), String> {
     cargo_stream(&["test", "--workspace", "--locked", "sandbox::"])?;
     let mut hygiene = cargo();

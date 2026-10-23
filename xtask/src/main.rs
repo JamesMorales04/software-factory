@@ -20,6 +20,7 @@ fn main() -> ExitCode {
         ("test", None) => check::test(),
         ("migrate", None) => check::migrate(),
         ("security", None) => check::security(),
+        ("office", None) => check::office(),
         ("validate-architecture", None) => governance::architecture(),
         ("governance", None) => governance::governance(),
         ("e2e", Some("recovery")) => e2e::recovery(),
@@ -52,6 +53,7 @@ Commands:
   test                    cargo test --workspace --locked
   migrate                 verify migrations against a disposable SQLite database
   security                sandbox isolation tests and repository hygiene audit
+  office                  Office typecheck, lint and production build
   validate-architecture   native architecture and capability consistency
   governance              architecture consistency plus legacy inventory
   e2e recovery            process-level Core restart and durable-state recovery

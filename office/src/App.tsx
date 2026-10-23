@@ -7,6 +7,7 @@ import { Agents } from "./views/Agents";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { Dashboard } from "./views/Dashboard";
+import { Native } from "./views/Native";
 import { Projects } from "./views/Projects";
 import { RunDetail } from "./views/RunDetail";
 import { Runs } from "./views/Runs";
@@ -125,6 +126,15 @@ export function App() {
           >
             Agents
           </NavLink>
+          <NavLink
+            to="/native"
+            end
+            className={({ isActive }) =>
+              isActive ? "navlink active" : "navlink"
+            }
+          >
+            Native
+          </NavLink>
           <button
             type="button"
             className="linklike"
@@ -149,6 +159,7 @@ export function App() {
           <Route path="/runs/:id" element={<RunDetail />} />
           <Route path="/workers" element={<Workers />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/native" element={<Native />} />
           <Route path="*" element={<p className="error">Unknown route.</p>} />
         </Routes>
       </main>
