@@ -1,0 +1,156 @@
+{
+  "schemaRevision": 1,
+  "projectId": "factory-fixture-s4d-semantic",
+  "actionId": "9531b83d606ebce785a5b4a5aa4a703c",
+  "requestId": "49455b9e05bfeb632f0bbfee629836ce",
+  "evidenceRefs": [
+    "E-07a",
+    "E-07b"
+  ],
+  "intent": "change",
+  "complexity": "small",
+  "effortEstimate": {
+    "status": "estimated",
+    "unit": "person-hours",
+    "minPersonHours": 3,
+    "maxPersonHours": 6,
+    "assumptions": [
+      "Handler and repository query are in the same package, so pagination can be implemented without cross-package coordination (E-07a).",
+      "Existing handler and repository tests provide a base for adding pagination tests (E-07b).",
+      "Project IDs are immutable, so ordering by project ID is stable (E-07a).",
+      "There is no public API compatibility freeze, so pagination parameters and response shape can change without migration work (E-07b).",
+      "Estimate covers implementation and tests but not deployment or database migration."
+    ],
+    "unknownReason": ""
+  },
+  "knowledgeGaps": [
+    "Pagination style is unspecified: limit/offset versus cursor. E-07b notes no cursor helper exists, so cursor pagination may require a new helper.",
+    "Project metadata lists node-basic and node-toolchain, but evidence says the endpoint is in a Go package; confirm the actual build/test toolchain before execution.",
+    "The current GET /projects response envelope and error format for invalid pagination parameters are not described."
+  ],
+  "changeImpact": [
+    "Touches the GET /projects handler and its repository query in the same package, plus handler and repository tests (E-07a, E-07b).",
+    "Query behavior and response shape may change; the absence of a compatibility freeze limits external impact (E-07b).",
+    "No database schema change is implied because pagination can be added to the existing query (E-07a)."
+  ],
+  "validationNeeds": [
+    "Build and run the Go package test suite.",
+    "Add and run tests for default page size 50, maximum 200, stable ordering by project ID, and invalid pagination parameters.",
+    "Verify the repository query applies pagination instead of returning all rows (E-07a)."
+  ],
+  "assumptions": [
+    "Pagination applies only to GET /projects.",
+    "Page size and page token or offset parameter names can be chosen during implementation.",
+    "The existing test frameworks can cover the new handler and repository behavior.",
+    "The work is confined to the repository root and requires no new service or dependency."
+  ],
+  "uncertainty": [
+    "The range reflects uncertainty between offset-based and cursor-based pagination and the amount of existing test scaffolding.",
+    "The node-basic profile and node-toolchain capability conflict with the Go evidence, which could change validation effort.",
+    "Exact acceptance behavior for limits above 200 (clamp versus error) is not specified."
+  ],
+  "suggestedNextAction": "Confirm the pagination contract (limit/offset versus cursor) and the Go toolchain, then implement the single pagination work unit with handler, repository query, and tests.",
+  "proposal": {
+    "projectId": "factory-fixture-s4d-semantic",
+    "actionId": "9531b83d606ebce785a5b4a5aa4a703c",
+    "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "projectConfigHash": "b79606fb3afea5bd1609ed40b622142ff309dd9c31fe24b3e594d2f9420419c4",
+    "objective": "Add pagination to GET /projects with a default page size of 50, a maximum of 200, stable ordering by project ID, and tests.",
+    "class": "feature",
+    "assumptions": [
+      "Handler and repository query are in the same package, so the change can remain within one package (E-07a).",
+      "Existing handler and repository tests can be extended for pagination (E-07b).",
+      "Project IDs are immutable and can provide stable ordering (E-07a).",
+      "No public API compatibility freeze exists, so parameter and response changes are acceptable (E-07b)."
+    ],
+    "risks": [
+      "Cursor pagination without an existing helper may add effort beyond the upper estimate if required (E-07b).",
+      "Changing the response shape could affect undocumented consumers despite no formal compatibility freeze (E-07b).",
+      "The node-basic profile and node-toolchain capability may not match the Go toolchain implied by the evidence, which could block the listed commands.",
+      "The exact behavior for page sizes above 200 is unspecified and could be implemented as clamping or rejection."
+    ],
+    "acceptanceCriteria": [
+      {
+        "id": "ac-build",
+        "kind": "build",
+        "description": "The Go package builds after the pagination change.",
+        "command": [
+          "go",
+          "build",
+          "./..."
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      },
+      {
+        "id": "ac-test",
+        "kind": "test",
+        "description": "Existing and new pagination tests pass.",
+        "command": [
+          "go",
+          "test",
+          "./..."
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      }
+    ],
+    "negativeCases": [
+      {
+        "id": "nc-limits",
+        "kind": "test",
+        "description": "Default size is 50, no more than 200 rows are returned for larger requests, and invalid page sizes are handled deterministically.",
+        "command": [
+          "go",
+          "test",
+          "./...",
+          "-run",
+          "TestPaginationLimits"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      },
+      {
+        "id": "nc-order",
+        "kind": "test",
+        "description": "Results remain stably ordered by project ID across pages without duplicates or omissions.",
+        "command": [
+          "go",
+          "test",
+          "./...",
+          "-run",
+          "TestPaginationOrdering"
+        ],
+        "expectExit": 0,
+        "timeoutSecs": 120
+      }
+    ],
+    "qualityProfile": "node-basic",
+    "riskClass": "R0",
+    "budget": {
+      "maxAttempts": 1,
+      "timeoutSecs": 120
+    },
+    "provider": "opencode",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "paseoMode": "build",
+    "maxRepairCycles": 0,
+    "maxWallClockSecs": 300,
+    "maxParallel": 1,
+    "maxSessions": 1,
+    "workUnits": [
+      {
+        "id": "wu-projects-pagination",
+        "kind": "implementation",
+        "dependsOn": [],
+        "allowedPaths": [
+          "."
+        ],
+        "capabilities": [
+          "repository-edit",
+          "node-toolchain"
+        ]
+      }
+    ]
+  }
+}

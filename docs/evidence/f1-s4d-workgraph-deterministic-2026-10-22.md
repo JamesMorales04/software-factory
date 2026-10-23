@@ -131,3 +131,11 @@ dispatch stopped; the envelope was not expanded.
   separate evidence.
 - TRUSTED_LOCAL remains broad host access and is not SEC-01 isolation.
 - CAP-014 has no model score and must not be marked verified.
+
+## Live certification result
+
+See [f1-s4d-live-certification-2026-10-22.md](f1-s4d-live-certification-2026-10-22.md).
+The authorized E2E envelope used 2 of 4 sessions and produced no completed
+journey; CAP-014 used 11/11 sessions and produced 6 captured / 5 failed
+fixtures, so no independent score exists. All sessions are terminal/archived.
+No full-product real certification is claimed.

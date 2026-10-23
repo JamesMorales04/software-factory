@@ -1,0 +1,10 @@
+{
+  "mechanism": "MODEL",
+  "provider": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "mode": "build",
+  "sessionId": "358c43df-b42b-41ce-be1c-2f380d07badf",
+  "elapsed": 43376754159,
+  "inputBytes": 1960,
+  "outputBytes": 2637
+}

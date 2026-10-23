@@ -32,10 +32,13 @@ The multi-unit live envelope is prepared in
 `scripts/e2e_s4d_graph_live.py` is default-closed and does not execute live
 work. No paid/live model session was started.
 
-Still required: explicit numeric Product Owner authorization, a reviewed
-multi-unit execution runner, independently scored CAP-014 model outputs and
-independent final-SHA review. CAP-014 remains blocked and CAP-043 remains in
-progress.
+The authorized live round is now recorded in
+[f1-s4d-live-certification-2026-10-22.md](../evidence/f1-s4d-live-certification-2026-10-22.md).
+E2E used 2 of 4 sessions and did not complete a journey; CAP-014 used all 11
+sessions but only 6 fixtures produced decodable outputs, so no score exists.
+All provider sessions are closed/archived. A new Product Owner numeric envelope
+is required for another E2E journey and a revised CAP-014 attempt. CAP-014
+remains blocked; S4-D real certification is not complete.
 
 ## Resume status (2026-10-22, after PR #16 lint failure)
 
