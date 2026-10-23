@@ -1,6 +1,6 @@
 # F1-S4-D standing autonomy and WorkGraph deterministic evidence
 
-**Recorded:** 2026-10-22. **Code candidate:** `e94ab079e58bc1026bd4e689350e6ec4b1b578e1`. This evidence is
+**Recorded:** 2026-10-22. **Code candidate:** `60bbdc34c27dceb266dfd0f81d0fe7c9ba9506ed`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
 No paid or live model/Paseo session was started.
 
@@ -85,6 +85,17 @@ on revocation; CAP-014 silently accepting unknown fixture IDs; unbound
 provider-session discovery and cleanup; semantic collector direct-invocation
 authority gaps; corpus digest pinning; raw model-output capture; and exact
 route-mode binding.
+
+## Live attempt 1 (preserved failure)
+
+The first authorized graph attempt at Factory head `4640e30d5ca58077c6a8c08a77b41996f6423d23`
+used one assessment session (`e3224b47-cc31-489c-a80e-9fdd1a799a0b`).
+The model proposed an invalid per-unit check kind (`syntax`), so Core blocked
+the proposal before any Implementer dispatch. The session was stopped and is
+already archived; the runner correctly marked the attempt `INCOMPLETE`.
+Evidence is preserved in
+[f1-s4d-graph-live-4640e30d5ca.json](f1-s4d-graph-live-4640e30d5ca.json).
+No unit or integration session was started, and no budget was expanded.
 
 ## Capability status
 

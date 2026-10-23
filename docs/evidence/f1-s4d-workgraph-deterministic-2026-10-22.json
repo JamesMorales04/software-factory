@@ -1,8 +1,8 @@
 {
-  "candidateSha": "e94ab079e58bc1026bd4e689350e6ec4b1b578e1",
+  "candidateSha": "60bbdc34c27dceb266dfd0f81d0fe7c9ba9506ed",
   "recorded": "2026-10-22",
   "scope": "F1-S4-D standing autonomy and bounded dependency-aware WorkGraph",
-  "paidSessions": 0,
+  "paidSessions": 1,
   "checks": [
     {"name": "pinned golangci-lint", "pass": true, "detail": "0 issues"},
     {"name": "go vet", "pass": true},
@@ -57,6 +57,9 @@
     "Unbound provider sessions are discovered by label, cleaned, and fail the run.",
     "Semantic collector enforces exact SHA/clean tree, corpus digest, raw output and cleanup.",
     "Full provider/model/mode route is bound in the authorization envelope."
+  ],
+  "liveAttempts": [
+    {"candidate": "4640e30d5ca58077c6a8c08a77b41996f6423d23", "status": "INCOMPLETE", "sessions": 1, "reason": "model proposed invalid per-unit check kind syntax; blocked before dispatch", "sessionArchived": true}
   ],
   "limits": [
     "No real model, paid provider session, UAT, deployment or isolation certification.",
