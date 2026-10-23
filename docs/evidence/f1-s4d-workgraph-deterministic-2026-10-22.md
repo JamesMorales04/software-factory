@@ -1,6 +1,6 @@
 # F1-S4-D standing autonomy and WorkGraph deterministic evidence
 
-**Recorded:** 2026-10-22. **Code candidate:** `8142462cda2aa0ea54e399fc409037aa20017d9d`. This evidence is
+**Recorded:** 2026-10-22. **Code candidate:** `9e12dcf0871105652160e328980bdec53d4fabd5`. This evidence is
 bound to the exact code commit resolved below after the completion commit.
 No paid or live model/Paseo session was started.
 
