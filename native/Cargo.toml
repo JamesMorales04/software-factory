@@ -1,0 +1,31 @@
+[package]
+name = "factory-native"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8.4", features = ["json"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+reqwest = { version = "0.12.23", features = ["json", "stream", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+sha2 = "0.10.9"
+serde = { version = "1.0.226", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[[bin]]
+name = "factory-core"
+path = "src/bin/core.rs"
+
+[[bin]]
+name = "factory-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "factory-provider-probe"
+path = "src/bin/provider_probe.rs"

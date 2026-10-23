@@ -1,6 +1,6 @@
 # ADR-0005: Go as the Core and Worker implementation language
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0018](ADR-0018-native-rust-replacement.md) for the replacement architecture. This record preserves the historical decision.
 - **Decision date:** 2026-10-18
 - **Decision authority:** Product owner
 - **Scope:** Factory Core, orchestration modules, local Workers, and future compatible Worker implementations.

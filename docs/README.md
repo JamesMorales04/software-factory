@@ -1,19 +1,17 @@
 # Documentation and governance
 
+> **Native Rust replacement branch:** [ADR-0018](architecture/decisions/ADR-0018-native-rust-replacement.md) is the Product Owner's superseding target decision. This branch is not cut over; historical Go/Paseo documents below describe the old implementation. See the [native Rust handoff](implementation/native-rust-handoff.md) for actual working state.
+
 All normative software architecture and engineering guidance is maintained **in this repository, in English**. Documentation must track real project state; prose is never sufficient evidence that a feature is implemented.
 
 ## Reading order
 
-1. [Master architecture](architecture/MASTER.md) — scope, decisions, boundaries and stage gates.
+1. [Native Rust decision](architecture/decisions/ADR-0018-native-rust-replacement.md), [native bootstrap](../native/README.md), and [handoff](implementation/native-rust-handoff.md) — active target and implemented scope on this branch.
 2. [Engineering standards](engineering/code-quality.md) and [linting](engineering/linting.md) — clean design and objective static checks.
-3. [Contracts](contracts/README.md) — authoritative interfaces to finish during F0.
-4. [Quality baseline](quality/baseline.md) — global acceptance and independent verification; [live certification policy](quality/live-certification.md) — deterministic, real Paseo and Product Owner UAT evidence levels.
-5. [Security](security/isolation.md), [SEC-01 spike](security/paseo-sandbox-spike.md) and [2026-10-18 results](security/SEC-01-results-2026-10-18.md).
-6. [Observability](observability/telemetry.md) — durable events, traces, metrics, logging.
-7. [Factory Office](product/factory-office.md) — F1 UI and event projections.
-8. [Capability registry](product/capabilities.yaml), [generated roadmap](roadmap/ROADMAP.md), [AEH assessment](architecture/AEH-CAPABILITY-ASSESSMENT.md) and [reliability debt](quality/reliability-debt.md) — canonical status, future slices and open risks. [F0/F1 plan](implementation/f0-f1-plan.md) remains historical implementation context; see [S4-C acceptance](implementation/f1-s4c-acceptance.md) and [C-07 live certification](implementation/f1-s4c-07-live-certification.md) for exact evidence.
-9. [Browser automation](engineering/browser-automation.md) — pinned agent-native Playwright CLI, Factory-managed Implementer capability, verifier boundary and MCP disposition.
-10. [Decision records](architecture/decisions/README.md) — decisions, trade-offs, and supersession.
+3. [Quality baseline](quality/baseline.md) — candidate integrity, independent verification, and gate states; its old implementation references are historical.
+4. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
+
+The [old master](architecture/MASTER.md), [contracts](contracts/README.md), [security spike](security/paseo-sandbox-spike.md), [live certification](quality/live-certification.md), [capability registry](product/capabilities.yaml), [roadmap](roadmap/ROADMAP.md), and [AEH assessment](architecture/AEH-CAPABILITY-ASSESSMENT.md) are historical input. They do not define the new runtime or certify the Rust branch. Their replacement is required before cutover.
 
 ## Authority hierarchy
 
