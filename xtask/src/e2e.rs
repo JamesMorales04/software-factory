@@ -1,9 +1,15 @@
 use crate::process::cargo_run;
 
-const SUITES: &[(&str, &str)] = &[(
-    "recovery",
-    "process-level Core restart and durable Project/Action recovery",
-)];
+const SUITES: &[(&str, &str)] = &[
+    (
+        "recovery",
+        "process-level Core restart and durable Project/Action recovery",
+    ),
+    (
+        "dispatch",
+        "fixture Campaign authorization, Worker lease, candidate, receipts and gate",
+    ),
+];
 
 pub(crate) fn list() -> Result<(), String> {
     println!("Deterministic E2E suites (no provider session):");
@@ -21,6 +27,16 @@ pub(crate) fn recovery() -> Result<(), String> {
         "--locked",
         "--test",
         "e2e_core_recovery",
+    ])
+}
+
+pub(crate) fn dispatch() -> Result<(), String> {
+    cargo_run(&[
+        "test",
+        "--workspace",
+        "--locked",
+        "--test",
+        "e2e_fixture_dispatch",
     ])
 }
 

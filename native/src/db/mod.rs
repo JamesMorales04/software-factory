@@ -102,6 +102,16 @@ pub struct Attempt {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerAssignment {
+    pub lease: WorkerLease,
+    pub action_id: String,
+    pub action_spec: ActionSpec,
+    pub action_spec_sha256: String,
+    pub repository: String,
+    pub execution_mode: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLease {
     pub attempt_id: String,
     pub worker_id: String,
@@ -439,6 +449,8 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+mod authorization;
+pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod lead;
 mod lifecycle;

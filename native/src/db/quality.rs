@@ -130,6 +130,38 @@ impl Database {
         Ok(QualityIngestResult { receipt, gate })
     }
 
+    pub async fn candidates(&self) -> Result<Vec<CandidateRecord>, Error> {
+        let rows: Vec<(String, String, String, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+                 FROM candidates ORDER BY created_at,id",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    attempt_id,
+                    action_spec_sha256,
+                    commit_sha,
+                    tree_sha,
+                    implementer_id,
+                    created_at,
+                )| CandidateRecord {
+                    id,
+                    attempt_id,
+                    action_spec_sha256,
+                    commit_sha,
+                    tree_sha,
+                    implementer_id,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
     pub async fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
         let mut connection = self.pool.acquire().await?;
         load_candidate(&mut connection, id).await

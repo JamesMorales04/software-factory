@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         ("validate-architecture", None) => governance::architecture(),
         ("governance", None) => governance::governance(),
         ("e2e", Some("recovery")) => e2e::recovery(),
+        ("e2e", Some("dispatch")) => e2e::dispatch(),
         ("e2e", Some(_)) => e2e::unsupported(args.get(1).map(String::as_str).unwrap_or_default()),
         ("e2e", None) => e2e::list(),
         _ => {
@@ -54,6 +55,7 @@ Commands:
   validate-architecture   native architecture and capability consistency
   governance              architecture consistency plus legacy inventory
   e2e recovery            process-level Core restart and durable-state recovery
+  e2e dispatch            fixture Campaign, Worker, candidate, receipts and gate
   e2e                     list available deterministic E2E suites
 
 Xtask coordinates existing tools. It never starts a paid provider session and

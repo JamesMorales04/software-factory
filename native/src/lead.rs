@@ -1180,6 +1180,10 @@ fn require_check_kinds<'a>(
     Ok(())
 }
 
+pub fn validate_repository_paths(name: &str, paths: &[String]) -> Result<(), LeadError> {
+    validate_paths(name, paths)
+}
+
 fn validate_paths(name: &str, paths: &[String]) -> Result<(), LeadError> {
     if paths.is_empty() {
         return Err(LeadError::Path(format!("{name} must not be empty")));

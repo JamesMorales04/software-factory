@@ -130,6 +130,71 @@ impl Database {
         now_ms: i64,
         lease_ms: i64,
     ) -> Result<Option<WorkerLease>, Error> {
+        Ok(self
+            .claim_candidate(worker_id, now_ms, lease_ms)
+            .await?
+            .map(|(lease, _)| lease))
+    }
+
+    /// Claim a fixture-authorized Attempt and return the frozen assignment data
+    /// the Worker needs. Provider/isolated modes are not returned by this slice.
+    pub async fn claim_assignment(
+        &self,
+        worker_id: &str,
+        now_ms: i64,
+        lease_ms: i64,
+    ) -> Result<Option<WorkerAssignment>, Error> {
+        let Some((lease, attempt_id)) = self.claim_candidate(worker_id, now_ms, lease_ms).await?
+        else {
+            return Ok(None);
+        };
+        let row = sqlx::query::query(
+            "SELECT c.action_id,p.repository,s.spec_json,s.spec_sha256,ca.execution_mode
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN projects p ON p.id=ac.project_id
+             JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+             WHERE a.id=?1",
+        )
+        .bind(&attempt_id)
+        .fetch_one(&self.pool)
+        .await?;
+        use sqlx::row::Row;
+        let action_id: String = row.try_get("action_id")?;
+        let repository: String = row.try_get("repository")?;
+        let spec_json: String = row.try_get("spec_json")?;
+        let spec_sha256: String = row.try_get("spec_sha256")?;
+        let execution_mode: Option<String> = row.try_get("execution_mode")?;
+        let execution_mode = execution_mode.unwrap_or_else(|| "ISOLATED".into());
+        if execution_mode != "FIXTURE" {
+            return Err(Error::Forbidden(
+                "only deterministic fixture assignments are enabled".into(),
+            ));
+        }
+        let spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        if sha256_hex(spec_json.as_bytes()) != spec_sha256 {
+            return Err(Error::Invalid("stored ActionSpec digest mismatch"));
+        }
+        Ok(Some(WorkerAssignment {
+            lease,
+            action_id,
+            action_spec: spec,
+            action_spec_sha256: spec_sha256,
+            repository,
+            execution_mode,
+        }))
+    }
+
+    async fn claim_candidate(
+        &self,
+        worker_id: &str,
+        now_ms: i64,
+        lease_ms: i64,
+    ) -> Result<Option<(WorkerLease, String)>, Error> {
         if worker_id.trim().is_empty() || lease_ms <= 0 || lease_ms > 60_000 {
             return Err(Error::Invalid("worker lease request"));
         }
@@ -139,8 +204,10 @@ impl Database {
             "SELECT a.id FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
+             LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
-             WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED' AND a.sandbox_ready=1
+             WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
+             AND (a.sandbox_ready=1 OR ca.execution_mode='FIXTURE')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
              ORDER BY a.created_at,a.id LIMIT 1",
         )
@@ -191,12 +258,15 @@ impl Database {
         )
         .await?;
         transaction.commit().await?;
-        Ok(Some(WorkerLease {
+        Ok(Some((
+            WorkerLease {
+                attempt_id: attempt_id.clone(),
+                worker_id: worker_id.into(),
+                generation,
+                expires_at_ms,
+            },
             attempt_id,
-            worker_id: worker_id.into(),
-            generation,
-            expires_at_ms,
-        }))
+        )))
     }
 
     pub async fn heartbeat(

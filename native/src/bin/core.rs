@@ -9,7 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use factory_native::db::{
-    Database, Error, NewCandidate, QualityReceiptInput, QualityRole, WorkerReport,
+    Database, Error, NewCampaignAuthorization, NewCandidate, QualityReceiptInput, QualityRole,
+    WorkerReport,
 };
 use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
@@ -74,6 +75,18 @@ struct Heartbeat {
 struct NewDelegation {
     delegation: StandingDelegation,
     idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizeCampaign {
+    authorization_id: String,
+    risk_class: String,
+    execution_mode: String,
+    actor: String,
+    rationale: String,
+    authorized_paths: Vec<String>,
+    max_attempts: u32,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +194,11 @@ fn build_router(app: Arc<App>) -> Router {
         )
         .route("/lead/requests", post(create_lead_request))
         .route("/lead/requests/{id}", get(get_lead_request))
+        .route("/campaigns/{id}/authorize", post(authorize_campaign))
+        .route("/campaigns/{id}/authorization", get(campaign_authorization))
+        .route("/campaigns/{id}/runs", post(create_campaign_run))
+        .route("/runs/{id}/attempts", post(create_run_attempt))
+        .route("/candidates", get(candidates))
         .with_state(app)
 }
 
@@ -334,10 +352,29 @@ async fn worker_claim(
     if input.worker_id.trim().is_empty() {
         return api_error(Error::Invalid("worker_id"));
     }
-    // Session authentication is bound to worker_id. Dispatch remains blocked
-    // until independent authorization and sandbox readiness paths exist.
-    Json(json!({"dispatch_supported":false,"lease":null,"blocked":"authorization and sandbox readiness are unavailable"})).into_response()
+    match app
+        .db
+        .claim_assignment(
+            &input.worker_id,
+            chrono::Utc::now().timestamp_millis(),
+            60_000,
+        )
+        .await
+    {
+        Ok(Some(assignment)) => Json(json!({
+            "dispatch_supported": true,
+            "assignment": assignment
+        }))
+        .into_response(),
+        Ok(None) => Json(json!({
+            "dispatch_supported": true,
+            "assignment": null
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
 }
+
 async fn worker_heartbeat(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -553,6 +590,89 @@ async fn get_lead_request(
         "plan": plan
     }))
     .into_response()
+}
+
+async fn authorize_campaign(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<AuthorizeCampaign>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let authorization = NewCampaignAuthorization {
+        authorization_id: input.authorization_id,
+        risk_class: input.risk_class,
+        execution_mode: input.execution_mode,
+        actor: input.actor,
+        rationale: input.rationale,
+        authorized_paths: input.authorized_paths,
+        max_attempts: input.max_attempts,
+    };
+    match app.db.authorize_campaign(&id, &authorization).await {
+        Ok((record, created)) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(record),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn campaign_authorization(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.campaign_authorization(&id).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_campaign_run(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let key = format!("campaign-run:{id}");
+    match app.db.create_run(&id, &key).await {
+        Ok(run) => (StatusCode::CREATED, Json(run)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_run_attempt(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let key = format!("run-attempt:{id}");
+    match app.db.create_attempt(&id, &key).await {
+        Ok(attempt) => (StatusCode::CREATED, Json(attempt)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn candidates(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.candidates().await)
 }
 
 async fn quality_candidate(
