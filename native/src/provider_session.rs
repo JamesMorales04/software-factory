@@ -5,7 +5,7 @@
 //! status and usage accounting. It never contacts a provider and never grants
 //! Factory authority.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +130,7 @@ pub struct ProviderSession {
     pub usage: Usage,
     pub streamed_text: String,
     pub pending_permission: Option<(String, String)>,
-    pub seen_events: BTreeSet<u64>,
+    pub seen_events: BTreeMap<u64, ProviderEvent>,
     pub cleanup_receipt: Option<String>,
 }
 
@@ -154,15 +154,19 @@ impl ProviderSession {
             usage: Usage::default(),
             streamed_text: String::new(),
             pending_permission: None,
-            seen_events: BTreeSet::new(),
+            seen_events: BTreeMap::new(),
             cleanup_receipt: None,
         })
     }
 
     pub fn apply(&mut self, event: &ProviderEvent) -> Result<(), SessionError> {
         let sequence = event.sequence();
-        if !self.seen_events.insert(sequence) {
-            return Ok(());
+        if let Some(previous) = self.seen_events.get(&sequence) {
+            return if previous == event {
+                Ok(())
+            } else {
+                Err(SessionError::Sequence)
+            };
         }
         if self.last_sequence.is_some_and(|last| sequence <= last) {
             return Err(SessionError::Sequence);
@@ -234,26 +238,29 @@ impl ProviderSession {
             }
             ProviderEvent::Usage { usage, .. } => {
                 self.require_active_or_cancelling()?;
-                self.usage.input_tokens = self
-                    .usage
-                    .input_tokens
-                    .checked_add(usage.input_tokens)
-                    .ok_or(SessionError::UsageOverflow)?;
-                self.usage.output_tokens = self
-                    .usage
-                    .output_tokens
-                    .checked_add(usage.output_tokens)
-                    .ok_or(SessionError::UsageOverflow)?;
-                self.usage.total_tokens = self
-                    .usage
-                    .total_tokens
-                    .checked_add(usage.total_tokens)
-                    .ok_or(SessionError::UsageOverflow)?;
-                self.usage.cost_micros = self
-                    .usage
-                    .cost_micros
-                    .checked_add(usage.cost_micros)
-                    .ok_or(SessionError::UsageOverflow)?;
+                let next = Usage {
+                    input_tokens: self
+                        .usage
+                        .input_tokens
+                        .checked_add(usage.input_tokens)
+                        .ok_or(SessionError::UsageOverflow)?,
+                    output_tokens: self
+                        .usage
+                        .output_tokens
+                        .checked_add(usage.output_tokens)
+                        .ok_or(SessionError::UsageOverflow)?,
+                    total_tokens: self
+                        .usage
+                        .total_tokens
+                        .checked_add(usage.total_tokens)
+                        .ok_or(SessionError::UsageOverflow)?,
+                    cost_micros: self
+                        .usage
+                        .cost_micros
+                        .checked_add(usage.cost_micros)
+                        .ok_or(SessionError::UsageOverflow)?,
+                };
+                self.usage = next;
             }
             ProviderEvent::TurnTerminal {
                 turn_id, status, ..
@@ -274,16 +281,19 @@ impl ProviderSession {
                 };
                 self.state = SessionState::CleanupPending;
                 self.last_sequence = Some(sequence);
+                self.seen_events.insert(sequence, event.clone());
                 return Ok(());
             }
             ProviderEvent::Error { .. } => {
                 self.state = SessionState::Failed;
                 self.state = SessionState::CleanupPending;
                 self.last_sequence = Some(sequence);
+                self.seen_events.insert(sequence, event.clone());
                 return Ok(());
             }
         }
         self.last_sequence = Some(sequence);
+        self.seen_events.insert(sequence, event.clone());
         Ok(())
     }
 
@@ -441,6 +451,50 @@ mod tests {
             }),
             Err(SessionError::Sequence)
         );
+    }
+
+    #[test]
+    fn rejected_events_do_not_become_accepted_replays() {
+        let mut session = started();
+        let invalid = ProviderEvent::TurnTerminal {
+            sequence: 2,
+            turn_id: "turn-1".into(),
+            status: TerminalStatus::Completed,
+        };
+        assert_eq!(session.apply(&invalid), Err(SessionError::IdentityMismatch));
+        assert_eq!(session.apply(&invalid), Err(SessionError::IdentityMismatch));
+        assert_eq!(session.last_sequence, Some(1));
+        assert!(!session.seen_events.contains_key(&2));
+
+        let accepted = ProviderEvent::TurnStarted {
+            sequence: 2,
+            turn_id: "turn-1".into(),
+        };
+        session.apply(&accepted).unwrap();
+        assert_eq!(session.apply(&accepted), Ok(()));
+        assert_eq!(session.apply(&invalid), Err(SessionError::Sequence));
+    }
+
+    #[test]
+    fn rejected_usage_overflow_keeps_accounting_and_sequence_unchanged() {
+        let mut session = started();
+        session.usage.cost_micros = u64::MAX;
+        let event = ProviderEvent::Usage {
+            sequence: 2,
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                cost_micros: 1,
+            },
+        };
+        assert_eq!(session.apply(&event), Err(SessionError::UsageOverflow));
+        assert_eq!(session.usage.input_tokens, 0);
+        assert_eq!(session.usage.output_tokens, 0);
+        assert_eq!(session.usage.total_tokens, 0);
+        assert_eq!(session.usage.cost_micros, u64::MAX);
+        assert_eq!(session.last_sequence, Some(1));
+        assert_eq!(session.apply(&event), Err(SessionError::UsageOverflow));
     }
 
     #[test]
