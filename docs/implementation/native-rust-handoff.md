@@ -531,6 +531,9 @@ This checkpoint adds:
   `regex` dependency was already transitive and is now direct; it is recorded
   in the dependency evaluation. Redaction is best effort and does not permit
   logging prompts or source bodies; OTLP cannot be deleted yet.
+- `8f1be47` extends campaign-cancellation unit coverage to a queued fan-in
+  integration row and both root/integration leases. It is still a DB-level
+  test; process-level in-flight integration cancellation remains open.
 
 Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
 **235 tests passed + 2 ignored**, workspace build, docs, ten migrations,
