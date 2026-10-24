@@ -217,12 +217,15 @@ fn api_router(app: Arc<App>) -> Router {
             "/quality/candidates/{id}/inspection",
             get(quality_candidate_inspection),
         )
-        .route("/delegations", post(create_delegation))
+        .route("/delegations", get(delegations).post(create_delegation))
         .route(
             "/delegations/{id}",
             get(get_delegation).post(revoke_delegation),
         )
-        .route("/lead/requests", post(create_lead_request))
+        .route(
+            "/lead/requests",
+            get(lead_requests).post(create_lead_request),
+        )
         .route("/lead/requests/{id}", get(get_lead_request))
         .route("/lead/requests/{id}/assess", post(assess_lead_request))
         .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
@@ -293,6 +296,26 @@ async fn register_project(
         Err(error) => api_error(error),
     }
 }
+async fn delegations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.standing_delegations().await {
+        Ok(grants) => Json(grants).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn lead_requests(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.lead_requests().await {
+        Ok(requests) => Json(requests).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn projects(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();

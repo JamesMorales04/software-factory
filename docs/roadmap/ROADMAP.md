@@ -67,11 +67,11 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-013 — Intelligent Lead (proposed, not_implemented)
-- CAP-014 — Intent and semantic assessment (proposed, not_implemented)
-- CAP-015 — Frozen executable planning (proposed, not_implemented)
-- CAP-016 — Dependency-aware WorkGraph (proposed, not_implemented)
-- CAP-017 — Standing delegation contract (proposed, not_implemented)
+- CAP-013 — Intelligent Lead (proposed, in_progress)
+- CAP-014 — Intent and semantic assessment (proposed, in_progress)
+- CAP-015 — Frozen executable planning (proposed, in_progress)
+- CAP-016 — Dependency-aware WorkGraph (proposed, in_progress)
+- CAP-017 — Standing delegation contract (proposed, in_progress)
 - CAP-043 — Autonomous product development (approved, not_implemented)
 
 ### Deliverables

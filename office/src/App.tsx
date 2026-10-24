@@ -4,6 +4,7 @@ import { clearToken, getToken, setToken } from "./coreApi";
 import { Actions } from "./views/Actions";
 import { Campaigns } from "./views/Campaigns";
 import { Dashboard } from "./views/Dashboard";
+import { Lead } from "./views/Lead";
 import { Projects } from "./views/Projects";
 import { Runs } from "./views/Runs";
 import { Workers } from "./views/Workers";
@@ -73,6 +74,7 @@ export function App() {
           <NavItem to="/" label="Dashboard" />
           <NavItem to="/projects" label="Projects" />
           <NavItem to="/actions" label="Actions" />
+          <NavItem to="/lead" label="Lead" />
           <NavItem to="/campaigns" label="Campaigns" />
           <NavItem to="/runs" label="Runs" />
           <NavItem to="/workers" label="Workers" />
@@ -93,6 +95,7 @@ export function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/actions" element={<Actions />} />
+          <Route path="/lead" element={<Lead />} />
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/workers" element={<Workers />} />

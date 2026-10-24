@@ -140,6 +140,94 @@ export interface NewActionRequest {
   checks: SpecCheck[];
 }
 
+export interface ProjectConfig {
+  projectId: string;
+  revision: number;
+  configHash: string;
+  repository: string;
+  baseCommit: string;
+  allowedPaths: string[];
+  capabilities: string[];
+  qualityProfile: string;
+  active: boolean;
+  updatedAt: string;
+}
+
+export interface UpdateProjectConfig {
+  expectedRevision: number;
+  allowedPaths: string[];
+  capabilities: string[];
+  qualityProfile: string;
+  active: boolean;
+}
+
+export interface ProviderRoute {
+  provider: string;
+  model: string;
+  mode: string;
+}
+
+export interface StandingDelegation {
+  id: string;
+  principalId: string;
+  auditId: string;
+  projectId: string;
+  revision: number;
+  contentHash: string;
+  objectiveClasses: string[];
+  allowedPaths: string[];
+  capabilities: string[];
+  riskClasses: string[];
+  autonomousStart: boolean;
+  autonomousRiskClasses: string[];
+  route: ProviderRoute;
+  maxAttempts: number;
+  maxTimeoutSecs: number;
+  maxRepairCycles: number;
+  maxWallClockSecs: number;
+  maxParallel: number;
+  maxSessions: number;
+  maxRequests: number;
+  maxCumulativeSessions: number;
+  maxCumulativeAttempts: number;
+  expiresAt: string;
+  revokedAt?: string;
+}
+
+export interface LeadRequestRecord {
+  id: string;
+  project_id: string;
+  action_id: string;
+  delegation_id: string;
+  objective: string;
+  request_hash: string;
+  project_config_hash: string;
+  state: string;
+  failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadRequestProjection {
+  request: LeadRequestRecord;
+  assessment: { assessment_json: string } | null;
+  proposal: { proposal_json: string } | null;
+  plan: {
+    plan_hash: string;
+    config_hash: string;
+    delegation_hash: string;
+  } | null;
+}
+
+export interface NewLeadRequest {
+  project_id: string;
+  action_id: string;
+  delegation_id: string;
+  objective: string;
+  project_config_hash: string;
+  idempotency_key: string;
+}
+
 export interface NewCampaignRequest {
   action_id: string;
   idempotency_key: string;
@@ -218,6 +306,32 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const coreApi = {
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
+  getProjectConfig: (projectId: string) =>
+    request<ProjectConfig>(`/projects/${encodeURIComponent(projectId)}/config`),
+  updateProjectConfig: (projectId: string, input: UpdateProjectConfig) =>
+    request<ProjectConfig>(
+      `/projects/${encodeURIComponent(projectId)}/config`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+  listDelegations: () => request<StandingDelegation[]>("/delegations"),
+  listLeadRequests: () => request<LeadRequestRecord[]>("/lead/requests"),
+  getLeadRequest: (id: string) =>
+    request<LeadRequestProjection>(`/lead/requests/${encodeURIComponent(id)}`),
+  createLeadRequest: (input: NewLeadRequest) =>
+    request<LeadRequestRecord>("/lead/requests", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  assessLeadRequest: (id: string) =>
+    request<Record<string, unknown>>(
+      `/lead/requests/${encodeURIComponent(id)}/assess`,
+      { method: "POST" },
+    ),
+  freezeLeadRequest: (id: string) =>
+    request<Record<string, unknown>>(
+      `/lead/requests/${encodeURIComponent(id)}/freeze`,
+      { method: "POST" },
+    ),
   registerProject: (input: NewProjectRequest) =>
     request<Project>("/projects", {
       method: "POST",

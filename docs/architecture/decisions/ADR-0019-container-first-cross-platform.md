@@ -120,11 +120,11 @@ The full materialization, rejection and cleanup policy is `NOT_IMPLEMENTED`. Exi
 - There is one Rust `factory` CLI. It is a host-native lifecycle tool: a Linux binary on Linux, and on Windows a small launcher that invokes the Linux binary inside WSL2.
 - The CLI is not a container and is not run inside the development container as the supported lifecycle entry point. It may be built and tested in the development container.
 - `factory doctor` is the intended preflight command for host, Podman/WSL, rootless mode, path policy, port exposure, image digests and toolchain versions. It must fail closed with specific remediation.
-- **No `factory` binary exists in the current Cargo workspace.** Therefore `factory doctor` and every other unified CLI command are `NOT_IMPLEMENTED`.
-- The existing `factory-core`, `factory-worker`, `factory-provider-probe`, `factory-repo-hygiene` and `factory-architecture-check` binaries exist in the Cargo workspace, but they are not the unified CLI.
+- The Rust `factory` CLI exists and implements `doctor`, `start`, `status`, `logs` and `stop`; `install`, `restart`, `update` and `dev` remain unimplemented.
+- `factory-core`, `factory-worker`, `factory-supervisor`, `factory-verifier`, `factory-provider-probe`, `factory-repo-hygiene` and `factory-architecture-check` are workspace binaries. The CLI manages the Core and, with explicit project roots, host Supervisor/Worker lifecycle.
 - The CLI may not silently downgrade to host execution, host networking, a rootful runtime or TRUSTED_LOCAL when a prerequisite is missing.
 
-**Command status:** The only Factory commands named in this ADR are `factory` and `factory doctor`; both are `NOT_IMPLEMENTED`. `factory-core`, `factory-worker`, `factory-provider-probe`, `factory-repo-hygiene` and `factory-architecture-check` are binary names, not unified CLI commands, and are `IMPLEMENTED` as workspace binaries. No host administration command in this ADR is a Factory implementation.
+**Command status:** `factory doctor`, `factory start`, `factory status`, `factory logs` and `factory stop` are implemented. `factory install`, `factory restart`, `factory update` and `factory dev` remain `NOT_IMPLEMENTED`. The runtime binaries are `IMPLEMENTED`; Windows lifecycle and production installation are `NOT_TESTED`.
 
 ### 8. Development-container configuration
 

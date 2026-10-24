@@ -1,10 +1,10 @@
 # Software Factory
 
 **Permanent repository:** [`JamesMorales04/software-factory`](https://github.com/JamesMorales04/software-factory)  
-**Project phase:** F1-S1 through F1-S4-C merged through PR #12. The C-07 Vlog path has bounded real-Paseo acceptance at Factory head `9567bc5` / runtime `14133cb7` and a separate Product Owner UAT attestation. No deployment, SEC-01 isolation, autonomous delivery or live corrective repair is certified. See the [capability registry](docs/product/capabilities.yaml), [roadmap](docs/roadmap/ROADMAP.md) and [live certification policy](docs/quality/live-certification.md) for precise scope.
-**Selected implementation language:** Go for Factory Core and Workers ([ADR-0005](docs/architecture/decisions/ADR-0005-go-core-worker-language.md)); SEC-01 isolation remains paused.
+**Project phase:** native Rust migration closure is in progress on PR #17. The deployed Core/Office, managed Supervisor/Worker, rootless-Podman named-volume execution, sandboxed verifier and deterministic fixture Campaign path are implemented and author-verified. S4-D Lead/WorkGraph parity, provider coding, legacy deletion, independent isolation and final review remain open. See the [migration closure ledger](docs/implementation/native-rust-closure.md), [capability decisions](docs/product/capability-decisions.md) and [capability registry](docs/product/capabilities.yaml).
+**Implementation:** Rust for Core, Worker, Supervisor, verifier and governance; React/TypeScript for the single Office ([ADR-0018](docs/architecture/decisions/ADR-0018-native-rust-replacement.md)). SEC-01 isolation remains paused and is not claimed.
 
-Software Factory is a local-first, multi-project engineering platform under development. Its current Core runs governed Actions and Campaigns through a local Worker and candidate-bound quality pipeline. Autonomous intent planning, maintenance, GitHub delivery and stable-controller self-development are future capabilities in the roadmap.
+Software Factory is a local-first, multi-project engineering platform under development. The current Core runs governed fixture Actions and Campaigns through a managed Worker/Supervisor, rootless Podman, independent sandboxed verification and a deterministic Quality Gate. Provider-backed coding, autonomous start, maintenance, GitHub delivery and stable-controller self-development remain fail-closed or future roadmap capabilities.
 
 ## Start here
 

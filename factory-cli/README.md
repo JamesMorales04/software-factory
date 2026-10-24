@@ -19,11 +19,14 @@ data volume, runs the container with a read-only root, dropped capabilities,
 `no-new-privileges`, a loopback-only published port, no host network and no
 Podman socket, then waits for `/health`. It generates four distinct role
 tokens into a private `0600` env file if absent and never prints token values.
+When `FACTORY_PROJECT_ROOTS` is set it also starts a private host Supervisor and
+Worker, creates a separate Supervisor token file, and stops both on
+`factory stop`.
 
 `stop` keeps the data volume unless `--purge` is given and explicitly confirmed
 by typing `purge` on a terminal. `logs` follows `podman logs`. `status` reports
-container state and Core health. The printed Office URL is the loopback Core
-API origin; the React Office is not packaged in this image.
+container state, Core health and managed host services. The image serves the
+built Rust Office and the printed URL is the loopback Office/Core origin.
 
 ## Configuration
 
@@ -34,6 +37,10 @@ API origin; the React Office is not packaged in this image.
 | `FACTORY_CONTAINER_NAME` | `factory-core` |
 | `FACTORY_VOLUME` | `factory-core-data` |
 | `FACTORY_ENV_FILE` | `$XDG_CONFIG_HOME/factory/core.env` or `$HOME/.config/factory/core.env` |
+| `FACTORY_PROJECT_ROOTS` | unset; explicit comma-separated absolute Git roots |
+| `FACTORY_SUPERVISOR_URL` | `http://127.0.0.1:8766` |
+| `FACTORY_BIN_DIR` | directory of the running `factory` binary |
+| `FACTORY_SUPERVISOR_IMAGES` | `docker.io/library/alpine:3.20` |
 
 `FACTORY_CORE_URL` must be an HTTP origin on IPv4 loopback with an explicit
 port. `start` publishes only `127.0.0.1:<port>`.

@@ -116,6 +116,19 @@ impl Database {
         Ok((sealed, true))
     }
 
+    pub async fn standing_delegations(&self) -> Result<Vec<StandingDelegation>, Error> {
+        let ids: Vec<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM standing_delegations ORDER BY created_at,id")
+                .fetch_all(&self.pool)
+                .await?;
+        let mut grants = Vec::with_capacity(ids.len());
+        let mut connection = self.pool.acquire().await?;
+        for (id,) in ids {
+            grants.push(load_delegation(&mut connection, &id).await?);
+        }
+        Ok(grants)
+    }
+
     pub async fn standing_delegation(&self, id: &str) -> Result<StandingDelegation, Error> {
         let mut connection = self.pool.acquire().await?;
         load_delegation(&mut connection, id).await

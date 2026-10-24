@@ -196,6 +196,19 @@ impl Database {
         Ok((request, true))
     }
 
+    pub async fn lead_requests(&self) -> Result<Vec<LeadRequestRecord>, Error> {
+        let ids: Vec<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM lead_requests ORDER BY created_at,id")
+                .fetch_all(&self.pool)
+                .await?;
+        let mut requests = Vec::with_capacity(ids.len());
+        let mut connection = self.pool.acquire().await?;
+        for (id,) in ids {
+            requests.push(load_lead_request(&mut connection, &id).await?);
+        }
+        Ok(requests)
+    }
+
     pub async fn lead_request(&self, id: &str) -> Result<LeadRequestRecord, Error> {
         let mut connection = self.pool.acquire().await?;
         load_lead_request(&mut connection, id).await

@@ -770,9 +770,9 @@ capabilities:
   purpose: Interpret owner objectives and coordinate bounded engineering
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -785,8 +785,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs]
   acceptance:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
@@ -804,9 +804,9 @@ capabilities:
   purpose: Select and produce typed, evidence-bound semantic judgments when they improve practical decision quality
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: partial
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -818,8 +818,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/evaluation.rs, native/src/lead.rs]
+    test: [native/src/evaluation.rs]
   acceptance:
     deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
       compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
@@ -841,9 +841,9 @@ capabilities:
   purpose: Turn intent into an authorized plan and specification
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -856,8 +856,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs]
   acceptance:
     deterministic: Applicable frozen executable planning contract, negative and regression checks pass on an exact
       candidate.
@@ -877,9 +877,9 @@ capabilities:
   purpose: Validate WorkUnits dependencies and coverage before dispatch
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -891,8 +891,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs]
+    test: [native/src/lead.rs]
   acceptance:
     deterministic: Applicable dependency-aware workgraph contract, negative and regression checks pass on an exact
       candidate.
@@ -912,9 +912,9 @@ capabilities:
   purpose: Bound autonomous decisions by owner scope expiry and budgets
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -927,8 +927,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/delegations.rs]
+    test: [native/src/lead.rs, native/src/db/delegations.rs]
   acceptance:
     deterministic: Applicable standing delegation contract contract, negative and regression checks pass on an exact
       candidate.

@@ -22,28 +22,41 @@ read-only root filesystem, a `/tmp` tmpfs, all capabilities dropped,
 `no-new-privileges`, a non-root user, Podman init for signal forwarding, and
 no host network or Podman socket.
 
+When `FACTORY_PROJECT_ROOTS` lists explicit absolute Git repository roots,
+`factory start` mounts each root read-only at the same path in Core, starts the
+host Supervisor and Worker with a private runtime directory, and enables the
+fixture execution path. `FACTORY_SUPERVISOR_URL` defaults to
+`http://127.0.0.1:8766`. The Supervisor holds the Podman boundary; no Podman
+socket enters a workload. `factory stop` stops the Worker and Supervisor before
+the Core container.
+
 ## Runtime configuration
 
 | Variable | Source | Purpose |
 |---|---|---|
 | `FACTORY_DATABASE` | image default `/data/factory.sqlite` | SQLite path on the data volume |
 | `FACTORY_BIND` | CLI `0.0.0.0:8765` | Container interface; host publication stays loopback |
-| `FACTORY_CONTAINER_MODE` | CLI `1` | Container-mode opt-in; see blocker below |
+| `FACTORY_CONTAINER_MODE` | CLI `1` | Container-mode opt-in |
 | `FACTORY_OPERATOR_TOKEN` | token env file | Operator API credential |
 | `FACTORY_WORKER_BOOTSTRAP_TOKEN` | token env file | Worker registration credential |
 | `FACTORY_VERIFIER_TOKEN` | token env file | Verifier credential |
 | `FACTORY_REVIEWER_TOKEN` | token env file | Reviewer credential |
+| `FACTORY_PROJECT_ROOTS` | host CLI | Explicit read-only project roots; enables managed host execution |
+| `FACTORY_SUPERVISOR_URL` | host CLI | Loopback Supervisor origin |
+| `FACTORY_SUPERVISOR_IMAGES` | host CLI | Exact fixture image allowlist |
+| `FACTORY_WORKER_FIXTURE_IMAGE` | host CLI | Fixture image passed to the Supervisor |
 
 The CLI generates four distinct role tokens into a mode `0600` env file
 (`$XDG_CONFIG_HOME/factory/core.env` by default, or `FACTORY_ENV_FILE`) and
 passes it with `--env-file`. It prints only the file path, never the tokens.
 
-## Known blocker
+## Verified runtime
 
-The current `factory-core` rejects any non-loopback `FACTORY_BIND`, so the
-container exits before serving. `FACTORY_CONTAINER_MODE` support is being added
-by the main implementer; until it lands, `factory start` cannot complete the
-health check. End-to-end container start is therefore not working yet.
+On the tested CachyOS/rootless-Podman host, `factory start` served the Rust
+Office, exposed only loopback, preserved SQLite state across restart, and
+executed an authorized fixture Campaign through the managed Supervisor/Worker
+to an accepted candidate. `factory status` reports Core health and host service
+state. Windows/Podman Machine and production deployment are not verified.
 
 ## Security boundaries
 
