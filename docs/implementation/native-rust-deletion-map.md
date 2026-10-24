@@ -33,9 +33,11 @@ Rust now owns the following former B2 behavior at `4bcd584`:
   (`native/src/review.rs`, `native/src/bin/reviewer.rs`);
 - canonical repository root-identity binding and base-tip validation
   (`native/src/repository.rs`, migration 0010);
-- a closed durable event-kind vocabulary (`native/src/db/mod.rs`).
+- a closed durable event-kind vocabulary (`native/src/db/mod.rs`);
+- bounded Core/Supervisor log credential redaction (`native/src/telemetry.rs`).
 
-The legacy event payload read projection has no production Rust equivalent
+C4 telemetry still lacks OTLP export/outage behavior and a process-level secret
+canary. The legacy event payload read projection has no production Rust equivalent
 because Rust events store only bounded detail strings, never a `diffExcerpt`
 payload. Any future payload field must reintroduce that projection test. Even
 after these ports, deletion requires retiring the whole dependent Go runtime

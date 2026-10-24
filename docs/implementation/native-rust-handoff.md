@@ -491,10 +491,10 @@ Remaining: parallel/fan-in integration, provider coding lifecycle, Go/Paseo
 removal and CI migration, strict hygiene, independent review and final merge
 authorization. Provider and ISOLATED execution remain fail-closed.
 
-## Closure checkpoint 2026-10-24 — `ec2e75b`
+## Closure checkpoint 2026-10-24 — `c0ed31d`
 
-**Code candidate:** `ec2e75b79599a3a0d8fafc5f7cc8ef18070d8892`.
-**Predecessors:** `4bcd584` (independent reviewer, recovery classification,
+**Code candidate:** `c0ed31d6694ad1047c0ac932474486453e21c387`.
+**Predecessors:** `ec2e75b` (repository identity), `4bcd584` (independent reviewer, recovery classification,
 campaign cancellation), `0435159` (in-flight WorkGraph lease recovery process
 test), `d0b8933` (OpenCode event subscription ordering) and `6cf3786` (loopback
 OpenCode prompt lifecycle). This text cannot embed its own documentation commit;
@@ -526,9 +526,14 @@ This checkpoint adds:
   closed vocabulary; Rust events never persist a payload field, so the legacy
   `diffExcerpt` read projection is structurally absent rather than silently
   dropped.
+- `native/src/telemetry.rs` redacts registered role credentials and common
+  bearer/keyed credential forms in Core and Supervisor tracing output. The
+  `regex` dependency was already transitive and is now direct; it is recorded
+  in the dependency evaluation. Redaction is best effort and does not permit
+  logging prompts or source bodies; OTLP cannot be deleted yet.
 
-Author-run at `ec2e75b`: `cargo xtask check` PASS (format, strict Clippy,
-**233 tests passed + 2 ignored**, workspace build, docs, ten migrations,
+Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
+**235 tests passed + 2 ignored**, workspace build, docs, ten migrations,
 `cargo audit` clean for 276 locked dependencies);
 `cargo xtask validate-architecture` PASS;
 `cargo xtask e2e recovery`, `e2e dispatch`, `e2e negatives` and `e2e office`
