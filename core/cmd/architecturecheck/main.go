@@ -158,7 +158,7 @@ func run(root, registryPath, roadmapPath string, writeRoadmap bool, baseRef stri
 	return nil
 }
 
-var amendmentADRID = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:\*\*)?Amended by(?:\*\*)?:\s*(ADR-\d{4})`)
+var amendmentADRID = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:\*\*)?Amended by:\s*(?:\*\*)?\s*(ADR-\d{4})`)
 
 var acceptedADRStatus = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:\*\*)?status(?:\*\*)?:?\s*(?:\*\*)?:?\s*["']?accepted(?:\b|[ \t(])`)
 

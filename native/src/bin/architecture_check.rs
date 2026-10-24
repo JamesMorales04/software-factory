@@ -129,11 +129,22 @@ fn validate_capability_preservation(registry: &Registry, decisions: &str) -> Res
             missing.push(capability.id.clone());
         }
     }
+    for required in [
+        "Lint, type, build and tests",
+        "Other validation adapters",
+        "Memory, context and simplification",
+        "CAP-020 Librarian",
+        "CAP-029 advisory incident diagnosis",
+    ] {
+        if !decisions.contains(required) {
+            missing.push(required.to_string());
+        }
+    }
     if missing.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "capability decision record is missing selected capabilities: {}",
+            "capability decision record is missing selected capabilities or opportunities: {}",
             missing.join(", ")
         ))
     }
@@ -891,8 +902,14 @@ fn has_valid_amendment(root: &Path, adr_path: &str) -> Result<bool, String> {
     let current = fs::read_to_string(root.join(adr_path))
         .map_err(|error| format!("read current ADR {adr_path}: {error}"))?;
     let Some(id) = current.lines().find_map(|line| {
-        line.split_once("Amended by:")
-            .map(|(_, rest)| rest.split_whitespace().next().unwrap_or(""))
+        line.split_once("Amended by:").map(|(_, rest)| {
+            rest.trim_start_matches(|character: char| {
+                character == '*' || character == ':' || character == ' '
+            })
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+        })
     }) else {
         return Ok(false);
     };
@@ -1044,7 +1061,7 @@ mod tests {
         repo.write("docs/product/capabilities.yaml", tiny_registry());
         let registry = parse_registry(tiny_registry()).unwrap();
         repo.write("docs/roadmap/ROADMAP.md", &render_roadmap(&registry));
-        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\n");
+        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\nLint, type, build and tests\nOther validation adapters\nMemory, context and simplification\nCAP-020 Librarian\nCAP-029 advisory incident diagnosis\n");
         repo.write(
             "docs/architecture/decisions/ADR-0001-one.md",
             accepted_adr(),
@@ -1110,7 +1127,7 @@ mod tests {
         let repo = Repo::new();
         repo.write("docs/product/capabilities.yaml", tiny_registry());
         repo.write("docs/roadmap/ROADMAP.md", "placeholder\n");
-        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\n");
+        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\nLint, type, build and tests\nOther validation adapters\nMemory, context and simplification\nCAP-020 Librarian\nCAP-029 advisory incident diagnosis\n");
         repo.write(
             "docs/architecture/decisions/ADR-0001-one.md",
             accepted_adr(),

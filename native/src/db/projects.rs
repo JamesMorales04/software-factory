@@ -189,6 +189,67 @@ impl Database {
         Ok(action)
     }
 
+    pub async fn classify_action(
+        &self,
+        action_id: &str,
+        risk_class: &str,
+        actor: &str,
+        rationale: &str,
+        key: &str,
+    ) -> Result<Action, Error> {
+        if risk_class != "R0" {
+            return Err(Error::Forbidden(
+                "only R0 fixture actions can be classified in this slice".into(),
+            ));
+        }
+        if actor.trim().is_empty() || rationale.trim().is_empty() || key.trim().is_empty() {
+            return Err(Error::Invalid("action classification input"));
+        }
+        let digest = sha256_hex(
+            serde_json::to_string(&(action_id, risk_class, actor, rationale))
+                .expect("classification digest serializes")
+                .as_bytes(),
+        );
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        if let Some(id) = replay(&mut transaction, key, "classify_action", &digest).await? {
+            let action = load_action(&mut transaction, &id).await?;
+            transaction.commit().await?;
+            return Ok(action);
+        }
+        let current: Option<(String, String)> =
+            sqlx::query_as::query_as("SELECT risk,status FROM actions WHERE id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let (risk, status) = current.ok_or(Error::NotFound)?;
+        if risk != "UNASSESSED" || status != "HUMAN_REQUIRED" {
+            return Err(Error::Conflict("action is already classified"));
+        }
+        sqlx::query::query("UPDATE actions SET risk=?1,status='AUTHORIZED' WHERE id=?2")
+            .bind(risk_class)
+            .bind(action_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+            .bind(key)
+            .bind("classify_action")
+            .bind(&digest)
+            .bind(action_id)
+            .execute(&mut *transaction)
+            .await?;
+        record_event(
+            &mut transaction,
+            action_id,
+            "action.classified",
+            &format!("{risk_class} by {actor}: {rationale}"),
+        )
+        .await?;
+        let action = load_action(&mut transaction, action_id).await?;
+        transaction.commit().await?;
+        Ok(action)
+    }
+
     pub async fn projects(&self) -> Result<Vec<Project>, Error> {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at FROM projects ORDER BY created_at",

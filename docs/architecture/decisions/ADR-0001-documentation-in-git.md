@@ -1,11 +1,12 @@
 ---
-- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 id: ADR-0001
 status: Accepted
 date: 2026-10-18
 owner: product-owner
 ---
 # ADR-0001: Versioned architecture and decisions in Git
+
+- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 
 ## Context
 A predecessor engineering harness exposed the cost of duplicated architectural authority, stale descriptions and features declared ready without real verification. Coding agents need a concise starting point and an auditable design.

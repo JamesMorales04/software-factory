@@ -46,13 +46,13 @@ product roadmap, and it does not mean rejected.**
 | CAP-008 | Scoped capability grants | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Partial project/capability scoping | Core authorization |
 | CAP-009 | Factory-managed browser capability | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Not implemented in Rust | Worker browser wrapper and managed test server |
 | CAP-010 | Bounded deterministic recovery | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Lease/retry primitives; no real corrective cycle | Core recovery policy |
-| CAP-011 | Factory Office | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Rust-backed six-route Office; browser journey passes | React Office projection |
+| CAP-011 | Factory Office | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Rust Office with Lead, Campaign detail/WorkGraph and fixture browser journey | React Office projection |
 | CAP-012 | Durable events and telemetry | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Durable event ledger; no cursor/SSE contract | Core events and telemetry |
 | CAP-013 | Intelligent Lead | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Typed Lead scaffold; no model assessor | Lead application service and provider assessor |
-| CAP-014 | Intent and semantic assessment | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Strict assessment schema; no assessor or CAP-014 evaluator | Assessment domain, evaluation tool |
-| CAP-015 | Frozen executable planning | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Proposal/freeze scaffold; no spec/Campaign creation | Lead planning service |
-| CAP-016 | Dependency-aware WorkGraph | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Bounded graph validation only | WorkGraph domain and scheduler |
-| CAP-017 | Standing delegation contract | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Sealed grants and atomic reservation; no autonomous policy | Core authorization |
+| CAP-014 | Intent and semantic assessment | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Strict schema, deterministic fixture assessor, CAP-014 corpus/baseline/evaluator | Assessment domain and direct model assessor |
+| CAP-015 | Frozen executable planning | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Proposal/freeze, per-unit specs and Campaign/Run/Attempt creation | Full plan projection and recovery |
+| CAP-016 | Dependency-aware WorkGraph | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Bounded validation plus sequential task persistence/scheduling | Parallel/fan-in and integration node |
+| CAP-017 | Standing delegation contract | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Sealed grants, atomic reservation, revocation containment and default-off autonomous policy | Ratified issuer/risk policy and provider modes |
 | CAP-018 | Agent Composer | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Deterministic composition service |
 | CAP-019 | Operation Supervisor | ADAPT | F1-S4-E | FUTURE_FEATURE | Core-owned deterministic coordination only | Core supervision policy; no second controller |
 | CAP-020 | Specialist agent roles | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Scoped role prompts through provider ports |
@@ -78,8 +78,20 @@ product roadmap, and it does not mean rejected.**
 | CAP-040 | Extended Factory Office | DEFER | Later | FUTURE_FEATURE | Not implemented | Office projections after Core APIs |
 | CAP-041 | Reliability analytics | ADAPT | Later | FUTURE_FEATURE | Event ledger only | Analytics over immutable evidence |
 | CAP-042 | Optional context integrations | EVALUATE | Later | FUTURE_FEATURE | Not implemented | Narrow optional ports |
-| CAP-043 | Autonomous product development | APPROVED objective | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Fail-closed; no autonomous start | Core policy and Lead/Campaign start |
+| CAP-043 | Autonomous product development | APPROVED objective | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Default-off single-unit R0 fixture start; provider/multi-unit blocked | Core policy and full WorkGraph start |
 | CAP-044 | Autonomous product maintenance and evolution | APPROVED objective | F1-S5+ | FUTURE_FEATURE | Not implemented | Maintenance and self-development policy |
+
+### Preserved sub-scope decisions
+
+| Capability | Original decision | Factory disposition |
+|---|---|---|
+| CAP-020 Librarian | EVALUATE | EVALUATE only when a demonstrated knowledge gap exists; the CAP-020 row above covers the broader specialist-role adaptation. |
+| CAP-029 advisory incident diagnosis | EVALUATE | EVALUATE as advisory model diagnosis; permanent always-on analyst role remains DEFER. |
+| CAP-004 Implementer | ADOPT responsibility | Implementer execution is adapted; the role cannot accept its own work. |
+| CAP-024 local delivery | DEFER | GitHub PR delivery is CAP-024; local delivery remains separately deferred. |
+| CAP-027 portfolio scope | ADAPT | Maintenance objectives are CAP-027; portfolio runtime remains CAP-033/035. |
+| CAP-039 MCP/external-tool scope | ADAPT narrow | Remote Workers remain CAP-039; MCP/tool admission is a separate evaluated opportunity. |
+
 
 ## Preserved engineering opportunities
 
@@ -102,6 +114,9 @@ or adaptation even when implementation is deferred.
 | Skill admission and scoped promotion | EVALUATE | Digest, provenance, license, capabilities and risk review | Global promotion is protected |
 | Model routing, benchmarking and adaptive promotion | EVALUATE | Representative corpus, cost and quality; revocable prospective promotion | No silent substitution |
 | Reliability and quality evaluation | ADAPT | Metrics reconcile to immutable Campaign evidence | No fabricated telemetry |
+| Lint, type, build and tests | ADAPT | Required checks are frozen per task and executed by the sandboxed verifier | Missing tooling blocks rather than passes |
+| Other validation adapters | EVALUATE | Compare a concrete adapter with the built-in checks on real tasks | No unreviewed external executor |
+| Memory, context and simplification | EVALUATE | Measure decision quality and context cost against simple bounded reads | No persistent memory without data-governance approval |
 
 ## Rejected mechanisms
 

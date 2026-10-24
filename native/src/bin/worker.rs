@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const CORE_TIMEOUT: Duration = Duration::from_secs(30);
-const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(300);
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(900);
 
 #[derive(Debug, Deserialize)]
 struct ClaimResponse {

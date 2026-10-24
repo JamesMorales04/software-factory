@@ -166,7 +166,10 @@ impl Database {
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
         let candidate = self.candidate(id).await?;
         let row = sqlx::query::query(
-            "SELECT c.action_id,p.repository,p.base_commit,s.spec_json,s.spec_sha256
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+                    COALESCE(aps.base_commit,p.base_commit) AS base_commit,
+                    COALESCE(aps.spec_json,s.spec_json) AS spec_json,
+                    COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256
              FROM candidates cd
              JOIN attempts a ON a.id=cd.attempt_id
              JOIN runs r ON r.id=a.run_id
@@ -174,6 +177,7 @@ impl Database {
              JOIN actions ac ON ac.id=c.action_id
              JOIN projects p ON p.id=ac.project_id
              JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
              WHERE cd.id=?1",
         )
         .bind(id)

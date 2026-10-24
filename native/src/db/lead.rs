@@ -666,6 +666,15 @@ impl Database {
         if action.status != crate::lead::ActionStatus::Pending {
             return Err(Error::Forbidden("action is not startable".into()));
         }
+        let risk: (String,) = sqlx::query_as::query_as("SELECT risk FROM actions WHERE id=?1")
+            .bind(&request.action_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if risk.0 != "R0" {
+            return Err(Error::Forbidden(
+                "action must be explicitly classified R0 before autonomous start".into(),
+            ));
+        }
         let config = load_project_config(&mut transaction, &request.project_id).await?;
         proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
         let mut paths = std::collections::BTreeSet::new();
@@ -695,15 +704,21 @@ impl Database {
         expected.sort_by(|a, b| a.id.cmp(&b.id));
         let mut actual = action_spec.checks.clone();
         actual.sort_by(|a, b| a.id.cmp(&b.id));
-        if expected != actual
-            || !same_paths(
-                &proposal.work_units[0].allowed_paths,
-                &action_spec.allowed_paths,
-            )
-        {
+        if expected != actual {
             return Err(Error::Forbidden(
-                "frozen plan does not match the ActionSpec execution boundary".into(),
+                "frozen plan does not match the ActionSpec checks".into(),
             ));
+        }
+        for unit in &proposal.work_units {
+            if unit
+                .allowed_paths
+                .iter()
+                .any(|path| !crate::workspace::path_covered(path, &action_spec.allowed_paths))
+            {
+                return Err(Error::Forbidden(
+                    "a WorkUnit path widens beyond the frozen ActionSpec".into(),
+                ));
+            }
         }
         let now = Utc::now().to_rfc3339();
         let campaign = Campaign {
@@ -1293,10 +1308,10 @@ async fn load_action_binding(
             .await?;
     let (project_id, status) = row.ok_or(Error::NotFound)?;
     let status = match status.as_str() {
-        "HUMAN_REQUIRED" | "PENDING" | "BLOCKED_AUTHORIZATION" => {
+        "HUMAN_REQUIRED" | "PENDING" | "BLOCKED_AUTHORIZATION" | "AUTHORIZED" => {
             crate::lead::ActionStatus::Pending
         }
-        "IN_PROGRESS" | "AUTHORIZED" | "RUNNING" => crate::lead::ActionStatus::InProgress,
+        "IN_PROGRESS" | "RUNNING" => crate::lead::ActionStatus::InProgress,
         "COMPLETED" | "FAILED" | "CANCELLED" => crate::lead::ActionStatus::Terminal,
         _ => return Err(Error::Invalid("stored action status")),
     };
@@ -1343,14 +1358,6 @@ async fn load_attempt_for_run(
         created_at,
     })
     .ok_or(Error::NotFound)
-}
-
-fn same_paths(left: &[String], right: &[String]) -> bool {
-    let mut left = left.to_vec();
-    let mut right = right.to_vec();
-    left.sort();
-    right.sort();
-    left == right
 }
 
 #[cfg(test)]
@@ -1716,6 +1723,15 @@ mod tests {
             )
             .await
             .unwrap();
+        db.classify_action(
+            &action.id,
+            "R0",
+            "test-owner",
+            "deterministic R0 classification",
+            "fixture-action-classification",
+        )
+        .await
+        .unwrap();
         let config = db.project_config("project").await.unwrap();
         let (request, _) = db
             .create_lead_request(
@@ -1805,6 +1821,15 @@ mod tests {
             )
             .await
             .unwrap();
+        db.classify_action(
+            &action.id,
+            "R0",
+            "test-owner",
+            "deterministic R0 classification",
+            "fixture-action-classification",
+        )
+        .await
+        .unwrap();
         let config = db.project_config("project").await.unwrap();
         let (request, _) = db
             .create_lead_request(

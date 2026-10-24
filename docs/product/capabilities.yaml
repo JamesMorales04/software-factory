@@ -54,6 +54,7 @@ milestones:
   - CAP-015
   - CAP-016
   - CAP-017
+  - CAP-022
   - CAP-043
   exclusions:
   - Autonomous merge
@@ -89,7 +90,6 @@ milestones:
   - CAP-019
   - CAP-020
   - CAP-021
-  - CAP-022
   - CAP-023
   exclusions:
   - Always-on fixed agent roster
@@ -1105,8 +1105,7 @@ capabilities:
   owner: Core
   dependencies:
   - CAP-016
-  - CAP-018
-  target_milestone: F1-S4-E
+  target_milestone: F1-S4-D
   refs:
     adr: []
     contract: []
@@ -1792,7 +1791,7 @@ capabilities:
   category: Knowledge
   purpose: Evaluate Serena Graphify Engram and Headroom against simple baselines
   product_objective: Efficient context
-  decision_status: deferred
+  decision_status: proposed
   implementation_status: not_implemented
   verification:
     deterministic: not_tested

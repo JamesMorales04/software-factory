@@ -7,8 +7,8 @@ supersedes: null
 ---
 # ADR-0019: Container-first development and cross-platform deployment
 
-- **Status:** Accepted for direction only. The development-container configuration is `IMPLEMENTED`; the image was built locally and `cargo xtask check`, `migrate` and `e2e recovery` passed inside it on 2026-10-23 using a host-network workaround. Default rootless container networking, the Office build inside the container, application runtime images, Quadlet, Windows/Podman Machine and every unified `factory` CLI command remain `NOT_TESTED` or `NOT_IMPLEMENTED`. No isolation is certified.
-- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
+- **Status:** Accepted for direction only. The development-container configuration is `IMPLEMENTED`; the image was built locally and `cargo xtask check`, `migrate` and `e2e recovery` passed inside it on 2026-10-23 using a host-network workaround. Current Rust lifecycle and container status is recorded in [ADR-0021](ADR-0021-rust-runtime-implementation-status.md). Quadlet, installer, Windows/Podman Machine and independent isolation remain `NOT_TESTED` or `NOT_IMPLEMENTED`. No isolation is certified.
+- **Amended by:** ADR-0021 (implementation status update; direction and security boundaries unchanged)
 - **Decision date:** 2026-10-23.
 - **Relationship:** Adds packaging and platform direction to [ADR-0018](ADR-0018-native-rust-replacement.md). It does not supersede ADR-0018, [ADR-0009](ADR-0009-trusted-local-execution.md), the [service placement policy](../service-placement-policy.md), or the [isolation policy](../../security/isolation.md).
 - **Approval scope:** The Product Owner approved the container-first direction recorded here. That approval does not authorize deployment, non-loopback exposure, host mounts, credential placement in untrusted execution, image publication, legacy deletion, or any security certification. No independent technical verification exists.
@@ -188,7 +188,7 @@ These labels are not interchangeable:
 
 ### Negative and open
 
-- No implementation or verification accompanies this ADR. The `.devcontainer` image is unbuilt, and the Windows path is entirely unexercised.
+- Implementation status is recorded in ADR-0021; this ADR remains the direction and security record. The `.devcontainer` image is unbuilt, and the Windows path is entirely unexercised.
 - Containerized Core networking conflicts with the current loopback-only bind; resolving it requires an explicit code and policy change, not a host-network workaround.
 - Rootless Podman and WSL2 add operational complexity and do not certify isolation.
 - Digest pinning, image publication, Quadlet units, the Windows launcher, path enforcement, secret injection and `factory doctor` all remain implementation work.

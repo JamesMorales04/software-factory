@@ -36,6 +36,15 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ClassifyAction {
+    risk_class: String,
+    actor: String,
+    rationale: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NewAction {
     project_id: String,
     objective: String,
@@ -203,6 +212,7 @@ fn api_router(app: Arc<App>) -> Router {
             get(project_config).put(update_project_config),
         )
         .route("/actions", get(actions).post(create_action))
+        .route("/actions/{id}/classify", post(classify_action))
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/campaigns/{id}", get(campaign_detail))
         .route("/runs", get(runs))
@@ -386,6 +396,31 @@ async fn create_action(
         Err(error) => api_error(error),
     }
 }
+async fn classify_action(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ClassifyAction>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .classify_action(
+            &id,
+            &input.risk_class,
+            &input.actor,
+            &input.rationale,
+            &input.idempotency_key,
+        )
+        .await
+    {
+        Ok(action) => (StatusCode::OK, Json(action)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn actions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();

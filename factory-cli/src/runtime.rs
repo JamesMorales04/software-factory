@@ -120,6 +120,15 @@ pub(crate) fn start(
     )
     .map_err(Failure::operation)?;
     wait_for_health(&url, &runtime_dir.join(SUPERVISOR_LOG))?;
+    let supervisor_exe =
+        fs::read_link(format!("/proc/{}/exe", supervisor_child.id())).map_err(|error| {
+            Failure::operation(format!("cannot verify Supervisor process: {error}"))
+        })?;
+    if !process_alive(supervisor_child.id()) || !same_binary(&supervisor_exe, &supervisor_bin) {
+        return Err(Failure::operation(
+            "Supervisor health did not come from the spawned Supervisor process",
+        ));
+    }
 
     let worker_log = open_log(&runtime_dir.join(WORKER_LOG)).map_err(Failure::operation)?;
     let mut worker = Command::new(&worker_bin);

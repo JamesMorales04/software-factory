@@ -306,6 +306,7 @@ impl RootlessPodmanVolumes {
             "--pull=never".into(),
             "--network=none".into(),
             "--read-only".into(),
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
             "--cap-drop=all".into(),
             "--security-opt=no-new-privileges".into(),
             "--userns=keep-id".into(),
@@ -328,6 +329,7 @@ impl VolumeBackend for RootlessPodmanVolumes {
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;
         validate_workspace_id(workspace_id)?;
+        let _ = self.remove_volume(name).await;
         let output = self
             .podman([
                 "--remote=false",
@@ -1011,13 +1013,13 @@ fn prepare_private_directory(path: &Path) -> Result<PathBuf, ExecutionError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.mode() & 0o077 != 0 {
-            fs::set_permissions(&canonical, fs::Permissions::from_mode(0o700))?;
-        }
         if metadata.uid() != effective_uid() {
             return Err(ExecutionError::Invalid(
                 "Supervisor directory must be owned by this user".into(),
             ));
+        }
+        if metadata.mode() & 0o077 != 0 {
+            fs::set_permissions(&canonical, fs::Permissions::from_mode(0o700))?;
         }
     }
     Ok(canonical)

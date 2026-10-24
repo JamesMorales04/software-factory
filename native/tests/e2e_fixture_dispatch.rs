@@ -655,6 +655,20 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     .await;
     assert_eq!(delegated.status(), StatusCode::CREATED);
 
+    let classified = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions/{action_id}/classify"),
+        Some(json!({
+            "risk_class": "R0",
+            "actor": "lead-e2e-operator",
+            "rationale": "deterministic R0 fixture classification",
+            "idempotency_key": "lead-classification"
+        })),
+    )
+    .await;
+    assert_eq!(classified.status(), StatusCode::OK);
+
     let lead: Value = operator(
         &client,
         reqwest::Method::POST,

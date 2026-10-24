@@ -192,10 +192,16 @@ fn wait_for_health(url: &CoreUrl, name: &str) -> Result<(), Failure> {
     let mut last_problem;
     loop {
         last_problem = match get_health(url, HEALTH_TIMEOUT) {
-            Ok(response) if response.status == 200 => {
-                println!("Core health: HTTP 200");
-                return Ok(());
-            }
+            Ok(response) if response.status == 200 => match podman::container_state(name) {
+                Ok(Some(state)) if state == "running" => {
+                    println!("Core health: HTTP 200");
+                    return Ok(());
+                }
+                Ok(state) => {
+                    format!("health 200 but container state is {state:?}")
+                }
+                Err(error) => error,
+            },
             Ok(response) => format!("HTTP {}", response.status),
             Err(error) => error.to_string(),
         };
