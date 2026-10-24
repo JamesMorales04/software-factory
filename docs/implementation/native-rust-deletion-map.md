@@ -4,14 +4,14 @@
 
 | Group | Classification and replacement | Behavioral oracle / missing work | Ready now? | Owner | Verification |
 |---|---|---|---|---|---|
-| B1 | Small Rust behavior gap — Go architecture checker → `native/src/bin/architecture_check.rs`; governance CI | Go checker tests plus capability, evidence, path and certification validation; Rust parity and CI swap pending | No | Luna | `cargo test --bin factory-architecture-check --locked`; run checker with `--base-ref origin/main`; governance CI |
+| B1 | Retired — Go architecture checker → `native/src/bin/architecture_check.rs`; governance CI | Eight Rust checker tests, base-ref check and `architecture-consistency` GitHub job passed at `6947b42` | Deleted | Luna/Sol | `cargo test --bin factory-architecture-check --locked`; run checker with `--base-ref origin/main`; governance CI |
 | B2 | Small or bounded Rust regression gaps — project/candidate/recovery/event helpers → `native/src/{db,workspace,quality}.rs` and process tests | Canonical identity, conflict/candidate lineage, failure classification, event projection negatives; exact assertions still to port | No | Sol/Luna | `cargo test --workspace --locked`; `cargo xtask e2e recovery` |
 | C1 | Substantial runtime behavior — CLI/Core/Worker/domain/scheduler/fixture execution → Rust Core, Worker, Supervisor and `factory` | Provider work lifecycle, WorkGraph failure/restart, cancellation, fenced concurrent execution, real use | No | Luna | `cargo test --workspace --locked`; `cargo xtask e2e recovery`; fixture dispatch E2E |
 | C2 | Substantial authority and state — Go API/store/quality → Rust SQLx Core and verifier/reviewer | S1–S4 HTTP/event parity, independent reviewer, cross-project security, restart/receipts | No | Luna/Sol | Rust process/API E2E, quality and security tests |
 | C3 | Substantial managed-browser parity — Go browser server → Rust Supervisor/browser capability | Browser lifecycle, ownership, timeout and process-group cleanup under Rust | No | Luna | `cargo xtask e2e office`; browser process fault tests |
 | C4 | Substantial telemetry/security parity — Go logging/tracing → Rust structured telemetry | Secret redaction, exporter outage, no source-body leaks, log canaries | No | Luna | Rust process telemetry negatives and log inspection |
 | D1 | Obsolete-by-design Paseo adapter and session types → direct Codex/OpenCode Rust provider sessions | Direct provider lifecycle and recovery plus independent isolation; do not port the intermediary | No | Luna | Provider protocol fixtures, security E2E; independently assessed isolation |
-| E1 | Legacy Go protected-file fixture → neutral/Rust protected-file fixture | Rebaseline S4-A protected diff and retain HUMAN_REQUIRED oracle | No | Sol | Rust protected-diff process E2E; fixture oracle |
+| E1 | Retired — legacy Go protected-file fixture → neutral protected-file fixture | S4-B B8 protected-diff HUMAN_REQUIRED and no-repair oracle passed at `1d10f06` | Deleted | Sol | `mise exec go@1.26.9 -- bash scripts/e2e-s4b.sh` (B8 passed, unrelated B11 failed) |
 
 At this baseline, **no complete Go package is deletion-ready**. Existing Rust component tests do not by themselves replace process, browser or security assertions. Remove each group only with the named oracle passing on its exact candidate.
 
@@ -34,9 +34,11 @@ registry/evidence/reference/certification checks to Rust, and switched the
 `eb36cade9749614742ad0b0cf7b823173abdc43f` confines evidence and manifest
 reads and rejects manifest fragments. Independent review found missing legacy
 regression assertions; `2cdd773` and `4fb29e9` restored claim, manifest,
-reference and dependency negatives. Seven focused Rust tests, Clippy and an
-actual base-ref checker invocation pass. Exact-head GitHub CI and independent
-acceptance remain pending. Tracked Go count: **98 → 96**. B1 is retired.
+reference and dependency negatives. A later parser-negative test brought the
+checker to eight focused Rust tests. Clippy, an actual base-ref checker
+invocation, and the `architecture-consistency` GitHub job on `6947b42`
+passed. Final independent acceptance remains pending. Tracked Go count:
+**98 → 96**. B1 is retired.
 
 ## Legacy CI and scripts (not counted as `.go` files)
 
