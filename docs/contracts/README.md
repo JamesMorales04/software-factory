@@ -2,7 +2,7 @@
 
 **Status:** These contracts define Rust-era protocol and state invariants. The current implementation is governed by [ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md), the [migration closure](../implementation/native-rust-closure.md) and the [capability registry](../product/capabilities.yaml). This index is a protocol map, not certification by itself. Legacy provider-intermediary contracts are archived under [docs/evidence/history/contracts](../evidence/history/contracts).
 
-## Frozen for F1 (implemented, review-bound)
+## Frozen contract expectations (implementation status varies)
 
 | Contract | File | Slice | Covers |
 | --- | --- | --- | --- |
