@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "230ad0b3ea3b6102c8c906bcaa193e5e9b7d82c1",
+  "verified_code_commit_sha": "b7131b389c12b7ee63d37f195ababdfa5cad3949",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -34,7 +34,8 @@
     "Explicit FACTORY_CONTAINER_MODE bind mode for Core and a minimal multi-stage Core OCI image",
     "Functional factory start/stop/logs/status with rootless Podman, loopback publication, read-only root, dropped capabilities and private tokens",
     "Process-level negative dispatch E2E for scope, failing checks, unauthorized runs and stale lease fencing",
-    "Real Chromium acceptance for the unified Rust Office (Project\u2192Action\u2192Campaign\u2192Attempt\u2192candidate\u2192gate) via cargo xtask e2e office"
+    "Real Chromium acceptance for the unified Rust Office (Project\u2192Action\u2192Campaign\u2192Attempt\u2192candidate\u2192gate) via cargo xtask e2e office",
+    "Rust-backed Workers visibility (registered credentials, not liveness) in the unified Office"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -73,7 +74,8 @@
     "provider_paid_turns": 0,
     "pr_published": "YES: origin/native-rust-replacement-20261023 at exact pushed head; exact-head CI pending",
     "ci": "Native Rust + governance passed at 90de26a; legacy Go/Paseo browser jobs fail on removed Office selectors/views. New exact-head CI pending.",
-    "xtask_e2e_office": "PASS: real Chromium, candidate commit and ACCEPTED gate after reload"
+    "xtask_e2e_office": "PASS: real Chromium, candidate commit and ACCEPTED gate after reload",
+    "workflow_ci": "Native Rust, governance and office-browser checks run on exact head; result pending at update. Legacy Go/Paseo browser jobs remain failing due removed legacy Office selectors/views; their non-browser assertions pass."
   },
   "dependency_audit": {
     "tool": "cargo-audit",
@@ -88,7 +90,7 @@
   "delivery_status": "PR #17 published at exact head; draft; no merge/deploy. CI pending.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Port remaining legacy browser/recovery/multi-project assertions or implement the missing Rust session/multi-project Office views; keep provider/ISOLATED execution fail-closed. Rerun exact-head CI after push.",
+  "next_task": "Port remaining legacy browser/recovery/multi-project assertions or implement the missing Rust session/multi-project Office capabilities; continue provider lifecycle and portable rootless networking. Keep provider/ISOLATED execution fail-closed.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",

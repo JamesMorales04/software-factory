@@ -318,10 +318,12 @@ runs a real Chromium journey through the unified Rust Office and reaches an
 `ACCEPTED` gate after reload (`230ad0b`). The branch was published to
 PR #17; exact-head CI is pending. The legacy governance gate initially failed
 on stale Office capability references and YAML quoting; both were repaired in
-`5d9af40` without restoring removed Paseo views. Native Rust and governance CI passed at `90de26a`;
-legacy Go/Paseo browser jobs fail on removed Office selectors/views (old
-`FACTORY_API_TOKEN`, Dashboard/Agents/Projects/Campaigns legacy journeys) while
-their non-browser Go assertions pass. Those legacy browser jobs are not
+`5d9af40` without restoring removed Paseo views. Native Rust and governance CI passed at `90de26a`; the new `office-browser`
+job passed at `6e2f4aa`. Legacy Go/Paseo browser jobs fail on removed Office
+selectors/views (old `FACTORY_API_TOKEN`, Dashboard/Agents/Projects/Campaigns
+legacy journeys) while their non-browser Go assertions pass. The Office now
+also exposes a Rust-backed Workers view (registered credentials only, not
+fabricated liveness) at `b7131b3`. Those legacy browser jobs are not
 Rust-era evidence. Exact-head CI for `230ad0b`, independent acceptance,
 provider lifecycle, recovery/multi-project Office, same-UID isolation, Windows
 and portable container networking remain open.

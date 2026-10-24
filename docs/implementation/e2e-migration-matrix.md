@@ -1,6 +1,6 @@
 # E2E and acceptance-test migration matrix (legacy → native Rust)
 
-**Audit date:** 2026-10-23 UTC. **Worktree:** `/home/james/Escritorio/Development/software-factory-native-rust`. **Audited HEAD:** `230ad0b3ea3b6102c8c906bcaa193e5e9b7d82c1`. **Branch:** `native-rust-replacement-20261023`.
+**Audit date:** 2026-10-23 UTC. **Worktree:** `/home/james/Escritorio/Development/software-factory-native-rust`. **Audited HEAD:** `b7131b389c12b7ee63d37f195ababdfa5cad3949`. **Branch:** `native-rust-replacement-20261023`.
 
 This file inventories material legacy E2E, acceptance, security, live-certification and browser suites. It is a test-migration inventory, not a replacement certificate. The broader component inventory is [native-rust-migration-matrix.md](native-rust-migration-matrix.md); S4-D product recovery is [s4d-rust-recovery-matrix.md](s4d-rust-recovery-matrix.md).
 
