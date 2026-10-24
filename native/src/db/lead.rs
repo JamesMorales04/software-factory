@@ -1315,6 +1315,7 @@ pub(super) async fn fail_lead_work(
                 .map_err(|_| Error::Invalid("stored task dependencies"))?;
             if status == "SUCCEEDED"
                 || status == "FAILED"
+                || failed_units.contains(&unit)
                 || !dependencies.iter().any(|dep| failed_units.contains(dep))
             {
                 continue;

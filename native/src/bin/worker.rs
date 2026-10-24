@@ -204,7 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => {
                 let message = error.to_string();
-                let _ = client
+                let response = client
                     .post(core.join("worker/report")?)
                     .bearer_auth(&session_token)
                     .json(&json!({
@@ -216,7 +216,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "terminal_status": "FAILED"
                     }))
                     .send()
-                    .await;
+                    .await?;
+                if !response.status().is_success() {
+                    eprintln!(
+                        "Core refused failed-attempt report: {} {}",
+                        response.status(),
+                        response.text().await.unwrap_or_default()
+                    );
+                }
                 eprintln!("sandbox execution failed: {message}");
                 if once {
                     return Err(error);
