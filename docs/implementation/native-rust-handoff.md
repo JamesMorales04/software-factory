@@ -555,17 +555,14 @@ legacy Paseo/Office browser jobs still fail and are not Rust evidence. These
 are not independent human acceptance. No paid provider turn, sandbox
 certification or Windows run is claimed.
 
-Remaining next executable work: integrate the provider lifecycle into a
-production caller only after Core-owned authorization/budget and credential
-confinement exist; add cancellation coverage for an in-flight integration node
-and recovery/cleanup Office projection; add a future event-payload projection
-if a payload field is introduced; then retire the legacy Go module and CI in
-one verified cutover. The Go inventory is now **94** tracked files after batch 3, which retired the
-B2 `recovery` and `project` unit tests once their exact assertions passed in
-Rust. Production Go remains one connected module; no further file-level
-deletion is currently truthful. The [deletion map](native-rust-deletion-map.md)
-records the exact dependency blocker. PR #17 remains Draft; provider/ISOLATED
-coding remains fail-closed and no merge/deploy authorization is implied.
+Remaining next executable work after retirement: integrate the provider
+lifecycle into a production caller only after Core-owned authorization/budget
+and credential confinement exist; add process-level cancellation coverage for
+an in-flight integration node and recovery/cleanup Office projection; add a
+future event-payload projection if a payload field is introduced. The complete
+legacy module and CI were retired in the checkpoint below; the tracked tree has
+zero Go files. PR #17 remains Draft; provider/ISOLATED coding remains
+fail-closed and no merge/deploy authorization is implied.
 
 ## Rust-only retirement checkpoint (2026-10-24)
 
