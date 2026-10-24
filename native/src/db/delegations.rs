@@ -197,6 +197,34 @@ impl Database {
             .execute(&mut *transaction)
             .await?;
             sqlx::query::query(
+                "WITH linked AS (
+                   SELECT c.id AS campaign_id FROM campaigns c
+                   JOIN lead_requests l ON l.action_id=c.action_id
+                   WHERE l.delegation_id=?1
+                 )
+                 UPDATE lead_tasks SET status='FAILED',updated_at=?2
+                 WHERE campaign_id IN (SELECT campaign_id FROM linked)
+                   AND status IN ('PENDING','RUNNING')",
+            )
+            .bind(id)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "WITH linked AS (
+                   SELECT c.id AS campaign_id FROM campaigns c
+                   JOIN lead_requests l ON l.action_id=c.action_id
+                   WHERE l.delegation_id=?1
+                 )
+                 UPDATE lead_integrations SET status='FAILED',updated_at=?2
+                 WHERE campaign_id IN (SELECT campaign_id FROM linked)
+                   AND status IN ('QUEUED','RUNNING')",
+            )
+            .bind(id)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
                 "DELETE FROM worker_leases
                  WHERE attempt_id IN (
                    SELECT a.id FROM attempts a

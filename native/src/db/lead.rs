@@ -1270,7 +1270,7 @@ pub(super) async fn fail_lead_work(
     if let Some(task_id) = &task_id {
         sqlx::query::query("UPDATE lead_tasks SET status='FAILED',updated_at=?1 WHERE task_id=?2")
             .bind(Utc::now().to_rfc3339())
-            .bind(&task_id)
+            .bind(task_id)
             .execute(&mut *transaction)
             .await?;
     }
@@ -1529,7 +1529,7 @@ async fn schedule_unit_attempt(
 }
 
 async fn ensure_integration(
-    mut transaction: &mut SqliteConnection,
+    transaction: &mut SqliteConnection,
     campaign_id: &str,
     purpose: &str,
     next_task_id: &str,
@@ -1578,8 +1578,8 @@ async fn ensure_integration(
     let proposal_json: String = context.try_get("proposal_json")?;
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-    let config = load_project_config(&mut transaction, &project_id).await?;
-    let grant = load_delegation(&mut transaction, &delegation_id).await?;
+    let config = load_project_config(transaction, &project_id).await?;
+    let grant = load_delegation(transaction, &delegation_id).await?;
     let mut allowed_paths = std::collections::BTreeSet::new();
     let checks = if purpose == "FANIN" {
         let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
