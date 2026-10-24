@@ -1889,7 +1889,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Database::open(&path).await.unwrap();
-        sqlx::query::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
+        sqlx::query::query("INSERT INTO projects(id,repository,base_commit,created_at,identity) VALUES (?1,?2,?3,?4,'')")
             .bind("project")
             .bind("/fixture")
             .bind("b".repeat(40))

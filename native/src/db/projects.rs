@@ -11,7 +11,7 @@ impl Database {
             return Err(Error::Invalid("idempotency key"));
         }
         let requested = repository.to_path_buf();
-        let (repository, base_commit) =
+        let (repository, base_commit, identity) =
             tokio::task::spawn_blocking(move || resolve_repository(&requested))
                 .await
                 .map_err(|error| Error::Repository(format!("repository task failed: {error}")))??;
@@ -29,14 +29,19 @@ impl Database {
             repository,
             base_commit,
             created_at: Utc::now().to_rfc3339(),
+            identity,
         };
-        sqlx::query::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
-            .bind(&project.id)
-            .bind(&project.repository)
-            .bind(&project.base_commit)
-            .bind(&project.created_at)
-            .execute(&mut *transaction)
-            .await?;
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES (?1,?2,?3,?4,?5)",
+        )
+        .bind(&project.id)
+        .bind(&project.repository)
+        .bind(&project.base_commit)
+        .bind(&project.created_at)
+        .bind(&project.identity)
+        .execute(&mut *transaction)
+        .await?;
         self.ensure_project_config(&mut transaction, &project.id)
             .await?;
         sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
@@ -251,19 +256,22 @@ impl Database {
     }
 
     pub async fn projects(&self) -> Result<Vec<Project>, Error> {
-        let rows: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
-            "SELECT id,repository,base_commit,created_at FROM projects ORDER BY created_at",
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
+            "SELECT id,repository,base_commit,created_at,identity FROM projects ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, repository, base_commit, created_at)| Project {
-                id,
-                repository,
-                base_commit,
-                created_at,
-            })
+            .map(
+                |(id, repository, base_commit, created_at, identity)| Project {
+                    id,
+                    repository,
+                    base_commit,
+                    created_at,
+                    identity,
+                },
+            )
             .collect())
     }
 
@@ -286,7 +294,7 @@ impl Database {
     }
 }
 
-fn resolve_repository(repository: &Path) -> Result<(String, String), Error> {
+fn resolve_repository(repository: &Path) -> Result<(String, String, String), Error> {
     let canonical = repository
         .canonicalize()
         .map_err(|error| Error::Repository(error.to_string()))?;
@@ -317,35 +325,36 @@ fn resolve_repository(repository: &Path) -> Result<(String, String), Error> {
     let root: PathBuf = Path::new(root)
         .canonicalize()
         .map_err(|error| Error::Repository(error.to_string()))?;
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
+    let inspected = crate::repository::inspect(&root, &["HEAD".to_string()])
         .map_err(|error| Error::Repository(error.to_string()))?;
-    if !output.status.success() {
-        return Err(Error::Repository("repository has no HEAD commit".into()));
-    }
-    let base_commit = String::from_utf8(output.stdout)
-        .map_err(|_| Error::Invalid("commit encoding"))?
-        .trim()
-        .to_string();
-    Ok((root.to_string_lossy().to_string(), base_commit))
+    let base_commit = inspected
+        .base_tips
+        .get("HEAD")
+        .cloned()
+        .ok_or_else(|| Error::Repository("repository has no HEAD commit".into()))?;
+    Ok((
+        inspected.path.to_string_lossy().to_string(),
+        base_commit,
+        inspected.identity,
+    ))
 }
 
 async fn load_project(connection: &mut SqliteConnection, id: &str) -> Result<Project, Error> {
-    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
-        "SELECT id,repository,base_commit,created_at FROM projects WHERE id=?1",
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT id,repository,base_commit,created_at,identity FROM projects WHERE id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
     .await?;
-    row.map(|(id, repository, base_commit, created_at)| Project {
-        id,
-        repository,
-        base_commit,
-        created_at,
-    })
+    row.map(
+        |(id, repository, base_commit, created_at, identity)| Project {
+            id,
+            repository,
+            base_commit,
+            created_at,
+            identity,
+        },
+    )
     .ok_or(Error::NotFound)
 }
 

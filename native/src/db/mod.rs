@@ -46,6 +46,7 @@ pub struct Project {
     pub repository: String,
     pub base_commit: String,
     pub created_at: String,
+    pub identity: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,6 +155,42 @@ pub struct WorkerSession {
     pub worker_id: String,
     pub created: bool,
 }
+
+pub const EVENT_KINDS: &[&str] = &[
+    "action.classified",
+    "action.created",
+    "attempt.created",
+    "campaign.authorized",
+    "campaign.cancelled",
+    "campaign.created",
+    "campaign.started",
+    "candidate.integrated",
+    "candidate.recorded",
+    "delegation.recorded",
+    "delegation.released",
+    "delegation.reserved",
+    "delegation.revoked",
+    "lead.assessment_recorded",
+    "lead.plan_completed",
+    "lead.plan_frozen",
+    "lead.proposal_recorded",
+    "lead.request_blocked",
+    "lead.request_created",
+    "lead.started",
+    "lead.state_changed",
+    "lead.work_failed",
+    "project.config_updated",
+    "project.registered",
+    "quality.gate_decided",
+    "quality.receipt_recorded",
+    "run.created",
+    "worker.claimed",
+    "worker.claim_released",
+    "worker.registered",
+    "worker.session_rotated",
+    "worker.terminal_reported",
+    "work_integration.started",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
@@ -430,6 +467,9 @@ async fn record_event(
     kind: &str,
     detail: &str,
 ) -> Result<(), Error> {
+    if !EVENT_KINDS.contains(&kind) {
+        return Err(Error::Invalid("unknown event kind"));
+    }
     sqlx::query::query(
         "INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,?3,?4)",
     )

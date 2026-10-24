@@ -19,7 +19,7 @@ async fn temp_db(prefix: &str) -> (PathBuf, Database) {
 }
 
 async fn insert_project(db: &Database, id: &str, repository: &str, base: &str) {
-    sqlx::query::query("INSERT INTO projects VALUES (?1,?2,?3,?4)")
+    sqlx::query::query("INSERT INTO projects(id,repository,base_commit,created_at,identity) VALUES (?1,?2,?3,?4,'')")
         .bind(id)
         .bind(repository)
         .bind(base)
@@ -41,14 +41,17 @@ async fn count(db: &Database, sql: &str) -> i64 {
 async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let path = temp_path("factory-migrations");
     let db = Database::open(&path).await.unwrap();
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await, 9);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        10
+    );
     insert_project(&db, "project", "/fixture", "base").await;
     db.close().await;
 
     let reopened = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        9
+        10
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
@@ -66,7 +69,7 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
         .execute(&mut connection)
         .await
         .unwrap();
-    sqlx::query::query("INSERT INTO projects VALUES ('keep','/legacy','base','now')")
+    sqlx::query::query("INSERT INTO projects(id,repository,base_commit,created_at) VALUES ('keep','/legacy','base','now')")
         .execute(&mut connection)
         .await
         .unwrap();
@@ -82,7 +85,10 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     }
 
     let db = Database::open(&path).await.unwrap();
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await, 9);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+        10
+    );
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,
         1
@@ -1167,4 +1173,20 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
     workspace.cleanup().unwrap();
     db.close().await;
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn event_kind_vocabulary_is_closed() {
+    let (path, db) = temp_db("factory-event-kind").await;
+    let mut transaction = db.pool.begin().await.unwrap();
+    super::record_event(&mut transaction, "subject", "action.created", "created")
+        .await
+        .unwrap();
+    assert!(matches!(
+        super::record_event(&mut transaction, "subject", "unknown.event", "x").await,
+        Err(Error::Invalid("unknown event kind"))
+    ));
+    transaction.rollback().await.unwrap();
+    db.close().await;
+    let _ = std::fs::remove_file(path);
 }
