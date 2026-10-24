@@ -235,7 +235,7 @@ fn validate_capability_preservation(registry: &Registry, decisions: &str) -> Res
 }
 
 fn parse_registry(contents: &str) -> Result<Registry, String> {
-    serde_yaml_ng::from_str(contents).map_err(|error| format!("parse registry: {error}"))
+    serde_saphyr::from_str(contents).map_err(|error| format!("parse registry: {error}"))
 }
 
 fn validate_registry(root: &Path, registry: &Registry) -> Result<(), String> {

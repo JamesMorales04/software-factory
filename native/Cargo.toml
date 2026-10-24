@@ -25,7 +25,7 @@ tower-http = { version = "0.6.11", features = ["fs"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
-serde_yaml_ng = "0.10"
+serde-saphyr = { version = "=2.0.0", default-features = false, features = ["deserialize"] }
 
 [[bin]]
 name = "factory-core"
