@@ -41,8 +41,8 @@ port. `start` publishes only `127.0.0.1:<port>`.
 ## Status
 
 Build the image with the command in [`deploy/README.md`](../deploy/README.md).
-Core supports `FACTORY_CONTAINER_MODE=1` with an explicit IPv4 unspecified bind;
-the image was built and `/health` was verified inside an isolated Podman network
-namespace. The full `factory start` path is blocked on the author host because
-rootless Podman networking requires `/dev/net/tun` (`pasta failed ... No such
-device`). Container start, Windows and isolation certification are not claimed.
+On the CachyOS host with kernel `7.3.0-3-cachyos`, `tun` loaded, rootless
+Podman 6.1.4 and pasta available, `factory start` completed: container created,
+published only on `127.0.0.1`, Core health 200, authenticated API accessible,
+the Rust Office served from the image, and a durable Worker registration
+survived stop/start. Windows and isolation certification are not claimed.

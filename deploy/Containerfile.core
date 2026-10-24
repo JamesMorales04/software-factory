@@ -22,6 +22,17 @@
 # Base images are pinned by tag, not digest. Digest pinning is not implemented.
 
 ARG RUST_VERSION=1.90.0
+ARG NODE_VERSION=22.23.2
+
+FROM node:${NODE_VERSION}-bookworm-slim AS office
+
+WORKDIR /office
+
+COPY office/package.json office/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY office/ ./
+RUN npm run build
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
@@ -53,10 +64,13 @@ RUN apt-get update \
     && install -d -o factory -g factory -m 0700 /data
 
 COPY --from=builder /build/target/release/factory-core /usr/local/bin/factory-core
+COPY --from=office /office/dist /app/office
 
-# The database path is a safe image default. Tokens have no defaults and Core
-# fails closed when they are absent. FACTORY_BIND is supplied by the CLI.
-ENV FACTORY_DATABASE=/data/factory.sqlite
+# The database path and Office assets are safe image defaults. Tokens have no
+# defaults and Core fails closed when they are absent. FACTORY_BIND is supplied
+# by the CLI.
+ENV FACTORY_DATABASE=/data/factory.sqlite \
+    FACTORY_OFFICE_DIR=/app/office
 
 EXPOSE 8765
 VOLUME ["/data"]

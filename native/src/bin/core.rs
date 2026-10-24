@@ -169,6 +169,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build_router(app: Arc<App>) -> Router {
+    let api = api_router(app);
+    let nested = api.clone();
+    let mut router = Router::new().merge(api).nest("/core-api", nested);
+    if let Ok(directory) = env::var("FACTORY_OFFICE_DIR") {
+        let directory = Path::new(&directory);
+        if directory.is_dir() {
+            let index = directory.join("index.html");
+            router = router.fallback_service(
+                tower_http::services::ServeDir::new(directory)
+                    .not_found_service(tower_http::services::ServeFile::new(index)),
+            );
+        }
+    }
+    router
+}
+
+fn api_router(app: Arc<App>) -> Router {
     Router::new()
         .route(
             "/health",
