@@ -374,6 +374,7 @@ async fn integrate<B: factory_native::execution::VolumeBackend>(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    tracing::info!(base = %input.base_commit, candidates = input.candidate_commits.len(), "integration request");
     if input.candidate_commits.len() < 2 || input.candidate_commits.len() > 8 {
         return (
             StatusCode::BAD_REQUEST,

@@ -17,6 +17,11 @@ impl Database {
             candidate_context(&mut connection, &input.attempt_id).await?
         };
         require_live_lease(&context, &input.worker_id, input.generation, now_ms)?;
+        if context.kind == "INTEGRATION" {
+            return Err(Error::Forbidden(
+                "integration attempts require the integrated-candidate endpoint".into(),
+            ));
+        }
         if context.spec_sha256 != input.action_spec_sha256 {
             return Err(Error::Forbidden(
                 "candidate ActionSpec hash does not match the frozen spec".into(),
@@ -98,8 +103,14 @@ impl Database {
             tree_sha: verified.tree_sha.clone(),
             implementer_id: input.worker_id.clone(),
             created_at: Utc::now().to_rfc3339(),
+            integration: false,
+            lineage: Vec::new(),
         };
-        sqlx::query::query("INSERT INTO candidates VALUES (?1,?2,?3,?4,?5,?6,?7)")
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,0,'[]')",
+        )
             .bind(&candidate.id)
             .bind(&candidate.attempt_id)
             .bind(&candidate.action_spec_sha256)
@@ -197,6 +208,8 @@ impl Database {
         let action_spec: ActionSpec = serde_json::from_str(&spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
         Ok(CandidateInspection {
+            integration: candidate.integration,
+            lineage: candidate.lineage.clone(),
             candidate,
             action_id,
             action_spec,
@@ -206,36 +219,180 @@ impl Database {
         })
     }
 
+    pub async fn record_integrated_candidate(
+        &self,
+        input: &NewIntegratedCandidate,
+        now_ms: i64,
+    ) -> Result<CandidateRecord, Error> {
+        if input.attempt_id.trim().is_empty()
+            || input.worker_id.trim().is_empty()
+            || input.generation <= 0
+            || !is_sha256(&input.action_spec_sha256)
+            || !is_git_oid(&input.commit_sha)
+            || !is_git_oid(&input.tree_sha)
+        {
+            return Err(Error::Invalid("integrated candidate submission"));
+        }
+        let context = {
+            let mut connection = self.pool.acquire().await?;
+            candidate_context(&mut connection, &input.attempt_id).await?
+        };
+        require_live_lease(&context, &input.worker_id, input.generation, now_ms)?;
+        if context.kind != "INTEGRATION" || context.integration_candidates.len() < 2 {
+            return Err(Error::Forbidden(
+                "attempt is not a multi-candidate integration".into(),
+            ));
+        }
+        if context.spec_sha256 != input.action_spec_sha256 {
+            return Err(Error::Forbidden(
+                "integration ActionSpec hash does not match the frozen spec".into(),
+            ));
+        }
+        let repository = context.repository.clone();
+        let base_commit = context.base_commit.clone();
+        let commit_sha = input.commit_sha.clone();
+        let tree_sha = input.tree_sha.clone();
+        let expected = context.integration_candidates.clone();
+        let verified = tokio::task::spawn_blocking(move || {
+            crate::workspace::verify_integrated_candidate(
+                Path::new(&repository),
+                &base_commit,
+                &commit_sha,
+                &tree_sha,
+                &expected,
+            )
+        })
+        .await
+        .map_err(|error| {
+            Error::Forbidden(format!("integration lineage verification failed: {error}"))
+        })?
+        .map_err(|error| Error::Forbidden(format!("integration lineage rejected: {error}")))?;
+        let spec: ActionSpec = serde_json::from_str(&context.spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        if !spec.allowed_paths.is_empty() {
+            let repository = context.repository.clone();
+            let base_commit = context.base_commit.clone();
+            let commit_sha = verified.commit_sha.clone();
+            let changed = tokio::task::spawn_blocking(move || {
+                crate::workspace::changed_paths(Path::new(&repository), &base_commit, &commit_sha)
+            })
+            .await
+            .map_err(|error| Error::Forbidden(format!("integration path task failed: {error}")))?
+            .map_err(|error| Error::Forbidden(format!("integration path check failed: {error}")))?;
+            if let Some(path) = changed
+                .iter()
+                .find(|path| !crate::workspace::path_covered(path, &spec.allowed_paths))
+            {
+                return Err(Error::Forbidden(format!(
+                    "integrated path {path:?} is outside the frozen allowed paths"
+                )));
+            }
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let current = candidate_context(&mut transaction, &input.attempt_id).await?;
+        if current.spec_sha256 != input.action_spec_sha256
+            || current.repository != context.repository
+            || current.base_commit != context.base_commit
+            || current.integration_candidates != context.integration_candidates
+        {
+            return Err(Error::Conflict(
+                "integration binding changed during candidate validation",
+            ));
+        }
+        if let Some(existing) =
+            load_candidate_for_attempt(&mut transaction, &input.attempt_id).await?
+        {
+            if existing.integration
+                && existing.implementer_id == input.worker_id
+                && existing.action_spec_sha256 == input.action_spec_sha256
+                && existing
+                    .commit_sha
+                    .eq_ignore_ascii_case(&verified.commit_sha)
+                && existing.tree_sha.eq_ignore_ascii_case(&verified.tree_sha)
+            {
+                transaction.commit().await?;
+                return Ok(existing);
+            }
+            return Err(Error::Conflict(
+                "integration attempt already recorded a different candidate",
+            ));
+        }
+        require_live_lease(
+            &current,
+            &input.worker_id,
+            input.generation,
+            Utc::now().timestamp_millis(),
+        )?;
+        let lineage_json = serde_json::to_string(&verified.parent_shas)
+            .map_err(|_| Error::Invalid("integration lineage encoding"))?;
+        let candidate = CandidateRecord {
+            id: Uuid::new_v4().to_string(),
+            attempt_id: input.attempt_id.clone(),
+            action_spec_sha256: input.action_spec_sha256.clone(),
+            commit_sha: verified.commit_sha.clone(),
+            tree_sha: verified.tree_sha.clone(),
+            implementer_id: input.worker_id.clone(),
+            created_at: Utc::now().to_rfc3339(),
+            integration: true,
+            lineage: verified.parent_shas.clone(),
+        };
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,1,?8)",
+        )
+        .bind(&candidate.id)
+        .bind(&candidate.attempt_id)
+        .bind(&candidate.action_spec_sha256)
+        .bind(&candidate.commit_sha)
+        .bind(&candidate.tree_sha)
+        .bind(&candidate.implementer_id)
+        .bind(&candidate.created_at)
+        .bind(lineage_json)
+        .execute(&mut *transaction)
+        .await?;
+        let changed = sqlx::query::query(
+            "UPDATE attempts SET status='CANDIDATE_READY' WHERE id=?1 AND status='LEASED'",
+        )
+        .bind(&candidate.attempt_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict("integration attempt is no longer leased"));
+        }
+        super::lead::advance_lead_task(
+            &mut transaction,
+            &candidate.attempt_id,
+            &candidate.commit_sha,
+        )
+        .await?;
+        record_event(
+            &mut transaction,
+            &candidate.id,
+            "candidate.integrated",
+            &format!(
+                "attempt={} commit={} parents={}",
+                candidate.attempt_id,
+                candidate.commit_sha,
+                candidate.lineage.len()
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(candidate)
+    }
+
     pub async fn candidates(&self) -> Result<Vec<CandidateRecord>, Error> {
-        let rows: Vec<(String, String, String, String, String, String, String)> =
-            sqlx::query_as::query_as(
-                "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
-                 FROM candidates ORDER BY created_at,id",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    attempt_id,
-                    action_spec_sha256,
-                    commit_sha,
-                    tree_sha,
-                    implementer_id,
-                    created_at,
-                )| CandidateRecord {
-                    id,
-                    attempt_id,
-                    action_spec_sha256,
-                    commit_sha,
-                    tree_sha,
-                    implementer_id,
-                    created_at,
-                },
-            )
-            .collect())
+        let rows: Vec<CandidateColumns> = sqlx::query_as::query_as(
+            "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+                    integration,lineage_json
+             FROM candidates ORDER BY created_at,id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(candidate_from_columns).collect())
     }
 
     pub async fn candidate(&self, id: &str) -> Result<CandidateRecord, Error> {
@@ -278,12 +435,16 @@ struct CandidateContext {
     spec_sha256: String,
     spec_json: String,
     execution_mode: String,
+    kind: String,
+    integration_candidates: Vec<String>,
 }
 
 type CandidateContextRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    String,
+    String,
     String,
     String,
     String,
@@ -300,7 +461,8 @@ async fn candidate_context(
     let row: Option<CandidateContextRow> = sqlx::query_as::query_as(
         "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,
                 COALESCE(aps.base_commit,p.base_commit),COALESCE(aps.spec_sha256,s.spec_sha256),
-                COALESCE(aps.spec_json,s.spec_json),COALESCE(ca.execution_mode,'NONE')
+                COALESCE(aps.spec_json,s.spec_json),COALESCE(ca.execution_mode,'NONE'),
+                COALESCE(aps.kind,'UNIT'),COALESCE(aps.integration_candidates_json,'[]')
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
@@ -326,6 +488,8 @@ async fn candidate_context(
         spec_sha256,
         spec_json,
         execution_mode,
+        kind,
+        integration_candidates,
     ) = row.ok_or(Error::NotFound)?;
     Ok(CandidateContext {
         worker_id: worker_id.unwrap_or_default(),
@@ -338,6 +502,9 @@ async fn candidate_context(
         spec_sha256,
         spec_json,
         execution_mode,
+        kind,
+        integration_candidates: serde_json::from_str(&integration_candidates)
+            .map_err(|_| Error::Invalid("stored integration candidates"))?,
     })
 }
 
@@ -563,11 +730,30 @@ async fn decide_gate(
     Ok(Some(gate))
 }
 
-type CandidateColumns = (String, String, String, String, String, String, String);
+type CandidateColumns = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+);
 
 fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
-    let (id, attempt_id, action_spec_sha256, commit_sha, tree_sha, implementer_id, created_at) =
-        columns;
+    let (
+        id,
+        attempt_id,
+        action_spec_sha256,
+        commit_sha,
+        tree_sha,
+        implementer_id,
+        created_at,
+        integration,
+        lineage,
+    ) = columns;
     CandidateRecord {
         id,
         attempt_id,
@@ -576,6 +762,8 @@ fn candidate_from_columns(columns: CandidateColumns) -> CandidateRecord {
         tree_sha,
         implementer_id,
         created_at,
+        integration: integration == 1,
+        lineage: serde_json::from_str(&lineage).unwrap_or_default(),
     }
 }
 
@@ -584,7 +772,8 @@ async fn load_candidate(
     id: &str,
 ) -> Result<CandidateRecord, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
-        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+                integration,lineage_json
          FROM candidates WHERE id=?1",
     )
     .bind(id)
@@ -598,7 +787,8 @@ async fn load_candidate_for_attempt(
     attempt_id: &str,
 ) -> Result<Option<CandidateRecord>, Error> {
     let row: Option<CandidateColumns> = sqlx::query_as::query_as(
-        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at
+        "SELECT id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+                integration,lineage_json
          FROM candidates WHERE attempt_id=?1",
     )
     .bind(attempt_id)

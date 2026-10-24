@@ -181,6 +181,9 @@ impl Database {
             "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256,
+                    COALESCE(aps.base_commit,p.base_commit) AS base_commit,
+                    COALESCE(aps.kind,'UNIT') AS kind,
+                    COALESCE(aps.integration_candidates_json,'[]') AS integration_candidates,
                     ca.execution_mode
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
@@ -200,6 +203,10 @@ impl Database {
         let repository: String = row.try_get("repository")?;
         let spec_json: String = row.try_get("spec_json")?;
         let spec_sha256: String = row.try_get("spec_sha256")?;
+        let kind: String = row.try_get("kind")?;
+        let integration_candidates: String = row.try_get("integration_candidates")?;
+        let integration_candidates: Vec<String> = serde_json::from_str(&integration_candidates)
+            .map_err(|_| Error::Invalid("stored integration candidates"))?;
         let execution_mode: Option<String> = row.try_get("execution_mode")?;
         let execution_mode = execution_mode.unwrap_or_else(|| "ISOLATED".into());
         if execution_mode != "FIXTURE" {
@@ -224,6 +231,8 @@ impl Database {
             action_spec_sha256: spec_sha256,
             repository,
             execution_mode,
+            kind,
+            integration_candidates,
         })
     }
 
@@ -440,6 +449,12 @@ impl Database {
             .bind(Utc::now().to_rfc3339())
             .execute(&mut *transaction)
             .await?;
+        super::lead::fail_lead_work(
+            &mut transaction,
+            &report.attempt_id,
+            &format!("worker terminal {}", report.terminal_status),
+        )
+        .await?;
         record_event(
             &mut transaction,
             &report.attempt_id,

@@ -9,8 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use factory_native::db::{
-    Database, Error, NewCampaignAuthorization, NewCandidate, NewProjectConfig, QualityReceiptInput,
-    QualityRole, WorkerReport,
+    Database, Error, NewCampaignAuthorization, NewCandidate, NewIntegratedCandidate,
+    NewProjectConfig, QualityReceiptInput, QualityRole, WorkerReport,
 };
 use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
@@ -223,6 +223,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
         .route("/worker/candidate", post(worker_candidate))
+        .route(
+            "/worker/integrated_candidate",
+            post(worker_integrated_candidate),
+        )
         .route("/quality/receipts", post(quality_receipt))
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
@@ -650,6 +654,24 @@ async fn worker_candidate(
     }
 }
 
+async fn worker_integrated_candidate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<NewIntegratedCandidate>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_integrated_candidate(&input, chrono::Utc::now().timestamp_millis())
+        .await
+    {
+        Ok(candidate) => (StatusCode::CREATED, Json(candidate)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -829,7 +851,7 @@ async fn assess_lead_request(
         project_id: action.project_id.clone(),
         status: factory_native::lead::ActionStatus::Pending,
     };
-    let (assessment, proposal) = match factory_native::lead::fixture_lead_assessment(
+    let (mut assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
         &request.id,
         &config,
         &action_binding,
@@ -844,6 +866,33 @@ async fn assess_lead_request(
             return api_error(error.into());
         }
     };
+    let requested_units = env::var("FACTORY_LEAD_FIXTURE_UNITS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    if requested_units > 1 {
+        let fanin = env::var("FACTORY_LEAD_FIXTURE_MODE").ok().as_deref() == Some("fanin");
+        proposal.budget.max_attempts = 1;
+        proposal.max_sessions = (1 + requested_units) as u32;
+        proposal.work_units = (1..=requested_units)
+            .map(|index| factory_native::lead::LeadWorkUnit {
+                id: format!("unit-{index}"),
+                kind: factory_native::lead::WorkUnitKind::Implementation,
+                description: format!("Unit {index}"),
+                depends_on: if fanin && index > 2 {
+                    vec!["unit-1".into(), "unit-2".into()]
+                } else {
+                    Vec::new()
+                },
+                allowed_paths: vec![format!("src/unit-{index}.txt")],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            })
+            .collect();
+        assessment.proposal = Some(proposal.clone());
+    }
     let input = factory_native::lead::AssessmentInput {
         project_id: request.project_id.clone(),
         action_id: request.action_id.clone(),

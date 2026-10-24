@@ -198,12 +198,36 @@ async fn verify_candidate(
     workspace_root: &Path,
 ) -> Result<(), VerificationError> {
     let repository = Path::new(&inspection.repository);
-    verify_git_identity(
-        repository,
-        &inspection.base_commit,
-        &inspection.candidate.commit_sha,
-        &inspection.candidate.tree_sha,
-    )?;
+    if inspection.integration {
+        let expected: Vec<String> = inspection
+            .lineage
+            .iter()
+            .filter(|parent| !parent.eq_ignore_ascii_case(&inspection.base_commit))
+            .cloned()
+            .collect();
+        if expected.len() < 2 {
+            return Err(VerificationError::Check(
+                "integrated candidate has insufficient parent evidence".into(),
+            ));
+        }
+        workspace::verify_integrated_candidate(
+            repository,
+            &inspection.base_commit,
+            &inspection.candidate.commit_sha,
+            &inspection.candidate.tree_sha,
+            &expected,
+        )
+        .map_err(|error| {
+            VerificationError::Check(format!("integration lineage rejected: {error}"))
+        })?;
+    } else {
+        verify_git_identity(
+            repository,
+            &inspection.base_commit,
+            &inspection.candidate.commit_sha,
+            &inspection.candidate.tree_sha,
+        )?;
+    }
     enforce_candidate_scope(inspection)?;
     if inspection.action_spec.checks.is_empty() {
         return Err(VerificationError::Infrastructure(

@@ -641,23 +641,8 @@ impl Database {
         let plan = load_frozen_plan_by_id(&mut transaction, &plan_id.0).await?;
         let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
             .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-        if proposal.work_units.is_empty() || proposal.needs_integration() {
-            return Err(Error::Forbidden(
-                "only a single linear WorkGraph chain is enabled; parallel/fan-in integration is not enabled"
-                    .into(),
-            ));
-        }
-        for (index, unit) in proposal.work_units.iter().enumerate() {
-            let expected: Vec<String> = if index == 0 {
-                Vec::new()
-            } else {
-                vec![proposal.work_units[index - 1].id.clone()]
-            };
-            if unit.depends_on != expected {
-                return Err(Error::Forbidden(
-                    "only a single linear WorkGraph chain is enabled".into(),
-                ));
-            }
+        if proposal.work_units.is_empty() {
+            return Err(Error::Forbidden("WorkGraph is empty".into()));
         }
         if proposal.risk_class != crate::lead::RiskClass::R0 {
             return Err(Error::Forbidden("autonomous start is limited to R0".into()));
@@ -757,7 +742,8 @@ impl Database {
             let task_id = Uuid::new_v4().to_string();
             let mut run_id = None;
             let mut attempt_id = None;
-            if index == 0 {
+            let is_root = unit.depends_on.is_empty();
+            if is_root {
                 let run = Run {
                     id: Uuid::new_v4().to_string(),
                     campaign_id: campaign.id.clone(),
@@ -813,7 +799,7 @@ impl Database {
             .bind(&request.id)
             .bind(&unit.id)
             .bind(i64::try_from(index).map_err(|_| Error::Invalid("task sequence"))?)
-            .bind(if index == 0 { "RUNNING" } else { "PENDING" })
+            .bind(if is_root { "RUNNING" } else { "PENDING" })
             .bind(&spec.base_commit)
             .bind(spec_json)
             .bind(spec_sha256)
@@ -1180,63 +1166,314 @@ pub(super) async fn advance_lead_task(
     candidate_commit: &str,
 ) -> Result<(), Error> {
     use sqlx::row::Row;
-    let task = sqlx::query::query(
-        "SELECT task_id,campaign_id,request_id,unit_id,sequence,spec_json,depends_on_json
-         FROM lead_tasks WHERE attempt_id=?1",
+    let campaign_id = if let Some(task) =
+        sqlx::query::query("SELECT task_id,campaign_id FROM lead_tasks WHERE attempt_id=?1")
+            .bind(attempt_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+    {
+        let task_id: String = task.try_get("task_id")?;
+        let campaign_id: String = task.try_get("campaign_id")?;
+        sqlx::query::query(
+            "UPDATE lead_tasks SET status='SUCCEEDED',candidate_id=(
+               SELECT id FROM candidates WHERE attempt_id=?1
+             ),updated_at=?2 WHERE task_id=?3",
+        )
+        .bind(attempt_id)
+        .bind(Utc::now().to_rfc3339())
+        .bind(&task_id)
+        .execute(&mut *transaction)
+        .await?;
+        campaign_id
+    } else if let Some(integration) = sqlx::query::query(
+        "SELECT campaign_id,next_task_id FROM lead_integrations WHERE attempt_id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    {
+        let campaign_id: String = integration.try_get("campaign_id")?;
+        let next_task_id: String = integration.try_get("next_task_id")?;
+        sqlx::query::query(
+            "UPDATE lead_integrations SET status='SUCCEEDED',candidate_id=(
+               SELECT id FROM candidates WHERE attempt_id=?1
+             ),updated_at=?2 WHERE attempt_id=?1",
+        )
+        .bind(attempt_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *transaction)
+        .await?;
+        if !next_task_id.is_empty() {
+            schedule_unit_attempt(transaction, &next_task_id, candidate_commit).await?;
+        } else {
+            let request_id: (String,) = sqlx::query_as::query_as(
+                "SELECT lr.id FROM lead_requests lr WHERE lr.campaign_id=?1",
+            )
+            .bind(&campaign_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            record_event(
+                transaction,
+                &request_id.0,
+                "lead.plan_completed",
+                "final integrated candidate recorded",
+            )
+            .await?;
+        }
+        campaign_id
+    } else {
+        return Ok(());
+    };
+    schedule_ready_tasks(transaction, &campaign_id).await?;
+    Ok(())
+}
+
+pub(super) async fn fail_lead_work(
+    transaction: &mut SqliteConnection,
+    attempt_id: &str,
+    reason: &str,
+) -> Result<(), Error> {
+    use sqlx::row::Row;
+    let task: Option<(String, String)> =
+        sqlx::query_as::query_as("SELECT task_id,campaign_id FROM lead_tasks WHERE attempt_id=?1")
+            .bind(attempt_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let integration: Option<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT integration_id,campaign_id,next_task_id FROM lead_integrations WHERE attempt_id=?1",
     )
     .bind(attempt_id)
     .fetch_optional(&mut *transaction)
     .await?;
-    let Some(task) = task else {
+    let (task_id, campaign_id, next_task) = if let Some((task_id, campaign_id)) = task {
+        (Some(task_id), campaign_id, None)
+    } else if let Some((integration_id, campaign_id, next_task_id)) = integration {
+        sqlx::query::query(
+            "UPDATE lead_integrations SET status='FAILED',updated_at=?1 WHERE integration_id=?2",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(&integration_id)
+        .execute(&mut *transaction)
+        .await?;
+        (
+            None,
+            campaign_id,
+            if next_task_id.is_empty() {
+                None
+            } else {
+                Some(next_task_id)
+            },
+        )
+    } else {
         return Ok(());
     };
-    let task_id: String = task.try_get("task_id")?;
-    let campaign_id: String = task.try_get("campaign_id")?;
-    let request_id: String = task.try_get("request_id")?;
-    let unit_id: String = task.try_get("unit_id")?;
-    let sequence: i64 = task.try_get("sequence")?;
-    let depends: String = task.try_get("depends_on_json")?;
-    let now = Utc::now().to_rfc3339();
-    sqlx::query::query(
-        "UPDATE lead_tasks SET status='SUCCEEDED',candidate_id=(
-           SELECT id FROM candidates WHERE attempt_id=?1
-         ),updated_at=?2 WHERE task_id=?3",
-    )
-    .bind(attempt_id)
-    .bind(&now)
-    .bind(&task_id)
-    .execute(&mut *transaction)
-    .await?;
-    let next = sqlx::query::query(
-        "SELECT task_id,unit_id,spec_json,depends_on_json FROM lead_tasks
-         WHERE campaign_id=?1 AND sequence=?2",
+    if let Some(task_id) = &task_id {
+        sqlx::query::query("UPDATE lead_tasks SET status='FAILED',updated_at=?1 WHERE task_id=?2")
+            .bind(Utc::now().to_rfc3339())
+            .bind(&task_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    let mut failed_units: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(task_id) = &task_id {
+        let unit: (String,) =
+            sqlx::query_as::query_as("SELECT unit_id FROM lead_tasks WHERE task_id=?1")
+                .bind(task_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        failed_units.insert(unit.0);
+    }
+    if let Some(next_task) = &next_task {
+        let unit: (String,) =
+            sqlx::query_as::query_as("SELECT unit_id FROM lead_tasks WHERE task_id=?1")
+                .bind(next_task)
+                .fetch_one(&mut *transaction)
+                .await?;
+        failed_units.insert(unit.0);
+        sqlx::query::query(
+            "UPDATE lead_tasks SET status='FAILED',updated_at=?1 WHERE task_id=?2 AND status='PENDING'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(next_task)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    let rows = sqlx::query::query(
+        "SELECT task_id,unit_id,status,depends_on_json FROM lead_tasks WHERE campaign_id=?1",
     )
     .bind(&campaign_id)
-    .bind(sequence + 1)
-    .fetch_optional(&mut *transaction)
+    .fetch_all(&mut *transaction)
     .await?;
-    let Some(next) = next else {
-        record_event(transaction, &request_id, "lead.plan_completed", &unit_id).await?;
-        return Ok(());
-    };
-    let next_task_id: String = next.try_get("task_id")?;
-    let next_unit: String = next.try_get("unit_id")?;
-    let next_spec: String = next.try_get("spec_json")?;
-    let next_depends: String = next.try_get("depends_on_json")?;
-    let dependencies: Vec<String> = serde_json::from_str(&next_depends)
-        .map_err(|_| Error::Invalid("stored task dependencies"))?;
-    if dependencies != vec![unit_id.clone()] {
-        return Err(Error::Forbidden(
-            "parallel/fan-in WorkGraph scheduling is not enabled".into(),
-        ));
+    loop {
+        let mut changed = false;
+        for row in &rows {
+            let task_id: String = row.try_get("task_id")?;
+            let unit: String = row.try_get("unit_id")?;
+            let status: String = row.try_get("status")?;
+            let depends: String = row.try_get("depends_on_json")?;
+            let dependencies: Vec<String> = serde_json::from_str(&depends)
+                .map_err(|_| Error::Invalid("stored task dependencies"))?;
+            if status == "SUCCEEDED"
+                || status == "FAILED"
+                || !dependencies.iter().any(|dep| failed_units.contains(dep))
+            {
+                continue;
+            }
+            sqlx::query::query(
+                "UPDATE lead_tasks SET status='FAILED',updated_at=?1 WHERE task_id=?2",
+            )
+            .bind(Utc::now().to_rfc3339())
+            .bind(&task_id)
+            .execute(&mut *transaction)
+            .await?;
+            failed_units.insert(unit);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
     }
-    let _ = depends;
+    let request: (String,) =
+        sqlx::query_as::query_as("SELECT id FROM lead_requests WHERE campaign_id=?1")
+            .bind(&campaign_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+    sqlx::query::query(
+        "UPDATE lead_requests SET state='FAILED',failure_reason=?1,updated_at=?2 WHERE id=?3",
+    )
+    .bind(reason)
+    .bind(Utc::now().to_rfc3339())
+    .bind(&request.0)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query::query("UPDATE campaigns SET status='FAILED' WHERE id=?1")
+        .bind(&campaign_id)
+        .execute(&mut *transaction)
+        .await?;
+    record_event(transaction, &request.0, "lead.work_failed", reason).await?;
+    Ok(())
+}
+
+async fn schedule_ready_tasks(
+    transaction: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<(), Error> {
+    use sqlx::row::Row;
+    let rows = sqlx::query::query(
+        "SELECT t.task_id,t.unit_id,t.status,t.depends_on_json,c.commit_sha
+         FROM lead_tasks t
+         LEFT JOIN candidates c ON c.id=t.candidate_id
+         WHERE t.campaign_id=?1 ORDER BY t.sequence",
+    )
+    .bind(campaign_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut candidates: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut all_units = Vec::new();
+    let mut depended_on = std::collections::BTreeSet::new();
+    let mut running_or_pending = false;
+    for row in &rows {
+        let unit: String = row.try_get("unit_id")?;
+        let status: String = row.try_get("status")?;
+        let candidate: Option<String> = row.try_get("commit_sha")?;
+        let depends: String = row.try_get("depends_on_json")?;
+        let dependencies: Vec<String> = serde_json::from_str(&depends)
+            .map_err(|_| Error::Invalid("stored task dependencies"))?;
+        depended_on.extend(dependencies);
+        if let Some(candidate) = candidate {
+            candidates.insert(unit.clone(), candidate);
+        }
+        all_units.push(unit.clone());
+        if matches!(status.as_str(), "PENDING" | "RUNNING") {
+            running_or_pending = true;
+        }
+    }
+    for row in &rows {
+        let status: String = row.try_get("status")?;
+        if status != "PENDING" {
+            continue;
+        }
+        let task_id: String = row.try_get("task_id")?;
+        let unit: String = row.try_get("unit_id")?;
+        let depends: String = row.try_get("depends_on_json")?;
+        let dependencies: Vec<String> = serde_json::from_str(&depends)
+            .map_err(|_| Error::Invalid("stored task dependencies"))?;
+        if dependencies.iter().all(|dep| candidates.contains_key(dep)) {
+            let commits: Vec<String> = dependencies
+                .iter()
+                .map(|dep| candidates[dep].clone())
+                .collect();
+            match commits.len() {
+                0 => {}
+                1 => schedule_unit_attempt(transaction, &task_id, &commits[0]).await?,
+                _ => {
+                    ensure_integration(transaction, campaign_id, "FANIN", &task_id, &commits)
+                        .await?;
+                }
+            }
+            let _ = unit;
+        }
+    }
+    if !running_or_pending {
+        let terminals: Vec<&String> = all_units
+            .iter()
+            .filter(|unit| !depended_on.contains(*unit))
+            .collect();
+        if terminals.len() > 1 {
+            let commits: Vec<String> = terminals
+                .iter()
+                .filter_map(|unit| candidates.get(*unit).cloned())
+                .collect();
+            if commits.len() > 1 {
+                ensure_integration(transaction, campaign_id, "FINAL", "", &commits).await?;
+            }
+        } else {
+            let request_id: (String,) =
+                sqlx::query_as::query_as("SELECT id FROM lead_requests WHERE campaign_id=?1")
+                    .bind(campaign_id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            record_event(
+                transaction,
+                &request_id.0,
+                "lead.plan_completed",
+                "all WorkGraph tasks succeeded",
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn schedule_unit_attempt(
+    transaction: &mut SqliteConnection,
+    task_id: &str,
+    base_commit: &str,
+) -> Result<(), Error> {
+    use sqlx::row::Row;
+    let task =
+        sqlx::query::query("SELECT campaign_id,status,spec_json FROM lead_tasks WHERE task_id=?1")
+            .bind(task_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(Error::NotFound)?;
+    let status: String = task.try_get("status")?;
+    if status != "PENDING" {
+        return Ok(());
+    }
+    let campaign_id: String = task.try_get("campaign_id")?;
+    let spec_json: String = task.try_get("spec_json")?;
     let mut spec: ActionSpec =
-        serde_json::from_str(&next_spec).map_err(|_| Error::Invalid("stored unit ActionSpec"))?;
-    spec.base_commit = candidate_commit.into();
+        serde_json::from_str(&spec_json).map_err(|_| Error::Invalid("stored unit ActionSpec"))?;
+    spec.base_commit = base_commit.into();
     let spec_json =
         serde_json::to_string(&spec).map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
     let spec_sha256 = sha256_hex(spec_json.as_bytes());
+    let now = Utc::now().to_rfc3339();
     let run = Run {
         id: Uuid::new_v4().to_string(),
         campaign_id: campaign_id.clone(),
@@ -1264,8 +1501,9 @@ pub(super) async fn advance_lead_task(
         .execute(&mut *transaction)
         .await?;
     sqlx::query::query(
-        "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
-         VALUES (?1,(SELECT action_id FROM campaigns WHERE id=?2),?3,?4,?5)",
+        "INSERT INTO attempt_specs
+         (attempt_id,action_id,base_commit,spec_json,spec_sha256,kind)
+         VALUES (?1,(SELECT action_id FROM campaigns WHERE id=?2),?3,?4,?5,'UNIT')",
     )
     .bind(&attempt.id)
     .bind(&campaign_id)
@@ -1284,14 +1522,167 @@ pub(super) async fn advance_lead_task(
     .bind(&run.id)
     .bind(&attempt.id)
     .bind(&now)
-    .bind(&next_task_id)
+    .bind(task_id)
+    .execute(&mut *transaction)
+    .await?;
+    Ok(())
+}
+
+async fn ensure_integration(
+    mut transaction: &mut SqliteConnection,
+    campaign_id: &str,
+    purpose: &str,
+    next_task_id: &str,
+    commits: &[String],
+) -> Result<(), Error> {
+    use sqlx::row::Row;
+    let mut commits = commits.to_vec();
+    commits.sort();
+    commits.dedup();
+    if commits.len() < 2 {
+        return Err(Error::Invalid(
+            "integration requires at least two candidates",
+        ));
+    }
+    let existing = sqlx::query::query(
+        "SELECT candidate_id FROM lead_integrations
+         WHERE campaign_id=?1 AND purpose=?2 AND next_task_id=?3",
+    )
+    .bind(campaign_id)
+    .bind(purpose)
+    .bind(next_task_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(existing) = existing {
+        let candidate: Option<String> = existing.try_get("candidate_id")?;
+        if let Some(candidate) = candidate
+            && purpose == "FANIN"
+        {
+            schedule_unit_attempt(transaction, next_task_id, &candidate).await?;
+        }
+        return Ok(());
+    }
+    let context = sqlx::query::query(
+        "SELECT lr.id AS request_id,lr.project_id,lr.delegation_id,lp.proposal_json
+         FROM campaigns c
+         JOIN lead_requests lr ON lr.campaign_id=c.id
+         JOIN lead_proposals lp ON lp.request_id=lr.id
+         WHERE c.id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let _request_id: String = context.try_get("request_id")?;
+    let project_id: String = context.try_get("project_id")?;
+    let delegation_id: String = context.try_get("delegation_id")?;
+    let proposal_json: String = context.try_get("proposal_json")?;
+    let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
+        .map_err(|_| Error::Invalid("stored proposal encoding"))?;
+    let config = load_project_config(&mut transaction, &project_id).await?;
+    let grant = load_delegation(&mut transaction, &delegation_id).await?;
+    let mut allowed_paths = std::collections::BTreeSet::new();
+    let checks = if purpose == "FANIN" {
+        let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
+            .bind(next_task_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        let spec_json: String = task.try_get("spec_json")?;
+        let spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored unit ActionSpec"))?;
+        allowed_paths.extend(spec.allowed_paths);
+        spec.checks
+    } else {
+        let mut checks = proposal.acceptance_criteria.clone();
+        checks.extend(proposal.negative_cases.clone());
+        for unit in proposal.terminal_units() {
+            allowed_paths.extend(unit.allowed_paths.iter().cloned());
+        }
+        checks
+    };
+    let objective = if purpose == "FINAL" {
+        "Integrate final WorkGraph candidates".to_string()
+    } else {
+        format!("Integrate fan-in candidates for task {next_task_id}")
+    };
+    let spec = ActionSpec {
+        schema_version: 1,
+        project_id: config.project_id.clone(),
+        repository: config.repository.clone(),
+        base_commit: config.base_commit.clone(),
+        objective_sha256: sha256_hex(objective.as_bytes()),
+        objective,
+        provider: grant.route.provider.clone(),
+        model: grant.route.model.clone(),
+        allowed_paths: allowed_paths.into_iter().collect(),
+        checks,
+    };
+    let spec_json = serde_json::to_string(&spec)
+        .map_err(|_| Error::Invalid("integration ActionSpec encoding"))?;
+    let spec_sha256 = sha256_hex(spec_json.as_bytes());
+    let now = Utc::now().to_rfc3339();
+    let run = Run {
+        id: Uuid::new_v4().to_string(),
+        campaign_id: campaign_id.into(),
+        status: "QUEUED".into(),
+        created_at: now.clone(),
+    };
+    sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+        .bind(&run.id)
+        .bind(&run.campaign_id)
+        .bind(&run.status)
+        .bind(&run.created_at)
+        .execute(&mut *transaction)
+        .await?;
+    let attempt = Attempt {
+        id: Uuid::new_v4().to_string(),
+        run_id: run.id.clone(),
+        status: "QUEUED".into(),
+        created_at: now.clone(),
+    };
+    sqlx::query::query("INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)")
+        .bind(&attempt.id)
+        .bind(&attempt.run_id)
+        .bind(&attempt.status)
+        .bind(&attempt.created_at)
+        .execute(&mut *transaction)
+        .await?;
+    let candidates_json = serde_json::to_string(&commits)
+        .map_err(|_| Error::Invalid("integration candidates encoding"))?;
+    sqlx::query::query(
+        "INSERT INTO attempt_specs
+         (attempt_id,action_id,base_commit,spec_json,spec_sha256,kind,
+          integration_candidates_json,next_task_id,final_integration)
+         VALUES (?1,(SELECT action_id FROM campaigns WHERE id=?2),?3,?4,?5,'INTEGRATION',?6,?7,?8)",
+    )
+    .bind(&attempt.id)
+    .bind(campaign_id)
+    .bind(&spec.base_commit)
+    .bind(&spec_json)
+    .bind(&spec_sha256)
+    .bind(&candidates_json)
+    .bind(next_task_id)
+    .bind(i64::from(purpose == "FINAL"))
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query::query(
+        "INSERT INTO lead_integrations
+         (integration_id,campaign_id,purpose,next_task_id,attempt_id,status,candidates_json,candidate_id,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,'QUEUED',?6,NULL,?7,?7)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(campaign_id)
+    .bind(purpose)
+    .bind(next_task_id)
+    .bind(&attempt.id)
+    .bind(candidates_json)
+    .bind(&now)
     .execute(&mut *transaction)
     .await?;
     record_event(
         transaction,
-        &campaign_id,
-        "work_task.started",
-        &format!("{} after {}", next_unit, unit_id),
+        campaign_id,
+        "work_integration.started",
+        &format!("{purpose} next_task={next_task_id}"),
     )
     .await?;
     Ok(())
@@ -1918,6 +2309,21 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count.0, 2);
+        let candidate = Uuid::new_v4().to_string();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
+             VALUES (?1,?2,?3,?4,?5,'test-worker',?6,0,'[]')",
+        )
+        .bind(&candidate)
+        .bind(&attempt.id)
+        .bind("e".repeat(64))
+        .bind("c".repeat(40))
+        .bind("d".repeat(40))
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let mut transaction = db.pool.begin().await.unwrap();
         advance_lead_task(&mut transaction, &attempt.id, &"c".repeat(40))
             .await
@@ -1932,6 +2338,206 @@ mod tests {
         .unwrap();
         assert_eq!(second.0, "RUNNING");
         assert!(second.1.is_some());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn fanin_creates_an_integration_then_schedules_the_dependent_unit() {
+        let (path, db, grant) = fixture().await;
+        let (acceptance, negative) = checks();
+        let checks: Vec<SpecCheck> = acceptance.into_iter().chain(negative).collect();
+        let action = db
+            .create_action_with_spec(
+                "project",
+                "Fan-in graph.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "fanin-action-key",
+                ActionSpecInput {
+                    allowed_paths: &["src".to_string()],
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        db.classify_action(&action.id, "R0", "test-owner", "R0", "fanin-classification")
+            .await
+            .unwrap();
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action.id,
+                "grant",
+                "Fan-in graph.",
+                &config.config_hash,
+                "fanin-request-key",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let binding = ActionBinding {
+            id: action.id.clone(),
+            project_id: "project".into(),
+            status: crate::lead::ActionStatus::Pending,
+        };
+        let (mut assessment, mut proposal) = crate::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            &grant,
+            Utc::now(),
+        )
+        .unwrap();
+        proposal.budget.max_attempts = 1;
+        proposal.max_sessions = 4;
+        proposal.work_units = vec![
+            crate::lead::LeadWorkUnit {
+                id: "root-a".into(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: "Root A.".into(),
+                depends_on: Vec::new(),
+                allowed_paths: vec!["src/a".into()],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            },
+            crate::lead::LeadWorkUnit {
+                id: "root-b".into(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: "Root B.".into(),
+                depends_on: Vec::new(),
+                allowed_paths: vec!["src/b".into()],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            },
+            crate::lead::LeadWorkUnit {
+                id: "fanin".into(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: "Fan in.".into(),
+                depends_on: vec!["root-a".into(), "root-b".into()],
+                allowed_paths: vec!["src/c".into()],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            },
+        ];
+        assessment.proposal = Some(proposal.clone());
+        let input = AssessmentInput {
+            project_id: "project".into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            "fanin-assessment",
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(&request.id, &proposal, "fanin-proposal")
+            .await
+            .unwrap();
+        db.freeze_lead_plan(&request.id, "fanin-freeze")
+            .await
+            .unwrap();
+        db.mark_lead_ready(&request.id).await.unwrap();
+        db.start_lead_campaign(&request.id, "fanin-start")
+            .await
+            .unwrap();
+        let tasks: Vec<(String, String, Option<String>)> = sqlx::query_as::query_as(
+            "SELECT unit_id,status,attempt_id FROM lead_tasks WHERE request_id=?1 ORDER BY sequence",
+        )
+        .bind(&request.id)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        let root_a_attempt = tasks
+            .iter()
+            .find(|(unit, _, _)| unit == "root-a")
+            .and_then(|(_, _, attempt)| attempt.clone())
+            .unwrap();
+        let root_b_attempt = tasks
+            .iter()
+            .find(|(unit, _, _)| unit == "root-b")
+            .and_then(|(_, _, attempt)| attempt.clone())
+            .unwrap();
+        for (attempt, commit) in [
+            (&root_a_attempt, "a".repeat(40)),
+            (&root_b_attempt, "b".repeat(40)),
+        ] {
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
+                 VALUES (?1,?2,?3,?4,?5,'test-worker',?6,0,'[]')",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(attempt)
+            .bind("e".repeat(64))
+            .bind(&commit)
+            .bind("d".repeat(40))
+            .bind(Utc::now().to_rfc3339())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            let mut transaction = db.pool.begin().await.unwrap();
+            advance_lead_task(&mut transaction, attempt, &commit)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
+        }
+        let integration: (String, String, Option<String>) = sqlx::query_as::query_as(
+            "SELECT purpose,status,attempt_id FROM lead_integrations WHERE campaign_id=(
+               SELECT campaign_id FROM lead_requests WHERE id=?1
+             )",
+        )
+        .bind(&request.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(integration.0, "FANIN");
+        assert_eq!(integration.1, "QUEUED");
+        let integration_attempt = integration.2.unwrap();
+        let integrated = Uuid::new_v4().to_string();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,integration,lineage_json)
+             VALUES (?1,?2,?3,?4,?5,'test-worker',?6,1,?7)",
+        )
+        .bind(&integrated)
+        .bind(&integration_attempt)
+        .bind("f".repeat(64))
+        .bind("c".repeat(40))
+        .bind("d".repeat(40))
+        .bind(Utc::now().to_rfc3339())
+        .bind(serde_json::json!(["a".repeat(40), "b".repeat(40)]).to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let mut transaction = db.pool.begin().await.unwrap();
+        advance_lead_task(&mut transaction, &integration_attempt, &"c".repeat(40))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let fanin: (String, Option<String>) = sqlx::query_as::query_as(
+            "SELECT status,attempt_id FROM lead_tasks WHERE request_id=?1 AND unit_id='fanin'",
+        )
+        .bind(&request.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(fanin.0, "RUNNING");
+        assert!(fanin.1.is_some());
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

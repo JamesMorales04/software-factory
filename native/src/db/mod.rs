@@ -120,6 +120,8 @@ pub struct WorkerAssignment {
     pub action_spec_sha256: String,
     pub repository: String,
     pub execution_mode: String,
+    pub kind: String,
+    pub integration_candidates: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +173,10 @@ pub struct CandidateRecord {
     pub tree_sha: String,
     pub implementer_id: String,
     pub created_at: String,
+    #[serde(default)]
+    pub integration: bool,
+    #[serde(default)]
+    pub lineage: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,11 +187,24 @@ pub struct CandidateInspection {
     pub action_spec_sha256: String,
     pub repository: String,
     pub base_commit: String,
+    pub integration: bool,
+    pub lineage: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NewCandidate {
+    pub attempt_id: String,
+    pub worker_id: String,
+    pub generation: i64,
+    pub action_spec_sha256: String,
+    pub commit_sha: String,
+    pub tree_sha: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NewIntegratedCandidate {
     pub attempt_id: String,
     pub worker_id: String,
     pub generation: i64,

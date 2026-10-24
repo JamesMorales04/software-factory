@@ -34,6 +34,8 @@ struct Assignment {
     action_spec_sha256: String,
     repository: String,
     execution_mode: String,
+    kind: String,
+    integration_candidates: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,8 +171,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         heartbeat.abort();
         match execution {
             Ok(candidate) => {
+                let endpoint = if assignment.kind == "INTEGRATION" {
+                    "worker/integrated_candidate"
+                } else {
+                    "worker/candidate"
+                };
                 let response = client
-                    .post(core.join("worker/candidate")?)
+                    .post(core.join(endpoint)?)
                     .bearer_auth(&session_token)
                     .json(&json!({
                         "attempt_id": assignment.lease.attempt_id,
@@ -226,17 +233,37 @@ async fn execute_assignment(
     assignment: &Assignment,
     supervisor: &Supervisor,
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
-    let file =
-        env::var("FACTORY_FIXTURE_FILE").unwrap_or_else(|_| "factory-fixture-change.txt".into());
+    if assignment.kind == "INTEGRATION" {
+        return integrate_assignment(assignment, supervisor).await;
+    }
+    let map = env::var("FACTORY_FIXTURE_MAP")
+        .ok()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
+    let mapped = map
+        .as_ref()
+        .and_then(|value| value.get(&assignment.action_spec.objective));
+    let file = mapped
+        .and_then(|value| value.get("file"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            env::var("FACTORY_FIXTURE_FILE").unwrap_or_else(|_| "factory-fixture-change.txt".into())
+        });
     if !factory_native::lead::is_safe_relative_path(&file) {
         return Err("fixture file path is unsafe".into());
     }
-    let content = env::var("FACTORY_FIXTURE_CONTENT").unwrap_or_else(|_| {
-        format!(
-            "fixture candidate\nobjective: {}\n",
-            assignment.action_spec.objective
-        )
-    });
+    let content = mapped
+        .and_then(|value| value.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            env::var("FACTORY_FIXTURE_CONTENT").unwrap_or_else(|_| {
+                format!(
+                    "fixture candidate\nobjective: {}\n",
+                    assignment.action_spec.objective
+                )
+            })
+        });
     let allocation = WorkspaceAllocation {
         attempt_id: assignment.lease.attempt_id.clone(),
         repository: assignment.repository.clone(),
@@ -307,6 +334,47 @@ async fn execute_assignment(
         eprintln!("Supervisor workspace cleanup failed: {error}");
     }
     Ok(candidate)
+}
+
+async fn integrate_assignment(
+    assignment: &Assignment,
+    supervisor: &Supervisor,
+) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    if assignment.integration_candidates.len() < 2 {
+        return Err("integration assignment has fewer than two candidates".into());
+    }
+    let response = supervisor
+        .client
+        .post(supervisor.base.join("v1/integrate")?)
+        .bearer_auth(&supervisor.token)
+        .json(&json!({
+            "repository": assignment.repository,
+            "baseCommit": assignment.action_spec.base_commit,
+            "candidateCommits": assignment.integration_candidates
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Supervisor integration failed: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    let value: serde_json::Value = response.json().await?;
+    let commit_sha = value
+        .get("commit_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("integration response has no commit")?;
+    let tree_sha = value
+        .get("tree_sha")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("integration response has no tree")?;
+    Ok(factory_native::workspace::CandidateRevision {
+        commit_sha: commit_sha.into(),
+        tree_sha: tree_sha.into(),
+    })
 }
 
 async fn cleanup(
