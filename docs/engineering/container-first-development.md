@@ -26,7 +26,7 @@ Running code from an untrusted pull request or model-directed code inside this c
 | Development container run on Linux | `LOCALLY_VERIFIED` with caveat | `cargo xtask check`, `migrate` and `e2e recovery` passed with `--network=host`; default container networking `NOT_TESTED`/environment-blocked |
 | Development container run on Windows 11 / WSL2 | `NOT_TESTED`; Windows verification `BLOCKED` | No Windows host was available |
 | Repository gates inside the container | `LOCALLY_VERIFIED` | Full `cargo xtask check` (fmt, Clippy, 107 tests, build, docs, audit) passed; Office build inside the container `NOT_TESTED` |
-| Unified `factory` CLI and `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists in the Cargo workspace |
+| Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Linux lifecycle subset exists; installer/restart/update and Windows launcher are not |
 | Untrusted execution in this container | Forbidden; sandbox path `BLOCKED` | SEC-01 remains paused and uncertified |
 | Independent verification | None | No independent verifier ran this change |
 
@@ -69,7 +69,7 @@ A development container is allowed to compile repository code because the contri
 - On Windows 11, the checkout must live in the WSL2 ext4 filesystem, for example `/home/<user>/src/software-factory` inside WSL. From Windows it may be viewed through `\\wsl.localhost\<Distro>\home\<user>\src\software-factory`. The Windows view is not the execution path.
 - Do not open, mount or bind `C:\...`, `\\?\C:\...`, `/mnt/c/...`, a Windows user profile, OneDrive, a network share or a mapped drive as the Factory workspace. Factory rejects these configurations even though a container runtime might be able to mount them.
 - Do not mount the host HOME or individual host configuration directories. The container has its own `/home/factory`.
-- Factory-managed per-Attempt workspaces are materialized and cleaned by Factory, not by a developer opening a folder in an editor. That policy is `NOT_IMPLEMENTED`; the development container does not provide it.
+- Factory-managed per-Attempt workspaces are materialized and cleaned by the Supervisor on the host. The development container does not provide that boundary.
 
 The reason is not cosmetic. Windows-backed Linux mounts have different permission, case-sensitivity, symlink, inode and performance behavior, and they collapse the workspace boundary Factory needs for per-Attempt ownership and cleanup. A successful bind mount is not evidence that the path policy is safe.
 
@@ -92,7 +92,7 @@ If a trusted developer needs a local nested-container experiment, any socket mou
 
 ## Commands
 
-Every command named in this guide is listed in the table below with an explicit status. Inline `factory` references mean the unified CLI and are `NOT_IMPLEMENTED`. The repository's Rust commands exist and are documented in [native/README.md](../../native/README.md); they were not run for this documentation change.
+Every command named in this guide is listed in the table below with an explicit status. Inline `factory` references use the implemented lifecycle subset unless marked otherwise. The repository's Rust commands exist and are documented in [native/README.md](../../native/README.md); they were not run for this documentation change.
 
 | Command | Status | Notes |
 |---|---|---|
@@ -103,8 +103,8 @@ Every command named in this guide is listed in the table below with an explicit 
 | `cargo build --bins` | `IMPLEMENTED` | Repository build; not run in this change |
 | `cargo sqlx migrate run --source migrations` | `IMPLEMENTED` | Documented repository workflow; requires `DATABASE_URL`; SQLx CLI 0.8.6 is installed by the image; not run in this change |
 | `cargo audit --file Cargo.lock` | `IMPLEMENTED` and run in the container | `cargo-audit` 0.22.2 is installed by the Containerfile; `cargo xtask check` passed |
-| `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists; intended host preflight |
-| `factory <subcommand>` | `NOT_IMPLEMENTED` | Every unified CLI command, including lifecycle and diagnostics |
+| `factory doctor` | `IMPLEMENTED` | Host preflight exists; Windows/WSL not tested |
+| `factory <subcommand>` | Partial | doctor/start/status/logs/stop; install/restart/update/dev remain unimplemented |
 | `podman build` / `podman run` for this configuration | `LOCALLY_VERIFIED` with host-network caveat; not Factory automation | Author run on Podman 6.1.4 rootless: default build network failed (`pasta failed ... /dev/net/tun`), `--network=host` succeeded; container also run with `--network=host` |
 
 No `go` command is part of this container or the supported workflow.

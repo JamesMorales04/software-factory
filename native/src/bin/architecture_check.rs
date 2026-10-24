@@ -93,8 +93,12 @@ fn check_repository(root: &Path, base_ref: Option<&str>) -> Result<(), String> {
         .map_err(|error| format!("read {}: {error}", registry_path.display()))?;
     let roadmap = fs::read_to_string(&roadmap_path)
         .map_err(|error| format!("read {}: {error}", roadmap_path.display()))?;
+    let decisions_path = root.join("docs/product/capability-decisions.md");
+    let decisions = fs::read_to_string(&decisions_path)
+        .map_err(|error| format!("read {}: {error}", decisions_path.display()))?;
     let registry = parse_registry(&registry_text)?;
     validate_registry(&registry)?;
+    validate_capability_preservation(&registry, &decisions)?;
     let expected = render_roadmap(&registry);
     if roadmap != expected {
         let line = roadmap
@@ -116,6 +120,23 @@ fn check_repository(root: &Path, base_ref: Option<&str>) -> Result<(), String> {
     }
     println!("architecture governance: PASS");
     Ok(())
+}
+
+fn validate_capability_preservation(registry: &Registry, decisions: &str) -> Result<(), String> {
+    let mut missing = Vec::new();
+    for capability in &registry.capabilities {
+        if !decisions.contains(&format!("| {} |", capability.id)) {
+            missing.push(capability.id.clone());
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "capability decision record is missing selected capabilities: {}",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn parse_registry(contents: &str) -> Result<Registry, String> {
@@ -992,6 +1013,7 @@ mod tests {
         repo.write("docs/product/capabilities.yaml", tiny_registry());
         let registry = parse_registry(tiny_registry()).unwrap();
         repo.write("docs/roadmap/ROADMAP.md", &render_roadmap(&registry));
+        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\n");
         repo.write(
             "docs/architecture/decisions/ADR-0001-one.md",
             accepted_adr(),
@@ -1057,6 +1079,7 @@ mod tests {
         let repo = Repo::new();
         repo.write("docs/product/capabilities.yaml", tiny_registry());
         repo.write("docs/roadmap/ROADMAP.md", "placeholder\n");
+        repo.write("docs/product/capability-decisions.md", "| CAP-1 | One |\n");
         repo.write(
             "docs/architecture/decisions/ADR-0001-one.md",
             accepted_adr(),

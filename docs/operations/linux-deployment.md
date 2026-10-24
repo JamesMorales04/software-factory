@@ -10,7 +10,7 @@ This guide describes the intended Linux deployment shape for Factory:
 - systemd user services and Quadlet for persistent trusted application runtime containers;
 - a trusted Sandbox Supervisor running as a host Linux process;
 - ephemeral, credential-free execution sandboxes launched per Attempt;
-- a single host-native Rust `factory` CLI, which does not exist yet (`NOT_IMPLEMENTED`).
+- a single host-native Rust `factory` CLI, implemented for `doctor/start/status/logs/stop`. Installer, Quadlet, restart and update commands remain `NOT_IMPLEMENTED`.
 
 It does not describe a rootful deployment, a multi-host cluster, a production hardening baseline, a public service, or a Windows host. Windows is covered by [Windows 11 with Podman Machine](windows-podman-machine.md).
 
@@ -19,11 +19,11 @@ It does not describe a rootful deployment, a multi-host cluster, a production ha
 | Item | Status | Notes |
 |---|---|---|
 | Linux rootless Podman + systemd/Quadlet topology | `SUPPORTED` target; `NOT_TESTED` | No unit was installed or started |
-| Quadlet units and installer | `NOT_IMPLEMENTED` | No unit files are shipped |
-| Trusted Sandbox Supervisor service | `NOT_IMPLEMENTED` | No Supervisor process exists |
-| Persistent application runtime containers | `NOT_IMPLEMENTED` | No runtime image was built |
-| Containerized Core API exposure | `NOT_IMPLEMENTED` | Current Core refuses non-loopback binding |
-| Unified `factory` CLI and `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists |
+| Quadlet units and installer | `NOT_IMPLEMENTED` | `factory start` manages detached host processes; no systemd units are shipped |
+| Trusted Sandbox Supervisor service | `IMPLEMENTED` | `factory-supervisor` is started by `factory start` when project roots are configured |
+| Persistent application runtime containers | `IMPLEMENTED` | `deploy/Containerfile.core` builds the Core/Office image |
+| Containerized Core API exposure | `IMPLEMENTED` | Loopback-published container with explicit `FACTORY_CONTAINER_MODE=1` |
+| Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Lifecycle subset only; installer/restart/update remain unimplemented |
 | Ephemeral sandbox isolation and credential confinement | `BLOCKED` | SEC-01 is paused; rootless Podman is not certified |
 | Linux container E2E | `NOT_TESTED` | Nothing was started |
 | Independent verification | None | No independent verifier ran this topology |
@@ -38,10 +38,10 @@ Every command-shaped procedure in this guide is listed here. None is a Factory i
 | `systemctl --user enable --now factory-service.service` | `NOT_IMPLEMENTED` as Factory automation; `NOT_TESTED` operator procedure |
 | `loginctl enable-linger "$USER"` | `NOT_IMPLEMENTED` as Factory automation; `NOT_TESTED` host policy |
 | `podman` container lifecycle and `podman info` | `NOT_IMPLEMENTED` as Factory automation; host CLI exists, `NOT_TESTED` for this topology |
-| `factory doctor` | `NOT_IMPLEMENTED`; no `factory` binary exists |
-| `factory <subcommand>` | `NOT_IMPLEMENTED`; every unified CLI command |
+| `factory doctor` | `IMPLEMENTED`; lifecycle installation and Windows are not covered |
+| `factory <subcommand>` | Partially implemented: doctor/start/status/logs/stop |
 
-Every inline `factory` or `factory doctor` reference in this guide is the unified CLI and is `NOT_IMPLEMENTED`. No host administration command in this guide is a Factory implementation.
+Inline `factory` references use the implemented lifecycle subset unless a row says `NOT_IMPLEMENTED`. Quadlet/installer and Windows automation remain unimplemented.
 
 ## Target topology
 
@@ -65,10 +65,10 @@ The development container described in [Container-first development](../engineer
 
 | Component | Intended placement | Trust and credentials | Status |
 |---|---|---|---|
-| Factory Core | `LEVEL B` host process, or `LEVEL C` trusted container packaging | Owns authority, state, budgets, gate and delivery; sole SQLite writer | `NOT_IMPLEMENTED` for container packaging |
-| Sandbox Supervisor | `LEVEL B` host Linux process | Trusted infrastructure; Worker session credential and scoped Podman launcher capability; no provider or GitHub credentials by default | `NOT_IMPLEMENTED` |
-| Provider server | `LEVEL B` host process or `LEVEL C` trusted container | Own provider credential only; no GitHub, Core or delivery token | `NOT_IMPLEMENTED` |
-| Application runtime service | `LEVEL C` persistent container | Trusted service; minimal image; scoped credentials | `NOT_IMPLEMENTED` |
+| Factory Core | `LEVEL B` host process, or `LEVEL C` trusted container packaging | Owns authority, state, budgets, gate and delivery; sole SQLite writer | `IMPLEMENTED` container image and loopback publication |
+| Sandbox Supervisor | `LEVEL B` host Linux process | Trusted infrastructure; Worker session credential and scoped Podman launcher capability; no provider or GitHub credentials by default | `IMPLEMENTED`; not isolation-certified |
+| Provider server | `LEVEL B` host process or `LEVEL C` trusted container | Own provider credential only; no GitHub, Core or delivery token | `NOT_IMPLEMENTED`; provider coding fail-closed |
+| Application runtime service | `LEVEL C` persistent container | Trusted service; minimal image; scoped credentials | `IMPLEMENTED` for Core/Office; not production-certified |
 | Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | `BLOCKED` until independently verified |
 | Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Configuration `IMPLEMENTED`; image + in-container Rust gates `LOCALLY_VERIFIED` with host-network caveat; Office build and default networking `NOT_TESTED` |
 
@@ -153,7 +153,7 @@ Factory does not use host networking as a shortcut.
 - Untrusted sandboxes use default-deny egress where practical, with explicit destinations. They must not reach Core, the SQLite volume, provider control ports, the host LAN or metadata services.
 - Provider servers and application runtime services use a dedicated network. Untrusted execution does not join that network or a shared Pod with those services.
 
-**Containerized Core limitation:** the current Core accepts only a loopback bind and refuses non-loopback binding. Publishing a containerized Core therefore requires an explicit, authenticated bind/exposure change that is `NOT_IMPLEMENTED`. Until then, run Core host-native on loopback. Do not use host networking, a proxy that silently exposes it broadly, or a weakened bind check to work around the limitation.
+The containerized Core accepts `0.0.0.0` only with explicit `FACTORY_CONTAINER_MODE=1`; the CLI publishes it on loopback only. Do not use host networking or a broadly exposed proxy.
 
 ## Persistent state
 
@@ -186,7 +186,7 @@ It is responsible for:
 - reconciling and removing orphaned containers after a crash;
 - refusing to fall back to host execution when Podman or policy is unavailable.
 
-The Supervisor's process lifecycle, credential provisioning, container ownership ledger and cleanup path are `NOT_IMPLEMENTED`. Existing Rust sandbox fixture code is not a Supervisor implementation. Rootless Podman remains a candidate runtime and is not certified isolation. Credentialed untrusted execution is `BLOCKED`.
+`factory start` manages the Supervisor/Worker process lifecycle with private pid/token/log files. `factory start` is not a systemd/Quadlet installer, and provider credential provisioning is not implemented. Rootless Podman remains a candidate runtime and is not certified isolation. Credentialed untrusted execution is `BLOCKED`.
 
 ## Upgrade and rollback
 
@@ -199,7 +199,7 @@ The intended procedure is:
 5. Start the service and verify its authenticated loopback endpoint.
 6. Roll back the image digest and the database backup if verification fails.
 
-Every step is `NOT_IMPLEMENTED` as Factory automation. There is no automatic rolling upgrade, no health-based promotion and no claim that rollback is safe without a tested migration and backup path.
+Rolling-upgrade automation remains `NOT_IMPLEMENTED`. There is no automatic health-based promotion and no claim that rollback is safe without a tested migration and backup path.
 
 ## Verification obligations
 

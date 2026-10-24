@@ -22,8 +22,8 @@ It does not cover Windows 10, Windows Server, Hyper-V-only Podman, Windows conta
 | Same Linux application runtime image on Windows and Linux | `NOT_TESTED` | No image was built, published or run |
 | Windows launcher | `NOT_IMPLEMENTED` | No launcher exists |
 | WSL2 path policy enforcement | `NOT_IMPLEMENTED` | No code enforces the policy |
-| Supervisor and provider processes in WSL2 | `NOT_IMPLEMENTED` | No Linux service is installed |
-| Unified `factory` CLI and `factory doctor` | `NOT_IMPLEMENTED` | No `factory` binary exists |
+| Supervisor process in WSL2 | `NOT_TESTED` | `factory start` can manage it on Linux; Windows/WSL acceptance is not run |
+| Unified `factory` CLI and `factory doctor` | `PARTIAL` | Linux/WSL2 lifecycle commands exist; Windows launcher is not implemented |
 | Windows container E2E | `NOT_TESTED` | Nothing was started |
 | Independent verification | None | No independent verifier ran this topology |
 
@@ -129,7 +129,7 @@ Rules:
 - Untrusted sandboxes use default-deny egress where practical, with explicit destinations. They must not reach Core, SQLite, provider control ports, the Windows host, the host LAN or metadata services.
 - Disable or avoid WSL interop and Windows drive access for untrusted execution. A container must not invoke Windows binaries or read Windows user files.
 
-The current Core refuses non-loopback binding. Containerized Core exposure on Windows is therefore `NOT_IMPLEMENTED`, exactly as on Linux. Windows port forwarding, firewall behavior and loopback reachability are `NOT_TESTED`.
+Containerized Core exposure requires explicit `FACTORY_CONTAINER_MODE=1` and loopback publication. Windows port forwarding, firewall behavior and loopback reachability are `NOT_TESTED`.
 
 ## Credentials
 
@@ -149,7 +149,7 @@ There is one Rust `factory` CLI. On Windows:
 - `factory doctor` is the intended preflight for WSL2, Podman Machine, rootless mode, path policy, image digests, port exposure and toolchain versions;
 - `factory` fails closed if WSL2, Podman Machine, a safe workspace or a required credential boundary is unavailable.
 
-No `factory` binary exists, so `factory doctor` and every other unified CLI command are `NOT_IMPLEMENTED`.
+The Linux `factory` lifecycle binary exists; the Windows launcher and WSL integration are `NOT_IMPLEMENTED`/`NOT_TESTED`.
 
 ## Setup checklist
 
