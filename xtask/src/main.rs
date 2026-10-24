@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         ("governance", None) => governance::governance(),
         ("e2e", Some("recovery")) => e2e::recovery(),
         ("e2e", Some("dispatch")) => e2e::dispatch(),
+        ("e2e", Some("office")) => e2e::office(),
         ("e2e", Some("negatives")) => e2e::negatives(),
         ("e2e", Some(_)) => e2e::unsupported(args.get(1).map(String::as_str).unwrap_or_default()),
         ("e2e", None) => e2e::list(),
@@ -59,6 +60,7 @@ Commands:
   governance              architecture consistency plus legacy inventory
   e2e recovery            process-level Core restart and durable-state recovery
   e2e dispatch            fixture Campaign, Worker, candidate, receipts and gate
+  e2e office              real Chromium journey against the Rust Core Office
   e2e negatives           deterministic scope, verification, authorization and lease negatives
   e2e                     list available deterministic E2E suites
 

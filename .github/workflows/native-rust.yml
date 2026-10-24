@@ -55,3 +55,27 @@ jobs:
         with:
           name: native-rust-repository-hygiene
           path: ${{ runner.temp }}/repo-hygiene.txt
+
+  office-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Build Core and Worker
+        run: cargo +1.90.0 build --locked --bins
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Install Office dependencies
+        run: npm ci
+        working-directory: office
+      - name: Install browser test dependencies
+        run: npm ci
+        working-directory: office/e2e-browser
+      - name: Install Chromium
+        run: npx --yes playwright@1.64.1 install --with-deps chromium
+      - name: Rust Office browser journey
+        run: cargo +1.90.0 xtask e2e office

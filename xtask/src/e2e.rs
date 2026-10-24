@@ -44,6 +44,14 @@ pub(crate) fn dispatch() -> Result<(), String> {
     ])
 }
 
+pub(crate) fn office() -> Result<(), String> {
+    let mut command = std::process::Command::new("node");
+    command.args(["office/e2e-browser/rust-journey.mjs"]);
+    crate::process::run(command).map_err(|error| {
+        format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
+    })
+}
+
 pub(crate) fn negatives() -> Result<(), String> {
     cargo_run(&[
         "test",

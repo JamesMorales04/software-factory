@@ -7,7 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/core-api": {
-        target: "http://127.0.0.1:8765",
+        target: process.env.FACTORY_CORE_URL || "http://127.0.0.1:8765",
         changeOrigin: false,
         rewrite: (path) => path.replace(/^\/core-api/, ""),
       },
