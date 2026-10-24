@@ -40,9 +40,9 @@ source-mapping snapshot; this ledger is the current status authority.
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
-| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency and pre-dispatch restart process tests pass at `a32c6d5`/`d50bd0f` | Conflict, in-flight restart and browser graph projection |
-| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency reaches terminal FAILED without dispatch; frozen fan-in graph resumes after Core restart before dispatch (`d50bd0f`) | Conflict, cancellation and in-flight restart process tests |
-| A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED | Conflict/failure process test and adversarial cross-project integration |
+| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass at `a32c6d5`/`d50bd0f`/`3840b39` | In-flight restart and browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
+| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart before dispatch (`d50bd0f`) | Cancellation and in-flight restart process tests |
+| A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED; integration failure retains exact root-candidate lineage and produces no integrated candidate (`3840b39`) | Adversarial cross-project integration and conflict-path assessment |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Add crash-injection and restart scheduler coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
 | A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested; multi-unit process evidence exists | Browser multi-unit graph and recovery/cleanup visibility |
@@ -60,8 +60,8 @@ source-mapping snapshot; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; reviewer is receipt-only |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency process test at `a32c6d5`; workspace tests pass locally at `c375d71`; final exact-head CI pending |
-| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `6947b42`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency and integration-failure process tests at `a32c6d5`/`3840b39`; workspace tests pass locally at `c375d71`; final exact-head CI pending |
+| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `a367766`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed, all 44 CAP IDs and opportunities present, strict audit empty; registry/roadmap decision and milestone consistency still being closed |
@@ -103,7 +103,7 @@ and manifest-fragment negatives. Later commits `2cdd773` and `4fb29e9`
 restored missing claim, manifest, reference and dependency regression cases
 after independent review. Eight checker tests, Clippy and an actual
 `--base-ref origin/main` invocation pass locally. The `architecture-consistency`
-GitHub CI job passed on `6947b42` after its PR impact declaration was rebound
+GitHub CI job passed on `6947b42` and `a367766` after each PR impact declaration was rebound
 to that head; independent acceptance remains pending. The workflow still
 installs Go for a separate legacy live-entrypoint guard.
 

@@ -171,7 +171,7 @@
     "paid_default": "FORBIDDEN"
   },
   "cutover_campaign_checkpoint_2026_10_24": {
-    "code_head_reviewed": "5a5df793f1553af7a96c7065b7e0196975b4cb71",
+    "code_head_reviewed": "3840b3993346121ffabaaf0f135e5cbb345ca1ef",
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
@@ -183,9 +183,9 @@
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "Eight governance tests, full workspace test at c375d71, OpenCode prompt fixture tests/format/Clippy at 5a5df79, base-ref checker, Rust Office browser, Python PR-impact/authorization, failed-dependency and pre-dispatch restart process tests passed locally; architecture-consistency GitHub job passed at 6947b42 after PR impact rebinding; cargo audit at dd91272 exited zero with no advisories. Legacy S4-B B8 passed but full script failed at B11 browser timeout.",
+    "checks": "Eight governance tests, full workspace test at c375d71, OpenCode prompt fixture tests/format/Clippy at 5a5df79, base-ref checker, Rust Office browser, Python PR-impact/authorization, failed-dependency, integration-failure and pre-dispatch restart process tests passed locally; independent WorkGraph test review found no blocker; architecture-consistency GitHub job passed at a367766 after PR impact rebinding; cargo audit at dd91272 exited zero with no advisories. Legacy S4-B B8 passed but full script failed at B11 browser timeout.",
     "remaining": "96 Go files; legacy Go/Paseo workflows and module; WorkGraph conflict/cancel/restart; model-backed Lead/provider lifecycle; independent quality; credential/isolation closure; strict hygiene; final exact-head CI and owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
-    "next_task": "Implement deterministic WorkGraph integration-conflict or in-flight restart process regression in native/tests/e2e_fixture_dispatch.rs and repair any exposed defect."
+    "next_task": "Integrate OpenCode's prompt/abort/cleanup HTTP path with a local fake server and exact SSE/session reconciliation; then test in-flight WorkGraph restart and cancellation."
   }
 }

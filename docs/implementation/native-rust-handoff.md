@@ -39,12 +39,24 @@ Independent review found that idle after an abort request cannot prove
 cancellation; `5a5df79` records `AbortRequestedAndIdle` and adds a completion
 race fixture. The reviewer verified this repair. No production prompt or abort
 request path uses those helpers yet, and no paid turn occurred.
+Luna's real-process fan-in failure test landed at `3840b39`: two root unit
+candidates are recorded, Supervisor is stopped before the integration Worker,
+and the Lead request and integration become FAILED. The dependent unit has no
+Attempt, no integrated candidate exists, and the integration's stored lineage
+matches the two root commit IDs. The focused test passed in Luna's worktree
+and on the root candidate. Natural Git conflicts are unreachable in this
+fixture because frozen unit scopes are disjoint; adversarial integration
+assessment is still open. An independent reviewer found no blocking false
+positive, verified the focused test, and confirmed this is Supervisor
+unavailability rather than a Git merge-conflict oracle. The
+`architecture-consistency` GitHub job passed again at `a367766` after its PR
+impact declaration was rebound to the exact head.
 Final exact-head GitHub CI, strict hygiene and final independent acceptance
 remain pending.
 Provider coding is still fail-closed; no paid provider turn ran. Isolation and
 credential confinement are not certified. The current executable next step is
-the WorkGraph integration-conflict or in-flight restart process regression, followed by
-provider lifecycle and security closure. See the
+the real OpenCode prompt/abort/cleanup HTTP path with a local fake server,
+followed by in-flight WorkGraph restart and security closure. See the
 [closure ledger](native-rust-closure.md) and
 [deletion map](native-rust-deletion-map.md) for exact blockers and files.
 
