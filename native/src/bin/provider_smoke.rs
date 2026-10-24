@@ -293,7 +293,7 @@ async fn opencode(
             .json().await.map_err(|e| e.to_string())?;
         let session_id = session.get("id").and_then(Value::as_str).ok_or("opencode session id missing")?.to_owned();
         let (provider_id, model_id) = model.split_once('/').ok_or("model must be provider/model")?;
-        let response: Value = client.post(format!("{base}/session/{session_id}/message{directory}"))
+        let response = client.post(format!("{base}/session/{session_id}/message{directory}"))
             .basic_auth("opencode", Some(&password))
             .json(&json!({
                 "model":{"providerID":provider_id,"modelID":model_id},
@@ -302,14 +302,25 @@ async fn opencode(
                 "format":{"type":"json_schema","schema":schema(),"retryCount":0},
                 "parts":[{"type":"text","text":"Return only JSON matching the provided schema. Set ok true and summary to a short confirmation that this is a read-only provider smoke test. Do not use tools."}]
             }))
-            .send().await.map_err(|e| e.to_string())?
-            .error_for_status().map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
+            .send().await.map_err(|error| error.to_string())?;
+        let status = response.status();
+        let body = response.text().await.map_err(|error| error.to_string())?;
+        if !status.is_success() {
+            let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+            return Err(format!(
+                "opencode message failed with HTTP {status}: {body}; session={session_id}; cleanup={cleanup}"
+            ));
+        }
+        let response: Value = serde_json::from_str(&body)
+            .map_err(|error| format!("opencode response is not JSON: {error}; session={session_id}"))?;
         let info = response.get("info").cloned().unwrap_or(json!({}));
         let usage = json!({"tokens": info.get("tokens"), "cost": info.get("cost")});
         let total = info.pointer("/tokens/total").and_then(Value::as_u64).unwrap_or(0);
         if total > max_tokens {
-            return Err::<Evidence, String>(format!("token ceiling exceeded: {total} > {max_tokens}"));
+            let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+            return Err(format!(
+                "token ceiling exceeded: {total} > {max_tokens}; session={session_id}; cleanup={cleanup}"
+            ));
         }
         let structured = info.get("structured").filter(|value| !value.is_null()).cloned();
         let text = structured.clone().map(|value| value.to_string()).or_else(|| {
@@ -317,18 +328,28 @@ async fn opencode(
                 parts.iter().find(|part| part.get("type").and_then(Value::as_str) == Some("text"))
                     .and_then(|part| part.get("text")).and_then(Value::as_str).map(str::to_owned)
             })
-        }).ok_or("opencode returned no structured or text result")?;
-        let output = validate_output(&text)?;
-        let deleted: bool = client.delete(format!("{base}/session/{session_id}{directory}"))
-            .basic_auth("opencode", Some(&password))
-            .send().await.map_err(|e| e.to_string())?
-            .error_for_status().map_err(|e| e.to_string())?
-            .json().await.map_err(|e| e.to_string())?;
-        let after = client.get(format!("{base}/session/{session_id}{directory}"))
-            .basic_auth("opencode", Some(&password))
-            .send().await.map_err(|e| e.to_string())?;
-        if !deleted || after.status().is_success() {
-            return Err("opencode session cleanup unconfirmed".into());
+        });
+        let Some(text) = text else {
+            let error = info.get("error").cloned().unwrap_or(json!({}));
+            let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+            return Err(format!(
+                "opencode returned no structured or text result; error={error}; session={session_id}; cleanup={cleanup}"
+            ));
+        };
+        let output = match validate_output(&text) {
+            Ok(output) => output,
+            Err(error) => {
+                let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+                return Err(format!(
+                    "opencode structured output invalid: {error}; session={session_id}; cleanup={cleanup}"
+                ));
+            }
+        };
+        let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+        if cleanup.get("deleted").and_then(Value::as_bool) != Some(true)
+            || cleanup.get("after_delete_success").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(format!("opencode session cleanup unconfirmed: {cleanup}"));
         }
         Ok(Evidence {
             provider: "opencode".into(),
@@ -344,7 +365,7 @@ async fn opencode(
             session_id: Some(session_id),
             usage,
             output: Some(serde_json::to_value(output).map_err(|error| error.to_string())?),
-            cleanup: json!({"deleted": deleted, "after_delete_status": after.status().as_u16()}),
+            cleanup,
             requests: 1,
             classification: if structured.is_some() { "LIVE_STRUCTURED_OUTPUT_VERIFIED" } else { "LIVE_PROVIDER_PROTOCOL_VERIFIED" }.into(),
             error: None,
@@ -357,6 +378,40 @@ async fn opencode(
         Ok(result) => result,
         Err(_) => Err("OpenCode smoke timed out".into()),
     }
+}
+
+async fn cleanup_session(
+    client: &reqwest::Client,
+    base: &str,
+    session_id: &str,
+    directory: &str,
+    password: &str,
+) -> Value {
+    let deleted = match client
+        .delete(format!("{base}/session/{session_id}{directory}"))
+        .basic_auth("opencode", Some(password))
+        .send()
+        .await
+    {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => response.json::<bool>().await.unwrap_or(false),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    };
+    let after = client
+        .get(format!("{base}/session/{session_id}{directory}"))
+        .basic_auth("opencode", Some(password))
+        .send()
+        .await
+        .ok()
+        .map(|response| response.status().as_u16())
+        .unwrap_or(0);
+    json!({
+        "deleted": deleted,
+        "after_delete_status": after,
+        "after_delete_success": (200..300).contains(&after)
+    })
 }
 
 fn urlencoding(value: &str) -> String {

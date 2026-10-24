@@ -26,3 +26,11 @@ No credential, prompt body, or raw environment value is written to evidence. Evi
 ## Non-claims
 
 A successful smoke establishes bounded live protocol/structured-output compatibility for the exact provider/model/version. It does **not** certify sandbox isolation, credential confinement, coding-work quality, candidate acceptance, or complete campaign E2E. No retry or second paid turn is authorized. Any protocol incompatibility must be fixed and deterministic fixtures updated before another authorization request.
+
+
+## Execution result (2026-10-24)
+
+- **Codex `gpt-6-luna`:** one read-only structured turn completed. 29 output tokens (18,537 total reported), schema validation passed, thread archive response recorded. Evidence: [provider-live-smoke-2026-10-24-codex.json](../evidence/provider-live-smoke-2026-10-24-codex.json). Classification: `LIVE_STRUCTURED_OUTPUT_VERIFIED`.
+- **OpenCode `opencode/deepseek-v4.1-flash`:** one read-only prompt request was attempted; the provider endpoint returned HTTP 401 `Invalid credential` before any model output. No tokens or cost were reported, no retry was made, and the session was deleted and verified absent. Evidence: [provider-live-smoke-2026-10-24-opencode.json](../evidence/provider-live-smoke-2026-10-24-opencode.json). Classification: `LIVE_PROVIDER_CREDENTIAL_BLOCKED`.
+
+The OpenCode credential must be renewed by the operator before a new bounded authorization. Do not silently substitute another provider/model or retry within this envelope.
