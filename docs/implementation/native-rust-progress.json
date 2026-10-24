@@ -75,7 +75,7 @@
     "pr_published": "YES: origin/native-rust-replacement-20261023 at exact pushed head; exact-head CI pending",
     "ci": "Native Rust + governance passed at 90de26a; legacy Go/Paseo browser jobs fail on removed Office selectors/views. New exact-head CI pending.",
     "xtask_e2e_office": "PASS: real Chromium, candidate commit and ACCEPTED gate after reload",
-    "workflow_ci": "Native Rust, governance and office-browser checks run on exact head; result pending at update. Legacy Go/Paseo browser jobs remain failing due removed legacy Office selectors/views; their non-browser assertions pass."
+    "workflow_ci": "PASS at code head 99d4b57: native Rust, governance/architecture-impact and office-browser. Legacy Go/Paseo browser jobs remain failing on obsolete Office selectors/views; their non-browser Go assertions pass. Results do not automatically certify later docs-only commits."
   },
   "dependency_audit": {
     "tool": "cargo-audit",
