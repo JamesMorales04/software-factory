@@ -56,6 +56,24 @@ pub struct LeadProposalRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeadTaskRecord {
+    pub task_id: String,
+    pub campaign_id: String,
+    pub request_id: String,
+    pub unit_id: String,
+    pub sequence: i64,
+    pub status: String,
+    pub base_commit: String,
+    pub depends_on: Vec<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub candidate_id: Option<String>,
+    pub candidate_commit: Option<String>,
+    pub candidate_tree: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrozenLeadPlanRecord {
     pub id: String,
     pub request_id: String,
@@ -821,6 +839,43 @@ impl Database {
         record_event(&mut transaction, &request.id, "lead.started", &campaign.id).await?;
         transaction.commit().await?;
         Ok((campaign, run, attempt))
+    }
+
+    pub async fn campaign_tasks(&self, campaign_id: &str) -> Result<Vec<LeadTaskRecord>, Error> {
+        use sqlx::row::Row;
+        let rows = sqlx::query::query(
+            "SELECT t.task_id,t.campaign_id,t.request_id,t.unit_id,t.sequence,t.status,
+                    t.base_commit,t.depends_on_json,t.run_id,t.attempt_id,t.candidate_id,
+                    c.commit_sha,c.tree_sha,t.updated_at
+             FROM lead_tasks t
+             LEFT JOIN candidates c ON c.id=t.candidate_id
+             WHERE t.campaign_id=?1 ORDER BY t.sequence",
+        )
+        .bind(campaign_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut tasks = Vec::with_capacity(rows.len());
+        for row in rows {
+            let depends: String = row.try_get("depends_on_json")?;
+            tasks.push(LeadTaskRecord {
+                task_id: row.try_get("task_id")?,
+                campaign_id: row.try_get("campaign_id")?,
+                request_id: row.try_get("request_id")?,
+                unit_id: row.try_get("unit_id")?,
+                sequence: row.try_get("sequence")?,
+                status: row.try_get("status")?,
+                base_commit: row.try_get("base_commit")?,
+                depends_on: serde_json::from_str(&depends)
+                    .map_err(|_| Error::Invalid("stored task dependencies"))?,
+                run_id: row.try_get("run_id")?,
+                attempt_id: row.try_get("attempt_id")?,
+                candidate_id: row.try_get("candidate_id")?,
+                candidate_commit: row.try_get("commit_sha")?,
+                candidate_tree: row.try_get("tree_sha")?,
+                updated_at: row.try_get("updated_at")?,
+            });
+        }
+        Ok(tasks)
     }
 
     pub async fn lead_assessment(&self, request_id: &str) -> Result<LeadAssessmentRecord, Error> {

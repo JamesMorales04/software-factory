@@ -57,6 +57,11 @@ impl Database {
         Ok(value)
     }
 
+    pub async fn campaign(&self, id: &str) -> Result<Campaign, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_campaign(&mut connection, id).await
+    }
+
     pub async fn create_run(&self, campaign_id: &str, key: &str) -> Result<Run, Error> {
         let digest = sha256_hex(
             serde_json::to_string(&(campaign_id, "run-v1"))

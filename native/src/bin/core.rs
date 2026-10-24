@@ -204,6 +204,7 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/actions", get(actions).post(create_action))
         .route("/campaigns", get(campaigns).post(create_campaign))
+        .route("/campaigns/{id}", get(campaign_detail))
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
         .route("/events", get(events))
@@ -417,6 +418,74 @@ async fn campaigns(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
     }
     result_list(app.db.campaigns().await)
 }
+async fn campaign_detail(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let campaign = match app.db.campaign(&id).await {
+        Ok(campaign) => campaign,
+        Err(error) => return api_error(error),
+    };
+    let authorization = app.db.campaign_authorization(&id).await.ok();
+    let tasks = match app.db.campaign_tasks(&id).await {
+        Ok(tasks) => tasks,
+        Err(error) => return api_error(error),
+    };
+    let runs = app
+        .db
+        .runs()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|run| run.campaign_id == id)
+        .collect::<Vec<_>>();
+    let attempts = app.db.attempts().await.unwrap_or_default();
+    let attempt_ids: std::collections::BTreeSet<String> =
+        attempts.iter().map(|attempt| attempt.id.clone()).collect();
+    let run_ids: std::collections::BTreeSet<String> =
+        runs.iter().map(|run| run.id.clone()).collect();
+    let attempts = attempts
+        .into_iter()
+        .filter(|attempt| run_ids.contains(&attempt.run_id))
+        .collect::<Vec<_>>();
+    let candidates = app
+        .db
+        .candidates()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
+        .collect::<Vec<_>>();
+    let events = app
+        .db
+        .events()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|event| {
+            event.subject_id == id
+                || event.subject_id.starts_with("lead")
+                || tasks
+                    .iter()
+                    .any(|task| task.campaign_id == event.subject_id)
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "campaign": campaign,
+        "authorization": authorization,
+        "tasks": tasks,
+        "runs": runs,
+        "attempts": attempts,
+        "candidates": candidates,
+        "events": events
+    }))
+    .into_response()
+}
+
 async fn runs(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();

@@ -108,6 +108,33 @@ export interface FactoryEvent {
   recorded_at: string;
 }
 
+export interface LeadTask {
+  task_id: string;
+  campaign_id: string;
+  request_id: string;
+  unit_id: string;
+  sequence: number;
+  status: string;
+  base_commit: string;
+  depends_on: string[];
+  run_id: string | null;
+  attempt_id: string | null;
+  candidate_id: string | null;
+  candidate_commit: string | null;
+  candidate_tree: string | null;
+  updated_at: string;
+}
+
+export interface CampaignDetail {
+  campaign: Campaign;
+  authorization: CampaignAuthorization | null;
+  tasks: LeadTask[];
+  runs: Run[];
+  attempts: Attempt[];
+  candidates: Candidate[];
+  events: FactoryEvent[];
+}
+
 export interface CampaignAuthorization {
   campaign_id: string;
   authorization_id: string;
@@ -344,6 +371,8 @@ export const coreApi = {
       body: JSON.stringify(input),
     }),
   listCampaigns: () => request<Campaign[]>("/campaigns"),
+  getCampaignDetail: (id: string) =>
+    request<CampaignDetail>(`/campaigns/${encodeURIComponent(id)}`),
   createCampaign: (input: NewCampaignRequest) =>
     request<Campaign>("/campaigns", {
       method: "POST",

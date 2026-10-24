@@ -483,6 +483,7 @@ mod authorization;
 pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod lead;
+pub use lead::LeadTaskRecord;
 mod lifecycle;
 mod project_configs;
 pub use project_configs::NewProjectConfig;

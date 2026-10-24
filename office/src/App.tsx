@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, NavLink, Route, Routes } from "react-router-dom";
 import { clearToken, getToken, setToken } from "./coreApi";
 import { Actions } from "./views/Actions";
+import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { Dashboard } from "./views/Dashboard";
 import { Lead } from "./views/Lead";
@@ -97,6 +98,7 @@ export function App() {
           <Route path="/actions" element={<Actions />} />
           <Route path="/lead" element={<Lead />} />
           <Route path="/campaigns" element={<Campaigns />} />
+          <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/workers" element={<Workers />} />
           <Route path="*" element={<p className="error">Unknown route.</p>} />
