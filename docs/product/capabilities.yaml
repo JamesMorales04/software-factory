@@ -792,9 +792,7 @@ capabilities:
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
-    - native/src/lead.rs
-    - native/src/db/lead.rs
-    - native/src/bin/core.rs
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
     uat: []
@@ -833,9 +831,7 @@ capabilities:
       a separate long-running session for each small judgment.
   evidence:
     deterministic:
-    - native/src/evaluation.rs
-    - native/fixtures/s4d-evaluation-corpus.json
-    - native/src/bin/s4d_evaluate.rs
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
     uat: []
@@ -873,8 +869,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
-    - native/src/lead.rs
-    - native/src/db/lead.rs
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
     uat: []
@@ -911,8 +906,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
-    - native/src/lead.rs
-    - native/src/db/lead.rs
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
     uat: []
@@ -950,8 +944,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
-    - native/src/lead.rs
-    - native/src/db/delegations.rs
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
     uat: []
