@@ -30,7 +30,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Identity | Permanent public repo `JamesMorales04/software-factory` | Agreed |
 | Product | Central, independent, local-first and multi-project | Agreed |
 | Deployment | Local Worker first, expandable to owned/cloud-managed remote Workers | Agreed |
-| Coding runtime | Paseo first; Factory owns its API/UI and policies | Agreed |
+| Coding runtime | Direct Codex/OpenCode adapters behind a Rust provider port; Factory owns API/UI/policy. Provider coding remains fail-closed. | Agreed (ADR-0018) |
 | UI | Real minimum Factory Office web interface required in F1 | Agreed |
 | Execution | Per-Run sandbox default; authorized, auditable host exceptions only | Agreed |
 | Autonomy | Standing autonomous monitoring and maintenance within bounds | Agreed |
@@ -53,7 +53,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 
 - **Core + local Worker:** Go is ratified and implemented for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). This does not certify provider credential isolation (SEC-01).
 - **Persistence:** Core-owned SQLite WAL is implemented. The observed transient lock error remains open in the [reliability register](../quality/reliability-debt.md); Postgres is only a future option if a measured scale constraint warrants it.
-- **Paseo:** the implemented Go adapter invokes the installed Paseo CLI and checks observed session identity (`core/internal/paseo/adapter.go`). Keep runtime details out of Core domain contracts.
+- **Providers:** direct Codex App Server and OpenCode HTTP adapters are the Rust target. No intermediary coding-agent orchestrator is part of the product. Provider work remains fail-closed until security is verified.
 - **Web UI:** React and TypeScript Office is implemented over authenticated HTTP and SSE with replay. Future visualization remains proposed.
 - **Sandbox:** rootless OCI/Podman, with no unauthorized host execution fallback; alternative confinement if proven appropriate.
 - **Observability:** a durable event ledger, structured redacted logs and OpenTelemetry tracing path are implemented. Full metrics coverage remains proposed; see [telemetry](../observability/telemetry.md).

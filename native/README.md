@@ -1,6 +1,6 @@
 # Native Factory bootstrap
 
-This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. Provider-backed coding, autonomous start, S4-D WorkGraph execution and ISOLATED mode remain fail-closed. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
+This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. Provider-backed coding, unrestricted/multi-unit autonomous start, parallel/fan-in WorkGraph execution and ISOLATED mode remain fail-closed. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
 
 Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
 

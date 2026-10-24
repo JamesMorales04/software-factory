@@ -28,15 +28,15 @@ merged and is not authoritative.
 - `HISTORICAL_ONLY` — provenance; never current runtime authority.
 
 See [capability decisions](../product/capability-decisions.md) for the complete
-portfolio and [S4-D recovery matrix](s4d-rust-recovery-matrix.md) for source
-mapping.
+portfolio and the [S4-D recovery matrix](s4d-rust-recovery-matrix.md) as a dated
+source-mapping snapshot; this ledger is the current status authority.
 
 ## S4-D A1–A12 disposition
 
 | ID | Capability | Status | Rust state | Blocker / next evidence |
 |---|---|---|---|---|
 | A1 | Semantic intake and typed assessment | `PARTIAL` | Strict typed assessment/storage; deterministic fixture assessor and operator routes; no model assessor | Add direct provider assessor, observation, Action creation, reconciliation, process tests |
-| A2 | Proposal validation and frozen plan | `PARTIAL` | Deterministic validation, project config hash binding, freeze revalidation, durable rows | Create per-unit specs/Campaign and expose complete projection |
+| A2 | Proposal validation and frozen plan | `PARTIAL` | Validation, project config binding, freeze revalidation, per-unit specs and Campaign/Run/Attempt creation | Complete projection, parallel/fan-in plan and recovery |
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Explicit default-off policy; single-unit R0 fixture start creates Campaign/Run/Attempt atomically | Multi-unit WorkGraph start, ratified issuer policy and provider mode remain |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks open Lead requests and cancels/fences linked Campaign/Run/Attempt work | Provider session reconciliation and independent cleanup evidence remain |
@@ -45,7 +45,7 @@ mapping.
 | A8 | Deterministic Git integration | `PARTIAL` | Tested integration primitives | Wire Worker/Core candidate lineage and Campaign integration |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Single-unit start transaction + idempotent replay; fixture E2E reaches ACCEPTED | Add crash-injection and multi-unit start coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
-| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Rust Office now includes Lead submission, fixture assessment, freeze and request projection | WorkGraph visualization, campaign detail/recovery and Lead browser reload test |
+| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested | Recovery/cleanup visibility and full multi-unit graph evidence |
 | A12 | Bounded live certification tooling | `PARTIAL` | Default-closed readonly provider smoke | Core-owned budget/session ledger and governed S4-D harness |
 
 ## Merge-readiness gates
@@ -55,16 +55,16 @@ mapping.
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path exists; Go tree still active |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 not complete; see table |
 | M3 Repository hygiene | `BLOCKED` | 99 tracked `.go` files plus Go module/lint/config; strict scanner not green |
-| M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified in author run |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE Campaign end-to-end verified; provider coding fail-closed |
+| M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
-| M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified; reviewer is receipt-only |
-| M8 Office | `PARTIAL` | Rust Office fixture browser journey `ACCEPTED`; S4-D views absent |
-| M9 Testing | `PARTIAL` | Rust suite and process/browser E2E pass at current author checkpoint; exact final candidate pending |
-| M10 Governance | `PARTIAL` | Architecture checker passes; strict hygiene, docs and capability registry still being closed |
+| M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; reviewer is receipt-only |
+| M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
+| M9 Testing | `PARTIAL` | Rust suite/process/browser E2E and exact-head CI pass at `5a323f8`; final candidate pending later docs/fixes |
+| M10 Governance | `PARTIAL` | Architecture checker passes including base-ref ADR history after ADR-0021; strict hygiene and legacy CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
-| M13 Product independence | `VERIFIED` | Predecessor assessment removed; `capability-decisions.md` preserves all 44 CAPs and engineering opportunities; strict case-insensitive audit is empty at this checkpoint |
+| M13 Product independence | `PARTIAL` | Predecessor assessment removed, all 44 CAP IDs and opportunities present, strict audit empty; registry/roadmap decision and milestone consistency still being closed |
 
 ## Verified execution path
 
@@ -78,8 +78,9 @@ At the author checkpoint:
 - `factory start/stop/status` managed Core, Supervisor and Worker;
 - real Chromium Office journey passed.
 
-This is author-run fixture evidence. It is not provider coding, OS isolation
-certification, independent acceptance or deployment authorization.
+Candidate-bound evidence: [native-rust-closure-2026-10-24.json](../evidence/native-rust-closure-2026-10-24.json)
+(`5a323f8`; author-run and exact-head CI). It is not provider coding, OS
+isolation certification, independent acceptance or deployment authorization.
 
 ## Legacy deletion status
 

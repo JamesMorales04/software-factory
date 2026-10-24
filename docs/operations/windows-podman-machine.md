@@ -20,7 +20,7 @@ It does not cover Windows 10, Windows Server, Hyper-V-only Podman, Windows conta
 |---|---|---|
 | Windows 11 + WSL2 + Podman Machine topology | `SUPPORTED` target; `NOT_TESTED`; verification `BLOCKED` | No Windows host was available |
 | Same Linux application runtime image on Windows and Linux | `NOT_TESTED` | No image was built, published or run |
-| Windows launcher | `NOT_IMPLEMENTED` | No launcher exists |
+| Windows launcher | `NOT_IMPLEMENTED` | Linux/WSL2 lifecycle binary exists; no Windows-native launcher |
 | WSL2 path policy enforcement | `NOT_IMPLEMENTED` | No code enforces the policy |
 | Supervisor process in WSL2 | `NOT_TESTED` | `factory start` can manage it on Linux; Windows/WSL acceptance is not run |
 | Unified `factory` CLI and `factory doctor` | `PARTIAL` | Linux/WSL2 lifecycle commands exist; Windows launcher is not implemented |

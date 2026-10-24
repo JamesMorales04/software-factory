@@ -25,7 +25,7 @@ It does not describe a rootful deployment, a multi-host cluster, a production ha
 | Containerized Core API exposure | `IMPLEMENTED` | Loopback-published container with explicit `FACTORY_CONTAINER_MODE=1` |
 | Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Lifecycle subset only; installer/restart/update remain unimplemented |
 | Ephemeral sandbox isolation and credential confinement | `BLOCKED` | SEC-01 is paused; rootless Podman is not certified |
-| Linux container E2E | `NOT_TESTED` | Nothing was started |
+| Linux container E2E | `AUTHOR_VERIFIED` | Core/Office image, factory start/stop/status and fixture Campaign run on the tested CachyOS host |
 | Independent verification | None | No independent verifier ran this topology |
 
 ### Command status
