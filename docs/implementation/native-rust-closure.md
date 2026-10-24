@@ -114,6 +114,14 @@ independent review found and Sol repaired pre-turn cancellation deadlock
 (`c375d71`). These are deterministic fixtures only. No paid provider coding
 turn or credential/isolation certification occurred.
 
+OpenCode prompt helpers now correlate matching session SSE idle/error events
+with a synchronous assistant HTTP response in deterministic fixtures
+(`17bcac2`). Independent review found an abort race: idle after a requested
+abort did not prove cancellation. The outcome is now explicitly
+`AbortRequestedAndIdle`, with a completed-response race fixture (`5a5df79`).
+The reviewer verified the repair. These helpers have no production prompt or
+abort caller yet; provider lifecycle remains incomplete.
+
 The [deletion and replacement map](native-rust-deletion-map.md) classifies all
 99 tracked Go files at `102f6a046f1f907546e8bc60da622388f80bd95c` by
 replacement, missing oracle, deletion readiness, owner and verification command.

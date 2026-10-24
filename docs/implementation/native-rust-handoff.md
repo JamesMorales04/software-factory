@@ -34,6 +34,11 @@ independent reviewer found a pre-turn cancellation dead end, repaired at
 `c375d71`. The reviewer verified both repairs. Local workspace tests,
 format and strict Clippy passed on `c375d71` (132 library tests and all other
 workspace targets); Codex interrupted-outcome regression coverage followed.
+Luna's OpenCode SSE/HTTP response fixture helpers landed at `17bcac2`.
+Independent review found that idle after an abort request cannot prove
+cancellation; `5a5df79` records `AbortRequestedAndIdle` and adds a completion
+race fixture. The reviewer verified this repair. No production prompt or abort
+request path uses those helpers yet, and no paid turn occurred.
 Final exact-head GitHub CI, strict hygiene and final independent acceptance
 remain pending.
 Provider coding is still fail-closed; no paid provider turn ran. Isolation and
