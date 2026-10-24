@@ -1,46 +1,29 @@
 //! Trusted local Sandbox Supervisor HTTP service.
 //!
-//! This is a candidate `TRUSTED_LOCAL` supervisor component, **not certified
-//! isolation**. It accepts a narrow fixture-execution contract from a trusted
-//! local caller, then delegates to [`factory_native::sandbox::RootlessPodman`]
-//! so that only hardened, allowlisted rootless Podman fixtures run. Callers
-//! cannot supply Podman flags, mounts, sockets, networks, environment variables
-//! or an executable outside the requested `argv`.
-//!
-//! Failures are closed: the service refuses to start without a sufficiently
-//! long bearer token, a private workspace root, a non-empty image allowlist and
-//! a confirmed rootless Podman engine. There is no fallback to host execution,
-//! Docker, rootful Podman or host networking, and the service exposes no
-//! provider, GitHub or Core credentials and no Podman socket.
-//!
-//! Fixtures receive only the named workspace mount. Container `HOME` and
-//! `TMPDIR` are fixed to `/tmp`; host `HOME`, runtime sockets and ambient host
-//! environment are not forwarded into the container.
-//!
-//! Residual risks remain blockers for isolation certification: fixtures share
-//! the supervisor user's UID, so same-UID workspace replacement races are not
-//! eliminated, and credential confinement has not been independently verified.
-//! Loopback binding, a bearer token and container hardening are not equivalent
-//! to OS-level isolation.
+//! This is a candidate `TRUSTED_LOCAL` boundary, not certified isolation. It
+//! owns durable per-Attempt Git worktrees and executes project code only in an
+//! allowlisted rootless Podman image with a named volume. No host workspace
+//! pathname is passed to Podman, so replacing the host path cannot redirect the
+//! sandbox mount. The service never exposes the Podman socket, provider
+//! credentials, Core tokens or host HOME. Failures are closed.
 
-use std::{
-    collections::BTreeSet,
-    env,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeSet, env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factory_native::sandbox::{MAX_RUNTIME, RootlessPodman, SandboxError, is_valid_workspace_name};
-use serde::{Deserialize, Serialize};
+use factory_native::{
+    execution::{
+        BoundedOutput, ExecuteWorkspace, ExecutionError, MAX_EXECUTION_RUNTIME,
+        RootlessPodmanVolumes, VolumeBackend, WorkspaceAllocation, WorkspaceManager,
+    },
+    workspace::WorkspaceError,
+    workspace_archive::ArchiveError,
+};
 use serde_json::json;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8766";
@@ -58,31 +41,167 @@ const OTHER_SECRET_VARIABLES: [&str; 5] = [
     "FACTORY_REVIEWER_TOKEN",
 ];
 
-struct App {
+enum SupervisorBackend {
+    Podman(RootlessPodmanVolumes),
+    #[cfg(debug_assertions)]
+    Local(LocalVolumeBackend),
+}
+
+impl VolumeBackend for SupervisorBackend {
+    async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.create_volume(name, workspace_id).await,
+        }
+    }
+    async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.remove_volume(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.remove_volume(name).await,
+        }
+    }
+    async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.import_volume(name, bytes).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.import_volume(name, bytes).await,
+        }
+    }
+    async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.export_volume(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.export_volume(name).await,
+        }
+    }
+    async fn run(
+        &self,
+        volume: &str,
+        container: &str,
+        image: &str,
+        argv: &[String],
+        timeout: Duration,
+    ) -> Result<BoundedOutput, ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.run(volume, container, image, argv, timeout).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
+        }
+    }
+    async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.remove_container(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.remove_container(name).await,
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct LocalVolumeBackend {
+    root: PathBuf,
+    volumes: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+}
+
+#[cfg(debug_assertions)]
+impl LocalVolumeBackend {
+    fn new(root: PathBuf) -> Result<Self, ExecutionError> {
+        std::fs::create_dir_all(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Self {
+            root,
+            volumes: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+
+    fn path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
+        self.volumes
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| ExecutionError::Volume("missing test volume".into()))
+    }
+}
+
+#[cfg(debug_assertions)]
+impl VolumeBackend for LocalVolumeBackend {
+    async fn create_volume(&self, name: &str, _workspace_id: &str) -> Result<(), ExecutionError> {
+        let path = self.root.join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir(&path)?;
+        self.volumes.lock().unwrap().insert(name.into(), path);
+        Ok(())
+    }
+    async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        if let Some(path) = self.volumes.lock().unwrap().remove(name) {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(())
+    }
+    async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
+        let path = self.path(name)?;
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        factory_native::workspace_archive::extract(bytes, &path)?;
+        self.volumes.lock().unwrap().insert(name.into(), path);
+        Ok(())
+    }
+    async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
+        Ok(factory_native::workspace_archive::snapshot(&self.path(name)?)?.bytes)
+    }
+    async fn run(
+        &self,
+        volume: &str,
+        _container: &str,
+        _image: &str,
+        argv: &[String],
+        timeout: Duration,
+    ) -> Result<BoundedOutput, ExecutionError> {
+        let path = self.path(volume)?;
+        let argv = argv.to_vec();
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .current_dir(path)
+                    .env_clear()
+                    .env("PATH", "/usr/bin:/bin")
+                    .env("HOME", "/tmp")
+                    .output()
+            }),
+        )
+        .await
+        .map_err(|_| ExecutionError::Volume("local test execution timed out".into()))?
+        .map_err(|error| ExecutionError::Volume(format!("local test runner: {error}")))??;
+        Ok(BoundedOutput {
+            exit_code: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })
+    }
+    async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+}
+
+struct App<B: factory_native::execution::VolumeBackend> {
     token: String,
-    workspace_root: PathBuf,
+    manager: WorkspaceManager<B>,
+    max_runtime: Duration,
     allowed_images: BTreeSet<String>,
-    max_timeout: Duration,
-    sandbox: RootlessPodman,
-    run_gate: tokio::sync::Mutex<()>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecuteRequest {
-    workspace_name: String,
-    image: String,
-    argv: Vec<String>,
-    timeout_secs: u64,
-}
-
-#[derive(Serialize)]
-struct ExecuteResponse {
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
 }
 
 #[tokio::main]
@@ -94,14 +213,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env::var("FACTORY_SUPERVISOR_TOKEN").map_err(|_| "FACTORY_SUPERVISOR_TOKEN required")?;
     validate_supervisor_token(&token)?;
     ensure_distinct_from_other_roles(&token)?;
-    let workspace_root = env::var("FACTORY_SUPERVISOR_WORKSPACE_ROOT")
-        .map_err(|_| "FACTORY_SUPERVISOR_WORKSPACE_ROOT required")?;
-    let workspace_root = Path::new(&workspace_root).canonicalize()?;
+    let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
+    let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
     let images = parse_images(
         &env::var("FACTORY_SUPERVISOR_IMAGES").map_err(|_| "FACTORY_SUPERVISOR_IMAGES required")?,
     )?;
-    let sandbox = RootlessPodman::new(&workspace_root, images.iter().cloned(), MAX_RUNTIME)?;
-    sandbox.preflight().await?;
+    let project_roots = parse_project_roots(
+        &env::var("FACTORY_SUPERVISOR_PROJECT_ROOTS")
+            .map_err(|_| "FACTORY_SUPERVISOR_PROJECT_ROOTS required")?,
+    )?;
+    let max_runtime = match env::var("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS") {
+        Ok(value) => Duration::from_secs(value.parse::<u64>()?),
+        Err(_) => MAX_EXECUTION_RUNTIME,
+    };
+    if max_runtime < Duration::from_secs(1) || max_runtime > MAX_EXECUTION_RUNTIME {
+        return Err("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS is outside the allowed bound".into());
+    }
+    let backend = if env::var("FACTORY_SUPERVISOR_TEST_BACKEND").ok().as_deref() == Some("local") {
+        if !cfg!(debug_assertions) {
+            return Err("the local Supervisor backend is not available in release builds".into());
+        }
+        #[cfg(debug_assertions)]
+        {
+            SupervisorBackend::Local(LocalVolumeBackend::new(required_path(
+                "FACTORY_SUPERVISOR_TEST_VOLUME_ROOT",
+            )?)?)
+        }
+        #[cfg(not(debug_assertions))]
+        unreachable!("release builds reject the local backend above")
+    } else {
+        let backend = RootlessPodmanVolumes::new(images.iter().cloned())?;
+        backend.preflight().await?;
+        SupervisorBackend::Podman(backend)
+    };
+    let manager = WorkspaceManager::new(&workspace_root, &state_root, project_roots, backend)?;
+    let removed = manager.reconcile().await?;
+    if removed > 0 {
+        tracing::warn!(removed, "reconciled stale workspace executions");
+    }
     let bind = env::var("FACTORY_SUPERVISOR_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
     let addr: SocketAddr = bind.parse()?;
     if !addr.ip().is_loopback() {
@@ -109,11 +258,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = Arc::new(App {
         token,
-        workspace_root,
+        manager,
+        max_runtime,
         allowed_images: images,
-        max_timeout: MAX_RUNTIME,
-        sandbox,
-        run_gate: tokio::sync::Mutex::new(()),
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -121,23 +268,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_router(app: Arc<App>) -> Router {
+fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<App<B>>) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/v1/execute", post(execute))
+        .route("/v1/workspaces", post(allocate))
+        .route("/v1/workspaces/{workspace_id}", get(status).delete(cleanup))
+        .route("/v1/workspaces/{workspace_id}/execute", post(execute))
         .route("/v1/reconcile", post(reconcile))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({"healthy": true}))
+    Json(json!({
+        "healthy": true,
+        "isolation_certified": false,
+        "mount": "named-volume",
+        "host_workspace_mounted": false
+    }))
 }
 
-async fn execute(
-    State(app): State<Arc<App>>,
+async fn allocate<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
     headers: HeaderMap,
-    Json(input): Json<ExecuteRequest>,
+    Json(input): Json<WorkspaceAllocation>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.allocate(&input).await {
+        Ok(handle) => (StatusCode::CREATED, Json(handle)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn execute<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<ExecuteWorkspace>,
 ) -> Response {
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -145,44 +314,54 @@ async fn execute(
     if let Err(message) = validate_execute(&app, &input) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
     }
-    let workspace = app.workspace_root.join(&input.workspace_name);
-    let timeout = Duration::from_secs(input.timeout_secs);
-    let _run_guard = app.run_gate.lock().await;
-    let sandbox = match RootlessPodman::new(
-        &app.workspace_root,
-        app.allowed_images.iter().cloned(),
-        timeout,
-    ) {
-        Ok(sandbox) => sandbox,
-        Err(error) => return sandbox_error(error),
-    };
-    match sandbox
-        .run_fixture_capture(&workspace, &input.image, &input.argv)
+    match app
+        .manager
+        .execute(&workspace_id, &input, app.max_runtime)
         .await
     {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(ExecuteResponse {
-                exit_code: result.exit_code,
-                stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
-                stdout_truncated: result.stdout_truncated,
-                stderr_truncated: result.stderr_truncated,
-            }),
-        )
-            .into_response(),
-        Err(error) => sandbox_error(error),
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => execution_error(error),
     }
 }
 
-async fn reconcile(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+async fn status<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+) -> Response {
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let _run_guard = app.run_gate.lock().await;
-    match app.sandbox.reconcile_orphans().await {
+    match app.manager.status(&workspace_id) {
+        Ok(handle) => (StatusCode::OK, Json(handle)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn cleanup<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.cleanup(&workspace_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn reconcile<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.reconcile().await {
         Ok(removed) => (StatusCode::OK, Json(json!({"removed": removed}))).into_response(),
-        Err(error) => sandbox_error(error),
+        Err(error) => execution_error(error),
     }
 }
 
@@ -194,10 +373,10 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
 }
 
-fn validate_execute(app: &App, input: &ExecuteRequest) -> Result<(), String> {
-    if !is_valid_workspace_name(&input.workspace_name) {
-        return Err("workspace_name must be a direct child directory name".into());
-    }
+fn validate_execute<B: factory_native::execution::VolumeBackend>(
+    app: &App<B>,
+    input: &ExecuteWorkspace,
+) -> Result<(), String> {
     if !app.allowed_images.contains(&input.image) {
         return Err("image is not in the configured exact allowlist".into());
     }
@@ -222,28 +401,58 @@ fn validate_execute(app: &App, input: &ExecuteRequest) -> Result<(), String> {
     if total_bytes > MAX_ARGV_BYTES {
         return Err(format!("argv must total at most {MAX_ARGV_BYTES} bytes"));
     }
-    if input.timeout_secs == 0 || input.timeout_secs > app.max_timeout.as_secs() {
+    if input.timeout_secs == 0 || Duration::from_secs(input.timeout_secs) > app.max_runtime {
         return Err(format!(
             "timeout_secs must be between 1 and {}",
-            app.max_timeout.as_secs()
+            app.max_runtime.as_secs()
         ));
     }
     Ok(())
 }
 
-fn sandbox_error(error: SandboxError) -> Response {
+fn execution_error(error: ExecutionError) -> Response {
     tracing::warn!(error = %error, "sandbox supervisor request failed");
     let status = match &error {
-        SandboxError::Invalid(_) => StatusCode::BAD_REQUEST,
-        SandboxError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-        SandboxError::TimedOut => StatusCode::GATEWAY_TIMEOUT,
-        SandboxError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-        SandboxError::Io(_)
-        | SandboxError::Failed { .. }
-        | SandboxError::Reader(_)
-        | SandboxError::Ledger(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ExecutionError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ExecutionError::NotFound => StatusCode::NOT_FOUND,
+        ExecutionError::Conflict => StatusCode::CONFLICT,
+        ExecutionError::Archive(ArchiveError::Invalid(_)) => StatusCode::BAD_REQUEST,
+        ExecutionError::Archive(ArchiveError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
+        ExecutionError::Workspace(WorkspaceError::Invalid(_)) => StatusCode::BAD_REQUEST,
+        ExecutionError::Volume(_) | ExecutionError::Sandbox(_) => StatusCode::SERVICE_UNAVAILABLE,
+        ExecutionError::Io(_) | ExecutionError::Archive(_) | ExecutionError::Workspace(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     (status, Json(json!({"error": error.to_string()}))).into_response()
+}
+
+fn required_path(variable: &str) -> Result<PathBuf, String> {
+    let value = env::var(variable).map_err(|_| format!("{variable} required"))?;
+    let path = PathBuf::from(&value);
+    if !path.is_absolute() {
+        return Err(format!("{variable} must be an absolute path"));
+    }
+    Ok(path)
+}
+
+fn parse_project_roots(raw: &str) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("FACTORY_SUPERVISOR_PROJECT_ROOTS must be a comma-separated list".into());
+        }
+        let path = PathBuf::from(part);
+        if !path.is_absolute() || path == PathBuf::from("/") {
+            return Err("project roots must be absolute and must not be /".into());
+        }
+        roots.push(path);
+    }
+    if roots.is_empty() {
+        return Err("FACTORY_SUPERVISOR_PROJECT_ROOTS must not be empty".into());
+    }
+    Ok(roots)
 }
 
 fn validate_supervisor_token(token: &str) -> Result<(), String> {
@@ -297,15 +506,84 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use std::fs;
+    use factory_native::execution::{BoundedOutput, VolumeBackend};
+    use std::{collections::HashMap, fs, path::Path, process::Command, sync::Mutex};
     use tower::ServiceExt;
     use uuid::Uuid;
 
     const TEST_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789abcdef";
 
+    #[derive(Default)]
+    struct TestBackend {
+        volumes: Mutex<HashMap<String, PathBuf>>,
+    }
+
+    impl TestBackend {
+        fn path(&self, volume: &str) -> PathBuf {
+            self.volumes.lock().unwrap().get(volume).cloned().unwrap()
+        }
+    }
+
+    impl VolumeBackend for TestBackend {
+        async fn create_volume(
+            &self,
+            name: &str,
+            _workspace_id: &str,
+        ) -> Result<(), ExecutionError> {
+            let path = std::env::temp_dir().join(format!("factory-test-volume-{}", Uuid::new_v4()));
+            fs::create_dir(&path)?;
+            self.volumes.lock().unwrap().insert(name.into(), path);
+            Ok(())
+        }
+        async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+            if let Some(path) = self.volumes.lock().unwrap().remove(name) {
+                let _ = fs::remove_dir_all(path);
+            }
+            Ok(())
+        }
+        async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
+            let path = self.path(name);
+            if path.exists() {
+                fs::remove_dir_all(&path)?;
+            }
+            factory_native::workspace_archive::extract(bytes, &path)?;
+            Ok(())
+        }
+        async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
+            Ok(factory_native::workspace_archive::snapshot(&self.path(name))?.bytes)
+        }
+        async fn run(
+            &self,
+            volume: &str,
+            _container: &str,
+            _image: &str,
+            argv: &[String],
+            _timeout: Duration,
+        ) -> Result<BoundedOutput, ExecutionError> {
+            let path = self.path(volume);
+            let output = Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(path)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .output()?;
+            Ok(BoundedOutput {
+                exit_code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })
+        }
+        async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
+            Ok(())
+        }
+    }
+
     struct TestFixture {
-        app: Arc<App>,
+        app: Arc<App<TestBackend>>,
         root: PathBuf,
+        repository: PathBuf,
     }
 
     impl Drop for TestFixture {
@@ -322,47 +600,62 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let images: BTreeSet<String> = ["alpine:3.20".to_owned()].into();
-        let sandbox = RootlessPodman::new(&root, images.iter().cloned(), MAX_RUNTIME).unwrap();
+        let repository = root.join("repo");
+        fs::create_dir(&repository).unwrap();
+        git(&repository, &["init", "-q"]);
+        git(
+            &repository,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git(&repository, &["config", "user.name", "Test"]);
+        fs::write(repository.join("seed.txt"), "base\n").unwrap();
+        git(&repository, &["add", "seed.txt"]);
+        git(&repository, &["commit", "-qm", "base"]);
+        let images: BTreeSet<String> = ["test/image:1".to_owned()].into();
+        let manager = WorkspaceManager::new(
+            root.join("work"),
+            root.join("state"),
+            [repository.clone()],
+            TestBackend::default(),
+        )
+        .unwrap();
         TestFixture {
             app: Arc::new(App {
                 token: TEST_TOKEN.into(),
-                workspace_root: root.clone(),
+                manager,
+                max_runtime: MAX_EXECUTION_RUNTIME,
                 allowed_images: images,
-                max_timeout: MAX_RUNTIME,
-                sandbox,
-                run_gate: tokio::sync::Mutex::new(()),
             }),
             root,
+            repository,
         }
     }
 
-    fn execute_request(
-        workspace_name: &str,
-        image: &str,
-        argv: &[&str],
-        timeout_secs: u64,
-    ) -> ExecuteRequest {
-        ExecuteRequest {
-            workspace_name: workspace_name.into(),
-            image: image.into(),
-            argv: argv.iter().map(|value| (*value).to_owned()).collect(),
-            timeout_secs,
-        }
+    fn git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
-    fn execute_json(
-        workspace_name: &str,
-        image: &str,
-        argv: &[&str],
-        timeout_secs: u64,
-    ) -> serde_json::Value {
-        json!({
-            "workspace_name": workspace_name,
-            "image": image,
-            "argv": argv,
-            "timeout_secs": timeout_secs
-        })
+    fn base(repository: &Path) -> String {
+        String::from_utf8(
+            Command::new("git")
+                .args(["-C", repository.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .into()
     }
 
     fn json_request(uri: &str, token: Option<&str>, body: &serde_json::Value) -> Request<Body> {
@@ -380,15 +673,23 @@ mod tests {
         router.clone().oneshot(request).await.unwrap().status()
     }
 
-    #[tokio::test]
-    async fn health_is_public_and_minimal() {
-        let fixture = fixture();
-        let request = Request::builder()
-            .uri("/health")
-            .body(Body::empty())
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
             .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_is_public_and_does_not_claim_certification() {
+        let fixture = fixture();
         let response = build_router(fixture.app.clone())
-            .oneshot(request)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -396,26 +697,28 @@ mod tests {
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value, json!({"healthy": true}));
+        assert_eq!(value["healthy"], true);
+        assert_eq!(value["isolation_certified"], false);
     }
 
     #[tokio::test]
-    async fn execute_and_reconcile_require_the_exact_bearer_token() {
+    async fn workspace_routes_require_the_exact_bearer_token() {
         let fixture = fixture();
         let router = build_router(fixture.app.clone());
-        let body = execute_json("workspace", "alpine:3.20", &["/bin/true"], 30);
-
-        assert_eq!(
-            status(&router, json_request("/v1/execute", None, &body)).await,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            status(&router, json_request("/v1/execute", Some("wrong"), &body)).await,
-            StatusCode::UNAUTHORIZED
-        );
+        let body = json!({
+            "attemptId": "attempt-1",
+            "repository": fixture.repository,
+            "baseCommit": base(&fixture.repository)
+        });
+        for token in [None, Some("wrong")] {
+            assert_eq!(
+                status(&router, json_request("/v1/workspaces", token, &body)).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
         let wrong_scheme = Request::builder()
             .method("POST")
-            .uri("/v1/execute")
+            .uri("/v1/workspaces")
             .header("content-type", "application/json")
             .header("authorization", format!("Token {TEST_TOKEN}"))
             .body(Body::from(body.to_string()))
@@ -424,209 +727,138 @@ mod tests {
             status(&router, wrong_scheme).await,
             StatusCode::UNAUTHORIZED
         );
-        let lowercase_scheme = Request::builder()
+        let reconcile = Request::builder()
             .method("POST")
-            .uri("/v1/execute")
-            .header("content-type", "application/json")
-            .header("authorization", format!("bearer {TEST_TOKEN}"))
-            .body(Body::from(body.to_string()))
+            .uri("/v1/reconcile")
+            .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            status(&router, lowercase_scheme).await,
-            StatusCode::UNAUTHORIZED
-        );
+        assert_eq!(status(&router, reconcile).await, StatusCode::UNAUTHORIZED);
+    }
 
+    #[tokio::test]
+    async fn allocates_executes_and_cleans_a_workspace_over_http() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let allocate = json!({
+            "attemptId": "attempt-1",
+            "repository": fixture.repository,
+            "baseCommit": base(&fixture.repository)
+        });
+        let response = router
+            .clone()
+            .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let handle = body_json(response).await;
+        assert_eq!(handle["status"], "ALLOCATED");
+        let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+
+        let execution = json!({
+            "image": "test/image:1",
+            "argv": ["/bin/sh", "-c", "printf 'http\\n' > result.txt"],
+            "timeoutSecs": 30
+        });
+        let response = router
+            .clone()
+            .oneshot(json_request(
+                &format!("/v1/workspaces/{workspace_id}/execute"),
+                Some(TEST_TOKEN),
+                &execution,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value = body_json(response).await;
+        assert_eq!(value["exitCode"], 0);
+        assert_eq!(value["confinement"]["mountKind"], "NAMED_VOLUME");
+        assert_eq!(value["confinement"]["hostWorkspaceMounted"], false);
+        let commit = value["candidate"]["commitSha"].as_str().unwrap();
         assert_eq!(
-            status(&router, json_request("/v1/reconcile", None, &json!({}))).await,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            status(
-                &router,
-                json_request("/v1/reconcile", Some("wrong"), &json!({}))
+            String::from_utf8(
+                Command::new("git")
+                    .args([
+                        "-C",
+                        fixture.repository.to_str().unwrap(),
+                        "show",
+                        &format!("{commit}:result.txt")
+                    ])
+                    .output()
+                    .unwrap()
+                    .stdout
             )
-            .await,
-            StatusCode::UNAUTHORIZED
+            .unwrap(),
+            "http\n"
         );
 
-        let invalid = execute_json("..", "alpine:3.20", &["/bin/true"], 30);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/workspaces/{workspace_id}"))
+                    .header("authorization", format!("Bearer {TEST_TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_input_and_unknown_fields() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let outside = fixture.root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        let outside_body = json!({
+            "attemptId": "outside",
+            "repository": outside,
+            "baseCommit": base(&fixture.repository)
+        });
         assert_eq!(
             status(
                 &router,
-                json_request("/v1/execute", Some(TEST_TOKEN), &invalid)
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &outside_body)
             )
             .await,
             StatusCode::BAD_REQUEST
         );
-    }
-
-    #[tokio::test]
-    async fn execute_rejects_invalid_workspace_image_argv_and_timeout() {
-        let fixture = fixture();
-        let router = build_router(fixture.app.clone());
-        let cases = [
-            execute_json("../escape", "alpine:3.20", &["/bin/true"], 30),
-            execute_json("nested/child", "alpine:3.20", &["/bin/true"], 30),
-            execute_json("", "alpine:3.20", &["/bin/true"], 30),
-            execute_json("workspace", "ubuntu:latest", &["/bin/true"], 30),
-            execute_json("workspace", "alpine:3.20x", &["/bin/true"], 30),
-            execute_json("workspace", "alpine:3.20", &[], 30),
-            execute_json("workspace", "alpine:3.20", &[""], 30),
-            execute_json("workspace", "alpine:3.20", &["/bin/true"], 0),
-            execute_json(
-                "workspace",
-                "alpine:3.20",
-                &["/bin/true"],
-                MAX_RUNTIME.as_secs() + 1,
-            ),
-        ];
-        for body in cases {
-            assert_eq!(
+        let allocate = json!({
+            "attemptId": "attempt-2",
+            "repository": fixture.repository,
+            "baseCommit": base(&fixture.repository)
+        });
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap();
+        for execution in [
+            json!({"image": "test/image:1", "argv": [], "timeoutSecs": 30}),
+            json!({"image": "other/image:1", "argv": ["/bin/true"], "timeoutSecs": 30}),
+            json!({"image": "test/image:1", "argv": ["/bin/true"], "timeoutSecs": 0}),
+            json!({"image": "test/image:1", "argv": ["/bin/true"], "timeoutSecs": MAX_EXECUTION_RUNTIME.as_secs() + 1}),
+            json!({"image": "test/image:1", "argv": ["/bin/true"], "timeoutSecs": 30, "network": "host"}),
+        ] {
+            assert!(
                 status(
                     &router,
-                    json_request("/v1/execute", Some(TEST_TOKEN), &body)
+                    json_request(
+                        &format!("/v1/workspaces/{workspace_id}/execute"),
+                        Some(TEST_TOKEN),
+                        &execution
+                    )
                 )
-                .await,
-                StatusCode::BAD_REQUEST,
-                "unexpected status for {body}"
+                .await
+                .is_client_error(),
+                "unexpected status for {execution}"
             );
         }
-    }
-
-    #[test]
-    fn validation_accepts_the_inclusive_timeout_bounds_and_exact_allowlist() {
-        let fixture = fixture();
-        let app = &fixture.app;
-        assert!(
-            validate_execute(
-                app,
-                &execute_request("workspace", "alpine:3.20", &["/bin/true"], 1)
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_execute(
-                app,
-                &execute_request(
-                    "workspace",
-                    "alpine:3.20",
-                    &["/bin/true"],
-                    MAX_RUNTIME.as_secs()
-                )
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_execute(
-                app,
-                &execute_request("workspace", "alpine:3.20", &["/bin/true"], 0)
-            )
-            .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_unknown_fields_malformed_json_wrong_content_type_and_oversized_bodies() {
-        let fixture = fixture();
-        let router = build_router(fixture.app.clone());
-        let unknown = json!({
-            "workspace_name": "workspace",
-            "image": "alpine:3.20",
-            "argv": ["/bin/true"],
-            "timeout_secs": 30,
-            "network": "host"
-        });
-        assert_eq!(
-            status(
-                &router,
-                json_request("/v1/execute", Some(TEST_TOKEN), &unknown)
-            )
-            .await,
-            StatusCode::UNPROCESSABLE_ENTITY
-        );
-
-        let malformed = Request::builder()
-            .method("POST")
-            .uri("/v1/execute")
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {TEST_TOKEN}"))
-            .body(Body::from("{"))
-            .unwrap();
-        assert_eq!(status(&router, malformed).await, StatusCode::BAD_REQUEST);
-
-        let wrong_content_type = Request::builder()
-            .method("POST")
-            .uri("/v1/execute")
-            .header("content-type", "text/plain")
-            .header("authorization", format!("Bearer {TEST_TOKEN}"))
-            .body(Body::from(
-                execute_json("workspace", "alpine:3.20", &["/bin/true"], 30).to_string(),
-            ))
-            .unwrap();
-        assert_eq!(
-            status(&router, wrong_content_type).await,
-            StatusCode::UNSUPPORTED_MEDIA_TYPE
-        );
-
-        let oversized = json!({
-            "workspace_name": "workspace",
-            "image": "alpine:3.20",
-            "argv": ["x".repeat(MAX_BODY_BYTES + 1)],
-            "timeout_secs": 30
-        });
-        assert_eq!(
-            status(
-                &router,
-                json_request("/v1/execute", Some(TEST_TOKEN), &oversized)
-            )
-            .await,
-            StatusCode::PAYLOAD_TOO_LARGE
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_unknown_routes_and_wrong_methods() {
-        let fixture = fixture();
-        let router = build_router(fixture.app.clone());
-        let unknown = Request::builder()
-            .method("POST")
-            .uri("/v1/execute/..%2Fescape")
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {TEST_TOKEN}"))
-            .body(Body::from("{}"))
-            .unwrap();
-        assert_eq!(status(&router, unknown).await, StatusCode::NOT_FOUND);
-
-        let wrong_method = Request::builder()
-            .uri("/v1/execute")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(
-            status(&router, wrong_method).await,
-            StatusCode::METHOD_NOT_ALLOWED
-        );
-
-        let health_post = Request::builder()
-            .method("POST")
-            .uri("/health")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(
-            status(&router, health_post).await,
-            StatusCode::METHOD_NOT_ALLOWED
-        );
-    }
-
-    #[test]
-    fn configuration_parsing_is_non_empty_and_exact() {
-        let parsed = parse_images("alpine:3.20, ubuntu:24.04").unwrap();
-        assert_eq!(
-            parsed,
-            BTreeSet::from(["alpine:3.20".to_owned(), "ubuntu:24.04".to_owned()])
-        );
-        assert!(parse_images("").is_err());
-        assert!(parse_images("alpine:3.20,,ubuntu:24.04").is_err());
-        assert!(validate_supervisor_token(&"x".repeat(MIN_TOKEN_BYTES - 1)).is_err());
-        assert!(validate_supervisor_token(&"x".repeat(MIN_TOKEN_BYTES)).is_ok());
     }
 }

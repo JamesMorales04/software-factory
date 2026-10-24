@@ -8,6 +8,7 @@ mod failure;
 mod logs;
 mod podman;
 mod report;
+mod runtime;
 mod start;
 mod status;
 mod stop;

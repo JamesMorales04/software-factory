@@ -1,4 +1,5 @@
 pub mod db;
+pub mod execution;
 pub mod lead;
 pub mod model_output;
 pub mod protocol;
@@ -7,3 +8,4 @@ pub mod runtime;
 pub mod sandbox;
 pub mod sse;
 pub mod workspace;
+pub mod workspace_archive;

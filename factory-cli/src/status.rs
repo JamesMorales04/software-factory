@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     config, core_client::get_health, core_url::CoreUrl, failure::Failure, podman, report::Check,
-    text::one_line,
+    runtime, text::one_line,
 };
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -48,6 +48,41 @@ fn execute() -> Result<u8, Failure> {
             false
         }
     };
+
+    let mut host_services_running = false;
+    let mut host_services_expected = false;
+    if let Ok(roots) = config::project_roots() {
+        host_services_expected = !roots.is_empty() && config::host_execution().unwrap_or(false);
+        println!("Project roots: {}", roots.len());
+        if let Ok(token_file) = config::token_file() {
+            match runtime::status(&token_file) {
+                Ok((supervisor, worker)) => {
+                    host_services_running = supervisor && worker;
+                    if host_services_expected {
+                        if supervisor {
+                            Check::pass("Sandbox Supervisor", "running").print();
+                        } else {
+                            Check::fail("Sandbox Supervisor", "not running").print();
+                        }
+                        if worker {
+                            Check::pass("Host Worker", "running").print();
+                        } else {
+                            Check::fail("Host Worker", "not running").print();
+                        }
+                    } else if supervisor || worker {
+                        Check::blocked("Host execution", "services are running but disabled")
+                            .print();
+                    } else {
+                        Check::pass("Host execution", "disabled").print();
+                    }
+                }
+                Err(error) => {
+                    Check::fail("Host execution", error.message).print();
+                    host_services_running = false;
+                }
+            }
+        }
+    }
 
     let mut container_running = false;
     if podman_available {
@@ -102,7 +137,8 @@ fn execute() -> Result<u8, Failure> {
         }
     };
 
-    if container_running && core_healthy {
+    let host_ok = !host_services_expected || host_services_running;
+    if container_running && core_healthy && host_ok {
         Ok(0)
     } else {
         Ok(1)

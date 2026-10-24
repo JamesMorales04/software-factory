@@ -1,6 +1,6 @@
 use std::io::{self, IsTerminal, Write};
 
-use crate::{config, failure::Failure, podman};
+use crate::{config, failure::Failure, podman, runtime};
 
 pub(crate) fn run(purge: bool) -> u8 {
     match execute(purge) {
@@ -21,6 +21,9 @@ fn execute(purge: bool) -> Result<(), Failure> {
     println!("Factory stop");
     println!("Container: {name}");
     println!("Data volume: {volume}");
+    if let Ok(token_file) = config::token_file() {
+        runtime::stop(&token_file)?;
+    }
 
     let purge_confirmed = if purge {
         confirm_purge(&volume).map_err(Failure::operation)?

@@ -19,6 +19,8 @@ const OPERATOR_TOKEN: &str = "operator-token-e2e-dispatch";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
 const VERIFIER_TOKEN: &str = "verifier-token-1234567890123456789012";
 const REVIEWER_TOKEN: &str = "reviewer-token-1234567890123456789012";
+const SUPERVISOR_TOKEN: &str = "supervisor-token-123456789012345678901234";
+const FIXTURE_IMAGE: &str = "test/image:1";
 
 struct CoreProcess {
     child: Child,
@@ -58,6 +60,64 @@ impl Drop for CoreProcess {
     }
 }
 
+struct SupervisorProcess {
+    child: Child,
+    log: PathBuf,
+}
+
+struct SupervisorSpec<'a> {
+    port: u16,
+    repository: &'a Path,
+    log: &'a Path,
+    workspace_root: &'a Path,
+    state_root: &'a Path,
+    volume_root: &'a Path,
+    image: &'a str,
+    local_backend: bool,
+}
+
+impl SupervisorProcess {
+    fn start(spec: SupervisorSpec<'_>) -> Self {
+        let file = File::create(spec.log).expect("supervisor log");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_factory-supervisor"));
+        command
+            .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+            .env(
+                "FACTORY_SUPERVISOR_BIND",
+                format!("127.0.0.1:{}", spec.port),
+            )
+            .env("FACTORY_SUPERVISOR_WORKSPACE_ROOT", spec.workspace_root)
+            .env("FACTORY_SUPERVISOR_STATE_ROOT", spec.state_root)
+            .env("FACTORY_SUPERVISOR_PROJECT_ROOTS", spec.repository)
+            .env("FACTORY_SUPERVISOR_IMAGES", spec.image)
+            .env("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS", "600")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(file));
+        if spec.local_backend {
+            command
+                .env("FACTORY_SUPERVISOR_TEST_BACKEND", "local")
+                .env("FACTORY_SUPERVISOR_TEST_VOLUME_ROOT", spec.volume_root);
+        }
+        let child = command.spawn().expect("spawn factory-supervisor");
+        Self {
+            child,
+            log: spec.log.to_path_buf(),
+        }
+    }
+
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for SupervisorProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("ephemeral port")
@@ -81,6 +141,26 @@ async fn wait_healthy(client: &reqwest::Client, base: &str, core: &mut CoreProce
         if Instant::now() >= deadline {
             let log = std::fs::read_to_string(&core.log).unwrap_or_default();
             panic!("Core did not become healthy; log:\n{log}");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_supervisor(client: &reqwest::Client, base: &str, supervisor: &mut SupervisorProcess) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = supervisor.child.try_wait().expect("supervisor status") {
+            let log = std::fs::read_to_string(&supervisor.log).unwrap_or_default();
+            panic!("Supervisor exited early with {status}; log:\n{log}");
+        }
+        if let Ok(response) = client.get(format!("{base}/health")).send().await
+            && response.status() == StatusCode::OK
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let log = std::fs::read_to_string(&supervisor.log).unwrap_or_default();
+            panic!("Supervisor did not become healthy; log:\n{log}");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -251,13 +331,38 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .unwrap();
     let attempt_id = attempt["id"].as_str().unwrap().to_owned();
 
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let podman_backend = std::env::var("FACTORY_E2E_SUPERVISOR_BACKEND")
+        .ok()
+        .as_deref()
+        == Some("podman");
+    let fixture_image = if podman_backend {
+        "alpine:3.20"
+    } else {
+        FIXTURE_IMAGE
+    };
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: fixture_image,
+        local_backend: !podman_backend,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+
     let worker_log = File::create(root.join("worker.log")).unwrap();
     let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
         .env("FACTORY_CORE_URL", &base_url)
         .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
         .env("FACTORY_WORKER_ID", "worker-e2e")
         .env("FACTORY_WORKER_REGISTRATION_KEY", "registration-key-e2e")
-        .env("FACTORY_WORKSPACE_ROOT", root.join("workspaces"))
+        .env("FACTORY_SUPERVISOR_URL", &supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", fixture_image)
         .env("FACTORY_WORKER_ONCE", "1")
         .env("FACTORY_FIXTURE_FILE", "src/fixture.txt")
         .env("FACTORY_FIXTURE_CONTENT", "fixture candidate\n")
@@ -318,6 +423,15 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
             "FACTORY_VERIFIER_WORKSPACE",
             root.join("verifier-workspaces"),
         )
+        .env("FACTORY_VERIFIER_IMAGE", fixture_image)
+        .env(
+            "FACTORY_VERIFIER_TEST_BACKEND",
+            if podman_backend { "" } else { "local" },
+        )
+        .env(
+            "FACTORY_VERIFIER_TEST_VOLUME_ROOT",
+            root.join("verifier-volumes"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::from(verifier_log.try_clone().unwrap()))
         .stderr(Stdio::from(verifier_log))
@@ -357,6 +471,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
 
+    supervisor.stop();
     core.stop();
     core = CoreProcess::start(&database, port, &root.join("core.log"));
     wait_healthy(&client, &base_url, &mut core).await;
@@ -372,6 +487,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .unwrap();
     assert_eq!(gate_after["outcome"], "ACCEPTED");
 
+    supervisor.stop();
     core.stop();
     drop(core);
     let _ = std::fs::remove_dir_all(root);

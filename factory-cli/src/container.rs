@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::config::{CONTAINER_BIND, CONTAINER_DATABASE, CORE_CONTAINER_PORT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7,10 +9,11 @@ pub(crate) struct RunSpec<'a> {
     pub(crate) volume: &'a str,
     pub(crate) env_file: &'a str,
     pub(crate) host_port: u16,
+    pub(crate) project_roots: &'a [PathBuf],
 }
 
 pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "run".to_owned(),
         "--pull=never".to_owned(),
         "--detach".to_owned(),
@@ -37,7 +40,22 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         "--env".to_owned(),
         format!("FACTORY_DATABASE={CONTAINER_DATABASE}"),
         spec.image.to_owned(),
-    ]
+    ];
+    if !spec.project_roots.is_empty() {
+        args.insert(4, "--userns=keep-id:uid=10001,gid=10001".to_owned());
+        let insert_at = args
+            .iter()
+            .position(|argument| argument == "--read-only")
+            .unwrap_or(args.len());
+        for root in spec.project_roots.iter().rev() {
+            let path = root.to_string_lossy().into_owned();
+            args.splice(
+                insert_at..insert_at,
+                ["--volume".to_owned(), format!("{path}:{path}:ro")],
+            );
+        }
+    }
+    args
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +89,8 @@ pub(crate) fn volume_action(exists: bool) -> VolumeAction {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{RunSpec, StartAction, VolumeAction, run_args, start_action, volume_action};
 
     fn spec() -> RunSpec<'static> {
@@ -80,6 +100,7 @@ mod tests {
             volume: "factory-core-data",
             env_file: "/home/operator/.config/factory/core.env",
             host_port: 8765,
+            project_roots: &[],
         }
     }
 
@@ -128,6 +149,22 @@ mod tests {
             !args
                 .iter()
                 .any(|argument| argument.contains("FACTORY_OPERATOR_TOKEN"))
+        );
+    }
+
+    #[test]
+    fn mounts_only_explicit_project_roots_read_only_with_a_matching_user_map() {
+        let roots = vec![PathBuf::from("/srv/projects/alpha")];
+        let mut spec = spec();
+        spec.project_roots = &roots;
+        let args = run_args(&spec);
+        assert!(args.contains(&"--userns=keep-id:uid=10001,gid=10001".to_owned()));
+        assert!(args.contains(&"/srv/projects/alpha:/srv/projects/alpha:ro".to_owned()));
+        assert_eq!(
+            args.iter()
+                .filter(|argument| argument.starts_with("/srv/projects/"))
+                .count(),
+            1
         );
     }
 

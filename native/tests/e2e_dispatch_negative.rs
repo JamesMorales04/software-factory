@@ -19,6 +19,8 @@ const OPERATOR_TOKEN: &str = "operator-token-e2e-negative";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
 const VERIFIER_TOKEN: &str = "verifier-token-1234567890123456789012";
 const REVIEWER_TOKEN: &str = "reviewer-token-1234567890123456789012";
+const SUPERVISOR_TOKEN: &str = "supervisor-token-negative-1234567890123456";
+const FIXTURE_IMAGE: &str = "test/image:1";
 
 struct TestRoot {
     path: PathBuf,
@@ -82,6 +84,69 @@ impl CoreProcess {
 impl Drop for CoreProcess {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+struct SupervisorProcess {
+    child: Child,
+}
+
+impl SupervisorProcess {
+    fn start(root: &Path, repository: &Path) -> (Self, String) {
+        let port = free_port();
+        let log = root.join("supervisor.log");
+        let file = File::create(&log).expect("supervisor log");
+        let child = Command::new(env!("CARGO_BIN_EXE_factory-supervisor"))
+            .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+            .env("FACTORY_SUPERVISOR_BIND", format!("127.0.0.1:{port}"))
+            .env(
+                "FACTORY_SUPERVISOR_WORKSPACE_ROOT",
+                root.join("supervisor-work"),
+            )
+            .env(
+                "FACTORY_SUPERVISOR_STATE_ROOT",
+                root.join("supervisor-state"),
+            )
+            .env("FACTORY_SUPERVISOR_PROJECT_ROOTS", repository)
+            .env("FACTORY_SUPERVISOR_IMAGES", FIXTURE_IMAGE)
+            .env("FACTORY_SUPERVISOR_TEST_BACKEND", "local")
+            .env(
+                "FACTORY_SUPERVISOR_TEST_VOLUME_ROOT",
+                root.join("supervisor-volumes"),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(file))
+            .spawn()
+            .expect("spawn factory-supervisor");
+        let url = format!("http://127.0.0.1:{port}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                use std::io::{Read, Write};
+                let _ = stream.write_all(
+                    b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                );
+                let mut response = String::new();
+                let _ = stream.read_to_string(&mut response);
+                if response.starts_with("HTTP/1.1 200") {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "supervisor did not become healthy"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (Self { child }, url)
+    }
+}
+
+impl Drop for SupervisorProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -320,6 +385,7 @@ async fn authorize_and_start_attempt(
 fn run_worker_once(
     root: &Path,
     base_url: &str,
+    supervisor_url: &str,
     worker_id: &str,
     fixture_file: &str,
     fixture_content: &str,
@@ -334,10 +400,9 @@ fn run_worker_once(
             "FACTORY_WORKER_REGISTRATION_KEY",
             format!("registration-{worker_id}"),
         )
-        .env(
-            "FACTORY_WORKSPACE_ROOT",
-            root.join(format!("workspaces-{worker_id}")),
-        )
+        .env("FACTORY_SUPERVISOR_URL", supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
         .env("FACTORY_WORKER_ONCE", "1")
         .env("FACTORY_FIXTURE_FILE", fixture_file)
         .env("FACTORY_FIXTURE_CONTENT", fixture_content)
@@ -359,6 +424,12 @@ fn run_verifier(root: &Path, base_url: &str, candidate_id: &str, principal: &str
         .env(
             "FACTORY_VERIFIER_WORKSPACE",
             root.join(format!("verifier-workspaces-{principal}")),
+        )
+        .env("FACTORY_VERIFIER_IMAGE", FIXTURE_IMAGE)
+        .env("FACTORY_VERIFIER_TEST_BACKEND", "local")
+        .env(
+            "FACTORY_VERIFIER_TEST_VOLUME_ROOT",
+            root.join(format!("verifier-volumes-{principal}")),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
@@ -383,10 +454,12 @@ async fn candidate_outside_frozen_allowed_paths_is_rejected_without_record() {
     )
     .await;
     let fixture = authorize_and_start_attempt(&client, &base_url, &action, "scope", &["src"]).await;
+    let (_supervisor, supervisor_url) = SupervisorProcess::start(root.path(), &repository);
 
     let status = run_worker_once(
         root.path(),
         &base_url,
+        &supervisor_url,
         "worker-scope",
         "outside.txt",
         "outside frozen scope\n",
@@ -455,10 +528,12 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
     )
     .await;
     let fixture = authorize_and_start_attempt(&client, &base_url, &action, "check", &["src"]).await;
+    let (_supervisor, supervisor_url) = SupervisorProcess::start(root.path(), &repository);
 
     let status = run_worker_once(
         root.path(),
         &base_url,
+        &supervisor_url,
         "worker-check",
         "src/fixture.txt",
         "fixture candidate\n",
@@ -606,6 +681,7 @@ async fn unauthorized_run_is_rejected_and_authorized_run_without_attempt_has_no_
     let status = run_worker_once(
         root.path(),
         &base_url,
+        "http://127.0.0.1:9",
         "worker-no-attempt",
         "src/fixture.txt",
         "fixture candidate\n",

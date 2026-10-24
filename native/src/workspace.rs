@@ -10,7 +10,7 @@ use std::{
     process::{Command, Output},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -42,7 +42,8 @@ pub struct AttemptWorkspace {
 }
 
 /// Commit and tree identities are immutable Git object IDs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CandidateRevision {
     pub commit_sha: String,
     pub tree_sha: String,
@@ -517,6 +518,60 @@ impl WorkspaceAllocator {
 }
 
 impl AttemptWorkspace {
+    /// Reopen a durable worktree after a Supervisor restart or a retried
+    /// Attempt. The path and Git registration are revalidated; the caller must
+    /// still compare the persisted device/inode identity.
+    pub fn open(
+        repository: &Path,
+        path: PathBuf,
+        attempt_id: String,
+        base_commit: String,
+    ) -> Result<Self, WorkspaceError> {
+        validate_attempt_id(&attempt_id)?;
+        let repository = repository.canonicalize()?;
+        if !repository.is_dir() {
+            return Err(WorkspaceError::Invalid(
+                "registered repository is not a directory".into(),
+            ));
+        }
+        if !is_object_id(&base_commit) {
+            return Err(WorkspaceError::Invalid(
+                "frozen base must be a full Git object ID".into(),
+            ));
+        }
+        let canonical = path.canonicalize()?;
+        if canonical != path {
+            return Err(WorkspaceError::Invalid(
+                "stored worktree path is not canonical".into(),
+            ));
+        }
+        let top = String::from_utf8(
+            git(
+                &canonical,
+                [OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
+            )?
+            .stdout,
+        )
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 worktree root: {error}")))?;
+        let top = PathBuf::from(top.trim_end_matches('\n'));
+        if top.canonicalize()? != canonical {
+            return Err(WorkspaceError::Invalid(
+                "stored worktree is not a Git worktree root".into(),
+            ));
+        }
+        if !worktree_registered(&repository, &canonical)? {
+            return Err(WorkspaceError::Invalid(
+                "stored worktree is not registered with the repository".into(),
+            ));
+        }
+        Ok(Self {
+            repository,
+            path: canonical,
+            attempt_id,
+            base_commit: base_commit.to_lowercase(),
+            cleaned: false,
+        })
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -526,16 +581,116 @@ impl AttemptWorkspace {
     pub fn base_commit(&self) -> &str {
         &self.base_commit
     }
-
-    /// Return the clean committed HEAD only when it is a single commit directly
-    /// based on the frozen base. Unrelated, merge, and unchanged revisions are
-    /// not CandidateRevisions.
-    pub fn candidate_revision(&self) -> Result<CandidateRevision, WorkspaceError> {
+    pub fn repository_path(&self) -> &Path {
+        &self.repository
+    }
+    /// Device and inode of the opened worktree directory. Callers persist this
+    /// identity and re-check it before any host-side mutation.
+    pub fn identity(&self) -> Result<(u64, u64), WorkspaceError> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(WorkspaceError::Invalid(
+                "attempt workspace is not a real directory".into(),
+            ));
+        }
+        file_identity(&metadata)
+    }
+    pub fn verify_identity(&self, expected: (u64, u64)) -> Result<(), WorkspaceError> {
+        if self.identity()? != expected {
+            return Err(WorkspaceError::Invalid(
+                "attempt workspace identity changed".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// Reset a reused worktree to the frozen base and remove untracked state.
+    pub fn reset_to_base(&self) -> Result<(), WorkspaceError> {
+        self.verify_usable()?;
+        git(
+            &self.path,
+            [
+                OsStr::new("reset"),
+                OsStr::new("--hard"),
+                OsStr::new(&self.base_commit),
+            ],
+        )?;
+        git(&self.path, [OsStr::new("clean"), OsStr::new("-ffdx")])?;
+        Ok(())
+    }
+    /// Replace the worktree's non-Git contents with a validated staging tree.
+    /// The staging tree must be on the same filesystem as the worktree.
+    pub fn replace_contents(&self, staging: &Path) -> Result<(), WorkspaceError> {
+        self.verify_usable()?;
+        let staging = staging.canonicalize()?;
+        if staging.parent() != Some(self.path.parent().unwrap_or(Path::new("/"))) {
+            return Err(WorkspaceError::Invalid(
+                "staging directory must be adjacent to the worktree".into(),
+            ));
+        }
+        for entry in fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_symlink() || metadata.is_file() {
+                fs::remove_file(entry.path())?;
+            } else if metadata.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                return Err(WorkspaceError::Invalid(
+                    "worktree contains a special file".into(),
+                ));
+            }
+        }
+        let mut entries: Vec<_> = fs::read_dir(&staging)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if name == ".git" {
+                return Err(WorkspaceError::Invalid(
+                    "staging tree contains Git metadata".into(),
+                ));
+            }
+            fs::rename(entry.path(), self.path.join(name))?;
+        }
+        fs::remove_dir(&staging)?;
+        Ok(())
+    }
+    /// Commit every staged and untracked change with fixed identity and dates,
+    /// then return the exact candidate revision.
+    pub fn commit_all(&self, message: &str) -> Result<CandidateRevision, WorkspaceError> {
+        self.verify_usable()?;
+        git(&self.path, [OsStr::new("add"), OsStr::new("-A")])?;
+        let arguments = vec![
+            "-c".to_owned(),
+            "user.name=Factory Sandbox Supervisor".to_owned(),
+            "-c".to_owned(),
+            "user.email=factory-supervisor@example.invalid".to_owned(),
+            "-c".to_owned(),
+            "commit.gpgsign=false".to_owned(),
+            "commit".to_owned(),
+            "-qm".to_owned(),
+            message.to_owned(),
+        ];
+        git_with_dates(&self.path, &arguments)?;
+        self.candidate_revision()
+    }
+    fn verify_usable(&self) -> Result<(), WorkspaceError> {
         if self.cleaned || !self.path.is_dir() {
             return Err(WorkspaceError::Invalid(
                 "attempt workspace is unavailable".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Return the clean committed HEAD only when it is a single commit directly
+    /// based on the frozen base. Unrelated, merge, and unchanged revisions are
+    /// not CandidateRevisions.
+    pub fn candidate_revision(&self) -> Result<CandidateRevision, WorkspaceError> {
+        self.verify_usable()?;
         let status = git(
             &self.path,
             [
@@ -760,6 +915,21 @@ fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn file_identity(metadata: &fs::Metadata) -> Result<(u64, u64), WorkspaceError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Err(WorkspaceError::Invalid(
+            "workspace identity requires Unix metadata".into(),
+        ))
+    }
+}
+
 fn validate_attempt_id(value: &str) -> Result<(), WorkspaceError> {
     if value.is_empty()
         || value.len() > 128
@@ -808,7 +978,10 @@ fn reject_symlink_components(path: &Path) -> Result<(), WorkspaceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use uuid::Uuid;
 
@@ -1049,6 +1222,59 @@ mod tests {
         assert!(path_covered("src/file.txt", &["src".to_string()]));
         assert!(!path_covered("docs/file.txt", &["src".to_string()]));
         assert!(!path_covered("srcx/file.txt", &["src".to_string()]));
+        workspace.cleanup().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replaces_worktree_contents_and_commits_fixed_candidate() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root = std::env::temp_dir().join(format!("factory-replace-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut workspace = allocator.allocate("replace", &base).unwrap();
+        let identity = workspace.identity().unwrap();
+        workspace.verify_identity(identity).unwrap();
+
+        let staging = root.join("stage-replace");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("new.txt"), "sandbox content\n").unwrap();
+        workspace.replace_contents(&staging).unwrap();
+        assert!(!workspace.path().join("seed.txt").exists());
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("new.txt")).unwrap(),
+            "sandbox content\n"
+        );
+        let candidate = workspace.commit_all("fixture replace").unwrap();
+        assert_eq!(
+            git(
+                &repo.0,
+                ["rev-parse", &format!("{}^", candidate.commit_sha)]
+            )
+            .unwrap()
+            .stdout,
+            format!("{base}\n").as_bytes()
+        );
+        workspace.verify_identity(identity).unwrap();
+        workspace.cleanup().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_restores_the_frozen_base_after_reuse() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let root = std::env::temp_dir().join(format!("factory-reset-{}", Uuid::new_v4()));
+        let allocator = WorkspaceAllocator::new(&repo.0, &root).unwrap();
+        let mut workspace = allocator.allocate("reset", &base).unwrap();
+        fs::write(workspace.path().join("seed.txt"), "dirty\n").unwrap();
+        fs::write(workspace.path().join("untracked.txt"), "dirty\n").unwrap();
+        workspace.reset_to_base().unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("seed.txt")).unwrap(),
+            "base\n"
+        );
+        assert!(!workspace.path().join("untracked.txt").exists());
         workspace.cleanup().unwrap();
         let _ = fs::remove_dir_all(root);
     }

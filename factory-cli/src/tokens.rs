@@ -197,7 +197,22 @@ fn generate_distinct_tokens() -> Result<[String; TOKEN_COUNT], String> {
         .expect("token count matches the key count"))
 }
 
-fn generate_token() -> Result<String, String> {
+pub(crate) fn read(path: &Path, key: &str) -> Result<String, String> {
+    ensure(path)?;
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read token env file {}: {error}", path.display()))?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some((candidate, value)) = line.split_once('=')
+            && candidate.trim() == key
+        {
+            return Ok(value.trim().to_owned());
+        }
+    }
+    Err(format!("token env file is missing {key}"))
+}
+
+pub(crate) fn generate_token() -> Result<String, String> {
     let mut bytes = [0_u8; TOKEN_BYTES];
     File::open("/dev/urandom")
         .and_then(|mut source| source.read_exact(&mut bytes))

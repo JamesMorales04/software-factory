@@ -53,10 +53,11 @@ RUN cargo build --locked --release -p factory-native --bin factory-core
 
 FROM debian:bookworm-slim AS runtime
 
-# ca-certificates is required for outbound TLS from provider integrations.
+# ca-certificates supports outbound TLS. Git is required by Core to register a
+# project and independently verify candidate object identity and lineage.
 # Debian slim supplies the glibc/libgcc runtime needed by the Rust binary.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 factory \
     && useradd --uid 10001 --gid factory --no-create-home \

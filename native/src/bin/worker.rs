@@ -1,11 +1,24 @@
-use std::{env, path::Path, process::Command, time::Duration};
+//! Trusted Worker: Core lease coordination and Supervisor-mediated execution.
+//!
+//! The Worker never mounts or executes a project directly. It asks the trusted
+//! Supervisor for a durable per-Attempt workspace, sends a bounded command into
+//! an allowlisted rootless Podman sandbox, and reports the exact candidate. No
+//! provider credentials, Podman socket or host workspace path reach the
+//! sandbox.
+
+use std::{env, time::Duration};
 
 use factory_native::db::ActionSpec;
-use factory_native::workspace::WorkspaceAllocator;
+use factory_native::execution::{
+    ExecuteWorkspace, ExecutionResult, WorkspaceAllocation, WorkspaceHandle, WorkspaceStatus,
+};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+const CORE_TIMEOUT: Duration = Duration::from_secs(30);
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Deserialize)]
 struct ClaimResponse {
@@ -29,6 +42,14 @@ struct Lease {
     generation: i64,
 }
 
+struct Supervisor {
+    client: reqwest::Client,
+    base: reqwest::Url,
+    token: String,
+    image: String,
+    timeout_secs: u64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap_token = env::var("FACTORY_WORKER_BOOTSTRAP_TOKEN")
@@ -41,15 +62,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Worker bootstrap token, identity and registration key must not be empty".into(),
         );
     }
-    let core = env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
-    let core = validated_core_url(&core)?;
-    let workspace_root = env::var("FACTORY_WORKSPACE_ROOT")
-        .map_err(|_| "FACTORY_WORKSPACE_ROOT required for fixture execution")?;
-    let workspace_root = Path::new(&workspace_root).to_path_buf();
+    let core = validated_loopback_url(
+        &env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
+        "FACTORY_CORE_URL",
+    )?;
+    let supervisor = Supervisor {
+        client: reqwest::Client::builder()
+            .timeout(SUPERVISOR_TIMEOUT)
+            .build()?,
+        base: validated_loopback_url(
+            &env::var("FACTORY_SUPERVISOR_URL").map_err(|_| "FACTORY_SUPERVISOR_URL required")?,
+            "FACTORY_SUPERVISOR_URL",
+        )?,
+        token: env::var("FACTORY_SUPERVISOR_TOKEN")
+            .map_err(|_| "FACTORY_SUPERVISOR_TOKEN required")?,
+        image: env::var("FACTORY_WORKER_FIXTURE_IMAGE").unwrap_or_else(|_| "alpine:3.20".into()),
+        timeout_secs: env::var("FACTORY_WORKER_FIXTURE_TIMEOUT_SECS")
+            .unwrap_or_else(|_| "120".into())
+            .parse()?,
+    };
+    if supervisor.token.len() < 32 {
+        return Err("FACTORY_SUPERVISOR_TOKEN must be at least 32 bytes".into());
+    }
+    if supervisor.timeout_secs == 0 || supervisor.timeout_secs > 600 {
+        return Err("FACTORY_WORKER_FIXTURE_TIMEOUT_SECS must be between 1 and 600".into());
+    }
     let once = env::var("FACTORY_WORKER_ONCE").ok().as_deref() == Some("1");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = reqwest::Client::builder().timeout(CORE_TIMEOUT).build()?;
     let response = client
         .post(core.join("worker/register")?)
         .bearer_auth(bootstrap_token)
@@ -126,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
-        let execution = execute_fixture(&assignment, &workspace_root).await;
+        let execution = execute_assignment(&assignment, &supervisor).await;
         heartbeat.abort();
         match execution {
             Ok(candidate) => {
@@ -152,7 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into());
                 }
                 println!(
-                    "fixture candidate accepted for action {}",
+                    "sandbox candidate accepted for action {}",
                     assignment.action_id
                 );
             }
@@ -171,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }))
                     .send()
                     .await;
-                eprintln!("fixture execution failed: {message}");
+                eprintln!("sandbox execution failed: {message}");
                 if once {
                     return Err(error);
                 }
@@ -183,112 +222,111 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn execute_fixture(
+async fn execute_assignment(
     assignment: &Assignment,
-    workspace_root: &Path,
+    supervisor: &Supervisor,
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
-    let allocator = WorkspaceAllocator::new(&assignment.repository, workspace_root)?;
-    let mut workspace = allocator.allocate(
-        &assignment.lease.attempt_id,
-        &assignment.action_spec.base_commit,
-    )?;
-    let result = (|| -> Result<_, Box<dyn std::error::Error>> {
-        let file = env::var("FACTORY_FIXTURE_FILE")
-            .unwrap_or_else(|_| "factory-fixture-change.txt".into());
-        if !factory_native::lead::is_safe_relative_path(&file) {
-            return Err("fixture file path is unsafe".into());
-        }
-        let content = env::var("FACTORY_FIXTURE_CONTENT").unwrap_or_else(|_| {
-            format!(
-                "fixture candidate\nobjective: {}\n",
-                assignment.action_spec.objective
-            )
-        });
-        let target = workspace.path().join(&file);
-        reject_symlink_components(workspace.path(), &file)?;
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        use std::io::Write;
-        options.open(&target)?.write_all(content.as_bytes())?;
-        run_git(workspace.path(), &["add", &file])?;
-        let message = format!("fixture candidate for {}", assignment.action_id);
-        run_git(
-            workspace.path(),
-            &[
-                "-c",
-                "user.name=Factory Fixture Worker",
-                "-c",
-                "user.email=fixture-worker@example.invalid",
-                "commit",
-                "-qm",
-                &message,
-            ],
-        )?;
-        Ok(workspace.candidate_revision()?)
-    })();
-    let cleanup = workspace.cleanup();
-    match (result, cleanup) {
-        (Ok(candidate), Ok(())) => Ok(candidate),
-        (Ok(_), Err(error)) => Err(format!("workspace cleanup failed: {error}").into()),
-        (Err(error), Ok(())) => Err(error),
-        (Err(error), Err(cleanup)) => {
-            Err(format!("{error}; workspace cleanup failed: {cleanup}").into())
-        }
+    let file =
+        env::var("FACTORY_FIXTURE_FILE").unwrap_or_else(|_| "factory-fixture-change.txt".into());
+    if !factory_native::lead::is_safe_relative_path(&file) {
+        return Err("fixture file path is unsafe".into());
     }
-}
-
-fn run_git(cwd: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_GRAFT_FILE", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()?;
-    if !output.status.success() {
+    let content = env::var("FACTORY_FIXTURE_CONTENT").unwrap_or_else(|_| {
+        format!(
+            "fixture candidate\nobjective: {}\n",
+            assignment.action_spec.objective
+        )
+    });
+    let allocation = WorkspaceAllocation {
+        attempt_id: assignment.lease.attempt_id.clone(),
+        repository: assignment.repository.clone(),
+        base_commit: assignment.action_spec.base_commit.clone(),
+    };
+    let response = supervisor
+        .client
+        .post(supervisor.base.join("v1/workspaces")?)
+        .bearer_auth(&supervisor.token)
+        .json(&allocation)
+        .send()
+        .await?;
+    if !response.status().is_success() {
         return Err(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "Supervisor refused workspace allocation: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
         )
         .into());
     }
-    Ok(())
+    let handle: WorkspaceHandle = response.json().await?;
+    if handle.status == WorkspaceStatus::Completed {
+        return handle
+            .candidate
+            .ok_or_else(|| "completed workspace has no candidate".into());
+    }
+    let request = ExecuteWorkspace {
+        image: supervisor.image.clone(),
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "mkdir -p \"$(dirname \"$2\")\" && printf '%s' \"$1\" > \"$2\"".into(),
+            "factory-fixture".into(),
+            content,
+            file,
+        ],
+        timeout_secs: supervisor.timeout_secs,
+    };
+    let response = supervisor
+        .client
+        .post(
+            supervisor
+                .base
+                .join(&format!("v1/workspaces/{}/execute", handle.workspace_id))?,
+        )
+        .bearer_auth(&supervisor.token)
+        .json(&request)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let _ = cleanup(supervisor, &handle.workspace_id).await;
+        return Err(format!("Supervisor execution failed: {status} {body}").into());
+    }
+    let result: ExecutionResult = response.json().await?;
+    let cleanup_result = cleanup(supervisor, &handle.workspace_id).await;
+    let Some(candidate) = result.candidate else {
+        let stderr = result
+            .stderr
+            .lines()
+            .take(5)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Err(format!("sandbox exited with {:?}: {stderr}", result.exit_code).into());
+    };
+    if let Err(error) = cleanup_result {
+        eprintln!("Supervisor workspace cleanup failed: {error}");
+    }
+    Ok(candidate)
 }
 
-fn reject_symlink_components(
-    root: &Path,
-    relative: &str,
+async fn cleanup(
+    supervisor: &Supervisor,
+    workspace_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut current = root.to_path_buf();
-    for component in relative.split('/') {
-        current.push(component);
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(format!("fixture path contains symlink: {}", current.display()).into());
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+    let response = supervisor
+        .client
+        .delete(
+            supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}"))?,
+        )
+        .bearer_auth(&supervisor.token)
+        .send()
+        .await?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
     }
-    Ok(())
+    Err(format!("Supervisor cleanup returned {}", response.status()).into())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -298,7 +336,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Error>> {
+fn validated_loopback_url(
+    raw: &str,
+    variable: &str,
+) -> Result<reqwest::Url, Box<dyn std::error::Error>> {
     let url = reqwest::Url::parse(raw)?;
     if url.scheme() != "http"
         || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
@@ -309,18 +350,19 @@ fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Err
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err("FACTORY_CORE_URL must be a loopback HTTP origin with explicit port".into());
+        return Err(format!("{variable} must be a loopback HTTP origin with explicit port").into());
     }
     Ok(url)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validated_core_url;
+    use super::validated_loopback_url;
 
     #[test]
     fn rejects_userinfo_host_bypass() {
-        assert!(validated_core_url("http://127.0.0.1:x@attacker.example").is_err());
-        assert!(validated_core_url("http://localhost:8765").is_ok());
+        assert!(validated_loopback_url("http://127.0.0.1:x@attacker.example", "TEST").is_err());
+        assert!(validated_loopback_url("http://localhost:8765", "TEST").is_ok());
+        assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST").is_err());
     }
 }

@@ -9,16 +9,26 @@
 //! credential isolation and does not provide independent certification.
 
 use std::{
-    collections::HashSet, env, ffi::OsString, fmt, io, path::Path, process::Stdio, time::Duration,
+    collections::HashSet,
+    env,
+    ffi::OsString,
+    fmt, io,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
 
 use factory_native::db::CandidateInspection;
+use factory_native::execution::{BoundedOutput, RootlessPodmanVolumes, VolumeBackend};
 use factory_native::lead::SpecCheck;
-use factory_native::workspace::{self, WorkspaceError};
+use factory_native::workspace::{self, WorkspaceAllocator, WorkspaceError};
+use factory_native::workspace_archive;
 use serde_json::json;
+#[cfg(test)]
 use tokio::io::{AsyncRead, AsyncReadExt};
 use uuid::Uuid;
 
+#[cfg(test)]
 const MAX_CHECK_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_GIT_STREAM_BYTES: usize = 1024 * 1024;
 
@@ -200,52 +210,370 @@ async fn verify_candidate(
             "candidate ActionSpec has no executable checks; refusing PASS".into(),
         ));
     }
+    sandboxed_checks(inspection, workspace_root).await
+}
+
+async fn sandboxed_checks(
+    inspection: &CandidateInspection,
+    workspace_root: &Path,
+) -> Result<(), VerificationError> {
+    let image = env::var("FACTORY_VERIFIER_IMAGE")
+        .map_err(|_| VerificationError::Infrastructure("FACTORY_VERIFIER_IMAGE required".into()))?;
+    let test_backend = env::var("FACTORY_VERIFIER_TEST_BACKEND").ok().as_deref() == Some("local");
+    if test_backend && !cfg!(debug_assertions) {
+        return Err(VerificationError::Infrastructure(
+            "the local verifier backend is not available in release builds".into(),
+        ));
+    }
+    let backend = if test_backend {
+        #[cfg(debug_assertions)]
+        {
+            let root =
+                PathBuf::from(env::var("FACTORY_VERIFIER_TEST_VOLUME_ROOT").map_err(|_| {
+                    VerificationError::Infrastructure(
+                        "FACTORY_VERIFIER_TEST_VOLUME_ROOT required".into(),
+                    )
+                })?);
+            VerifierBackend::Local(
+                LocalVolumeBackend::new(root).map_err(VerificationError::Infrastructure)?,
+            )
+        }
+        #[cfg(not(debug_assertions))]
+        unreachable!("release builds reject the local backend")
+    } else {
+        let backend = RootlessPodmanVolumes::new([image.clone()]).map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier sandbox configuration: {error}"))
+        })?;
+        backend.preflight().await.map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier sandbox unavailable: {error}"))
+        })?;
+        VerifierBackend::Podman(backend)
+    };
     std::fs::create_dir_all(workspace_root).map_err(|error| {
         VerificationError::Infrastructure(format!(
             "verifier workspace could not be created: {error}"
         ))
     })?;
-    let worktree = workspace_root.join(format!("verify-{}", Uuid::new_v4()));
-    if std::fs::symlink_metadata(&worktree).is_ok() {
-        return Err(VerificationError::Infrastructure(
-            "verifier worktree path already exists".into(),
-        ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(workspace_root, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                VerificationError::Infrastructure(format!(
+                    "verifier workspace permissions: {error}"
+                ))
+            },
+        )?;
     }
-    let worktree_path = worktree.to_string_lossy().into_owned();
-    if let Err(error) = git(
-        repository,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &worktree_path,
-            inspection.candidate.commit_sha.as_str(),
-        ],
-    ) {
-        let cleanup = cleanup_worktree(repository, &worktree);
-        return Err(match cleanup {
-            Ok(()) => error,
-            Err(cleanup) => VerificationError::Infrastructure(format!("{error}; {cleanup}")),
-        });
-    }
-    let check_home = workspace_root.join(format!("verify-home-{}", Uuid::new_v4()));
-    if let Err(error) = std::fs::create_dir_all(&check_home) {
-        let cleanup = cleanup_worktree(repository, &worktree);
-        let message = match cleanup {
-            Ok(()) => format!("verifier check HOME could not be created: {error}"),
-            Err(cleanup) => {
-                format!("verifier check HOME could not be created: {error}; {cleanup}")
-            }
-        };
-        return Err(VerificationError::Infrastructure(message));
-    }
-    let result = run_checks(&worktree, &inspection.action_spec.checks, &check_home).await;
-    let cleanup = cleanup_worktree(repository, &worktree);
-    let _ = std::fs::remove_dir_all(&check_home);
-    cleanup?;
+    let allocator = WorkspaceAllocator::new(Path::new(&inspection.repository), workspace_root)
+        .map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier workspace setup: {error}"))
+        })?;
+    let mut workspace = allocator
+        .allocate(
+            &format!("verify-{}", inspection.candidate.id),
+            &inspection.candidate.commit_sha,
+        )
+        .map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier worktree allocation: {error}"))
+        })?;
+    let result = run_sandboxed_checks(
+        &backend,
+        workspace.path(),
+        &image,
+        &inspection.action_spec.checks,
+    )
+    .await;
+    let _ = workspace.cleanup();
     result
 }
 
+async fn run_sandboxed_checks<B: VolumeBackend>(
+    backend: &B,
+    worktree: &Path,
+    image: &str,
+    checks: &[SpecCheck],
+) -> Result<(), VerificationError> {
+    let snapshot = workspace_archive::snapshot(worktree).map_err(|error| {
+        VerificationError::Infrastructure(format!("verifier snapshot failed: {error}"))
+    })?;
+    let volume = format!("factory-ws-{}", Uuid::new_v4());
+    backend
+        .create_volume(&volume, &Uuid::new_v4().to_string())
+        .await
+        .map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier volume create failed: {error}"))
+        })?;
+    let result = async {
+        backend
+            .import_volume(&volume, &snapshot.bytes)
+            .await
+            .map_err(|error| {
+                VerificationError::Infrastructure(format!("verifier volume import failed: {error}"))
+            })?;
+        for check in checks {
+            let Some(executable) = check.command.first() else {
+                return Err(VerificationError::Infrastructure(format!(
+                    "check {} has no executable",
+                    check.id
+                )));
+            };
+            let _ = executable;
+            let container = format!("factory-exec-{}", Uuid::new_v4());
+            let output: BoundedOutput = backend
+                .run(
+                    &volume,
+                    &container,
+                    image,
+                    &check.command,
+                    Duration::from_secs(u64::from(check.timeout_secs)),
+                )
+                .await
+                .map_err(|error| {
+                    VerificationError::Infrastructure(format!(
+                        "check {} sandbox failed: {error}",
+                        check.id
+                    ))
+                })?;
+            let code = output.exit_code.unwrap_or(-1);
+            if code != check.expect_exit {
+                return Err(VerificationError::Check(format!(
+                    "check {} exited {code}, expected {}: {}",
+                    check.id,
+                    check.expect_exit,
+                    check_diagnostic(
+                        &output.stdout,
+                        output.stdout_truncated,
+                        &output.stderr,
+                        output.stderr_truncated
+                    )
+                )));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let cleanup = backend.remove_volume(&volume).await;
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(VerificationError::Infrastructure(format!(
+            "verifier volume cleanup failed: {error}"
+        ))),
+        (Err(error), Err(cleanup)) => Err(VerificationError::Infrastructure(format!(
+            "{error}; verifier volume cleanup failed: {cleanup}"
+        ))),
+    }
+}
+
+enum VerifierBackend {
+    Podman(RootlessPodmanVolumes),
+    #[cfg(debug_assertions)]
+    Local(LocalVolumeBackend),
+}
+
+impl VolumeBackend for VerifierBackend {
+    async fn create_volume(
+        &self,
+        name: &str,
+        workspace_id: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.create_volume(name, workspace_id).await,
+        }
+    }
+    async fn remove_volume(
+        &self,
+        name: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.remove_volume(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.remove_volume(name).await,
+        }
+    }
+    async fn import_volume(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.import_volume(name, bytes).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.import_volume(name, bytes).await,
+        }
+    }
+    async fn export_volume(
+        &self,
+        name: &str,
+    ) -> Result<Vec<u8>, factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.export_volume(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.export_volume(name).await,
+        }
+    }
+    async fn run(
+        &self,
+        volume: &str,
+        container: &str,
+        image: &str,
+        argv: &[String],
+        timeout: Duration,
+    ) -> Result<BoundedOutput, factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.run(volume, container, image, argv, timeout).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
+        }
+    }
+    async fn remove_container(
+        &self,
+        name: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        match self {
+            Self::Podman(backend) => backend.remove_container(name).await,
+            #[cfg(debug_assertions)]
+            Self::Local(backend) => backend.remove_container(name).await,
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct LocalVolumeBackend {
+    root: PathBuf,
+    volumes: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+}
+
+#[cfg(debug_assertions)]
+impl LocalVolumeBackend {
+    fn new(root: PathBuf) -> Result<Self, String> {
+        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Self {
+            root,
+            volumes: std::sync::Mutex::new(std::collections::HashMap::new()),
+        })
+    }
+    fn path(&self, name: &str) -> Result<PathBuf, String> {
+        self.volumes
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| "missing verifier test volume".into())
+    }
+}
+
+#[cfg(debug_assertions)]
+impl VolumeBackend for LocalVolumeBackend {
+    async fn create_volume(
+        &self,
+        name: &str,
+        _workspace_id: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        let path = self.root.join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir(&path)?;
+        self.volumes.lock().unwrap().insert(name.into(), path);
+        Ok(())
+    }
+    async fn remove_volume(
+        &self,
+        name: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        if let Some(path) = self.volumes.lock().unwrap().remove(name) {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(())
+    }
+    async fn import_volume(
+        &self,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        let path = self
+            .path(name)
+            .map_err(factory_native::execution::ExecutionError::Volume)?;
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        workspace_archive::extract(bytes, &path)?;
+        self.volumes.lock().unwrap().insert(name.into(), path);
+        Ok(())
+    }
+    async fn export_volume(
+        &self,
+        name: &str,
+    ) -> Result<Vec<u8>, factory_native::execution::ExecutionError> {
+        Ok(workspace_archive::snapshot(
+            &self
+                .path(name)
+                .map_err(factory_native::execution::ExecutionError::Volume)?,
+        )?
+        .bytes)
+    }
+    async fn run(
+        &self,
+        volume: &str,
+        _container: &str,
+        _image: &str,
+        argv: &[String],
+        timeout: Duration,
+    ) -> Result<BoundedOutput, factory_native::execution::ExecutionError> {
+        let path = self
+            .path(volume)
+            .map_err(factory_native::execution::ExecutionError::Volume)?;
+        let argv = argv.to_vec();
+        let output = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .current_dir(path)
+                    .env_clear()
+                    .env("PATH", command_path())
+                    .env("HOME", "/tmp")
+                    .output()
+            }),
+        )
+        .await
+        .map_err(|_| {
+            factory_native::execution::ExecutionError::Volume(
+                "local verifier check timed out".into(),
+            )
+        })?
+        .map_err(|error| {
+            factory_native::execution::ExecutionError::Volume(format!(
+                "local verifier runner: {error}"
+            ))
+        })??;
+        Ok(BoundedOutput {
+            exit_code: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })
+    }
+    async fn remove_container(
+        &self,
+        _name: &str,
+    ) -> Result<(), factory_native::execution::ExecutionError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 async fn run_checks(
     worktree: &Path,
     checks: &[SpecCheck],
@@ -336,6 +664,7 @@ async fn run_checks(
     Ok(())
 }
 
+#[cfg(test)]
 async fn read_bounded<R>(mut reader: R, limit: usize) -> io::Result<(Vec<u8>, bool)>
 where
     R: AsyncRead + Unpin,
@@ -384,6 +713,7 @@ fn rendered_stream(bytes: &[u8], truncated: bool) -> String {
     text
 }
 
+#[cfg(test)]
 fn safe_check_environment(check_home: &Path) -> Vec<(OsString, OsString)> {
     vec![
         (OsString::from("PATH"), command_path()),
@@ -530,24 +860,6 @@ fn verify_git_identity(
         return Err(VerificationError::Check(
             "candidate is not a single-parent child of the frozen base".into(),
         ));
-    }
-    Ok(())
-}
-
-fn cleanup_worktree(repository: &Path, worktree: &Path) -> Result<(), VerificationError> {
-    let path = worktree.to_string_lossy().into_owned();
-    let removal = git(repository, &["worktree", "remove", "--force", &path]);
-    if std::fs::symlink_metadata(worktree).is_ok() {
-        let _ = std::fs::remove_dir_all(worktree);
-    }
-    removal.map_err(|error| {
-        VerificationError::Infrastructure(format!("verifier worktree cleanup failed: {error}"))
-    })?;
-    if std::fs::symlink_metadata(worktree).is_ok() {
-        return Err(VerificationError::Infrastructure(format!(
-            "verifier worktree cleanup left {} behind",
-            worktree.display()
-        )));
     }
     Ok(())
 }

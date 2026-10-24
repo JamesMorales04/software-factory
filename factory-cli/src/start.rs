@@ -9,7 +9,7 @@ use crate::{
     core_client::get_health,
     core_url::CoreUrl,
     failure::Failure,
-    podman,
+    podman, runtime,
     tokens::{self, TokenFileState},
 };
 
@@ -46,6 +46,7 @@ fn execute() -> Result<(), Failure> {
     let volume = config::volume().map_err(Failure::usage)?;
     podman::validate_volume_name(&volume).map_err(Failure::usage)?;
     let token_file = config::token_file().map_err(Failure::usage)?;
+    let project_roots = config::project_roots().map_err(Failure::usage)?;
     let env_file = token_file
         .to_str()
         .ok_or_else(|| {
@@ -102,16 +103,26 @@ fn execute() -> Result<(), Failure> {
             );
             ensure_volume(&volume)?;
             replace_container(&name, state.as_deref())?;
-            run_container(&name, &image, &volume, &env_file, port)?;
+            run_container(&name, &image, &volume, &env_file, port, &project_roots)?;
         }
         StartAction::Create => {
             ensure_volume(&volume)?;
-            run_container(&name, &image, &volume, &env_file, port)?;
+            run_container(&name, &image, &volume, &env_file, port, &project_roots)?;
         }
     }
 
     println!("Office URL: http://127.0.0.1:{port}");
     wait_for_health(&url, &name)?;
+    let host = runtime::start(&token_file, &raw_url, &project_roots)?;
+    if host.enabled {
+        println!("Host execution: enabled");
+        println!("Sandbox Supervisor: {}", host.supervisor_url);
+        println!("Host runtime state: {}", host.runtime_dir.display());
+    } else {
+        println!(
+            "Host execution: disabled (set FACTORY_PROJECT_ROOTS to an explicit project root)"
+        );
+    }
     Ok(())
 }
 
@@ -156,6 +167,7 @@ fn run_container(
     volume: &str,
     env_file: &str,
     host_port: u16,
+    project_roots: &[std::path::PathBuf],
 ) -> Result<(), Failure> {
     let args = container::run_args(&RunSpec {
         name,
@@ -163,6 +175,7 @@ fn run_container(
         volume,
         env_file,
         host_port,
+        project_roots,
     });
     let container_id = podman::run(&args).map_err(Failure::operation)?;
     let short_id = container_id.chars().take(12).collect::<String>();
