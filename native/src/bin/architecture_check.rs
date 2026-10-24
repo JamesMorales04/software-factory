@@ -1310,6 +1310,20 @@ mod tests {
     }
 
     #[test]
+    fn registry_parser_rejects_duplicate_keys_unknown_fields_and_malformed_yaml() {
+        let duplicate = tiny_registry().replacen(
+            "schema_version: 1",
+            "schema_version: 1\nschema_version: 2",
+            1,
+        );
+        assert!(parse_registry(&duplicate).is_err());
+        let unknown =
+            tiny_registry().replacen("  name: One", "  name: One\n  unsupported_field: true", 1);
+        assert!(parse_registry(&unknown).is_err());
+        assert!(parse_registry("schema_version: [").is_err());
+    }
+
+    #[test]
     fn valid_registry_renders_exact_roadmap() {
         let repo = Repo::new();
         repo.write("docs/product/capabilities.yaml", tiny_registry());
