@@ -1,5 +1,31 @@
 # Native Rust implementation handoff
 
+## 2026-10-24 cutover campaign checkpoint
+
+PR #17 remains Draft on `native-rust-replacement-20261023`. The starting code
+HEAD was `102f6a046f1f907546e8bc60da622388f80bd95c` with 99 tracked Go
+files. Batch 1 (`1d10f06`) replaced and deleted a protected `.go` test datum;
+the S4-B B8 human-required oracle passed, while its separate legacy B11 browser
+journey timed out. Batch 2 (`c2923ac`) replaced and deleted the two Go
+architecture-checker files and wrapper. Sol cross-reviewed the port and fixed
+evidence read confinement (`eb36cad`); independent review found missing
+negative oracles, repaired in `2cdd773` and `4fb29e9`. Current Go count is 96.
+
+Luna's WorkGraph process test exposed an infinite dependency-failure loop;
+`a32c6d5` fixes it and makes Worker report failures visible. The real
+Core/Supervisor/Worker failed fan-in dependency test passed, and an independent
+review found no blocker in that slice. Locally, seven Rust governance tests,
+format, Clippy, architecture validation, the failed-dependency process test,
+Python PR-impact and authorization tests, and the Rust Office browser journey
+passed on their recorded code commits. Exact-head GitHub CI, full-suite Rust
+verification, strict hygiene and final independent acceptance remain pending.
+Provider coding is still fail-closed; no paid provider turn ran. Isolation and
+credential confinement are not certified. The current executable next step is
+the WorkGraph integration-conflict/restart process regression, followed by
+provider lifecycle and security closure. See the
+[closure ledger](native-rust-closure.md) and
+[deletion map](native-rust-deletion-map.md) for exact blockers and files.
+
 **Date:** 2026-10-23 UTC. **Repository:** `JamesMorales04/software-factory`. **Branch:** `native-rust-replacement-20261023`. **Base and entry HEAD:** `102d7ba29295554bd61ae71956347a025d219d7b` (`origin/main`). **Verified code commit:** `f255f0c348838e36d15555d7db7242e36d10f842`. Run `git rev-parse HEAD` for the current documentation tip; a commit cannot embed its own SHA. The entry S4-D checkout was dirty at `9c6aa4a` with seven tracked modifications and was left untouched. This branch was created as a separate worktree at `/home/james/Escritorio/Development/software-factory-native-rust`.
 
 ## Binding objective and decisions

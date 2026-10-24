@@ -40,8 +40,8 @@ source-mapping snapshot; this ledger is the current status authority.
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
-| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel and fan-in process E2E reach ACCEPTED | Failure/restart process tests and browser graph projection |
-| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording, failure/cancellation state propagation | Conflict and restart process tests |
+| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel and fan-in process E2E reach ACCEPTED; failed fan-in dependency process test passes at `a32c6d5` | Conflict/restart process tests and browser graph projection |
+| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency now reaches terminal FAILED without dispatch after fixing a stale-row propagation loop (`a32c6d5`) | Conflict, cancellation and restart process tests |
 | A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED | Conflict/failure process test and adversarial cross-project integration |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Add crash-injection and restart scheduler coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
@@ -54,14 +54,14 @@ source-mapping snapshot; this ledger is the current status authority.
 |---|---|---|
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path exists; Go tree still active |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 not complete; see table |
-| M3 Repository hygiene | `BLOCKED` | 99 tracked `.go` files plus Go module/lint/config; strict scanner not green |
+| M3 Repository hygiene | `BLOCKED` | 96 tracked `.go` files after two retirement batches; Go module/lint/config and legacy jobs remain; strict scanner not green |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; reviewer is receipt-only |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust suite/process/browser E2E and exact-head CI pass at `5a323f8`; final candidate pending later docs/fixes |
-| M10 Governance | `PARTIAL` | Architecture checker passes including base-ref ADR history after ADR-0021; strict hygiene and legacy CI remain |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency process test at `a32c6d5`; final exact-head CI pending |
+| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed, all 44 CAP IDs and opportunities present, strict audit empty; registry/roadmap decision and milestone consistency still being closed |
@@ -84,10 +84,32 @@ isolation certification, independent acceptance or deployment authorization.
 
 ## Legacy deletion status
 
-No legacy batch is `DELETED_AFTER_REPLACEMENT` yet. Go/Paseo removal requires the
-relevant Rust behavior and tests first. The predecessor capability assessment
-was removed only after [capability decisions](../product/capability-decisions.md)
+One fixture batch is `DELETED_AFTER_REPLACEMENT`: commit `1d10f065a2143cbe8fc84006113ec315610420bd`
+replaced the protected S4-A `.go` test datum with `policy.txt` (99 to 98
+tracked Go files). On that exact code commit, the deterministic S4-B oracle's
+B8 protected-diff checks reached `HUMAN_REQUIRED` and prohibited repair. The
+full script exited 1 at its separate B11 Chromium Campaigns-heading timeout;
+the overall S4-B suite is not a Rust acceptance result. Go/Paseo removal still
+requires the relevant Rust behavior and tests first. The predecessor capability
+assessment was removed only after [capability decisions](../product/capability-decisions.md)
 preserved its selected portfolio and engineering opportunities.
+
+The Go architecture checker and wrapper were deleted at
+`c2923aca1ae58df92f623b1670e40c0175273a39` (98 to 96 Go files) after
+porting the registry, evidence, path, certification and ADR checks to Rust and
+switching the `architecture-consistency` CI job. Sol's cross-review repair at
+`eb36cade9749614742ad0b0cf7b823173abdc43f` added read-path confinement
+and manifest-fragment negatives. Later commits `2cdd773` and `4fb29e9`
+restored missing claim, manifest, reference and dependency regression cases
+after independent review. Seven checker tests, Clippy and an actual
+`--base-ref origin/main` invocation pass locally. Exact-head GitHub CI and
+independent acceptance remain pending; the workflow still installs Go for a
+separate legacy live-entrypoint guard.
+
+The [deletion and replacement map](native-rust-deletion-map.md) classifies all
+99 tracked Go files at `102f6a046f1f907546e8bc60da622388f80bd95c` by
+replacement, missing oracle, deletion readiness, owner and verification command.
+The map records the two completed batches and the remaining blockers.
 
 Strict tracked-tree independence audit:
 

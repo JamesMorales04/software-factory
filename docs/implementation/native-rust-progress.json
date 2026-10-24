@@ -169,5 +169,23 @@
     "xtask": "xtask/",
     "e2e_matrix": "docs/implementation/e2e-migration-matrix.md",
     "paid_default": "FORBIDDEN"
+  },
+  "cutover_campaign_checkpoint_2026_10_24": {
+    "code_head_reviewed": "4fb29e9bc6974415577a941fa48c38e2883da2dd",
+    "pr": 17,
+    "pr_state": "DRAFT",
+    "tracked_go_before": 99,
+    "tracked_go_after": 96,
+    "deleted_go_files": [
+      "scripts/fixtures/s4a-ui/core/internal/quality/policy.go",
+      "core/cmd/architecturecheck/main.go",
+      "core/cmd/architecturecheck/main_test.go"
+    ],
+    "retired_wrapper": "scripts/check-architecture-consistency",
+    "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
+    "checks": "Focused governance tests (7), format, Clippy, base-ref checker, Rust Office browser, Python PR-impact/authorization and failed-dependency process test passed locally; legacy S4-B B8 passed but full script failed at B11 browser timeout.",
+    "remaining": "96 Go files; legacy Go/Paseo workflows and module; WorkGraph conflict/cancel/restart; model-backed Lead/provider lifecycle; independent quality; credential/isolation closure; strict hygiene; final exact-head CI and owner merge authorization.",
+    "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
+    "next_task": "Implement deterministic WorkGraph integration-conflict or restart process regression in native/tests/e2e_fixture_dispatch.rs and repair any exposed defect."
   }
 }
