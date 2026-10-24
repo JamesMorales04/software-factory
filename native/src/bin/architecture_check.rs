@@ -592,6 +592,7 @@ fn check_reference(root: &Path, reference: &str) -> Result<(), String> {
 }
 
 fn validate_evidence(root: &Path, dimension: &str, reference: &str) -> Result<(), String> {
+    check_reference(root, reference)?;
     let path = reference.split('#').next().unwrap_or("");
     if !path.starts_with("docs/evidence/") || !path.to_ascii_lowercase().ends_with(".json") {
         return Err(format!(
@@ -641,6 +642,12 @@ fn validate_evidence(root: &Path, dimension: &str, reference: &str) -> Result<()
 }
 
 fn validate_manifest(root: &Path, reference: &str) -> Result<(), String> {
+    check_reference(root, reference)?;
+    if reference.contains('#') {
+        return Err(
+            "live_agent evidence must reference docs/evidence/*certification-manifest.json without a fragment".into(),
+        );
+    }
     let path = reference.split('#').next().unwrap_or("");
     if !path.starts_with("docs/evidence/")
         || !path.ends_with("certification-manifest.json")
@@ -1159,9 +1166,22 @@ mod tests {
                 .unwrap_err()
                 .contains("no recorded passing result")
         );
+        assert!(
+            validate_evidence(&repo.0, "deterministic", "docs/evidence/../../outside.json")
+                .unwrap_err()
+                .contains("parent traversal")
+        );
         repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#);
         assert!(
             validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json").is_ok()
+        );
+        assert!(
+            validate_manifest(
+                &repo.0,
+                "docs/evidence/example-certification-manifest.json#result"
+            )
+            .unwrap_err()
+            .contains("without a fragment")
         );
         repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"SIMULATED","status":"verified","implementation_sha":"short","candidate_sha":"short"}"#);
         assert!(
