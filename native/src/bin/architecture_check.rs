@@ -1189,6 +1189,102 @@ mod tests {
                 .unwrap_err()
                 .contains("REAL_PASEO_E2E_VERIFIED")
         );
+        for (name, content, expected) in [
+            (
+                "rejected status",
+                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"rejected","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
+                "must have level",
+            ),
+            (
+                "short implementation SHA",
+                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"short","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
+                "requires full implementation_sha",
+            ),
+            (
+                "short candidate SHA",
+                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"short"}"#,
+                "requires full implementation_sha",
+            ),
+            ("malformed JSON", "{", "invalid JSON"),
+        ] {
+            repo.write("docs/evidence/example-certification-manifest.json", content);
+            assert!(
+                validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json")
+                    .unwrap_err()
+                    .contains(expected),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_rejects_invalid_claim_combinations() {
+        let root = Path::new(".");
+        let baseline = parse_registry(tiny_registry()).unwrap();
+        type ClaimCase = (&'static str, fn(&mut Registry), &'static str);
+        let cases: &[ClaimCase] = &[
+            (
+                "duplicate id",
+                |r| r.capabilities.push(r.capabilities[0].clone()),
+                "duplicate capability id",
+            ),
+            (
+                "implemented without references",
+                |r| r.capabilities[0].implementation = "implemented".into(),
+                "implemented requires source and test references",
+            ),
+            (
+                "verified without evidence",
+                |r| r.capabilities[0].verification.deterministic = "verified".into(),
+                "deterministic verified without evidence",
+            ),
+            (
+                "invalid decision",
+                |r| r.capabilities[0].decision = "implemented".into(),
+                "missing or invalid projection fields",
+            ),
+            (
+                "not implemented with verified claim",
+                |r| {
+                    r.capabilities[0].implementation = "not_implemented".into();
+                    r.capabilities[0].verification.deterministic = "verified".into();
+                },
+                "not_implemented cannot claim verified",
+            ),
+            (
+                "rejected but implemented",
+                |r| {
+                    r.capabilities[0].decision = "rejected".into();
+                    r.capabilities[0].implementation = "implemented".into();
+                },
+                "rejected capability cannot be marked implemented",
+            ),
+            (
+                "evidence while not tested",
+                |r| {
+                    r.capabilities[0]
+                        .evidence
+                        .deterministic
+                        .push("docs/evidence/record.json".into())
+                },
+                "has evidence while marked not_tested",
+            ),
+            (
+                "missing milestone membership",
+                |r| r.milestones[0].capability_ids.clear(),
+                "must occur in exactly one milestone",
+            ),
+        ];
+        for (name, mutate, expected) in cases {
+            let mut registry = baseline.clone();
+            mutate(&mut registry);
+            assert!(
+                validate_registry(root, &registry)
+                    .unwrap_err()
+                    .contains(expected),
+                "{name}"
+            );
+        }
     }
 
     #[test]
