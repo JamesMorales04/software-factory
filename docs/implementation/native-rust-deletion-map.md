@@ -15,10 +15,13 @@
 
 At this baseline, **no complete Go package is deletion-ready**. Existing Rust component tests do not by themselves replace process, browser or security assertions. Remove each group only with the named oracle passing on its exact candidate.
 
-## Current blocker assessment (2026-10-24, 96 tracked `.go` files)
+## Current blocker assessment (2026-10-24, 94 tracked `.go` files)
 
-The inventory is now 96 files after batches 1 and 2. No third file-level batch
-is truthful. The remaining Go tree is one connected module: the B2 `domain`,
+The inventory is now 94 files after batches 1–3. Batch 3 retired the B2
+Go tests for `recovery.Classify` and `project.Inspect` after their exact
+assertions were ported to `native/src/recovery.rs` and
+`native/src/repository.rs`; both Go packages still build with `[no test files]`.
+No production Go file-level batch is truthful yet. The remaining Go tree is one connected module: the B2 `domain`,
 `candidate`, `project` and `recovery` packages are imported by the C1/C2
 commands, `api`, `store`, `orchestrator`, verifier and reviewer. Removing any
 B2 file without removing or rewriting its dependents breaks `go build` and the
@@ -89,9 +92,7 @@ passed. Final independent acceptance remains pending. Tracked Go count:
 - `core/internal/domain/event.go`
 - `core/internal/domain/event_test.go`
 - `core/internal/project/repository.go`
-- `core/internal/project/repository_test.go`
 - `core/internal/recovery/classify.go`
-- `core/internal/recovery/classify_test.go`
 
 ### C1 (35)
 
@@ -200,4 +201,4 @@ passed. Final independent acceptance remains pending. Tracked Go count:
 
 - `scripts/fixtures/s4a-ui/core/internal/quality/policy.go`
 
-Inventory checksum: 99 files. Regenerate classification after each deletion batch and compare with `git ls-files "*.go" | wc -l`.
+Inventory checksum: 99 files at the original baseline. Current count after batches 1–3: **94**. Regenerate classification after each deletion batch and compare with `git ls-files "*.go" | wc -l`.

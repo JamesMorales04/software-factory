@@ -123,12 +123,12 @@
     "workgraph": "sequential, parallel, fan-in, failed dependency/integration, pre-dispatch and in-flight root lease recovery, operator cancellation",
     "supervisor": "named-volume rootless Podman, durable workspace state, reconciliation, process-identity startup checks",
     "s4d": "A1-A12 partial except A10 deterministic evaluator; campaign-level cancellation and project repository identity implemented",
-    "legacy": "96 Go files remain; monolithic Go module blocks partial deletion; strict hygiene not green"
+    "legacy": "94 Go files remain after three retirement batches; monolithic Go module blocks production partial deletion; strict hygiene not green"
   },
   "completion_gates": {
     "G1": "PARTIAL: Rust runtime is authoritative in practice, but Go tree remains",
     "G2": "PARTIAL: provider read-only smokes pass; coding lifecycle absent",
-    "G3": "BLOCKED: 96 Go files remain in one connected Go module; legacy Go config/workflows active",
+    "G3": "BLOCKED: 94 Go files remain in one connected Go module; legacy Go config/workflows active",
     "G4": "PARTIAL: Rust CI green; legacy workflows remain",
     "G5": "PARTIAL: fixture and single-unit Lead execution plus parallel/fan-in/cancellation process tests verified; provider-backed execution blocked",
     "G6": "PARTIAL: sandboxed verifier, independent deterministic reviewer process and gate verified; model/semantic reviewer absent",
@@ -187,15 +187,17 @@
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
-    "tracked_go_after": 96,
+    "tracked_go_after": 94,
     "deleted_go_files": [
       "scripts/fixtures/s4a-ui/core/internal/quality/policy.go",
       "core/cmd/architecturecheck/main.go",
-      "core/cmd/architecturecheck/main_test.go"
+      "core/cmd/architecturecheck/main_test.go",
+      "core/internal/recovery/classify_test.go",
+      "core/internal/project/repository_test.go"
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "Exact-head CI at 14506eab7345df3af2b2bc57658224906291be33: native Rust (2 runs), Office browser (2 runs), architecture (40121648466) PASS; S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs PASS. Legacy Paseo/Office browser jobs fail and are not Rust evidence. Local xtask check 235 tests + 2 ignored PASS.",
+    "checks": "Exact-head CI at 14506eab7345df3af2b2bc57658224906291be33: native Rust (2 runs), Office browser (2 runs), architecture (40121648466) PASS; S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs PASS. Legacy Paseo/Office browser jobs fail and are not Rust evidence. Local xtask check 235 tests + 2 ignored PASS. Batch 3 retired two B2 Go unit tests after exact Rust ports; Go packages build with no test files.",
     "remaining": "96 Go files in one connected Go module; legacy Go/Paseo workflows/module; provider coding lifecycle; durable session recovery; future event payload projection; in-flight integration cancellation; strict hygiene; exact-head CI; owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
     "next_task": "Add in-flight integration cancellation and recovery/cleanup Office projection; port repository identity and event read projection; prepare a whole-module Go/Paseo retirement plan after provider/telemetry parity, not partial unsafe deletions."

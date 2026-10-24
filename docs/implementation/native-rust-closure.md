@@ -54,7 +54,7 @@ source-mapping snapshot; this ledger is the current status authority.
 |---|---|---|
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path exists; Go tree still active |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 not complete; see table |
-| M3 Repository hygiene | `BLOCKED` | 96 tracked `.go` files after two retirement batches; Go module/lint/config and legacy jobs remain; strict scanner not green |
+| M3 Repository hygiene | `BLOCKED` | 94 tracked `.go` files after three retirement batches; Go module/lint/config and legacy jobs remain; strict scanner not green |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; Codex thread/turn terminal classification and session identity are fixture-tested at `c375d71`; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
@@ -141,8 +141,10 @@ The [deletion and replacement map](native-rust-deletion-map.md) classifies all
 replacement, missing oracle, deletion readiness, owner and verification command.
 The map records the two completed batches and the remaining blockers.
 
-The inventory is now 96 tracked `.go` files. No further file is independently
-deletion-ready: all remaining Go packages are one connected module, and B2
+The inventory is now 94 tracked `.go` files. Batch 3 retired the B2 Go unit
+tests for failure classification and repository identity after exact Rust
+ports passed; the remaining production Go files are one connected module and
+no further file is independently deletion-ready: all remaining Go packages are one connected module, and B2
 `domain`, `candidate`, `project`, and `recovery` are imported by the remaining
 C1/C2 commands, API, store, orchestrator, verifier and reviewer. Deleting any
 of them requires retiring their dependents and the Go CI in the same batch,
@@ -155,6 +157,9 @@ Supervisor logs. The legacy event payload projection has
 no production Rust equivalent because Rust never persists a payload field; any
 future payload surface must re-introduce that read-boundary test. The exact
 per-file dependency blocker is recorded in the deletion map.
+
+Batch 3 evidence: [native-rust-deletion-batch-3-2026-10-24.json](../evidence/native-rust-deletion-batch-3-2026-10-24.json)
+(`96 → 94`, test-only B2 retirement with exact Rust ports).
 
 Strict tracked-tree independence audit:
 

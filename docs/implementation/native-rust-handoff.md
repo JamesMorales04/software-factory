@@ -556,8 +556,9 @@ production caller only after Core-owned authorization/budget and credential
 confinement exist; add cancellation coverage for an in-flight integration node
 and recovery/cleanup Office projection; add a future event-payload projection
 if a payload field is introduced; then retire the legacy Go module and CI in
-one verified cutover. The Go inventory remains **96** tracked files because
-every remaining package is imported by the surviving Go module; no file-level
+one verified cutover. The Go inventory is now **94** tracked files after batch 3, which retired the
+B2 `recovery` and `project` unit tests once their exact assertions passed in
+Rust. Production Go remains one connected module; no further file-level
 deletion is currently truthful. The [deletion map](native-rust-deletion-map.md)
 records the exact dependency blocker. PR #17 remains Draft; provider/ISOLATED
 coding remains fail-closed and no merge/deploy authorization is implied.
