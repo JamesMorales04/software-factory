@@ -34,7 +34,9 @@ Rust now owns the following former B2 behavior at `4bcd584`:
 - canonical repository root-identity binding and base-tip validation
   (`native/src/repository.rs`, migration 0010);
 - a closed durable event-kind vocabulary (`native/src/db/mod.rs`);
-- bounded Core/Supervisor log credential redaction (`native/src/telemetry.rs`).
+- bounded Core/Supervisor log credential redaction (`native/src/telemetry.rs`);
+- campaign cancellation of a queued fan-in integration row and both lease
+  generations in the DB-level test (`8f1be47`).
 
 C4 telemetry still lacks OTLP export/outage behavior and a process-level secret
 canary. The legacy event payload read projection has no production Rust equivalent
