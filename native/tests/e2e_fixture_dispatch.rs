@@ -1223,7 +1223,7 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
 }
 
 #[tokio::test]
-async fn fanin_workgraph_reaches_accepted_on_integrated_base() {
+async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
     let root = std::env::temp_dir().join(format!(
         "factory-e2e-fanin-{}-{}",
         std::process::id(),
@@ -1400,17 +1400,45 @@ async fn fanin_workgraph_reaches_accepted_on_integrated_base() {
         .status(),
         StatusCode::OK
     );
-    assert_eq!(
-        operator(
-            &client,
-            reqwest::Method::POST,
-            format!("{base_url}/lead/requests/{request_id}/start"),
-            None
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
+    let started: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(started["campaign"]["status"], "AUTHORIZED");
+    let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+
+    // Restart Core with the frozen graph durably started but before any Worker
+    // claims an Attempt. The same real Supervisor/Worker flow must resume it.
+    core.stop();
+    core = CoreProcess::start_with_lead_fixture(
+        &root.join("factory.sqlite"),
+        port,
+        &root.join("core.log"),
+        3,
+        "fanin",
     );
+    wait_healthy(&client, &base_url, &mut core).await;
+    let restored: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/lead/requests/{request_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(restored["request"]["state"], "RUNNING");
+    assert_eq!(restored["request"]["campaign_id"], campaign_id);
+    let restored_proposal: Value =
+        serde_json::from_str(restored["proposal"]["proposal_json"].as_str().unwrap()).unwrap();
+    assert_eq!(restored_proposal["workUnits"].as_array().unwrap().len(), 3);
     let supervisor_port = free_port();
     let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
     let mut supervisor = SupervisorProcess::start(SupervisorSpec {
