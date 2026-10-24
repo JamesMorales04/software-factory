@@ -66,6 +66,33 @@ pub enum CodexTurnAwait {
     InterruptRequestedAfterTimeout { response: serde_json::Value },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpenCodePromptTerminal {
+    Idle {
+        session_id: String,
+        cancel_requested: bool,
+    },
+    Failed {
+        session_id: String,
+        error: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpenCodePromptOutcome {
+    Completed {
+        session_id: String,
+        message_id: String,
+    },
+    Failed {
+        session_id: String,
+        error: serde_json::Value,
+    },
+    Cancelled {
+        session_id: String,
+    },
+}
+
 /// Waits for the terminal notification for an exact turn identity. On timeout it requests
 /// interruption with that same identity, but does not classify the turn as terminal.
 pub async fn await_codex_turn<R, W>(
@@ -579,6 +606,152 @@ where
     .map_err(|_| Error::Timeout)?
 }
 
+/// Waits for terminal SSE evidence for one exact OpenCode session. `cancel_requested`
+/// records that the caller requested abort; `session.idle` is still required before
+/// cancellation is classified as terminal. Errors take precedence over cancellation.
+pub async fn wait_for_opencode_prompt_terminal<S, B, E>(
+    stream: &mut S,
+    parser: &mut SseParser,
+    session_id: &str,
+    cancel_requested: bool,
+) -> Result<OpenCodePromptTerminal, Error>
+where
+    S: futures_util::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    if session_id.trim().is_empty() {
+        return Err(Error::Incompatible(
+            "OpenCode prompt requires an exact nonempty session identity".into(),
+        ));
+    }
+    time::timeout(Duration::from_secs(30), async {
+        for _ in 0..256 {
+            let chunk = stream
+                .next()
+                .await
+                .ok_or_else(|| {
+                    Error::Incompatible("OpenCode SSE ended before prompt terminal".into())
+                })?
+                .map_err(|error| {
+                    Error::Incompatible(format!("OpenCode SSE read failed: {error}"))
+                })?;
+            for frame in parser
+                .push(chunk.as_ref())
+                .map_err(|error| Error::Incompatible(error.to_string()))?
+            {
+                let event = OpenCodeEvent::parse(&frame.data)
+                    .map_err(|error| Error::Incompatible(error.to_string()))?;
+                if !matches!(event.kind.as_str(), "session.idle" | "session.error") {
+                    continue;
+                }
+                if event.session_id.as_deref() != Some(session_id) {
+                    continue;
+                }
+                event
+                    .require_session(session_id)
+                    .map_err(|error| Error::Incompatible(error.to_string()))?;
+                if event.kind == "session.error" {
+                    let value: serde_json::Value = serde_json::from_str(&frame.data)
+                        .map_err(|_| Error::Incompatible("OpenCode SSE data is not JSON".into()))?;
+                    let error = value
+                        .pointer("/properties/error")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    return Ok(OpenCodePromptTerminal::Failed {
+                        session_id: session_id.to_owned(),
+                        error,
+                    });
+                }
+                return Ok(OpenCodePromptTerminal::Idle {
+                    session_id: session_id.to_owned(),
+                    cancel_requested,
+                });
+            }
+        }
+        Err(Error::Incompatible(
+            "OpenCode prompt terminal event not found within 256 SSE chunks".into(),
+        ))
+    })
+    .await
+    .map_err(|_| Error::Timeout)?
+}
+
+/// Validates the JSON body returned by OpenCode's synchronous session message
+/// endpoint. SSE terminal evidence is still required separately.
+pub fn validate_opencode_prompt_response(
+    session_id: &str,
+    response: &serde_json::Value,
+) -> Result<(), Error> {
+    let info = response.get("info").ok_or_else(|| {
+        Error::Incompatible("OpenCode prompt response has no message info".into())
+    })?;
+    if info.get("sessionID").and_then(serde_json::Value::as_str) != Some(session_id) {
+        return Err(Error::Incompatible(
+            "OpenCode prompt response session identity mismatch".into(),
+        ));
+    }
+    if info.get("role").and_then(serde_json::Value::as_str) != Some("assistant")
+        || info
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err(Error::Incompatible(
+            "OpenCode prompt response is not a terminal assistant message".into(),
+        ));
+    }
+    if info.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(Error::Incompatible(
+            "OpenCode prompt response contains a provider message error".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Combines terminal SSE evidence with the synchronous HTTP prompt response.
+/// An idle event alone never becomes a successful completed prompt result.
+pub fn reconcile_opencode_prompt(
+    session_id: &str,
+    terminal: OpenCodePromptTerminal,
+    response: &serde_json::Value,
+) -> Result<OpenCodePromptOutcome, Error> {
+    let observed_session_id = match &terminal {
+        OpenCodePromptTerminal::Idle { session_id, .. }
+        | OpenCodePromptTerminal::Failed { session_id, .. } => session_id,
+    };
+    if session_id.trim().is_empty() || observed_session_id != session_id {
+        return Err(Error::Incompatible(
+            "OpenCode prompt terminal session identity mismatch".into(),
+        ));
+    }
+    match terminal {
+        OpenCodePromptTerminal::Failed { session_id, error } => {
+            Ok(OpenCodePromptOutcome::Failed { session_id, error })
+        }
+        OpenCodePromptTerminal::Idle {
+            session_id,
+            cancel_requested: true,
+        } => Ok(OpenCodePromptOutcome::Cancelled { session_id }),
+        OpenCodePromptTerminal::Idle {
+            session_id,
+            cancel_requested: false,
+        } => {
+            validate_opencode_prompt_response(&session_id, response)?;
+            let message_id = response
+                .pointer("/info/id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Error::Incompatible("OpenCode prompt response has no message id".into())
+                })?;
+            Ok(OpenCodePromptOutcome::Completed {
+                session_id,
+                message_id: message_id.to_owned(),
+            })
+        }
+    }
+}
+
 fn validate_session_inspection(
     session_id: &str,
     workspace: &str,
@@ -845,5 +1018,143 @@ mod codex_reconciliation_tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("session event"));
+    }
+
+    #[tokio::test]
+    async fn opencode_prompt_waits_for_exact_session_idle_after_other_session_events() {
+        let frames = concat!(
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_other\"}}\n\n",
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"ses_expected\"}}\n\n",
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_expected\"}}\n\n"
+        );
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frames.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        let terminal =
+            wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", false)
+                .await
+                .unwrap();
+        assert_eq!(
+            terminal,
+            OpenCodePromptTerminal::Idle {
+                session_id: "ses_expected".into(),
+                cancel_requested: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_prompt_classifies_provider_error_even_after_cancel_request() {
+        let frame = "data: {\"type\":\"session.error\",\"properties\":{\"sessionID\":\"ses_expected\",\"error\":{\"name\":\"ProviderError\"}}}\n\n";
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        let terminal =
+            wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", true)
+                .await
+                .unwrap();
+        assert_eq!(
+            terminal,
+            OpenCodePromptTerminal::Failed {
+                session_id: "ses_expected".into(),
+                error: json!({"name":"ProviderError"})
+            }
+        );
+        assert_eq!(
+            reconcile_opencode_prompt("ses_expected", terminal, &json!({})).unwrap(),
+            OpenCodePromptOutcome::Failed {
+                session_id: "ses_expected".into(),
+                error: json!({"name":"ProviderError"})
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_idle_is_cancelled_only_after_abort_was_requested() {
+        let frame =
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_expected\"}}\n\n";
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        let terminal =
+            wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", true)
+                .await
+                .unwrap();
+        assert_eq!(
+            terminal,
+            OpenCodePromptTerminal::Idle {
+                session_id: "ses_expected".into(),
+                cancel_requested: true,
+            }
+        );
+        assert_eq!(
+            reconcile_opencode_prompt("ses_expected", terminal, &json!({})).unwrap(),
+            OpenCodePromptOutcome::Cancelled {
+                session_id: "ses_expected".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_prompt_does_not_complete_on_other_session_terminal() {
+        let frame =
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_other\"}}\n\n";
+        let mut stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(frame.as_bytes().to_vec())]);
+        let mut parser = SseParser::new(4096);
+        let error =
+            wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", false)
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("ended before prompt terminal"));
+    }
+
+    #[test]
+    fn opencode_http_prompt_response_requires_exact_assistant_message_identity() {
+        let response = json!({
+            "info":{"id":"msg_1","sessionID":"ses_expected","role":"assistant"},
+            "parts":[{"type":"text","text":"fixture result"}]
+        });
+        validate_opencode_prompt_response("ses_expected", &response).unwrap();
+        let outcome = reconcile_opencode_prompt(
+            "ses_expected",
+            OpenCodePromptTerminal::Idle {
+                session_id: "ses_expected".into(),
+                cancel_requested: false,
+            },
+            &response,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            OpenCodePromptOutcome::Completed {
+                session_id: "ses_expected".into(),
+                message_id: "msg_1".into(),
+            }
+        );
+        assert!(validate_opencode_prompt_response("ses_other", &response).is_err());
+        assert!(
+            reconcile_opencode_prompt(
+                "ses_expected",
+                OpenCodePromptTerminal::Idle {
+                    session_id: "ses_other".into(),
+                    cancel_requested: false,
+                },
+                &response,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_opencode_prompt_response(
+                "ses_expected",
+                &json!({"info":{"id":"msg_1","sessionID":"ses_expected","role":"user"}})
+            )
+            .is_err()
+        );
+        assert!(validate_opencode_prompt_response(
+            "ses_expected",
+            &json!({"info":{"id":"msg_1","sessionID":"ses_expected","role":"assistant","error":{"name":"ProviderError"}}})
+        )
+        .is_err());
     }
 }
