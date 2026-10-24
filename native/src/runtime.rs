@@ -377,9 +377,7 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
         .map_err(|_| Error::Timeout)??;
         let port = address.port();
         let url = format!("http://127.0.0.1:{port}/global/health");
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()?;
+        let client = opencode_http_client(Duration::from_secs(2))?;
         let deadline = time::Instant::now() + Duration::from_secs(15);
         let health = loop {
             if time::Instant::now() > deadline {
@@ -429,23 +427,13 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
             return Err(Error::Incompatible("OpenCode /doc is not OpenAPI 3".into()));
         }
         let workspace = workspace.canonicalize()?.to_string_lossy().to_string();
-        let event_response = client
-            .get(format!("http://127.0.0.1:{port}/event"))
-            .basic_auth("opencode", Some(&password))
-            .query(&[("directory", &workspace)])
-            .send()
-            .await?
-            .error_for_status()?;
-        if !event_response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("text/event-stream"))
-        {
-            return Err(Error::Incompatible(
-                "OpenCode /event did not return SSE".into(),
-            ));
-        }
+        let event_response = open_opencode_event_stream(
+            &client,
+            &format!("http://127.0.0.1:{port}"),
+            &password,
+            &workspace,
+        )
+        .await?;
         let mut stream = event_response.bytes_stream();
         let mut parser = SseParser::new(1_048_576);
         time::timeout(Duration::from_secs(5), async {
@@ -470,17 +458,16 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
         })
         .await
         .map_err(|_| Error::Timeout)??;
-        let session_url = format!("http://127.0.0.1:{port}/session");
-        let created: serde_json::Value = client
-            .post(&session_url)
-            .basic_auth("opencode", Some(&password))
-            .query(&[("directory", &workspace)])
-            .json(&json!({"title":"Factory protocol preflight"}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let session_url = format!("{base_url}/session");
+        let created = create_opencode_session(
+            &client,
+            &base_url,
+            &password,
+            &workspace,
+            "Factory protocol preflight",
+        )
+        .await?;
         let session_id = created
             .get("id")
             .and_then(serde_json::Value::as_str)
@@ -507,29 +494,7 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
             .await;
         let session_created_event =
             wait_for_session_created_event(&mut stream, &mut parser, &session_id).await;
-        let deleted = client
-            .delete(&item_url)
-            .basic_auth("opencode", Some(&password))
-            .query(&[("directory", &workspace)])
-            .send()
-            .await;
-        let deleted = deleted.map_err(|error| {
-            Error::Incompatible(format!(
-                "OpenCode session {session_id} cleanup unconfirmed: {error}"
-            ))
-        })?;
-        if !deleted.status().is_success() || !(deleted.json::<bool>().await?) {
-            return Err(Error::Incompatible(format!(
-                "OpenCode session {session_id} cleanup unconfirmed"
-            )));
-        }
-        let after_delete = client
-            .get(&item_url)
-            .basic_auth("opencode", Some(&password))
-            .query(&[("directory", &workspace)])
-            .send()
-            .await?;
-        validate_deleted_session_status(after_delete.status())?;
+        delete_opencode_session(&client, &base_url, &password, &workspace, &session_id).await?;
         let inspected: serde_json::Value = inspected?.error_for_status()?.json().await?;
         let status: serde_json::Value = status?.error_for_status()?.json().await?;
         let messages: serde_json::Value = messages?.error_for_status()?.json().await?;
@@ -559,6 +524,309 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
         session_cleanup_confirmed: Some(true),
         sse_handshake_tested: true,
     })
+}
+
+/// Opens the authenticated OpenCode event stream after verifying that credentials
+/// will only be sent to a loopback origin.
+async fn open_opencode_event_stream(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+) -> Result<reqwest::Response, Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    let response = client
+        .get(format!("{base_url}/event"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .send()
+        .await?
+        .error_for_status()?;
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+    {
+        return Err(Error::Incompatible(
+            "OpenCode /event did not return SSE".into(),
+        ));
+    }
+    Ok(response)
+}
+
+/// Creates one OpenCode session through the loopback provider API and checks
+/// that the returned session is bound to the requested workspace.
+async fn create_opencode_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    title: &str,
+) -> Result<serde_json::Value, Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    let created: serde_json::Value = client
+        .post(format!("{base_url}/session"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .json(&json!({"title":title}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let session_id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Incompatible("OpenCode session/create returned no id".into()))?;
+    validate_opencode_session_id(session_id)?;
+    if created.get("directory").and_then(serde_json::Value::as_str) != Some(directory) {
+        return Err(Error::Incompatible(
+            "OpenCode created session workspace identity mismatch".into(),
+        ));
+    }
+    Ok(created)
+}
+
+/// Submits a prompt asynchronously to one exact session. The accepted HTTP
+/// request is not terminal completion; callers must reconcile the session SSE.
+async fn submit_opencode_prompt(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    session_id: &str,
+    prompt: &serde_json::Value,
+) -> Result<(), Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    validate_opencode_session_id(session_id)?;
+    let response = client
+        .post(format!("{base_url}/session/{session_id}/prompt_async"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .json(prompt)
+        .send()
+        .await?;
+    if response.status() != reqwest::StatusCode::NO_CONTENT {
+        return Err(Error::Incompatible(format!(
+            "OpenCode prompt_async returned HTTP {}",
+            response.status()
+        )));
+    }
+    Ok(())
+}
+
+/// Requests abort for the exact session. A true HTTP response only confirms
+/// that the abort request was accepted; it does not prove interruption.
+async fn request_opencode_abort(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    session_id: &str,
+) -> Result<(), Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    validate_opencode_session_id(session_id)?;
+    let accepted = client
+        .post(format!("{base_url}/session/{session_id}/abort"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<bool>()
+        .await?;
+    if !accepted {
+        return Err(Error::Incompatible(
+            "OpenCode abort request was not accepted".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Deletes a session and confirms absence with a follow-up read.
+async fn delete_opencode_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    session_id: &str,
+) -> Result<(), Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    validate_opencode_session_id(session_id)?;
+    let deleted = client
+        .delete(format!("{base_url}/session/{session_id}"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<bool>()
+        .await?;
+    if !deleted {
+        return Err(Error::Incompatible(
+            "OpenCode session delete was not confirmed".into(),
+        ));
+    }
+    let after_delete = client
+        .get(format!("{base_url}/session/{session_id}"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .send()
+        .await?;
+    validate_deleted_session_status(after_delete.status())
+}
+
+fn validate_opencode_base_url(base_url: &str) -> Result<String, Error> {
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|_| Error::Incompatible("invalid OpenCode base URL".into()))?;
+    let loopback = url
+        .host_str()
+        .and_then(|host| host.parse::<IpAddr>().ok())
+        .is_some_and(|ip| ip.is_loopback());
+    if url.scheme() != "http"
+        || !loopback
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::Incompatible(
+            "OpenCode credentials require a plain HTTP loopback origin".into(),
+        ));
+    }
+    Ok(base_url.trim_end_matches('/').to_owned())
+}
+
+fn validate_opencode_session_id(session_id: &str) -> Result<(), Error> {
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(Error::Incompatible("OpenCode session id is invalid".into()));
+    }
+    Ok(())
+}
+
+/// Exercises an OpenCode prompt through its loopback HTTP and SSE APIs. When
+/// `abort_after_submit` is set, the result remains `AbortRequestedAndIdle` until
+/// the provider exposes stronger interruption evidence.
+pub async fn execute_opencode_prompt(
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    title: &str,
+    prompt: &serde_json::Value,
+    abort_after_submit: bool,
+) -> Result<OpenCodePromptOutcome, Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    let client = opencode_http_client(Duration::from_secs(30))?;
+    let created = create_opencode_session(&client, &base_url, password, directory, title).await?;
+    let session_id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Incompatible("OpenCode session/create returned no id".into()))?
+        .to_owned();
+
+    let outcome = async {
+        let event_response =
+            open_opencode_event_stream(&client, &base_url, password, directory).await?;
+        let mut event_stream = event_response.bytes_stream();
+        let mut parser = SseParser::new(1_048_576);
+        wait_for_session_created_event(&mut event_stream, &mut parser, &session_id).await?;
+        submit_opencode_prompt(&client, &base_url, password, directory, &session_id, prompt)
+            .await?;
+        if abort_after_submit {
+            request_opencode_abort(&client, &base_url, password, directory, &session_id).await?;
+        }
+        let terminal = wait_for_opencode_prompt_terminal(
+            &mut event_stream,
+            &mut parser,
+            &session_id,
+            abort_after_submit,
+        )
+        .await?;
+        let response = match &terminal {
+            OpenCodePromptTerminal::Idle {
+                cancel_requested: false,
+                ..
+            } => {
+                read_opencode_assistant_message(
+                    &client,
+                    &base_url,
+                    password,
+                    directory,
+                    &session_id,
+                )
+                .await?
+            }
+            OpenCodePromptTerminal::Idle {
+                cancel_requested: true,
+                ..
+            }
+            | OpenCodePromptTerminal::Failed { .. } => serde_json::Value::Null,
+        };
+        reconcile_opencode_prompt(&session_id, terminal, &response)
+    }
+    .await;
+
+    let cleanup =
+        delete_opencode_session(&client, &base_url, password, directory, &session_id).await;
+    match (outcome, cleanup) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(Error::Incompatible(format!(
+            "OpenCode session {session_id} cleanup unconfirmed: {cleanup}"
+        ))),
+        (Err(error), Err(cleanup)) => Err(Error::Incompatible(format!(
+            "{error}; OpenCode session {session_id} cleanup unconfirmed: {cleanup}"
+        ))),
+    }
+}
+
+fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
+    Ok(reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
+async fn read_opencode_assistant_message(
+    client: &reqwest::Client,
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    session_id: &str,
+) -> Result<serde_json::Value, Error> {
+    let base_url = validate_opencode_base_url(base_url)?;
+    validate_opencode_session_id(session_id)?;
+    let messages = client
+        .get(format!("{base_url}/session/{session_id}/message"))
+        .basic_auth("opencode", Some(password))
+        .query(&[("directory", directory)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let messages = messages.as_array().ok_or_else(|| {
+        Error::Incompatible("OpenCode session message response is not an array".into())
+    })?;
+    let assistant = messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message
+                .pointer("/info/role")
+                .and_then(serde_json::Value::as_str)
+                == Some("assistant")
+        })
+        .cloned()
+        .ok_or_else(|| Error::Incompatible("OpenCode session has no assistant message".into()))?;
+    validate_opencode_prompt_response(session_id, &assistant)?;
+    Ok(assistant)
 }
 
 async fn wait_for_session_created_event<S, B, E>(
@@ -839,6 +1107,7 @@ async fn binary_version(binary: &str) -> Result<String, Error> {
 #[cfg(test)]
 mod codex_reconciliation_tests {
     use super::*;
+    use axum::response::IntoResponse;
 
     #[tokio::test]
     async fn codex_turn_wait_correlates_thread_and_turn_completion() {
@@ -1174,5 +1443,251 @@ mod codex_reconciliation_tests {
             &json!({"info":{"id":"msg_1","sessionID":"ses_expected","role":"assistant","error":{"name":"ProviderError"}}})
         )
         .is_err());
+    }
+
+    #[derive(Clone)]
+    struct FakeOpenCodeState {
+        expected_authorization: &'static str,
+        event_sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        event_receiver:
+            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>>>,
+        calls: std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool, serde_json::Value)>>>,
+        deleted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    fn fake_call(
+        state: &FakeOpenCodeState,
+        route: &str,
+        headers: &axum::http::HeaderMap,
+        body: serde_json::Value,
+    ) -> (String, bool, serde_json::Value) {
+        (
+            route.into(),
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                == Some(state.expected_authorization),
+            body,
+        )
+    }
+
+    async fn fake_create_session(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        headers: axum::http::HeaderMap,
+        axum::extract::Query(query): axum::extract::Query<
+            std::collections::HashMap<String, String>,
+        >,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
+        let directory = query.get("directory").cloned().unwrap_or_default();
+        state.calls.lock().await.push(fake_call(
+            &state,
+            &format!("POST /session?directory={directory}"),
+            &headers,
+            body,
+        ));
+        axum::Json(json!({"id":"ses_fixture","directory":query.get("directory")}))
+    }
+
+    async fn fake_events(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        state.calls.lock().await.push(fake_call(
+            &state,
+            "GET /event",
+            &headers,
+            serde_json::Value::Null,
+        ));
+        let Some(receiver) = state.event_receiver.lock().await.take() else {
+            return axum::http::StatusCode::CONFLICT.into_response();
+        };
+        let _ = state
+            .event_sender
+            .send(b"data: {\"type\":\"server.connected\"}\n\n".to_vec())
+            .await;
+        let _ = state.event_sender.send(b"data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_fixture\",\"info\":{\"id\":\"ses_fixture\"}}}\n\n".to_vec()).await;
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|chunk| {
+                (
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(chunk)),
+                    receiver,
+                )
+            })
+        });
+        let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
+        response
+    }
+
+    async fn fake_prompt(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        axum::extract::Path(session_id): axum::extract::Path<String>,
+        headers: axum::http::HeaderMap,
+        axum::extract::Query(query): axum::extract::Query<
+            std::collections::HashMap<String, String>,
+        >,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> axum::http::StatusCode {
+        state.calls.lock().await.push(fake_call(
+            &state,
+            &format!(
+                "POST /session/{session_id}/prompt_async?directory={}",
+                query.get("directory").cloned().unwrap_or_default()
+            ),
+            &headers,
+            body,
+        ));
+        axum::http::StatusCode::NO_CONTENT
+    }
+
+    async fn fake_abort(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        axum::extract::Path(session_id): axum::extract::Path<String>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::Json<bool> {
+        state.calls.lock().await.push(fake_call(
+            &state,
+            &format!("POST /session/{session_id}/abort"),
+            &headers,
+            serde_json::Value::Null,
+        ));
+        let _ = state.event_sender.send(b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n".to_vec()).await;
+        axum::Json(true)
+    }
+
+    async fn fake_delete(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        axum::extract::Path(session_id): axum::extract::Path<String>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::Json<bool> {
+        state.calls.lock().await.push(fake_call(
+            &state,
+            &format!("DELETE /session/{session_id}"),
+            &headers,
+            serde_json::Value::Null,
+        ));
+        state
+            .deleted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        axum::Json(true)
+    }
+
+    async fn fake_inspect(
+        axum::extract::State(state): axum::extract::State<FakeOpenCodeState>,
+        axum::extract::Path(session_id): axum::extract::Path<String>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        state.calls.lock().await.push(fake_call(
+            &state,
+            &format!("GET /session/{session_id}"),
+            &headers,
+            serde_json::Value::Null,
+        ));
+        if state.deleted.load(std::sync::atomic::Ordering::SeqCst) {
+            axum::http::StatusCode::NOT_FOUND.into_response()
+        } else {
+            axum::Json(json!({"id":session_id})).into_response()
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_http_sse_prompt_binds_auth_submission_abort_and_cleanup() {
+        let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
+        let state = FakeOpenCodeState {
+            expected_authorization: "Basic b3BlbmNvZGU6Zml4dHVyZS1zZWNyZXQ=",
+            event_sender,
+            event_receiver: std::sync::Arc::new(tokio::sync::Mutex::new(Some(event_receiver))),
+            calls: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            deleted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let app = axum::Router::new()
+            .route("/session", axum::routing::post(fake_create_session))
+            .route("/event", axum::routing::get(fake_events))
+            .route(
+                "/session/{session_id}/prompt_async",
+                axum::routing::post(fake_prompt),
+            )
+            .route(
+                "/session/{session_id}/abort",
+                axum::routing::post(fake_abort),
+            )
+            .route(
+                "/session/{session_id}",
+                axum::routing::delete(fake_delete).get(fake_inspect),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let prompt = json!({"model":{"providerID":"fixture","modelID":"local"},"parts":[{"type":"text","text":"fixture prompt"}]});
+        let outcome = execute_opencode_prompt(
+            &format!("http://{address}"),
+            "fixture-secret",
+            "/fixture/workspace",
+            "Lifecycle fixture",
+            &prompt,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            OpenCodePromptOutcome::AbortRequestedAndIdle {
+                session_id: "ses_fixture".into()
+            }
+        );
+        assert!(!format!("{outcome:?}").contains("fixture-secret"));
+
+        let calls = state.calls.lock().await;
+        assert!(calls.len() >= 5, "all lifecycle routes should be observed");
+        assert!(calls.iter().all(|(_, authorized, _)| *authorized));
+        assert!(calls.iter().any(|(route, _, body)| {
+            route == "POST /session?directory=/fixture/workspace"
+                && body["title"] == "Lifecycle fixture"
+        }));
+        assert!(calls.iter().any(|(route, _, body)| {
+            route.starts_with("POST /session/ses_fixture/prompt_async") && body == &prompt
+        }));
+        assert!(
+            calls
+                .iter()
+                .any(|(route, _, _)| route == "POST /session/ses_fixture/abort")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|(route, _, _)| route == "DELETE /session/ses_fixture")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|(route, _, _)| route == "GET /session/ses_fixture")
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|(_, _, body)| !body.to_string().contains("fixture-secret"))
+        );
+        drop(calls);
+
+        let client = opencode_http_client(Duration::from_secs(1)).unwrap();
+        assert!(
+            open_opencode_event_stream(
+                &client,
+                "http://example.invalid",
+                "fixture-secret",
+                "/fixture/workspace"
+            )
+            .await
+            .is_err()
+        );
+        server.abort();
     }
 }
