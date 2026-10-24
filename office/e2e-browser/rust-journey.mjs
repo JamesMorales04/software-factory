@@ -10,15 +10,19 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = resolve(import.meta.dirname, "../..");
-const coreBin = process.env.FACTORY_CORE_BIN || join(root, "target/debug/factory-core");
-const workerBin = process.env.FACTORY_WORKER_BIN || join(root, "target/debug/factory-worker");
-const nodeBin = process.env.NODE_BIN || process.execPath;
+const coreBin =
+  process.env.FACTORY_CORE_BIN || join(root, "target/debug/factory-core");
+const workerBin =
+  process.env.FACTORY_WORKER_BIN || join(root, "target/debug/factory-worker");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
 const bootstrap = token();
 const verifier = token();
 const reviewer = token();
-const temp = join(tmpdir(), `factory-rust-office-${randomBytes(6).toString("hex")}`);
+const temp = join(
+  tmpdir(),
+  `factory-rust-office-${randomBytes(6).toString("hex")}`,
+);
 const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const workspace = join(temp, "workspaces");
@@ -30,7 +34,11 @@ mkdirSync(workspace, { recursive: true });
 function git(args) {
   const result = spawn("git", ["-C", repository, ...args], { stdio: "ignore" });
   return new Promise((resolvePromise, reject) => {
-    result.on("exit", (code) => (code === 0 ? resolvePromise() : reject(new Error(`git ${args.join(" ")} failed`))));
+    result.on("exit", (code) =>
+      code === 0
+        ? resolvePromise()
+        : reject(new Error(`git ${args.join(" ")} failed`)),
+    );
   });
 }
 await git(["init", "-q"]);
@@ -73,7 +81,10 @@ async function api(path, options = {}, bearer = operator) {
     },
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`${options.method || "GET"} ${path}: ${response.status} ${text}`);
+  if (!response.ok)
+    throw new Error(
+      `${options.method || "GET"} ${path}: ${response.status} ${text}`,
+    );
   return text ? JSON.parse(text) : null;
 }
 
@@ -82,7 +93,10 @@ const coreUrl = `http://127.0.0.1:${corePort}`;
 const vitePort = await freePort();
 
 function launch(command, args, options = {}) {
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
+  const child = spawn(command, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  });
   processes.push(child);
   child.stdout.on("data", () => {});
   child.stderr.on("data", () => {});
@@ -106,25 +120,37 @@ try {
   await waitFor(`${coreUrl}/health`);
   assert.equal(core.exitCode, null);
 
-  const vite = launch(join(root, "office/node_modules/.bin/vite"), ["--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], {
-    cwd: join(root, "office"),
-    env: { ...process.env, FACTORY_CORE_URL: coreUrl },
-  });
+  const vite = launch(
+    join(root, "office/node_modules/.bin/vite"),
+    ["--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"],
+    {
+      cwd: join(root, "office"),
+      env: { ...process.env, FACTORY_CORE_URL: coreUrl },
+    },
+  );
   vite.stderr.on("data", (chunk) => process.stderr.write(chunk));
   const viteUrl = `http://127.0.0.1:${vitePort}`;
   await waitFor(viteUrl);
   assert.equal(vite.exitCode, null);
 
-  const executablePath = process.env.CHROMIUM_EXE || (() => {
-    const base = join(homedir(), ".cache/ms-playwright");
-    const candidates = readdirSync(base).filter((name) => name.startsWith("chromium-"));
-    for (const name of candidates.reverse()) {
-      const path = join(base, name, "chrome-linux64/chrome");
-      try { readdirSync(join(base, name)); } catch { continue; }
-      return path;
-    }
-    throw new Error("no Chromium executable found");
-  })();
+  const executablePath =
+    process.env.CHROMIUM_EXE ||
+    (() => {
+      const base = join(homedir(), ".cache/ms-playwright");
+      const candidates = readdirSync(base).filter((name) =>
+        name.startsWith("chromium-"),
+      );
+      for (const name of candidates.reverse()) {
+        const path = join(base, name, "chrome-linux64/chrome");
+        try {
+          readdirSync(join(base, name));
+        } catch {
+          continue;
+        }
+        return path;
+      }
+      throw new Error("no Chromium executable found");
+    })();
   browser = await chromium.launch({ headless: true, executablePath });
   const page = await browser.newPage();
   const consoleErrors = [];
@@ -147,7 +173,9 @@ try {
 
   await page.getByRole("link", { name: "Actions", exact: true }).click();
   await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
-  await page.getByTestId("action-objective").fill("Rust Office fixture journey");
+  await page
+    .getByTestId("action-objective")
+    .fill("Rust Office fixture journey");
   await page.getByRole("button", { name: "Create Action" }).click();
   await page.getByText("Created Action", { exact: false }).waitFor();
 
@@ -155,7 +183,10 @@ try {
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.getByTestId("campaign-action").selectOption({ index: 0 });
   await page.getByRole("button", { name: "Create Campaign" }).click();
-  await page.getByRole("button", { name: "Authorize R0 fixture" }).first().click();
+  await page
+    .getByRole("button", { name: "Authorize R0 fixture" })
+    .first()
+    .click();
   await page.getByRole("button", { name: "Queue Run" }).first().click();
 
   await page.getByRole("link", { name: "Runs", exact: true }).click();
@@ -177,37 +208,56 @@ try {
       FACTORY_FIXTURE_CONTENT: "fixture candidate\n",
     },
   });
-  const workerExit = await new Promise((resolvePromise) => worker.on("exit", resolvePromise));
+  const workerExit = await new Promise((resolvePromise) =>
+    worker.on("exit", resolvePromise),
+  );
   assert.equal(workerExit, 0, "fixture Worker must succeed");
 
   const candidates = await api("/candidates");
   assert.equal(candidates.length, 1);
   const candidate = candidates[0];
-  for (const [bearer, role] of [[verifier, "verifier"], [reviewer, "reviewer"]]) {
-    await api("/quality/receipts", {
-      method: "POST",
-      body: JSON.stringify({
-        candidate_id: candidate.id,
-        receipt_id: `${role}-office-e2e`,
-        principal_id: `${role}-office-e2e`,
-        actionSpecSha256: candidate.action_spec_sha256,
-        commitSha: candidate.commit_sha,
-        treeSha: candidate.tree_sha,
-        result: "PASS",
-        evidence: "EXECUTED",
-      }),
-    }, bearer);
+  for (const [bearer, role] of [
+    [verifier, "verifier"],
+    [reviewer, "reviewer"],
+  ]) {
+    await api(
+      "/quality/receipts",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          candidate_id: candidate.id,
+          receipt_id: `${role}-office-e2e`,
+          principal_id: `${role}-office-e2e`,
+          actionSpecSha256: candidate.action_spec_sha256,
+          commitSha: candidate.commit_sha,
+          treeSha: candidate.tree_sha,
+          result: "PASS",
+          evidence: "EXECUTED",
+        }),
+      },
+      bearer,
+    );
   }
 
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.reload();
   await page.getByText("ACCEPTED").waitFor({ timeout: 15000 });
-  assert.deepEqual(pageErrors, [], `browser page errors: ${pageErrors.join("; ")}`);
+  assert.deepEqual(
+    pageErrors,
+    [],
+    `browser page errors: ${pageErrors.join("; ")}`,
+  );
   if (consoleErrors.length > 0) {
     console.error("browser console diagnostics:", consoleErrors.join("; "));
   }
-  console.log(JSON.stringify({ ok: true, candidate: candidate.commit_sha, gate: "ACCEPTED" }));
+  console.log(
+    JSON.stringify({
+      ok: true,
+      candidate: candidate.commit_sha,
+      gate: "ACCEPTED",
+    }),
+  );
 } finally {
   if (browser) await browser.close().catch(() => {});
   for (const child of processes.reverse()) child.kill("SIGKILL");
