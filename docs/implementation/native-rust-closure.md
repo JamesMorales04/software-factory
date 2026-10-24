@@ -90,7 +90,9 @@ recorded in
 [native-rust-exact-head-ci-2026-10-24.json](../evidence/native-rust-exact-head-ci-2026-10-24.json)
 (`b91bd96`; GitHub Actions) and
 [native-rust-exact-head-ci-2026-10-24-final.json](../evidence/native-rust-exact-head-ci-2026-10-24-final.json)
-(`14506eab7345df3af2b2bc57658224906291be33`; GitHub Actions, same job set). None is provider coding, OS isolation
+(`14506ea`; GitHub Actions) and
+[native-rust-exact-head-ci-2026-10-24-deletion.json](../evidence/native-rust-exact-head-ci-2026-10-24-deletion.json)
+(`efd172c6a6023aed50d861b083ea341ff3b22e22`; GitHub Actions after the 96→94 deletion batch). None is provider coding, OS isolation
 certification, independent acceptance or deployment authorization.
 
 ## Legacy deletion status

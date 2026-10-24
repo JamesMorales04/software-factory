@@ -1,0 +1,54 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "efd172c6a6023aed50d861b083ea341ff3b22e22",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "tracked_go_files": 94,
+  "passing": {
+    "native-rust-runs": [40123536239, 40123539631],
+    "office-browser": "PASS (both runs)",
+    "architecture-consistency": 40123539654,
+    "s1-core": "PASS",
+    "s1-e2e": "PASS",
+    "s1-office": "PASS",
+    "s2-e2e": "PASS",
+    "s3a-e2e": "PASS",
+    "s3b-e2e": "PASS",
+    "s4a-core-quality": "PASS",
+    "s4a-office": "PASS",
+    "s4b-core-campaign": "PASS",
+    "s4b-office": "PASS",
+    "s4c-core": "PASS",
+    "s4c-office": "PASS"
+  },
+  "failing_legacy_jobs": [
+    "s2-browser",
+    "s3c-e2e",
+    "s3d-e2e",
+    "s4a-e2e",
+    "s4b-e2e",
+    "s4c-regressions",
+    "s4c-e2e"
+  ],
+  "legacy_failure_classification": "NOT_RUST_EVIDENCE; these workflows still target removed Go/Paseo Office surfaces.",
+  "deletion_batch": {
+    "tracked_go_before": 96,
+    "tracked_go_after": 94,
+    "files": [
+      "core/internal/recovery/classify_test.go",
+      "core/internal/project/repository_test.go"
+    ],
+    "replacement": "native/src/recovery.rs and native/src/repository.rs tests"
+  },
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "independent human acceptance",
+    "zero-Go cutover",
+    "provider coding",
+    "isolation certification",
+    "deployment or merge authorization"
+  ]
+}

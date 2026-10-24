@@ -536,7 +536,11 @@ This checkpoint adds:
   test; process-level in-flight integration cancellation remains open.
 - `14506ea` raises SQLite connection acquisition to 30s for saturated CI
   runners and includes the identity column in the post-migration schema probe.
-  Both exact-head Rust runs then passed.
+  Both exact-head Rust runs then passed. After retiring the two B2 Go unit tests
+(`96 → 94`), exact-head CI at `efd172c` passed native Rust (both runs), Office
+browser (both runs), architecture (`40123539654`), S1 core/e2e, S2 e2e,
+S3-A/S3-B and the S4-A/S4-B/S4-C non-browser Go jobs. The legacy Paseo/Office
+browser jobs still fail and are not Rust evidence.
 
 Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
 **235 tests passed + 2 ignored**, workspace build, docs, ten migrations,
