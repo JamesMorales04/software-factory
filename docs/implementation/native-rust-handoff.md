@@ -358,3 +358,30 @@ At candidate `5cd0619` the authorized read-only smoke produced:
 Do not silently substitute another provider/model or retry within this
 envelope. Continue deterministic provider lifecycle fixtures, sandbox/credential
 confinement and recovery/Office parity.
+
+
+## Host runtime and OpenCode Go routing checkpoint (2026-10-24)
+
+At `2dd4757` the repaired CachyOS host (kernel `7.3.0-3-cachyos`, `tun`
+loaded, rootless Podman 6.1.4, pasta working) passed real `factory start`:
+
+- `factory doctor`/`status` PASS; loopback-only `127.0.0.1:18766`; Core health;
+  authenticated API 200/unauthenticated 401; the built Rust Office served from
+  the image and unlocked in real Chromium; Worker registration persisted across
+  stop/start; repeated start was idempotent; stop retained the data volume;
+  token env file 0600; read-only root, no host network, no Podman socket.
+- See [native-rust-host-runtime-2026-10-24.md](../evidence/native-rust-host-runtime-2026-10-24.md).
+  No isolation or Windows certification is claimed.
+
+**OpenCode Go:** `opencode models opencode-go` confirms
+`opencode-go/deepseek-v4.1-flash`. The earlier smoke used the distinct ordinary
+`opencode` provider and failed 401. The native route parser now preserves
+`opencode-go` exactly, rejects unknown/malformed providers and classifies
+auth/protocol failures; deterministic tests pass. No paid retry was made under
+the old envelope. A fresh bounded authorization is required for a real
+OpenCode Go turn.
+
+**Next executable task:** fresh bounded OpenCode Go authorization, deterministic
+provider lifecycle fixtures, then Supervisor/credential confinement and
+recovery/multi-project Office parity. Keep provider/ISOLATED execution
+fail-closed.
