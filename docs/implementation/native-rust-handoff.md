@@ -313,12 +313,18 @@ and negative dispatch coverage.
 
 Author-run at `5edfc46`: 164 tests + 1 ignored, `cargo xtask check`, five
 migrations, `e2e dispatch`, `e2e negatives`, Office typecheck/lint/build, Core
-image build, container `/health` and audit pass. The branch was published to
+image build, container `/health` and audit pass. `cargo xtask e2e office` now
+runs a real Chromium journey through the unified Rust Office and reaches an
+`ACCEPTED` gate after reload (`230ad0b`). The branch was published to
 PR #17; exact-head CI is pending. The legacy governance gate initially failed
 on stale Office capability references and YAML quoting; both were repaired in
-`5d9af40` without restoring removed Paseo views. Exact-head CI, independent
-acceptance, provider lifecycle, browser E2E, same-UID isolation, Windows and
-portable container networking remain open.
+`5d9af40` without restoring removed Paseo views. Native Rust and governance CI passed at `90de26a`;
+legacy Go/Paseo browser jobs fail on removed Office selectors/views (old
+`FACTORY_API_TOKEN`, Dashboard/Agents/Projects/Campaigns legacy journeys) while
+their non-browser Go assertions pass. Those legacy browser jobs are not
+Rust-era evidence. Exact-head CI for `230ad0b`, independent acceptance,
+provider lifecycle, recovery/multi-project Office, same-UID isolation, Windows
+and portable container networking remain open.
 
 **Next executable task:** push `5edfc46`, verify exact-head CI and PR impact,
 then implement deterministic Codex/OpenCode work-lifecycle fixtures or a
