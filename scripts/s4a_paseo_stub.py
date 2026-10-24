@@ -137,10 +137,10 @@ def edit(workspace_path, current):
     elif current == "outside-scope":
         (project / "outside.txt").write_text("outside the frozen scope\n", encoding="utf-8")
     elif current == "critical":
-        target = project / "core" / "internal" / "quality" / "policy.go"
+        target = project / "core" / "internal" / "quality" / "policy.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
-        text = target.read_text(encoding="utf-8") if target.exists() else "package quality\n"
-        target.write_text(text + "\n// simulated protected change\n", encoding="utf-8")
+        text = target.read_text(encoding="utf-8") if target.exists() else "protected policy fixture\n"
+        target.write_text(text + "\nsimulated protected change\n", encoding="utf-8")
     elif current == "empty":
         return
     else:

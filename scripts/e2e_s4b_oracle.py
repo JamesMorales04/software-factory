@@ -507,7 +507,7 @@ def main():
 
         # B8: HUMAN_REQUIRED cannot silently become a repair authorization.
         human_action, human_spec = create_work_item(
-            "B8 protected diff", repo, base, allowed=["core/internal/quality/policy.go"],
+            "B8 protected diff", repo, base, allowed=["core/internal/quality/policy.txt"],
             goal="Simulate a protected authority change for the human gate.")
         set_mode("critical")
         human_created, _ = create_campaign(human_spec["id"], repairs=2)
