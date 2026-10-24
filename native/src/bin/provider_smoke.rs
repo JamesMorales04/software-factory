@@ -181,12 +181,11 @@ async fn codex(
                 .map_err(|error| error.to_string())?;
             match notification.method.as_str() {
                 "item/completed" => {
-                    if let Some(item) = notification.params.get("item") {
-                        if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                            if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                final_text = Some(text.to_owned());
-                            }
-                        }
+                    if let Some(item) = notification.params.get("item")
+                        && item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                        && let Some(text) = item.get("text").and_then(Value::as_str)
+                    {
+                        final_text = Some(text.to_owned());
                     }
                 }
                 "thread/tokenUsage/updated" => {
