@@ -142,6 +142,12 @@ pub struct WorkerReport {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerSummary {
+    pub worker_id: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerSession {
     pub worker_id: String,
     pub created: bool,

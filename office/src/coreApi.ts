@@ -71,6 +71,11 @@ export interface Attempt {
   created_at: string;
 }
 
+export interface WorkerSummary {
+  worker_id: string;
+  updated_at: string;
+}
+
 export interface Candidate {
   id: string;
   attempt_id: string;
@@ -258,6 +263,7 @@ export const coreApi = {
   listAttempts: () => request<Attempt[]>("/attempts"),
   listCandidates: () => request<Candidate[]>("/candidates"),
   listEvents: () => request<FactoryEvent[]>("/events"),
+  listWorkers: () => request<WorkerSummary[]>("/workers"),
   getGate: async (candidateId: string): Promise<Gate | null> => {
     try {
       return await request<Gate>(

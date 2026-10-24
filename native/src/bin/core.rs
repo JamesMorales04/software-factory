@@ -205,6 +205,7 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/campaigns/{id}/runs", post(create_campaign_run))
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
+        .route("/workers", get(workers))
         .with_state(app)
 }
 
@@ -695,6 +696,13 @@ async fn create_run_attempt(
         Ok(attempt) => (StatusCode::CREATED, Json(attempt)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn workers(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.workers().await)
 }
 
 async fn candidates(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {

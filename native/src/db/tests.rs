@@ -516,6 +516,9 @@ async fn worker_registration_stores_only_hash_and_rotates_after_restart() {
             .await
             .unwrap()
     );
+    let workers = db.workers().await.unwrap();
+    assert_eq!(workers.len(), 1);
+    assert_eq!(workers[0].worker_id, "worker-a");
     assert!(
         !db.register_worker_session(
             "worker-a",

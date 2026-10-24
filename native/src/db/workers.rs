@@ -106,6 +106,21 @@ impl Database {
         })
     }
 
+    pub async fn workers(&self) -> Result<Vec<WorkerSummary>, Error> {
+        let rows: Vec<(String, String)> = sqlx::query_as::query_as(
+            "SELECT worker_id,updated_at FROM worker_sessions ORDER BY updated_at,worker_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(worker_id, updated_at)| WorkerSummary {
+                worker_id,
+                updated_at,
+            })
+            .collect())
+    }
+
     pub async fn worker_session_matches(
         &self,
         worker_id: &str,
