@@ -696,6 +696,16 @@ mod codex_reconciliation_tests {
     }
 
     #[tokio::test]
+    async fn codex_interrupted_status_is_not_success() {
+        let input = b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turn\":{\"id\":\"turn-1\",\"status\":\"interrupted\",\"items\":[]}}}\n";
+        let mut rpc = JsonRpc::new(&input[..], Vec::new());
+        let result = await_codex_turn(&mut rpc, "thread-1", "turn-1", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(matches!(result, CodexTurnAwait::Interrupted(_)));
+    }
+
+    #[tokio::test]
     async fn indexed_thread_lookup_follows_opaque_cursor() {
         let input = concat!(
             "{\"id\":1,\"result\":{\"data\":[{\"id\":\"first\"}],\"nextCursor\":\"opaque-cursor\"}}\n",

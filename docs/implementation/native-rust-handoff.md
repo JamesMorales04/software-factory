@@ -25,6 +25,15 @@ workspace build and docs passed at `d47f6cd`. `cargo audit` initially warned
 that newly added `serde_yaml_ng` depended on unmaintained `unsafe-libyaml`.
 Commit `dd91272` replaced it with `serde-saphyr` 2.0.0; seven checker tests,
 the base-ref invocation and a clean `cargo audit` pass locally on that code.
+The Rust `architecture-consistency` GitHub job passed on `6947b42` after the
+PR impact declaration was rebound to its exact head. Commit `6bf9657` added
+parser-negative coverage, bringing the checker to eight focused tests.
+Luna's Codex thread/turn lifecycle fixture slice was integrated at `911ce5d`;
+Sol fixed event replay and usage-overflow atomicity at `37e387b`, then an
+independent reviewer found a pre-turn cancellation dead end, repaired at
+`c375d71`. The reviewer verified both repairs. Local workspace tests,
+format and strict Clippy passed on `c375d71` (132 library tests and all other
+workspace targets); Codex interrupted-outcome regression coverage followed.
 Final exact-head GitHub CI, strict hygiene and final independent acceptance
 remain pending.
 Provider coding is still fail-closed; no paid provider turn ran. Isolation and

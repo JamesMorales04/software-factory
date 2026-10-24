@@ -56,12 +56,12 @@ source-mapping snapshot; this ledger is the current status authority.
 | M2 PR #16 parity | `PARTIAL` | A1–A12 not complete; see table |
 | M3 Repository hygiene | `BLOCKED` | 96 tracked `.go` files after two retirement batches; Go module/lint/config and legacy jobs remain; strict scanner not green |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; provider coding fail-closed |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; Codex thread/turn terminal classification and session identity are fixture-tested at `c375d71`; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; reviewer is receipt-only |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency process test at `a32c6d5`; final exact-head CI pending |
-| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; strict hygiene, legacy live-entrypoint guard and Go CI remain |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency process test at `a32c6d5`; workspace tests pass locally at `c375d71`; final exact-head CI pending |
+| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `6947b42`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed, all 44 CAP IDs and opportunities present, strict audit empty; registry/roadmap decision and milestone consistency still being closed |
@@ -101,10 +101,18 @@ switching the `architecture-consistency` CI job. Sol's cross-review repair at
 `eb36cade9749614742ad0b0cf7b823173abdc43f` added read-path confinement
 and manifest-fragment negatives. Later commits `2cdd773` and `4fb29e9`
 restored missing claim, manifest, reference and dependency regression cases
-after independent review. Seven checker tests, Clippy and an actual
-`--base-ref origin/main` invocation pass locally. Exact-head GitHub CI and
-independent acceptance remain pending; the workflow still installs Go for a
-separate legacy live-entrypoint guard.
+after independent review. Eight checker tests, Clippy and an actual
+`--base-ref origin/main` invocation pass locally. The `architecture-consistency`
+GitHub CI job passed on `6947b42` after its PR impact declaration was rebound
+to that head; independent acceptance remains pending. The workflow still
+installs Go for a separate legacy live-entrypoint guard.
+
+Codex direct thread/turn protocol fixtures now reject empty identities, keep
+terminal outcomes distinct, and bind completion to the started turn. Sol's
+review repaired provider event replay and usage-overflow atomicity (`37e387b`);
+independent review found and Sol repaired pre-turn cancellation deadlock
+(`c375d71`). These are deterministic fixtures only. No paid provider coding
+turn or credential/isolation certification occurred.
 
 The [deletion and replacement map](native-rust-deletion-map.md) classifies all
 99 tracked Go files at `102f6a046f1f907546e8bc60da622388f80bd95c` by
