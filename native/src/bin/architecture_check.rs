@@ -1,9 +1,9 @@
 //! Native governance checks for ADR supersession and capability/roadmap consistency.
 //!
-//! This deliberately ports only those governance checks. It does not yet port
-//! the former checker's evidence-manifest, reference-path, certification, or
-//! authorization validation.
+//! Checks the capability registry, its roadmap projection, evidence references,
+//! certification claims, and append-only ADR history.
 
+use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -11,10 +11,12 @@ use std::{
     process::{Command, ExitCode},
 };
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 struct Milestone {
     id: String,
     title: String,
+    #[serde(rename = "decision_status")]
     decision: String,
     dependencies: Vec<String>,
     deliverables: Vec<String>,
@@ -26,28 +28,76 @@ struct Milestone {
     owner_decisions: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 struct Capability {
     id: String,
     name: String,
+    category: String,
+    purpose: String,
+    product_objective: String,
+    #[serde(rename = "decision_status")]
     decision: String,
+    #[serde(rename = "implementation_status")]
     implementation: String,
+    verification: Verification,
+    owner: String,
     dependencies: Vec<String>,
     target_milestone: String,
+    refs: References,
+    acceptance: Acceptance,
+    evidence: Evidence,
+    limitations: Vec<String>,
+    blockers: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+struct Verification {
+    deterministic: String,
+    live_agent: String,
+    uat: String,
+    deployment: String,
+    isolation: String,
+}
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+struct References {
+    adr: Vec<String>,
+    contract: Vec<String>,
+    source: Vec<String>,
+    test: Vec<String>,
+}
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+struct Acceptance {
+    deterministic: String,
+    real: String,
+}
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+struct Evidence {
+    deterministic: Vec<String>,
+    live_agent: Vec<String>,
+    uat: Vec<String>,
+    deployment: Vec<String>,
+    isolation: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 struct Registry {
-    schema_version: Option<u32>,
+    schema_version: u32,
     milestones: Vec<Milestone>,
     capabilities: Vec<Capability>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Section {
-    None,
-    Milestones,
-    Capabilities,
+#[derive(Clone, Debug, Deserialize)]
+struct CertificationManifest {
+    level: String,
+    status: String,
+    implementation_sha: String,
+    candidate_sha: String,
 }
 
 fn main() -> ExitCode {
@@ -63,16 +113,27 @@ fn main() -> ExitCode {
 fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     let mut root = None;
     let mut base_ref = None;
+    let mut registry_path = PathBuf::from("docs/product/capabilities.yaml");
+    let mut roadmap_path = PathBuf::from("docs/roadmap/ROADMAP.md");
+    let mut write_roadmap = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root requires a path")?)),
             "--base-ref" => base_ref = Some(args.next().ok_or("--base-ref requires a Git ref")?),
+            "--registry" => {
+                registry_path = PathBuf::from(args.next().ok_or("--registry requires a path")?)
+            }
+            "--roadmap" => {
+                roadmap_path = PathBuf::from(args.next().ok_or("--roadmap requires a path")?)
+            }
+            "--write-roadmap" => write_roadmap = true,
             "-h" | "--help" => {
-                println!("usage: factory-architecture-check --root PATH [--base-ref REF]");
-                println!("Validates ADR supersession and capability registry/roadmap consistency.");
                 println!(
-                    "Does not validate capability evidence, reference paths, or authorization."
+                    "usage: factory-architecture-check --root PATH [--registry PATH] [--roadmap PATH] [--write-roadmap] [--base-ref REF]"
+                );
+                println!(
+                    "Validates capability references and evidence, generated roadmap, ADR supersession and accepted ADR history."
                 );
                 return Ok(());
             }
@@ -80,27 +141,50 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), String> {
         }
     }
     let root = root.ok_or("--root is required")?;
-    check_repository(&root, base_ref.as_deref())
+    check_repository(
+        &root,
+        &registry_path,
+        &roadmap_path,
+        write_roadmap,
+        base_ref.as_deref(),
+    )
 }
 
-fn check_repository(root: &Path, base_ref: Option<&str>) -> Result<(), String> {
+fn check_repository(
+    root: &Path,
+    registry_relative: &Path,
+    roadmap_relative: &Path,
+    write_roadmap: bool,
+    base_ref: Option<&str>,
+) -> Result<(), String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("cannot resolve root {}: {error}", root.display()))?;
-    let registry_path = root.join("docs/product/capabilities.yaml");
-    let roadmap_path = root.join("docs/roadmap/ROADMAP.md");
+    let registry_path = root.join(registry_relative);
+    let roadmap_path = root.join(roadmap_relative);
     let registry_text = fs::read_to_string(&registry_path)
         .map_err(|error| format!("read {}: {error}", registry_path.display()))?;
-    let roadmap = fs::read_to_string(&roadmap_path)
-        .map_err(|error| format!("read {}: {error}", roadmap_path.display()))?;
+    let roadmap = if write_roadmap {
+        String::new()
+    } else {
+        fs::read_to_string(&roadmap_path)
+            .map_err(|error| format!("read {}: {error}", roadmap_path.display()))?
+    };
     let decisions_path = root.join("docs/product/capability-decisions.md");
     let decisions = fs::read_to_string(&decisions_path)
         .map_err(|error| format!("read {}: {error}", decisions_path.display()))?;
     let registry = parse_registry(&registry_text)?;
-    validate_registry(&registry)?;
+    validate_registry(&root, &registry)?;
     validate_capability_preservation(&registry, &decisions)?;
     let expected = render_roadmap(&registry);
-    if roadmap != expected {
+    if write_roadmap {
+        if let Some(parent) = roadmap_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        }
+        fs::write(&roadmap_path, expected)
+            .map_err(|error| format!("write {}: {error}", roadmap_path.display()))?;
+    } else if roadmap != expected {
         let line = roadmap
             .lines()
             .zip(expected.lines())
@@ -151,278 +235,12 @@ fn validate_capability_preservation(registry: &Registry, decisions: &str) -> Res
 }
 
 fn parse_registry(contents: &str) -> Result<Registry, String> {
-    let mut result = Registry::default();
-    let mut section = Section::None;
-    let mut current_milestone: Option<usize> = None;
-    let mut current_capability: Option<usize> = None;
-    let mut list_field: Option<String> = None;
-
-    for (line_number, raw) in contents.lines().enumerate() {
-        let line = raw.split_once('#').map_or(raw, |(before, _)| before);
-        if line.trim().is_empty() {
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
-        let trimmed = line.trim();
-        if indent <= 1 && trimmed.starts_with("- ") && section != Section::None {
-            let (key, value) = trimmed[2..]
-                .split_once(':')
-                .ok_or_else(|| format!("line {}: expected list item key:value", line_number + 1))?;
-            match section {
-                Section::Milestones if key == "id" => {
-                    result.milestones.push(Milestone {
-                        id: parse_scalar(value),
-                        ..Milestone::default()
-                    });
-                    current_milestone = Some(result.milestones.len() - 1);
-                    current_capability = None;
-                }
-                Section::Capabilities if key == "id" => {
-                    result.capabilities.push(Capability {
-                        id: parse_scalar(value),
-                        ..Capability::default()
-                    });
-                    current_capability = Some(result.capabilities.len() - 1);
-                    current_milestone = None;
-                }
-                _ => {
-                    return Err(format!(
-                        "line {}: expected {} item to begin with id",
-                        line_number + 1,
-                        match section {
-                            Section::Milestones => "milestone",
-                            Section::Capabilities => "capability",
-                            Section::None => unreachable!(),
-                        }
-                    ));
-                }
-            }
-            list_field = None;
-            continue;
-        }
-        if indent == 0 {
-            list_field = None;
-            if trimmed == "milestones:" {
-                section = Section::Milestones;
-                current_milestone = None;
-                current_capability = None;
-                continue;
-            }
-            if trimmed == "capabilities:" {
-                section = Section::Capabilities;
-                current_milestone = None;
-                current_capability = None;
-                continue;
-            }
-            if let Some((key, value)) = trimmed.split_once(':')
-                && key == "schema_version"
-            {
-                result.schema_version = Some(parse_scalar(value).parse().map_err(|_| {
-                    format!(
-                        "line {}: schema_version must be an integer",
-                        line_number + 1
-                    )
-                })?);
-            }
-            continue;
-        }
-
-        if !matches!(section, Section::Milestones | Section::Capabilities) {
-            continue;
-        }
-
-        if let Some(field) = list_field.as_deref()
-            && let Some(value) = trimmed.strip_prefix("- ")
-        {
-            push_list_value(
-                &mut result,
-                section,
-                current_milestone,
-                current_capability,
-                field,
-                parse_scalar(value),
-            );
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once(':') else {
-            let Some(field) = list_field.as_deref() else {
-                // Unprojected nested YAML fields are outside this slice's schema model.
-                continue;
-            };
-            append_list_continuation(
-                &mut result,
-                section,
-                current_milestone,
-                current_capability,
-                field,
-                trimmed,
-            )?;
-            continue;
-        };
-        let value = value.trim();
-        if value.is_empty() || value == "[]" {
-            list_field = is_projected_list(section, key).then(|| key.to_string());
-            continue;
-        }
-        list_field = None;
-        let value = parse_scalar(value);
-        match section {
-            Section::Milestones => {
-                let Some(index) = current_milestone else {
-                    return Err(format!(
-                        "line {}: milestone field before id",
-                        line_number + 1
-                    ));
-                };
-                set_milestone_scalar(&mut result.milestones[index], key, value);
-            }
-            Section::Capabilities => {
-                let Some(index) = current_capability else {
-                    return Err(format!(
-                        "line {}: capability field before id",
-                        line_number + 1
-                    ));
-                };
-                set_capability_scalar(&mut result.capabilities[index], key, value);
-            }
-            Section::None => {}
-        }
-    }
-    Ok(result)
+    serde_yaml_ng::from_str(contents).map_err(|error| format!("parse registry: {error}"))
 }
 
-fn is_projected_list(section: Section, field: &str) -> bool {
-    match section {
-        Section::Milestones => matches!(
-            field,
-            "dependencies"
-                | "deliverables"
-                | "capability_ids"
-                | "exclusions"
-                | "risks"
-                | "deterministic_acceptance"
-                | "real_acceptance"
-                | "owner_decisions"
-        ),
-        Section::Capabilities => field == "dependencies",
-        Section::None => false,
-    }
-}
-
-fn append_list_continuation(
-    registry: &mut Registry,
-    section: Section,
-    milestone: Option<usize>,
-    capability: Option<usize>,
-    field: &str,
-    continuation: &str,
-) -> Result<(), String> {
-    let last = match section {
-        Section::Milestones => {
-            let Some(index) = milestone else {
-                return Err("list continuation has no milestone".into());
-            };
-            let target = &mut registry.milestones[index];
-            match field {
-                "dependencies" => target.dependencies.last_mut(),
-                "deliverables" => target.deliverables.last_mut(),
-                "capability_ids" => target.capability_ids.last_mut(),
-                "exclusions" => target.exclusions.last_mut(),
-                "risks" => target.risks.last_mut(),
-                "deterministic_acceptance" => target.deterministic_acceptance.last_mut(),
-                "real_acceptance" => target.real_acceptance.last_mut(),
-                "owner_decisions" => target.owner_decisions.last_mut(),
-                _ => None,
-            }
-        }
-        Section::Capabilities => {
-            let Some(index) = capability else {
-                return Err("list continuation has no capability".into());
-            };
-            if field == "dependencies" {
-                registry.capabilities[index].dependencies.last_mut()
-            } else {
-                None
-            }
-        }
-        Section::None => None,
-    };
-    let Some(last) = last else {
-        return Err(format!("list field {field} has no preceding item"));
-    };
-    last.push(' ');
-    last.push_str(continuation);
-    Ok(())
-}
-
-fn parse_scalar(value: &str) -> String {
-    let value = value.trim();
-    if value.len() >= 2 {
-        let first = value.as_bytes()[0];
-        let last = value.as_bytes()[value.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return value[1..value.len() - 1].to_string();
-        }
-    }
-    value.to_string()
-}
-
-fn set_milestone_scalar(target: &mut Milestone, key: &str, value: String) {
-    match key {
-        "title" => target.title = value,
-        "decision_status" => target.decision = value,
-        _ => {}
-    }
-}
-
-fn set_capability_scalar(target: &mut Capability, key: &str, value: String) {
-    match key {
-        "name" => target.name = value,
-        "decision_status" => target.decision = value,
-        "implementation_status" => target.implementation = value,
-        "target_milestone" => target.target_milestone = value,
-        _ => {}
-    }
-}
-
-fn push_list_value(
-    registry: &mut Registry,
-    section: Section,
-    milestone: Option<usize>,
-    capability: Option<usize>,
-    field: &str,
-    value: String,
-) {
-    match section {
-        Section::Milestones => {
-            let Some(index) = milestone else { return };
-            let target = &mut registry.milestones[index];
-            match field {
-                "dependencies" => target.dependencies.push(value),
-                "deliverables" => target.deliverables.push(value),
-                "capability_ids" => target.capability_ids.push(value),
-                "exclusions" => target.exclusions.push(value),
-                "risks" => target.risks.push(value),
-                "deterministic_acceptance" => target.deterministic_acceptance.push(value),
-                "real_acceptance" => target.real_acceptance.push(value),
-                "owner_decisions" => target.owner_decisions.push(value),
-                _ => {}
-            }
-        }
-        Section::Capabilities => {
-            let Some(index) = capability else { return };
-            if field == "dependencies" {
-                registry.capabilities[index].dependencies.push(value);
-            }
-        }
-        Section::None => {}
-    }
-}
-
-fn validate_registry(registry: &Registry) -> Result<(), String> {
+fn validate_registry(root: &Path, registry: &Registry) -> Result<(), String> {
     let mut errors = Vec::new();
-    if registry.schema_version != Some(1) {
+    if registry.schema_version != 1 {
         errors.push("schema_version must be 1".to_string());
     }
     let mut milestone_positions = BTreeMap::new();
@@ -479,6 +297,10 @@ fn validate_registry(registry: &Registry) -> Result<(), String> {
     }
     for capability in &registry.capabilities {
         if capability.name.is_empty()
+            || capability.category.is_empty()
+            || capability.purpose.is_empty()
+            || capability.product_objective.is_empty()
+            || capability.owner.is_empty()
             || !valid_decision(&capability.decision)
             || !matches!(
                 capability.implementation.as_str(),
@@ -490,6 +312,7 @@ fn validate_registry(registry: &Registry) -> Result<(), String> {
                 capability.id
             ));
         }
+        validate_capability_claims(root, capability, &mut errors);
         let Some(&target_position) = milestone_positions.get(capability.target_milestone.as_str())
         else {
             errors.push(format!(
@@ -601,6 +424,250 @@ fn validate_registry(registry: &Registry) -> Result<(), String> {
     }
 }
 
+fn validate_capability_claims(root: &Path, capability: &Capability, errors: &mut Vec<String>) {
+    let prefix = format!("capability {} ", capability.id);
+    let refs = [
+        &capability.refs.adr,
+        &capability.refs.contract,
+        &capability.refs.source,
+        &capability.refs.test,
+    ];
+    for group in refs {
+        for reference in group {
+            if let Err(error) = check_reference(root, reference) {
+                errors.push(format!("{prefix}{error}"));
+            }
+        }
+    }
+    let dimensions = [
+        (
+            "deterministic",
+            &capability.verification.deterministic,
+            &capability.evidence.deterministic,
+        ),
+        (
+            "live_agent",
+            &capability.verification.live_agent,
+            &capability.evidence.live_agent,
+        ),
+        (
+            "uat",
+            &capability.verification.uat,
+            &capability.evidence.uat,
+        ),
+        (
+            "deployment",
+            &capability.verification.deployment,
+            &capability.evidence.deployment,
+        ),
+        (
+            "isolation",
+            &capability.verification.isolation,
+            &capability.evidence.isolation,
+        ),
+    ];
+    for (name, state, records) in dimensions {
+        for reference in records {
+            if let Err(error) = check_reference(root, reference) {
+                errors.push(format!("{prefix}evidence {error}"));
+            }
+        }
+        if state == "not_tested" && !records.is_empty() {
+            errors.push(format!(
+                "{prefix}{name} has evidence while marked not_tested"
+            ));
+        }
+        if state == "verified" || state == "accepted" {
+            if records.is_empty() {
+                errors.push(format!("{prefix}{name} {state} without evidence"));
+            } else if name == "live_agent" {
+                for record in records {
+                    if let Err(error) = validate_manifest(root, record) {
+                        errors.push(format!("{prefix}{error}"));
+                    }
+                }
+            } else {
+                for record in records {
+                    if let Err(error) = validate_evidence(root, name, record) {
+                        errors.push(format!("{prefix}{error}"));
+                    }
+                }
+            }
+        }
+    }
+    if capability.implementation == "implemented"
+        && (capability.refs.source.is_empty() || capability.refs.test.is_empty())
+    {
+        errors.push(format!(
+            "{prefix}implemented requires source and test references"
+        ));
+    }
+    if capability.implementation == "not_implemented"
+        && dimensions
+            .iter()
+            .any(|(_, state, _)| *state == "verified" || *state == "accepted")
+    {
+        errors.push(format!(
+            "{prefix}not_implemented cannot claim verified or accepted evidence"
+        ));
+    }
+    if capability.decision == "rejected" && capability.implementation == "implemented" {
+        errors.push(format!(
+            "{prefix}rejected capability cannot be marked implemented"
+        ));
+    }
+    if capability.acceptance.deterministic.is_empty() || capability.acceptance.real.is_empty() {
+        errors.push(format!(
+            "{prefix}requires deterministic and real acceptance criteria"
+        ));
+    }
+    for (name, state, allowed) in [
+        (
+            "deterministic",
+            &capability.verification.deterministic,
+            &["verified", "not_tested", "blocked", "failed"][..],
+        ),
+        (
+            "live_agent",
+            &capability.verification.live_agent,
+            &["verified", "not_tested", "blocked", "failed"][..],
+        ),
+        (
+            "uat",
+            &capability.verification.uat,
+            &["accepted", "not_tested", "blocked", "failed"][..],
+        ),
+        (
+            "deployment",
+            &capability.verification.deployment,
+            &["verified", "not_tested", "blocked", "failed"][..],
+        ),
+        (
+            "isolation",
+            &capability.verification.isolation,
+            &["verified", "not_tested", "blocked", "failed"][..],
+        ),
+    ] {
+        if !allowed.contains(&state.as_str()) {
+            errors.push(format!("{prefix}has invalid {name} verification state"));
+        }
+    }
+}
+
+fn check_reference(root: &Path, reference: &str) -> Result<(), String> {
+    let path = reference.split('#').next().unwrap_or("");
+    if path.is_empty() {
+        return Err("has empty reference".into());
+    }
+    let relative = Path::new(path);
+    if relative.is_absolute() {
+        return Err(format!(
+            "reference {path:?} is absolute; repository-relative paths are required"
+        ));
+    }
+    if relative
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err(format!(
+            "reference {path:?} contains forbidden parent traversal"
+        ));
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("resolve repository root: {e}"))?;
+    let target = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| format!("references missing file {path:?}"))?;
+    if !target.starts_with(&root) {
+        return Err(format!(
+            "reference {path:?} resolves outside repository root"
+        ));
+    }
+    if !target.is_file() {
+        return Err(format!("references missing file {path:?}"));
+    }
+    Ok(())
+}
+
+fn validate_evidence(root: &Path, dimension: &str, reference: &str) -> Result<(), String> {
+    let path = reference.split('#').next().unwrap_or("");
+    if !path.starts_with("docs/evidence/") || !path.to_ascii_lowercase().ends_with(".json") {
+        return Err(format!(
+            "{dimension} evidence must reference a JSON file under docs/evidence"
+        ));
+    }
+    let content =
+        fs::read(root.join(path)).map_err(|e| format!("{dimension} evidence {path:?}: {e}"))?;
+    let record: serde_json::Value = serde_json::from_slice(&content)
+        .map_err(|e| format!("{dimension} evidence {path:?} is invalid JSON: {e}"))?;
+    let pass = record
+        .get("result")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.to_ascii_uppercase().starts_with("PASS"))
+        || record
+            .get("checks")
+            .and_then(|v| v.as_array())
+            .is_some_and(|checks| {
+                !checks.is_empty()
+                    && checks
+                        .iter()
+                        .all(|v| v.get("pass").and_then(|p| p.as_bool()) == Some(true))
+            });
+    let required = match dimension {
+        "uat" => "PRODUCT_OWNER_UAT_VERIFIED",
+        "deployment" => "DEPLOYMENT_VERIFIED",
+        "isolation" => "SEC_01_ISOLATION_VERIFIED",
+        _ => "",
+    };
+    let level_ok = required.is_empty()
+        || (record.get("evidence_level").and_then(|v| v.as_str()) == Some(required)
+            && record
+                .get("status")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("verified")));
+    if dimension == "deterministic" && !pass {
+        return Err(format!(
+            "deterministic evidence {path:?} has no recorded passing result"
+        ));
+    }
+    if !level_ok {
+        return Err(format!(
+            "{dimension} evidence {path:?} must have {required} level and verified status"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_manifest(root: &Path, reference: &str) -> Result<(), String> {
+    let path = reference.split('#').next().unwrap_or("");
+    if !path.starts_with("docs/evidence/")
+        || !path.ends_with("certification-manifest.json")
+        || path.matches('/').count() != 2
+    {
+        return Err(
+            "live_agent evidence must reference docs/evidence/*certification-manifest.json".into(),
+        );
+    }
+    let content = fs::read(root.join(path))
+        .map_err(|e| format!("live_agent certification manifest {path:?}: {e}"))?;
+    let manifest: CertificationManifest = serde_json::from_slice(&content)
+        .map_err(|e| format!("live_agent certification manifest {path:?} is invalid JSON: {e}"))?;
+    let sha = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if manifest.level != "REAL_PASEO_E2E_VERIFIED" || manifest.status != "verified" {
+        return Err(format!(
+            "live_agent certification manifest {path:?} must have level REAL_PASEO_E2E_VERIFIED and status verified"
+        ));
+    }
+    if !sha(&manifest.implementation_sha) || !sha(&manifest.candidate_sha) {
+        return Err(format!(
+            "live_agent certification manifest {path:?} requires full implementation_sha and candidate_sha values"
+        ));
+    }
+    Ok(())
+}
+
 fn dependency_cycle<'a>(
     nodes: impl Iterator<Item = &'a str>,
     edges: impl Iterator<Item = (&'a str, &'a [String])>,
@@ -671,7 +738,7 @@ fn render_roadmap(registry: &Registry) -> String {
         .map(|capability| (capability.id.as_str(), capability))
         .collect();
     let mut output = String::from(
-        "# Software Factory Roadmap\n\nThis page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `scripts/check-architecture-consistency --write-roadmap`.\n",
+        "# Software Factory Roadmap\n\nThis page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `cargo run --manifest-path native/Cargo.toml --bin factory-architecture-check -- --root . --write-roadmap`.\n",
     );
     for milestone in &registry.milestones {
         output.push_str(&format!(
@@ -1048,11 +1115,60 @@ mod tests {
     }
 
     fn tiny_registry() -> &'static str {
-        "schema_version: 1\nmilestones:\n- id: M-1\n  title: First\n  decision_status: approved\n  dependencies: []\n  deliverables:\n  - Deliver\n  capability_ids:\n  - CAP-1\n  exclusions:\n  - None\n  risks:\n  - Low\n  deterministic_acceptance:\n  - Test\n  real_acceptance:\n  - Real\n  owner_decisions:\n  - Owner\ncapabilities:\n- id: CAP-1\n  name: One\n  decision_status: approved\n  implementation_status: implemented\n  dependencies: []\n  target_milestone: M-1\n"
+        "schema_version: 1\nmilestones:\n- id: M-1\n  title: First\n  decision_status: approved\n  dependencies: []\n  deliverables:\n  - Deliver\n  capability_ids:\n  - CAP-1\n  exclusions:\n  - None\n  risks:\n  - Low\n  deterministic_acceptance:\n  - Test\n  real_acceptance:\n  - Real\n  owner_decisions:\n  - Owner\ncapabilities:\n- id: CAP-1\n  name: One\n  category: Runtime\n  purpose: Do work\n  product_objective: Objective\n  decision_status: approved\n  implementation_status: in_progress\n  verification:\n    deterministic: not_tested\n    live_agent: not_tested\n    uat: not_tested\n    deployment: not_tested\n    isolation: not_tested\n  owner: Core\n  dependencies: []\n  target_milestone: M-1\n  refs: {adr: [], contract: [], source: [], test: []}\n  acceptance: {deterministic: Test, real: Run}\n  evidence: {deterministic: [], live_agent: [], uat: [], deployment: [], isolation: []}\n"
     }
 
     fn accepted_adr() -> &'static str {
         "# ADR-0001\n\n- **Status:** Accepted\n\n## Decision\nA decision.\n"
+    }
+
+    #[test]
+    fn references_reject_traversal_and_symlink_escape() {
+        let repo = Repo::new();
+        let outside = env::temp_dir().join(format!(
+            "factory-architecture-outside-{}",
+            std::process::id()
+        ));
+        fs::write(&outside, "outside").unwrap();
+        repo.write("inside/file.md", "inside");
+        assert!(
+            check_reference(&repo.0, "../outside")
+                .unwrap_err()
+                .contains("parent traversal")
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, repo.0.join("inside/escape.md")).unwrap();
+            assert!(
+                check_reference(&repo.0, "inside/escape.md")
+                    .unwrap_err()
+                    .contains("outside repository root")
+            );
+        }
+        let _ = fs::remove_file(outside);
+    }
+
+    #[test]
+    fn evidence_and_live_certification_claims_require_typed_passing_records() {
+        let repo = Repo::new();
+        repo.write("docs/evidence/pass.json", r#"{"checks":[{"pass":true}]}"#);
+        repo.write("docs/evidence/fail.json", r#"{"checks":[{"pass":false}]}"#);
+        assert!(validate_evidence(&repo.0, "deterministic", "docs/evidence/pass.json").is_ok());
+        assert!(
+            validate_evidence(&repo.0, "deterministic", "docs/evidence/fail.json")
+                .unwrap_err()
+                .contains("no recorded passing result")
+        );
+        repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#);
+        assert!(
+            validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json").is_ok()
+        );
+        repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"SIMULATED","status":"verified","implementation_sha":"short","candidate_sha":"short"}"#);
+        assert!(
+            validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json")
+                .unwrap_err()
+                .contains("REAL_PASEO_E2E_VERIFIED")
+        );
     }
 
     #[test]
@@ -1066,14 +1182,29 @@ mod tests {
             "docs/architecture/decisions/ADR-0001-one.md",
             accepted_adr(),
         );
-        assert!(check_repository(&repo.0, None).is_ok());
+        assert!(
+            check_repository(
+                &repo.0,
+                Path::new("docs/product/capabilities.yaml"),
+                Path::new("docs/roadmap/ROADMAP.md"),
+                false,
+                None
+            )
+            .is_ok()
+        );
         let mut stale = render_roadmap(&registry);
         stale.push_str("stale\n");
         repo.write("docs/roadmap/ROADMAP.md", &stale);
         assert!(
-            check_repository(&repo.0, None)
-                .unwrap_err()
-                .contains("roadmap is stale")
+            check_repository(
+                &repo.0,
+                Path::new("docs/product/capabilities.yaml"),
+                Path::new("docs/roadmap/ROADMAP.md"),
+                false,
+                None
+            )
+            .unwrap_err()
+            .contains("roadmap is stale")
         );
     }
 
@@ -1082,14 +1213,14 @@ mod tests {
         let mut registry = parse_registry(tiny_registry()).unwrap();
         registry.milestones[0].capability_ids.push("CAP-1".into());
         assert!(
-            validate_registry(&registry)
+            validate_registry(Path::new("."), &registry)
                 .unwrap_err()
                 .contains("membership")
         );
         let mut registry = parse_registry(tiny_registry()).unwrap();
         registry.capabilities[0].dependencies.push("CAP-1".into());
         assert!(
-            validate_registry(&registry)
+            validate_registry(Path::new("."), &registry)
                 .unwrap_err()
                 .contains("dependency cycle")
         );

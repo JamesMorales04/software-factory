@@ -1,6 +1,6 @@
 # Software Factory Roadmap
 
-This page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `scripts/check-architecture-consistency --write-roadmap`.
+This page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `cargo run --manifest-path native/Cargo.toml --bin factory-architecture-check -- --root . --write-roadmap`.
 
 ## F1-S4-C — Completed governed multi-project baseline
 

@@ -5,6 +5,7 @@
 | Area | Candidates | Decision | Rationale |
 |---|---|---|---|
 | JSON Schema | `schemars` 1.2.3, `jsonschema` 0.60.1 | **ADOPTED / IMPLEMENTED** | Rust-derived assessment schema, strict schema validation, provider keyword allowlist; 3 tests pass. |
+| YAML parsing | `serde_yaml_ng` 0.10.0 | **ADOPTED / IMPLEMENTED** | Replaces the architecture checker's handwritten partial YAML parser with Serde deserialization and unknown-field rejection. MIT, declared MSRV 1.64, pure Rust; focused registry and negative governance tests pass. Windows behavior is not separately exercised. |
 | Git | `gix` 0.90 (MSRV 1.88), `git2` 0.21, hardened CLI | **RETAIN_CLI (evaluated)** | Current CLI is narrow, uses exact Git semantics and now disables hooks/replace/grafts/global config. A library migration needs a full worktree/lineage/cleanup equivalence suite; not justified in this increment. |
 | Podman | `bollard` 0.21.1, `podman-api` 0.11, CLI | **RETAIN_CLI / SPIKE_REQUIRED** | Docker-compatible APIs may not expose every rootless Podman security control. The supervisor uses named-volume mounts but remains blocked on independent isolation and credential confinement; no API adoption without an explicit endpoint/authorization spike. |
 | GitHub | `octocrab` 0.54.5 (MSRV 1.85) | **EVALUATED / ADOPT_LATER** | Suitable adapter candidate when delivery is implemented; Core delivery authority and token scope remain outside the library. |
