@@ -211,6 +211,26 @@ fn git(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+async fn expire_fixture_lease(database: &Path, attempt_id: &str) {
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(database)
+                .create_if_missing(false),
+        )
+        .await
+        .expect("open fixture database to advance lease expiry");
+    let changed =
+        sqlx::query::query("UPDATE worker_leases SET expires_at_ms=1 WHERE attempt_id=?1")
+            .bind(attempt_id)
+            .execute(&pool)
+            .await
+            .expect("advance fixture lease expiry");
+    assert_eq!(changed.rows_affected(), 1);
+    pool.close().await;
+}
+
 #[tokio::test]
 async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     let root = std::env::temp_dir().join(format!(
@@ -1411,8 +1431,36 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
     let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
 
-    // Restart Core with the frozen graph durably started but before any Worker
-    // claims an Attempt. The same real Supervisor/Worker flow must resume it.
+    // Claim a root Attempt before the process dies. After restart, advance its
+    // persisted expiry deterministically so a recovery worker can fence the
+    // old generation without waiting for the production 60s lease duration.
+    let stale_registration = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({"worker_id":"stale-fanin-worker","registration_key":"stale-fanin-registration"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale_registration.status(), StatusCode::OK);
+    let stale_session: Value = stale_registration.json().await.unwrap();
+    let stale_claim: Value = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(stale_session["session_token"].as_str().unwrap())
+        .json(&json!({"worker_id":"stale-fanin-worker"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let stale_assignment = &stale_claim["assignment"];
+    let stale_attempt_id = stale_assignment["lease"]["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(stale_assignment["lease"]["generation"], 1);
+
+    // Restart Core while a real root Attempt is leased.
     core.stop();
     core = CoreProcess::start_with_lead_fixture(
         &root.join("factory.sqlite"),
@@ -1422,6 +1470,72 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
         "fanin",
     );
     wait_healthy(&client, &base_url, &mut core).await;
+    expire_fixture_lease(&root.join("factory.sqlite"), &stale_attempt_id).await;
+    let recovery_registration = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({"worker_id":"recovery-fanin-worker","registration_key":"recovery-fanin-registration"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recovery_registration.status(), StatusCode::OK);
+    let recovery_session: Value = recovery_registration.json().await.unwrap();
+    let recovery_claim: Value = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(recovery_session["session_token"].as_str().unwrap())
+        .json(&json!({"worker_id":"recovery-fanin-worker"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let recovery_assignment = &recovery_claim["assignment"];
+    assert_eq!(recovery_assignment["lease"]["attempt_id"], stale_attempt_id);
+    assert_eq!(recovery_assignment["lease"]["generation"], 2);
+    assert_eq!(
+        recovery_assignment["action_spec_sha256"], stale_assignment["action_spec_sha256"],
+        "recovery must retain the frozen Action specification"
+    );
+    let stale_report = client
+        .post(format!("{base_url}/worker/report"))
+        .bearer_auth(stale_session["session_token"].as_str().unwrap())
+        .json(&json!({
+            "attempt_id":stale_attempt_id,
+            "worker_id":"stale-fanin-worker",
+            "generation":1,
+            "receipt_id":"stale-after-restart",
+            "result_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "terminal_status":"FAILED"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        stale_report.status().is_client_error(),
+        "stale lease generation must be fenced after Core restart"
+    );
+    expire_fixture_lease(&root.join("factory.sqlite"), &stale_attempt_id).await;
+    let attempts_after_reclaim: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/attempts"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        attempts_after_reclaim
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|attempt| attempt["id"] == stale_attempt_id)
+            .count(),
+        1,
+        "lease recovery must not create a duplicate dependent/root Attempt"
+    );
     let restored: Value = operator(
         &client,
         reqwest::Method::GET,
