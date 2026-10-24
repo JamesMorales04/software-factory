@@ -12,5 +12,6 @@ pub mod review;
 pub mod runtime;
 pub mod sandbox;
 pub mod sse;
+pub mod telemetry;
 pub mod workspace;
 pub mod workspace_archive;

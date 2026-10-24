@@ -142,6 +142,7 @@ struct QualityReceiptRequest {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("factory_native=info")
+        .with_writer(factory_native::telemetry::RedactingMakeWriter)
         .init();
     let database = env::var("FACTORY_DATABASE").unwrap_or_else(|_| "factory-native.sqlite".into());
     let operator_token =
@@ -168,6 +169,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .any(|(index, token)| token.is_empty() || tokens[index + 1..].contains(token))
     {
         return Err("operator, Worker bootstrap, verifier and reviewer tokens must be nonempty, at least 32 bytes for role tokens, and distinct".into());
+    }
+    for token in &tokens {
+        factory_native::telemetry::register_secret(token);
     }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");

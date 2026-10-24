@@ -210,11 +210,13 @@ struct App<B: factory_native::execution::VolumeBackend> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("factory_native=info")
+        .with_writer(factory_native::telemetry::RedactingMakeWriter)
         .init();
     let token =
         env::var("FACTORY_SUPERVISOR_TOKEN").map_err(|_| "FACTORY_SUPERVISOR_TOKEN required")?;
     validate_supervisor_token(&token)?;
     ensure_distinct_from_other_roles(&token)?;
+    factory_native::telemetry::register_secret(&token);
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
     let images = parse_images(
