@@ -1,3 +1,5 @@
+> **Historical Go implementation.** This directory is not the active target architecture. The native Rust branch uses `native/`, `cargo xtask`, SQLx and the container-first workflow. These instructions are retained only until verified legacy deletion; do not use them as current guidance.
+
 # Factory Core and Worker (F1-S1 + F1-S2)
 
 Go modular monolith: domain rules, SQLite WAL persistence, authenticated

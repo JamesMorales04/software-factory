@@ -1,10 +1,11 @@
 # ADR-0016 — Dual-mode autonomous engineering
+- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 
 **Status:** Accepted for product objectives and authority boundaries; implementation contracts for future milestones remain proposed. **Date:** 2026-10-21 UTC.
 
 ## Context
 
-The Product Owner ratified two operating modes: autonomous product development from an authorized objective, and ongoing autonomous maintenance and evolution after delivery. AEH showed that elaborate orchestration and deterministic tests can coexist with poor real-world completion. The existing Factory already has one Core-owned Project/Action/Campaign path and candidate-bound quality pipeline. Splitting maintenance into a second controller would duplicate authority and evidence rules.
+The Product Owner ratified two operating modes: autonomous product development from an authorized objective, and ongoing autonomous maintenance and evolution after delivery. A predecessor harness showed that elaborate orchestration and deterministic tests can coexist with poor real-world completion. The existing Factory already has one Core-owned Project/Action/Campaign path and candidate-bound quality pipeline. Splitting maintenance into a second controller would duplicate authority and evidence rules.
 
 ## Decision
 

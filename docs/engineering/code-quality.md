@@ -2,6 +2,8 @@
 
 **Decision:** agreed quality direction; technical details subject to evidence. Applies to all Factory implementation languages and generated changes.
 
+**Rust implementation:** [rust-standards.md](rust-standards.md) is the normative Rust-specific standard for Core, Worker, provider adapters, persistence, governance tools and tests. It specializes these principles with concrete ownership, error, async, security and transaction rules.
+
 ## Core design principles
 
 - **Make the smallest correct design.** Favor explicit, readable code over abstraction for its own sake. Complexity must have a real requirement, measured benefit or documented invariant.
@@ -20,9 +22,9 @@
 
 ## Architecture boundaries, not ceremonial Clean Architecture
 
-The proposed modular Core has domain/application, platform/adapters and interface/transport concerns. These are *logical responsibilities*, not a required number of folders or framework-generated layers. A small feature may use a single module. Introduce a port/adapter when an actual trust, persistence, runtime or test boundary requires it.
+The Rust Core is a pragmatic modular monolith with hexagonal boundaries. Domain/application, persistence, provider adapters and interface/transport are *logical responsibilities*, not a required number of folders or framework-generated layers. A small feature may use a single module. Introduce a port/adapter when an actual trust, persistence, runtime or test boundary requires it; otherwise prefer concrete types and static dispatch. See [rust-standards.md](rust-standards.md).
 
-The TypeScript Paseo adapter should translate SDK interactions to a small, versioned Core–Worker contract; no Paseo-specific types should leak into Core domain policy. React components must render server-authoritative state, not reimplement action or delivery rules.
+Provider adapters translate Codex App Server and OpenCode protocol interactions into a small, versioned Core–Worker contract; no provider-specific types should leak into Core domain policy. React components must render server-authoritative state, not reimplement action or delivery rules.
 
 ## Code review checklist
 
@@ -37,4 +39,4 @@ The TypeScript Paseo adapter should translate SDK interactions to a small, versi
 
 **Avoid:** god objects, duplicate validation/authorization logic, cyclic module dependencies, clever generics, unnecessary interfaces, premature plugin abstractions, long parameter lists with implicit behavior, silent retries, undocumented magic values, broad `any`/type assertions, ignored errors, and unused fallbacks.
 
-See [linting](linting.md), [quality baseline](../quality/baseline.md), and [early-development compatibility ADR](../architecture/decisions/ADR-0006-early-development-compatibility.md).
+See [Rust standards](rust-standards.md), [linting](linting.md), [quality baseline](../quality/baseline.md), and [early-development compatibility ADR](../architecture/decisions/ADR-0006-early-development-compatibility.md).

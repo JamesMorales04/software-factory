@@ -1,0 +1,3 @@
+[workspace]
+members = ["factory-cli", "native", "xtask"]
+resolver = "2"

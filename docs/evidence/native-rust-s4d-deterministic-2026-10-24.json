@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "evidence_id": "native-rust-s4d-deterministic-2026-10-24",
+  "candidate_sha": "f7caf3776ddc28acd37847d2c72ca46b9367a568",
+  "recorded_at": "2026-10-24",
+  "result": "PASS (author-run, not independent acceptance)",
+  "scope": "S4-D Rust deterministic scaffold: strict assessment schema, project config binding, proposal/freeze validation, delegation reservation/revocation, sequential WorkGraph tasks, CAP-014 evaluator, Lead fixture lifecycle and browser projection.",
+  "limitations": [
+    "No model assessor or live provider coding.",
+    "No parallel/fan-in integration.",
+    "No independent isolation or credential certification.",
+    "This is not PR #16 certification and does not authorize merge."
+  ],
+  "checks": [
+    {
+      "id": "workspace_tests",
+      "command": "cargo test --workspace --locked",
+      "pass": true,
+      "result": "author-run green at the recorded candidate family"
+    },
+    {
+      "id": "lead_fixture_process",
+      "command": "cargo test --test e2e_fixture_dispatch lead_fixture",
+      "pass": true,
+      "result": "Lead request -> fixture assessment -> freeze -> start -> Supervisor candidate -> verifier -> ACCEPTED"
+    },
+    {
+      "id": "office_lead_browser",
+      "command": "cargo xtask e2e office",
+      "pass": true,
+      "result": "Lead submit/assess/freeze/reload and fixture Campaign reach ACCEPTED"
+    },
+    {
+      "id": "cap014",
+      "command": "cargo test --lib evaluation",
+      "pass": true,
+      "result": "Frozen corpus digest, baseline, blinded scoring and thresholds pass"
+    },
+    {
+      "id": "architecture",
+      "command": "cargo xtask validate-architecture",
+      "pass": true,
+      "result": "registry, roadmap and capability-preservation projection pass"
+    }
+  ]
+}

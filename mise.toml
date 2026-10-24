@@ -1,2 +1,5 @@
+# Optional host-native developer convenience. Container-first development uses
+# .devcontainer and does not require mise, Go, host Rust, Node or SQLx tooling.
 [tools]
-go = "1.26.9"
+rust = "1.90.0"
+node = "22.23.2"

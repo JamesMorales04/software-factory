@@ -1,0 +1,43 @@
+{
+  "provider": "opencode",
+  "provider_version": "1.18.32",
+  "provider_id": "opencode-go",
+  "model_id": "deepseek-v4.1-flash",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "authorization_id": "po-directive-2026-10-24-opencode-go-256",
+  "candidate_sha": "0601a6d8af59314b62ed8e9a92d8c7958f8bc7f3",
+  "schema_sha256": "8f491d2fa7dfe9883e4aacd38cd01feffa33eba1f57435657dff0126d8d17b78",
+  "structured_output_supported": true,
+  "protocol_verified": true,
+  "structured_output_verified": true,
+  "turn_id": "msg_16becba690022DVSPG0M81bBkL",
+  "session_id": "ses_e941345e9ffe32yqIb9BacUrZ7",
+  "max_output_tokens": 256,
+  "max_total_tokens": null,
+  "usage": {
+    "cost": 0.000872526,
+    "tokens": {
+      "cache": {
+        "read": 1792,
+        "write": 0
+      },
+      "input": 5513,
+      "output": 67,
+      "reasoning": 0,
+      "total": 7372
+    }
+  },
+  "output": {
+    "ok": true,
+    "summary": "Confirmed: this is a read-only provider smoke test. No changes made."
+  },
+  "cleanup": {
+    "after_delete_status": 404,
+    "after_delete_success": false,
+    "deleted": true
+  },
+  "requests": 1,
+  "classification": "LIVE_STRUCTURED_OUTPUT_VERIFIED",
+  "error": null,
+  "duration_ms": 5248
+}

@@ -1,6 +1,6 @@
 # F0 contract inventory
 
-**Status:** S1 through S4-C slice contracts exist and have candidate-bound acceptance evidence. S5 delivery, autonomous planning and maintenance contracts remain proposed; the [capability registry](../product/capabilities.yaml) records current implementation and verification status. This index is a protocol map, not certification by itself.
+**Status:** These S1 through S4-C contracts describe historical Go/Paseo behavior and remain behavioral oracles during migration. The current Rust implementation is governed by [ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md), the [migration closure](../implementation/native-rust-closure.md) and the [capability registry](../product/capabilities.yaml). This index is a protocol map, not certification by itself. Paseo-specific contracts are `HISTORICAL_ONLY` for the Rust runtime.
 
 ## Frozen for F1 (implemented, review-bound)
 

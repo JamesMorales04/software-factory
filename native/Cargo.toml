@@ -1,0 +1,66 @@
+[package]
+name = "factory-native"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8.4", features = ["json"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+futures-util = "0.3.31"
+reqwest = { version = "0.12.23", features = ["json", "stream", "rustls-tls"], default-features = false }
+ring = "0.17.14"
+sqlx = { package = "sqlx-core", version = "0.8.6", default-features = false, features = ["_rt-tokio", "migrate"] }
+sqlx-sqlite = { version = "0.8.6", default-features = false, features = ["bundled", "migrate"] }
+sqlx-macros = { version = "0.8.6", default-features = false, features = ["macros", "migrate", "sqlite", "_rt-tokio"] }
+sha2 = "0.10.9"
+tar = "0.4.44"
+schemars = "1.2.3"
+jsonschema = { version = "0.60.1", default-features = false }
+serde = { version = "1.0.226", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["full"] }
+tower-http = { version = "0.6.11", features = ["fs"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[[bin]]
+name = "factory-core"
+path = "src/bin/core.rs"
+
+[[bin]]
+name = "factory-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "factory-verifier"
+path = "src/bin/verifier.rs"
+
+[[bin]]
+name = "factory-supervisor"
+path = "src/bin/supervisor.rs"
+
+[[bin]]
+name = "factory-s4d-evaluate"
+path = "src/bin/s4d_evaluate.rs"
+
+[[bin]]
+name = "factory-provider-smoke"
+path = "src/bin/provider_smoke.rs"
+
+[[bin]]
+name = "factory-provider-probe"
+path = "src/bin/provider_probe.rs"
+
+[[bin]]
+name = "factory-repo-hygiene"
+path = "src/bin/repo_hygiene.rs"
+
+[[bin]]
+name = "factory-architecture-check"
+path = "src/bin/architecture_check.rs"
+
+[dev-dependencies]
+tower = { version = "0.5.2", features = ["util"] }

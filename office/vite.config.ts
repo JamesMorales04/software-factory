@@ -1,14 +1,17 @@
-import { defineConfig } from "vite";
+declare const process: { env: Record<string, string | undefined> };
+
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
-      "/api": {
-        target: "http://127.0.0.1:8471",
+      "/core-api": {
+        target: process.env.FACTORY_CORE_URL || "http://127.0.0.1:8765",
         changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/core-api/, ""),
       },
     },
   },

@@ -1,6 +1,9 @@
+> **Current architecture:** Rust Core/Worker/Supervisor/provider adapters, SQLite/SQLx, React Office and rootless Podman execution under [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The historical F1-S4-C sections that mention Go/Paseo describe earlier implementation and are retained only as provenance. Active capability decisions are in [capability-decisions.md](../product/capability-decisions.md).
 # Software Factory — Master Architecture Specification
 
-> **Status:** F1-S1 through F1-S4-B merged. F1-S4-C multi-project registry, scoped capabilities and Factory-managed browser capability are implemented and deterministically verified (2026-10-21 UTC). F1-S4-C-07 achieved the bounded real-Paseo Vlog live path on tested head `9567bc5` / runtime `14133cb7`: one paid session, initial-turn model-mediated browser interaction, independent verifier PASS, reviewer APPROVE, gate ACCEPTED, clean session/workspace/server cleanup. PR #12 is merged at `9ec7643`; `PRODUCT_OWNER_UAT_VERIFIED` is recorded from the Product Owner's explicit attestation (owner acceptance, not independent technical evidence). Deployment and SEC-01 isolation are not claimed. No other component is certified beyond its recorded candidate-bound evidence. Architecture baseline revision 0.5. **Permanent repository:** `JamesMorales04/software-factory`. **Software status:** working components are exercised by real acceptance suites, but no component is certified beyond its recorded candidate-bound evidence. The document distinguishes agreed product policy from proposed technical solutions and unverified feasibility.
+> **Authority:** [ADR-0018](decisions/ADR-0018-native-rust-replacement.md) governs the native Rust target. Rust engineering rules are normative in [rust-standards.md](../engineering/rust-standards.md). Sections describing Go/Paseo are historical provenance only; no historical behavior is current runtime evidence.
+
+> **Status:** This document preserves the F1-S4-C architecture baseline. The current native Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification and the deterministic gate are implemented; S4-D parity, provider coding, Go deletion and independent isolation remain open. Paseo/Go references below are historical provenance, not current runtime authority. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
 
 ## 1. Product mission and priorities
 
@@ -27,7 +30,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Identity | Permanent public repo `JamesMorales04/software-factory` | Agreed |
 | Product | Central, independent, local-first and multi-project | Agreed |
 | Deployment | Local Worker first, expandable to owned/cloud-managed remote Workers | Agreed |
-| Coding runtime | Paseo first; Factory owns its API/UI and policies | Agreed |
+| Coding runtime | Direct Codex/OpenCode adapters behind a Rust provider port; Factory owns API/UI/policy. Provider coding remains fail-closed. | Agreed (ADR-0018) |
 | UI | Real minimum Factory Office web interface required in F1 | Agreed |
 | Execution | Per-Run sandbox default; authorized, auditable host exceptions only | Agreed |
 | Autonomy | Standing autonomous monitoring and maintenance within bounds | Agreed |
@@ -48,9 +51,9 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 
 ### Implemented technology choices and remaining proposals
 
-- **Core + local Worker:** Go is ratified and implemented for the modular Core and separate Worker process ([ADR-0005](decisions/ADR-0005-go-core-worker-language.md)). This does not certify provider credential isolation (SEC-01).
+- **Core + local Worker:** Rust is ratified for the modular Core and separate Worker process by [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The Go tree remains migration debt. This does not certify provider credential isolation (SEC-01).
 - **Persistence:** Core-owned SQLite WAL is implemented. The observed transient lock error remains open in the [reliability register](../quality/reliability-debt.md); Postgres is only a future option if a measured scale constraint warrants it.
-- **Paseo:** the implemented Go adapter invokes the installed Paseo CLI and checks observed session identity (`core/internal/paseo/adapter.go`). Keep runtime details out of Core domain contracts.
+- **Providers:** direct Codex App Server and OpenCode HTTP adapters are the Rust target. No intermediary coding-agent orchestrator is part of the product. Provider work remains fail-closed until security is verified.
 - **Web UI:** React and TypeScript Office is implemented over authenticated HTTP and SSE with replay. Future visualization remains proposed.
 - **Sandbox:** rootless OCI/Podman, with no unauthorized host execution fallback; alternative confinement if proven appropriate.
 - **Observability:** a durable event ledger, structured redacted logs and OpenTelemetry tracing path are implemented. Full metrics coverage remains proposed; see [telemetry](../observability/telemetry.md).
@@ -204,7 +207,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 |---|---|---|
 | SEC-01 | Mode-specific per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md): STRICT not-required-for-TRUSTED_LOCAL (owner risk acceptance); ISOLATED paused / BLOCKED available-only-where-verified — host read canary FAIL; partial Podman/SDK/MCP feasibility PASS | ISOLATED/S3-ISOLATED: mandatory tool/credential OS boundary, real isolated Paseo session, bypass-negative and restart tests; [results](../security/SEC-01-results-2026-10-18.md). S3-TRUSTED_LOCAL entry conditions replace the absolute gate for that mode only. |
 | EXEC-01 | Per-Run Paseo sandbox lifecycle and SDK capabilities | Real start/observe/cancel/cleanup/recovery |
-| TECH-01 | Core/Worker language selection | **Closed: Go ratified by product owner**; Go toolchain/integration checks remain implementation tasks, not a comparative Rust prerequisite |
+| TECH-01 | Core/Worker language selection | **Superseded: Rust ratified by ADR-0018**; the Go tree remains to be removed after parity |
 | DATA-01 | SQLite WAL, durability, single-writer semantics | Crash recovery, fencing, idempotency and replay tests |
 | UI-01 | Browser event transport choice | Authenticated reconnect and missed/duplicate-event recovery |
 | POLICY-01 | Initial quality/budget thresholds | Empirical baseline and policy tests |
@@ -220,7 +223,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 - [Live certification policy](../quality/live-certification.md), [campaign recovery contract](../contracts/campaign-recovery-s4c03.md), [ADR-0013](decisions/ADR-0013-bounded-autonomous-recovery.md), [ADR-0014](decisions/ADR-0014-same-session-capability-completion.md), [ADR-0015](decisions/ADR-0015-worker-managed-browser-test-server.md), [F1-S4-C acceptance](../implementation/f1-s4c-acceptance.md), [C-04 diagnosis](../implementation/f1-s4c-04-diagnosis.md), [C-06 server lifecycle](../implementation/f1-s4c-06-server-lifecycle.md) and [C-07 live certification](../implementation/f1-s4c-07-live-certification.md)
 - [Isolation](../security/isolation.md)
 - [F0/F1 implementation plan](../implementation/f0-f1-plan.md)
-- Historical AEH for selective conceptual reuse: https://github.com/JamesMorales04/agentic-engineering-harness
+- Capability decisions are owned by Software Factory in [capability-decisions.md](../product/capability-decisions.md).
 - Agent guidelines: https://agents.md/
 - Architecture decision template: https://github.com/adr/madr
 - Observability: https://opentelemetry.io/docs/languages/go/

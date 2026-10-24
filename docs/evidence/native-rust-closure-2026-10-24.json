@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "evidence_id": "native-rust-closure-2026-10-24",
+  "candidate_sha": "5a323f8d97a963b0569f888640632780d5c570ee",
+  "recorded_at": "2026-10-24",
+  "result": "PASS (author-run and exact-head CI; not independent acceptance)",
+  "scope": "Native Rust closure checkpoint: rootless-Podman named-volume execution, managed host Supervisor/Worker, containerized Core/Office, sandboxed verifier, deterministic gate, Lead/WorkGraph fixture lifecycle, CAP-014 evaluator and Office browser journey.",
+  "checks": [
+    {
+      "id": "rust_ci",
+      "command": "GitHub Actions native-rust.yml rust job",
+      "pass": true,
+      "result": "exact-head PASS at 5a323f8; migrations, fmt, strict Clippy, workspace tests, build, recovery E2E, architecture check",
+      "run": "https://github.com/JamesMorales04/software-factory/actions/runs/40070608163/job/120803008846"
+    },
+    {
+      "id": "architecture_ci",
+      "command": "GitHub Actions governance architecture-consistency",
+      "pass": true,
+      "result": "exact-head PASS including PR impact and base-ref capability/ADR checks",
+      "run": "https://github.com/JamesMorales04/software-factory/actions/runs/40070608192/job/120803009063"
+    },
+    {
+      "id": "office_browser_ci",
+      "command": "GitHub Actions office-browser",
+      "pass": true,
+      "result": "exact-head PASS",
+      "run": "https://github.com/JamesMorales04/software-factory/actions/runs/40070608163/job/120803008933"
+    },
+    {
+      "id": "lead_fixture_process",
+      "command": "cargo test --test e2e_fixture_dispatch",
+      "pass": true,
+      "result": "Lead request -> classification -> assessment -> freeze -> start -> Supervisor candidate -> verifier -> ACCEPTED"
+    },
+    {
+      "id": "rootless_podman_named_volume",
+      "command": "cargo test --lib execution::tests::real_podman -- --ignored",
+      "pass": true,
+      "result": "real rootless Podman named-volume candidate; host path and provider-secret canary inaccessible"
+    }
+  ],
+  "limitations": [
+    "No provider-backed coding or model assessor.",
+    "No parallel/fan-in WorkGraph or integration node.",
+    "No independent isolation, credential-confinement certification or zero-Go cutover.",
+    "Office recovery/cleanup visibility and Windows remain unverified.",
+    "Exact-head CI is not independent human acceptance."
+  ]
+}

@@ -54,6 +54,7 @@ milestones:
   - CAP-015
   - CAP-016
   - CAP-017
+  - CAP-022
   - CAP-043
   exclusions:
   - Autonomous merge
@@ -89,7 +90,6 @@ milestones:
   - CAP-019
   - CAP-020
   - CAP-021
-  - CAP-022
   - CAP-023
   exclusions:
   - Always-on fixed agent roster
@@ -271,7 +271,7 @@ capabilities:
   purpose: Bind repository identity, base policy and quality profile
   product_objective: Multi-project engineering
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -295,6 +295,7 @@ capabilities:
     real: Exercise registered projects in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -308,7 +309,7 @@ capabilities:
   purpose: Preserve authorized objective and acceptance revision
   product_objective: Governed execution
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -335,6 +336,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -348,7 +350,7 @@ capabilities:
   purpose: Advance a durable bounded task plan
   product_objective: Governed execution
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: verified
@@ -373,6 +375,7 @@ capabilities:
     real: Exercise campaign orchestration in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent:
     - docs/evidence/f1-s4c-07-certification-manifest.json
@@ -390,7 +393,7 @@ capabilities:
   purpose: Dispatch leased work to a real local agent runtime
   product_objective: Real engineering work
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: verified
@@ -418,6 +421,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent:
     - docs/evidence/f1-s4c-07-certification-manifest.json
@@ -435,7 +439,7 @@ capabilities:
   purpose: Freeze source changes for exact-candidate checks
   product_objective: Trustworthy acceptance
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -463,6 +467,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -476,7 +481,7 @@ capabilities:
   purpose: Collect separate candidate-bound functional and review evidence
   product_objective: Trustworthy acceptance
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -503,6 +508,7 @@ capabilities:
       verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -516,7 +522,7 @@ capabilities:
   purpose: Apply Core-owned acceptance policy to candidate evidence
   product_objective: Trustworthy acceptance
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -544,6 +550,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -558,7 +565,7 @@ capabilities:
   purpose: Bind Project and Run capability requirements to Worker support
   product_objective: Bounded authority
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -585,6 +592,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -627,6 +635,7 @@ capabilities:
       verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent:
     - docs/evidence/f1-s4c-07-certification-manifest.json
@@ -645,7 +654,7 @@ capabilities:
   purpose: Classify and retry recoverable failures under immutable budgets
   product_objective: Reliable campaigns
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -673,6 +682,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -687,7 +697,7 @@ capabilities:
   purpose: Expose Projects Actions Campaigns Runs and evidence to the owner
   product_objective: Observable operation
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -707,19 +717,21 @@ capabilities:
     source:
     - office/src/App.tsx
     test:
-    - office/src/views/CampaignDetail.tsx
+    - office/src/views/Campaigns.tsx
   acceptance:
     deterministic: Applicable factory office contract, negative and regression checks pass on an exact candidate.
     real: Exercise factory office in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat:
     - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - "Native Rust Office migration is partial: Dashboard/Projects/Actions/Campaigns/Runs only; browser E2E and Lead/delegation views remain pending."
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -727,7 +739,7 @@ capabilities:
   purpose: Persist transitions and emit redacted logs and traces
   product_objective: Diagnosable operation
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
     deterministic: verified
     live_agent: not_tested
@@ -755,6 +767,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
     uat: []
@@ -769,9 +782,9 @@ capabilities:
   purpose: Interpret owner objectives and coordinate bounded engineering
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -784,13 +797,15 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs]
   acceptance:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
+
     live_agent: []
     uat: []
     deployment: []
@@ -803,9 +818,9 @@ capabilities:
   purpose: Select and produce typed, evidence-bound semantic judgments when they improve practical decision quality
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -817,8 +832,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/evaluation.rs, native/src/lead.rs]
+    test: [native/src/evaluation.rs]
   acceptance:
     deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
       compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
@@ -827,7 +842,9 @@ capabilities:
       than the deterministic baseline while Core retains authority; reuse sufficient agent context rather than requiring
       a separate long-running session for each small judgment.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
+
     live_agent: []
     uat: []
     deployment: []
@@ -840,9 +857,9 @@ capabilities:
   purpose: Turn intent into an authorized plan and specification
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -855,15 +872,17 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs]
   acceptance:
     deterministic: Applicable frozen executable planning contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise frozen executable planning in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
+
     live_agent: []
     uat: []
     deployment: []
@@ -876,9 +895,9 @@ capabilities:
   purpose: Validate WorkUnits dependencies and coverage before dispatch
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -890,15 +909,17 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs]
+    test: [native/src/lead.rs]
   acceptance:
     deterministic: Applicable dependency-aware workgraph contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise dependency-aware workgraph in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
+
     live_agent: []
     uat: []
     deployment: []
@@ -911,9 +932,9 @@ capabilities:
   purpose: Bound autonomous decisions by owner scope expiry and budgets
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -926,15 +947,17 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source: [native/src/lead.rs, native/src/db/delegations.rs]
+    test: [native/src/lead.rs, native/src/db/delegations.rs]
   acceptance:
     deterministic: Applicable standing delegation contract contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise standing delegation contract in a genuine authorized project journey and independently verify
       the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
+
     live_agent: []
     uat: []
     deployment: []
@@ -1094,8 +1117,7 @@ capabilities:
   owner: Core
   dependencies:
   - CAP-016
-  - CAP-018
-  target_milestone: F1-S4-E
+  target_milestone: F1-S4-D
   refs:
     adr: []
     contract: []
@@ -1781,7 +1803,7 @@ capabilities:
   category: Knowledge
   purpose: Evaluate Serena Graphify Engram and Headroom against simple baselines
   product_objective: Efficient context
-  decision_status: deferred
+  decision_status: proposed
   implementation_status: not_implemented
   verification:
     deterministic: not_tested
@@ -1817,7 +1839,7 @@ capabilities:
   purpose: Product Owner objectives become independently accepted engineering changes
   product_objective: Autonomous product development
   decision_status: approved
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
     deterministic: not_tested
     live_agent: not_tested

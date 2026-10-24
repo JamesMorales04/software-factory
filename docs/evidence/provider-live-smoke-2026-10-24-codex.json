@@ -1,0 +1,43 @@
+{
+  "provider": "codex",
+  "provider_version": "codex-cli 0.156.1",
+  "model": "gpt-6-luna",
+  "authorization_id": "po-directive-2026-10-24-readonly-smoke",
+  "candidate_sha": "fa45904a5ef39df07ab812d305bf3f116e6077ca",
+  "schema_sha256": "8f491d2fa7dfe9883e4aacd38cd01feffa33eba1f57435657dff0126d8d17b78",
+  "structured_output_supported": true,
+  "protocol_verified": true,
+  "structured_output_verified": true,
+  "turn_id": "01a16b9d-fb94-7c83-ba23-e7cb8091b5db",
+  "session_id": "01a16b9d-fb35-7b81-803a-cda558dbeacb",
+  "usage": {
+    "last": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 0,
+      "inputTokens": 18508,
+      "outputTokens": 29,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 18537
+    },
+    "modelContextWindow": 258400,
+    "total": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 0,
+      "inputTokens": 18508,
+      "outputTokens": 29,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 18537
+    }
+  },
+  "output": {
+    "ok": true,
+    "summary": "Confirmed: this is a read-only provider smoke test."
+  },
+  "cleanup": {
+    "archive_response": {}
+  },
+  "requests": 1,
+  "classification": "LIVE_STRUCTURED_OUTPUT_VERIFIED",
+  "error": null,
+  "duration_ms": 3385
+}

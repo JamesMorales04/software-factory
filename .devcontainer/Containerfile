@@ -1,0 +1,103 @@
+# Development-container image for the Software Factory native Rust branch.
+#
+# This image is a trusted, writable contributor environment. It is not an
+# application runtime image and it is not an execution sandbox. Do not add
+# provider credentials, GitHub tokens, host HOME mounts or a host Podman/Docker
+# socket to it.
+#
+# The optional host Podman socket is intentionally NOT mounted or exposed.
+# Mounting /run/user/<uid>/podman/podman.sock (or the Docker socket) would let
+# any process in this container control the host user's container runtime and
+# would blur the boundary between development and the untrusted sandbox
+# launcher. Use an uncommitted local override only for trusted diagnostics
+# after a placement assessment; never enable it for untrusted code or CI.
+#
+# Reproducibility note: base images are pinned by tag, not digest, and Debian
+# packages are not snapshot-pinned. Digest pinning and an apt snapshot are
+# required before claiming byte-reproducible builds.
+
+ARG NODE_VERSION=22.23.2
+ARG RUST_VERSION=1.90.0
+
+FROM node:${NODE_VERSION}-bookworm-slim AS node
+
+FROM rust:${RUST_VERSION}-bookworm
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG NODE_VERSION=22.23.2
+ARG SQLX_CLI_VERSION=0.8.6
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:/home/factory/.cargo/bin:${PATH}
+
+# Rust 1.90.0 is pinned by rust-toolchain.toml. The base image provides the
+# pinned toolchain; only the formatter and linter components used by the
+# repository gates are added.
+RUN rustup component add clippy rustfmt
+
+# Build prerequisites for the Rust workspace and its SQLite/SQLx tooling.
+# Go is deliberately absent: ADR-0018 selects Rust for Core, Worker, provider
+# adapters, persistence and governance tools.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libsqlite3-dev \
+        libssl-dev \
+        pkg-config \
+        sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root development user. UID/GID are build arguments so a host
+# can align them when its development policy requires a specific identity.
+RUN groupadd --gid "${USER_GID}" factory \
+    && useradd --uid "${USER_UID}" --gid factory --create-home --shell /bin/bash factory \
+    && mkdir -p /workspaces/software-factory
+
+# Keep the user's Cargo registry and SQLx binary in the user's own home. The
+# Rust toolchain itself stays in the root-owned system locations.
+ENV CARGO_HOME=/home/factory/.cargo
+
+# Install the pinned SQLx CLI into the user's CARGO_HOME. The build runs as
+# root only to install system and toolchain packages; the container runs as
+# the non-root "factory" user below.
+RUN cargo install sqlx-cli \
+        --version "${SQLX_CLI_VERSION}" \
+        --locked \
+        --no-default-features \
+        --features rustls,sqlite
+
+# Pin the security audit tool used by `cargo xtask check`.
+RUN cargo install cargo-audit --version 0.22.2 --locked
+
+# Reuse the exact Node version from .nvmrc. The build context is the repository
+# root, and this check fails the build if the two pins drift.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+COPY .nvmrc /tmp/.nvmrc
+RUN test "$(tr -d '[:space:]' < /tmp/.nvmrc)" = "${NODE_VERSION}" \
+    && rm -f /tmp/.nvmrc
+
+RUN chown -R factory:factory /home/factory /workspaces/software-factory
+
+USER factory
+WORKDIR /workspaces/software-factory
+
+# Fail the build if a pinned tool is missing or the wrong version. These are
+# image-build checks, not an end-to-end verification of the development
+# container or of any Factory capability.
+RUN rustc --version | grep -q '^rustc 1\.90\.0 ' \
+    && cargo --version \
+    && node --version | grep -q '^v22\.23\.2$' \
+    && npm --version \
+    && sqlx --version | grep -q '0\.8\.6' \
+    && ! command -v go >/dev/null
