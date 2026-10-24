@@ -406,3 +406,27 @@ Both Codex and OpenCode Go now have bounded read-only structured-output
 evidence. Coding lifecycle, sandbox isolation and independent acceptance remain
 open. Next: deployed Project/Attempt workspace access and Supervisor-mediated
 execution, still fail-closed for provider/ISOLATED coding.
+
+## Closure checkpoint 2026-10-24 — `be22102`
+
+The current status authority is [native-rust-closure.md](native-rust-closure.md).
+This checkpoint adds:
+
+- Supervisor-owned named-volume execution, durable workspace identity,
+  path-replacement rejection and reconciliation.
+- Deployed `factory start/stop/status` management of Core, Supervisor and
+  Worker with explicit read-only project roots.
+- Sandboxed verifier and real deployed fixture Campaign to `ACCEPTED`.
+- Project configuration revisions/hash binding, exact provider route allowlist,
+  delegation release and revocation containment.
+- Frozen CAP-014 corpus, deterministic baseline, blinded scoring and CLI.
+- Authoritative capability decisions; predecessor assessment removed with a
+  preservation gate and empty strict independence audit.
+- Deterministic Lead fixture lifecycle and default-off single-unit autonomous
+  start, including a process E2E to `ACCEPTED`.
+- Sequential WorkGraph tasks, per-Attempt specs, candidate-driven promotion,
+  Lead Office view and Campaign detail projection.
+
+Remaining: parallel/fan-in integration, provider coding lifecycle, Go/Paseo
+removal and CI migration, strict hygiene, independent review and final merge
+authorization. Provider and ISOLATED execution remain fail-closed.
