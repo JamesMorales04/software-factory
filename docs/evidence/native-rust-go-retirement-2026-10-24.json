@@ -1,0 +1,55 @@
+{
+  "schema": "factory.legacy-retirement-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
+  "tracked_go_before": 94,
+  "tracked_go_after": 0,
+  "removed": {
+    "directories": ["core/"],
+    "go_module": ["core/go.mod", "core/go.sum", "core/.golangci.yml", "core/README.md"],
+    "legacy_workflows": [
+      ".github/workflows/s1.yml",
+      ".github/workflows/s2.yml",
+      ".github/workflows/s3a.yml",
+      ".github/workflows/s3b.yml",
+      ".github/workflows/s3c.yml",
+      ".github/workflows/s3d.yml",
+      ".github/workflows/s4a.yml",
+      ".github/workflows/s4b.yml",
+      ".github/workflows/s4c.yml"
+    ],
+    "legacy_scripts_and_harnesses": "provider-intermediary adapters/stubs, shell/Python/Node E2E runners/oracles, live authorization and certification validators, Go-era Office journeys",
+    "legacy_office_e2e": "journey.mjs, reconnect.mjs, soak.mjs, s2/s3c/s3d/s4a/s4b/s4c journeys, sse-parser and native tab switcher"
+  },
+  "preserved": [
+    "all selected CAP entries in docs/product/capabilities.yaml",
+    "Rust Core/Worker/Supervisor/verifier/reviewer/Office implementation",
+    "Rust architecture checker, PR-impact governance and strict hygiene",
+    "historical checkpoints, contracts, security findings and deletion inventory under docs/evidence/history",
+    "frozen CAP-014 corpus and evaluation policy",
+    "external project fixtures under scripts/fixtures"
+  ],
+  "author_run_checks": {
+    "cargo xtask check": "PASS (235 tests + 2 ignored, fmt, strict Clippy, build, docs, ten migrations, audit clean for 276 dependencies)",
+    "factory-architecture-check": "PASS with base-ref",
+    "factory-repo-hygiene --mode strict": "PASS (0 findings)",
+    "cargo xtask e2e recovery": "PASS",
+    "cargo xtask e2e dispatch": "PASS (7 tests)",
+    "cargo xtask e2e negatives": "PASS (4 tests)",
+    "cargo xtask e2e office": "PASS (real Chromium, independent reviewer, Workers view)"
+  },
+  "exact_head_ci": "PENDING",
+  "not_upgraded": [
+    "provider coding and direct provider work lifecycle",
+    "durable provider-session recovery",
+    "credential confinement and ISOLATED certification",
+    "model-backed Lead assessment",
+    "Factory-managed browser test server",
+    "recovery/cleanup Office projections",
+    "independent human acceptance and merge authorization"
+  ],
+  "provider_paid_turns": 0
+}

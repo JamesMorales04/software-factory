@@ -55,7 +55,7 @@ portfolio; this ledger is the current status authority.
 |---|---|---|
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. Provider coding and isolation remain fail-closed. |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
-| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally at the retirement candidate; exact-head CI pending |
+| M3 Repository hygiene | `PASS` | Zero tracked Go files at `0b94e09ecd9b0e5067295d9a21c43799028c6015`; strict hygiene passes locally; exact-head CI pending |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Credential confinement, provider-in-sandbox and independent isolation are not certified |
@@ -86,13 +86,13 @@ deployment authorization.
 
 ## Legacy retirement
 
-The complete former tracked implementation was removed in the retirement
-cutover commit on this branch together with its module files, Go-only lint
-configuration, legacy entrypoints, test harnesses, scripts and workflows. The
+The complete former tracked implementation was removed at `0b94e09ecd9b0e5067295d9a21c43799028c6015` together
+with its module files, Go-only lint configuration, legacy entrypoints, test
+harnesses, scripts and workflows. The
 tracked Go inventory is **0**. Historical contracts, checkpoints, security
 findings and the former deletion map are archived under
 [docs/evidence/history](../evidence/history/README.md); Git history preserves
-the former source.
+the former source. Evidence: [native-rust-go-retirement-2026-10-24.json](../evidence/native-rust-go-retirement-2026-10-24.json).
 
 The deletion does not change any capability from `PARTIAL` or `BLOCKED` to
 `VERIFIED`. Functional gaps remain as recorded above.

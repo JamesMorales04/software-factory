@@ -7,7 +7,7 @@
   "draft_pr": 17,
   "status": "INCOMPLETE_RUST_ONLY_MIGRATION",
   "tracked_go_files": 0,
-  "legacy_retirement": "The former tracked implementation, module, lint configuration, entrypoints, harnesses, scripts and legacy workflows were removed in the retirement cutover commit on this branch. Historical records are archived under docs/evidence/history.",
+  "legacy_retirement": "The former tracked implementation, module, lint configuration, entrypoints, harnesses, scripts and legacy workflows were removed at 0b94e09ecd9b0e5067295d9a21c43799028c6015. Historical records are archived under docs/evidence/history.",
   "implemented": [
     "Rust Core/Worker/Supervisor/Office workspace with SQLx/SQLite and ten versioned migrations",
     "Canonical project repository identity from the symlink-resolved path and root commit set",
@@ -86,5 +86,12 @@
     "devcontainer": ".devcontainer/devcontainer.json",
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
+  },
+  "verified_code_commit_sha": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
+  "cutover_campaign_checkpoint_2026_10_24": {
+    "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
+    "tracked_go_before": 94,
+    "tracked_go_after": 0,
+    "checks": "Author-run PASS: cargo xtask check (235 tests + 2 ignored, fmt, Clippy, build, docs, ten migrations, audit), architecture, strict hygiene 0 findings, recovery/dispatch/negatives/office E2E. Exact-head CI pending."
   }
 }

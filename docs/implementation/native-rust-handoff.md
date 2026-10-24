@@ -569,10 +569,11 @@ coding remains fail-closed and no merge/deploy authorization is implied.
 
 ## Rust-only retirement checkpoint (2026-10-24)
 
-The Product Owner authorized immediate whole-module retirement. This branch now
-contains **zero tracked `.go` files** and no Go module, Go lint/toolchain
-configuration, legacy Core/Worker/Verifier/Reviewer entrypoint, provider
-intermediary adapter, legacy harness, legacy script or legacy workflow.
+The Product Owner authorized immediate whole-module retirement. Commit
+`0b94e09ecd9b0e5067295d9a21c43799028c6015` now leaves this branch with **zero tracked `.go` files** and no Go
+module, Go lint/toolchain configuration, legacy Core/Worker/Verifier/Reviewer
+entrypoint, provider intermediary adapter, legacy harness, legacy script or
+legacy workflow.
 
 Deleted in the retirement cutover:
 
