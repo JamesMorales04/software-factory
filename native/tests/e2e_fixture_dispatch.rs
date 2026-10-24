@@ -1946,3 +1946,418 @@ async fn failed_fanin_dependency_is_not_dispatched() {
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
+#[tokio::test]
+async fn failed_fanin_integration_propagates_without_dependent_dispatch() {
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-fanin-integration-failure-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Fan-in E2E"]);
+    git(
+        &repository,
+        &[
+            "config",
+            "user.email",
+            "integration-failure@example.invalid",
+        ],
+    );
+    std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+    git(&repository, &["add", "seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start_with_lead_fixture(
+        &root.join("factory.sqlite"),
+        port,
+        &root.join("core.log"),
+        3,
+        "fanin",
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "integration-failure-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let config: Value = operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/projects/{project_id}/config"),
+        Some(json!({
+            "expectedRevision":1,"allowedPaths":["src"],
+            "capabilities":["repository-edit","generic-toolchain"],
+            "qualityProfile":"generic","active":true
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let config_hash = config["configHash"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id":project_id,
+            "objective":"Fan-in unit changes.",
+            "provider":"opencode","model":"deepseek-v4.1-flash",
+            "idempotency_key":"integration-failure-action","allowed_paths":["src"],
+            "checks":[
+                {"id":"build","kind":"build","description":"build","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"test","kind":"test","description":"test","command":["true"],"expectExit":0,"timeoutSecs":30},
+                {"id":"functional","kind":"functional","description":"fan-in output","command":["test","-f","src/unit-3.txt"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent rejected","command":["grep","-q","absent","src/unit-3.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/actions/{action_id}/classify"),
+            Some(json!({"risk_class":"R0","actor":"integration-failure-e2e","rationale":"R0","idempotency_key":"integration-failure-classify"}))
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let mut grant = factory_native::lead::StandingDelegation {
+        id: "integration-failure-grant".into(),
+        principal_id: "owner".into(),
+        audit_id: "audit".into(),
+        project_id: project_id.clone(),
+        revision: 1,
+        content_hash: String::new(),
+        objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+        allowed_paths: vec!["src".into()],
+        capabilities: vec![
+            factory_native::lead::Capability::RepositoryEdit,
+            factory_native::lead::Capability::GenericToolchain,
+        ],
+        risk_classes: vec![factory_native::lead::RiskClass::R0],
+        autonomous_start: true,
+        autonomous_risk_classes: vec![factory_native::lead::RiskClass::R0],
+        route: factory_native::lead::ProviderRoute {
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            mode: "build".into(),
+        },
+        max_attempts: 2,
+        max_timeout_secs: 300,
+        max_repair_cycles: 0,
+        max_wall_clock_secs: 1800,
+        max_parallel: 2,
+        max_sessions: 8,
+        max_requests: 2,
+        max_cumulative_sessions: 16,
+        max_cumulative_attempts: 32,
+        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+        revoked_at: None,
+    };
+    grant.content_hash = grant.compute_content_hash();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/delegations"),
+            Some(json!({"delegation":grant,"idempotency_key":"integration-failure-grant-key"}))
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let lead: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests"),
+        Some(json!({
+            "project_id":project_id,"action_id":action_id,"delegation_id":"integration-failure-grant",
+            "objective":"Fan-in unit changes.","project_config_hash":config_hash,
+            "idempotency_key":"integration-failure-request"
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let request_id = lead["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/lead/requests/{request_id}/assess"),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/lead/requests/{request_id}/freeze"),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let started: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: FIXTURE_IMAGE,
+        local_backend: true,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+    let map = json!({
+        "Unit 1":{"file":"src/unit-1.txt","content":"one\n"},
+        "Unit 2":{"file":"src/unit-2.txt","content":"two\n"},
+        "Unit 3":{"file":"src/unit-3.txt","content":"three\n"}
+    })
+    .to_string();
+    let run_worker = |map: Option<String>, id: u32, expected_success: bool| {
+        let base_url = base_url.clone();
+        let supervisor_url = supervisor_url.clone();
+        let root = root.clone();
+        async move {
+            let log =
+                File::create(root.join(format!("integration-failure-worker-{id}.log"))).unwrap();
+            let mut command = Command::new(env!("CARGO_BIN_EXE_factory-worker"));
+            command
+                .env("FACTORY_CORE_URL", base_url)
+                .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+                .env("FACTORY_WORKER_ID", "integration-failure-worker")
+                .env(
+                    "FACTORY_WORKER_REGISTRATION_KEY",
+                    "integration-failure-registration",
+                )
+                .env("FACTORY_SUPERVISOR_URL", supervisor_url)
+                .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+                .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
+                .env("FACTORY_WORKER_ONCE", "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(log.try_clone().unwrap()))
+                .stderr(Stdio::from(log));
+            if let Some(map) = map {
+                command.env("FACTORY_FIXTURE_MAP", map);
+            }
+            let mut child = command.spawn().expect("spawn integration-failure Worker");
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll integration-failure Worker") {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    panic!("integration-failure Worker {id} exceeded its 20s deadline");
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            assert_eq!(
+                status.success(),
+                expected_success,
+                "Worker {id} exit status"
+            );
+        }
+    };
+    run_worker(Some(map.clone()), 1, true).await;
+    run_worker(Some(map.clone()), 2, true).await;
+
+    let candidate_deadline = Instant::now() + Duration::from_secs(15);
+    let unit_candidates = loop {
+        let candidates: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/candidates"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        let units: Vec<Value> = candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|candidate| candidate["integration"] == false)
+            .cloned()
+            .collect();
+        if units.len() >= 2 {
+            break units;
+        }
+        assert!(
+            Instant::now() < candidate_deadline,
+            "two root candidates missing"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let mut expected_commits: Vec<String> = unit_candidates
+        .iter()
+        .map(|candidate| candidate["commit_sha"].as_str().unwrap().to_owned())
+        .collect();
+    expected_commits.sort();
+
+    // Force the real integration Worker down its failure path after Core has
+    // durably created the fan-in integration Attempt and exact candidate list.
+    supervisor.stop();
+    run_worker(None, 3, false).await;
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let attempts: Value = loop {
+        let attempts: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/attempts"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        if attempts.as_array().is_some_and(|items| {
+            items.len() == 3 && items.iter().any(|attempt| attempt["status"] == "FAILED")
+        }) {
+            break attempts;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "integration failure was not recorded"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let failed_request: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/lead/requests/{request_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(failed_request["request"]["state"], "FAILED");
+    assert_eq!(failed_request["request"]["campaign_id"], campaign_id);
+    let integration_attempts: Vec<&Value> = attempts
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|attempt| attempt["status"] == "FAILED")
+        .collect();
+    assert_eq!(
+        integration_attempts.len(),
+        1,
+        "one integration Attempt should fail"
+    );
+    assert_eq!(
+        attempts.as_array().unwrap().len(),
+        3,
+        "dependent unit was dispatched"
+    );
+
+    let candidates: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/candidates"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|candidate| candidate["integration"] == true)
+            .count(),
+        0,
+        "failed integration must not produce an integrated candidate"
+    );
+    let database = root.join("factory.sqlite");
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&database)
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let integration: (String, String, String, String, String) = sqlx::query_as::query_as(
+        "SELECT purpose,status,next_task_id,candidates_json,attempt_id
+         FROM lead_integrations WHERE campaign_id=?1",
+    )
+    .bind(&campaign_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(integration.0, "FANIN");
+    assert_eq!(integration.1, "FAILED");
+    assert_eq!(integration_attempts[0]["id"], integration.4);
+    let mut recorded_commits: Vec<String> = serde_json::from_str(&integration.3).unwrap();
+    recorded_commits.sort();
+    assert_eq!(
+        recorded_commits, expected_commits,
+        "integration lineage changed"
+    );
+    let task_states: Vec<(String, String, Option<String>)> = sqlx::query_as::query_as(
+        "SELECT unit_id,status,attempt_id FROM lead_tasks WHERE campaign_id=?1 ORDER BY sequence",
+    )
+    .bind(&campaign_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(task_states.len(), 3);
+    assert_eq!(task_states[0].1, "SUCCEEDED");
+    assert_eq!(task_states[1].1, "SUCCEEDED");
+    assert_eq!(task_states[2], ("unit-3".into(), "FAILED".into(), None));
+    pool.close().await;
+    supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
