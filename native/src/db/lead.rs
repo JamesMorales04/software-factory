@@ -2805,6 +2805,30 @@ mod tests {
         .await
         .unwrap();
         sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES ('integration-cancel','run-cancel','LEASED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO worker_leases VALUES ('integration-cancel','worker-cancel',1,9999999999999)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_integrations
+             (integration_id,campaign_id,purpose,next_task_id,attempt_id,status,candidates_json,
+              candidate_id,created_at,updated_at)
+             VALUES ('integration-cancel','campaign-cancel','FANIN','','integration-cancel',
+                     'QUEUED','[]',NULL,?1,?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
             "INSERT INTO lead_requests
              (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
               state,failure_reason,created_at,updated_at,campaign_id)
@@ -2866,12 +2890,19 @@ mod tests {
                 .is_some_and(|reason| reason.contains("owner request"))
         );
         let (leases,): (i64,) = sqlx::query_as::query_as(
-            "SELECT COUNT(*) FROM worker_leases WHERE attempt_id='attempt-cancel'",
+            "SELECT COUNT(*) FROM worker_leases WHERE attempt_id IN ('attempt-cancel','integration-cancel')",
         )
         .fetch_one(&db.pool)
         .await
         .unwrap();
         assert_eq!(leases, 0);
+        let (integration_status,): (String,) = sqlx::query_as::query_as(
+            "SELECT status FROM lead_integrations WHERE integration_id='integration-cancel'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(integration_status, "CANCELLED");
 
         let again = db
             .cancel_campaign("campaign-cancel", "operator", "repeat")
