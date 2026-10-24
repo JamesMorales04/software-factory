@@ -289,7 +289,7 @@ capabilities:
     source:
     - core/internal/project/repository.go
     test:
-    - core/internal/project/repository_test.go
+    - native/src/repository.rs
   acceptance:
     deterministic: Applicable registered projects contract, negative and regression checks pass on an exact candidate.
     real: Exercise registered projects in a genuine authorized project journey and independently verify the outcome.
