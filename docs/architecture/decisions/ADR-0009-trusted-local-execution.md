@@ -10,7 +10,7 @@ supersedes: null
 
 ## Context and problem
 
-SEC-01 observed facts remain valid: a host Paseo agent read a synthetic canary outside its workspace (D1 FAIL), a same-UID process read a colocated synthetic credential (D2-C FAIL), and mandatory mediation of every native tool path was never proven (D3-D2 NOT TESTED). See [SEC-01 results](../../evidence/history/security/SEC-01-results-2026-10-18.md).
+SEC-01 observed facts remain valid: a host Paseo agent read a synthetic canary outside its workspace (D1 FAIL), a same-UID process read a colocated synthetic credential (D2-C FAIL), and mandatory mediation of every native tool path was never proven (D3-D2 NOT TESTED). See [SEC-01 results](../../security/SEC-01-results-2026-10-18.md).
 
 The product owner has issued a binding sequencing decision for the TRUSTED_LOCAL migration campaign (branch `f1-s2-trusted-local`): broad local access by trusted local tooling is explicitly accepted with documented risks. SEC-01-STRICT (mandatory credential isolation from every native tool) is NOT REQUIRED for TRUSTED_LOCAL. This supersession rests on informed risk acceptance, not on proof of isolation.
 
@@ -63,7 +63,7 @@ Compatibility impact (per [ADR-0006](ADR-0006-early-development-compatibility.md
 
 ## Verification
 
-- Docs change set: this ADR, [isolation policy](../../security/isolation.md), [MASTER](../MASTER.md) sections 8/15/18, [F0/F1 plan](../../evidence/history/implementation/f0-f1-plan.md), and new [trusted-local policy](../../security/trusted-local.md).
+- Docs change set: this ADR, [isolation policy](../../security/isolation.md), [MASTER](../MASTER.md) sections 8/15/18, [F0/F1 plan](../../implementation/f0-f1-plan.md), and new [trusted-local policy](../../security/trusted-local.md).
 - Acceptance: markdown formatting matches repo style; cross-links resolve; no frozen S2 contract file is rewritten; no historical result is claimed PASS; S3-TRUSTED_LOCAL entry conditions are stated explicitly.
 - Evidence: this ADR and linked policy docs on branch `f1-s2-trusted-local`; independent review of the documentation diff.
 
