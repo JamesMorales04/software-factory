@@ -337,3 +337,24 @@ task is the bounded one-turn read-only provider smoke recorded in
 Codex `gpt-6-luna` and OpenCode `opencode/deepseek-v4.1-flash`, one turn each,
 1024-token ceiling, no tools/write, no retries. Live results are not claimed
 until the tool runs and evidence is recorded.
+
+
+## Live provider smoke checkpoint (2026-10-24)
+
+At candidate `5cd0619` the authorized read-only smoke produced:
+
+- **Codex:** `gpt-6-luna` on CLI/App Server `0.156.1`, one turn, 29 output
+  tokens, `outputSchema` + strict validation PASS, thread archive response.
+  Evidence: [provider-live-smoke-2026-10-24-codex.json](../evidence/provider-live-smoke-2026-10-24-codex.json).
+  Classification: `LIVE_STRUCTURED_OUTPUT_VERIFIED`. This is not sandbox,
+  coding-work or campaign certification.
+- **OpenCode:** server `1.18.32`, `opencode/deepseek-v4.1-flash`, one prompt
+  attempt returned HTTP 401 `Invalid credential` before model output. Zero
+  tokens/cost reported; no retry; session deleted and verified absent.
+  Evidence: [provider-live-smoke-2026-10-24-opencode.json](../evidence/provider-live-smoke-2026-10-24-opencode.json).
+  Classification: `LIVE_PROVIDER_CREDENTIAL_BLOCKED`. The operator must renew
+  the OpenCode credential before another bounded authorization.
+
+Do not silently substitute another provider/model or retry within this
+envelope. Continue deterministic provider lifecycle fixtures, sandbox/credential
+confinement and recovery/Office parity.

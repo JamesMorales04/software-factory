@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "e74899ba8298297f551eae964d151ec326170623",
+  "verified_code_commit_sha": "5cd0619fc4533bd5b71a93b73e92e5fbf69161e9",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -35,7 +35,9 @@
     "Functional factory start/stop/logs/status with rootless Podman, loopback publication, read-only root, dropped capabilities and private tokens",
     "Process-level negative dispatch E2E for scope, failing checks, unauthorized runs and stale lease fencing",
     "Real Chromium acceptance for the unified Rust Office (Project\u2192Action\u2192Campaign\u2192Attempt\u2192candidate\u2192gate) via cargo xtask e2e office",
-    "Rust-backed Workers visibility (registered credentials, not liveness) in the unified Office"
+    "Rust-backed Workers visibility (registered credentials, not liveness) in the unified Office",
+    "Bounded live Codex read-only structured-output smoke (gpt-6-luna, 29 output tokens, schema validated, thread archived)",
+    "OpenCode live prompt attempt with credential failure diagnosis and verified session cleanup"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -54,7 +56,7 @@
   },
   "provider_paid_turns": 0,
   "local_unit_tests_passed": 75,
-  "current_test_inventory": "Author-run + exact-head CI at e74899b: 164 Rust tests passed, 1 ignored; native Rust, governance and office-browser CI PASS. Five migrations apply. Office typecheck/lint/build PASS. No paid provider turn yet.",
+  "current_test_inventory": "Author-run + exact-head CI at e74899b: 164 Rust tests passed, 1 ignored; native Rust, governance and office-browser CI PASS. Five migrations. Live smoke: Codex PASS; OpenCode BLOCKED by HTTP 401 Invalid credential. Office typecheck/lint/build PASS.",
   "author_verification_at_code_sha": {
     "sha": "5edfc46c5a60f39197ba7bb232948b8a81b9500c",
     "binding": "COMMITTED_CANDIDATE_AUTHOR_RUN",
@@ -90,7 +92,7 @@
   "delivery_status": "PR #17 published at exact head e74899b; Draft; native Rust, governance and office-browser checks PASS; legacy Go/Paseo browser jobs classified as obsolete selector/UI assumptions. No merge/deploy.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Run one bounded read-only smoke turn per provider under the recorded authorization; record evidence and update fixtures. Then continue provider lifecycle/sandbox work.",
+  "next_task": "Operator must renew the OpenCode credential before any new bounded OpenCode authorization. Continue deterministic provider lifecycle fixtures, sandbox/credential confinement and recovery/Office parity in parallel.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
@@ -102,19 +104,23 @@
     "supervisor": "Authenticated rootless Podman fixture supervisor candidate; not isolation-certified; same-UID/credential boundaries open",
     "runtime": "Core OCI image and factory start/stop/logs/status implemented; full start blocked on host nested-Podman /dev/net/tun",
     "structured_outputs": "Schemars-generated Lead schema, jsonschema validation, provider keyword gate, schema digest persisted",
-    "live_providers": "One-turn read-only smoke tool implemented and authorized by docs/implementation/provider-live-authorization-2026-10-24.md; execution pending",
+    "live_providers": {
+      "codex": "LIVE_STRUCTURED_OUTPUT_VERIFIED: gpt-6-luna, provider 0.156.1, 29 output tokens, schema 8f491d2f..., thread archived; evidence provider-live-smoke-2026-10-24-codex.json",
+      "opencode": "LIVE_PROVIDER_CREDENTIAL_BLOCKED: 1.18.32, opencode/deepseek-v4.1-flash, HTTP 401 Invalid credential, zero reported tokens, session deleted and verified absent; evidence provider-live-smoke-2026-10-24-opencode.json",
+      "sandbox": "not exercised; provider smoke was host read-only, not isolated"
+    },
     "legacy": "Go/Paseo active tree remains pending verified replacement; legacy browser jobs are not Rust evidence"
   },
   "completion_gates": {
     "G1": "INCOMPLETE: Rust remains additive beside legacy Go core until cutover",
-    "G2": "PARTIAL: deterministic fixtures and bounded live smoke tooling; live provider lifecycle not yet executed/certified",
+    "G2": "PARTIAL: Codex live read-only structured output verified; OpenCode blocked by invalid credential; full coding work lifecycle and sandboxed provider execution remain incomplete",
     "G3": "INCOMPLETE: legacy tree remains; hygiene audit 317 findings",
     "G4": "INCOMPLETE: native xtask/architecture/migration checks exist; Go workflows/checker remain",
     "G5": "PARTIAL: deterministic authorized dispatch works; provider-backed execution and public risk policy remain blocked",
     "G6": "PARTIAL: independent verifier process and durable gate work; reviewer is still a receipt client, not a separate semantic process",
     "G7": "PARTIAL: Rust Office browser journey passes for Project/Action/Campaign/Attempt/candidate/gate/Workers; Lead, delegation and recovery views absent",
     "G8": "BLOCKED: supervisor candidate exists but same-UID race, credential confinement, live Podman isolation and provider-in-sandbox remain unverified",
-    "G9": "PARTIAL: exact-head native Rust, governance and office-browser CI pass; no independent acceptance or live provider result yet",
+    "G9": "PARTIAL: Codex live read-only evidence exists; OpenCode blocked; no independent acceptance",
     "G10": "NOT_SATISFIED: independent review of the current candidate and full diff outstanding"
   },
   "deepseek_continuation": "Inspect git status, HEAD and PR #17; read this handoff and migration matrix. Keep public dispatch disabled and PR draft. Implement authenticated durable quality evidence and independent verifier/reviewer execution, then the provider-backed Worker lifecycle. Do not claim G1-G10 PASS or completed replacement.",
