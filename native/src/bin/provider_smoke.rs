@@ -48,6 +48,8 @@ fn schema_sha256() -> String {
 struct Evidence {
     provider: String,
     provider_version: String,
+    provider_id: String,
+    model_id: String,
     model: String,
     authorization_id: String,
     candidate_sha: String,
@@ -57,6 +59,8 @@ struct Evidence {
     structured_output_verified: bool,
     turn_id: Option<String>,
     session_id: Option<String>,
+    max_output_tokens: u64,
+    max_total_tokens: Option<u64>,
     usage: Value,
     output: Option<Value>,
     cleanup: Value,
@@ -123,7 +127,7 @@ fn free_port() -> Result<u16, String> {
 
 async fn codex(
     model: &str,
-    max_tokens: u64,
+    max_output_tokens: u64,
     timeout: Duration,
     workspace: &Path,
 ) -> Result<Evidence, String> {
@@ -191,10 +195,10 @@ async fn codex(
                 "thread/tokenUsage/updated" => {
                     usage = notification.params.get("tokenUsage").cloned().unwrap_or(json!({}));
                     let output_tokens = usage.pointer("/last/outputTokens").and_then(Value::as_u64).unwrap_or(0);
-                    if output_tokens > max_tokens {
+                    if output_tokens > max_output_tokens {
                         let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
                         return Err::<Evidence, String>(format!(
-                            "token ceiling exceeded: {output_tokens} > {max_tokens}; interrupt requested"
+                            "output token ceiling exceeded: {output_tokens} > {max_output_tokens}; interrupt requested"
                         ));
                     }
                 }
@@ -220,6 +224,8 @@ async fn codex(
         Ok(Evidence {
             provider: "codex".into(),
             provider_version: version,
+            provider_id: "codex".into(),
+            model_id: model.into(),
             model: model.into(),
             authorization_id: env::var("FACTORY_PROVIDER_SMOKE_AUTHORIZATION").unwrap_or_default(),
             candidate_sha: candidate_sha()?,
@@ -229,6 +235,8 @@ async fn codex(
             structured_output_verified: true,
             turn_id: Some(turn_id),
             session_id: Some(thread_id),
+            max_output_tokens,
+            max_total_tokens: None,
             usage,
             output: Some(serde_json::to_value(output).map_err(|error| error.to_string())?),
             cleanup,
@@ -248,7 +256,8 @@ async fn codex(
 
 async fn opencode(
     model: &str,
-    max_tokens: u64,
+    max_output_tokens: u64,
+    max_total_tokens: Option<u64>,
     timeout: Duration,
     workspace: &Path,
 ) -> Result<Evidence, String> {
@@ -285,6 +294,30 @@ async fn opencode(
         let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
         let workspace = workspace.canonicalize().map_err(|e| e.to_string())?.to_string_lossy().to_string();
         let directory = format!("?directory={}", urlencoding(&workspace));
+        let route = parse_opencode_route(model)?;
+        let providers: Value = client.get(format!("{base}/provider{directory}"))
+            .basic_auth("opencode", Some(&password))
+            .send().await.map_err(|error| error.to_string())?
+            .error_for_status().map_err(|error| error.to_string())?
+            .json().await.map_err(|error| error.to_string())?;
+        let connected = providers.get("connected").and_then(Value::as_array).is_some_and(|items| {
+            items.iter().any(|value| value.as_str() == Some(route.provider_id))
+        });
+        let resolved = providers.get("all").and_then(Value::as_array).is_some_and(|items| {
+            items.iter().any(|provider| {
+                provider.get("id").and_then(Value::as_str) == Some(route.provider_id)
+                    && provider.get("models").and_then(Value::as_object).is_some_and(|models| {
+                        models.contains_key(route.model_id)
+                    })
+            })
+        });
+        if !connected || !resolved {
+            return Err(format!(
+                "opencode provider/model not resolved: connected={connected} model={route_provider}/{route_model}",
+                route_provider = route.provider_id,
+                route_model = route.model_id
+            ));
+        }
         let session: Value = client.post(format!("{base}/session{directory}"))
             .basic_auth("opencode", Some(&password))
             .json(&json!({"title":"Factory read-only provider smoke"}))
@@ -292,7 +325,6 @@ async fn opencode(
             .error_for_status().map_err(|e| e.to_string())?
             .json().await.map_err(|e| e.to_string())?;
         let session_id = session.get("id").and_then(Value::as_str).ok_or("opencode session id missing")?.to_owned();
-        let route = parse_opencode_route(model)?;
         let response = client.post(format!("{base}/session/{session_id}/message{directory}"))
             .basic_auth("opencode", Some(&password))
             .json(&opencode_request(&route, schema()))
@@ -310,11 +342,20 @@ async fn opencode(
             .map_err(|error| format!("opencode response is not JSON: {error}; session={session_id}"))?;
         let info = response.get("info").cloned().unwrap_or(json!({}));
         let usage = json!({"tokens": info.get("tokens"), "cost": info.get("cost")});
+        let output = info.pointer("/tokens/output").and_then(Value::as_u64).unwrap_or(0);
         let total = info.pointer("/tokens/total").and_then(Value::as_u64).unwrap_or(0);
-        if total > max_tokens {
+        if output > max_output_tokens {
             let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
             return Err(format!(
-                "token ceiling exceeded: {total} > {max_tokens}; session={session_id}; cleanup={cleanup}"
+                "output token ceiling exceeded: {output} > {max_output_tokens}; session={session_id}; cleanup={cleanup}"
+            ));
+        }
+        if let Some(limit) = max_total_tokens
+            && total > limit
+        {
+            let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
+            return Err(format!(
+                "total token ceiling exceeded: {total} > {limit}; session={session_id}; cleanup={cleanup}"
             ));
         }
         let structured = info.get("structured").filter(|value| !value.is_null()).cloned();
@@ -349,6 +390,8 @@ async fn opencode(
         Ok(Evidence {
             provider: "opencode".into(),
             provider_version: version,
+            provider_id: route.provider_id.into(),
+            model_id: route.model_id.into(),
             model: model.into(),
             authorization_id: env::var("FACTORY_PROVIDER_SMOKE_AUTHORIZATION").unwrap_or_default(),
             candidate_sha: candidate_sha()?,
@@ -361,6 +404,8 @@ async fn opencode(
             usage,
             output: Some(serde_json::to_value(output).map_err(|error| error.to_string())?),
             cleanup,
+            max_output_tokens,
+            max_total_tokens,
             requests: 1,
             classification: if structured.is_some() { "LIVE_STRUCTURED_OUTPUT_VERIFIED" } else { "LIVE_PROVIDER_PROTOCOL_VERIFIED" }.into(),
             error: None,
@@ -474,9 +519,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("usage: factory-provider-smoke codex|opencode")?;
     let model = require("FACTORY_PROVIDER_MODEL")?;
-    let max_tokens: u64 = env::var("FACTORY_SMOKE_MAX_TOKENS")
+    let max_output_tokens: u64 = env::var("FACTORY_SMOKE_MAX_OUTPUT_TOKENS")
+        .or_else(|_| env::var("FACTORY_SMOKE_MAX_TOKENS"))
         .unwrap_or_else(|_| "1024".into())
         .parse()?;
+    let max_total_tokens = env::var("FACTORY_SMOKE_MAX_TOTAL_TOKENS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
     let timeout = Duration::from_secs(
         env::var("FACTORY_SMOKE_TIMEOUT_SECS")
             .unwrap_or_else(|_| "240".into())
@@ -492,8 +542,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let started = Instant::now();
     let result = match provider.as_str() {
-        "codex" => codex(&model, max_tokens, timeout, &workspace).await,
-        "opencode" => opencode(&model, max_tokens, timeout, &workspace).await,
+        "codex" => codex(&model, max_output_tokens, timeout, &workspace).await,
+        "opencode" => {
+            opencode(
+                &model,
+                max_output_tokens,
+                max_total_tokens,
+                timeout,
+                &workspace,
+            )
+            .await
+        }
         _ => Err("provider must be codex or opencode".into()),
     };
     let mut evidence = match result {
@@ -506,6 +565,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let evidence = Evidence {
                 provider,
                 provider_version: String::new(),
+                provider_id: String::new(),
+                model_id: String::new(),
                 model,
                 authorization_id,
                 candidate_sha: candidate_sha().unwrap_or_default(),
@@ -515,6 +576,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 structured_output_verified: false,
                 turn_id: None,
                 session_id: None,
+                max_output_tokens,
+                max_total_tokens,
                 usage: json!({}),
                 output: None,
                 cleanup: json!({}),

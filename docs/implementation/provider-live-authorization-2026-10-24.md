@@ -46,3 +46,19 @@ HTTP 401. The native smoke now parses and preserves the exact provider id
 
 A new live OpenCode turn requires fresh explicit authorization beyond this
 record; no paid retry was made after the provider-identity fix.
+
+
+## Fresh OpenCode Go authorization (2026-10-24)
+
+Product Owner authorizes one additional read-only OpenCode Go turn:
+`opencode-go/deepseek-v4.1-flash`, maximum 1 model request, 256 requested
+output tokens if enforceable, smallest practical input, no tools/writes, no
+retries, native structured output, strict validation, deletion and sanitized
+evidence. Authorization id: `po-directive-2026-10-24-opencode-go-256`.
+
+Provider metadata confirms `opencode-go` is connected and exposes
+`deepseek-v4.1-flash`. The OpenCode message API does not expose a request-level
+output-token cap; the 256-output-token limit is therefore reconciled after the
+response and is **not** a hard total-token cap. No total-token ceiling is
+asserted. The smoke tool resolves provider/model against `/provider` before the
+prompt and refuses unknown/unconnected routes.
