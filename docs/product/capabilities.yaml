@@ -804,7 +804,7 @@ capabilities:
   purpose: Select and produce typed, evidence-bound semantic judgments when they improve practical decision quality
   product_objective: Autonomous product development
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: partial
   verification:
     deterministic: not_tested
     live_agent: not_tested

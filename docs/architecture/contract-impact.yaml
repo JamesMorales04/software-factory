@@ -62,7 +62,5 @@ entries:
     paths: [docs/roadmap/ROADMAP.md]
     change: "Generated milestone descriptions from the canonical capability registry."
     impact: "Prevents roadmap status from drifting away from capability decisions and acceptance criteria."
-  - id: GOV01-AEH-ASSESSMENT
-    paths: [docs/architecture/AEH-CAPABILITY-ASSESSMENT.md]
     change: "Added source-backed predecessor capability findings with explicit disposition recommendations."
     impact: "Preserves useful lessons without treating inherited capabilities as automatically approved."

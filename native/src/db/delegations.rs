@@ -266,6 +266,60 @@ fn checked_usage(current: i64, added: u32) -> Result<i64, Error> {
         .ok_or(Error::Constraint("delegation usage overflow".into()))
 }
 
+pub(super) async fn release_usage_in_tx(
+    transaction: &mut sqlx_sqlite::SqliteConnection,
+    grant: &StandingDelegation,
+    requests: u32,
+    sessions: u32,
+    attempts: u32,
+) -> Result<(), Error> {
+    if requests == 0 && sessions == 0 && attempts == 0 {
+        return Err(Error::Invalid("delegation release is empty"));
+    }
+    let row: Option<(i64, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT requests,sessions,attempts FROM delegation_usage WHERE delegation_id=?1",
+    )
+    .bind(&grant.id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (saved_requests, saved_sessions, saved_attempts) = row.ok_or(Error::NotFound)?;
+    let requests = saved_requests
+        .checked_sub(i64::from(requests))
+        .filter(|value| *value >= 0)
+        .ok_or(Error::Constraint(
+            "delegation request release underflow".to_string(),
+        ))?;
+    let sessions = saved_sessions
+        .checked_sub(i64::from(sessions))
+        .filter(|value| *value >= 0)
+        .ok_or(Error::Constraint(
+            "delegation session release underflow".to_string(),
+        ))?;
+    let attempts = saved_attempts
+        .checked_sub(i64::from(attempts))
+        .filter(|value| *value >= 0)
+        .ok_or(Error::Constraint(
+            "delegation attempt release underflow".to_string(),
+        ))?;
+    sqlx::query::query(
+        "UPDATE delegation_usage SET requests=?1,sessions=?2,attempts=?3 WHERE delegation_id=?4",
+    )
+    .bind(requests)
+    .bind(sessions)
+    .bind(attempts)
+    .bind(&grant.id)
+    .execute(&mut *transaction)
+    .await?;
+    record_event(
+        transaction,
+        &grant.id,
+        "delegation.released",
+        &format!("requests={requests} sessions={sessions} attempts={attempts}"),
+    )
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn load_delegation(
     connection: &mut SqliteConnection,
     id: &str,
@@ -349,7 +403,7 @@ mod tests {
             autonomous_risk_classes: vec![RiskClass::R0],
             route: ProviderRoute {
                 provider: "opencode".into(),
-                model: "test/model".into(),
+                model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
             max_attempts: 2,
@@ -463,7 +517,7 @@ mod tests {
         expired.content_hash = expired.compute_content_hash();
         assert!(matches!(
             db.create_standing_delegation(&expired, "expired-key").await,
-            Err(Error::Delegation(_))
+            Err(Error::Forbidden(_))
         ));
         assert!(matches!(
             db.reserve_delegation("missing", 1, 1, 1, Utc::now()).await,

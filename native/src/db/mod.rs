@@ -315,7 +315,10 @@ impl Database {
 
 impl From<crate::lead::LeadError> for Error {
     fn from(error: crate::lead::LeadError) -> Self {
-        Self::Delegation(error.to_string())
+        match error {
+            crate::lead::LeadError::Delegation(_) => Self::Forbidden(error.to_string()),
+            _ => Self::Delegation(error.to_string()),
+        }
     }
 }
 
@@ -481,6 +484,8 @@ pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod lead;
 mod lifecycle;
+mod project_configs;
+pub use project_configs::NewProjectConfig;
 mod projects;
 mod quality;
 mod workers;

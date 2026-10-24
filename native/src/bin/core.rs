@@ -9,8 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use factory_native::db::{
-    Database, Error, NewCampaignAuthorization, NewCandidate, QualityReceiptInput, QualityRole,
-    WorkerReport,
+    Database, Error, NewCampaignAuthorization, NewCandidate, NewProjectConfig, QualityReceiptInput,
+    QualityRole, WorkerReport,
 };
 use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
@@ -23,6 +23,7 @@ struct App {
     worker_bootstrap_token: String,
     verifier_token: String,
     reviewer_token: String,
+    lead_fixture_assessor: bool,
 }
 
 #[derive(Deserialize)]
@@ -160,6 +161,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker_bootstrap_token,
         verifier_token,
         reviewer_token,
+        lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
+            == Some("1"),
     });
     let router = build_router(app);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -192,6 +195,10 @@ fn api_router(app: Arc<App>) -> Router {
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
         )
         .route("/projects", get(projects).post(register_project))
+        .route(
+            "/projects/{id}/config",
+            get(project_config).put(update_project_config),
+        )
         .route("/actions", get(actions).post(create_action))
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/runs", get(runs))
@@ -217,6 +224,8 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/lead/requests", post(create_lead_request))
         .route("/lead/requests/{id}", get(get_lead_request))
+        .route("/lead/requests/{id}/assess", post(assess_lead_request))
+        .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -290,6 +299,35 @@ async fn projects(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
     result_list(app.db.projects().await)
 }
+async fn project_config(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_config(&id).await {
+        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn update_project_config(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<NewProjectConfig>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.update_project_config(&id, &input).await {
+        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn create_action(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -615,6 +653,124 @@ async fn create_lead_request(
     }
 }
 
+async fn assess_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !app.lead_fixture_assessor {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error":"no provider assessor is authorized; set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
+        )
+            .into_response();
+    }
+    let request = match app.db.lead_request(&id).await {
+        Ok(request) => request,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&request.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let action = match app.db.action(&request.action_id).await {
+        Ok(action) => action,
+        Err(error) => return api_error(error),
+    };
+    let grant = match app.db.standing_delegation(&request.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    if request.state == factory_native::lead::LeadRequestState::Submitted
+        && let Err(error) = app.db.begin_lead_assessment(&id).await
+    {
+        return api_error(error);
+    }
+    let action_binding = factory_native::lead::ActionBinding {
+        id: action.id.clone(),
+        project_id: action.project_id.clone(),
+        status: factory_native::lead::ActionStatus::Pending,
+    };
+    let (assessment, proposal) = match factory_native::lead::fixture_lead_assessment(
+        &request.id,
+        &config,
+        &action_binding,
+        &action.spec,
+        &request.objective,
+        &grant,
+        chrono::Utc::now(),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = app.db.block_lead_request(&id, &error.to_string()).await;
+            return api_error(error.into());
+        }
+    };
+    let input = factory_native::lead::AssessmentInput {
+        project_id: request.project_id.clone(),
+        action_id: request.action_id.clone(),
+        request_id: request.id.clone(),
+        objective: request.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
+    };
+    let assessment_record = match app
+        .db
+        .record_lead_assessment(
+            &id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            &format!("fixture-assessment:{id}"),
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let proposal_record = match app
+        .db
+        .record_lead_proposal(&id, &proposal, &format!("fixture-proposal:{id}"))
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "assessment": assessment_record,
+            "proposal": proposal_record
+        })),
+    )
+        .into_response()
+}
+
+async fn freeze_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let plan = match app.db.freeze_lead_plan(&id, &format!("freeze:{id}")).await {
+        Ok(plan) => plan,
+        Err(error) => return api_error(error),
+    };
+    let request = match app.db.mark_lead_ready(&id).await {
+        Ok(request) => request,
+        Err(error) => return api_error(error),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({"plan": plan, "request": request})),
+    )
+        .into_response()
+}
+
 async fn get_lead_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -862,6 +1018,7 @@ mod tests {
             worker_bootstrap_token: "bootstrap".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -906,7 +1063,7 @@ mod tests {
             },
             route: factory_native::lead::ProviderRoute {
                 provider: "opencode".into(),
-                model: "test/model".into(),
+                model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
             max_attempts: 2,
@@ -973,12 +1130,14 @@ mod tests {
             .register_project(&repository, "project-key")
             .await
             .unwrap();
+        let config_hash = db.project_config(&project.id).await.unwrap().config_hash;
         let app = Arc::new(App {
             db,
             operator_token: "operator-token".into(),
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1032,7 +1191,7 @@ mod tests {
                     "project_id": project.id,
                     "objective": "Implement the API slice.",
                     "provider": "opencode",
-                    "model": "test/model",
+                    "model": "deepseek-v4.1-flash",
                     "idempotency_key": "action-api-key"
                 }))
                 .unwrap(),
@@ -1057,7 +1216,7 @@ mod tests {
                     "action_id": action["id"],
                     "delegation_id": "grant-api",
                     "objective": "Implement the API slice.",
-                    "project_config_hash": "a".repeat(64),
+                    "project_config_hash": config_hash,
                     "idempotency_key": "lead-api-key"
                 }))
                 .unwrap(),
@@ -1106,6 +1265,7 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1156,6 +1316,7 @@ mod tests {
             worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert(

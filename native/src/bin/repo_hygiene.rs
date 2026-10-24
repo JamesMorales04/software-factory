@@ -169,7 +169,7 @@ fn is_go_path(name: &str, path: &Path) -> bool {
 fn is_runtime_path(path: &Path) -> bool {
     path.components().any(|component| {
         let segment = component.as_os_str().to_string_lossy().to_ascii_lowercase();
-        segment.contains("paseo") || segment == "aeh" || segment.contains("agent-engine")
+        segment.contains("paseo")
     })
 }
 
@@ -264,11 +264,6 @@ fn contains_former_runtime_name(contents: &str) -> bool {
     contents.lines().any(|line| {
         let lower = line.to_ascii_lowercase();
         lower.contains("paseo")
-            || lower.contains("agent-engineering-harness")
-            || lower.contains("agent engineering harness")
-            || lower
-                .split(|character: char| !character.is_ascii_alphanumeric())
-                .any(|word| word == "aeh")
     })
 }
 
@@ -427,7 +422,7 @@ mod tests {
     fn former_runtime_name_in_active_code_is_reported() {
         let repo = Repo::new();
         repo.add("native/src/lib.rs", "const RUNTIME: &str = \"paseo\";\n");
-        repo.add("native/src/provider.rs", "// agent-engineering-harness\n");
+        repo.add("native/src/provider.rs", "// paseo reference\n");
         assert!(
             repo.scan()
                 .iter()

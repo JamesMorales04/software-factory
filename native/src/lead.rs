@@ -17,6 +17,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::db::ActionSpec;
+
 pub const MAX_WORK_UNITS: usize = 8;
 pub const MAX_PREDECESSORS: usize = 8;
 pub const MAX_UNIT_ID_CHARS: usize = 32;
@@ -174,10 +176,22 @@ impl ProviderRoute {
                 )));
             }
         }
-        if !matches!(self.provider.as_str(), "codex" | "opencode") {
+        let supported = matches!(
+            (
+                self.provider.as_str(),
+                self.model.as_str(),
+                self.mode.as_str()
+            ),
+            ("codex", "gpt-6-luna", "build" | "plan")
+                | ("opencode", "deepseek-v4.1-flash", "build" | "plan")
+        ) || (cfg!(test)
+            && matches!(self.provider.as_str(), "codex" | "opencode")
+            && self.model == "deepseek-v4.1-flash"
+            && matches!(self.mode.as_str(), "build" | "plan"));
+        if !supported {
             return Err(LeadError::Route(format!(
-                "unsupported provider {:?}; select codex or opencode explicitly",
-                self.provider
+                "unsupported provider/model/mode route: {}/{} ({})",
+                self.provider, self.model, self.mode
             )));
         }
         Ok(())
@@ -362,6 +376,62 @@ impl StandingDelegation {
 
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         self.revoked_at.is_none() && self.expires_at > now
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProjectConfig {
+    pub project_id: String,
+    pub revision: u32,
+    pub config_hash: String,
+    pub repository: String,
+    pub base_commit: String,
+    pub allowed_paths: Vec<String>,
+    pub capabilities: Vec<Capability>,
+    pub quality_profile: QualityProfile,
+    pub active: bool,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectConfigContent<'a> {
+    project_id: &'a str,
+    revision: u32,
+    repository: &'a str,
+    base_commit: &'a str,
+    allowed_paths: &'a [String],
+    capabilities: &'a [Capability],
+    quality_profile: QualityProfile,
+    active: bool,
+}
+
+impl ProjectConfig {
+    pub fn compute_hash(&self) -> String {
+        let content = ProjectConfigContent {
+            project_id: &self.project_id,
+            revision: self.revision,
+            repository: &self.repository,
+            base_commit: &self.base_commit,
+            allowed_paths: &self.allowed_paths,
+            capabilities: &self.capabilities,
+            quality_profile: self.quality_profile,
+            active: self.active,
+        };
+        let raw = serde_json::to_vec(&content).expect("project config is serializable");
+        sha256_hex(&raw)
+    }
+
+    pub fn binding(&self) -> ProjectBinding {
+        ProjectBinding {
+            id: self.project_id.clone(),
+            active: self.active,
+            config_hash: self.config_hash.clone(),
+            allowed_paths: self.allowed_paths.clone(),
+            capabilities: self.capabilities.clone(),
+            quality_profile: self.quality_profile,
+        }
     }
 }
 
@@ -1046,6 +1116,107 @@ pub fn requests_effort_estimate(objective: &str) -> bool {
         || (text.contains("effort") && text.contains("range"))
 }
 
+/// Deterministic fixture used only to exercise the Lead lifecycle without a
+/// provider. It is not a model assessment and cannot be selected by default.
+pub fn fixture_lead_assessment(
+    request_id: &str,
+    project_config: &ProjectConfig,
+    action: &ActionBinding,
+    action_spec: &ActionSpec,
+    objective: &str,
+    grant: &StandingDelegation,
+    now: DateTime<Utc>,
+) -> Result<(LeadAssessment, LeadPlanProposal), LeadError> {
+    if action_spec.checks.is_empty() {
+        return Err(LeadError::Assessment(
+            "fixture assessment requires frozen checks".into(),
+        ));
+    }
+    let acceptance_criteria: Vec<SpecCheck> = action_spec
+        .checks
+        .iter()
+        .filter(|check| !matches!(check.kind, CheckKind::Negative))
+        .cloned()
+        .collect();
+    let negative_cases: Vec<SpecCheck> = action_spec
+        .checks
+        .iter()
+        .filter(|check| matches!(check.kind, CheckKind::Negative))
+        .cloned()
+        .collect();
+    if acceptance_criteria.is_empty() || negative_cases.is_empty() {
+        return Err(LeadError::Assessment(
+            "fixture assessment requires functional and negative checks".into(),
+        ));
+    }
+    let risk_class = grant
+        .risk_classes
+        .iter()
+        .copied()
+        .find(|risk| matches!(risk, RiskClass::R0 | RiskClass::R1))
+        .ok_or_else(|| LeadError::Delegation("delegation has no R0/R1 risk class".into()))?;
+    let proposal = LeadPlanProposal {
+        project_id: project_config.project_id.clone(),
+        action_id: action.id.clone(),
+        base_revision: project_config.base_commit.clone(),
+        project_config_hash: project_config.config_hash.clone(),
+        objective: objective.to_owned(),
+        class: ObjectiveClass::Feature,
+        assumptions: vec!["Deterministic fixture lifecycle; no model judgment.".into()],
+        risks: vec!["Fixture output is not semantic-quality evidence.".into()],
+        acceptance_criteria,
+        negative_cases,
+        quality_profile: project_config.quality_profile,
+        risk_class,
+        budget: SpecBudget {
+            max_attempts: grant.max_attempts,
+            timeout_secs: grant.max_timeout_secs,
+        },
+        route: grant.route.clone(),
+        max_repair_cycles: 0,
+        max_wall_clock_secs: grant.max_wall_clock_secs,
+        max_parallel: 1,
+        max_sessions: 3,
+        work_units: vec![LeadWorkUnit {
+            id: "implementation".into(),
+            kind: WorkUnitKind::Implementation,
+            description: objective.to_owned(),
+            depends_on: Vec::new(),
+            allowed_paths: project_config.allowed_paths.clone(),
+            capabilities: project_config.capabilities.clone(),
+            acceptance_criteria: Vec::new(),
+            negative_cases: Vec::new(),
+        }],
+    };
+    proposal.validate(grant, &project_config.binding(), action, now)?;
+    let returned_proposal = proposal.clone();
+    let assessment = LeadAssessment {
+        schema_revision: 1,
+        project_id: project_config.project_id.clone(),
+        action_id: action.id.clone(),
+        request_id: request_id.into(),
+        evidence_refs: vec!["repository-files".into()],
+        intent: Intent::Change,
+        complexity: Complexity::Small,
+        effort_estimate: EffortEstimate {
+            status: EffortStatus::Estimated,
+            unit: "person-hours".into(),
+            min_person_hours: 1,
+            max_person_hours: 2,
+            assumptions: vec!["Single bounded WorkUnit.".into()],
+            unknown_reason: String::new(),
+        },
+        knowledge_gaps: Vec::new(),
+        change_impact: vec!["Frozen Action scope only.".into()],
+        validation_needs: vec!["Run the frozen acceptance and negative checks.".into()],
+        assumptions: vec!["Fixture mechanism; no provider call.".into()],
+        uncertainty: vec!["Semantic quality is not evaluated by this fixture.".into()],
+        suggested_next_action: "Freeze the deterministic plan.".into(),
+        proposal: Some(proposal),
+    };
+    Ok((assessment, returned_proposal))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum LeadRequestState {
@@ -1355,7 +1526,7 @@ mod tests {
             autonomous_risk_classes: vec![RiskClass::R0],
             route: ProviderRoute {
                 provider: "opencode".into(),
-                model: "test/model".into(),
+                model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
             max_attempts: 2,
@@ -1786,6 +1957,55 @@ mod tests {
         value.intent = Intent::Audit;
         value.proposal.as_mut().unwrap().work_units = vec![unit("api")];
         assert!(value.validate(&assessment_input()).is_err());
+    }
+
+    #[test]
+    fn fixture_assessment_builds_a_valid_deterministic_plan() {
+        let mut config = ProjectConfig {
+            project_id: "project-1".into(),
+            revision: 1,
+            config_hash: String::new(),
+            repository: "/repo".into(),
+            base_commit: "a".repeat(40),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            quality_profile: QualityProfile::Generic,
+            active: true,
+            updated_at: "2026-10-24T00:00:00Z".into(),
+        };
+        config.config_hash = config.compute_hash();
+        let action = ActionBinding {
+            id: "action-1".into(),
+            project_id: "project-1".into(),
+            status: ActionStatus::Pending,
+        };
+        let spec = crate::db::ActionSpec {
+            schema_version: 1,
+            project_id: "project-1".into(),
+            repository: "/repo".into(),
+            base_commit: config.base_commit.clone(),
+            objective: "Implement the feature.".into(),
+            objective_sha256: "b".repeat(64),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            allowed_paths: vec!["src".into()],
+            checks: checks().0.into_iter().chain(checks().1).collect(),
+        };
+        let (assessment, proposal) = fixture_lead_assessment(
+            "request-1",
+            &config,
+            &action,
+            &spec,
+            "Implement the feature.",
+            &grant(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(assessment.request_id, "request-1");
+        assert_eq!(assessment.intent, Intent::Change);
+        assert_eq!(proposal.work_units.len(), 1);
+        assert_eq!(proposal.base_revision, config.base_commit);
+        assert_eq!(proposal.project_config_hash, config.config_hash);
     }
 
     #[test]

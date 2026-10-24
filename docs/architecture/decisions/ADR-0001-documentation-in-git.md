@@ -7,7 +7,7 @@ owner: product-owner
 # ADR-0001: Versioned architecture and decisions in Git
 
 ## Context
-Prior AEH work exposed the cost of duplicated architectural authority, stale descriptions and features declared ready without real verification. Coding agents need a concise starting point and an auditable design.
+A predecessor engineering harness exposed the cost of duplicated architectural authority, stale descriptions and features declared ready without real verification. Coding agents need a concise starting point and an auditable design.
 
 ## Alternatives
 1. Conversations/external wiki as primary authority: not reliably bound to commits and PRs.

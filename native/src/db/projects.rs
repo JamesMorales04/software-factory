@@ -37,6 +37,8 @@ impl Database {
             .bind(&project.created_at)
             .execute(&mut *transaction)
             .await?;
+        self.ensure_project_config(&mut transaction, &project.id)
+            .await?;
         sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("register_project")
@@ -202,6 +204,11 @@ impl Database {
                 created_at,
             })
             .collect())
+    }
+
+    pub async fn action(&self, id: &str) -> Result<Action, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_action(&mut connection, id).await
     }
 
     pub async fn actions(&self) -> Result<Vec<Action>, Error> {

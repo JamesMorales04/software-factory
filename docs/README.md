@@ -13,7 +13,7 @@ All normative software architecture and engineering guidance is maintained **in 
 5. [Quality baseline](quality/baseline.md) — candidate integrity, independent verification, and gate states; its old implementation references are historical.
 4. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
 
-The [old master](architecture/MASTER.md), [contracts](contracts/README.md), [security spike](security/paseo-sandbox-spike.md), [live certification](quality/live-certification.md), [capability registry](product/capabilities.yaml), [roadmap](roadmap/ROADMAP.md), and [AEH assessment](architecture/AEH-CAPABILITY-ASSESSMENT.md) are historical input. They do not define the new runtime or certify the Rust branch. Their replacement is required before cutover.
+The [migration closure ledger](implementation/native-rust-closure.md) is the current status authority. The [capability registry](product/capabilities.yaml), [capability decisions](product/capability-decisions.md) and [roadmap](roadmap/ROADMAP.md) are active product authorities. Historical evidence and accepted ADRs remain provenance; they do not certify the Rust branch.
 
 ## Authority hierarchy
 

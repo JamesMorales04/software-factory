@@ -43,6 +43,10 @@ name = "factory-supervisor"
 path = "src/bin/supervisor.rs"
 
 [[bin]]
+name = "factory-s4d-evaluate"
+path = "src/bin/s4d_evaluate.rs"
+
+[[bin]]
 name = "factory-provider-smoke"
 path = "src/bin/provider_smoke.rs"
 

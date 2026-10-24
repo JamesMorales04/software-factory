@@ -222,7 +222,7 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 - [Live certification policy](../quality/live-certification.md), [campaign recovery contract](../contracts/campaign-recovery-s4c03.md), [ADR-0013](decisions/ADR-0013-bounded-autonomous-recovery.md), [ADR-0014](decisions/ADR-0014-same-session-capability-completion.md), [ADR-0015](decisions/ADR-0015-worker-managed-browser-test-server.md), [F1-S4-C acceptance](../implementation/f1-s4c-acceptance.md), [C-04 diagnosis](../implementation/f1-s4c-04-diagnosis.md), [C-06 server lifecycle](../implementation/f1-s4c-06-server-lifecycle.md) and [C-07 live certification](../implementation/f1-s4c-07-live-certification.md)
 - [Isolation](../security/isolation.md)
 - [F0/F1 implementation plan](../implementation/f0-f1-plan.md)
-- Historical AEH for selective conceptual reuse: https://github.com/JamesMorales04/agentic-engineering-harness
+- Capability decisions are owned by Software Factory in [capability-decisions.md](../product/capability-decisions.md).
 - Agent guidelines: https://agents.md/
 - Architecture decision template: https://github.com/adr/madr
 - Observability: https://opentelemetry.io/docs/languages/go/

@@ -48,7 +48,7 @@
     "Direct Codex/OpenCode work lifecycle, permissions, cancellation and session recovery",
     "Verified sandbox/credential confinement; same-UID race unresolved",
     "Container image build/run, Quadlet deployment, unified factory CLI and Windows/Podman Machine verification",
-    "Legacy Go/Paseo/AEH removal and hygiene strict pass",
+    "Legacy Go/Paseo/predecessor removal and hygiene strict pass",
     "Lead assessor/API, Campaign start and autonomous activation",
     "Rust-backed Office browser E2E; retained e2e-browser scripts target the former API",
     "factory start/stop/runtime image/Quadlet and Windows Podman Machine verification"

@@ -14,11 +14,15 @@ const coreBin =
   process.env.FACTORY_CORE_BIN || join(root, "target/debug/factory-core");
 const workerBin =
   process.env.FACTORY_WORKER_BIN || join(root, "target/debug/factory-worker");
+const supervisorBin =
+  process.env.FACTORY_SUPERVISOR_BIN ||
+  join(root, "target/debug/factory-supervisor");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
 const bootstrap = token();
 const verifier = token();
 const reviewer = token();
+const supervisorToken = token();
 const temp = join(
   tmpdir(),
   `factory-rust-office-${randomBytes(6).toString("hex")}`,
@@ -26,6 +30,9 @@ const temp = join(
 const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const workspace = join(temp, "workspaces");
+const supervisorWork = join(temp, "supervisor-work");
+const supervisorState = join(temp, "supervisor-state");
+const supervisorVolumes = join(temp, "supervisor-volumes");
 const processes = [];
 
 mkdirSync(repository, { recursive: true });
@@ -90,6 +97,8 @@ async function api(path, options = {}, bearer = operator) {
 
 const corePort = await freePort();
 const coreUrl = `http://127.0.0.1:${corePort}`;
+const supervisorPort = await freePort();
+const supervisorUrl = `http://127.0.0.1:${supervisorPort}`;
 const vitePort = await freePort();
 
 function launch(command, args, options = {}) {
@@ -119,6 +128,23 @@ try {
   });
   await waitFor(`${coreUrl}/health`);
   assert.equal(core.exitCode, null);
+
+  const supervisor = launch(supervisorBin, [], {
+    cwd: temp,
+    env: {
+      ...process.env,
+      FACTORY_SUPERVISOR_TOKEN: supervisorToken,
+      FACTORY_SUPERVISOR_BIND: `127.0.0.1:${supervisorPort}`,
+      FACTORY_SUPERVISOR_WORKSPACE_ROOT: supervisorWork,
+      FACTORY_SUPERVISOR_STATE_ROOT: supervisorState,
+      FACTORY_SUPERVISOR_PROJECT_ROOTS: repository,
+      FACTORY_SUPERVISOR_IMAGES: "test/image:1",
+      FACTORY_SUPERVISOR_TEST_BACKEND: "local",
+      FACTORY_SUPERVISOR_TEST_VOLUME_ROOT: supervisorVolumes,
+    },
+  });
+  await waitFor(`${supervisorUrl}/health`);
+  assert.equal(supervisor.exitCode, null);
 
   const vite = launch(
     join(root, "office/node_modules/.bin/vite"),
@@ -202,7 +228,9 @@ try {
       FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
       FACTORY_WORKER_ID: "office-e2e-worker",
       FACTORY_WORKER_REGISTRATION_KEY: "office-e2e-registration",
-      FACTORY_WORKSPACE_ROOT: workspace,
+      FACTORY_SUPERVISOR_URL: supervisorUrl,
+      FACTORY_SUPERVISOR_TOKEN: supervisorToken,
+      FACTORY_WORKER_FIXTURE_IMAGE: "test/image:1",
       FACTORY_WORKER_ONCE: "1",
       FACTORY_FIXTURE_FILE: "src/fixture.txt",
       FACTORY_FIXTURE_CONTENT: "fixture candidate\n",

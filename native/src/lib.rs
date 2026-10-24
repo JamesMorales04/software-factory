@@ -1,4 +1,5 @@
 pub mod db;
+pub mod evaluation;
 pub mod execution;
 pub mod lead;
 pub mod model_output;

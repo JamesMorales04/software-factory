@@ -11,11 +11,11 @@ use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
 use crate::lead::{
-    ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState,
-    ProjectBinding, plan_hash,
+    ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState, plan_hash,
 };
 
-use super::delegations::{load_delegation, reserve_usage_in_tx};
+use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
+use super::project_configs::load_project_config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeadRequestRecord {
@@ -118,6 +118,12 @@ impl Database {
         }
         if matches!(action_status.as_str(), "CANCELLED" | "COMPLETED" | "FAILED") {
             return Err(Error::Conflict("lead request action is terminal"));
+        }
+        let project_config = load_project_config(&mut transaction, project_id).await?;
+        if !project_config.active || project_config.config_hash != project_config_hash {
+            return Err(Error::Forbidden(
+                "project configuration is inactive or the supplied config hash is stale".into(),
+            ));
         }
         let grant = load_delegation(&mut transaction, delegation_id).await?;
         if grant.project_id != project_id {
@@ -222,6 +228,15 @@ impl Database {
         ) {
             transaction.commit().await?;
             return Ok(current);
+        }
+        let assessment: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM lead_assessments WHERE request_id=?1")
+                .bind(id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if assessment.is_none() && current.state == LeadRequestState::Submitted {
+            let grant = load_delegation(&mut transaction, &current.delegation_id).await?;
+            release_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
         }
         sqlx::query::query(
             "UPDATE lead_requests SET state='BLOCKED',failure_reason=?1,updated_at=?2 WHERE id=?3",
@@ -335,8 +350,6 @@ impl Database {
         &self,
         request_id: &str,
         proposal: &LeadPlanProposal,
-        project: &ProjectBinding,
-        action: &ActionBinding,
         idempotency_key: &str,
     ) -> Result<LeadProposalRecord, Error> {
         let _write = self.write_lock.lock().await;
@@ -354,7 +367,14 @@ impl Database {
                 "proposal binding does not match the lead request".into(),
             ));
         }
-        proposal.validate(&grant, project, action, Utc::now())?;
+        let config = load_project_config(&mut transaction, &request.project_id).await?;
+        if proposal.base_revision != config.base_commit {
+            return Err(Error::Forbidden(
+                "proposal base revision is not the current registered base".into(),
+            ));
+        }
+        let action = load_action_binding(&mut transaction, &request.action_id).await?;
+        proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
         let proposal_json =
             serde_json::to_string(proposal).map_err(|_| Error::Invalid("proposal encoding"))?;
         let proposal_hash = proposal.content_hash();
@@ -446,6 +466,20 @@ impl Database {
         let grant = load_delegation(&mut transaction, &request.delegation_id).await?;
         let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
             .map_err(|_| Error::Invalid("stored proposal encoding"))?;
+        let config = load_project_config(&mut transaction, &request.project_id).await?;
+        if config.config_hash != request.project_config_hash
+            || proposal.base_revision != config.base_commit
+        {
+            return Err(Error::Forbidden(
+                "project configuration or base changed after the Lead request".into(),
+            ));
+        }
+        let action = load_action_binding(&mut transaction, &request.action_id).await?;
+        proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+        let extra_sessions = proposal.max_sessions.saturating_sub(1);
+        if extra_sessions > 0 {
+            reserve_usage_in_tx(&mut transaction, &grant, 0, extra_sessions, 0).await?;
+        }
         let hash = plan_hash(&proposal, &grant, &request.project_config_hash);
         if let Some(id) =
             replay(&mut transaction, idempotency_key, "freeze_lead_plan", &hash).await?
@@ -741,12 +775,37 @@ async fn load_frozen_plan_by_id(
     })
 }
 
+async fn load_action_binding(
+    connection: &mut SqliteConnection,
+    action_id: &str,
+) -> Result<ActionBinding, Error> {
+    let row: Option<(String, String)> =
+        sqlx::query_as::query_as("SELECT project_id,status FROM actions WHERE id=?1")
+            .bind(action_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    let (project_id, status) = row.ok_or(Error::NotFound)?;
+    let status = match status.as_str() {
+        "HUMAN_REQUIRED" | "PENDING" | "BLOCKED_AUTHORIZATION" => {
+            crate::lead::ActionStatus::Pending
+        }
+        "IN_PROGRESS" | "AUTHORIZED" | "RUNNING" => crate::lead::ActionStatus::InProgress,
+        "COMPLETED" | "FAILED" | "CANCELLED" => crate::lead::ActionStatus::Terminal,
+        _ => return Err(Error::Invalid("stored action status")),
+    };
+    Ok(ActionBinding {
+        id: action_id.into(),
+        project_id,
+        status,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lead::{
         Capability, CheckKind, Complexity, EffortEstimate, EffortStatus, Intent, LeadRequestState,
-        LeadWorkUnit, ObjectiveClass, ProjectBinding, ProviderRoute, QualityProfile, RiskClass,
+        LeadWorkUnit, ObjectiveClass, ProjectConfig, ProviderRoute, QualityProfile, RiskClass,
         SpecBudget, SpecCheck, StandingDelegation, WorkUnitKind,
     };
 
@@ -764,6 +823,26 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
+        let config = project_config();
+        sqlx::query::query(
+            "INSERT INTO project_configs
+             (project_id,revision,config_hash,repository,base_commit,allowed_paths_json,
+              capabilities_json,quality_profile,active,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        )
+        .bind(&config.project_id)
+        .bind(i64::from(config.revision))
+        .bind(&config.config_hash)
+        .bind(&config.repository)
+        .bind(&config.base_commit)
+        .bind(serde_json::to_string(&config.allowed_paths).unwrap())
+        .bind(serde_json::to_string(&config.capabilities).unwrap())
+        .bind("generic")
+        .bind(1_i64)
+        .bind(&config.updated_at)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let grant = grant();
         db.create_standing_delegation(&grant, "grant-key")
             .await
@@ -771,8 +850,25 @@ mod tests {
         (path, db, grant)
     }
 
+    fn project_config() -> ProjectConfig {
+        let mut config = ProjectConfig {
+            project_id: "project".into(),
+            revision: 1,
+            config_hash: String::new(),
+            repository: "/fixture".into(),
+            base_commit: "b".repeat(40),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            quality_profile: QualityProfile::Generic,
+            active: true,
+            updated_at: "2026-10-24T00:00:00Z".into(),
+        };
+        config.config_hash = config.compute_hash();
+        config
+    }
+
     fn config_hash() -> String {
-        "a".repeat(64)
+        project_config().config_hash
     }
 
     fn grant() -> StandingDelegation {
@@ -791,7 +887,7 @@ mod tests {
             autonomous_risk_classes: Vec::new(),
             route: ProviderRoute {
                 provider: "opencode".into(),
-                model: "test/model".into(),
+                model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
             max_attempts: 2,
@@ -808,17 +904,6 @@ mod tests {
         };
         grant.content_hash = grant.compute_content_hash();
         grant
-    }
-
-    fn project() -> ProjectBinding {
-        ProjectBinding {
-            id: "project".into(),
-            active: true,
-            config_hash: config_hash(),
-            allowed_paths: vec!["src".into()],
-            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
-            quality_profile: QualityProfile::Generic,
-        }
     }
 
     fn checks() -> (Vec<SpecCheck>, Vec<SpecCheck>) {
@@ -934,7 +1019,7 @@ mod tests {
             "project",
             "Implement the feature.",
             "opencode",
-            "test/model",
+            "deepseek-v4.1-flash",
             "action-key",
         )
         .await
@@ -986,12 +1071,7 @@ mod tests {
         );
 
         let proposal = value.proposal.clone().unwrap();
-        let binding = ActionBinding {
-            id: action_id,
-            project_id: "project".into(),
-            status: crate::lead::ActionStatus::Pending,
-        };
-        db.record_lead_proposal(&request.id, &proposal, &project(), &binding, "proposal-key")
+        db.record_lead_proposal(&request.id, &proposal, "proposal-key")
             .await
             .unwrap();
         let frozen = db
@@ -1057,6 +1137,165 @@ mod tests {
                 .is_err()
         );
         assert!(db.freeze_lead_plan(&first.id, "freeze-key").await.is_err());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn fixture_assessment_and_freeze_flow_is_reachable_through_storage() {
+        let (path, db, grant) = fixture().await;
+        let (acceptance, negative) = checks();
+        let checks: Vec<SpecCheck> = acceptance.into_iter().chain(negative).collect();
+        let action = db
+            .create_action_with_spec(
+                "project",
+                "Implement the feature.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "fixture-action-key",
+                ActionSpecInput {
+                    allowed_paths: &["src".to_string()],
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action.id,
+                "grant",
+                "Implement the feature.",
+                &config.config_hash,
+                "fixture-request-key",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let binding = ActionBinding {
+            id: action.id.clone(),
+            project_id: "project".into(),
+            status: crate::lead::ActionStatus::Pending,
+        };
+        let (assessment, proposal) = crate::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            &grant,
+            Utc::now(),
+        )
+        .unwrap();
+        let input = AssessmentInput {
+            project_id: "project".into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            "fixture-assessment-key",
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(&request.id, &proposal, "fixture-proposal-key")
+            .await
+            .unwrap();
+        db.freeze_lead_plan(&request.id, "fixture-freeze-key")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.mark_lead_ready(&request.id).await.unwrap().state,
+            LeadRequestState::Ready
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn pre_model_block_releases_the_reserved_assessment_session() {
+        let (path, db, _) = fixture().await;
+        let action_id = action(&db).await;
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action_id,
+                "grant",
+                "Implement the feature.",
+                &config_hash(),
+                "release-request",
+            )
+            .await
+            .unwrap();
+        assert_eq!(db.delegation_usage("grant").await.unwrap().sessions, 1);
+        db.block_lead_request(&request.id, "no provider authorization")
+            .await
+            .unwrap();
+        assert_eq!(db.delegation_usage("grant").await.unwrap().sessions, 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn freeze_rejects_revocation_after_proposal() {
+        let (path, db, _) = fixture().await;
+        let action_id = action(&db).await;
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action_id,
+                "grant",
+                "Implement the feature.",
+                &config_hash(),
+                "revoke-freeze-request",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let mut value = assessment();
+        value.action_id = action_id.clone();
+        value.request_id = request.id.clone();
+        if let Some(proposal) = value.proposal.as_mut() {
+            proposal.action_id = action_id.clone();
+        }
+        let input = AssessmentInput {
+            project_id: "project".into(),
+            action_id: action_id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "MODEL",
+            &value,
+            &input,
+            "revoke-freeze-assessment",
+        )
+        .await
+        .unwrap();
+        let proposal = value.proposal.clone().unwrap();
+        db.record_lead_proposal(&request.id, &proposal, "revoke-freeze-proposal")
+            .await
+            .unwrap();
+        db.revoke_standing_delegation("grant", Utc::now())
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.freeze_lead_plan(&request.id, "revoke-freeze-freeze")
+                .await,
+            Err(Error::Forbidden(_))
+        ));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

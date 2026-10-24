@@ -4,7 +4,7 @@
 
 ## Binding objective and decisions
 
-The Product Owner authorized a clean Rust Core/Worker replacement with direct Codex App Server and OpenCode server integration, React/TypeScript Office, no completed Go/Paseo/AEH active product, no speculative compatibility layer, and no host fallback for required isolation. [ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md) supersedes the old implementation choice. Core alone owns policy, risk, authorization, budgets, leases, evidence, gate and delivery. A model cannot grant authority. This branch is **not** a completed replacement and must not be merged as a cutover.
+The Product Owner authorized a clean Rust Core/Worker replacement with direct Codex App Server and OpenCode server integration, React/TypeScript Office, no completed Go/Paseo/predecessor active product, no speculative compatibility layer, and no host fallback for required isolation. [ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md) supersedes the old implementation choice. Core alone owns policy, risk, authorization, budgets, leases, evidence, gate and delivery. A model cannot grant authority. This branch is **not** a completed replacement and must not be merged as a cutover.
 
 Decision mechanisms: canonical Git identity, idempotency, API auth and current non-dispatch are `DETERMINISTIC`. Future semantic assessment is `MODEL` input under `HYBRID` Core validation. Candidate acceptance and gate remain `DETERMINISTIC`. No model assessment or gate is implemented here.
 
@@ -49,7 +49,7 @@ At campaign entry, only PR #16 was open: `f1-s4-d-intelligent-lead` head `19cb49
 2. Create Core-owned frozen ActionSpec, risk and delegation authority, per-Action budgets, authenticated Worker assignment with lease/generation/fencing and idempotent receipts. A Worker must not dispatch when isolation or authority is absent.
 3. Add Factory-owned per-Attempt workspace allocation and tested sandbox/credential confinement. A Git worktree alone is insufficient. Test restart and stale-Worker recovery.
 4. Implement provider-backed Attempt → candidate commit → independent clean-checkout verifier → reviewer → deterministic gate, then a Rust-backed Office journey. Use a disposable external fixture and exact candidate evidence.
-5. Add bounded WorkGraphs, semantic evaluation, delegation, independent acceptance, exact-SHA CI, and only then remove obsolete Go/Paseo/AEH active code/docs/CI in one coherent cutover. Keep Git history.
+5. Add bounded WorkGraphs, semantic evaluation, delegation, independent acceptance, exact-SHA CI, and only then remove obsolete Go/Paseo/predecessor active code/docs/CI in one coherent cutover. Keep Git history.
 
 **Next executable acceptance:** reconcile Codex thread `01a169da-763d-7240-a953-6937793f8360` with the provider's supported inspection/cleanup path and record whether it remains unresolved. Then use deterministic fixtures to validate both adapters' work lifecycle, permissions, failed/interrupted/completed terminal distinctions, cancellation, reconnect inspection, and truthful cleanup. The OpenCode no-paid probe checks startup, authenticated health, a limited SSE handshake (`server.connected`), session create/get/delete, canonical workspace binding, and server cleanup; progress and reconnect remain untested. A live paid turn needs a separately explicit bounded authorization; none is authorized here.
 
