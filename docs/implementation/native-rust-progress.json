@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "WORKTREE_PENDING",
+  "verified_code_commit_sha": "e3c9e10a215cad013ac8df3800bddd726b611a20",
   "draft_pr": 17,
   "ci_at_update": "Exact-head native Rust, architecture and Office browser CI run per push; final candidate gates pending. Legacy Go/Paseo workflows and strict hygiene remain open.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",

@@ -791,7 +791,11 @@ capabilities:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - native/src/lead.rs
+    - native/src/db/lead.rs
+    - native/src/bin/core.rs
+
     live_agent: []
     uat: []
     deployment: []
@@ -828,7 +832,11 @@ capabilities:
       than the deterministic baseline while Core retains authority; reuse sufficient agent context rather than requiring
       a separate long-running session for each small judgment.
   evidence:
-    deterministic: []
+    deterministic:
+    - native/src/evaluation.rs
+    - native/fixtures/s4d-evaluation-corpus.json
+    - native/src/bin/s4d_evaluate.rs
+
     live_agent: []
     uat: []
     deployment: []
@@ -864,7 +872,10 @@ capabilities:
     real: Exercise frozen executable planning in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - native/src/lead.rs
+    - native/src/db/lead.rs
+
     live_agent: []
     uat: []
     deployment: []
@@ -899,7 +910,10 @@ capabilities:
     real: Exercise dependency-aware workgraph in a genuine authorized project journey and independently verify the
       outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - native/src/lead.rs
+    - native/src/db/lead.rs
+
     live_agent: []
     uat: []
     deployment: []
@@ -935,7 +949,10 @@ capabilities:
     real: Exercise standing delegation contract in a genuine authorized project journey and independently verify
       the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - native/src/lead.rs
+    - native/src/db/delegations.rs
+
     live_agent: []
     uat: []
     deployment: []
