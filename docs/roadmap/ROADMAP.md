@@ -12,18 +12,18 @@ Decision: `approved`
 
 ### Capabilities
 
-- CAP-001 — Registered projects (approved, implemented)
-- CAP-002 — Action and frozen specification (approved, implemented)
-- CAP-003 — Campaign orchestration (approved, implemented)
-- CAP-004 — Worker and Paseo integration (approved, implemented)
-- CAP-005 — Candidate revision lineage (approved, implemented)
-- CAP-006 — Independent verification and review (approved, implemented)
-- CAP-007 — Deterministic Quality Gate (approved, implemented)
-- CAP-008 — Scoped capability grants (approved, implemented)
+- CAP-001 — Registered projects (approved, in_progress)
+- CAP-002 — Action and frozen specification (approved, in_progress)
+- CAP-003 — Campaign orchestration (approved, in_progress)
+- CAP-004 — Worker and Paseo integration (approved, in_progress)
+- CAP-005 — Candidate revision lineage (approved, in_progress)
+- CAP-006 — Independent verification and review (approved, in_progress)
+- CAP-007 — Deterministic Quality Gate (approved, in_progress)
+- CAP-008 — Scoped capability grants (approved, in_progress)
 - CAP-009 — Factory-managed browser capability (approved, implemented)
-- CAP-010 — Bounded deterministic recovery (approved, implemented)
-- CAP-011 — Factory Office (approved, implemented)
-- CAP-012 — Durable events and telemetry (approved, implemented)
+- CAP-010 — Bounded deterministic recovery (approved, in_progress)
+- CAP-011 — Factory Office (approved, in_progress)
+- CAP-012 — Durable events and telemetry (approved, in_progress)
 
 ### Deliverables
 
