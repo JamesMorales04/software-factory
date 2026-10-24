@@ -148,18 +148,72 @@ impl Database {
             transaction.commit().await?;
             return Ok(current);
         }
-        sqlx::query::query(
+        let changed = sqlx::query::query(
             "UPDATE standing_delegations SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
         )
         .bind(at.to_rfc3339())
         .bind(id)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected();
+        if changed == 1 {
+            sqlx::query::query(
+                "UPDATE lead_requests SET state='BLOCKED',failure_reason='delegation revoked',updated_at=?1
+                 WHERE delegation_id=?2 AND state IN ('SUBMITTED','ASSESSING','PLANNED','FROZEN','READY','RUNNING')",
+            )
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "UPDATE campaigns SET status='CANCELLED'
+                 WHERE status IN ('AUTHORIZED','RUNNING')
+                   AND action_id IN (SELECT action_id FROM lead_requests WHERE delegation_id=?1)",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "UPDATE runs SET status='CANCELLED'
+                 WHERE status IN ('QUEUED','RUNNING')
+                   AND campaign_id IN (
+                     SELECT c.id FROM campaigns c
+                     JOIN lead_requests l ON l.action_id=c.action_id
+                     WHERE l.delegation_id=?1)",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "UPDATE attempts SET status='CANCELLED'
+                 WHERE status IN ('QUEUED','LEASED')
+                   AND run_id IN (
+                     SELECT r.id FROM runs r
+                     JOIN campaigns c ON c.id=r.campaign_id
+                     JOIN lead_requests l ON l.action_id=c.action_id
+                     WHERE l.delegation_id=?1)",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
+                "DELETE FROM worker_leases
+                 WHERE attempt_id IN (
+                   SELECT a.id FROM attempts a
+                   JOIN runs r ON r.id=a.run_id
+                   JOIN campaigns c ON c.id=r.campaign_id
+                   JOIN lead_requests l ON l.action_id=c.action_id
+                   WHERE l.delegation_id=?1)",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
         record_event(
             &mut transaction,
             id,
             "delegation.revoked",
-            "revocation recorded; in-flight containment is a separate Core action",
+            "one-way revocation recorded; open Lead work blocked and Campaign work fenced",
         )
         .await?;
         let revoked = load_delegation(&mut transaction, id).await?;

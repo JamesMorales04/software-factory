@@ -38,14 +38,14 @@ mapping.
 | A1 | Semantic intake and typed assessment | `PARTIAL` | Strict typed assessment/storage; deterministic fixture assessor and operator routes; no model assessor | Add direct provider assessor, observation, Action creation, reconciliation, process tests |
 | A2 | Proposal validation and frozen plan | `PARTIAL` | Deterministic validation, project config hash binding, freeze revalidation, durable rows | Create per-unit specs/Campaign and expose complete projection |
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
-| A4 | Authorized autonomous Campaign start | `NOT_STARTED` | Fail-closed rejection | Ratified policy; atomic start + audit; model cannot self-authorize |
-| A5 | Immediate revocation containment | `PARTIAL` | New reservations blocked | Contain open requests/runs/sessions with durable evidence |
+| A4 | Authorized autonomous Campaign start | `PARTIAL` | Explicit default-off policy; single-unit R0 fixture start creates Campaign/Run/Attempt atomically | Multi-unit WorkGraph start, ratified issuer policy and provider mode remain |
+| A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks open Lead requests and cancels/fences linked Campaign/Run/Attempt work | Provider session reconciliation and independent cleanup evidence remain |
 | A6 | Bounded WorkGraph | `PARTIAL` | Deterministic graph validation | Persist graph, per-unit specs, integration node |
 | A7 | Dependency-aware execution/recovery | `NOT_STARTED` | No graph scheduler | Core scheduler, leases, fan-in, restart, failure propagation |
 | A8 | Deterministic Git integration | `PARTIAL` | Tested integration primitives | Wire Worker/Core candidate lineage and Campaign integration |
-| A9 | Atomic Lead/Campaign start | `NOT_STARTED` | No start transaction | Crash-injection and idempotent replay test |
+| A9 | Atomic Lead/Campaign start | `PARTIAL` | Single-unit start transaction + idempotent replay; fixture E2E reaches ACCEPTED | Add crash-injection and multi-unit start coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
-| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Six route Rust Office; browser journey passes | Lead/delegation/detail/recovery projections and reload tests |
+| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Rust Office now includes Lead submission, fixture assessment, freeze and request projection | WorkGraph visualization, campaign detail/recovery and Lead browser reload test |
 | A12 | Bounded live certification tooling | `PARTIAL` | Default-closed readonly provider smoke | Core-owned budget/session ledger and governed S4-D harness |
 
 ## Merge-readiness gates
@@ -91,8 +91,8 @@ preserved its selected portfolio and engineering opportunities.
 Strict tracked-tree independence audit:
 
 ```sh
-git grep -n -i -E 'AEH|agentic[-_ ]engineering[-_ ]harness' -- .
-git ls-files | grep -Ei 'AEH|agentic[-_ ]engineering[-_ ]harness'
+git grep -n -i -E 'A[E]H|agentic[-_ ]engineering[-_ ]harness' -- .
+git ls-files | grep -Ei 'A[E]H|agentic[-_ ]engineering[-_ ]harness'
 ```
 
 Both must be empty for M13. Go/path and strict hygiene audits remain separate.

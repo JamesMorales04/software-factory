@@ -24,6 +24,7 @@ struct App {
     verifier_token: String,
     reviewer_token: String,
     lead_fixture_assessor: bool,
+    lead_autonomous_start: bool,
 }
 
 #[derive(Deserialize)]
@@ -163,6 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reviewer_token,
         lead_fixture_assessor: env::var("FACTORY_LEAD_FIXTURE_ASSESSOR").ok().as_deref()
             == Some("1"),
+        lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
+            == Some("1"),
     });
     let router = build_router(app);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -229,6 +232,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}", get(get_lead_request))
         .route("/lead/requests/{id}/assess", post(assess_lead_request))
         .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
+        .route("/lead/requests/{id}/start", post(start_lead_request))
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -583,10 +587,10 @@ async fn create_delegation(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if input.delegation.autonomous_start {
+    if input.delegation.autonomous_start && !app.lead_autonomous_start {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"error":"autonomous delegation policy is not ratified"})),
+            Json(json!({"error":"autonomous delegation policy is not ratified or activated"})),
         )
             .into_response();
     }
@@ -792,6 +796,35 @@ async fn freeze_lead_request(
         Json(json!({"plan": plan, "request": request})),
     )
         .into_response()
+}
+
+async fn start_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !app.lead_autonomous_start {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"autonomous start policy is not activated"})),
+        )
+            .into_response();
+    }
+    match app
+        .db
+        .start_lead_campaign(&id, &format!("start:{id}"))
+        .await
+    {
+        Ok((campaign, run, attempt)) => (
+            StatusCode::CREATED,
+            Json(json!({"campaign":campaign,"run":run,"attempt":attempt})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn get_lead_request(
@@ -1042,6 +1075,7 @@ mod tests {
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
+            lead_autonomous_start: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1161,6 +1195,7 @@ mod tests {
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
+            lead_autonomous_start: false,
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1289,6 +1324,7 @@ mod tests {
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
+            lead_autonomous_start: false,
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1340,6 +1376,7 @@ mod tests {
             verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
+            lead_autonomous_start: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert(

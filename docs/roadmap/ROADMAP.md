@@ -72,7 +72,7 @@ Decision: `proposed`
 - CAP-015 — Frozen executable planning (proposed, in_progress)
 - CAP-016 — Dependency-aware WorkGraph (proposed, in_progress)
 - CAP-017 — Standing delegation contract (proposed, in_progress)
-- CAP-043 — Autonomous product development (approved, not_implemented)
+- CAP-043 — Autonomous product development (approved, in_progress)
 
 ### Deliverables
 

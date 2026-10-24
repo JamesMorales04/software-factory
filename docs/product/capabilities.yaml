@@ -1818,7 +1818,7 @@ capabilities:
   purpose: Product Owner objectives become independently accepted engineering changes
   product_objective: Autonomous product development
   decision_status: approved
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
     deterministic: not_tested
     live_agent: not_tested

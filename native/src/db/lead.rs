@@ -15,6 +15,7 @@ use crate::lead::{
 };
 
 use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
+use super::lifecycle::load_campaign;
 use super::project_configs::load_project_config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,7 @@ pub struct LeadRequestRecord {
     pub project_config_hash: String,
     pub state: LeadRequestState,
     pub failure_reason: Option<String>,
+    pub campaign_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -159,13 +161,14 @@ impl Database {
             project_config_hash: project_config_hash.into(),
             state: LeadRequestState::Submitted,
             failure_reason: None,
+            campaign_id: None,
             created_at: now.clone(),
             updated_at: now,
         };
         sqlx::query::query(
             "INSERT INTO lead_requests
-             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,state,failure_reason,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?9)",
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,state,failure_reason,campaign_id,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,NULL,?9,?9)",
         )
         .bind(&request.id)
         .bind(&request.project_id)
@@ -551,6 +554,198 @@ impl Database {
         Ok(record)
     }
 
+    /// Start a frozen single-unit Lead plan under an explicit autonomous grant.
+    /// This creates the Campaign authorization, Run and Attempt atomically. It
+    /// does not enable provider or ISOLATED execution.
+    pub async fn start_lead_campaign(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+    ) -> Result<(Campaign, Run, Attempt), Error> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
+            return Err(Error::Invalid("lead start idempotency key"));
+        }
+        let digest = sha256_hex(
+            serde_json::to_string(&(request_id, "start-lead-campaign-v1"))
+                .expect("lead start digest serializes")
+                .as_bytes(),
+        );
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        if let Some(existing) = replay(
+            &mut transaction,
+            idempotency_key,
+            "start_lead_campaign",
+            &digest,
+        )
+        .await?
+        {
+            let campaign = load_campaign(&mut transaction, &existing).await?;
+            let run = load_run_for_campaign(&mut transaction, &campaign.id).await?;
+            let attempt = load_attempt_for_run(&mut transaction, &run.id).await?;
+            transaction.commit().await?;
+            return Ok((campaign, run, attempt));
+        }
+        let request = load_lead_request(&mut transaction, request_id).await?;
+        if request.state != LeadRequestState::Ready {
+            return Err(Error::Conflict("lead plan is not ready to start"));
+        }
+        if request.campaign_id.is_some() {
+            return Err(Error::Conflict("lead request already started"));
+        }
+        let grant = load_delegation(&mut transaction, &request.delegation_id).await?;
+        grant.validate(Utc::now())?;
+        if !grant.autonomous_start
+            || !grant
+                .autonomous_risk_classes
+                .contains(&crate::lead::RiskClass::R0)
+        {
+            return Err(Error::Forbidden(
+                "delegation does not authorize autonomous R0 start".into(),
+            ));
+        }
+        let (proposal_id, proposal_json): (String, String) = sqlx::query_as::query_as(
+            "SELECT p.id,lp.proposal_json FROM frozen_lead_plans p
+             JOIN lead_proposals lp ON lp.id=p.proposal_id
+             WHERE p.request_id=?1",
+        )
+        .bind(request_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(Error::Conflict("lead plan is not frozen"))?;
+        let plan_id: (String,) =
+            sqlx::query_as::query_as("SELECT id FROM frozen_lead_plans WHERE request_id=?1")
+                .bind(request_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::Conflict("lead plan is not frozen"))?;
+        let plan = load_frozen_plan_by_id(&mut transaction, &plan_id.0).await?;
+        let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
+            .map_err(|_| Error::Invalid("stored proposal encoding"))?;
+        if proposal.work_units.len() != 1 || proposal.needs_integration() {
+            return Err(Error::Forbidden(
+                "single-unit autonomous start only; multi-unit WorkGraph scheduling is not enabled"
+                    .into(),
+            ));
+        }
+        if proposal.risk_class != crate::lead::RiskClass::R0 {
+            return Err(Error::Forbidden("autonomous start is limited to R0".into()));
+        }
+        let action = load_action_binding(&mut transaction, &request.action_id).await?;
+        if action.status != crate::lead::ActionStatus::Pending {
+            return Err(Error::Forbidden("action is not startable".into()));
+        }
+        let config = load_project_config(&mut transaction, &request.project_id).await?;
+        proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+        let action_spec: String = sqlx::query_as::query_as::<_, (String,)>(
+            "SELECT spec_json FROM action_specs WHERE action_id=?1",
+        )
+        .bind(&request.action_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(Error::Conflict("action has no frozen spec"))?
+        .0;
+        let action_spec: ActionSpec = serde_json::from_str(&action_spec)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        let mut expected = proposal.acceptance_criteria.clone();
+        expected.extend(proposal.negative_cases.clone());
+        expected.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut actual = action_spec.checks.clone();
+        actual.sort_by(|a, b| a.id.cmp(&b.id));
+        if expected != actual
+            || !same_paths(
+                &proposal.work_units[0].allowed_paths,
+                &action_spec.allowed_paths,
+            )
+        {
+            return Err(Error::Forbidden(
+                "frozen plan does not match the ActionSpec execution boundary".into(),
+            ));
+        }
+        let now = Utc::now().to_rfc3339();
+        let campaign = Campaign {
+            id: Uuid::new_v4().to_string(),
+            action_id: request.action_id.clone(),
+            status: "AUTHORIZED".into(),
+            created_at: now.clone(),
+        };
+        sqlx::query::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
+            .bind(&campaign.id)
+            .bind(&campaign.action_id)
+            .bind(&campaign.status)
+            .bind(&campaign.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query::query(
+            "INSERT INTO campaign_authorizations
+             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,authorized_paths_json,max_attempts,created_at)
+             VALUES (?1,?2,'R0','FIXTURE',?3,?4,?5,?6,?7)",
+        )
+        .bind(&campaign.id)
+        .bind(format!("lead-{}", request.id))
+        .bind(format!("delegation:{}", grant.id))
+        .bind(format!("autonomous R0 start for plan {}", plan.plan_hash))
+        .bind(serde_json::to_string(&action_spec.allowed_paths).map_err(|_| Error::Invalid("allowed paths encoding"))?)
+        .bind(i64::from(proposal.budget.max_attempts))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        let run = Run {
+            id: Uuid::new_v4().to_string(),
+            campaign_id: campaign.id.clone(),
+            status: "QUEUED".into(),
+            created_at: now.clone(),
+        };
+        sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+            .bind(&run.id)
+            .bind(&run.campaign_id)
+            .bind(&run.status)
+            .bind(&run.created_at)
+            .execute(&mut *transaction)
+            .await?;
+        let attempt = Attempt {
+            id: Uuid::new_v4().to_string(),
+            run_id: run.id.clone(),
+            status: "QUEUED".into(),
+            created_at: now.clone(),
+        };
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)",
+        )
+        .bind(&attempt.id)
+        .bind(&attempt.run_id)
+        .bind(&attempt.status)
+        .bind(&attempt.created_at)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE lead_requests SET state='RUNNING',campaign_id=?1,updated_at=?2 WHERE id=?3",
+        )
+        .bind(&campaign.id)
+        .bind(&now)
+        .bind(&request.id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+            .bind(idempotency_key)
+            .bind("start_lead_campaign")
+            .bind(&digest)
+            .bind(&campaign.id)
+            .execute(&mut *transaction)
+            .await?;
+        record_event(
+            &mut transaction,
+            &campaign.id,
+            "campaign.started",
+            "autonomous R0 fixture start",
+        )
+        .await?;
+        record_event(&mut transaction, &request.id, "lead.started", &campaign.id).await?;
+        transaction.commit().await?;
+        let _ = proposal_id;
+        Ok((campaign, run, attempt))
+    }
+
     pub async fn lead_assessment(&self, request_id: &str) -> Result<LeadAssessmentRecord, Error> {
         let row: Option<(String, String, String, String, String, String)> =
             sqlx::query_as::query_as(
@@ -698,7 +893,7 @@ async fn load_lead_request(
 ) -> Result<LeadRequestRecord, Error> {
     let row = sqlx::query::query(
         "SELECT id,project_id,action_id,delegation_id,objective,request_hash,
-                project_config_hash,state,failure_reason,created_at,updated_at
+                project_config_hash,state,failure_reason,campaign_id,created_at,updated_at
          FROM lead_requests WHERE id=?1",
     )
     .bind(id)
@@ -716,6 +911,7 @@ async fn load_lead_request(
         project_config_hash: row.try_get("project_config_hash")?,
         state: parse_state(&state).ok_or(Error::Invalid("stored lead request state"))?,
         failure_reason: row.try_get("failure_reason")?,
+        campaign_id: row.try_get("campaign_id")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -813,6 +1009,52 @@ async fn load_action_binding(
     })
 }
 
+async fn load_run_for_campaign(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<Run, Error> {
+    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT id,campaign_id,status,created_at FROM runs WHERE campaign_id=?1 ORDER BY created_at LIMIT 1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|(id, campaign_id, status, created_at)| Run {
+        id,
+        campaign_id,
+        status,
+        created_at,
+    })
+    .ok_or(Error::NotFound)
+}
+
+async fn load_attempt_for_run(
+    connection: &mut SqliteConnection,
+    run_id: &str,
+) -> Result<Attempt, Error> {
+    let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+        "SELECT id,run_id,status,created_at FROM attempts WHERE run_id=?1 ORDER BY created_at LIMIT 1",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|(id, run_id, status, created_at)| Attempt {
+        id,
+        run_id,
+        status,
+        created_at,
+    })
+    .ok_or(Error::NotFound)
+}
+
+fn same_paths(left: &[String], right: &[String]) -> bool {
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort();
+    right.sort();
+    left == right
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,7 +1098,10 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        let grant = grant();
+        let mut grant = grant();
+        grant.autonomous_start = true;
+        grant.autonomous_risk_classes = vec![RiskClass::R0];
+        grant.content_hash = grant.compute_content_hash();
         db.create_standing_delegation(&grant, "grant-key")
             .await
             .unwrap();
@@ -1229,6 +1474,16 @@ mod tests {
             db.mark_lead_ready(&request.id).await.unwrap().state,
             LeadRequestState::Ready
         );
+        let (campaign, run, attempt) = db
+            .start_lead_campaign(&request.id, "fixture-start-key")
+            .await
+            .unwrap();
+        assert_eq!(campaign.status, "AUTHORIZED");
+        assert_eq!(run.status, "QUEUED");
+        assert_eq!(attempt.status, "QUEUED");
+        let running = db.lead_request(&request.id).await.unwrap();
+        assert_eq!(running.state, LeadRequestState::Running);
+        assert_eq!(running.campaign_id.as_deref(), Some(campaign.id.as_str()));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -1253,6 +1508,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.delegation_usage("grant").await.unwrap().sessions, 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn revocation_blocks_an_open_lead_request() {
+        let (path, db, _) = fixture().await;
+        let action_id = action(&db).await;
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action_id,
+                "grant",
+                "Implement the feature.",
+                &config_hash(),
+                "revoke-open-request",
+            )
+            .await
+            .unwrap();
+        db.revoke_standing_delegation("grant", Utc::now())
+            .await
+            .unwrap();
+        let blocked = db.lead_request(&request.id).await.unwrap();
+        assert_eq!(blocked.state, LeadRequestState::Blocked);
+        assert!(
+            blocked
+                .failure_reason
+                .as_deref()
+                .is_some_and(|value| value.contains("revoked"))
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -1307,7 +1592,7 @@ mod tests {
         assert!(matches!(
             db.freeze_lead_plan(&request.id, "revoke-freeze-freeze")
                 .await,
-            Err(Error::Forbidden(_))
+            Err(Error::Forbidden(_) | Error::Conflict(_))
         ));
         db.close().await;
         let _ = std::fs::remove_file(path);
