@@ -5,9 +5,9 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "c19d3276cd90961f19d41897fde25fca46dc9487",
+  "verified_code_commit_sha": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
   "draft_pr": 17,
-  "ci_at_update": "Exact-head native Rust, governance/architecture and Office browser CI PASS at 35d8b93. Legacy Go workflows and strict hygiene remain open.",
+  "ci_at_update": "Exact-head CI for 4bcd584 is pending. Local author gates PASS; legacy Go/Paseo workflows remain failing and active.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",
   "implemented": [
     "SQLx 0.8.6 (sqlx-core + sqlx-sqlite directly) persistence with versioned migrations and async pool",
@@ -59,76 +59,83 @@
     "Capability-preservation enforcement and predecessor independence audit",
     "Deterministic provider-session state machine fixtures",
     "Parallel roots, fan-in and final integration nodes; integrated candidate lineage/verifier/Quality Gate process E2E",
-    "Fan-in process E2E through intermediate integration and dependent unit to ACCEPTED"
+    "Fan-in process E2E through intermediate integration and dependent unit to ACCEPTED",
+    "Independent deterministic diff reviewer process with exact candidate/spec receipts and bounded scope/diff checks",
+    "Deterministic pre-candidate failure classifier ported with the closed recoverability policy",
+    "Operator Campaign cancellation that fences runs, attempts, tasks, integrations and leases across restart",
+    "Loopback OpenCode prompt/abort/assistant-read/delete HTTP lifecycle fixture with credential and redirect checks",
+    "In-flight WorkGraph lease recovery and stale-generation fencing process test",
+    "Bounded candidate diff, diff-stat, added-line and recursive content-digest evidence helpers"
   ],
   "not_implemented": [
-    "Parallel/fan-in WorkGraph execution and deterministic integrated candidate acceptance",
     "Provider-backed coding, direct provider work lifecycle, permissions, cancellation and session recovery",
     "Independent isolation/credential-confinement certification",
     "Zero-Go deletion, strict hygiene, legacy workflow migration and final independent review",
     "Windows/Podman Machine acceptance",
-    "Multi-unit crash-injection and scheduler restart recovery"
+    "In-flight integration-node cancellation, scheduler crash injection and browser recovery projection"
   ],
   "provider_versions": {
     "codex": "0.156.1",
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 124,
-  "current_test_inventory": "Exact-head CI at c19d327: Rust, architecture and Office browser PASS; 196 Rust tests passed, 2 ignored author-run; parallel and fan-in WorkGraph process E2E reach ACCEPTED.",
+  "local_unit_tests_passed": 230,
+  "current_test_inventory": "Author-run at 4bcd584: 230 Rust tests passed, 2 ignored; xtask check/migrate/architecture/e2e recovery/dispatch/negatives/office pass. Exact-head CI pending.",
   "author_verification_at_code_sha": {
-    "sha": "35d8b93c075d410ee82d37415dbc4debca2c46cd",
-    "binding": "EXACT_HEAD_CI",
-    "rust": "PASS: 193 tests, fmt, Clippy, build, migrations, recovery, architecture",
-    "office_browser": "PASS",
-    "architecture_consistency": "PASS",
-    "rootless_podman_fixture": "PASS (author run)",
+    "sha": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
+    "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
+    "rust": "PASS: 230 tests + 2 ignored, fmt, strict Clippy, build, docs, audit (276 dependencies), migrations, architecture",
+    "process_e2e": "PASS: recovery, fixture dispatch (including in-flight recovery and cancellation), negatives",
+    "office_browser": "PASS: real Chromium journey with independent reviewer process and Workers view",
+    "rootless_podman_fixture": "PASS (author run, earlier candidate)",
     "windows_runtime": "NOT_TESTED",
-    "independent_review": "Technical subagent security and closure reviews performed; findings repaired. Not independent human acceptance.",
+    "independent_review": "Technical subagent security and closure reviews performed earlier; findings repaired. Not independent human acceptance.",
     "provider_paid_turns": 0
   },
   "dependency_audit": {
     "tool": "cargo-audit",
     "version": "0.22.2",
     "command": "cargo audit --file Cargo.lock",
-    "local_result": "PASS",
-    "dependency_count": 214,
+    "local_result": "PASS at 4bcd584 (276 dependencies)",
+    "dependency_count": 276,
     "sqlx_dependency_decision": "sqlx-core + sqlx-sqlite direct; sqlx-macros for embedded migrations; no MySQL/PostgreSQL/RSA optional backends in lock"
   },
   "provider_live_status": "Read-only structured-output smokes pass for Codex and OpenCode Go. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn authorized.",
-  "security_status": "PARTIAL/BLOCKED: named-volume mount boundary, explicit Action classification, per-Attempt verification and process identity checks are implemented. Credential confinement, provider-in-sandbox, fd-relative host mutation and independent isolation remain unverified; SEC-01 not certified.",
-  "delivery_status": "PR #17 Draft at 35d8b93; exact-head CI green; independent human review, zero-Go cutover and merge authorization outstanding.",
+  "security_status": "PARTIAL/BLOCKED: named-volume mount boundary, explicit Action classification, per-Attempt verification, independent deterministic reviewer and process identity checks are implemented. Credential confinement, provider-in-sandbox, fd-relative host mutation and independent isolation remain unverified; SEC-01 not certified.",
+  "delivery_status": "PR #17 Draft; code candidate 4bcd584. Exact-head CI, independent human review, zero-Go cutover and merge authorization outstanding.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Add WorkGraph conflict/failure/restart process tests; implement provider work lifecycle and model assessor; then delete Go/Paseo code and legacy CI after replacement, followed by independent review.",
+  "next_task": "Integrate provider lifecycle only after Core-owned authorization/budget and credential confinement; add in-flight integration cancellation and recovery/cleanup Office coverage; port repository root identity and event read projection; then retire the legacy Go module and CI in one verified cutover.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
   "working_tree_status_at_update": "Committed standards, skill and recovery matrix on top of f79f04f; see current HEAD.",
   "current_slice": {
-    "evidence_binding": "exact-head CI 35d8b93; code evidence 5a323f8 and docs evidence f7caf37",
+    "evidence_binding": "author-run code head 4bcd584; exact-head CI pending",
     "dispatch": "R0/FIXTURE and default-off single-unit autonomous Lead start; provider/ISOLATED fail-closed",
-    "office": "Dashboard, Projects, Actions, Lead, Campaigns/detail, Runs, Workers; browser Lead/Campaign reload paths",
+    "office": "Dashboard, Projects, Actions, Lead, Campaigns/detail, Runs, Workers; browser Lead/Campaign reload plus Workers view",
+    "quality": "sandboxed verifier, independent deterministic diff reviewer process, immutable receipts and deterministic gate",
+    "workgraph": "sequential, parallel, fan-in, failed dependency/integration, pre-dispatch and in-flight root lease recovery, operator cancellation",
     "supervisor": "named-volume rootless Podman, durable workspace state, reconciliation, process-identity startup checks",
-    "s4d": "A1-A12 all partial except A10 deterministic evaluator; sequential WorkGraph only",
-    "legacy": "99 Go files remain; strict hygiene not green"
+    "s4d": "A1-A12 partial except A10 deterministic evaluator; WorkGraph cancellation now implemented at campaign level",
+    "legacy": "96 Go files remain; monolithic Go module blocks partial deletion; strict hygiene not green"
   },
   "completion_gates": {
     "G1": "PARTIAL: Rust runtime is authoritative in practice, but Go tree remains",
     "G2": "PARTIAL: provider read-only smokes pass; coding lifecycle absent",
-    "G3": "BLOCKED: 99 Go files and Go config remain",
+    "G3": "BLOCKED: 96 Go files remain in one connected Go module; legacy Go config/workflows active",
     "G4": "PARTIAL: Rust CI green; legacy workflows remain",
-    "G5": "PARTIAL: fixture and single-unit Lead execution verified; provider/parallel WorkGraph blocked",
-    "G6": "PARTIAL: sandboxed verifier and gate verified; semantic Reviewer process absent",
+    "G5": "PARTIAL: fixture and single-unit Lead execution plus parallel/fan-in/cancellation process tests verified; provider-backed execution blocked",
+    "G6": "PARTIAL: sandboxed verifier, independent deterministic reviewer process and gate verified; model/semantic reviewer absent",
     "G7": "PARTIAL: Lead/Campaign detail browser paths verified; recovery visibility absent",
     "G8": "BLOCKED: credential confinement/independent isolation not verified",
-    "G9": "PARTIAL: exact-head CI green at 35d8b93; independent human acceptance absent",
+    "G9": "PARTIAL: author-run exact code head 4bcd584; exact-head CI and independent human acceptance absent",
     "G10": "PARTIAL: architecture/governance pass; strict hygiene and legacy CI remain",
     "G11": "NOT_STARTED: independent human full-diff review",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: predecessor independence audit empty; preservation gate enforced; registry/roadmap closure still in review"
   },
-  "deepseek_continuation": "Inspect git status, HEAD and PR #17; read this handoff and migration matrix. Keep public dispatch disabled and PR draft. Implement authenticated durable quality evidence and independent verifier/reviewer execution, then the provider-backed Worker lifecycle. Do not claim G1-G10 PASS or completed replacement.",
+  "deepseek_continuation": "Inspect git status, HEAD and PR #17; read the closure ledger and this handoff. Keep provider/ISOLATED dispatch fail-closed and PR draft. Continue from cancellation/recovery evidence into in-flight integration cancellation, provider authorization/budget and credential confinement; do not claim any G1-G13 PASS or a completed replacement.",
   "matrix": "docs/implementation/native-rust-migration-matrix.md",
   "intended_cutover_layout": "After verified Go deletion, move staged Rust backend from native/ into core/, retaining one Cargo workspace with cohesive domain, persistence, provider, workspace, quality, API, and Worker modules. This is an implementation choice, not an edit to accepted ADR-0018; matrix crate paths are illustrative.",
   "rust_engineering": {
@@ -171,7 +178,7 @@
     "paid_default": "FORBIDDEN"
   },
   "cutover_campaign_checkpoint_2026_10_24": {
-    "code_head_reviewed": "3840b3993346121ffabaaf0f135e5cbb345ca1ef",
+    "code_head_reviewed": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
@@ -183,9 +190,9 @@
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "Eight governance tests, full workspace test at c375d71, OpenCode prompt fixture tests/format/Clippy at 5a5df79, base-ref checker, Rust Office browser, Python PR-impact/authorization, failed-dependency, integration-failure and pre-dispatch restart process tests passed locally; independent WorkGraph test review found no blocker; architecture-consistency GitHub job passed at a367766 after PR impact rebinding; cargo audit at dd91272 exited zero with no advisories. Legacy S4-B B8 passed but full script failed at B11 browser timeout.",
-    "remaining": "96 Go files; legacy Go/Paseo workflows and module; WorkGraph conflict/cancel/restart; model-backed Lead/provider lifecycle; independent quality; credential/isolation closure; strict hygiene; final exact-head CI and owner merge authorization.",
+    "checks": "cargo xtask check PASS (230 tests + 2 ignored, fmt, strict Clippy, build, docs, audit 276 deps); validate-architecture, e2e recovery/dispatch/negatives/office PASS; Office journey uses independent reviewer process and Workers view. Exact-head CI pending.",
+    "remaining": "96 Go files in one connected Go module; legacy Go/Paseo workflows/module; provider coding lifecycle; durable session recovery; repository identity/event projection; in-flight integration cancellation; strict hygiene; exact-head CI; owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
-    "next_task": "Integrate OpenCode's prompt/abort/cleanup HTTP path with a local fake server and exact SSE/session reconciliation; then test in-flight WorkGraph restart and cancellation."
+    "next_task": "Add in-flight integration cancellation and recovery/cleanup Office projection; port repository identity and event read projection; prepare a whole-module Go/Paseo retirement plan after provider/telemetry parity, not partial unsafe deletions."
   }
 }

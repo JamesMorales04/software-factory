@@ -1,3 +1,7 @@
+> **Historical audit snapshot.** This 2026-10-23 inventory is not the current
+> status authority. See [native-rust-closure.md](native-rust-closure.md) for
+> current Rust capabilities, evidence and remaining blockers.
+
 # E2E and acceptance-test migration matrix (legacy → native Rust)
 
 **Audit date:** 2026-10-23 UTC. **Worktree:** `/home/james/Escritorio/Development/software-factory-native-rust`. **Audited HEAD:** `b7131b389c12b7ee63d37f195ababdfa5cad3949`. **Branch:** `native-rust-replacement-20261023`.

@@ -1,0 +1,46 @@
+{
+  "schema": "factory.author-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
+  "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
+  "scope": [
+    "independent deterministic reviewer process",
+    "pre-candidate failure classification",
+    "operator Campaign cancellation with lease fencing",
+    "in-flight WorkGraph lease recovery",
+    "OpenCode loopback prompt lifecycle fixture"
+  ],
+  "commands": {
+    "cargo xtask check": "PASS",
+    "cargo xtask validate-architecture": "PASS",
+    "cargo xtask e2e recovery": "PASS",
+    "cargo xtask e2e dispatch": "PASS (7 tests)",
+    "cargo xtask e2e negatives": "PASS (4 tests)",
+    "cargo xtask e2e office": "PASS (real Chromium; independent reviewer process; Workers view)"
+  },
+  "test_inventory": {
+    "passed": 230,
+    "failed": 0,
+    "ignored": 2
+  },
+  "dependency_audit": {
+    "command": "cargo audit --file Cargo.lock",
+    "result": "PASS",
+    "dependency_count": 276,
+    "advisory_database_head_loaded": 1352
+  },
+  "not_claimed": [
+    "independent human acceptance",
+    "paid provider coding",
+    "provider-in-sandbox execution",
+    "credential confinement",
+    "ISOLATED or OS isolation certification",
+    "exact-head GitHub CI",
+    "Windows/Podman Machine",
+    "deployment or merge authorization"
+  ],
+  "provider_paid_turns": 0
+}

@@ -15,6 +15,30 @@
 
 At this baseline, **no complete Go package is deletion-ready**. Existing Rust component tests do not by themselves replace process, browser or security assertions. Remove each group only with the named oracle passing on its exact candidate.
 
+## Current blocker assessment (2026-10-24, 96 tracked `.go` files)
+
+The inventory is now 96 files after batches 1 and 2. No third file-level batch
+is truthful. The remaining Go tree is one connected module: the B2 `domain`,
+`candidate`, `project` and `recovery` packages are imported by the C1/C2
+commands, `api`, `store`, `orchestrator`, verifier and reviewer. Removing any
+B2 file without removing or rewriting its dependents breaks `go build` and the
+legacy CI oracles.
+
+Rust now owns the following former B2 behavior at `4bcd584`:
+
+- pre-candidate failure classification (`native/src/recovery.rs`);
+- bounded candidate diff, diff-stat, added-line and content-digest evidence
+  (`native/src/workspace.rs`);
+- independent deterministic final-diff review and receipt submission
+  (`native/src/review.rs`, `native/src/bin/reviewer.rs`).
+
+Still missing before B2 can be retired: a production Rust repository
+root-identity binding equivalent to `core/internal/project/repository.go` and
+the legacy event payload read projection from `core/internal/domain/event.go`.
+Even after those ports, deletion requires retiring the whole dependent Go
+runtime and CI in one verified cutover. The next safe deletion batch is
+therefore the full legacy module retirement, not another isolated file.
+
 ## Completed batch 1
 
 Commit `1d10f065a2143cbe8fc84006113ec315610420bd` deleted the E1

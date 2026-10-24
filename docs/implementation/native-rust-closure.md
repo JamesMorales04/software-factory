@@ -40,8 +40,8 @@ source-mapping snapshot; this ledger is the current status authority.
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
-| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass at `a32c6d5`/`d50bd0f`/`3840b39` | In-flight restart and browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
-| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart before dispatch (`d50bd0f`) | Cancellation and in-flight restart process tests |
+| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass at `a32c6d5`/`d50bd0f`/`3840b39`; in-flight root-lease restart/recovery passes at `0435159`/`4bcd584` | Browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
+| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart before dispatch (`d50bd0f`); operator Campaign cancellation fences runs, attempts, tasks, integrations and leases across restart (`4bcd584`) | Cancelling an in-flight integration node and browser recovery projection remain untested |
 | A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED; integration failure retains exact root-candidate lineage and produces no integrated candidate (`3840b39`) | Adversarial cross-project integration and conflict-path assessment |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Add crash-injection and restart scheduler coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
@@ -58,9 +58,9 @@ source-mapping snapshot; this ledger is the current status authority.
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; Codex thread/turn terminal classification and session identity are fixture-tested at `c375d71`; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
-| M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; reviewer is receipt-only |
+| M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; independent deterministic diff reviewer process runs in fixture and Office E2E (`4bcd584`); no model review |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency and integration-failure process tests at `a32c6d5`/`3840b39`; workspace tests pass locally at `c375d71`; final exact-head CI pending |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; 230 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally at `4bcd584`; final exact-head CI pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `a367766`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -79,8 +79,11 @@ At the author checkpoint:
 - real Chromium Office journey passed.
 
 Candidate-bound evidence: [native-rust-closure-2026-10-24.json](../evidence/native-rust-closure-2026-10-24.json)
-(`5a323f8`; author-run and exact-head CI). It is not provider coding, OS
-isolation certification, independent acceptance or deployment authorization.
+(`5a323f8`; author-run and exact-head CI). The reviewer/cancellation slice is
+recorded in
+[native-rust-closure-2026-10-24-review-cancel.json](../evidence/native-rust-closure-2026-10-24-review-cancel.json)
+(`4bcd584`; author-run). Neither is provider coding, OS isolation
+certification, independent acceptance or deployment authorization.
 
 ## Legacy deletion status
 
@@ -119,13 +122,28 @@ with a synchronous assistant HTTP response in deterministic fixtures
 (`17bcac2`). Independent review found an abort race: idle after a requested
 abort did not prove cancellation. The outcome is now explicitly
 `AbortRequestedAndIdle`, with a completed-response race fixture (`5a5df79`).
-The reviewer verified the repair. These helpers have no production prompt or
-abort caller yet; provider lifecycle remains incomplete.
+The reviewer verified the repair. The loopback HTTP prompt, abort, assistant
+read and delete path with credential/redirect checks and event-before-session
+ordering is exercised against a local fake server (`6cf3786`/`d0b8933`).
+These helpers still have no production prompt or abort caller; provider
+lifecycle remains incomplete.
 
 The [deletion and replacement map](native-rust-deletion-map.md) classifies all
 99 tracked Go files at `102f6a046f1f907546e8bc60da622388f80bd95c` by
 replacement, missing oracle, deletion readiness, owner and verification command.
 The map records the two completed batches and the remaining blockers.
+
+The inventory is now 96 tracked `.go` files. No further file is independently
+deletion-ready: all remaining Go packages are one connected module, and B2
+`domain`, `candidate`, `project`, and `recovery` are imported by the remaining
+C1/C2 commands, API, store, orchestrator, verifier and reviewer. Deleting any
+of them requires retiring their dependents and the Go CI in the same batch,
+which is not truthful while provider coding, durable session recovery,
+telemetry and multi-project capability parity remain absent. Rust now owns the
+recovery failure classifier, bounded candidate diff/content evidence and the
+independent reviewer process; repository root-identity binding and the legacy
+event-payload read projection have no production Rust equivalent yet. The
+exact per-file dependency blocker is recorded in the deletion map.
 
 Strict tracked-tree independence audit:
 

@@ -1,3 +1,7 @@
+> **Historical audit snapshot.** This early inventory is not the current
+> status authority. See [native-rust-closure.md](native-rust-closure.md) for
+> current Rust capabilities, evidence and remaining blockers.
+
 # Native Rust replacement migration matrix
 
 **Audit basis:** Legacy comparison is PR #17 entry HEAD `21f6136052ad0eba53df57759185145592951c56`; base `origin/main` at `102d7ba29295554bd61ae71956347a025d219d7b`. The current tracked-tree hygiene audit reports 313 findings; strict hygiene is not active. The current Rust slice is committed in this branch, so evidence is candidate-bound to the commit that introduced this file; rerun checks at that exact SHA. This matrix is a migration inventory, not proof of full replacement. S4-D product capabilities from legacy PR #16 are tracked separately in [s4d-rust-recovery-matrix.md](s4d-rust-recovery-matrix.md).
