@@ -30,14 +30,17 @@ Rust now owns the following former B2 behavior at `4bcd584`:
 - bounded candidate diff, diff-stat, added-line and content-digest evidence
   (`native/src/workspace.rs`);
 - independent deterministic final-diff review and receipt submission
-  (`native/src/review.rs`, `native/src/bin/reviewer.rs`).
+  (`native/src/review.rs`, `native/src/bin/reviewer.rs`);
+- canonical repository root-identity binding and base-tip validation
+  (`native/src/repository.rs`, migration 0010);
+- a closed durable event-kind vocabulary (`native/src/db/mod.rs`).
 
-Still missing before B2 can be retired: a production Rust repository
-root-identity binding equivalent to `core/internal/project/repository.go` and
-the legacy event payload read projection from `core/internal/domain/event.go`.
-Even after those ports, deletion requires retiring the whole dependent Go
-runtime and CI in one verified cutover. The next safe deletion batch is
-therefore the full legacy module retirement, not another isolated file.
+The legacy event payload read projection has no production Rust equivalent
+because Rust events store only bounded detail strings, never a `diffExcerpt`
+payload. Any future payload field must reintroduce that projection test. Even
+after these ports, deletion requires retiring the whole dependent Go runtime
+and CI in one verified cutover. The next safe deletion batch is therefore the
+full legacy module retirement, not another isolated file.
 
 ## Completed batch 1
 

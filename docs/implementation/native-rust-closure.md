@@ -60,7 +60,7 @@ source-mapping snapshot; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; independent deterministic diff reviewer process runs in fixture and Office E2E (`4bcd584`); no model review |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; 230 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally at `4bcd584`; final exact-head CI pending |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; repository identity/event-kind vocabulary at `ec2e75b`; 233 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally at `ec2e75b`; final exact-head CI pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `a367766`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -82,8 +82,10 @@ Candidate-bound evidence: [native-rust-closure-2026-10-24.json](../evidence/nati
 (`5a323f8`; author-run and exact-head CI). The reviewer/cancellation slice is
 recorded in
 [native-rust-closure-2026-10-24-review-cancel.json](../evidence/native-rust-closure-2026-10-24-review-cancel.json)
-(`4bcd584`; author-run). Neither is provider coding, OS isolation
-certification, independent acceptance or deployment authorization.
+(`4bcd584`; author-run) and
+[native-rust-closure-2026-10-24-repository-identity.json](../evidence/native-rust-closure-2026-10-24-repository-identity.json)
+(`ec2e75b`; author-run). None is provider coding, OS isolation certification,
+independent acceptance or deployment authorization.
 
 ## Legacy deletion status
 
@@ -140,10 +142,12 @@ C1/C2 commands, API, store, orchestrator, verifier and reviewer. Deleting any
 of them requires retiring their dependents and the Go CI in the same batch,
 which is not truthful while provider coding, durable session recovery,
 telemetry and multi-project capability parity remain absent. Rust now owns the
-recovery failure classifier, bounded candidate diff/content evidence and the
-independent reviewer process; repository root-identity binding and the legacy
-event-payload read projection have no production Rust equivalent yet. The
-exact per-file dependency blocker is recorded in the deletion map.
+recovery failure classifier, bounded candidate diff/content evidence, the
+independent reviewer process, canonical repository identity binding and a
+closed durable event-kind vocabulary. The legacy event payload projection has
+no production Rust equivalent because Rust never persists a payload field; any
+future payload surface must re-introduce that read-boundary test. The exact
+per-file dependency blocker is recorded in the deletion map.
 
 Strict tracked-tree independence audit:
 

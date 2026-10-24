@@ -491,11 +491,12 @@ Remaining: parallel/fan-in integration, provider coding lifecycle, Go/Paseo
 removal and CI migration, strict hygiene, independent review and final merge
 authorization. Provider and ISOLATED execution remain fail-closed.
 
-## Closure checkpoint 2026-10-24 — `4bcd584`
+## Closure checkpoint 2026-10-24 — `ec2e75b`
 
-**Code candidate:** `4bcd58462d08d226d89e1f1dd3ef25e6de786bb6`.
-**Predecessors:** `0435159` (in-flight WorkGraph lease recovery process test),
-`d0b8933` (OpenCode event subscription ordering) and `6cf3786` (loopback
+**Code candidate:** `ec2e75b79599a3a0d8fafc5f7cc8ef18070d8892`.
+**Predecessors:** `4bcd584` (independent reviewer, recovery classification,
+campaign cancellation), `0435159` (in-flight WorkGraph lease recovery process
+test), `d0b8933` (OpenCode event subscription ordering) and `6cf3786` (loopback
 OpenCode prompt lifecycle). This text cannot embed its own documentation commit;
 run `git rev-parse HEAD` for the current tree.
 
@@ -519,10 +520,17 @@ This checkpoint adds:
   after Core restart.
 - `native/src/workspace.rs` bounded candidate diff, diff-stat, added-line and
   recursive content-digest helpers with stable identity tests.
+- `native/src/repository.rs` and migration 0010 persist a canonical repository
+  identity from the symlink-resolved path and sorted root commits, validate
+  authorized base tips and expose a revalidation path. Event kinds are now a
+  closed vocabulary; Rust events never persist a payload field, so the legacy
+  `diffExcerpt` read projection is structurally absent rather than silently
+  dropped.
 
-Author-run at `4bcd584`: `cargo xtask check` PASS (format, strict Clippy,
-**230 tests passed + 2 ignored**, workspace build, docs, `cargo audit` clean for
-276 locked dependencies); `cargo xtask validate-architecture` PASS;
+Author-run at `ec2e75b`: `cargo xtask check` PASS (format, strict Clippy,
+**233 tests passed + 2 ignored**, workspace build, docs, ten migrations,
+`cargo audit` clean for 276 locked dependencies);
+`cargo xtask validate-architecture` PASS;
 `cargo xtask e2e recovery`, `e2e dispatch`, `e2e negatives` and `e2e office`
 PASS. The Office journey passed with the real reviewer process and a real
 Workers view assertion. These are author-run, not independent acceptance. No
@@ -531,9 +539,9 @@ paid provider turn, sandbox certification or Windows run is claimed.
 Remaining next executable work: integrate the provider lifecycle into a
 production caller only after Core-owned authorization/budget and credential
 confinement exist; add cancellation coverage for an in-flight integration node
-and recovery/cleanup Office projection; port repository root-identity binding
-and the legacy event read projection; then retire the legacy Go module and CI
-in one verified cutover. The Go inventory remains **96** tracked files because
+and recovery/cleanup Office projection; add a future event-payload projection
+if a payload field is introduced; then retire the legacy Go module and CI in
+one verified cutover. The Go inventory remains **96** tracked files because
 every remaining package is imported by the surviving Go module; no file-level
 deletion is currently truthful. The [deletion map](native-rust-deletion-map.md)
 records the exact dependency blocker. PR #17 remains Draft; provider/ISOLATED

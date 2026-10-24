@@ -5,9 +5,9 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
+  "verified_code_commit_sha": "ec2e75b79599a3a0d8fafc5f7cc8ef18070d8892",
   "draft_pr": 17,
-  "ci_at_update": "Exact-head CI for 4bcd584 is pending. Local author gates PASS; legacy Go/Paseo workflows remain failing and active.",
+  "ci_at_update": "Exact-head CI for ec2e75b is pending. Local author gates PASS; legacy Go/Paseo workflows remain failing and active.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",
   "implemented": [
     "SQLx 0.8.6 (sqlx-core + sqlx-sqlite directly) persistence with versioned migrations and async pool",
@@ -65,7 +65,9 @@
     "Operator Campaign cancellation that fences runs, attempts, tasks, integrations and leases across restart",
     "Loopback OpenCode prompt/abort/assistant-read/delete HTTP lifecycle fixture with credential and redirect checks",
     "In-flight WorkGraph lease recovery and stale-generation fencing process test",
-    "Bounded candidate diff, diff-stat, added-line and recursive content-digest evidence helpers"
+    "Bounded candidate diff, diff-stat, added-line and recursive content-digest evidence helpers",
+    "Canonical project repository identity persisted from the symlink-resolved path and root commit set (migration 0010)",
+    "Closed durable event-kind vocabulary with negative coverage"
   ],
   "not_implemented": [
     "Provider-backed coding, direct provider work lifecycle, permissions, cancellation and session recovery",
@@ -79,12 +81,12 @@
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 230,
-  "current_test_inventory": "Author-run at 4bcd584: 230 Rust tests passed, 2 ignored; xtask check/migrate/architecture/e2e recovery/dispatch/negatives/office pass. Exact-head CI pending.",
+  "local_unit_tests_passed": 233,
+  "current_test_inventory": "Author-run at ec2e75b: 233 Rust tests passed, 2 ignored; ten migrations; xtask check/architecture/e2e recovery/dispatch/negatives/office pass. Exact-head CI pending.",
   "author_verification_at_code_sha": {
-    "sha": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
+    "sha": "ec2e75b79599a3a0d8fafc5f7cc8ef18070d8892",
     "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
-    "rust": "PASS: 230 tests + 2 ignored, fmt, strict Clippy, build, docs, audit (276 dependencies), migrations, architecture",
+    "rust": "PASS: 233 tests + 2 ignored, fmt, strict Clippy, build, docs, audit (276 dependencies), ten migrations, architecture",
     "process_e2e": "PASS: recovery, fixture dispatch (including in-flight recovery and cancellation), negatives",
     "office_browser": "PASS: real Chromium journey with independent reviewer process and Workers view",
     "rootless_podman_fixture": "PASS (author run, earlier candidate)",
@@ -111,13 +113,13 @@
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
   "working_tree_status_at_update": "Committed standards, skill and recovery matrix on top of f79f04f; see current HEAD.",
   "current_slice": {
-    "evidence_binding": "author-run code head 4bcd584; exact-head CI pending",
+    "evidence_binding": "author-run code head ec2e75b; exact-head CI pending",
     "dispatch": "R0/FIXTURE and default-off single-unit autonomous Lead start; provider/ISOLATED fail-closed",
     "office": "Dashboard, Projects, Actions, Lead, Campaigns/detail, Runs, Workers; browser Lead/Campaign reload plus Workers view",
     "quality": "sandboxed verifier, independent deterministic diff reviewer process, immutable receipts and deterministic gate",
     "workgraph": "sequential, parallel, fan-in, failed dependency/integration, pre-dispatch and in-flight root lease recovery, operator cancellation",
     "supervisor": "named-volume rootless Podman, durable workspace state, reconciliation, process-identity startup checks",
-    "s4d": "A1-A12 partial except A10 deterministic evaluator; WorkGraph cancellation now implemented at campaign level",
+    "s4d": "A1-A12 partial except A10 deterministic evaluator; campaign-level cancellation and project repository identity implemented",
     "legacy": "96 Go files remain; monolithic Go module blocks partial deletion; strict hygiene not green"
   },
   "completion_gates": {
@@ -178,7 +180,7 @@
     "paid_default": "FORBIDDEN"
   },
   "cutover_campaign_checkpoint_2026_10_24": {
-    "code_head_reviewed": "4bcd58462d08d226d89e1f1dd3ef25e6de786bb6",
+    "code_head_reviewed": "ec2e75b79599a3a0d8fafc5f7cc8ef18070d8892",
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
@@ -190,8 +192,8 @@
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "cargo xtask check PASS (230 tests + 2 ignored, fmt, strict Clippy, build, docs, audit 276 deps); validate-architecture, e2e recovery/dispatch/negatives/office PASS; Office journey uses independent reviewer process and Workers view. Exact-head CI pending.",
-    "remaining": "96 Go files in one connected Go module; legacy Go/Paseo workflows/module; provider coding lifecycle; durable session recovery; repository identity/event projection; in-flight integration cancellation; strict hygiene; exact-head CI; owner merge authorization.",
+    "checks": "cargo xtask check PASS (233 tests + 2 ignored, fmt, strict Clippy, build, docs, audit 276 deps); ten migrations; validate-architecture, e2e recovery/dispatch/negatives/office PASS. Exact-head CI pending.",
+    "remaining": "96 Go files in one connected Go module; legacy Go/Paseo workflows/module; provider coding lifecycle; durable session recovery; future event payload projection; in-flight integration cancellation; strict hygiene; exact-head CI; owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
     "next_task": "Add in-flight integration cancellation and recovery/cleanup Office projection; port repository identity and event read projection; prepare a whole-module Go/Paseo retirement plan after provider/telemetry parity, not partial unsafe deletions."
   }
