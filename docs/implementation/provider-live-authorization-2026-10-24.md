@@ -11,7 +11,7 @@ Derived from the Product Owner directive of 2026-10-24: "Begin Bounded Live-Prov
 | Item | Codex | OpenCode |
 |---|---|---|
 | Provider | `codex` CLI/App Server 0.156.1 | `opencode` 1.18.32 |
-| Model | `gpt-6-luna` (discovered in `model/list`; fast/affordable) | `opencode/deepseek-v4.1-flash` (discovered route) |
+| Model | `gpt-6-luna` (discovered in `model/list`; fast/affordable) | `opencode-go/deepseek-v4.1-flash` (corrected OpenCode Go route; `opencode-go` and `opencode` remain distinct) |
 | Requests | 1 read-only turn | 1 read-only prompt |
 | Tools/write | Denied; read-only sandbox policy | `agent: plan`, write/bash/edit/patch tools false |
 | Output | `turn/start.outputSchema` + strict Rust/jsonschema validation | `/session/{id}/message` `format: json_schema` + strict validation |
@@ -31,6 +31,18 @@ A successful smoke establishes bounded live protocol/structured-output compatibi
 ## Execution result (2026-10-24)
 
 - **Codex `gpt-6-luna`:** one read-only structured turn completed. 29 output tokens (18,537 total reported), schema validation passed, thread archive response recorded. Evidence: [provider-live-smoke-2026-10-24-codex.json](../evidence/provider-live-smoke-2026-10-24-codex.json). Classification: `LIVE_STRUCTURED_OUTPUT_VERIFIED`.
-- **OpenCode `opencode/deepseek-v4.1-flash`:** one read-only prompt request was attempted; the provider endpoint returned HTTP 401 `Invalid credential` before any model output. No tokens or cost were reported, no retry was made, and the session was deleted and verified absent. Evidence: [provider-live-smoke-2026-10-24-opencode.json](../evidence/provider-live-smoke-2026-10-24-opencode.json). Classification: `LIVE_PROVIDER_CREDENTIAL_BLOCKED`.
+- **OpenCode `opencode-go/deepseek-v4.1-flash`:** one read-only prompt request was attempted; the provider endpoint returned HTTP 401 `Invalid credential` before any model output. No tokens or cost were reported, no retry was made, and the session was deleted and verified absent. Evidence: [provider-live-smoke-2026-10-24-opencode.json](../evidence/provider-live-smoke-2026-10-24-opencode.json). Classification: `LIVE_PROVIDER_CREDENTIAL_BLOCKED`.
 
 The OpenCode credential must be renewed by the operator before a new bounded authorization. Do not silently substitute another provider/model or retry within this envelope.
+
+
+## Provider identity correction (2026-10-24)
+
+`opencode models opencode-go` confirms `opencode-go/deepseek-v4.1-flash`. The
+earlier smoke used the distinct ordinary `opencode` provider and failed with
+HTTP 401. The native smoke now parses and preserves the exact provider id
+(`opencode-go`), rejects unknown/malformed routes and classifies 401/403 as
+`LIVE_PROVIDER_AUTH_BLOCKED`. Deterministic tests pass.
+
+A new live OpenCode turn requires fresh explicit authorization beyond this
+record; no paid retry was made after the provider-identity fix.

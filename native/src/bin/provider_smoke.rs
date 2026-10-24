@@ -292,23 +292,18 @@ async fn opencode(
             .error_for_status().map_err(|e| e.to_string())?
             .json().await.map_err(|e| e.to_string())?;
         let session_id = session.get("id").and_then(Value::as_str).ok_or("opencode session id missing")?.to_owned();
-        let (provider_id, model_id) = model.split_once('/').ok_or("model must be provider/model")?;
+        let route = parse_opencode_route(model)?;
         let response = client.post(format!("{base}/session/{session_id}/message{directory}"))
             .basic_auth("opencode", Some(&password))
-            .json(&json!({
-                "model":{"providerID":provider_id,"modelID":model_id},
-                "agent":"plan",
-                "tools":{"bash":false,"edit":false,"write":false,"patch":false,"multiedit":false},
-                "format":{"type":"json_schema","schema":schema(),"retryCount":0},
-                "parts":[{"type":"text","text":"Return only JSON matching the provided schema. Set ok true and summary to a short confirmation that this is a read-only provider smoke test. Do not use tools."}]
-            }))
+            .json(&opencode_request(&route, schema()))
             .send().await.map_err(|error| error.to_string())?;
         let status = response.status();
         let body = response.text().await.map_err(|error| error.to_string())?;
         if !status.is_success() {
+            let classification = classify_http_failure(status.as_u16());
             let cleanup = cleanup_session(&client, &base, &session_id, &directory, &password).await;
             return Err(format!(
-                "opencode message failed with HTTP {status}: {body}; session={session_id}; cleanup={cleanup}"
+                "opencode message failed with HTTP {status}: {body}; classification={classification}; session={session_id}; cleanup={cleanup}"
             ));
         }
         let response: Value = serde_json::from_str(&body)
@@ -414,6 +409,53 @@ async fn cleanup_session(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct OpencodeRoute<'a> {
+    provider_id: &'a str,
+    model_id: &'a str,
+}
+
+fn parse_opencode_route(model: &str) -> Result<OpencodeRoute<'_>, String> {
+    let (provider_id, model_id) = model
+        .split_once('/')
+        .ok_or_else(|| "OpenCode model must be provider/model".to_string())?;
+    if provider_id.is_empty()
+        || model_id.is_empty()
+        || provider_id.contains('/')
+        || model_id.contains('/')
+    {
+        return Err(format!("invalid OpenCode route {model:?}"));
+    }
+    if !matches!(provider_id, "opencode" | "opencode-go") {
+        return Err(format!(
+            "unknown OpenCode provider {provider_id:?}; explicit opencode or opencode-go route required"
+        ));
+    }
+    Ok(OpencodeRoute {
+        provider_id,
+        model_id,
+    })
+}
+
+fn opencode_request(route: &OpencodeRoute<'_>, schema: Value) -> Value {
+    json!({
+        "model":{"providerID":route.provider_id,"modelID":route.model_id},
+        "agent":"plan",
+        "tools":{"bash":false,"edit":false,"write":false,"patch":false,"multiedit":false},
+        "format":{"type":"json_schema","schema":schema,"retryCount":0},
+        "parts":[{"type":"text","text":"Return only JSON matching the provided schema. Set ok true and summary to a short confirmation that this is a read-only provider smoke test. Do not use tools."}]
+    })
+}
+
+fn classify_http_failure(status: u16) -> &'static str {
+    match status {
+        401 | 403 => "LIVE_PROVIDER_AUTH_BLOCKED",
+        404 | 405 | 415 | 422 => "LIVE_PROVIDER_PROTOCOL_BLOCKED",
+        408 | 429 | 500..=599 => "LIVE_PROVIDER_PROTOCOL_BLOCKED",
+        _ => "LIVE_VALIDATION_FAILED",
+    }
+}
+
 fn urlencoding(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -493,4 +535,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&evidence_path, serde_json::to_vec_pretty(&evidence)?)?;
     println!("{}", serde_json::to_string_pretty(&evidence)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_go_and_opencode_are_distinct_provider_identities() {
+        let go = parse_opencode_route("opencode-go/deepseek-v4.1-flash").unwrap();
+        assert_eq!(go.provider_id, "opencode-go");
+        assert_eq!(go.model_id, "deepseek-v4.1-flash");
+        let ordinary = parse_opencode_route("opencode/deepseek-v4.1-flash").unwrap();
+        assert_eq!(ordinary.provider_id, "opencode");
+        assert_ne!(go.provider_id, ordinary.provider_id);
+
+        let body = opencode_request(&go, schema());
+        assert_eq!(body["model"]["providerID"], "opencode-go");
+        assert_eq!(body["model"]["modelID"], "deepseek-v4.1-flash");
+        assert_eq!(body["tools"]["bash"], false);
+        assert_eq!(body["format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn unknown_or_malformed_opencode_routes_fail_explicitly() {
+        for route in [
+            "",
+            "deepseek-v4.1-flash",
+            "/deepseek",
+            "opencode/",
+            "opencode/",
+            "other/model",
+            "opencode/a/b",
+        ] {
+            assert!(parse_opencode_route(route).is_err(), "{route}");
+        }
+    }
+
+    #[test]
+    fn credential_and_protocol_failures_are_classified() {
+        assert_eq!(classify_http_failure(401), "LIVE_PROVIDER_AUTH_BLOCKED");
+        assert_eq!(classify_http_failure(403), "LIVE_PROVIDER_AUTH_BLOCKED");
+        assert_eq!(classify_http_failure(422), "LIVE_PROVIDER_PROTOCOL_BLOCKED");
+        assert_eq!(classify_http_failure(500), "LIVE_PROVIDER_PROTOCOL_BLOCKED");
+        assert_eq!(classify_http_failure(400), "LIVE_VALIDATION_FAILED");
+    }
 }
