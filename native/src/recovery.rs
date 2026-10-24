@@ -47,7 +47,7 @@ pub fn classify(input: &RecoveryInput<'_>) -> Classification {
     if failure.is_empty()
         && let Some(detail) = input.stage_detail
     {
-        failure = format!("paseo-task {detail}");
+        failure = format!("provider-task {detail}");
     }
     let lower = failure.to_lowercase();
     if input.unresolved_recovery {
@@ -149,7 +149,7 @@ pub fn classify(input: &RecoveryInput<'_>) -> Classification {
             "temporary",
             "connection reset",
         ],
-    ) || (lower.contains("exit 1") && lower.contains("paseo"))
+    ) || (lower.contains("exit 1") && lower.contains("provider"))
     {
         return Classification {
             class: FailureClass::RecoverableExecutionFailure,
@@ -195,11 +195,11 @@ mod tests {
     #[test]
     fn classifies_recoverable_failures() {
         for failure in [
-            "paseo-task verify: no-source-change: agent left no git diff",
+            "provider-task verify: no-source-change: agent left no git diff",
             "candidate: implementer left no source diff; an empty candidate is not success",
-            "paseo-task verify: tests failed: npm exited 1",
-            "paseo-task verify: formatter failed: npm exited 1",
-            "paseo-task session-start: paseo run failed (startup): exit 1",
+            "provider-task verify: tests failed: npm exited 1",
+            "provider-task verify: formatter failed: npm exited 1",
+            "provider-task session-start: provider run failed (startup): exit 1",
         ] {
             let result = classify(&input(failure));
             assert!(
@@ -214,7 +214,7 @@ mod tests {
     fn classifies_blocking_failures() {
         for failure in [
             "candidate: candidate rejected: candidate changed path \"tests/browser-check.mjs\" outside the authorized scope",
-            "paseo-task verify: protected acceptance oracle was modified by the candidate: browser-check.mjs",
+            "provider-task verify: protected acceptance oracle was modified by the candidate: browser-check.mjs",
             "candidate: cross-project evidence mismatch",
             "candidate: repository identity differs from the frozen project binding",
             "capability: browser capability is required but Playwright CLI/Chromium unavailable",
@@ -235,10 +235,10 @@ mod tests {
     #[test]
     fn classifies_unresolved_and_ambiguous_failures() {
         let result = classify(&RecoveryInput {
-            run_error: "paseo-task observe: cancelled",
+            run_error: "provider-task observe: cancelled",
             stage_detail: None,
             unresolved_recovery: true,
-            unresolved_reason: "paseo session binding active is not terminal",
+            unresolved_reason: "provider session binding active is not terminal",
             cleanup_unconfirmed: false,
         });
         assert_eq!(result.class, FailureClass::UnresolvedExternalRecovery);
@@ -247,7 +247,7 @@ mod tests {
         let result = classify(&input("something completely unexpected"));
         assert_eq!(result.class, FailureClass::OracleDefectSuspected);
 
-        let result = classify(&input("paseo-task verify: no-source-change"));
+        let result = classify(&input("provider-task verify: no-source-change"));
         assert_eq!(result.class, FailureClass::RecoverableImplementationFailure);
     }
 

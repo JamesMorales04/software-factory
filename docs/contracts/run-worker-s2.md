@@ -4,7 +4,7 @@
 contract; breaking changes require updating all in-repo callers, tests, docs
 and fixtures atomically ([ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md)).
 
-S2 covers exactly the slice below. Real Paseo/agent execution, remote
+S2 covers exactly the slice below. Real provider/agent execution, remote
 Workers, per-Worker credentials and Campaign orchestration are deferred.
 SEC-01 remains BLOCKED: only the fixed credential-free synthetic workload
 below is authorized.
@@ -145,7 +145,7 @@ never promoted to a second authoritative result.
 
 ## 7. Worker and execution boundary
 
-One real Go Worker process (`factory-worker`): registration, bounded
+One real Rust Worker process (`factory-worker`): registration, bounded
 poll loop (`--max-concurrent`, default 1), heartbeat goroutine,
 context-aware cancellation, clean shutdown, structured result reporting.
 

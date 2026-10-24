@@ -1,4 +1,4 @@
-# Native Factory bootstrap
+# Native Factory
 
 This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. Provider-backed coding, unrestricted/multi-unit autonomous start and ISOLATED mode remain fail-closed; bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
 
@@ -24,8 +24,8 @@ The read-only native probes are:
 cargo run --bin factory-provider-probe -- codex
 cargo run --bin factory-provider-probe -- opencode
 cargo run --bin factory-provider-probe -- codex-reconcile <thread-id>
-cargo run --bin factory-repo-hygiene -- --mode audit
+cargo run --bin factory-repo-hygiene -- --mode strict
 cargo run --bin factory-architecture-check -- --root . --base-ref origin/main
 ```
 
-These start and stop provider servers but do not create paid turns. The Codex probe checks initialization and model discovery only. `codex-reconcile` queries a **new** App Server for indexed and locally loaded thread metadata; absence cannot prove cleanup by an earlier process. The OpenCode probe uses a generated per-process password on loopback, reads the server's own bound address, hashes its OpenAPI schema, checks the first SSE `server.connected` event, and creates, inspects, then deletes one session bound to the canonical workspace. This does not test prompt progress, completion, reconnect, or real coding. Probe results are preflight observations, not a provider execution certificate. The hygiene tool reports the remaining legacy tree in audit mode; strict mode is required before final cutover. Lead fixture assessment is available only with explicit `FACTORY_LEAD_FIXTURE_ASSESSOR=1`; it is not a model and cannot start a Campaign. CAP-014 commands are `cargo run --bin factory-s4d-evaluate -- corpus|baseline|validate|compare`.
+These start and stop provider servers but do not create paid turns. The Codex probe checks initialization and model discovery only. `codex-reconcile` queries a **new** App Server for indexed and locally loaded thread metadata; absence cannot prove cleanup by an earlier process. The OpenCode probe uses a generated per-process password on loopback, reads the server's own bound address, hashes its OpenAPI schema, checks the first SSE `server.connected` event, and creates, inspects, then deletes one session bound to the canonical workspace. This does not test prompt progress, completion, reconnect, or real coding. Probe results are preflight observations, not a provider execution certificate. The hygiene tool enforces the strict zero-legacy tracked-tree gate in CI. Lead fixture assessment is available only with explicit `FACTORY_LEAD_FIXTURE_ASSESSOR=1`; it is not a model and cannot start a Campaign. CAP-014 commands are `cargo run --bin factory-s4d-evaluate -- corpus|baseline|validate|compare`.

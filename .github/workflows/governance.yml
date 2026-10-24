@@ -23,19 +23,9 @@ jobs:
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: python3 .github/scripts/check-pr-architecture-impact.py
-      - name: Install certification validator dependencies
-        run: python3 -m pip install -r scripts/requirements-certification.txt
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: core/go.mod
-          cache-dependency-path: core/go.sum
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Test PR impact gate
         run: python3 .github/scripts/test_check_pr_architecture_impact.py
-      - name: Test live E2E authorization preflight with fixtures
-        run: python3 scripts/test-live-e2e-authorization.py
-      - name: Prove live entrypoints make no provider call by default or without authorization
-        run: python3 -u scripts/test-live-e2e-entrypoints.py
       - name: Run checker tests
         run: cargo test --manifest-path native/Cargo.toml --locked --bin factory-architecture-check
       - name: Validate capability registry and generated roadmap
@@ -47,16 +37,3 @@ jobs:
           else
             cargo run --manifest-path native/Cargo.toml --locked --bin factory-architecture-check -- --root .
           fi
-      - name: Test certification manifest validator
-        run: python3 -m unittest scripts/test_validate_live_certification.py
-      - name: Validate every recorded live certification manifest
-        run: |
-          shopt -s nullglob
-          manifests=(docs/evidence/*certification-manifest.json)
-          if [ "${#manifests[@]}" -eq 0 ]; then
-            echo "No live certification manifests found" >&2
-            exit 1
-          fi
-          for manifest in "${manifests[@]}"; do
-            python3 scripts/validate-live-certification.py "$manifest"
-          done

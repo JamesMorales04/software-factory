@@ -1,6 +1,6 @@
 # Structured model outputs
 
-**Status:** normative for machine-readable model results. Read with [Lead contracts](../../docs/implementation/s4d-rust-recovery-matrix.md) and [Rust standards](rust-standards.md).
+**Status:** normative for machine-readable model results. Read with [Lead contracts](../../docs/evidence/history/implementation/s4d-rust-recovery-matrix.md) and [Rust standards](rust-standards.md).
 
 ## When required
 

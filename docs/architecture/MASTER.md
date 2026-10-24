@@ -1,9 +1,9 @@
-> **Current architecture:** Rust Core/Worker/Supervisor/provider adapters, SQLite/SQLx, React Office and rootless Podman execution under [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The historical F1-S4-C sections that mention Go/Paseo describe earlier implementation and are retained only as provenance. Active capability decisions are in [capability-decisions.md](../product/capability-decisions.md).
+> **Current architecture:** Rust Core/Worker/Supervisor/provider adapters, SQLite/SQLx, React Office and rootless Podman execution under [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The tracked tree is Rust-only; historical records are archived under [docs/evidence/history](../evidence/history/README.md).
 # Software Factory — Master Architecture Specification
 
-> **Authority:** [ADR-0018](decisions/ADR-0018-native-rust-replacement.md) governs the native Rust target. Rust engineering rules are normative in [rust-standards.md](../engineering/rust-standards.md). Sections describing Go/Paseo are historical provenance only; no historical behavior is current runtime evidence.
+> **Authority:** [ADR-0018](decisions/ADR-0018-native-rust-replacement.md) governs the native Rust architecture. Rust engineering rules are normative in [rust-standards.md](../engineering/rust-standards.md). Historical ADRs remain provenance; they are not current runtime authority.
 
-> **Status:** This document preserves the F1-S4-C architecture baseline. The current native Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification and the deterministic gate are implemented; S4-D parity, provider coding, Go deletion and independent isolation remain open. Paseo/Go references below are historical provenance, not current runtime authority. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
+> **Status:** The current Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification and the deterministic gate are implemented; S4-D parity, provider coding and independent isolation remain open. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
 
 ## 1. Product mission and priorities
 
@@ -11,7 +11,7 @@ Build an autonomous, local-first, multi-project engineering system that converts
 
 Order of priorities: (1) correct authority, isolation and integrity; (2) objective acceptance and delivery quality; (3) recovery, durability and observable continuity; (4) low total time, tokens and resources per **accepted** change; (5) an operational Office UI, later enhanced with visual agents. Number of agent turns, generated commits or PRs is not success.
 
-Not in F1: a custom agent-coding engine replacing Paseo; distributed HA Core; production remote workers; animated pixel office; autonomous Core binary promotion; speculative plugins/services; required third-party telemetry SaaS.
+Not in F1: a custom agent-coding engine replacing the direct provider adapters; distributed HA Core; production remote workers; animated pixel office; autonomous Core binary promotion; speculative plugins/services; required third-party telemetry SaaS.
 
 ## 2. Normative status and design authority
 
@@ -51,7 +51,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 
 ### Implemented technology choices and remaining proposals
 
-- **Core + local Worker:** Rust is ratified for the modular Core and separate Worker process by [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The Go tree remains migration debt. This does not certify provider credential isolation (SEC-01).
+- **Core + local Worker:** Rust is ratified for the modular Core and separate Worker process by [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). The legacy tracked tree has been retired. This does not certify provider credential isolation (SEC-01).
 - **Persistence:** Core-owned SQLite WAL is implemented. The observed transient lock error remains open in the [reliability register](../quality/reliability-debt.md); Postgres is only a future option if a measured scale constraint warrants it.
 - **Providers:** direct Codex App Server and OpenCode HTTP adapters are the Rust target. No intermediary coding-agent orchestrator is part of the product. Provider work remains fail-closed until security is verified.
 - **Web UI:** React and TypeScript Office is implemented over authenticated HTTP and SSE with replay. Future visualization remains proposed.
@@ -80,10 +80,10 @@ No technology choice overrides security or acceptance blockers.
                  |
       per-Run sandbox / repository snapshot
                  |
-        Paseo coding agent sessions
+        provider coding agent sessions
 ```
 
-The Core owns canonical state, policies, authorization, budgets and external effects. Workers execute **identified, leased and fenced** assignments and return observations; they do not self-authorize merges or change risk policy. Paseo owns runtime sessions, not Action state. The UI reads Core projections and issues authorized intents; it never writes SQLite directly or controls Workers out of band. Scheduler and Resource Governor are deterministic services, not permanently running LLM agents.
+The Core owns canonical state, policies, authorization, budgets and external effects. Workers execute **identified, leased and fenced** assignments and return observations; they do not self-authorize merges or change risk policy. The provider adapter owns runtime sessions, not Action state. The UI reads Core projections and issues authorized intents; it never writes SQLite directly or controls Workers out of band. Scheduler and Resource Governor are deterministic services, not permanently running LLM agents.
 
 These names are cohesive logical modules **inside one Core**, not an instruction to create many processes, interfaces or microservices. Respect [engineering standards](../engineering/code-quality.md): high cohesion, narrow boundaries, no duplicate policy engines, no ceremonial Clean Architecture scaffolding.
 
@@ -96,7 +96,7 @@ These names are cohesive logical modules **inside one Core**, not an instruction
 - **Campaign:** governed set of Actions/dependencies within budget.
 - **Task:** assignable engineering work unit.
 - **Run / Attempt:** exact configuration, source revision, sandbox, lease, activity and result.
-- **AgentSession:** role, provider, model, capabilities, Paseo ID and Worker association.
+- **AgentSession:** role, provider, model, capabilities, provider session ID and Worker association.
 - **CandidateRevision:** immutable exact content digest/commit to validate.
 - **EvidenceBundle:** candidate-bound checks, logs, independent verdicts and provenance.
 - **Delivery:** PR/merge intents, authoritative confirmations, idempotency keys and receipts.
@@ -147,7 +147,7 @@ processing, governed delivery and stable-controller promotion remain future
 capabilities. The [registry](../product/capabilities.yaml) and [roadmap](../roadmap/ROADMAP.md)
 carry their distinct decision, implementation and verification states.
 
-**SEC-01 disposition is mode-specific (see [ADR-0009](decisions/ADR-0009-trusted-local-execution.md)):** a host Paseo agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Historical FAIL/NOT TESTED findings remain valid observations and are never rewritten to PASS. SEC-01-STRICT is **not required for TRUSTED_LOCAL** (owner risk acceptance); SEC-01-ISOLATED is available-only-where-verified. Product owner paused further spike experiments and authorized S1, credential-free S2 prototypes, and S3-TRUSTED_LOCAL under its entry conditions; S3-ISOLATED, credential-bearing untrusted execution under an isolation claim, and privileged autonomous effects remain blocked. Never fall back to a privileged host process. Never call TRUSTED_LOCAL isolated or certified. See [security](../security/isolation.md), [trusted-local policy](../security/trusted-local.md), [spike plan](../security/paseo-sandbox-spike.md) and [observed results](../security/SEC-01-results-2026-10-18.md).
+**SEC-01 disposition is mode-specific (see [ADR-0009](decisions/ADR-0009-trusted-local-execution.md)):** a host provider agent actually read a synthetic canary outside its workspace. Rootless Podman protected tested host paths and a brokered SDK → Codex → MCP → Worker execution worked, but mandatory isolation of all tools from provider credentials is **not certified**. Historical FAIL/NOT TESTED findings remain valid observations and are never rewritten to PASS. SEC-01-STRICT is **not required for TRUSTED_LOCAL** (owner risk acceptance); SEC-01-ISOLATED is available-only-where-verified. Product owner paused further spike experiments and authorized S1, credential-free S2 prototypes, and S3-TRUSTED_LOCAL under its entry conditions; S3-ISOLATED, credential-bearing untrusted execution under an isolation claim, and privileged autonomous effects remain blocked. Never fall back to a privileged host process. Never call TRUSTED_LOCAL isolated or certified. See [security](../security/isolation.md), [trusted-local policy](../security/trusted-local.md) and the [archived security history](../evidence/history/README.md).
 
 ## 9. Global quality, design quality and delivery
 
@@ -179,21 +179,21 @@ F1 requires Dashboard, Actions, Agents and Action Detail. Use authenticated Core
 
 ## 14. Telemetry from inception
 
-Keep three systems distinct: (1) transactionally durable domain events that are never sampled, (2) operational OpenTelemetry traces and metrics, and (3) structured, redacted logs and evidence artifacts. Core must operate while an exporter is offline. Propagate correlatable IDs across Core/Worker/Paseo adapter/tests/delivery; no raw secret, source bodies or unredacted prompt content in telemetry. See [telemetry specification](../observability/telemetry.md).
+Keep three systems distinct: (1) transactionally durable domain events that are never sampled, (2) operational OpenTelemetry traces and metrics, and (3) structured, redacted logs and evidence artifacts. Core must operate while an exporter is offline. Propagate correlatable IDs across Core/Worker/provider adapter/tests/delivery; no raw secret, source bodies or unredacted prompt content in telemetry. See [telemetry specification](../observability/telemetry.md).
 
 ## 15. F0 and F1 gates
 
-**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Go toolchain and static-analysis requirements, record SEC-01 as **partially verified / security BLOCKED for ISOLATED** with mode-specific disposition per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md) (SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED available-only-where-verified), and freeze explicit F1 acceptance criteria. S1 may begin with its minimum applicable contracts while remaining F0 contracts are completed incrementally; this is not a waiver of S3-ISOLATED. Repo documentation and `AGENTS.md` are versioned now.
+**F0 (documentation + feasibility):** finish six contracts (Project–Action, Campaign–Run, Core–Worker, Agent Session, Quality–Delivery, Factory Events), apply the ratified Rust toolchain and static-analysis requirements, record SEC-01 as **partially verified / security BLOCKED for ISOLATED** with mode-specific disposition per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md) (SEC-01-STRICT not-required-for-TRUSTED_LOCAL; SEC-01-ISOLATED available-only-where-verified), and freeze explicit F1 acceptance criteria. S1 may begin with its minimum applicable contracts while remaining F0 contracts are completed incrementally; this is not a waiver of S3-ISOLATED. Repo documentation and `AGENTS.md` are versioned now.
 
-**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real Paseo — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + frozen ActionSpec/CandidateRevision + independent user-journey verifier + read-only Reviewer + deterministic Quality Gate (S4-A; browser checks included) and a Core-owned Campaign/Task orchestrator that natively advances the workflow, bounds repair and recovers across restart (S4-B); S4-C adds a Project Registry, Project-bound specs, scoped capability grants, Factory-managed Playwright and the complete Office provisioning journey; S4-C-03 adds deterministic failure classification, bounded pre-candidate Implementer recovery with immutable failed identities, explicit attempt budgets, protected-oracle discipline one bounded same-session capability continuation when a productive Implementer omits a required browser interaction, and a declarative Worker-managed browser test server so agent-managed background startup is not on the critical path, with real-Paseo certification governed by the [live certification policy](../quality/live-certification.md); S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
+**F1 (single vertical path):** S1 persistent Core/API/events/telemetry/minimal UI; S2 local Worker/leases/reconciliation; S3 real provider — S3-TRUSTED_LOCAL under ADR-0009 entry conditions (implemented local-trust policy, S2 green, provider operational, bounded readiness test, observable mode, no unauthorized delivery, owner authorization) or S3-ISOLATED inside a certified sandbox; S4 implementer + frozen ActionSpec/CandidateRevision + independent user-journey verifier + read-only Reviewer + deterministic Quality Gate (S4-A; browser checks included) and a Core-owned Campaign/Task orchestrator that natively advances the workflow, bounds repair and recovers across restart (S4-B); S4-C adds a Project Registry, Project-bound specs, scoped capability grants, Factory-managed Playwright and the complete Office provisioning journey; S4-C-03 adds deterministic failure classification, bounded pre-candidate Implementer recovery with immutable failed identities, explicit attempt budgets, protected-oracle discipline one bounded same-session capability continuation when a productive Implementer omits a required browser interaction, and a declarative Worker-managed browser test server so agent-managed background startup is not on the critical path, with real-provider certification governed by the [live certification policy](../quality/live-certification.md); S5 governed GitHub PR/conditional R0 merge; S6 real self-development change managed by stable A against candidate B. One real local Worker and one primary project are enough; a second fixture repo validates project isolation.
 
 F1 excludes production remote workers, mature autonomous global skills, full adaptive router, animated Office and automatic live Core upgrade.
 
 ## 16. Each increment must prove real behavior
 
-For each slice: define independent oracle and negative cases before coding → implement + format/lint/build/tests → Implementer runs the product and repairs → freeze candidate SHA → **Independent Verifier** runs real CLI/API/Playwright/Paseo user journeys on a clean read-only candidate → independent Reviewer assesses quality/security/evidence → deterministic gate accepts or blocks. After repair, revalidate changed evidence and never silently relax a test.
+For each slice: define independent oracle and negative cases before coding → implement + format/lint/build/tests → Implementer runs the product and repairs → freeze candidate SHA → **Independent Verifier** runs real CLI/API/Playwright/provider user journeys on a clean read-only candidate → independent Reviewer assesses quality/security/evidence → deterministic gate accepts or blocks. After repair, revalidate changed evidence and never silently relax a test.
 
-F1 evidence must include an actual Paseo coding Run, tested sandbox/credential boundary, crash/restart and deduplication, exact candidate verification, separate Reviewer, actual PR and eligibility-specific merge decisions, a real UI timeline, and a functional Factory improvement delivered under the stable controller.
+F1 evidence must include an actual provider coding Run, tested sandbox/credential boundary, crash/restart and deduplication, exact candidate verification, separate Reviewer, actual PR and eligibility-specific merge decisions, a real UI timeline, and a functional Factory improvement delivered under the stable controller.
 
 ## 17. Documentation governance and compatibility
 
@@ -205,9 +205,9 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 
 | ID | Open question | Required proof |
 |---|---|---|
-| SEC-01 | Mode-specific per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md): STRICT not-required-for-TRUSTED_LOCAL (owner risk acceptance); ISOLATED paused / BLOCKED available-only-where-verified — host read canary FAIL; partial Podman/SDK/MCP feasibility PASS | ISOLATED/S3-ISOLATED: mandatory tool/credential OS boundary, real isolated Paseo session, bypass-negative and restart tests; [results](../security/SEC-01-results-2026-10-18.md). S3-TRUSTED_LOCAL entry conditions replace the absolute gate for that mode only. |
-| EXEC-01 | Per-Run Paseo sandbox lifecycle and SDK capabilities | Real start/observe/cancel/cleanup/recovery |
-| TECH-01 | Core/Worker language selection | **Superseded: Rust ratified by ADR-0018**; the Go tree remains to be removed after parity |
+| SEC-01 | Mode-specific per [ADR-0009](decisions/ADR-0009-trusted-local-execution.md): STRICT not-required-for-TRUSTED_LOCAL (owner risk acceptance); ISOLATED paused / BLOCKED available-only-where-verified — host read canary FAIL; partial Podman/SDK/MCP feasibility PASS | ISOLATED/S3-ISOLATED: mandatory tool/credential OS boundary, real isolated provider session, bypass-negative and restart tests; [archived results](../evidence/history/security/SEC-01-results-2026-10-18.md). S3-TRUSTED_LOCAL entry conditions replace the absolute gate for that mode only. |
+| EXEC-01 | Per-Run provider sandbox lifecycle and SDK capabilities | Real start/observe/cancel/cleanup/recovery |
+| TECH-01 | Core/Worker language selection | **Superseded: Rust is the sole tracked implementation by ADR-0018; the legacy tree has been retired** |
 | DATA-01 | SQLite WAL, durability, single-writer semantics | Crash recovery, fencing, idempotency and replay tests |
 | UI-01 | Browser event transport choice | Authenticated reconnect and missed/duplicate-event recovery |
 | POLICY-01 | Initial quality/budget thresholds | Empirical baseline and policy tests |
@@ -220,9 +220,9 @@ F1 evidence must include an actual Paseo coding Run, tested sandbox/credential b
 - [Lint and static analysis](../engineering/linting.md)
 - [Global quality baseline](../quality/baseline.md)
 - [F1-S4-A quality pipeline contract](../contracts/quality-pipeline-s4a.md), [F1-S4-B campaign contract](../contracts/campaign-orchestration-s4b.md), [F1-S4-C multi-project contract](../contracts/multi-project-s4c.md), [ADR-0010](decisions/ADR-0010-frozen-candidate-quality-pipeline.md), [ADR-0011](decisions/ADR-0011-native-campaign-orchestration.md) and [ADR-0012](decisions/ADR-0012-project-registry-and-capabilities.md)
-- [Live certification policy](../quality/live-certification.md), [campaign recovery contract](../contracts/campaign-recovery-s4c03.md), [ADR-0013](decisions/ADR-0013-bounded-autonomous-recovery.md), [ADR-0014](decisions/ADR-0014-same-session-capability-completion.md), [ADR-0015](decisions/ADR-0015-worker-managed-browser-test-server.md), [F1-S4-C acceptance](../implementation/f1-s4c-acceptance.md), [C-04 diagnosis](../implementation/f1-s4c-04-diagnosis.md), [C-06 server lifecycle](../implementation/f1-s4c-06-server-lifecycle.md) and [C-07 live certification](../implementation/f1-s4c-07-live-certification.md)
+- [Live certification policy](../quality/live-certification.md), [campaign recovery contract](../contracts/campaign-recovery-s4c03.md), [ADR-0013](decisions/ADR-0013-bounded-autonomous-recovery.md), [ADR-0014](decisions/ADR-0014-same-session-capability-completion.md), [ADR-0015](decisions/ADR-0015-worker-managed-browser-test-server.md), [archived F1-S4-C acceptance](../evidence/history/implementation/f1-s4c-acceptance.md) and [C-07 live certification](../evidence/history/implementation/f1-s4c-07-live-certification.md)
 - [Isolation](../security/isolation.md)
-- [F0/F1 implementation plan](../implementation/f0-f1-plan.md)
+- [Archived F0/F1 plan](../evidence/history/implementation/f0-f1-plan.md)
 - Capability decisions are owned by Software Factory in [capability-decisions.md](../product/capability-decisions.md).
 - Agent guidelines: https://agents.md/
 - Architecture decision template: https://github.com/adr/madr

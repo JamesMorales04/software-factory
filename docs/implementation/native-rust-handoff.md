@@ -210,7 +210,7 @@ budget boundaries are independently verified. No paid turn is authorized.
 ## Continuation checkpoint: SQLx, xtask, container-first, and E2E (2026-10-23)
 
 **Candidate:** `22b816418f52258d1e99b066016790a92682701b`. See the
-[E2E migration matrix](e2e-migration-matrix.md), [automation standards](../engineering/automation-standards.md),
+[E2E migration matrix](../evidence/history/implementation/e2e-migration-matrix.md), [automation standards](../engineering/automation-standards.md),
 [service placement policy](../architecture/service-placement-policy.md) and
 [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md).
 
@@ -566,3 +566,44 @@ Rust. Production Go remains one connected module; no further file-level
 deletion is currently truthful. The [deletion map](native-rust-deletion-map.md)
 records the exact dependency blocker. PR #17 remains Draft; provider/ISOLATED
 coding remains fail-closed and no merge/deploy authorization is implied.
+
+## Rust-only retirement checkpoint (2026-10-24)
+
+The Product Owner authorized immediate whole-module retirement. This branch now
+contains **zero tracked `.go` files** and no Go module, Go lint/toolchain
+configuration, legacy Core/Worker/Verifier/Reviewer entrypoint, provider
+intermediary adapter, legacy harness, legacy script or legacy workflow.
+
+Deleted in the retirement cutover:
+
+- the complete former `core/` implementation and its Go module/lint config;
+- the former Core, Worker, Verifier and Reviewer entrypoints;
+- provider-intermediary adapters, session domain/store/API code and stubs;
+- legacy shell/Python/Node E2E runners, oracles, live-entrypoint guards and
+  certification tooling;
+- `.github/workflows/{s1,s2,s3a,s3b,s3c,s3d,s4a,s4b,s4c}.yml`;
+- legacy Office journeys that targeted the retired API.
+
+Preserved:
+
+- all selected CAP entries in `docs/product/capabilities.yaml`;
+- Rust Core/Worker/Supervisor/verifier/reviewer/Office implementation;
+- the Rust architecture checker, PR-impact governance and strict hygiene gate;
+- historical checkpoints, contracts, security findings and deletion inventory
+  under `docs/evidence/history/` and in Git history;
+- the frozen CAP-014 corpus and evaluation policy.
+
+Author-run after retirement: `cargo xtask check` PASS (235 tests + 2 ignored,
+format, strict Clippy, build, docs, ten migrations, audit clean for 276
+dependencies); `factory-architecture-check` PASS; `factory-repo-hygiene
+--mode strict` PASS with 0 findings; `cargo xtask e2e recovery`, `e2e dispatch`,
+`e2e negatives` and `e2e office` PASS. Exact-head CI at the retirement commit is
+pending; this deletion does not upgrade any capability from PARTIAL/BLOCKED to
+VERIFIED.
+
+The active CI is now `Native Rust` (Rust gates, migrations, architecture,
+strict zero-legacy hygiene, process E2E and Office browser) and `Governance
+consistency` (PR impact, checker tests and capability registry/roadmap). Provider
+coding, durable session recovery, credential confinement, ISOLATED execution,
+recovery/cleanup Office visibility and independent human review remain open and
+fail-closed.

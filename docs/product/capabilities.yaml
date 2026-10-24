@@ -69,7 +69,7 @@ milestones:
   - stale authorization and unsupported model routes
   - Compare CAP-014 judgments with a reasonable deterministic baseline on representative tasks, including ambiguous engineering-effort estimates
   real_acceptance:
-  - Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role
+  - Natural-language request becomes an authorized executable plan through a real direct-provider run without manual per-role
     orchestration
   - Independently demonstrate better practical semantic decision quality than the deterministic baseline without granting model output Core authority
   owner_decisions:
@@ -287,7 +287,7 @@ capabilities:
     contract:
     - docs/contracts/multi-project-s4c.md
     source:
-    - core/internal/project/repository.go
+    - native/src/repository.rs
     test:
     - native/src/repository.rs
   acceptance:
@@ -326,9 +326,9 @@ capabilities:
     contract:
     - docs/contracts/project-action-s1.md
     source:
-    - core/internal/domain/spec.go
+    - native/src/lead.rs
     test:
-    - core/internal/domain/spec_test.go
+    - native/src/db/tests.rs
   acceptance:
     deterministic: Applicable action and frozen specification contract, negative and regression checks pass on an
       exact candidate.
@@ -353,8 +353,8 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: verified
-    uat: accepted
+    live_agent: not_tested
+    uat: not_tested
     deployment: not_tested
     isolation: not_tested
   owner: Core
@@ -367,28 +367,25 @@ capabilities:
     contract:
     - docs/contracts/campaign-orchestration-s4b.md
     source:
-    - core/internal/orchestrator/orchestrator.go
+    - native/src/db/lead.rs
     test:
-    - core/internal/orchestrator/orchestrator_test.go
+    - native/tests/e2e_fixture_dispatch.rs
   acceptance:
     deterministic: Applicable campaign orchestration contract, negative and regression checks pass on an exact candidate.
     real: Exercise campaign orchestration in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
-    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
-    live_agent:
-    - docs/evidence/f1-s4c-07-certification-manifest.json
-    uat:
-    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    live_agent: []
+    uat: []
     deployment: []
     isolation: []
   limitations:
-  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
-    all uses.
+  - Historical C-07 evidence in docs/evidence is provenance for the retired implementation, not certification of
+    the Rust Campaign path.
   blockers: []
 - id: CAP-004
-  name: Worker and Paseo integration
+  name: Worker and provider integration
   category: Runtime
   purpose: Dispatch leased work to a real local agent runtime
   product_objective: Real engineering work
@@ -396,7 +393,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: verified
+    live_agent: not_tested
     uat: not_tested
     deployment: not_tested
     isolation: blocked
@@ -409,28 +406,25 @@ capabilities:
     adr:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
     contract:
-    - docs/contracts/run-paseo-s3a.md
+    - docs/contracts/run-worker-s2.md
     source:
-    - core/internal/paseo/adapter.go
+    - native/src/provider_session.rs
     test:
-    - core/internal/paseo/cli_test.go
+    - native/src/runtime.rs
   acceptance:
-    deterministic: Applicable worker and paseo integration contract, negative and regression checks pass on an exact
-      candidate.
-    real: Exercise worker and paseo integration in a genuine authorized project journey and independently verify
-      the outcome.
+    deterministic: Applicable worker and direct-provider integration contract, negative and regression checks pass on an
+      exact candidate.
+    real: Exercise worker and direct-provider integration in a genuine authorized project journey and independently
+      verify the outcome.
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
-    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
-    live_agent:
-    - docs/evidence/f1-s4c-07-certification-manifest.json
+    live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
-    all uses.
+  - Direct-provider coding is not implemented; provider and ISOLATED dispatch remain fail-closed.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
 - id: CAP-005
@@ -457,9 +451,9 @@ capabilities:
     contract:
     - docs/contracts/quality-pipeline-s4a.md
     source:
-    - core/internal/candidate/git.go
+    - native/src/workspace.rs
     test:
-    - core/internal/candidate/git_test.go
+    - native/src/workspace.rs
   acceptance:
     deterministic: Applicable candidate revision lineage contract, negative and regression checks pass on an exact
       candidate.
@@ -498,9 +492,9 @@ capabilities:
     contract:
     - docs/contracts/quality-pipeline-s4a.md
     source:
-    - core/internal/quality/gate.go
+    - native/src/quality.rs
     test:
-    - core/internal/quality/gate_test.go
+    - native/src/quality.rs
   acceptance:
     deterministic: Applicable independent verification and review contract, negative and regression checks pass
       on an exact candidate.
@@ -540,9 +534,9 @@ capabilities:
     contract:
     - docs/contracts/quality-pipeline-s4a.md
     source:
-    - core/internal/quality/gate.go
+    - native/src/quality.rs
     test:
-    - core/internal/quality/gate_test.go
+    - native/src/quality.rs
   acceptance:
     deterministic: Applicable deterministic quality gate contract, negative and regression checks pass on an exact
       candidate.
@@ -582,9 +576,9 @@ capabilities:
     contract:
     - docs/contracts/multi-project-s4c.md
     source:
-    - core/cmd/factory-worker/capabilities.go
+    - native/src/lead.rs
     test:
-    - core/cmd/factory-worker/capabilities_test.go
+    - native/src/lead.rs
   acceptance:
     deterministic: Applicable scoped capability grants contract, negative and regression checks pass on an exact
       candidate.
@@ -607,11 +601,11 @@ capabilities:
   purpose: Supply a pinned browser tool and managed test server to the Run
   product_objective: Real UI engineering
   decision_status: approved
-  implementation_status: implemented
+  implementation_status: in_progress
   verification:
-    deterministic: verified
-    live_agent: verified
-    uat: accepted
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
     deployment: not_tested
     isolation: blocked
   owner: Core
@@ -624,28 +618,19 @@ capabilities:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
     contract:
     - docs/contracts/browser-test-server-s4c06.md
-    source:
-    - core/internal/browserserver/server.go
-    test:
-    - core/internal/browserserver/server_test.go
   acceptance:
     deterministic: Applicable factory-managed browser capability contract, negative and regression checks pass on
       an exact candidate.
     real: Exercise factory-managed browser capability in a genuine authorized project journey and independently
       verify the outcome.
   evidence:
-    deterministic:
-    - docs/evidence/native-rust-closure-2026-10-24.json
-    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
-    live_agent:
-    - docs/evidence/f1-s4c-07-certification-manifest.json
-    uat:
-    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    deterministic: []
+    live_agent: []
+    uat: []
     deployment: []
     isolation: []
   limitations:
-  - Live evidence covers only the C-07 Vlog path at Factory head 9567bc5 / runtime 14133cb7; it does not certify
-    all uses.
+  - The Rust runtime does not yet implement a Factory-managed browser test server or browser capability.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
 - id: CAP-010
@@ -672,9 +657,9 @@ capabilities:
     contract:
     - docs/contracts/campaign-recovery-s4c03.md
     source:
-    - core/cmd/factory-worker/recovery.go
+    - native/src/recovery.rs
     test:
-    - core/cmd/factory-worker/recovery_test.go
+    - native/src/recovery.rs
   acceptance:
     deterministic: Applicable bounded deterministic recovery contract, negative and regression checks pass on an
       exact candidate.
@@ -701,7 +686,7 @@ capabilities:
   verification:
     deterministic: verified
     live_agent: not_tested
-    uat: accepted
+    uat: not_tested
     deployment: not_tested
     isolation: not_tested
   owner: Office
@@ -724,14 +709,12 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
-    - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
-    uat:
-    - docs/evidence/f1-s4c-07-product-owner-uat-2026-10-21.json
+    uat: []
     deployment: []
     isolation: []
   limitations:
-  - "Native Rust Office migration is partial: Dashboard/Projects/Actions/Campaigns/Runs only; browser E2E and Lead/delegation views remain pending."
+  - "Office recovery and cleanup projections remain incomplete."
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -757,9 +740,9 @@ capabilities:
     contract:
     - docs/contracts/factory-events-s1.md
     source:
-    - core/internal/telemetry/tracing.go
+    - native/src/telemetry.rs
     test:
-    - core/internal/telemetry/redact_test.go
+    - native/src/telemetry.rs
   acceptance:
     deterministic: Applicable durable events and telemetry contract, negative and regression checks pass on an exact
       candidate.

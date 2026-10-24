@@ -17,9 +17,9 @@ class ImpactClassificationTests(unittest.TestCase):
     def test_required_pr_change_families_are_protected(self):
         examples = [
             ".agents/skills/example/SKILL.md",
-            "core/internal/campaign/service.go",
-            "worker/paseo/executor.go",
-            ".github/workflows/s1.yml",
+            "native/src/db/lead.rs",
+            "native/src/bin/worker.rs",
+            ".github/workflows/native-rust.yml",
             "docs/quality/live-certification.md",
             "docs/engineering/linting.md",
             "docs/architecture/MASTER.md",
@@ -35,14 +35,14 @@ class ImpactClassificationTests(unittest.TestCase):
         self.assertEqual(category, "ordinary-change")
 
     def test_protected_diff_requires_meaningful_declaration(self):
-        self.assertFalse(impact_check.evaluate(["core/auth/policy.go"], "")[0])
+        self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], "")[0])
         body = f"""<!-- architecture-impact:start -->
 category: authorization
 rationale: This changes how project grants are checked before a run begins.
 base_sha: {self.base}
 head_sha: {self.head}
 <!-- architecture-impact:end -->"""
-        ok, category, _ = impact_check.evaluate(["core/auth/policy.go"], body, self.base, self.head)
+        ok, category, _ = impact_check.evaluate(["native/src/db/authorization.rs"], body, self.base, self.head)
         self.assertTrue(ok)
         self.assertEqual(category, "authorization")
 
@@ -70,9 +70,9 @@ rationale: This changes the governance workflow and needs review of its behavior
 base_sha: {self.base}
 head_sha: {self.head}
 {impact_check.END}"""
-        self.assertTrue(impact_check.evaluate(["core/auth/policy.go"], body, self.base, self.head)[0])
-        self.assertFalse(impact_check.evaluate(["core/auth/policy.go"], body, self.base, "c" * 40)[0])
-        self.assertFalse(impact_check.evaluate(["core/auth/policy.go"], body, "d" * 40, self.head)[0])
+        self.assertTrue(impact_check.evaluate(["native/src/db/authorization.rs"], body, self.base, self.head)[0])
+        self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], body, self.base, "c" * 40)[0])
+        self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], body, "d" * 40, self.head)[0])
 
     def test_workflow_runs_for_every_pr_and_body_edits(self):
         workflow = Path(".github/workflows/governance.yml").read_text(encoding="utf-8")

@@ -37,8 +37,14 @@ jobs:
         run: cargo +1.90.0 test --workspace --locked
       - name: Build
         run: cargo +1.90.0 build --bins --locked
+      - name: Documentation
+        run: cargo +1.90.0 doc --workspace --no-deps --locked
       - name: Deterministic process-level recovery E2E
         run: cargo +1.90.0 xtask e2e recovery
+      - name: Deterministic fixture dispatch E2E
+        run: cargo +1.90.0 xtask e2e dispatch
+      - name: Authorization, scope and lease negatives
+        run: cargo +1.90.0 xtask e2e negatives
       - name: Native architecture consistency
         run: |
           if [ -n "$GITHUB_BASE_REF" ]; then
@@ -46,15 +52,8 @@ jobs:
           else
             cargo +1.90.0 xtask validate-architecture
           fi
-      - name: Inventory active legacy files
-        run: |
-          cargo +1.90.0 run --locked --bin factory-repo-hygiene -- --mode audit > "$RUNNER_TEMP/repo-hygiene.txt"
-          tail -n 1 "$RUNNER_TEMP/repo-hygiene.txt"
-      - name: Preserve migration inventory
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-rust-repository-hygiene
-          path: ${{ runner.temp }}/repo-hygiene.txt
+      - name: Strict zero-legacy repository hygiene
+        run: cargo +1.90.0 run --locked --bin factory-repo-hygiene -- --mode strict
 
   office-browser:
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 # Isolation, credentials and trust boundaries
 
-**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. Rootless Podman is still not certified isolation, and the authenticated provider/tool credential boundary is **not certified**. Provider-backed and ISOLATED execution stay fail-closed. See [SEC-01 results](SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. Rootless Podman is still not certified isolation, and the authenticated provider/tool credential boundary is **not certified**. Provider-backed and ISOLATED execution stay fail-closed. See [SEC-01 results](../evidence/history/security/SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
 
 ## Execution modes
 
@@ -19,7 +19,7 @@ Rules:
 
 ## Authority
 
-The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. Paseo owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
+The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. provider owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
 
 ## Per-Run workspaces
 
@@ -45,14 +45,14 @@ host-operation and transparency rules that DO apply there).
 The tests below are the acceptance obligations for ISOLATED execution (and
 the applicable subset for RESTRICTED fixtures). TRUSTED_LOCAL has its own
 acceptance — the bounded readiness test in
-[paseo-readiness](paseo-readiness.md) — and is never subjected to, nor
+[provider-readiness](../evidence/history/security/provider-readiness-legacy.md) — and is never subjected to, nor
 claimed to pass, these isolation tests.
 
 1. Untrusted execution cannot read or mutate host/other-project files.
 2. Untrusted scripts cannot inspect Core secrets or provider authentication artifacts within the defined threat model.
 3. Alternative shell/MCP/skill invocation cannot bypass capabilities.
-4. A real Paseo agent can start, run, be inspected and end while the boundary holds.
+4. A real provider agent can start, run, be inspected and end while the boundary holds.
 5. Required egress works and forbidden destinations fail.
 6. Crash/restart/cleanup do not leak privileged orphan sessions, processes or workspaces.
 
-These are actual test obligations, not proof of absolute security. Follow [SEC-01](paseo-sandbox-spike.md).
+These are actual test obligations, not proof of absolute security. Follow [SEC-01](../evidence/history/security/provider-sandbox-spike-legacy.md).

@@ -33,9 +33,9 @@ cargo audit --file Cargo.lock
 
 The RustSec audit tool/version is pinned in CI. `cargo-nextest` and `cargo-deny` may be evaluated before adoption; do not add them speculatively. This language decision does not waive SEC-01 isolation.
 
-### Historical Go toolchain
+### Historical Rust toolchain
 
-[ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md) is superseded by ADR-0018. Legacy Go files, workflows and lint commands remain in the tree only until the Rust replacement and its acceptance evidence are complete; they are not the target toolchain. Do not add new Go code or extend Go CI.
+[ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md) is superseded by ADR-0018. Legacy Go files, workflows and lint commands remain in the tree only until the Rust replacement and its acceptance evidence are complete; they are not the target toolchain. Do not add new Rust code or extend Go CI.
 
 ## Gate rules
 

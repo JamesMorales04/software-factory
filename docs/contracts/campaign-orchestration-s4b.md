@@ -5,7 +5,7 @@ the PR. **Version:** `1`. Experimental pre-release contract; breaking changes
 update all in-repo callers, fixtures, docs and tests atomically (ADR-0006).
 TRUSTED_LOCAL only; this is not isolation certification.
 
-S4-B does not replace the S1 Action, S2 Run/Attempt/Worker, S3 Paseo or S4-A
+S4-B does not replace the S1 Action, S2 Run/Attempt/Worker, S3 provider or S4-A
 candidate/evidence lifecycles. It binds one frozen ActionSpec to a durable,
 Core-owned task graph.
 

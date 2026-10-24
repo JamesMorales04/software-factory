@@ -15,12 +15,12 @@ Decision: `approved`
 - CAP-001 — Registered projects (approved, in_progress)
 - CAP-002 — Action and frozen specification (approved, in_progress)
 - CAP-003 — Campaign orchestration (approved, in_progress)
-- CAP-004 — Worker and Paseo integration (approved, in_progress)
+- CAP-004 — Worker and provider integration (approved, in_progress)
 - CAP-005 — Candidate revision lineage (approved, in_progress)
 - CAP-006 — Independent verification and review (approved, in_progress)
 - CAP-007 — Deterministic Quality Gate (approved, in_progress)
 - CAP-008 — Scoped capability grants (approved, in_progress)
-- CAP-009 — Factory-managed browser capability (approved, implemented)
+- CAP-009 — Factory-managed browser capability (approved, in_progress)
 - CAP-010 — Bounded deterministic recovery (approved, in_progress)
 - CAP-011 — Factory Office (approved, in_progress)
 - CAP-012 — Durable events and telemetry (approved, in_progress)
@@ -104,7 +104,7 @@ Decision: `proposed`
 
 ### Real acceptance
 
-- Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role orchestration
+- Natural-language request becomes an authorized executable plan through a real direct-provider run without manual per-role orchestration
 - Independently demonstrate better practical semantic decision quality than the deterministic baseline without granting model output Core authority
 
 ### Product Owner decisions

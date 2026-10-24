@@ -1,7 +1,7 @@
 # Provider adapter reference
 
 Codex App Server (JSON-RPC over stdio) and OpenCode (HTTP/OpenAPI/SSE) are
-directly integrated from Rust. No Node bridge, Paseo runtime or Go adapter is
+directly integrated from Rust. No Node bridge, direct-provider runtime or Go adapter is
 part of the target architecture.
 
 ## Common contract

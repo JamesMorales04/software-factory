@@ -85,7 +85,7 @@ temporary Home/profile and records Chromium provenance. Missing tooling is
 
 ## 5. Project binding propagation
 
-`Project → Action → ActionSpec → Campaign → Task → Run → Attempt → Paseo
+`Project → Action → ActionSpec → Campaign → Task → Run → Attempt → provider
 session → CandidateRevision → Evidence → GateDecision` carries project identity.
 Core rejects:
 

@@ -34,7 +34,7 @@ Xtask coordinates; tests verify; Podman executes; Factory governs. Xtask is not 
 
 **G — Keep product and engineering separate.** The installed Factory must operate without Cargo, xtask, Python, pytest, Node or the development container. `factory` commands must not call xtask.
 
-**H — Maintain portability.** Automation runs in the canonical Linux development container on Linux and on Windows through Podman Machine/WSL2. Do not depend on personal paths, host-installed Go/Paseo/mise, hidden services or fixed ports.
+**H — Maintain portability.** Automation runs in the canonical Linux development container on Linux and on Windows through Podman Machine/WSL2. Do not depend on personal paths, host-installed Go/provider/mise, hidden services or fixed ports.
 
 ## 3. Command design
 
@@ -57,7 +57,7 @@ Xtask coordinates; tests verify; Podman executes; Factory governs. Xtask is not 
 - A test is `MIGRATED_VERIFIED` only when the relevant assertions execute and pass on an exact candidate. A file with the same name is not migration evidence.
 - Preserve historical E2E results as historical evidence; never present them as verification of the Rust implementation.
 
-See the [E2E migration matrix](../implementation/e2e-migration-matrix.md) for the current inventory and status.
+See the [E2E migration matrix](../evidence/history/implementation/e2e-migration-matrix.md) for the current inventory and status.
 
 ## 5. Scripts
 

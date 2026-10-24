@@ -45,7 +45,7 @@ The `Containerfile` is a multi-stage build:
 
 The base images are pinned by tag, not digest, and Debian packages are not snapshot-pinned; byte-reproducible builds are `NOT_IMPLEMENTED`. The build context is the repository root so the Containerfile can read `.nvmrc`. A build-time check fails if `.nvmrc` and the `NODE_VERSION` build argument disagree. The image creates a non-root `factory` user (UID/GID 1000 by default, configurable at build time) and uses `/workspaces/software-factory` as the workspace folder.
 
-The image does not install provider CLIs, provider credentials, GitHub tokens, cloud credentials or a Go toolchain. It also does not install `cargo-audit`; see the command table below.
+The image does not install provider CLIs, provider credentials, GitHub tokens, cloud credentials or a Rust toolchain. It also does not install `cargo-audit`; see the command table below.
 
 ## Development container versus runtime versus sandbox
 

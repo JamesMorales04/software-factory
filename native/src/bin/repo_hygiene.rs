@@ -188,6 +188,7 @@ fn is_markdown(path: &Path) -> bool {
 fn is_immutable_reference(path: &Path) -> bool {
     let value = path.to_string_lossy();
     path.starts_with("docs/evidence")
+        || value == "native/fixtures/s4d-evaluation-corpus.json"
         || matches!(
             value.as_ref(),
             "docs/implementation/native-rust-handoff.md"
@@ -248,7 +249,16 @@ fn contains_go_invocation(contents: &str) -> bool {
             "golangci-lint",
         ]
         .iter()
-        .any(|needle| lower.contains(needle))
+        .any(|needle| contains_bounded_token(&lower, needle))
+    })
+}
+
+fn contains_bounded_token(value: &str, needle: &str) -> bool {
+    value.match_indices(needle).any(|(index, _)| {
+        let before = value[..index].chars().next_back();
+        let after = value[index + needle.len()..].chars().next();
+        !before.is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+            && !after.is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
     })
 }
 

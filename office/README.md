@@ -1,13 +1,13 @@
 # Factory Office
 
-React + TypeScript Office backed by the Rust Core API. The legacy Go/Paseo API
-client and Paseo-specific views have been removed. The app renders
-server-authoritative snapshots and polls Core; no live SSE claim is made.
+React + TypeScript Office backed by the Rust Core API. The only API client is
+the Rust Core client; former provider-specific views were removed. The app
+renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 
-Migrated views: Dashboard, Projects, Actions, Campaigns, and Runs. Campaigns
-show candidates and deterministic Quality Gate outcomes; Runs queues Attempts.
-Delegations/Lead and detailed session/evidence views are not yet exposed by the
-Rust API and are not rendered.
+Current views: Dashboard, Projects, Actions, Lead, Campaigns/Campaign detail,
+Runs and Workers. Campaigns show WorkGraph tasks, candidates and deterministic
+Quality Gate outcomes; Runs queues Attempts. Recovery/cleanup projection and
+detailed provider-session evidence remain future work.
 
 ## Toolchain
 
@@ -30,7 +30,7 @@ the prefix. The operator token stays in `sessionStorage`.
 
 ## Status
 
-The Rust-backed views typecheck, lint and build. No Playwright browser journey
-has been migrated to the Rust API yet; the retained `e2e-browser/` scripts
-describe the former API and are historical until replaced. Do not use them as
-evidence for the Rust Office.
+The Rust-backed views typecheck, lint and build. `cargo xtask e2e office` runs
+the real Chromium journey against the Rust Core, Supervisor and Worker; see
+`e2e-browser/README.md`. That journey is author-run and CI evidence, not
+independent acceptance or isolation certification.

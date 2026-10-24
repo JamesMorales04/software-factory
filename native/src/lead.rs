@@ -1683,7 +1683,7 @@ mod tests {
         assert!(unsafe_path.validate(now()).is_err());
 
         let mut route = grant();
-        route.route.provider = "paseo".into();
+        route.route.provider = "unknown-provider".into();
         route.content_hash = route.compute_content_hash();
         assert!(route.validate(now()).is_err());
     }

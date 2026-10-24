@@ -1,6 +1,6 @@
 # Documentation and governance
 
-> **Native Rust replacement branch:** [ADR-0018](architecture/decisions/ADR-0018-native-rust-replacement.md) is the Product Owner's superseding target decision. This branch is not cut over; historical Go/Paseo documents below describe the old implementation. See the [native Rust handoff](implementation/native-rust-handoff.md) for actual working state.
+> **Native Rust replacement branch:** [ADR-0018](architecture/decisions/ADR-0018-native-rust-replacement.md) is the Product Owner's superseding target decision. The tracked tree is Rust-only; the former implementation and CI are retired. Historical records are archived under [docs/evidence/history](evidence/history/README.md). See the [native Rust handoff](implementation/native-rust-handoff.md) for actual working state.
 
 All normative software architecture and engineering guidance is maintained **in this repository, in English**. Documentation must track real project state; prose is never sufficient evidence that a feature is implemented.
 

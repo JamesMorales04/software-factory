@@ -662,9 +662,9 @@ fn validate_manifest(root: &Path, reference: &str) -> Result<(), String> {
     let manifest: CertificationManifest = serde_json::from_slice(&content)
         .map_err(|e| format!("live_agent certification manifest {path:?} is invalid JSON: {e}"))?;
     let sha = |s: &str| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit());
-    if manifest.level != "REAL_PASEO_E2E_VERIFIED" || manifest.status != "verified" {
+    if manifest.level != "REAL_PROVIDER_E2E_VERIFIED" || manifest.status != "verified" {
         return Err(format!(
-            "live_agent certification manifest {path:?} must have level REAL_PASEO_E2E_VERIFIED and status verified"
+            "live_agent certification manifest {path:?} must have level REAL_PROVIDER_E2E_VERIFIED and status verified"
         ));
     }
     if !sha(&manifest.implementation_sha) || !sha(&manifest.candidate_sha) {
@@ -1171,7 +1171,7 @@ mod tests {
                 .unwrap_err()
                 .contains("parent traversal")
         );
-        repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#);
+        repo.write("docs/evidence/example-certification-manifest.json", r#"{"level":"REAL_PROVIDER_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#);
         assert!(
             validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json").is_ok()
         );
@@ -1187,22 +1187,22 @@ mod tests {
         assert!(
             validate_manifest(&repo.0, "docs/evidence/example-certification-manifest.json")
                 .unwrap_err()
-                .contains("REAL_PASEO_E2E_VERIFIED")
+                .contains("REAL_PROVIDER_E2E_VERIFIED")
         );
         for (name, content, expected) in [
             (
                 "rejected status",
-                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"rejected","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
+                r#"{"level":"REAL_PROVIDER_E2E_VERIFIED","status":"rejected","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
                 "must have level",
             ),
             (
                 "short implementation SHA",
-                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"short","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
+                r#"{"level":"REAL_PROVIDER_E2E_VERIFIED","status":"verified","implementation_sha":"short","candidate_sha":"abcdef0123456789abcdef0123456789abcdef01"}"#,
                 "requires full implementation_sha",
             ),
             (
                 "short candidate SHA",
-                r#"{"level":"REAL_PASEO_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"short"}"#,
+                r#"{"level":"REAL_PROVIDER_E2E_VERIFIED","status":"verified","implementation_sha":"0123456789abcdef0123456789abcdef01234567","candidate_sha":"short"}"#,
                 "requires full implementation_sha",
             ),
             ("malformed JSON", "{", "invalid JSON"),

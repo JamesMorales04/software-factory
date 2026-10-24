@@ -11,25 +11,26 @@ replace candidate-bound test output, independent review or protected approval.
 | Authoritative main baseline | `102d7ba29295554bd61ae71956347a025d219d7b` |
 | PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` |
 | PR #17 branch | `native-rust-replacement-20261023` |
-| PR #17 implementation baseline | `8c627bebf7f8245cc5ee4f904d70825017bd33f4` |
 | Product | Software Factory, independent Rust implementation |
+| Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
 | Merge state | PR #17 Draft; not mergeable as migration completion |
 
-PR #16 is a behavior/provenance oracle only. Its Go implementation is not
-merged and is not authoritative.
+PR #16 is a product-concept and provenance reference only. Its implementation is
+not merged, is not built or tested by this repository, and is not authoritative.
+Historical evidence and legacy-era contracts are archived under
+[docs/evidence/history](../evidence/history/README.md).
 
 ## Scope classes
 
-- `REQUIRED_FOR_MIGRATION` — current main behavior and replacement operation.
+- `REQUIRED_FOR_MIGRATION` — approved product behavior and replacement operation.
 - `REQUIRED_FOR_SECURITY` — mandatory fail-closed boundary.
-- `REQUIRED_FOR_PR16_PARITY` — S4-D A1–A12 behavior.
-- `REQUIRED_FOR_VERIFICATION` — evidence needed before deletion/merge.
+- `REQUIRED_FOR_PR16_PARITY` — S4-D A1–A12 product concepts.
+- `REQUIRED_FOR_VERIFICATION` — evidence needed before merge.
 - `FUTURE_FEATURE` — retained in the roadmap, not implemented in this closure.
 - `HISTORICAL_ONLY` — provenance; never current runtime authority.
 
 See [capability decisions](../product/capability-decisions.md) for the complete
-portfolio and the [S4-D recovery matrix](s4d-rust-recovery-matrix.md) as a dated
-source-mapping snapshot; this ledger is the current status authority.
+portfolio; this ledger is the current status authority.
 
 ## S4-D A1–A12 disposition
 
@@ -40,31 +41,31 @@ source-mapping snapshot; this ledger is the current status authority.
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
-| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass at `a32c6d5`/`d50bd0f`/`3840b39`; in-flight root-lease restart/recovery passes at `0435159`/`4bcd584` | Browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
-| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart before dispatch (`d50bd0f`); operator Campaign cancellation fences runs, attempts, tasks, integrations and leases across restart (`4bcd584`) | Cancelling an in-flight integration node and browser recovery projection remain untested |
-| A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED; integration failure retains exact root-candidate lineage and produces no integrated candidate (`3840b39`) | Adversarial cross-project integration and conflict-path assessment |
-| A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Add crash-injection and restart scheduler coverage |
-| A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
-| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested; multi-unit process evidence exists | Browser multi-unit graph and recovery/cleanup visibility |
-| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed readonly provider smoke | Core-owned budget/session ledger and governed S4-D harness |
+| A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass; in-flight root-lease recovery and operator cancellation pass | Browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
+| A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart; cancellation fences runs, attempts, tasks, integrations and leases across restart | Process-level in-flight integration cancellation and browser recovery projection remain untested |
+| A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED; integration failure retains exact root-candidate lineage and produces no integrated candidate | Adversarial cross-project integration and conflict-path assessment |
+| A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Crash-injection and restart scheduler coverage |
+| A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds and CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
+| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested | Browser multi-unit graph and recovery/cleanup visibility |
+| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed read-only provider smoke | Core-owned budget/session ledger and governed S4-D harness |
 
 ## Merge-readiness gates
 
 | Gate | Status | Evidence / blocker |
 |---|---|---|
-| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path exists; Go tree still active |
-| M2 PR #16 parity | `PARTIAL` | A1–A12 not complete; see table |
-| M3 Repository hygiene | `BLOCKED` | 94 tracked `.go` files after three retirement batches; Go module/lint/config and legacy jobs remain; strict scanner not green |
+| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. Provider coding and isolation remain fail-closed. |
+| M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
+| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally at the retirement candidate; exact-head CI pending |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified at `5a323f8`; Codex thread/turn terminal classification and session identity are fixture-tested at `c375d71`; provider coding fail-closed |
-| M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
-| M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; independent deterministic diff reviewer process runs in fixture and Office E2E (`4bcd584`); no model review |
-| M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; repository identity/event-kind vocabulary at `ec2e75b`; credential-redacting Core/Supervisor logging at `c0ed31d`; 235 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally; exact-head native Rust (both runs), Office browser and architecture CI PASS at `14506eab7345df3af2b2bc57658224906291be33`; legacy Go/Paseo browser jobs still fail |
-| M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `a367766`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
-| M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; provider coding fail-closed |
+| M6 Security | `BLOCKED` | Credential confinement, provider-in-sandbox and independent isolation are not certified |
+| M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
+| M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
+| M9 Testing | `PARTIAL` | 235 Rust tests + 2 ignored, audit, architecture, process E2E and Office browser pass locally after retirement; exact-head CI pending |
+| M10 Governance | `PARTIAL` | Rust architecture checker and PR-impact gate are the active governance path; legacy workflows are removed |
+| M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
-| M13 Product independence | `PARTIAL` | Predecessor assessment removed, all 44 CAP IDs and opportunities present, strict audit empty; registry/roadmap decision and milestone consistency still being closed |
+| M13 Product independence | `PARTIAL` | Predecessor assessment removed; all selected CAP IDs and opportunities present; strict independence audit remains required |
 
 ## Verified execution path
 
@@ -73,104 +74,39 @@ At the author checkpoint:
 - rootless Podman named-volume execution produced a candidate;
 - Supervisor state survived reconciliation and rejected path replacement;
 - verifier executed frozen checks in a separate named-volume sandbox;
-- reviewer receipt and deterministic gate reached `ACCEPTED`;
+- independent deterministic reviewer submitted a candidate-bound receipt;
+- deterministic gate reached `ACCEPTED`;
 - containerized Core served the Rust Office;
 - `factory start/stop/status` managed Core, Supervisor and Worker;
-- real Chromium Office journey passed.
+- real Chromium Office journey passed, including Workers and Campaign reload.
 
-Candidate-bound evidence: [native-rust-closure-2026-10-24.json](../evidence/native-rust-closure-2026-10-24.json)
-(`5a323f8`; author-run and exact-head CI). The reviewer/cancellation slice is
-recorded in
-[native-rust-closure-2026-10-24-review-cancel.json](../evidence/native-rust-closure-2026-10-24-review-cancel.json)
-(`4bcd584`; author-run) and
-[native-rust-closure-2026-10-24-repository-identity.json](../evidence/native-rust-closure-2026-10-24-repository-identity.json)
-(`ec2e75b`; author-run) and
-[native-rust-closure-2026-10-24-log-redaction.json](../evidence/native-rust-closure-2026-10-24-log-redaction.json)
-(`c0ed31d`; author-run) and
-[native-rust-exact-head-ci-2026-10-24.json](../evidence/native-rust-exact-head-ci-2026-10-24.json)
-(`b91bd96`; GitHub Actions) and
-[native-rust-exact-head-ci-2026-10-24-final.json](../evidence/native-rust-exact-head-ci-2026-10-24-final.json)
-(`14506ea`; GitHub Actions) and
-[native-rust-exact-head-ci-2026-10-24-deletion.json](../evidence/native-rust-exact-head-ci-2026-10-24-deletion.json)
-(`efd172c6a6023aed50d861b083ea341ff3b22e22`; GitHub Actions after the 96→94 deletion batch). None is provider coding, OS isolation
-certification, independent acceptance or deployment authorization.
+Candidate-bound evidence lives under [docs/evidence](../evidence). None of it is
+provider coding, OS isolation certification, independent human acceptance or
+deployment authorization.
 
-## Legacy deletion status
+## Legacy retirement
 
-One fixture batch is `DELETED_AFTER_REPLACEMENT`: commit `1d10f065a2143cbe8fc84006113ec315610420bd`
-replaced the protected S4-A `.go` test datum with `policy.txt` (99 to 98
-tracked Go files). On that exact code commit, the deterministic S4-B oracle's
-B8 protected-diff checks reached `HUMAN_REQUIRED` and prohibited repair. The
-full script exited 1 at its separate B11 Chromium Campaigns-heading timeout;
-the overall S4-B suite is not a Rust acceptance result. Go/Paseo removal still
-requires the relevant Rust behavior and tests first. The predecessor capability
-assessment was removed only after [capability decisions](../product/capability-decisions.md)
-preserved its selected portfolio and engineering opportunities.
+The complete former tracked implementation was removed in the retirement
+cutover commit on this branch together with its module files, Go-only lint
+configuration, legacy entrypoints, test harnesses, scripts and workflows. The
+tracked Go inventory is **0**. Historical contracts, checkpoints, security
+findings and the former deletion map are archived under
+[docs/evidence/history](../evidence/history/README.md); Git history preserves
+the former source.
 
-The Go architecture checker and wrapper were deleted at
-`c2923aca1ae58df92f623b1670e40c0175273a39` (98 to 96 Go files) after
-porting the registry, evidence, path, certification and ADR checks to Rust and
-switching the `architecture-consistency` CI job. Sol's cross-review repair at
-`eb36cade9749614742ad0b0cf7b823173abdc43f` added read-path confinement
-and manifest-fragment negatives. Later commits `2cdd773` and `4fb29e9`
-restored missing claim, manifest, reference and dependency regression cases
-after independent review. Eight checker tests, Clippy and an actual
-`--base-ref origin/main` invocation pass locally. The `architecture-consistency`
-GitHub CI job passed on `6947b42` and `a367766` after each PR impact declaration was rebound
-to that head; independent acceptance remains pending. The workflow still
-installs Go for a separate legacy live-entrypoint guard.
-
-Codex direct thread/turn protocol fixtures now reject empty identities, keep
-terminal outcomes distinct, and bind completion to the started turn. Sol's
-review repaired provider event replay and usage-overflow atomicity (`37e387b`);
-independent review found and Sol repaired pre-turn cancellation deadlock
-(`c375d71`). These are deterministic fixtures only. No paid provider coding
-turn or credential/isolation certification occurred.
-
-OpenCode prompt helpers now correlate matching session SSE idle/error events
-with a synchronous assistant HTTP response in deterministic fixtures
-(`17bcac2`). Independent review found an abort race: idle after a requested
-abort did not prove cancellation. The outcome is now explicitly
-`AbortRequestedAndIdle`, with a completed-response race fixture (`5a5df79`).
-The reviewer verified the repair. The loopback HTTP prompt, abort, assistant
-read and delete path with credential/redirect checks and event-before-session
-ordering is exercised against a local fake server (`6cf3786`/`d0b8933`).
-These helpers still have no production prompt or abort caller; provider
-lifecycle remains incomplete.
-
-The [deletion and replacement map](native-rust-deletion-map.md) classifies all
-99 tracked Go files at `102f6a046f1f907546e8bc60da622388f80bd95c` by
-replacement, missing oracle, deletion readiness, owner and verification command.
-The map records the two completed batches and the remaining blockers.
-
-The inventory is now 94 tracked `.go` files. Batch 3 retired the B2 Go unit
-tests for failure classification and repository identity after exact Rust
-ports passed; the remaining production Go files are one connected module and
-no further file is independently deletion-ready: all remaining Go packages are one connected module, and B2
-`domain`, `candidate`, `project`, and `recovery` are imported by the remaining
-C1/C2 commands, API, store, orchestrator, verifier and reviewer. Deleting any
-of them requires retiring their dependents and the Go CI in the same batch,
-which is not truthful while provider coding, durable session recovery,
-telemetry and multi-project capability parity remain absent. Rust now owns the
-recovery failure classifier, bounded candidate diff/content evidence, the
-independent reviewer process, canonical repository identity binding, a closed
-durable event-kind vocabulary and bounded credential redaction in Core and
-Supervisor logs. The legacy event payload projection has
-no production Rust equivalent because Rust never persists a payload field; any
-future payload surface must re-introduce that read-boundary test. The exact
-per-file dependency blocker is recorded in the deletion map.
-
-Batch 3 evidence: [native-rust-deletion-batch-3-2026-10-24.json](../evidence/native-rust-deletion-batch-3-2026-10-24.json)
-(`96 → 94`, test-only B2 retirement with exact Rust ports).
+The deletion does not change any capability from `PARTIAL` or `BLOCKED` to
+`VERIFIED`. Functional gaps remain as recorded above.
 
 Strict tracked-tree independence audit:
 
 ```sh
 git grep -n -i -E 'A[E]H|agentic[-_ ]engineering[-_ ]harness' -- .
 git ls-files | grep -Ei 'A[E]H|agentic[-_ ]engineering[-_ ]harness'
+git ls-files '*.go'
 ```
 
-Both must be empty for M13. Go/path and strict hygiene audits remain separate.
+All three must be empty. The strict repository hygiene binary is the required
+CI gate.
 
 ## Product Owner decisions required
 

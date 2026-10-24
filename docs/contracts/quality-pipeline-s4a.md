@@ -6,7 +6,7 @@ contracts). Experimental pre-release contract; breaking changes update all
 in-repo callers, fixtures, docs and tests atomically
 ([ADR-0006](../architecture/decisions/ADR-0006-early-development-compatibility.md)).
 
-S4-A does not replace the S1 Action, S2 Run/Attempt/Worker or S3 Paseo session
+S4-A does not replace the S1 Action, S2 Run/Attempt/Worker or S3 provider session
 lifecycles. It binds them: an Implementer Run can now reference a frozen
 `ActionSpec`, and completion requires an independently validated
 `CandidateRevision`.
@@ -51,7 +51,7 @@ binds verifier/reviewer evidence to the exact protected oracle.
   "budget": {"maxAttempts": 1, "timeoutSecs": 600},
   "executionMode": "trusted-local",
   "provider": "opencode", "model": "opencode-go/deepseek-v4.1-flash",
-  "paseoMode": "build",
+  "providerMode": "build",
   "createdAt": "RFC3339Nano", "frozenAt": "RFC3339Nano"
 }
 ```
@@ -82,7 +82,7 @@ Rules:
   "implementerRunId": "…", "implementerAttemptId": "…",
   "implementerGeneration": 1, "implementerWorkerId": "local-1",
   "executionMode": "trusted-local", "provider": "…", "model": "…",
-  "paseoMode": "…", "changedPaths": ["add.js", "app.js"],
+  "providerMode": "…", "changedPaths": ["add.js", "app.js"],
   "riskClass": "R0", "state": "frozen | superseded | rejected",
   "createdAt": "…", "frozenAt": "…", "supersededAt": "…"
 }
