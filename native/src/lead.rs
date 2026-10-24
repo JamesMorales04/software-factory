@@ -206,6 +206,7 @@ pub struct StandingDelegation {
     pub audit_id: String,
     pub project_id: String,
     pub revision: u32,
+    #[serde(default)]
     pub content_hash: String,
     pub objective_classes: Vec<ObjectiveClass>,
     pub allowed_paths: Vec<String>,

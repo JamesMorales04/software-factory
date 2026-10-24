@@ -656,7 +656,11 @@ async fn create_delegation(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if input.delegation.autonomous_start && !app.lead_autonomous_start {
+    let mut delegation = input.delegation;
+    if delegation.content_hash.is_empty() {
+        delegation.content_hash = delegation.compute_content_hash();
+    }
+    if delegation.autonomous_start && !app.lead_autonomous_start {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error":"autonomous delegation policy is not ratified or activated"})),
@@ -665,7 +669,7 @@ async fn create_delegation(
     }
     match app
         .db
-        .create_standing_delegation(&input.delegation, &input.idempotency_key)
+        .create_standing_delegation(&delegation, &input.idempotency_key)
         .await
     {
         Ok((delegation, created)) => (

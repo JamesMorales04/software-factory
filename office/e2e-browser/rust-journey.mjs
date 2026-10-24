@@ -124,6 +124,8 @@ try {
       FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
       FACTORY_VERIFIER_TOKEN: verifier,
       FACTORY_REVIEWER_TOKEN: reviewer,
+      FACTORY_LEAD_FIXTURE_ASSESSOR: "1",
+      FACTORY_ENABLE_AUTONOMOUS_START: "1",
     },
   });
   await waitFor(`${coreUrl}/health`);
@@ -266,6 +268,130 @@ try {
       bearer,
     );
   }
+
+  const _projects = await api("/projects");
+  const _leadProject = _projects[0];
+  const _leadConfig = await api(`/projects/${_leadProject.id}/config`, {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedRevision: 1,
+      allowedPaths: ["src"],
+      capabilities: ["repository-edit", "generic-toolchain"],
+      qualityProfile: "generic",
+      active: true,
+    }),
+  });
+  const _leadAction = await api("/actions", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      objective: "Lead fixture objective",
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      idempotency_key: "office-lead-action",
+      allowed_paths: ["src"],
+      checks: [
+        {
+          id: "build",
+          kind: "build",
+          description: "build",
+          command: ["true"],
+          expectExit: 0,
+          timeoutSecs: 30,
+        },
+        {
+          id: "test",
+          kind: "test",
+          description: "test",
+          command: ["true"],
+          expectExit: 0,
+          timeoutSecs: 30,
+        },
+        {
+          id: "functional",
+          kind: "functional",
+          description: "fixture",
+          command: ["grep", "-q", "fixture candidate", "src/fixture.txt"],
+          expectExit: 0,
+          timeoutSecs: 30,
+        },
+        {
+          id: "negative",
+          kind: "negative",
+          description: "absent",
+          command: ["grep", "-q", "absent", "src/fixture.txt"],
+          expectExit: 1,
+          timeoutSecs: 30,
+        },
+      ],
+    }),
+  });
+  const _leadDelegation = await api("/delegations", {
+    method: "POST",
+    body: JSON.stringify({
+      idempotency_key: "office-lead-delegation",
+      delegation: {
+        id: "office-lead-grant",
+        principalId: "office-owner",
+        auditId: "office-audit",
+        projectId: _leadProject.id,
+        revision: 1,
+        objectiveClasses: ["feature"],
+        allowedPaths: ["src"],
+        capabilities: ["repository-edit", "generic-toolchain"],
+        riskClasses: ["R0", "R1"],
+        autonomousStart: false,
+        autonomousRiskClasses: [],
+        route: {
+          provider: "opencode",
+          model: "deepseek-v4.1-flash",
+          mode: "build",
+        },
+        maxAttempts: 2,
+        maxTimeoutSecs: 300,
+        maxRepairCycles: 0,
+        maxWallClockSecs: 1800,
+        maxParallel: 1,
+        maxSessions: 4,
+        maxRequests: 2,
+        maxCumulativeSessions: 8,
+        maxCumulativeAttempts: 16,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+    }),
+  });
+  const _leadRequest = await api("/lead/requests", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      action_id: _leadAction.id,
+      delegation_id: _leadDelegation.id,
+      objective: "Lead fixture objective",
+      project_config_hash: _leadConfig.configHash,
+      idempotency_key: "office-lead-request",
+    }),
+  });
+  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
+  await page.getByTestId("lead-project").selectOption(_leadProject.id);
+  await page.getByTestId("lead-action").selectOption(_leadAction.id);
+  await page.getByTestId("lead-delegation").selectOption(_leadDelegation.id);
+  await page.getByTestId("lead-objective").fill("Lead fixture objective");
+  await page.getByRole("button", { name: "Submit Lead request" }).click();
+  await page
+    .getByText(_leadRequest.id.slice(0, 8), { exact: false })
+    .first()
+    .waitFor();
+  await page.getByRole("button", { name: "Assess (fixture)" }).first().click();
+  await page.getByText("PLANNED", { exact: true }).first().waitFor();
+  await page.getByRole("button", { name: "Freeze plan" }).first().click();
+  await page.getByText("READY", { exact: true }).first().waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
+  await page
+    .getByText("READY", { exact: true })
+    .first()
+    .waitFor({ timeout: 15000 });
 
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();

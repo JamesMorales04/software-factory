@@ -151,6 +151,7 @@ export function Lead() {
         <label>
           Project
           <select
+            data-testid="lead-project"
             value={projectId}
             onChange={(event) => setProjectId(event.target.value)}
           >
@@ -165,6 +166,7 @@ export function Lead() {
         <label>
           Frozen Action
           <select
+            data-testid="lead-action"
             value={actionId}
             onChange={(event) => setActionId(event.target.value)}
           >
@@ -179,6 +181,7 @@ export function Lead() {
         <label>
           Active delegation
           <select
+            data-testid="lead-delegation"
             value={delegationId}
             onChange={(event) => setDelegationId(event.target.value)}
           >
@@ -194,6 +197,7 @@ export function Lead() {
         <label>
           Objective
           <textarea
+            data-testid="lead-objective"
             value={objective}
             onChange={(event) => setObjective(event.target.value)}
             placeholder="Describe the intended outcome"
