@@ -36,6 +36,13 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CancelCampaignRequest {
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClassifyAction {
     risk_class: String,
     actor: String,
@@ -215,6 +222,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/actions/{id}/classify", post(classify_action))
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/campaigns/{id}", get(campaign_detail))
+        .route("/campaigns/{id}/cancel", post(cancel_campaign))
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
         .route("/events", get(events))
@@ -523,6 +531,35 @@ async fn campaign_detail(
         "events": events
     }))
     .into_response()
+}
+
+async fn cancel_campaign(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let reason = if body.is_empty() {
+        String::new()
+    } else {
+        match serde_json::from_slice::<CancelCampaignRequest>(&body) {
+            Ok(input) => input.reason,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid cancellation payload"})),
+                )
+                    .into_response();
+            }
+        }
+    };
+    match app.db.cancel_campaign(&id, "operator", &reason).await {
+        Ok(campaign) => Json(campaign).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn runs(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {

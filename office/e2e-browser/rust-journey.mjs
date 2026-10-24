@@ -17,6 +17,9 @@ const workerBin =
 const supervisorBin =
   process.env.FACTORY_SUPERVISOR_BIN ||
   join(root, "target/debug/factory-supervisor");
+const reviewerBin =
+  process.env.FACTORY_REVIEWER_BIN ||
+  join(root, "target/debug/factory-reviewer");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
 const bootstrap = token();
@@ -246,28 +249,41 @@ try {
   const candidates = await api("/candidates");
   assert.equal(candidates.length, 1);
   const candidate = candidates[0];
-  for (const [bearer, role] of [
-    [verifier, "verifier"],
-    [reviewer, "reviewer"],
-  ]) {
-    await api(
-      "/quality/receipts",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          candidate_id: candidate.id,
-          receipt_id: `${role}-office-e2e`,
-          principal_id: `${role}-office-e2e`,
-          actionSpecSha256: candidate.action_spec_sha256,
-          commitSha: candidate.commit_sha,
-          treeSha: candidate.tree_sha,
-          result: "PASS",
-          evidence: "EXECUTED",
-        }),
-      },
-      bearer,
-    );
-  }
+  await api(
+    "/quality/receipts",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_id: candidate.id,
+        receipt_id: "verifier-office-e2e",
+        principal_id: "verifier-office-e2e",
+        actionSpecSha256: candidate.action_spec_sha256,
+        commitSha: candidate.commit_sha,
+        treeSha: candidate.tree_sha,
+        result: "PASS",
+        evidence: "EXECUTED",
+      }),
+    },
+    verifier,
+  );
+  const reviewerProcess = launch(reviewerBin, [], {
+    cwd: temp,
+    env: {
+      ...process.env,
+      FACTORY_CORE_URL: coreUrl,
+      FACTORY_REVIEWER_TOKEN: reviewer,
+      FACTORY_CANDIDATE_ID: candidate.id,
+      FACTORY_REVIEWER_PRINCIPAL: "reviewer-office-e2e",
+    },
+  });
+  const reviewerExit = await new Promise((resolvePromise) =>
+    reviewerProcess.on("exit", resolvePromise),
+  );
+  assert.equal(reviewerExit, 0, "independent reviewer process must pass");
+
+  await page.getByRole("link", { name: "Workers", exact: true }).click();
+  await page.getByRole("heading", { name: "Workers", exact: true }).waitFor();
+  await page.getByText("office-e2e-worker").waitFor();
 
   const _projects = await api("/projects");
   const _leadProject = _projects[0];

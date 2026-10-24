@@ -6,6 +6,8 @@ pub mod model_output;
 pub mod protocol;
 pub mod provider_session;
 pub mod quality;
+pub mod recovery;
+pub mod review;
 pub mod runtime;
 pub mod sandbox;
 pub mod sse;

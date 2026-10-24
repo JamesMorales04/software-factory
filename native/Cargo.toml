@@ -40,6 +40,10 @@ name = "factory-verifier"
 path = "src/bin/verifier.rs"
 
 [[bin]]
+name = "factory-reviewer"
+path = "src/bin/reviewer.rs"
+
+[[bin]]
 name = "factory-supervisor"
 path = "src/bin/supervisor.rs"
 

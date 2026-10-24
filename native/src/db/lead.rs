@@ -842,6 +842,108 @@ impl Database {
         Ok((campaign, run, attempt))
     }
 
+    pub async fn cancel_campaign(
+        &self,
+        campaign_id: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<Campaign, Error> {
+        if actor.trim().is_empty() || actor.len() > 128 || reason.len() > 500 {
+            return Err(Error::Invalid("campaign cancellation identity or reason"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let row: Option<(String, String, String, String)> = sqlx::query_as::query_as(
+            "SELECT id,action_id,status,created_at FROM campaigns WHERE id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let (id, action_id, status, created_at) = row.ok_or(Error::NotFound)?;
+        if status == "CANCELLED" {
+            transaction.commit().await?;
+            return Ok(Campaign {
+                id,
+                action_id,
+                status,
+                created_at,
+            });
+        }
+        if matches!(status.as_str(), "COMPLETED" | "FAILED") {
+            return Err(Error::Conflict("campaign is already terminal"));
+        }
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query("UPDATE campaigns SET status='CANCELLED' WHERE id=?1")
+            .bind(&id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query::query(
+            "UPDATE runs SET status='CANCELLED'
+             WHERE campaign_id=?1 AND status IN ('QUEUED','RUNNING')",
+        )
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE attempts SET status='CANCELLED'
+             WHERE status IN ('QUEUED','LEASED')
+               AND run_id IN (SELECT id FROM runs WHERE campaign_id=?1)",
+        )
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE lead_tasks SET status='CANCELLED',updated_at=?2
+             WHERE campaign_id=?1 AND status IN ('PENDING','RUNNING')",
+        )
+        .bind(&id)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE lead_integrations SET status='CANCELLED',updated_at=?2
+             WHERE campaign_id=?1 AND status IN ('QUEUED','RUNNING')",
+        )
+        .bind(&id)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE lead_requests SET state='BLOCKED',failure_reason=?2,updated_at=?3
+             WHERE campaign_id=?1 AND state='RUNNING'",
+        )
+        .bind(&id)
+        .bind(format!("campaign cancelled: {}", reason.trim()))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "DELETE FROM worker_leases
+             WHERE attempt_id IN (
+               SELECT a.id FROM attempts a
+               JOIN runs r ON r.id=a.run_id
+               WHERE r.campaign_id=?1
+             )",
+        )
+        .bind(&id)
+        .execute(&mut *transaction)
+        .await?;
+        record_event(
+            &mut transaction,
+            &id,
+            "campaign.cancelled",
+            &format!("cancelled by {}: {}", actor, reason.trim()),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(Campaign {
+            id,
+            action_id,
+            status: "CANCELLED".into(),
+            created_at,
+        })
+    }
+
     pub async fn campaign_tasks(&self, campaign_id: &str) -> Result<Vec<LeadTaskRecord>, Error> {
         use sqlx::row::Row;
         let rows = sqlx::query::query(
@@ -2669,6 +2771,134 @@ mod tests {
                 .await,
             Err(Error::Forbidden(_) | Error::Conflict(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn campaign_cancellation_fences_open_work_and_is_idempotent() {
+        let (path, db, _) = fixture().await;
+        let action_id = action(&db).await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query("INSERT INTO campaigns VALUES ('campaign-cancel',?1,'AUTHORIZED',?2)")
+            .bind(&action_id)
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("INSERT INTO runs VALUES ('run-cancel','campaign-cancel','QUEUED',?1)")
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at) VALUES ('attempt-cancel','run-cancel','LEASED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO worker_leases VALUES ('attempt-cancel','worker-cancel',1,9999999999999)",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,failure_reason,created_at,updated_at,campaign_id)
+             VALUES ('request-cancel','project',?1,'grant','objective','request-hash','config-hash',
+                     'RUNNING',NULL,?2,?2,'campaign-cancel')",
+        )
+        .bind(&action_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_tasks
+             (task_id,campaign_id,request_id,unit_id,sequence,status,base_commit,spec_json,
+              spec_sha256,depends_on_json,run_id,attempt_id,candidate_id,created_at,updated_at)
+             VALUES ('task-cancel','campaign-cancel','request-cancel','unit',0,'RUNNING',?1,'{}',
+                     'spec-hash','[]','run-cancel','attempt-cancel',NULL,?2,?2)",
+        )
+        .bind("b".repeat(40))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let cancelled = db
+            .cancel_campaign("campaign-cancel", "operator", "owner request")
+            .await
+            .unwrap();
+        assert_eq!(cancelled.status, "CANCELLED");
+
+        let (run_status,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM runs WHERE id='run-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(run_status, "CANCELLED");
+        let (attempt_status,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM attempts WHERE id='attempt-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(attempt_status, "CANCELLED");
+        let (task_status,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM lead_tasks WHERE task_id='task-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(task_status, "CANCELLED");
+        let (request_state, failure_reason): (String, Option<String>) = sqlx::query_as::query_as(
+            "SELECT state,failure_reason FROM lead_requests WHERE id='request-cancel'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(request_state, "BLOCKED");
+        assert!(
+            failure_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("owner request"))
+        );
+        let (leases,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM worker_leases WHERE attempt_id='attempt-cancel'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(leases, 0);
+
+        let again = db
+            .cancel_campaign("campaign-cancel", "operator", "repeat")
+            .await
+            .unwrap();
+        assert_eq!(again.status, "CANCELLED");
+        let (event_count,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM events WHERE subject_id='campaign-cancel' AND kind='campaign.cancelled'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(event_count, 1);
+
+        let (audit,): (String,) =
+            sqlx::query_as::query_as("SELECT detail FROM events WHERE subject_id='campaign-cancel' AND kind='campaign.cancelled'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(audit.contains("owner request"));
+        assert_eq!(
+            db.cancel_campaign("missing-campaign", "operator", "x")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "record not found"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

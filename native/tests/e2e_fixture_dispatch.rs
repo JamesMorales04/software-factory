@@ -211,6 +211,25 @@ fn git(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn run_reviewer(root: &Path, base_url: &str, candidate_id: &str, principal: &str, log_name: &str) {
+    let log = File::create(root.join(log_name)).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_factory-reviewer"))
+        .env("FACTORY_CORE_URL", base_url)
+        .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
+        .env("FACTORY_CANDIDATE_ID", candidate_id)
+        .env("FACTORY_REVIEWER_PRINCIPAL", principal)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .status()
+        .expect("reviewer");
+    assert!(
+        status.success(),
+        "reviewer failed: {}",
+        std::fs::read_to_string(root.join(log_name)).unwrap_or_default()
+    );
+}
+
 async fn expire_fixture_lease(database: &Path, attempt_id: &str) {
     let pool = sqlx_sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -476,23 +495,13 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         "verifier failed: {}",
         std::fs::read_to_string(root.join("verifier.log")).unwrap_or_default()
     );
-    let reviewer = client
-        .post(format!("{base_url}/quality/receipts"))
-        .bearer_auth(REVIEWER_TOKEN)
-        .json(&json!({
-            "candidate_id": candidate_id,
-            "receipt_id": "reviewer-e2e",
-            "principal_id": "reviewer-e2e",
-            "actionSpecSha256": spec_sha,
-            "commitSha": commit,
-            "treeSha": tree,
-            "result": "PASS",
-            "evidence": "EXECUTED"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::CREATED);
+    run_reviewer(
+        &root,
+        &base_url,
+        &candidate_id,
+        "reviewer-process-e2e",
+        "reviewer.log",
+    );
     let gate: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -832,23 +841,13 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
         "verifier failed: {}",
         std::fs::read_to_string(root.join("verifier.log")).unwrap_or_default()
     );
-    let reviewer = client
-        .post(format!("{base_url}/quality/receipts"))
-        .bearer_auth(REVIEWER_TOKEN)
-        .json(&json!({
-            "candidate_id": candidate_id,
-            "receipt_id": "lead-reviewer",
-            "principal_id": "lead-reviewer",
-            "actionSpecSha256": spec_sha,
-            "commitSha": candidate["commit_sha"],
-            "treeSha": candidate["tree_sha"],
-            "result": "PASS",
-            "evidence": "EXECUTED"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::CREATED);
+    run_reviewer(
+        &root,
+        &base_url,
+        &candidate_id,
+        "lead-reviewer",
+        "reviewer.log",
+    );
     let gate: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1170,10 +1169,6 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let candidate_id = integrated["id"].as_str().unwrap().to_owned();
-    let spec_sha = integrated["action_spec_sha256"]
-        .as_str()
-        .unwrap()
-        .to_owned();
     assert!(
         integrated["lineage"]
             .as_array()
@@ -1206,23 +1201,13 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
         "integration verifier failed: {}",
         std::fs::read_to_string(root.join("verifier-integration.log")).unwrap_or_default()
     );
-    let reviewer = client
-        .post(format!("{base_url}/quality/receipts"))
-        .bearer_auth(REVIEWER_TOKEN)
-        .json(&json!({
-            "candidate_id": candidate_id,
-            "receipt_id": "integration-reviewer",
-            "principal_id": "integration-reviewer",
-            "actionSpecSha256": spec_sha,
-            "commitSha": integrated["commit_sha"],
-            "treeSha": integrated["tree_sha"],
-            "result": "PASS",
-            "evidence": "EXECUTED"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::CREATED);
+    run_reviewer(
+        &root,
+        &base_url,
+        &candidate_id,
+        "integration-reviewer",
+        "reviewer-integration.log",
+    );
     let gate: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -1644,7 +1629,7 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
     }
     run_worker(Some(map), 4).await;
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (candidate_id, spec_sha, commit_sha, tree_sha) = loop {
+    let candidate_id = loop {
         let candidates: Value = operator(
             &client,
             reqwest::Method::GET,
@@ -1661,12 +1646,7 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
                 .rev()
                 .find(|candidate| candidate["integration"] == false)
         }) {
-            break (
-                candidate["id"].as_str().unwrap().to_owned(),
-                candidate["action_spec_sha256"].as_str().unwrap().to_owned(),
-                candidate["commit_sha"].as_str().unwrap().to_owned(),
-                candidate["tree_sha"].as_str().unwrap().to_owned(),
-            );
+            break candidate["id"].as_str().unwrap().to_owned();
         }
         assert!(
             Instant::now() < deadline,
@@ -1700,18 +1680,13 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
         "fanin verifier failed: {}",
         std::fs::read_to_string(root.join("fanin-verifier.log")).unwrap_or_default()
     );
-    let reviewer = client
-        .post(format!("{base_url}/quality/receipts"))
-        .bearer_auth(REVIEWER_TOKEN)
-        .json(&json!({
-            "candidate_id":candidate_id,"receipt_id":"fanin-reviewer","principal_id":"fanin-reviewer",
-            "actionSpecSha256":spec_sha,"commitSha":commit_sha,"treeSha":tree_sha,
-            "result":"PASS","evidence":"EXECUTED"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::CREATED);
+    run_reviewer(
+        &root,
+        &base_url,
+        &candidate_id,
+        "fanin-reviewer",
+        "fanin-reviewer.log",
+    );
     let gate: Value = operator(
         &client,
         reqwest::Method::GET,
@@ -2472,6 +2447,236 @@ async fn failed_fanin_integration_propagates_without_dependent_dispatch() {
     assert_eq!(task_states[2], ("unit-3".into(), "FAILED".into(), None));
     pool.close().await;
     supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-cancel-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "E2E Cancel"]);
+    git(
+        &repository,
+        &["config", "user.email", "cancel@example.invalid"],
+    );
+    std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+    git(&repository, &["add", "seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+    let database = root.join("factory.sqlite");
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start(&database, port, &root.join("core.log"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "cancel-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project["id"],
+            "objective": "cancellation fixture",
+            "provider": "opencode",
+            "model": "test/model",
+            "idempotency_key": "cancel-action",
+            "allowed_paths": ["src"],
+            "checks": [{
+                "id": "content",
+                "kind": "functional",
+                "description": "fixture content",
+                "command": ["true"],
+                "expectExit": 0,
+                "timeoutSecs": 30
+            }]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id": action["id"], "idempotency_key": "cancel-campaign"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(json!({
+                "authorization_id": "cancel-auth",
+                "risk_class": "R0",
+                "execution_mode": "FIXTURE",
+                "actor": "e2e-operator",
+                "rationale": "cancellation fixture",
+                "authorized_paths": ["src"],
+                "max_attempts": 1
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+
+    let registration = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({"worker_id":"cancel-worker","registration_key":"cancel-registration"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registration.status(), StatusCode::OK);
+    let session: Value = registration.json().await.unwrap();
+    let claim: Value = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(session["session_token"].as_str().unwrap())
+        .json(&json!({"worker_id":"cancel-worker"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let attempt_id = claim["assignment"]["lease"]["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let unauthorized = client
+        .post(format!("{base_url}/campaigns/{campaign_id}/cancel"))
+        .json(&json!({"reason":"unauthorized"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    let cancelled = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/cancel"),
+        Some(json!({"reason":"Product Owner cancelled the fixture"})),
+    )
+    .await;
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    assert_eq!(
+        cancelled.json::<Value>().await.unwrap()["status"],
+        "CANCELLED"
+    );
+
+    let detail: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns/{campaign_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(detail["campaign"]["status"], "CANCELLED");
+    assert_eq!(detail["runs"][0]["status"], "CANCELLED");
+    assert_eq!(detail["attempts"][0]["status"], "CANCELLED");
+    assert_eq!(detail["attempts"][0]["id"], attempt_id);
+    assert!(detail["candidates"].as_array().unwrap().is_empty());
+
+    let next_registration = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({"worker_id":"cancel-worker-2","registration_key":"cancel-registration-2"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(next_registration.status(), StatusCode::OK);
+    let next_session: Value = next_registration.json().await.unwrap();
+    let next_claim: Value = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(next_session["session_token"].as_str().unwrap())
+        .json(&json!({"worker_id":"cancel-worker-2"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(next_claim["assignment"].is_null());
+    let stale = client
+        .post(format!("{base_url}/worker/report"))
+        .bearer_auth(session["session_token"].as_str().unwrap())
+        .json(&json!({
+            "attempt_id": attempt_id,
+            "worker_id": "cancel-worker",
+            "generation": 1,
+            "receipt_id": "cancel-stale-report",
+            "result_sha256": "a".repeat(64),
+            "terminal_status": "FAILED"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(stale.status().is_client_error());
+
+    core.stop();
+    core = CoreProcess::start(&database, port, &root.join("core.log"));
+    wait_healthy(&client, &base_url, &mut core).await;
+    let restored: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns/{campaign_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(restored["campaign"]["status"], "CANCELLED");
+    assert_eq!(restored["attempts"][0]["status"], "CANCELLED");
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }

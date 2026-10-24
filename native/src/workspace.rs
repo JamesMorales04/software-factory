@@ -11,6 +11,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub const MAX_CANDIDATE_DIFF_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -342,6 +345,98 @@ pub fn changed_paths(
         ));
     }
     Ok(paths)
+}
+
+/// Hash the exact recursive tree listing of a commit. The digest is stable
+/// across clones and independent of the checkout filesystem.
+pub fn content_digest(repository: &Path, commit_sha: &str) -> Result<String, WorkspaceError> {
+    if !is_object_id(commit_sha) {
+        return Err(WorkspaceError::Invalid(
+            "content digest requires a full Git commit ID".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let output = git(
+        &repository,
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("--full-tree"),
+            OsStr::new(commit_sha),
+        ],
+    )?;
+    let digest = Sha256::digest(&output.stdout);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Bounded unified diff between the frozen base and one candidate commit.
+pub fn diff(
+    repository: &Path,
+    base: &str,
+    commit: &str,
+) -> Result<(String, usize), WorkspaceError> {
+    if !is_object_id(base) || !is_object_id(commit) {
+        return Err(WorkspaceError::Invalid(
+            "candidate diff requires full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let output = git(
+        &repository,
+        [
+            OsStr::new("diff"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-renames"),
+            OsStr::new(base),
+            OsStr::new(commit),
+        ],
+    )?;
+    let bytes = output.stdout.len();
+    if bytes > MAX_CANDIDATE_DIFF_BYTES {
+        return Err(WorkspaceError::Invalid(format!(
+            "candidate diff exceeds {MAX_CANDIDATE_DIFF_BYTES} bytes"
+        )));
+    }
+    let diff = String::from_utf8(output.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 candidate diff: {error}")))?;
+    Ok((diff, bytes))
+}
+
+/// Bounded `git diff --stat` summary for the exact candidate.
+pub fn diff_stat(repository: &Path, base: &str, commit: &str) -> Result<String, WorkspaceError> {
+    if !is_object_id(base) || !is_object_id(commit) {
+        return Err(WorkspaceError::Invalid(
+            "candidate diff stat requires full Git object IDs".into(),
+        ));
+    }
+    let repository = repository.canonicalize()?;
+    let output = git(
+        &repository,
+        [
+            OsStr::new("diff"),
+            OsStr::new("--stat"),
+            OsStr::new("--no-renames"),
+            OsStr::new(base),
+            OsStr::new(commit),
+        ],
+    )?;
+    let stat = String::from_utf8(output.stdout)
+        .map_err(|error| WorkspaceError::Invalid(format!("non-UTF-8 diff stat: {error}")))?;
+    let summary = stat
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim();
+    Ok(summary.chars().take(512).collect())
+}
+
+/// Added lines from a unified diff, excluding file headers.
+pub fn added_lines(diff: &str) -> Vec<&str> {
+    diff.lines()
+        .filter(|line| !line.starts_with("+++") && !line.starts_with("---"))
+        .filter_map(|line| line.strip_prefix('+'))
+        .collect()
 }
 
 /// Verify a Worker's candidate claim directly against the registered Git
@@ -1117,6 +1212,40 @@ mod tests {
                 .is_err()
         );
         assert!(verify_candidate_commit(&repo.0, &base, &base, &candidate.tree_sha).is_err());
+        attempt.cleanup().unwrap();
+    }
+
+    #[test]
+    fn content_digest_diff_and_diff_stat_describe_the_exact_candidate() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let allocator = WorkspaceAllocator::new(
+            &repo.0,
+            std::env::temp_dir().join(format!("factory-diff-root-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let mut attempt = allocator.allocate("attempt_diff", &base).unwrap();
+        fs::write(attempt.path().join("seed.txt"), "candidate\n").unwrap();
+        git(attempt.path(), ["add", "seed.txt"]).unwrap();
+        git(attempt.path(), ["commit", "-qm", "candidate"]).unwrap();
+        let candidate = attempt.candidate_revision().unwrap();
+        let digest = content_digest(&repo.0, &candidate.commit_sha).unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            digest,
+            content_digest(&repo.0, &candidate.commit_sha).unwrap()
+        );
+        let (candidate_diff, diff_bytes) = diff(&repo.0, &base, &candidate.commit_sha).unwrap();
+        assert_eq!(diff_bytes, candidate_diff.len());
+        assert!(candidate_diff.contains("+candidate"));
+        assert_eq!(added_lines(&candidate_diff), vec!["candidate"]);
+        assert!(
+            diff_stat(&repo.0, &base, &candidate.commit_sha)
+                .unwrap()
+                .contains("file changed")
+        );
+        assert!(diff(&repo.0, &base, "not-an-object-id").is_err());
         attempt.cleanup().unwrap();
     }
 
