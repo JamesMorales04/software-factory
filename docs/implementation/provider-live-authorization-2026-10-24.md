@@ -62,3 +62,18 @@ output-token cap; the 256-output-token limit is therefore reconciled after the
 response and is **not** a hard total-token cap. No total-token ceiling is
 asserted. The smoke tool resolves provider/model against `/provider` before the
 prompt and refuses unknown/unconnected routes.
+
+
+## OpenCode Go live result (2026-10-24)
+
+`LIVE_STRUCTURED_OUTPUT_VERIFIED`.
+
+- Candidate: `0601a6d8af59314b62ed8e9a92d8c7958f8bc7f3`.
+- Provider: `opencode-go` (`OpenCode` 1.18.32); model `deepseek-v4.1-flash`.
+- One request: `msg_16becba690022DVSPG0M81bBkL`, session `ses_e941345e9ffe32yqIb9BacUrZ7`.
+- Requested output limit 256; actual output 67 tokens. Total usage 7,372 (input 5,513, cached read 1,792); cost 0.000872526. The 256 limit is an output reconciliation, not a total cap.
+- Native `format: json_schema` accepted; strict Rust/jsonschema validation passed.
+- Session deleted; subsequent GET returned 404. No retry was made.
+- Evidence: [provider-live-smoke-2026-10-24-opencode-go.json](../evidence/provider-live-smoke-2026-10-24-opencode-go.json).
+
+This is bounded read-only protocol/structured-output evidence, not coding or sandbox certification.

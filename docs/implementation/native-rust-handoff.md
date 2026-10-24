@@ -385,3 +385,24 @@ OpenCode Go turn.
 provider lifecycle fixtures, then Supervisor/credential confinement and
 recovery/multi-project Office parity. Keep provider/ISOLATED execution
 fail-closed.
+
+
+## OpenCode Go live verification (2026-10-24)
+
+`LIVE_STRUCTURED_OUTPUT_VERIFIED` at candidate
+`0601a6d8af59314b62ed8e9a92d8c7958f8bc7f3`.
+
+- Provider `opencode-go`, OpenCode `1.18.32`, model `deepseek-v4.1-flash`.
+- One request `msg_16becba690022DVSPG0M81bBkL`, session
+  `ses_e941345e9ffe32yqIb9BacUrZ7`.
+- Requested output ceiling 256; output 67 tokens. Total usage 7,372 (input
+  5,513, cached 1,792); cost 0.000872526. The output ceiling is not a total
+  usage cap.
+- Native JSON Schema structured output accepted and strictly validated.
+- Session deleted; GET returned 404; no retry.
+- Evidence: [provider-live-smoke-2026-10-24-opencode-go.json](../evidence/provider-live-smoke-2026-10-24-opencode-go.json).
+
+Both Codex and OpenCode Go now have bounded read-only structured-output
+evidence. Coding lifecycle, sandbox isolation and independent acceptance remain
+open. Next: deployed Project/Attempt workspace access and Supervisor-mediated
+execution, still fail-closed for provider/ISOLATED coding.

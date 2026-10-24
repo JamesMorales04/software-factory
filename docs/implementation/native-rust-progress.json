@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "2dd475775d53f8c1c113d3f2b9e0f1e2eed6366c",
+  "verified_code_commit_sha": "0601a6d8af59314b62ed8e9a92d8c7958f8bc7f3",
   "draft_pr": 17,
   "ci_at_update": "Native Rust CI runs migration verification, deterministic recovery E2E and native architecture checks. Legacy Go workflows/checker and 317 hygiene findings remain. PR #17 remains draft.",
   "status": "INCOMPLETE_REPLACEMENT_COMMITTED_CHECKPOINT",
@@ -39,7 +39,8 @@
     "Bounded live Codex read-only structured-output smoke (gpt-6-luna, 29 output tokens, schema validated, thread archived)",
     "OpenCode live prompt attempt with credential failure diagnosis and verified session cleanup",
     "Core serves the built React Office from the runtime image under FACTORY_OFFICE_DIR; /core-api alias for the browser client",
-    "Real factory start/stop/status verified on the repaired CachyOS rootless Podman host with loopback publication, auth, Office browser access and Worker-state restart persistence"
+    "Real factory start/stop/status verified on the repaired CachyOS rootless Podman host with loopback publication, auth, Office browser access and Worker-state restart persistence",
+    "Live OpenCode Go read-only structured-output smoke (opencode-go/deepseek-v4.1-flash, 67 output tokens, session deleted/404, schema validated)"
   ],
   "not_implemented": [
     "Authorized provider-backed Action execution or public dispatch",
@@ -87,7 +88,7 @@
   "delivery_status": "PR #17 Draft; host runtime verified on CachyOS kernel 7.3.0-3-cachyos; no merge/deploy/isolation claim.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Obtain fresh bounded OpenCode Go authorization, add deterministic provider lifecycle fixtures, then continue sandbox/credential confinement and recovery/multi-project Office parity. Keep provider/ISOLATED execution fail-closed.",
+  "next_task": "Implement deployed Project/Attempt workspace access and Supervisor-mediated per-Attempt execution; keep provider/ISOLATED coding fail-closed. Then provider lifecycle fixtures, recovery/multi-project Office and legacy deletion.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
@@ -101,21 +102,21 @@
     "structured_outputs": "Schemars-generated Lead schema, jsonschema validation, provider keyword gate, schema digest persisted",
     "live_providers": {
       "codex": "LIVE_STRUCTURED_OUTPUT_VERIFIED: gpt-6-luna, 29 output tokens, schema validated, thread archived",
-      "opencode": "LIVE_PROVIDER_AUTH_BLOCKED for ordinary opencode route; corrected opencode-go/deepseek-v4.1-flash route has deterministic tests but no fresh paid authorization. Prior failed session deleted and verified absent.",
-      "sandbox": "not exercised; provider smoke was host read-only, not isolated"
+      "opencode": "LIVE_STRUCTURED_OUTPUT_VERIFIED: opencode-go/deepseek-v4.1-flash, 67 output tokens / 7,372 total, schema validated, session deleted and 404-confirmed",
+      "sandbox": "not exercised; both smokes were host read-only, not isolated"
     },
     "legacy": "Go/Paseo active tree remains pending verified replacement; legacy browser jobs are not Rust evidence"
   },
   "completion_gates": {
     "G1": "INCOMPLETE: Rust remains additive beside legacy Go core until cutover",
-    "G2": "PARTIAL: Codex live read-only structured output verified; OpenCode blocked by invalid credential; full coding work lifecycle and sandboxed provider execution remain incomplete",
+    "G2": "PARTIAL: both providers pass bounded read-only structured output; full coding work lifecycle and sandboxed provider execution remain incomplete",
     "G3": "INCOMPLETE: legacy tree remains; hygiene audit 317 findings",
     "G4": "INCOMPLETE: native xtask/architecture/migration checks exist; Go workflows/checker remain",
     "G5": "PARTIAL: deterministic authorized dispatch works; provider-backed execution and public risk policy remain blocked",
     "G6": "PARTIAL: independent verifier process and durable gate work; reviewer is still a receipt client, not a separate semantic process",
     "G7": "PARTIAL: deployed Rust Office browser auth/Dashboard verified; Lead, delegation, recovery and multi-project views remain absent",
     "G8": "BLOCKED: supervisor candidate exists but same-UID race, credential confinement, live Podman isolation and provider-in-sandbox remain unverified",
-    "G9": "PARTIAL: exact-head Rust/governance/Office browser CI passed at e74899b; Codex read-only live evidence; host runtime evidence. No independent acceptance.",
+    "G9": "PARTIAL: exact-head deterministic CI plus Codex/OpenCode read-only live evidence; no independent acceptance or coding certification",
     "G10": "NOT_SATISFIED: independent review of the current candidate and full diff outstanding"
   },
   "deepseek_continuation": "Inspect git status, HEAD and PR #17; read this handoff and migration matrix. Keep public dispatch disabled and PR draft. Implement authenticated durable quality evidence and independent verifier/reviewer execution, then the provider-backed Worker lifecycle. Do not claim G1-G10 PASS or completed replacement.",
