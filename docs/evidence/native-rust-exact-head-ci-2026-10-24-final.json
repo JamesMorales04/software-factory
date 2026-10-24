@@ -1,0 +1,45 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "14506eab7345df3af2b2bc57658224906291be33",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "passing": {
+    "native-rust-runs": [40121644318, 40121648420],
+    "office-browser": "PASS (both runs)",
+    "architecture-consistency": 40121648466,
+    "s1-core": "PASS",
+    "s1-e2e": "PASS",
+    "s1-office": "PASS",
+    "s2-e2e": "PASS",
+    "s3a-e2e": "PASS",
+    "s3b-e2e": "PASS",
+    "s4a-core-quality": "PASS",
+    "s4a-office": "PASS",
+    "s4b-core-campaign": "PASS",
+    "s4b-office": "PASS",
+    "s4c-core": "PASS",
+    "s4c-office": "PASS"
+  },
+  "failing_legacy_jobs": {
+    "s2-browser": "legacy Office selectors/API removed",
+    "s3c-e2e": "legacy Paseo/Agents Office journey",
+    "s3d-e2e": "legacy Paseo recovery Office journey",
+    "s4a-e2e": "legacy Paseo/Office journey",
+    "s4b-e2e": "legacy Paseo/Office journey",
+    "s4c-e2e": "legacy Paseo/Office journey",
+    "s4c-regressions": "legacy Paseo/Office journey"
+  },
+  "legacy_failure_classification": "NOT_RUST_EVIDENCE; these workflows still target removed Go/Paseo Office surfaces and are a deletion/migration blocker, not a regression in the native Rust checks.",
+  "reliability_repair": "One earlier exact-head run at 0a058b1 hit SQLite pool-acquisition timeouts under parallel CI load. The acquisition timeout is now 30s and the post-migration probe includes the identity column; both exact-head runs at 14506ea passed.",
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "independent human acceptance",
+    "zero-Go cutover",
+    "provider coding",
+    "isolation certification",
+    "deployment or merge authorization"
+  ]
+}

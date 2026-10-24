@@ -5,9 +5,9 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "b91bd9624cf7987500ade363565fa445ecb64aae",
+  "verified_code_commit_sha": "14506eab7345df3af2b2bc57658224906291be33",
   "draft_pr": 17,
-  "ci_at_update": "Exact-head native Rust, Office browser and architecture CI PASS at b91bd96. Legacy Go/Paseo browser jobs fail; strict hygiene and zero-Go cutover remain open.",
+  "ci_at_update": "Exact-head native Rust (both runs), Office browser and architecture CI PASS at 14506eab7345df3af2b2bc57658224906291be33. Legacy Go/Paseo browser jobs fail; strict hygiene and zero-Go cutover remain open.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",
   "implemented": [
     "SQLx 0.8.6 (sqlx-core + sqlx-sqlite directly) persistence with versioned migrations and async pool",
@@ -68,7 +68,8 @@
     "Bounded candidate diff, diff-stat, added-line and recursive content-digest evidence helpers",
     "Canonical project repository identity persisted from the symlink-resolved path and root commit set (migration 0010)",
     "Closed durable event-kind vocabulary with negative coverage",
-    "Core/Supervisor tracing credential redaction with registered secrets and bearer/keyed patterns"
+    "Core/Supervisor tracing credential redaction with registered secrets and bearer/keyed patterns",
+    "SQLite pool acquisition timeout and identity-aware migration probe hardened after a CI load timeout"
   ],
   "not_implemented": [
     "Provider-backed coding, direct provider work lifecycle, permissions, cancellation and session recovery",
@@ -85,7 +86,7 @@
   "local_unit_tests_passed": 235,
   "current_test_inventory": "Author-run at c0ed31d: 235 Rust tests passed, 2 ignored; ten migrations; xtask check/architecture/e2e recovery/dispatch/negatives/office pass. Exact-head CI pending.",
   "author_verification_at_code_sha": {
-    "sha": "b91bd9624cf7987500ade363565fa445ecb64aae",
+    "sha": "14506eab7345df3af2b2bc57658224906291be33",
     "binding": "EXACT_HEAD_CI",
     "rust": "PASS: 235 tests + 2 ignored, fmt, strict Clippy, build, docs, audit (276 dependencies), ten migrations, architecture",
     "process_e2e": "PASS: recovery, fixture dispatch (including in-flight recovery and cancellation), negatives",
@@ -94,7 +95,7 @@
     "windows_runtime": "NOT_TESTED",
     "independent_review": "Technical subagent security and closure reviews performed earlier; findings repaired. Not independent human acceptance.",
     "provider_paid_turns": 0,
-    "architecture_consistency": "PASS at b91bd96 (run 40119554382)"
+    "architecture_consistency": "PASS at 14506eab7345df3af2b2bc57658224906291be33 (run 40121648466)"
   },
   "dependency_audit": {
     "tool": "cargo-audit",
@@ -106,7 +107,7 @@
   },
   "provider_live_status": "Read-only structured-output smokes pass for Codex and OpenCode Go. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn authorized.",
   "security_status": "PARTIAL/BLOCKED: named-volume mount boundary, explicit Action classification, per-Attempt verification, independent deterministic reviewer and process identity checks are implemented. Credential confinement, provider-in-sandbox, fd-relative host mutation and independent isolation remain unverified; SEC-01 not certified.",
-  "delivery_status": "PR #17 Draft at b91bd96; native Rust, Office browser and architecture CI green; legacy Go/Paseo browser jobs fail; independent human review, zero-Go cutover and merge authorization outstanding.",
+  "delivery_status": "PR #17 Draft at 14506eab7345df3af2b2bc57658224906291be33; native Rust, Office browser and architecture CI green; legacy Go/Paseo browser jobs fail; independent human review, zero-Go cutover and merge authorization outstanding.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
   "next_task": "Integrate provider lifecycle only after Core-owned authorization/budget and credential confinement; add in-flight integration cancellation and recovery/cleanup Office coverage; port repository root identity and event read projection; then retire the legacy Go module and CI in one verified cutover.",
@@ -115,7 +116,7 @@
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",
   "working_tree_status_at_update": "Committed standards, skill and recovery matrix on top of f79f04f; see current HEAD.",
   "current_slice": {
-    "evidence_binding": "exact-head CI b91bd96; author-run code evidence c0ed31d/ec2e75b/4bcd584",
+    "evidence_binding": "exact-head CI 14506eab7345df3af2b2bc57658224906291be33",
     "dispatch": "R0/FIXTURE and default-off single-unit autonomous Lead start; provider/ISOLATED fail-closed",
     "office": "Dashboard, Projects, Actions, Lead, Campaigns/detail, Runs, Workers; browser Lead/Campaign reload plus Workers view",
     "quality": "sandboxed verifier, independent deterministic diff reviewer process, immutable receipts and deterministic gate",
@@ -182,7 +183,7 @@
     "paid_default": "FORBIDDEN"
   },
   "cutover_campaign_checkpoint_2026_10_24": {
-    "code_head_reviewed": "b91bd9624cf7987500ade363565fa445ecb64aae",
+    "code_head_reviewed": "14506eab7345df3af2b2bc57658224906291be33",
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
@@ -194,7 +195,7 @@
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "Exact-head CI at b91bd96: native Rust (2 runs), Office browser (2 runs), architecture (40119554382) PASS; S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs PASS. Legacy Paseo/Office browser jobs fail and are not Rust evidence. Local xtask check 235 tests + 2 ignored PASS.",
+    "checks": "Exact-head CI at 14506eab7345df3af2b2bc57658224906291be33: native Rust (2 runs), Office browser (2 runs), architecture (40121648466) PASS; S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs PASS. Legacy Paseo/Office browser jobs fail and are not Rust evidence. Local xtask check 235 tests + 2 ignored PASS.",
     "remaining": "96 Go files in one connected Go module; legacy Go/Paseo workflows/module; provider coding lifecycle; durable session recovery; future event payload projection; in-flight integration cancellation; strict hygiene; exact-head CI; owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
     "next_task": "Add in-flight integration cancellation and recovery/cleanup Office projection; port repository identity and event read projection; prepare a whole-module Go/Paseo retirement plan after provider/telemetry parity, not partial unsafe deletions."

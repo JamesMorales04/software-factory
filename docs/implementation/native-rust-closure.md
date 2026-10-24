@@ -60,7 +60,7 @@ source-mapping snapshot; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | Same-UID host pathname race removed for sandbox mounts; credential confinement, provider-in-sandbox, independent isolation not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier and deterministic gate verified at `5a323f8`; independent deterministic diff reviewer process runs in fixture and Office E2E (`4bcd584`); no model review |
 | M8 Office | `PARTIAL` | Rust Office fixture, Lead and Campaign-detail browser flows pass; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; repository identity/event-kind vocabulary at `ec2e75b`; credential-redacting Core/Supervisor logging at `c0ed31d`; 235 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally; exact-head native Rust, Office browser and architecture CI PASS at `b91bd96`; legacy Go/Paseo browser jobs still fail |
+| M9 Testing | `PARTIAL` | Rust process/browser E2E at earlier candidates plus failed-dependency, integration-failure and in-flight recovery process tests at `a32c6d5`/`3840b39`/`0435159`; cancellation and independent-reviewer process tests at `4bcd584`; repository identity/event-kind vocabulary at `ec2e75b`; credential-redacting Core/Supervisor logging at `c0ed31d`; 235 tests + 2 ignored, audit, architecture, dispatch, negatives, recovery and Office browser pass locally; exact-head native Rust (both runs), Office browser and architecture CI PASS at `14506eab7345df3af2b2bc57658224906291be33`; legacy Go/Paseo browser jobs still fail |
 | M10 Governance | `PARTIAL` | Rust architecture checker now covers retired Go checker and base-ref ADR history; the `architecture-consistency` CI job passed on `a367766`; strict hygiene, legacy live-entrypoint guard and Go CI remain |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -88,7 +88,9 @@ recorded in
 [native-rust-closure-2026-10-24-log-redaction.json](../evidence/native-rust-closure-2026-10-24-log-redaction.json)
 (`c0ed31d`; author-run) and
 [native-rust-exact-head-ci-2026-10-24.json](../evidence/native-rust-exact-head-ci-2026-10-24.json)
-(`b91bd96`; GitHub Actions). None is provider coding, OS isolation
+(`b91bd96`; GitHub Actions) and
+[native-rust-exact-head-ci-2026-10-24-final.json](../evidence/native-rust-exact-head-ci-2026-10-24-final.json)
+(`14506eab7345df3af2b2bc57658224906291be33`; GitHub Actions, same job set). None is provider coding, OS isolation
 certification, independent acceptance or deployment authorization.
 
 ## Legacy deletion status

@@ -491,10 +491,10 @@ Remaining: parallel/fan-in integration, provider coding lifecycle, Go/Paseo
 removal and CI migration, strict hygiene, independent review and final merge
 authorization. Provider and ISOLATED execution remain fail-closed.
 
-## Closure checkpoint 2026-10-24 — `c0ed31d`
+## Closure checkpoint 2026-10-24 — `14506eab7345df3af2b2bc57658224906291be33`
 
-**Code candidate:** `c0ed31d6694ad1047c0ac932474486453e21c387`.
-**Predecessors:** `ec2e75b` (repository identity), `4bcd584` (independent reviewer, recovery classification,
+**Code candidate:** `14506eab7345df3af2b2bc57658224906291be33`.
+**Predecessors:** `c0ed31d` (telemetry), `ec2e75b` (repository identity), `4bcd584` (independent reviewer, recovery classification,
 campaign cancellation), `0435159` (in-flight WorkGraph lease recovery process
 test), `d0b8933` (OpenCode event subscription ordering) and `6cf3786` (loopback
 OpenCode prompt lifecycle). This text cannot embed its own documentation commit;
@@ -534,6 +534,9 @@ This checkpoint adds:
 - `8f1be47` extends campaign-cancellation unit coverage to a queued fan-in
   integration row and both root/integration leases. It is still a DB-level
   test; process-level in-flight integration cancellation remains open.
+- `14506ea` raises SQLite connection acquisition to 30s for saturated CI
+  runners and includes the identity column in the post-migration schema probe.
+  Both exact-head Rust runs then passed.
 
 Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
 **235 tests passed + 2 ignored**, workspace build, docs, ten migrations,
@@ -541,9 +544,9 @@ Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
 `cargo xtask validate-architecture` PASS;
 `cargo xtask e2e recovery`, `e2e dispatch`, `e2e negatives` and `e2e office`
 PASS. The Office journey passed with the real reviewer process and a real
-Workers view assertion. Exact-head GitHub Actions at `b91bd96` passed native
+Workers view assertion. Exact-head GitHub Actions at `14506eab7345df3af2b2bc57658224906291be33` passed native
 Rust (both runs), Office browser (both runs), architecture consistency
-(`40119554382`) and the S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs. The
+(`40121648466`) and the S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs. The
 legacy Paseo/Office browser jobs still fail and are not Rust evidence. These
 are not independent human acceptance. No paid provider turn, sandbox
 certification or Windows run is claimed.
