@@ -58,7 +58,8 @@
     "Sandboxed verifier sees the exact per-Attempt spec/base",
     "Capability-preservation enforcement and predecessor independence audit",
     "Deterministic provider-session state machine fixtures",
-    "Parallel roots, fan-in and final integration nodes; integrated candidate lineage/verifier/Quality Gate process E2E"
+    "Parallel roots, fan-in and final integration nodes; integrated candidate lineage/verifier/Quality Gate process E2E",
+    "Fan-in process E2E through intermediate integration and dependent unit to ACCEPTED"
   ],
   "not_implemented": [
     "Parallel/fan-in WorkGraph execution and deterministic integrated candidate acceptance",
@@ -74,7 +75,7 @@
   },
   "provider_paid_turns": 0,
   "local_unit_tests_passed": 124,
-  "current_test_inventory": "Author-run: 202 Rust tests passed, 2 ignored; parallel integrated WorkGraph E2E, fan-in scheduler test, fmt/Clippy PASS.",
+  "current_test_inventory": "Author-run: parallel final and fan-in WorkGraph process E2E plus 196 Rust tests passed, 2 ignored; fmt/Clippy PASS.",
   "author_verification_at_code_sha": {
     "sha": "35d8b93c075d410ee82d37415dbc4debca2c46cd",
     "binding": "EXACT_HEAD_CI",

@@ -1411,8 +1411,15 @@ async fn schedule_ready_tasks(
                 0 => {}
                 1 => schedule_unit_attempt(transaction, &task_id, &commits[0]).await?,
                 _ => {
-                    ensure_integration(transaction, campaign_id, "FANIN", &task_id, &commits)
-                        .await?;
+                    ensure_integration(
+                        transaction,
+                        campaign_id,
+                        "FANIN",
+                        &task_id,
+                        &dependencies,
+                        &commits,
+                    )
+                    .await?;
                 }
             }
             let _ = unit;
@@ -1429,7 +1436,7 @@ async fn schedule_ready_tasks(
                 .filter_map(|unit| candidates.get(*unit).cloned())
                 .collect();
             if commits.len() > 1 {
-                ensure_integration(transaction, campaign_id, "FINAL", "", &commits).await?;
+                ensure_integration(transaction, campaign_id, "FINAL", "", &[], &commits).await?;
             }
         } else {
             let request_id: (String,) =
@@ -1533,6 +1540,7 @@ async fn ensure_integration(
     campaign_id: &str,
     purpose: &str,
     next_task_id: &str,
+    dependencies: &[String],
     commits: &[String],
 ) -> Result<(), Error> {
     use sqlx::row::Row;
@@ -1590,6 +1598,18 @@ async fn ensure_integration(
         let spec: ActionSpec = serde_json::from_str(&spec_json)
             .map_err(|_| Error::Invalid("stored unit ActionSpec"))?;
         allowed_paths.extend(spec.allowed_paths);
+        for dependency in dependencies {
+            let dep_spec: (String,) = sqlx::query_as::query_as(
+                "SELECT spec_json FROM lead_tasks WHERE campaign_id=?1 AND unit_id=?2",
+            )
+            .bind(campaign_id)
+            .bind(dependency)
+            .fetch_one(&mut *transaction)
+            .await?;
+            let dep_spec: ActionSpec = serde_json::from_str(&dep_spec.0)
+                .map_err(|_| Error::Invalid("stored dependency ActionSpec"))?;
+            allowed_paths.extend(dep_spec.allowed_paths);
+        }
         spec.checks
     } else {
         let mut checks = proposal.acceptance_criteria.clone();
