@@ -60,7 +60,9 @@ pub enum CodexThreadReconciliation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexTurnAwait {
-    Terminal(TurnCompletedParams),
+    Completed(TurnCompletedParams),
+    Failed(TurnCompletedParams),
+    Interrupted(TurnCompletedParams),
     InterruptRequestedAfterTimeout { response: serde_json::Value },
 }
 
@@ -80,7 +82,14 @@ where
         .wait_for_turn_or_interrupt_on_timeout(thread_id, turn_id, timeout)
         .await?
     {
-        TurnWaitOutcome::Completed(turn) => Ok(CodexTurnAwait::Terminal(turn)),
+        TurnWaitOutcome::Completed(turn) => match turn.turn.status {
+            crate::protocol::TurnStatus::Completed => Ok(CodexTurnAwait::Completed(turn)),
+            crate::protocol::TurnStatus::Failed => Ok(CodexTurnAwait::Failed(turn)),
+            crate::protocol::TurnStatus::Interrupted => Ok(CodexTurnAwait::Interrupted(turn)),
+            crate::protocol::TurnStatus::InProgress => Err(RpcError::Protocol(
+                "turn/completed notification carried in-progress status".into(),
+            )),
+        },
         TurnWaitOutcome::TimeoutInterruptRequested { interrupt_response } => {
             Ok(CodexTurnAwait::InterruptRequestedAfterTimeout {
                 response: interrupt_response,
@@ -666,7 +675,7 @@ mod codex_reconciliation_tests {
             .unwrap();
         assert!(matches!(
             result,
-            CodexTurnAwait::Terminal(TurnCompletedParams {
+            CodexTurnAwait::Failed(TurnCompletedParams {
                 turn: crate::protocol::TurnSummary {
                     status: crate::protocol::TurnStatus::Failed,
                     ..
@@ -674,6 +683,16 @@ mod codex_reconciliation_tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn codex_completed_status_is_the_only_success_classification() {
+        let input = b"{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turn\":{\"id\":\"turn-1\",\"status\":\"completed\",\"items\":[]}}}\n";
+        let mut rpc = JsonRpc::new(&input[..], Vec::new());
+        let result = await_codex_turn(&mut rpc, "thread-1", "turn-1", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(matches!(result, CodexTurnAwait::Completed(_)));
     }
 
     #[tokio::test]

@@ -124,6 +124,7 @@ pub struct ProviderSession {
     pub model: String,
     pub mode: String,
     pub session_id: Option<String>,
+    pub active_turn_id: Option<String>,
     pub state: SessionState,
     pub last_sequence: Option<u64>,
     pub usage: Usage,
@@ -147,6 +148,7 @@ impl ProviderSession {
             model: model.into(),
             mode: mode.into(),
             session_id: None,
+            active_turn_id: None,
             state: SessionState::Starting,
             last_sequence: None,
             usage: Usage::default(),
@@ -183,8 +185,12 @@ impl ProviderSession {
                 self.session_id = Some(session_id.clone());
                 self.state = SessionState::Active;
             }
-            ProviderEvent::TurnStarted { .. } => {
+            ProviderEvent::TurnStarted { turn_id, .. } => {
                 self.require_active()?;
+                if turn_id.trim().is_empty() || self.active_turn_id.is_some() {
+                    return Err(SessionError::InvalidTransition);
+                }
+                self.active_turn_id = Some(turn_id.clone());
             }
             ProviderEvent::MessageDelta { text, .. } => {
                 self.require_active()?;
@@ -249,9 +255,14 @@ impl ProviderSession {
                     .checked_add(usage.cost_micros)
                     .ok_or(SessionError::UsageOverflow)?;
             }
-            ProviderEvent::TurnTerminal { status, .. } => {
+            ProviderEvent::TurnTerminal {
+                turn_id, status, ..
+            } => {
                 if !matches!(self.state, SessionState::Active | SessionState::Cancelling) {
                     return Err(SessionError::InvalidTransition);
+                }
+                if self.active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                    return Err(SessionError::IdentityMismatch);
                 }
                 if self.pending_permission.is_some() {
                     return Err(SessionError::InvalidTransition);
@@ -465,12 +476,18 @@ mod tests {
     #[test]
     fn cancellation_is_not_terminal_until_provider_interrupts() {
         let mut session = started();
+        session
+            .apply(&ProviderEvent::TurnStarted {
+                sequence: 2,
+                turn_id: "turn-1".into(),
+            })
+            .unwrap();
         session.request_cancel().unwrap();
         assert_eq!(session.state, SessionState::Cancelling);
         assert!(!session.is_terminal());
         session
             .apply(&ProviderEvent::TurnTerminal {
-                sequence: 2,
+                sequence: 3,
                 turn_id: "turn-1".into(),
                 status: TerminalStatus::Interrupted,
             })
@@ -485,11 +502,37 @@ mod tests {
     }
 
     #[test]
+    fn terminal_event_must_match_the_started_turn() {
+        let mut session = started();
+        session
+            .apply(&ProviderEvent::TurnStarted {
+                sequence: 2,
+                turn_id: "turn-1".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            session.apply(&ProviderEvent::TurnTerminal {
+                sequence: 3,
+                turn_id: "other-turn".into(),
+                status: TerminalStatus::Completed,
+            }),
+            Err(SessionError::IdentityMismatch)
+        );
+        assert_eq!(session.state, SessionState::Active);
+    }
+
+    #[test]
     fn failed_terminal_requires_cleanup_receipt() {
         let mut session = started();
         session
-            .apply(&ProviderEvent::Error {
+            .apply(&ProviderEvent::TurnStarted {
                 sequence: 2,
+                turn_id: "turn-1".into(),
+            })
+            .unwrap();
+        session
+            .apply(&ProviderEvent::Error {
+                sequence: 3,
                 message: "provider failed".into(),
             })
             .unwrap();

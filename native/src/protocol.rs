@@ -234,7 +234,13 @@ where
         let value = self
             .request("thread/start", serde_json::to_value(params)?)
             .await?;
-        serde_json::from_value(value).map_err(RpcError::Json)
+        let response: ThreadStartResponse = serde_json::from_value(value)?;
+        if response.thread.id.trim().is_empty() {
+            return Err(RpcError::Protocol(
+                "thread/start returned an empty thread identity".into(),
+            ));
+        }
+        Ok(response)
     }
 
     pub async fn start_turn(
@@ -244,7 +250,13 @@ where
         let value = self
             .request("turn/start", serde_json::to_value(params)?)
             .await?;
-        serde_json::from_value(value).map_err(RpcError::Json)
+        let response: TurnStartResponse = serde_json::from_value(value)?;
+        if response.turn.id.trim().is_empty() || response.turn.status != TurnStatus::InProgress {
+            return Err(RpcError::Protocol(
+                "turn/start did not return a nonempty in-progress turn identity".into(),
+            ));
+        }
+        Ok(response)
     }
 
     pub async fn interrupt_turn(
@@ -432,6 +444,11 @@ fn decode_terminal_notification(params: Value) -> Result<TurnCompletedParams, Rp
     if completion.turn.status == TurnStatus::InProgress {
         return Err(RpcError::Protocol(
             "turn/completed notification carries nonterminal inProgress status".into(),
+        ));
+    }
+    if completion.thread_id.trim().is_empty() || completion.turn.id.trim().is_empty() {
+        return Err(RpcError::Protocol(
+            "turn/completed notification has an empty thread or turn identity".into(),
         ));
     }
     Ok(completion)
