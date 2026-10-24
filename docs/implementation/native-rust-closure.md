@@ -36,16 +36,16 @@ source-mapping snapshot; this ledger is the current status authority.
 | ID | Capability | Status | Rust state | Blocker / next evidence |
 |---|---|---|---|---|
 | A1 | Semantic intake and typed assessment | `PARTIAL` | Strict typed assessment/storage; deterministic fixture assessor and operator routes; no model assessor | Add direct provider assessor, observation, Action creation, reconciliation, process tests |
-| A2 | Proposal validation and frozen plan | `PARTIAL` | Validation, project config binding, freeze revalidation, per-unit specs and Campaign/Run/Attempt creation | Complete projection, parallel/fan-in plan and recovery |
+| A2 | Proposal validation and frozen plan | `PARTIAL` | Validation, config binding, freeze revalidation, per-unit specs, parallel/fan-in plans and Campaign/Run/Attempt creation | Full plan projection and crash recovery |
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
-| A4 | Authorized autonomous Campaign start | `PARTIAL` | Explicit default-off policy; single-unit R0 fixture start creates Campaign/Run/Attempt atomically | Multi-unit WorkGraph start, ratified issuer policy and provider mode remain |
+| A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
 | A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel and fan-in process E2E reach ACCEPTED | Failure/restart process tests and browser graph projection |
 | A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording, failure/cancellation state propagation | Conflict and restart process tests |
 | A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED | Conflict/failure process test and adversarial cross-project integration |
-| A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel E2E reaches ACCEPTED | Add crash-injection and restart scheduler coverage |
+| A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Add crash-injection and restart scheduler coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
-| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested | Recovery/cleanup visibility and full multi-unit graph evidence |
+| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested; multi-unit process evidence exists | Browser multi-unit graph and recovery/cleanup visibility |
 | A12 | Bounded live certification tooling | `PARTIAL` | Default-closed readonly provider smoke | Core-owned budget/session ledger and governed S4-D harness |
 
 ## Merge-readiness gates
