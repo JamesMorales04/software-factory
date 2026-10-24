@@ -1229,6 +1229,16 @@ mod tests {
                 "duplicate capability id",
             ),
             (
+                "missing reference",
+                |r| {
+                    r.capabilities[0]
+                        .refs
+                        .adr
+                        .push("docs/architecture/missing.md".into())
+                },
+                "references missing file",
+            ),
+            (
                 "implemented without references",
                 |r| r.capabilities[0].implementation = "implemented".into(),
                 "implemented requires source and test references",
@@ -1274,6 +1284,11 @@ mod tests {
                 |r| r.milestones[0].capability_ids.clear(),
                 "must occur in exactly one milestone",
             ),
+            (
+                "unknown dependency",
+                |r| r.capabilities[0].dependencies.push("CAP-999".into()),
+                "unknown dependency",
+            ),
         ];
         for (name, mutate, expected) in cases {
             let mut registry = baseline.clone();
@@ -1285,6 +1300,13 @@ mod tests {
                 "{name}"
             );
         }
+        let repo = Repo::new();
+        repo.write("docs/evidence/live.json", "{}");
+        assert!(
+            validate_manifest(&repo.0, "docs/evidence/live.json")
+                .unwrap_err()
+                .contains("must reference docs/evidence/*certification-manifest.json")
+        );
     }
 
     #[test]
@@ -1339,6 +1361,30 @@ mod tests {
             validate_registry(Path::new("."), &registry)
                 .unwrap_err()
                 .contains("dependency cycle")
+        );
+        let mut registry = parse_registry(tiny_registry()).unwrap();
+        let mut second = registry.milestones[0].clone();
+        second.id = "M-2".into();
+        second.capability_ids.clear();
+        second.dependencies = vec!["M-1".into()];
+        registry.milestones[0].dependencies = vec!["M-2".into()];
+        registry.milestones.push(second);
+        assert!(
+            validate_registry(Path::new("."), &registry)
+                .unwrap_err()
+                .contains("milestone dependency cycle: M-1 -> M-2 -> M-1")
+        );
+        let mut registry = parse_registry(tiny_registry()).unwrap();
+        let mut second = registry.capabilities[0].clone();
+        second.id = "CAP-2".into();
+        second.dependencies = vec!["CAP-1".into()];
+        registry.capabilities[0].dependencies = vec!["CAP-2".into()];
+        registry.milestones[0].capability_ids.push("CAP-2".into());
+        registry.capabilities.push(second);
+        assert!(
+            validate_registry(Path::new("."), &registry)
+                .unwrap_err()
+                .contains("capability dependency cycle: CAP-1 -> CAP-2 -> CAP-1")
         );
     }
 
