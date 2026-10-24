@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "35d8b93c075d410ee82d37415dbc4debca2c46cd",
+  "verified_code_commit_sha": "4627bc071711d452819a153faa6b7a02502dc691",
   "draft_pr": 17,
   "ci_at_update": "Exact-head native Rust, governance/architecture and Office browser CI PASS at 35d8b93. Legacy Go workflows and strict hygiene remain open.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",
@@ -57,7 +57,8 @@
     "Sequential WorkGraph tasks/per-Attempt specs and Lead/Campaign detail Office views",
     "Sandboxed verifier sees the exact per-Attempt spec/base",
     "Capability-preservation enforcement and predecessor independence audit",
-    "Deterministic provider-session state machine fixtures"
+    "Deterministic provider-session state machine fixtures",
+    "Parallel roots, fan-in and final integration nodes; integrated candidate lineage/verifier/Quality Gate process E2E"
   ],
   "not_implemented": [
     "Parallel/fan-in WorkGraph execution and deterministic integrated candidate acceptance",
@@ -73,7 +74,7 @@
   },
   "provider_paid_turns": 0,
   "local_unit_tests_passed": 124,
-  "current_test_inventory": "Exact-head CI at 35d8b93: 193 Rust tests passed, 2 ignored; fmt, strict Clippy, build, migrations, recovery E2E and architecture PASS; Office browser CI PASS.",
+  "current_test_inventory": "Author-run after WorkGraph integration: 202 Rust tests passed, 2 ignored; fmt/Clippy/workspace tests plus parallel integration E2E PASS.",
   "author_verification_at_code_sha": {
     "sha": "35d8b93c075d410ee82d37415dbc4debca2c46cd",
     "binding": "EXACT_HEAD_CI",
