@@ -329,7 +329,11 @@ Rust-era evidence. Exact-head CI for `230ad0b`, independent acceptance,
 provider lifecycle, recovery/multi-project Office, same-UID isolation, Windows
 and portable container networking remain open.
 
-**Next executable task:** push `5edfc46`, verify exact-head CI and PR impact,
-then implement deterministic Codex/OpenCode work-lifecycle fixtures or a
-portable rootless-network path for `factory start`. Keep provider/ISOLATED
-execution fail-closed.
+**Next executable task (current):** exact-head native Rust, governance and
+`office-browser` CI now pass at code head `99d4b57`/published `e74899b`. The
+unified Rust Office browser journey and Workers view are verified. The next
+task is the bounded one-turn read-only provider smoke recorded in
+[provider-live-authorization-2026-10-24.md](provider-live-authorization-2026-10-24.md):
+Codex `gpt-6-luna` and OpenCode `opencode/deepseek-v4.1-flash`, one turn each,
+1024-token ceiling, no tools/write, no retries. Live results are not claimed
+until the tool runs and evidence is recorded.
