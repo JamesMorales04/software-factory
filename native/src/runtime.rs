@@ -580,11 +580,6 @@ async fn create_opencode_session(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| Error::Incompatible("OpenCode session/create returned no id".into()))?;
     validate_opencode_session_id(session_id)?;
-    if created.get("directory").and_then(serde_json::Value::as_str) != Some(directory) {
-        return Err(Error::Incompatible(
-            "OpenCode created session workspace identity mismatch".into(),
-        ));
-    }
     Ok(created)
 }
 
@@ -723,6 +718,10 @@ pub async fn execute_opencode_prompt(
 ) -> Result<OpenCodePromptOutcome, Error> {
     let base_url = validate_opencode_base_url(base_url)?;
     let client = opencode_http_client(Duration::from_secs(30))?;
+    let event_response =
+        open_opencode_event_stream(&client, &base_url, password, directory).await?;
+    let mut event_stream = event_response.bytes_stream();
+    let mut parser = SseParser::new(1_048_576);
     let created = create_opencode_session(&client, &base_url, password, directory, title).await?;
     let session_id = created
         .get("id")
@@ -731,10 +730,11 @@ pub async fn execute_opencode_prompt(
         .to_owned();
 
     let outcome = async {
-        let event_response =
-            open_opencode_event_stream(&client, &base_url, password, directory).await?;
-        let mut event_stream = event_response.bytes_stream();
-        let mut parser = SseParser::new(1_048_576);
+        if created.get("directory").and_then(serde_json::Value::as_str) != Some(directory) {
+            return Err(Error::Incompatible(
+                "OpenCode created session workspace identity mismatch".into(),
+            ));
+        }
         wait_for_session_created_event(&mut event_stream, &mut parser, &session_id).await?;
         submit_opencode_prompt(&client, &base_url, password, directory, &session_id, prompt)
             .await?;
@@ -789,6 +789,7 @@ pub async fn execute_opencode_prompt(
 fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
     Ok(reqwest::Client::builder()
         .timeout(timeout)
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }
@@ -1480,12 +1481,14 @@ mod codex_reconciliation_tests {
         axum::Json(body): axum::Json<serde_json::Value>,
     ) -> axum::Json<serde_json::Value> {
         let directory = query.get("directory").cloned().unwrap_or_default();
+        let subscriber_ready = state.event_receiver.lock().await.is_none();
         state.calls.lock().await.push(fake_call(
             &state,
-            &format!("POST /session?directory={directory}"),
+            &format!("POST /session?directory={directory};subscriber_ready={subscriber_ready}"),
             &headers,
             body,
         ));
+        let _ = state.event_sender.send(b"data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_fixture\",\"info\":{\"id\":\"ses_fixture\"}}}\n\n".to_vec()).await;
         axum::Json(json!({"id":"ses_fixture","directory":query.get("directory")}))
     }
 
@@ -1506,7 +1509,6 @@ mod codex_reconciliation_tests {
             .event_sender
             .send(b"data: {\"type\":\"server.connected\"}\n\n".to_vec())
             .await;
-        let _ = state.event_sender.send(b"data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_fixture\",\"info\":{\"id\":\"ses_fixture\"}}}\n\n".to_vec()).await;
         let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|chunk| {
                 (
@@ -1648,8 +1650,20 @@ mod codex_reconciliation_tests {
         let calls = state.calls.lock().await;
         assert!(calls.len() >= 5, "all lifecycle routes should be observed");
         assert!(calls.iter().all(|(_, authorized, _)| *authorized));
+        let event_subscription = calls
+            .iter()
+            .position(|(route, _, _)| route == "GET /event")
+            .expect("SSE subscription should be recorded");
+        let session_create = calls
+            .iter()
+            .position(|(route, _, body)| {
+                route == "POST /session?directory=/fixture/workspace;subscriber_ready=true"
+                    && body["title"] == "Lifecycle fixture"
+            })
+            .expect("session create should follow SSE subscription");
+        assert!(event_subscription < session_create);
         assert!(calls.iter().any(|(route, _, body)| {
-            route == "POST /session?directory=/fixture/workspace"
+            route == "POST /session?directory=/fixture/workspace;subscriber_ready=true"
                 && body["title"] == "Lifecycle fixture"
         }));
         assert!(calls.iter().any(|(route, _, body)| {
