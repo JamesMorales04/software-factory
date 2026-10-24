@@ -14,14 +14,21 @@ negative oracles, repaired in `2cdd773` and `4fb29e9`. Current Go count is 96.
 Luna's WorkGraph process test exposed an infinite dependency-failure loop;
 `a32c6d5` fixes it and makes Worker report failures visible. The real
 Core/Supervisor/Worker failed fan-in dependency test passed, and an independent
-review found no blocker in that slice. Locally, seven Rust governance tests,
+review found no blocker in that slice. `d50bd0f` adds a pre-dispatch Core
+restart to the real fan-in acceptance process test; independent review found
+the recovery oracle meaningful, and the repaired test preserves HTTP 201.
+Locally, seven Rust governance tests,
 format, Clippy, architecture validation, the failed-dependency process test,
 Python PR-impact and authorization tests, and the Rust Office browser journey
-passed on their recorded code commits. Exact-head GitHub CI, full-suite Rust
-verification, strict hygiene and final independent acceptance remain pending.
+passed on their recorded code commits. `cargo test --workspace --locked`,
+workspace build and docs passed at `d47f6cd`. `cargo audit` exited zero but
+warned that newly added `serde_yaml_ng` depends on unmaintained
+`unsafe-libyaml`; a maintained-parser replacement is being evaluated.
+Final exact-head GitHub CI, strict hygiene and final independent acceptance
+remain pending.
 Provider coding is still fail-closed; no paid provider turn ran. Isolation and
 credential confinement are not certified. The current executable next step is
-the WorkGraph integration-conflict/restart process regression, followed by
+the WorkGraph integration-conflict or in-flight restart process regression, followed by
 provider lifecycle and security closure. See the
 [closure ledger](native-rust-closure.md) and
 [deletion map](native-rust-deletion-map.md) for exact blockers and files.
