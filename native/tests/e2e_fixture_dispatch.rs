@@ -718,16 +718,15 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     )
     .await;
     assert_eq!(frozen.status(), StatusCode::OK);
-    let started: Value = operator(
+    let started_response = operator(
         &client,
         reqwest::Method::POST,
         format!("{base_url}/lead/requests/{request_id}/start"),
         None,
     )
-    .await
-    .json()
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(started_response.status(), StatusCode::CREATED);
+    let started: Value = started_response.json().await.unwrap();
     let attempt_id = started["attempt"]["id"].as_str().unwrap().to_owned();
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
 
@@ -1034,16 +1033,15 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
         .status(),
         StatusCode::OK
     );
-    let started: Value = operator(
+    let started_response = operator(
         &client,
         reqwest::Method::POST,
         format!("{base_url}/lead/requests/{request_id}/start"),
         None,
     )
-    .await
-    .json()
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(started_response.status(), StatusCode::CREATED);
+    let started: Value = started_response.json().await.unwrap();
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
 
     let supervisor_port = free_port();
