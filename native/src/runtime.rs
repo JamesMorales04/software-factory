@@ -88,7 +88,7 @@ pub enum OpenCodePromptOutcome {
         session_id: String,
         error: serde_json::Value,
     },
-    Cancelled {
+    AbortRequestedAndIdle {
         session_id: String,
     },
 }
@@ -607,8 +607,9 @@ where
 }
 
 /// Waits for terminal SSE evidence for one exact OpenCode session. `cancel_requested`
-/// records that the caller requested abort; `session.idle` is still required before
-/// cancellation is classified as terminal. Errors take precedence over cancellation.
+/// records that the caller requested abort; `session.idle` does not prove
+/// cancellation because normal completion can race with the abort request.
+/// Errors take precedence over the unresolved idle-after-abort result.
 pub async fn wait_for_opencode_prompt_terminal<S, B, E>(
     stream: &mut S,
     parser: &mut SseParser,
@@ -732,7 +733,7 @@ pub fn reconcile_opencode_prompt(
         OpenCodePromptTerminal::Idle {
             session_id,
             cancel_requested: true,
-        } => Ok(OpenCodePromptOutcome::Cancelled { session_id }),
+        } => Ok(OpenCodePromptOutcome::AbortRequestedAndIdle { session_id }),
         OpenCodePromptTerminal::Idle {
             session_id,
             cancel_requested: false,
@@ -1070,7 +1071,7 @@ mod codex_reconciliation_tests {
     }
 
     #[tokio::test]
-    async fn opencode_idle_is_cancelled_only_after_abort_was_requested() {
+    async fn opencode_idle_after_abort_does_not_claim_cancellation() {
         let frame =
             "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_expected\"}}\n\n";
         let mut stream =
@@ -1089,7 +1090,24 @@ mod codex_reconciliation_tests {
         );
         assert_eq!(
             reconcile_opencode_prompt("ses_expected", terminal, &json!({})).unwrap(),
-            OpenCodePromptOutcome::Cancelled {
+            OpenCodePromptOutcome::AbortRequestedAndIdle {
+                session_id: "ses_expected".into()
+            }
+        );
+        let completed_response = json!({
+            "info":{"id":"msg_completed","sessionID":"ses_expected","role":"assistant"}
+        });
+        assert_eq!(
+            reconcile_opencode_prompt(
+                "ses_expected",
+                OpenCodePromptTerminal::Idle {
+                    session_id: "ses_expected".into(),
+                    cancel_requested: true,
+                },
+                &completed_response,
+            )
+            .unwrap(),
+            OpenCodePromptOutcome::AbortRequestedAndIdle {
                 session_id: "ses_expected".into()
             }
         );
