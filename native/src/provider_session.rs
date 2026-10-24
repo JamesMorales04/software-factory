@@ -326,7 +326,8 @@ impl ProviderSession {
         if !matches!(
             self.state,
             SessionState::Active | SessionState::WaitingPermission
-        ) {
+        ) || self.active_turn_id.is_none()
+        {
             return Err(SessionError::InvalidTransition);
         }
         self.state = SessionState::Cancelling;
@@ -495,6 +496,24 @@ mod tests {
         assert_eq!(session.usage.cost_micros, u64::MAX);
         assert_eq!(session.last_sequence, Some(1));
         assert_eq!(session.apply(&event), Err(SessionError::UsageOverflow));
+    }
+
+    #[test]
+    fn cancellation_requires_a_started_turn() {
+        let mut session = started();
+        assert_eq!(
+            session.request_cancel(),
+            Err(SessionError::InvalidTransition)
+        );
+        assert_eq!(session.state, SessionState::Active);
+        session
+            .apply(&ProviderEvent::TurnStarted {
+                sequence: 2,
+                turn_id: "turn-1".into(),
+            })
+            .unwrap();
+        session.request_cancel().unwrap();
+        assert_eq!(session.state, SessionState::Cancelling);
     }
 
     #[test]
