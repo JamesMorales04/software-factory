@@ -11,7 +11,8 @@ use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
 use crate::lead::{
-    ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState, plan_hash,
+    ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState,
+    ProjectConfig, StandingDelegation, plan_hash,
 };
 
 use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
@@ -604,7 +605,7 @@ impl Database {
                 "delegation does not authorize autonomous R0 start".into(),
             ));
         }
-        let (proposal_id, proposal_json): (String, String) = sqlx::query_as::query_as(
+        let (_proposal_id, proposal_json): (String, String) = sqlx::query_as::query_as(
             "SELECT p.id,lp.proposal_json FROM frozen_lead_plans p
              JOIN lead_proposals lp ON lp.id=p.proposal_id
              WHERE p.request_id=?1",
@@ -622,11 +623,23 @@ impl Database {
         let plan = load_frozen_plan_by_id(&mut transaction, &plan_id.0).await?;
         let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
             .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-        if proposal.work_units.len() != 1 || proposal.needs_integration() {
+        if proposal.work_units.is_empty() || proposal.needs_integration() {
             return Err(Error::Forbidden(
-                "single-unit autonomous start only; multi-unit WorkGraph scheduling is not enabled"
+                "only a single linear WorkGraph chain is enabled; parallel/fan-in integration is not enabled"
                     .into(),
             ));
+        }
+        for (index, unit) in proposal.work_units.iter().enumerate() {
+            let expected: Vec<String> = if index == 0 {
+                Vec::new()
+            } else {
+                vec![proposal.work_units[index - 1].id.clone()]
+            };
+            if unit.depends_on != expected {
+                return Err(Error::Forbidden(
+                    "only a single linear WorkGraph chain is enabled".into(),
+                ));
+            }
         }
         if proposal.risk_class != crate::lead::RiskClass::R0 {
             return Err(Error::Forbidden("autonomous start is limited to R0".into()));
@@ -637,6 +650,18 @@ impl Database {
         }
         let config = load_project_config(&mut transaction, &request.project_id).await?;
         proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+        let mut paths = std::collections::BTreeSet::new();
+        let mut specs = Vec::with_capacity(proposal.work_units.len());
+        for unit in &proposal.work_units {
+            paths.extend(unit.allowed_paths.iter().cloned());
+            specs.push(unit_action_spec(
+                &proposal,
+                &config,
+                &grant,
+                unit,
+                &config.base_commit,
+            )?);
+        }
         let action_spec: String = sqlx::query_as::query_as::<_, (String,)>(
             "SELECT spec_json FROM action_specs WHERE action_id=?1",
         )
@@ -685,39 +710,92 @@ impl Database {
         .bind(format!("lead-{}", request.id))
         .bind(format!("delegation:{}", grant.id))
         .bind(format!("autonomous R0 start for plan {}", plan.plan_hash))
-        .bind(serde_json::to_string(&action_spec.allowed_paths).map_err(|_| Error::Invalid("allowed paths encoding"))?)
+        .bind(serde_json::to_string(&paths.into_iter().collect::<Vec<_>>()).map_err(|_| Error::Invalid("allowed paths encoding"))?)
         .bind(i64::from(proposal.budget.max_attempts))
         .bind(&now)
         .execute(&mut *transaction)
         .await?;
-        let run = Run {
-            id: Uuid::new_v4().to_string(),
-            campaign_id: campaign.id.clone(),
-            status: "QUEUED".into(),
-            created_at: now.clone(),
-        };
-        sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
-            .bind(&run.id)
-            .bind(&run.campaign_id)
-            .bind(&run.status)
-            .bind(&run.created_at)
+        let mut first_run = None;
+        let mut first_attempt = None;
+        for (index, (unit, spec)) in proposal.work_units.iter().zip(specs.iter()).enumerate() {
+            let spec_json = serde_json::to_string(spec)
+                .map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
+            let spec_sha256 = sha256_hex(spec_json.as_bytes());
+            let task_id = Uuid::new_v4().to_string();
+            let mut run_id = None;
+            let mut attempt_id = None;
+            if index == 0 {
+                let run = Run {
+                    id: Uuid::new_v4().to_string(),
+                    campaign_id: campaign.id.clone(),
+                    status: "QUEUED".into(),
+                    created_at: now.clone(),
+                };
+                sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+                    .bind(&run.id)
+                    .bind(&run.campaign_id)
+                    .bind(&run.status)
+                    .bind(&run.created_at)
+                    .execute(&mut *transaction)
+                    .await?;
+                let attempt = Attempt {
+                    id: Uuid::new_v4().to_string(),
+                    run_id: run.id.clone(),
+                    status: "QUEUED".into(),
+                    created_at: now.clone(),
+                };
+                sqlx::query::query(
+                    "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)",
+                )
+                .bind(&attempt.id)
+                .bind(&attempt.run_id)
+                .bind(&attempt.status)
+                .bind(&attempt.created_at)
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query::query(
+                    "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
+                     VALUES (?1,?2,?3,?4,?5)",
+                )
+                .bind(&attempt.id)
+                .bind(&request.action_id)
+                .bind(&spec.base_commit)
+                .bind(&spec_json)
+                .bind(&spec_sha256)
+                .execute(&mut *transaction)
+                .await?;
+                run_id = Some(run.id.clone());
+                attempt_id = Some(attempt.id.clone());
+                first_run = Some(run);
+                first_attempt = Some(attempt);
+            }
+            sqlx::query::query(
+                "INSERT INTO lead_tasks
+                 (task_id,campaign_id,request_id,unit_id,sequence,status,base_commit,spec_json,
+                  spec_sha256,depends_on_json,run_id,attempt_id,candidate_id,created_at,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?13)",
+            )
+            .bind(&task_id)
+            .bind(&campaign.id)
+            .bind(&request.id)
+            .bind(&unit.id)
+            .bind(i64::try_from(index).map_err(|_| Error::Invalid("task sequence"))?)
+            .bind(if index == 0 { "RUNNING" } else { "PENDING" })
+            .bind(&spec.base_commit)
+            .bind(spec_json)
+            .bind(spec_sha256)
+            .bind(
+                serde_json::to_string(&unit.depends_on)
+                    .map_err(|_| Error::Invalid("dependencies encoding"))?,
+            )
+            .bind(run_id)
+            .bind(attempt_id)
+            .bind(&now)
             .execute(&mut *transaction)
             .await?;
-        let attempt = Attempt {
-            id: Uuid::new_v4().to_string(),
-            run_id: run.id.clone(),
-            status: "QUEUED".into(),
-            created_at: now.clone(),
-        };
-        sqlx::query::query(
-            "INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)",
-        )
-        .bind(&attempt.id)
-        .bind(&attempt.run_id)
-        .bind(&attempt.status)
-        .bind(&attempt.created_at)
-        .execute(&mut *transaction)
-        .await?;
+        }
+        let run = first_run.ok_or(Error::Invalid("lead plan has no runnable unit"))?;
+        let attempt = first_attempt.ok_or(Error::Invalid("lead plan has no runnable attempt"))?;
         sqlx::query::query(
             "UPDATE lead_requests SET state='RUNNING',campaign_id=?1,updated_at=?2 WHERE id=?3",
         )
@@ -742,7 +820,6 @@ impl Database {
         .await?;
         record_event(&mut transaction, &request.id, "lead.started", &campaign.id).await?;
         transaction.commit().await?;
-        let _ = proposal_id;
         Ok((campaign, run, attempt))
     }
 
@@ -982,6 +1059,172 @@ async fn load_frozen_plan_by_id(
         delegation_hash: row.try_get("delegation_hash")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+fn unit_action_spec(
+    proposal: &LeadPlanProposal,
+    config: &ProjectConfig,
+    grant: &StandingDelegation,
+    unit: &crate::lead::LeadWorkUnit,
+    base_commit: &str,
+) -> Result<ActionSpec, Error> {
+    let mut checks = unit.acceptance_criteria.clone();
+    checks.extend(unit.negative_cases.clone());
+    if checks.is_empty() {
+        checks = proposal.acceptance_criteria.clone();
+        checks.extend(proposal.negative_cases.clone());
+    }
+    if !checks
+        .iter()
+        .any(|check| !matches!(check.kind, crate::lead::CheckKind::Negative))
+        || !checks
+            .iter()
+            .any(|check| matches!(check.kind, crate::lead::CheckKind::Negative))
+    {
+        return Err(Error::Forbidden(
+            "each WorkUnit requires acceptance and negative checks".into(),
+        ));
+    }
+    let objective = if unit.description.trim().is_empty() {
+        proposal.objective.clone()
+    } else {
+        unit.description.clone()
+    };
+    Ok(ActionSpec {
+        schema_version: 1,
+        project_id: config.project_id.clone(),
+        repository: config.repository.clone(),
+        base_commit: base_commit.into(),
+        objective_sha256: sha256_hex(objective.as_bytes()),
+        objective,
+        provider: grant.route.provider.clone(),
+        model: grant.route.model.clone(),
+        allowed_paths: unit.allowed_paths.clone(),
+        checks,
+    })
+}
+
+pub(super) async fn advance_lead_task(
+    transaction: &mut SqliteConnection,
+    attempt_id: &str,
+    candidate_commit: &str,
+) -> Result<(), Error> {
+    use sqlx::row::Row;
+    let task = sqlx::query::query(
+        "SELECT task_id,campaign_id,request_id,unit_id,sequence,spec_json,depends_on_json
+         FROM lead_tasks WHERE attempt_id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(task) = task else {
+        return Ok(());
+    };
+    let task_id: String = task.try_get("task_id")?;
+    let campaign_id: String = task.try_get("campaign_id")?;
+    let request_id: String = task.try_get("request_id")?;
+    let unit_id: String = task.try_get("unit_id")?;
+    let sequence: i64 = task.try_get("sequence")?;
+    let depends: String = task.try_get("depends_on_json")?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "UPDATE lead_tasks SET status='SUCCEEDED',candidate_id=(
+           SELECT id FROM candidates WHERE attempt_id=?1
+         ),updated_at=?2 WHERE task_id=?3",
+    )
+    .bind(attempt_id)
+    .bind(&now)
+    .bind(&task_id)
+    .execute(&mut *transaction)
+    .await?;
+    let next = sqlx::query::query(
+        "SELECT task_id,unit_id,spec_json,depends_on_json FROM lead_tasks
+         WHERE campaign_id=?1 AND sequence=?2",
+    )
+    .bind(&campaign_id)
+    .bind(sequence + 1)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(next) = next else {
+        record_event(transaction, &request_id, "lead.plan_completed", &unit_id).await?;
+        return Ok(());
+    };
+    let next_task_id: String = next.try_get("task_id")?;
+    let next_unit: String = next.try_get("unit_id")?;
+    let next_spec: String = next.try_get("spec_json")?;
+    let next_depends: String = next.try_get("depends_on_json")?;
+    let dependencies: Vec<String> = serde_json::from_str(&next_depends)
+        .map_err(|_| Error::Invalid("stored task dependencies"))?;
+    if dependencies != vec![unit_id.clone()] {
+        return Err(Error::Forbidden(
+            "parallel/fan-in WorkGraph scheduling is not enabled".into(),
+        ));
+    }
+    let _ = depends;
+    let mut spec: ActionSpec =
+        serde_json::from_str(&next_spec).map_err(|_| Error::Invalid("stored unit ActionSpec"))?;
+    spec.base_commit = candidate_commit.into();
+    let spec_json =
+        serde_json::to_string(&spec).map_err(|_| Error::Invalid("unit ActionSpec encoding"))?;
+    let spec_sha256 = sha256_hex(spec_json.as_bytes());
+    let run = Run {
+        id: Uuid::new_v4().to_string(),
+        campaign_id: campaign_id.clone(),
+        status: "QUEUED".into(),
+        created_at: now.clone(),
+    };
+    sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+        .bind(&run.id)
+        .bind(&run.campaign_id)
+        .bind(&run.status)
+        .bind(&run.created_at)
+        .execute(&mut *transaction)
+        .await?;
+    let attempt = Attempt {
+        id: Uuid::new_v4().to_string(),
+        run_id: run.id.clone(),
+        status: "QUEUED".into(),
+        created_at: now.clone(),
+    };
+    sqlx::query::query("INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)")
+        .bind(&attempt.id)
+        .bind(&attempt.run_id)
+        .bind(&attempt.status)
+        .bind(&attempt.created_at)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query::query(
+        "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
+         VALUES (?1,(SELECT action_id FROM campaigns WHERE id=?2),?3,?4,?5)",
+    )
+    .bind(&attempt.id)
+    .bind(&campaign_id)
+    .bind(&spec.base_commit)
+    .bind(&spec_json)
+    .bind(&spec_sha256)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query::query(
+        "UPDATE lead_tasks SET status='RUNNING',base_commit=?1,spec_json=?2,spec_sha256=?3,
+         run_id=?4,attempt_id=?5,updated_at=?6 WHERE task_id=?7",
+    )
+    .bind(&spec.base_commit)
+    .bind(&spec_json)
+    .bind(&spec_sha256)
+    .bind(&run.id)
+    .bind(&attempt.id)
+    .bind(&now)
+    .bind(&next_task_id)
+    .execute(&mut *transaction)
+    .await?;
+    record_event(
+        transaction,
+        &campaign_id,
+        "work_task.started",
+        &format!("{} after {}", next_unit, unit_id),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn load_action_binding(
@@ -1484,6 +1727,131 @@ mod tests {
         let running = db.lead_request(&request.id).await.unwrap();
         assert_eq!(running.state, LeadRequestState::Running);
         assert_eq!(running.campaign_id.as_deref(), Some(campaign.id.as_str()));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sequential_workgraph_start_advances_to_the_next_unit() {
+        let (path, db, grant) = fixture().await;
+        let (acceptance, negative) = checks();
+        let checks: Vec<SpecCheck> = acceptance.into_iter().chain(negative).collect();
+        let action = db
+            .create_action_with_spec(
+                "project",
+                "Implement two units.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "chain-action-key",
+                ActionSpecInput {
+                    allowed_paths: &["src".to_string()],
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action.id,
+                "grant",
+                "Implement two units.",
+                &config.config_hash,
+                "chain-request-key",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let binding = ActionBinding {
+            id: action.id.clone(),
+            project_id: "project".into(),
+            status: crate::lead::ActionStatus::Pending,
+        };
+        let (assessment, mut proposal) = crate::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            &grant,
+            Utc::now(),
+        )
+        .unwrap();
+        proposal.budget.max_attempts = 1;
+        proposal.max_sessions = 3;
+        proposal.work_units = vec![
+            crate::lead::LeadWorkUnit {
+                id: "first".into(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: "First unit.".into(),
+                depends_on: Vec::new(),
+                allowed_paths: vec!["src".into()],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            },
+            crate::lead::LeadWorkUnit {
+                id: "second".into(),
+                kind: crate::lead::WorkUnitKind::Implementation,
+                description: "Second unit.".into(),
+                depends_on: vec!["first".into()],
+                allowed_paths: vec!["src".into()],
+                capabilities: config.capabilities.clone(),
+                acceptance_criteria: Vec::new(),
+                negative_cases: Vec::new(),
+            },
+        ];
+        let input = AssessmentInput {
+            project_id: "project".into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            "chain-assessment-key",
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(&request.id, &proposal, "chain-proposal-key")
+            .await
+            .unwrap();
+        db.freeze_lead_plan(&request.id, "chain-freeze-key")
+            .await
+            .unwrap();
+        db.mark_lead_ready(&request.id).await.unwrap();
+        let (_campaign, _run, attempt) = db
+            .start_lead_campaign(&request.id, "chain-start-key")
+            .await
+            .unwrap();
+        let count: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM lead_tasks WHERE request_id=?1")
+                .bind(&request.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count.0, 2);
+        let mut transaction = db.pool.begin().await.unwrap();
+        advance_lead_task(&mut transaction, &attempt.id, &"c".repeat(40))
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let second: (String, Option<String>) = sqlx::query_as::query_as(
+            "SELECT status,attempt_id FROM lead_tasks WHERE request_id=?1 AND unit_id='second'",
+        )
+        .bind(&request.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(second.0, "RUNNING");
+        assert!(second.1.is_some());
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

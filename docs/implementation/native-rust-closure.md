@@ -40,8 +40,8 @@ mapping.
 | A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
 | A4 | Authorized autonomous Campaign start | `PARTIAL` | Explicit default-off policy; single-unit R0 fixture start creates Campaign/Run/Attempt atomically | Multi-unit WorkGraph start, ratified issuer policy and provider mode remain |
 | A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks open Lead requests and cancels/fences linked Campaign/Run/Attempt work | Provider session reconciliation and independent cleanup evidence remain |
-| A6 | Bounded WorkGraph | `PARTIAL` | Deterministic graph validation | Persist graph, per-unit specs, integration node |
-| A7 | Dependency-aware execution/recovery | `NOT_STARTED` | No graph scheduler | Core scheduler, leases, fan-in, restart, failure propagation |
+| A6 | Bounded WorkGraph | `PARTIAL` | Deterministic validation plus persisted sequential unit tasks and per-unit specs | Parallel/fan-in integration and final integrated acceptance |
+| A7 | Dependency-aware execution/recovery | `PARTIAL` | Sequential unit chaining, per-Attempt specs and candidate-driven promotion | Parallel/fan-in, restart/failure process tests, integration node |
 | A8 | Deterministic Git integration | `PARTIAL` | Tested integration primitives | Wire Worker/Core candidate lineage and Campaign integration |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Single-unit start transaction + idempotent replay; fixture E2E reaches ACCEPTED | Add crash-injection and multi-unit start coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds, CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |

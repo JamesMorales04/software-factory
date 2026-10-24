@@ -141,6 +141,19 @@ impl Database {
         .bind(&value.created_at)
         .execute(&mut *transaction)
         .await?;
+        sqlx::query::query(
+            "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
+             SELECT ?1,c.action_id,p.base_commit,s.spec_json,s.spec_sha256
+             FROM runs r JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN projects p ON p.id=ac.project_id
+             JOIN action_specs s ON s.action_id=ac.id
+             WHERE r.id=?2",
+        )
+        .bind(&value.id)
+        .bind(&value.run_id)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
             .bind(key)
             .bind("create_attempt")

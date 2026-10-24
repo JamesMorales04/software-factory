@@ -178,13 +178,17 @@ impl Database {
         attempt_id: &str,
     ) -> Result<WorkerAssignment, Error> {
         let row = sqlx::query::query(
-            "SELECT c.action_id,p.repository,s.spec_json,s.spec_sha256,ca.execution_mode
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+                    COALESCE(aps.spec_json,s.spec_json) AS spec_json,
+                    COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256,
+                    ca.execution_mode
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN actions ac ON ac.id=c.action_id
              JOIN projects p ON p.id=ac.project_id
              JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              WHERE a.id=?1",
         )

@@ -119,6 +119,12 @@ impl Database {
         if changed != 1 {
             return Err(Error::Conflict("attempt is no longer leased"));
         }
+        super::lead::advance_lead_task(
+            &mut transaction,
+            &candidate.attempt_id,
+            &candidate.commit_sha,
+        )
+        .await?;
         record_event(
             &mut transaction,
             &candidate.id,
@@ -288,13 +294,16 @@ async fn candidate_context(
     attempt_id: &str,
 ) -> Result<CandidateContext, Error> {
     let row: Option<CandidateContextRow> = sqlx::query_as::query_as(
-        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,p.base_commit,s.spec_sha256,s.spec_json,COALESCE(ca.execution_mode,'NONE')
+        "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,p.repository,
+                COALESCE(aps.base_commit,p.base_commit),COALESCE(aps.spec_sha256,s.spec_sha256),
+                COALESCE(aps.spec_json,s.spec_json),COALESCE(ca.execution_mode,'NONE')
          FROM attempts a
          JOIN runs r ON r.id=a.run_id
          JOIN campaigns c ON c.id=r.campaign_id
          JOIN actions ac ON ac.id=c.action_id
          JOIN projects p ON p.id=ac.project_id
          JOIN action_specs s ON s.action_id=ac.id
+         LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
          LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
          LEFT JOIN worker_leases l ON l.attempt_id=a.id
          WHERE a.id=?1",
