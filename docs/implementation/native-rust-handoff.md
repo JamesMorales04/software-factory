@@ -21,9 +21,10 @@ Locally, seven Rust governance tests,
 format, Clippy, architecture validation, the failed-dependency process test,
 Python PR-impact and authorization tests, and the Rust Office browser journey
 passed on their recorded code commits. `cargo test --workspace --locked`,
-workspace build and docs passed at `d47f6cd`. `cargo audit` exited zero but
-warned that newly added `serde_yaml_ng` depends on unmaintained
-`unsafe-libyaml`; a maintained-parser replacement is being evaluated.
+workspace build and docs passed at `d47f6cd`. `cargo audit` initially warned
+that newly added `serde_yaml_ng` depended on unmaintained `unsafe-libyaml`.
+Commit `dd91272` replaced it with `serde-saphyr` 2.0.0; seven checker tests,
+the base-ref invocation and a clean `cargo audit` pass locally on that code.
 Final exact-head GitHub CI, strict hygiene and final independent acceptance
 remain pending.
 Provider coding is still fail-closed; no paid provider turn ran. Isolation and

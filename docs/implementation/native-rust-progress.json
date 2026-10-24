@@ -171,7 +171,7 @@
     "paid_default": "FORBIDDEN"
   },
   "cutover_campaign_checkpoint_2026_10_24": {
-    "code_head_reviewed": "d50bd0fc65064b35f1f617cd9a6ab9c364ae2566",
+    "code_head_reviewed": "dd912721df2f89d12c6e99e2bffd0d135e4b6603",
     "pr": 17,
     "pr_state": "DRAFT",
     "tracked_go_before": 99,
@@ -183,9 +183,9 @@
     ],
     "retired_wrapper": "scripts/check-architecture-consistency",
     "workgraph_failure_commit": "a32c6d5244a964fc784e25da384c1380cd01b665",
-    "checks": "Seven governance tests, full cargo test/build/doc, fmt, Clippy, base-ref checker, Rust Office browser, Python PR-impact/authorization, failed-dependency and pre-dispatch restart process tests passed locally; cargo audit exited zero with unmaintained unsafe-libyaml warning. Legacy S4-B B8 passed but full script failed at B11 browser timeout.",
+    "checks": "Seven governance tests, full cargo test/build/doc at d47f6cd, fmt, Clippy, base-ref checker, Rust Office browser, Python PR-impact/authorization, failed-dependency and pre-dispatch restart process tests passed locally; cargo audit at dd91272 exited zero with no advisories after parser replacement. Legacy S4-B B8 passed but full script failed at B11 browser timeout.",
     "remaining": "96 Go files; legacy Go/Paseo workflows and module; WorkGraph conflict/cancel/restart; model-backed Lead/provider lifecycle; independent quality; credential/isolation closure; strict hygiene; final exact-head CI and owner merge authorization.",
     "security": "Provider coding fail-closed; no paid run; isolation and credential confinement uncertified.",
-    "next_task": "Implement deterministic WorkGraph integration-conflict or in-flight restart process regression in native/tests/e2e_fixture_dispatch.rs and repair any exposed defect; evaluate maintained YAML parser to remove unsafe-libyaml warning."
+    "next_task": "Implement deterministic WorkGraph integration-conflict or in-flight restart process regression in native/tests/e2e_fixture_dispatch.rs and repair any exposed defect."
   }
 }
