@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "base_sha": "102d7ba29295554bd61ae71956347a025d219d7b",
   "head_sha_at_campaign_entry": "102d7ba29295554bd61ae71956347a025d219d7b",
-  "verified_code_commit_sha": "be221020ba02d5def218790fffaef3d678cd9969",
+  "verified_code_commit_sha": "WORKTREE_PENDING",
   "draft_pr": 17,
   "ci_at_update": "Exact-head native Rust, architecture and Office browser CI run per push; final candidate gates pending. Legacy Go/Paseo workflows and strict hygiene remain open.",
   "status": "INCOMPLETE_REPLACEMENT_ACTIVE_CLOSURE",
@@ -49,7 +49,8 @@
     "Migration closure ledger and authoritative capability-decision record; predecessor assessment removed with capability preservation",
     "Single-unit autonomous R0 fixture start behind an explicit default-off flag, with Lead request -> assessment -> freeze -> Campaign/Run/Attempt process E2E",
     "Sequential WorkGraph task persistence, per-Attempt specs and candidate-driven unit promotion",
-    "Rust Office Lead view and Campaign detail/WorkGraph projection"
+    "Rust Office Lead view and Campaign detail/WorkGraph projection",
+    "Deterministic provider-session state machine: exact identity, monotonic streaming, permission mediation, cancellation truthfulness, usage accounting and cleanup receipts"
   ],
   "not_implemented": [
     "Parallel/fan-in WorkGraph execution and deterministic integrated candidate acceptance",
@@ -64,8 +65,8 @@
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 120,
-  "current_test_inventory": "Author-run at be22102: 189 Rust tests passed, 2 ignored (rootless-Podman); fmt/clippy/full workspace tests PASS; Office lint/typecheck/build PASS; cargo xtask e2e office and e2e negatives PASS; Lead process E2E reaches ACCEPTED.",
+  "local_unit_tests_passed": 124,
+  "current_test_inventory": "Author-run: 193 Rust tests passed, 2 ignored; fmt/clippy/full workspace tests PASS; Office lint/typecheck/build and Rust browser journey PASS at the current worktree.",
   "author_verification_at_code_sha": {
     "sha": "be221020ba02d5def218790fffaef3d678cd9969",
     "binding": "COMMITTED_CANDIDATE_AUTHOR_RUN",

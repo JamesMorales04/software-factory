@@ -4,6 +4,7 @@ pub mod execution;
 pub mod lead;
 pub mod model_output;
 pub mod protocol;
+pub mod provider_session;
 pub mod quality;
 pub mod runtime;
 pub mod sandbox;
