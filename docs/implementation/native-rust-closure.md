@@ -55,14 +55,14 @@ portfolio; this ledger is the current status authority.
 |---|---|---|
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. Provider coding and isolation remain fail-closed. |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
-| M3 Repository hygiene | `PASS` | Zero tracked Go files at `0b94e09ecd9b0e5067295d9a21c43799028c6015`; strict hygiene passes locally; exact-head CI pending |
+| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; provider coding fail-closed |
 | M6 Security | `BLOCKED` | Credential confinement, provider-in-sandbox and independent isolation are not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 235 Rust tests + 2 ignored, audit, architecture, process E2E and Office browser pass locally after retirement; exact-head CI pending |
-| M10 Governance | `PARTIAL` | Rust architecture checker and PR-impact gate are the active governance path; legacy workflows are removed |
+| M9 Testing | `PARTIAL` | 235 Rust tests + 2 ignored, audit, architecture, process E2E and Office browser pass at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` exact-head CI; independent acceptance absent |
+| M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed; all selected CAP IDs and opportunities present; strict independence audit remains required |
@@ -92,7 +92,7 @@ harnesses, scripts and workflows. The
 tracked Go inventory is **0**. Historical contracts, checkpoints, security
 findings and the former deletion map are archived under
 [docs/evidence/history](../evidence/history/README.md); Git history preserves
-the former source. Evidence: [native-rust-go-retirement-2026-10-24.json](../evidence/native-rust-go-retirement-2026-10-24.json).
+the former source. Evidence: [native-rust-go-retirement-2026-10-24.json](../evidence/native-rust-go-retirement-2026-10-24.json) and [native-rust-retirement-ci-2026-10-24.json](../evidence/native-rust-retirement-ci-2026-10-24.json) (`3f229f37ebd856ef3fba37b7e6456a2406ad3284`).
 
 The deletion does not change any capability from `PARTIAL` or `BLOCKED` to
 `VERIFIED`. Functional gaps remain as recorded above.

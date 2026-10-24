@@ -53,21 +53,21 @@
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
   "security_status": "PARTIAL/BLOCKED: named-volume mount boundary, explicit Action classification, per-Attempt verification, independent deterministic reviewer, closed event vocabulary and log redaction are implemented. Credential confinement, provider-in-sandbox, fd-relative host mutation and independent isolation remain unverified; SEC-01 is not certified.",
-  "delivery_status": "PR #17 Draft; Rust-only tracked tree. Exact-head CI, independent human review and merge authorization outstanding.",
+  "delivery_status": "PR #17 Draft at 3f229f37ebd856ef3fba37b7e6456a2406ad3284; Rust-only tracked tree; Native Rust, Office browser and architecture CI green; independent human review and merge authorization outstanding.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
   "next_task": "Run and record exact-head Rust-only CI, then implement direct provider execution behind Core-owned authorization/budget and credential confinement; add process-level in-flight integration cancellation and recovery/cleanup Office visibility.",
   "completion_gates": {
     "G1": "PARTIAL: one Rust architecture; provider execution and isolation incomplete",
     "G2": "PARTIAL: read-only provider smokes only; coding lifecycle absent",
-    "G3": "PASS (author-run): zero tracked Go files and strict hygiene pass; exact-head CI pending",
-    "G4": "PARTIAL: Rust CI and governance are authoritative; exact-head retirement CI pending",
+    "G3": "PASS: zero tracked Go files; strict hygiene passes locally and in exact-head CI",
+    "G4": "PASS: only Rust-native Native Rust and Governance consistency workflows are active",
     "G5": "PARTIAL: fixture and single-unit Lead execution plus WorkGraph E2E; provider execution blocked",
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: credential confinement and independent isolation not verified",
-    "G9": "PARTIAL: author-run evidence; exact-head retirement CI and independent acceptance absent",
-    "G10": "PARTIAL: architecture and strict hygiene pass locally; exact-head CI pending",
+    "G9": "PARTIAL: exact-head Rust CI green; independent human acceptance absent",
+    "G10": "PASS: architecture, PR-impact and strict zero-legacy hygiene gates pass in CI",
     "G11": "NOT_STARTED: independent human full-diff review",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
@@ -87,11 +87,23 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
+  "verified_code_commit_sha": "3f229f37ebd856ef3fba37b7e6456a2406ad3284",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
     "tracked_go_after": 0,
-    "checks": "Author-run PASS: cargo xtask check (235 tests + 2 ignored, fmt, Clippy, build, docs, ten migrations, audit), architecture, strict hygiene 0 findings, recovery/dispatch/negatives/office E2E. Exact-head CI pending."
+    "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
+    "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
+  },
+  "ci_at_update": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (both runs), Office browser (both runs) and architecture consistency PASS; strict hygiene and migrations PASS. Active workflows: Native Rust and Governance consistency only.",
+  "author_verification_at_code_sha": {
+    "sha": "3f229f37ebd856ef3fba37b7e6456a2406ad3284",
+    "binding": "EXACT_HEAD_CI",
+    "rust": "PASS: 235 tests + 2 ignored, fmt, strict Clippy, build, docs, ten migrations, audit (276 dependencies), architecture, strict hygiene, recovery/dispatch/negatives",
+    "office_browser": "PASS (both runs)",
+    "architecture_consistency": "PASS (40134431481)",
+    "windows_runtime": "NOT_TESTED",
+    "independent_review": "Not started",
+    "provider_paid_turns": 0
   }
 }

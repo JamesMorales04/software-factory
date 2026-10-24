@@ -598,9 +598,14 @@ Author-run after retirement: `cargo xtask check` PASS (235 tests + 2 ignored,
 format, strict Clippy, build, docs, ten migrations, audit clean for 276
 dependencies); `factory-architecture-check` PASS; `factory-repo-hygiene
 --mode strict` PASS with 0 findings; `cargo xtask e2e recovery`, `e2e dispatch`,
-`e2e negatives` and `e2e office` PASS. Exact-head CI at the retirement commit is
-pending; this deletion does not upgrade any capability from PARTIAL/BLOCKED to
-VERIFIED.
+`e2e negatives` and `e2e office` PASS.
+
+Exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` passed Native Rust (both runs), Office browser (both
+runs) and architecture consistency (`40134431481`), including migrations, strict
+zero-legacy hygiene, process recovery/dispatch/negatives and the real Chromium
+journey. The active workflows are only `Native Rust` and `Governance
+consistency`; the legacy workflow files are removed. This deletion does not
+upgrade any capability from PARTIAL/BLOCKED to VERIFIED.
 
 The active CI is now `Native Rust` (Rust gates, migrations, architecture,
 strict zero-legacy hygiene, process E2E and Office browser) and `Governance
