@@ -1,4 +1,5 @@
 ---
+- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 id: ADR-0001
 status: Accepted
 date: 2026-10-18

@@ -1,4 +1,5 @@
 # ADR-0016 — Dual-mode autonomous engineering
+- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 
 **Status:** Accepted for product objectives and authority boundaries; implementation contracts for future milestones remain proposed. **Date:** 2026-10-21 UTC.
 

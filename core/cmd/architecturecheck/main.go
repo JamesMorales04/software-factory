@@ -158,6 +158,8 @@ func run(root, registryPath, roadmapPath string, writeRoadmap bool, baseRef stri
 	return nil
 }
 
+var amendmentADRID = regexp.MustCompile(`(?m)^\s*(?:[-*]\s*)?(?:\*\*)?Amended by(?:\*\*)?:\s*(ADR-\d{4})`)
+
 var acceptedADRStatus = regexp.MustCompile(`(?im)^\s*(?:[-*]\s*)?(?:\*\*)?status(?:\*\*)?:?\s*(?:\*\*)?:?\s*["']?accepted(?:\b|[ \t(])`)
 
 func validateAcceptedADRHistory(root, baseRef string) error {
@@ -187,7 +189,22 @@ func validateAcceptedADRHistory(root, baseRef string) error {
 			return fmt.Errorf("read base ADR %s: %w", basePath, err)
 		}
 		if acceptedADRStatus.Match(baseContent) {
-			return fmt.Errorf("accepted ADR %s was changed in place; add a superseding ADR and preserve accepted history", basePath)
+			current, err := os.ReadFile(filepath.Join(root, basePath))
+			if err != nil {
+				return fmt.Errorf("read current ADR %s: %w", basePath, err)
+			}
+			amendment := amendmentADRID.FindSubmatch(current)
+			if len(amendment) != 2 {
+				return fmt.Errorf("accepted ADR %s was changed in place; add a superseding ADR and preserve accepted history", basePath)
+			}
+			matches, err := filepath.Glob(filepath.Join(root, "docs/architecture/decisions", string(amendment[1])+"-*.md"))
+			if err != nil || len(matches) != 1 {
+				return fmt.Errorf("accepted ADR %s amendment %s is missing or ambiguous", basePath, amendment[1])
+			}
+			amendmentContent, err := os.ReadFile(matches[0])
+			if err != nil || !acceptedADRStatus.Match(amendmentContent) {
+				return fmt.Errorf("accepted ADR %s amendment %s is not accepted", basePath, amendment[1])
+			}
 		}
 	}
 	return nil

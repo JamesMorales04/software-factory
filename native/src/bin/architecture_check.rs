@@ -876,13 +876,44 @@ fn validate_accepted_adr_history(root: &Path, base_ref: &str) -> Result<(), Stri
         let base_path = fields[1];
         let base_contents = git_output(root, &["show", &format!("{base_ref}:{base_path}")])
             .map_err(|error| format!("read base ADR {base_path}: {error}"))?;
-        if parse_adr(&String::from_utf8_lossy(&base_contents)).accepted {
+        if parse_adr(&String::from_utf8_lossy(&base_contents)).accepted
+            && !has_valid_amendment(root, base_path)?
+        {
             return Err(format!(
                 "accepted ADR {base_path} was changed in place; add a superseding ADR and preserve accepted history"
             ));
         }
     }
     Ok(())
+}
+
+fn has_valid_amendment(root: &Path, adr_path: &str) -> Result<bool, String> {
+    let current = fs::read_to_string(root.join(adr_path))
+        .map_err(|error| format!("read current ADR {adr_path}: {error}"))?;
+    let Some(id) = current.lines().find_map(|line| {
+        line.split_once("Amended by:")
+            .map(|(_, rest)| rest.split_whitespace().next().unwrap_or(""))
+    }) else {
+        return Ok(false);
+    };
+    if id.is_empty() {
+        return Ok(false);
+    }
+    let directory = root.join("docs/architecture/decisions");
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|error| format!("read ADR directory: {error}"))? {
+        let entry = entry.map_err(|error| format!("read ADR entry: {error}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&format!("{id}-")) && name.ends_with(".md") {
+            matches.push(entry.path());
+        }
+    }
+    if matches.len() != 1 {
+        return Ok(false);
+    }
+    let amendment =
+        fs::read_to_string(&matches[0]).map_err(|error| format!("read amendment ADR: {error}"))?;
+    Ok(parse_adr(&amendment).accepted)
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {

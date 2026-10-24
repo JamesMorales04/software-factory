@@ -1,6 +1,7 @@
 # ADR-0018 — Native Rust replacement and direct provider control
 
 - **Status:** Accepted by Product Owner for target architecture; implementation is incomplete.
+- **Amended by:** ADR-0020 (editorial predecessor-independence cleanup; decisions unchanged)
 - **Decision date:** 2026-10-23.
 - **Base:** `origin/main` at `102d7ba29295554bd61ae71956347a025d219d7b`.
 - **Supersedes:** ADR-0005 and the Go/Paseo implementation choices in ADR-0016 and current MASTER. Historical observations and authority requirements remain valid.
