@@ -331,15 +331,17 @@ impl Database {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .min_connections(0)
-            .acquire_timeout(Duration::from_secs(5))
+            .acquire_timeout(Duration::from_secs(30))
             .connect_with(options)
             .await?;
         migrate!("../migrations").run(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
         // migrations could not establish the expected columns.
-        sqlx::query::query("SELECT id,repository,base_commit,created_at FROM projects LIMIT 0")
-            .execute(&pool)
-            .await?;
+        sqlx::query::query(
+            "SELECT id,repository,base_commit,created_at,identity FROM projects LIMIT 0",
+        )
+        .execute(&pool)
+        .await?;
         Ok(Self {
             pool,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
