@@ -98,7 +98,7 @@
   "delivery_status": "PR #17 Draft at 35d8b93; exact-head CI green; independent human review, zero-Go cutover and merge authorization outstanding.",
   "unresolved_runtime_sessions": "Codex pre-turn thread 01a169da-763d-7240-a953-6937793f8360 was absent from a newly spawned App Server indexed state DB; this cannot establish whether original server still owns it. Cleanup unconfirmed. OpenCode no-paid probe session delete followed by GET absence.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Implement parallel/fan-in WorkGraph integration and provider work lifecycle; migrate/remove Go and legacy CI; strict hygiene; final independent review and merge authorization.",
+  "next_task": "Wire Supervisor integration into Core/Worker integration-node acceptance; then provider lifecycle, parallel/fan-in, Go deletion, strict hygiene and independent review.",
   "paid_provider_turns": 0,
   "prior_handoff_commit_sha": "21f6136052ad0eba53df57759185145592951c56",
   "independent_review": "Luna review of earlier parts of this slice found and prompted fixes to candidate parent validation, generation overflow, per-Worker session binding and plaintext registration key. Current sandbox review: ownership ledger/orphan reconciliation implemented and Alpine fixture passes locally, but same-UID pathname race remains unresolved. Full tracked-tree and exact PR diff review remains outstanding; no current-slice final review acceptance.",

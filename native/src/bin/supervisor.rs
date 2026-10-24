@@ -202,6 +202,8 @@ struct App<B: factory_native::execution::VolumeBackend> {
     manager: WorkspaceManager<B>,
     max_runtime: Duration,
     allowed_images: BTreeSet<String>,
+    project_roots: Vec<PathBuf>,
+    workspace_root: PathBuf,
 }
 
 #[tokio::main]
@@ -246,7 +248,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         backend.preflight().await?;
         SupervisorBackend::Podman(backend)
     };
-    let manager = WorkspaceManager::new(&workspace_root, &state_root, project_roots, backend)?;
+    let manager =
+        WorkspaceManager::new(&workspace_root, &state_root, project_roots.clone(), backend)?;
     let removed = manager.reconcile().await?;
     if removed > 0 {
         tracing::warn!(removed, "reconciled stale workspace executions");
@@ -261,6 +264,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager,
         max_runtime,
         allowed_images: images,
+        project_roots,
+        workspace_root,
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -274,6 +279,7 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces", post(allocate))
         .route("/v1/workspaces/{workspace_id}", get(status).delete(cleanup))
         .route("/v1/workspaces/{workspace_id}/execute", post(execute))
+        .route("/v1/integrate", post(integrate))
         .route("/v1/reconcile", post(reconcile))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
@@ -349,6 +355,77 @@ async fn cleanup<B: factory_native::execution::VolumeBackend>(
     match app.manager.cleanup(&workspace_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => execution_error(error),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct IntegrateRequest {
+    repository: String,
+    base_commit: String,
+    candidate_commits: Vec<String>,
+}
+
+async fn integrate<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Json(input): Json<IntegrateRequest>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.candidate_commits.len() < 2 || input.candidate_commits.len() > 8 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"integration requires 2..=8 candidates"})),
+        )
+            .into_response();
+    }
+    let repository = match std::path::Path::new(&input.repository).canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":error.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    if !app
+        .project_roots
+        .iter()
+        .any(|root| repository.starts_with(root))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"repository is outside configured project roots"})),
+        )
+            .into_response();
+    }
+    let workspace_root = app.workspace_root.clone();
+    let base = input.base_commit;
+    let candidates = input.candidate_commits;
+    let result = tokio::task::spawn_blocking(move || {
+        factory_native::workspace::integrate_candidates(
+            &repository,
+            &base,
+            &candidates,
+            &workspace_root,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(integrated)) => (StatusCode::OK, Json(integrated)).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":error.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -625,6 +702,8 @@ mod tests {
                 manager,
                 max_runtime: MAX_EXECUTION_RUNTIME,
                 allowed_images: images,
+                project_roots: vec![repository.clone()],
+                workspace_root: root.join("integration-work"),
             }),
             root,
             repository,
