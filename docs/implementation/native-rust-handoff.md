@@ -541,8 +541,12 @@ Author-run at `c0ed31d`: `cargo xtask check` PASS (format, strict Clippy,
 `cargo xtask validate-architecture` PASS;
 `cargo xtask e2e recovery`, `e2e dispatch`, `e2e negatives` and `e2e office`
 PASS. The Office journey passed with the real reviewer process and a real
-Workers view assertion. These are author-run, not independent acceptance. No
-paid provider turn, sandbox certification or Windows run is claimed.
+Workers view assertion. Exact-head GitHub Actions at `b91bd96` passed native
+Rust (both runs), Office browser (both runs), architecture consistency
+(`40119554382`) and the S1/S2/S3A/S3B/S4A/S4B/S4C non-browser Go jobs. The
+legacy Paseo/Office browser jobs still fail and are not Rust evidence. These
+are not independent human acceptance. No paid provider turn, sandbox
+certification or Windows run is claimed.
 
 Remaining next executable work: integrate the provider lifecycle into a
 production caller only after Core-owned authorization/budget and credential
