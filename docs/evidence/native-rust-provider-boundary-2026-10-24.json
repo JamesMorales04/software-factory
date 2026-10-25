@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
   "candidate_sha": "81978fd146f79aa9335791e0bd9111f738701b56",
-  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
   "topology": {
     "provider_process": "bubblewrap --unshare-all user/pid/net/ipc/uts/cgroup namespace; empty HOME; read-only /usr; private 0700 session directory; no host repository, /run/user socket or external network",
     "provider_transport": "host loopback TCP bridge requiring per-run Basic-auth capability; forwards only /event, /global/health, /doc and /session* to the sandbox Unix socket",
@@ -26,7 +26,8 @@
     "capability_reuse": "PASS: capability for workspace A rejected on workspace B; admin bearer rejected; tampered capability rejected",
     "attempt_grant_binding": "PASS: grant for another Attempt rejected; expired grant rejected",
     "recovery": "PASS: explicitly unconfined fixture orphan cleanup after Core restart; sandboxed-session recovery NOT_IMPLEMENTED",
-    "office_browser": "PASS"
+    "office_browser": "PASS",
+    "exact_head_ci": "PASS at a1779a97fe4c22e313cf4279271659a7759399a4: Native Rust both runs, Office browser both runs, bubblewrap tests executed, confined provider E2E and architecture edited-run"
   },
   "not_claimed": [
     "independent security review",
@@ -39,5 +40,6 @@
     "rootless Podman or bubblewrap kernel isolation certification",
     "merge or deployment authorization"
   ],
-  "provider_paid_turns": 0
+  "provider_paid_turns": 0,
+  "exact_head_sha": "a1779a97fe4c22e313cf4279271659a7759399a4"
 }

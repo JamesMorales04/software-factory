@@ -1,0 +1,29 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "exact_head_sha": "a1779a97fe4c22e313cf4279271659a7759399a4",
+  "code_candidate_sha": "81978fd146f79aa9335791e0bd9111f738701b56",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "native_rust_runs": [40174178267, 40174179497],
+  "governance_edited_run": 40174179492,
+  "bubblewrap_install_and_smoke": "PASS",
+  "bubblewrap_unit_probe": "PASS (executed, not skipped)",
+  "bubblewrap_provider_broker": "PASS (executed, not skipped)",
+  "confined_provider_e2e": "PASS",
+  "office_browser": "PASS (both runs)",
+  "migrations": "PASS (13)",
+  "strict_hygiene": "PASS",
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "independent security review",
+    "credential-confinement certification",
+    "ISOLATED certification",
+    "live provider coding or sandboxed model egress",
+    "sandboxed provider-session recovery after Worker crash",
+    "compromised Worker confinement",
+    "merge or deployment authorization"
+  ]
+}
