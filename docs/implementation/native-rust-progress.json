@@ -94,7 +94,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "e31e3a12fdedea5e5baad77e1949cbcdbf11640a",
+  "verified_code_commit_sha": "c0e822b2b09fa494c36bc218baa37537c32a1869",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -104,7 +104,7 @@
   },
   "ci_at_update": "Exact-head CI at c5ea92b8bb8424a87773056ceb7c40712c4fda00: Native Rust (both runs), Office browser (both runs) and architecture consistency PASS; source-aware provider E2E, recovery restart, cancellation state, migrations and strict hygiene PASS.",
   "author_verification_at_code_sha": {
-    "sha": "e31e3a12fdedea5e5baad77e1949cbcdbf11640a",
+    "sha": "c0e822b2b09fa494c36bc218baa37537c32a1869",
     "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
     "rust": "PASS: 241 tests + 2 ignored, fmt, strict Clippy, build, docs, eleven migrations, audit (276 dependencies), architecture, strict hygiene",
     "provider_e2e": "PASS: deterministic fake OpenCode patch path to ACCEPTED",

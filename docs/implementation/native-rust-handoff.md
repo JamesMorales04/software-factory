@@ -664,7 +664,7 @@ delegation revocation, unresolved-session dispatch blocking, and a recovery
 Worker that deletes a confirmed orphan after Core restart. The process-level
 recovery test passes. Exact-head CI at `c5ea92b8bb8424a87773056ceb7c40712c4fda00` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40151910746`), source-aware provider E2E, recovery restart, cancellation state, migrations and strict hygiene. Multi-turn provider tool events, permission decisions, reconnection to an existing session and live model coding remain unimplemented and fail-closed.
 
-## Multi-turn provider tool-event checkpoint (2026-10-24)
+## Multi-turn provider tool-event checkpoint (2026-10-24) — `c0e822b2b09fa494c36bc218baa37537c32a1869`
 
 The OpenCode fake-provider process now exercises four turns in one session:
 an unauthorized `read_file` request is denied and recorded, then `write_file`

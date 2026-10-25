@@ -43,5 +43,6 @@
     "independent human acceptance",
     "merge or deployment authorization"
   ],
-  "provider_paid_turns": 0
+  "provider_paid_turns": 0,
+  "candidate_sha": "c0e822b2b09fa494c36bc218baa37537c32a1869"
 }
