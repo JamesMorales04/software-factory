@@ -312,6 +312,31 @@ impl QualityRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewMechanism {
+    #[default]
+    Deterministic,
+    Model,
+}
+
+impl ReviewMechanism {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deterministic => "DETERMINISTIC",
+            Self::Model => "MODEL",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "DETERMINISTIC" => Some(Self::Deterministic),
+            "MODEL" => Some(Self::Model),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct QualityReceiptInput {
@@ -322,6 +347,26 @@ pub struct QualityReceiptInput {
     pub tree_sha: String,
     pub result: ReceiptResult,
     pub evidence: EvidenceKind,
+    #[serde(default)]
+    pub findings: Vec<crate::review::ReviewFinding>,
+    #[serde(default)]
+    pub mechanism: ReviewMechanism,
+    #[serde(default)]
+    pub model_provider: String,
+    #[serde(default)]
+    pub model_name: String,
+    #[serde(default)]
+    pub model_reservation_id: String,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub cost_micros: u64,
+    #[serde(default)]
+    pub usage_known: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -335,6 +380,16 @@ pub struct QualityReceiptRecord {
     pub tree_sha: String,
     pub result: ReceiptResult,
     pub evidence: EvidenceKind,
+    pub findings: Vec<crate::review::ReviewFinding>,
+    pub mechanism: ReviewMechanism,
+    pub model_provider: String,
+    pub model_name: String,
+    pub model_reservation_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub usage_known: bool,
     pub received_at: String,
 }
 

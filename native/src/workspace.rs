@@ -431,6 +431,79 @@ pub fn diff_stat(repository: &Path, base: &str, commit: &str) -> Result<String, 
     Ok(summary.chars().take(512).collect())
 }
 
+/// Read one bounded UTF-8 file blob from an exact candidate commit. Symlinks,
+/// gitlinks, binary blobs and files above the byte budget are excluded.
+pub fn candidate_file(
+    repository: &Path,
+    commit_sha: &str,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, WorkspaceError> {
+    if !is_object_id(commit_sha) {
+        return Err(WorkspaceError::Invalid(
+            "candidate file requires a full Git commit ID".into(),
+        ));
+    }
+    if !is_safe_repository_path(path) {
+        return Err(WorkspaceError::Invalid(format!(
+            "candidate file path is unsafe: {path:?}"
+        )));
+    }
+    let repository = repository.canonicalize()?;
+    let listing = git(
+        &repository,
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("-z"),
+            OsStr::new(commit_sha),
+            OsStr::new("--"),
+            OsStr::new(path),
+        ],
+    )?;
+    let Some(entry) = listing
+        .stdout
+        .split(|byte| *byte == 0)
+        .find(|entry| !entry.is_empty())
+    else {
+        return Ok(None);
+    };
+    let entry = String::from_utf8_lossy(entry);
+    let metadata = entry
+        .split_once('\t')
+        .map(|(metadata, _)| metadata)
+        .unwrap_or_default();
+    let fields: Vec<&str> = metadata.split_whitespace().collect();
+    if fields.len() != 3 || matches!(fields[0], "120000" | "160000") || fields[1] != "blob" {
+        return Ok(None);
+    }
+    let object = fields[2];
+    let size = git(
+        &repository,
+        [OsStr::new("cat-file"), OsStr::new("-s"), OsStr::new(object)],
+    )?;
+    let size: usize = String::from_utf8_lossy(&size.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| WorkspaceError::Invalid("candidate file size is invalid".into()))?;
+    if size > max_bytes {
+        return Ok(None);
+    }
+    let blob = git(
+        &repository,
+        [
+            OsStr::new("cat-file"),
+            OsStr::new("blob"),
+            OsStr::new(object),
+        ],
+    )?;
+    if blob.stdout.contains(&0) {
+        return Ok(None);
+    }
+    String::from_utf8(blob.stdout)
+        .map(Some)
+        .map_err(|_| WorkspaceError::Invalid("candidate file is not UTF-8".into()))
+}
+
 /// Added lines from a unified diff, excluding file headers.
 pub fn added_lines(diff: &str) -> Vec<&str> {
     diff.lines()

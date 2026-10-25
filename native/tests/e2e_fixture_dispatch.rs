@@ -249,17 +249,31 @@ fn git(root: &Path, arguments: &[&str]) -> String {
 }
 
 fn run_reviewer(root: &Path, base_url: &str, candidate_id: &str, principal: &str, log_name: &str) {
+    run_reviewer_with(root, base_url, candidate_id, principal, log_name, None);
+}
+
+fn run_reviewer_with(
+    root: &Path,
+    base_url: &str,
+    candidate_id: &str,
+    principal: &str,
+    log_name: &str,
+    mechanism: Option<&str>,
+) {
     let log = File::create(root.join(log_name)).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_factory-reviewer"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_factory-reviewer"));
+    command
         .env("FACTORY_CORE_URL", base_url)
         .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
         .env("FACTORY_CANDIDATE_ID", candidate_id)
         .env("FACTORY_REVIEWER_PRINCIPAL", principal)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
-        .stderr(Stdio::from(log))
-        .status()
-        .expect("reviewer");
+        .stderr(Stdio::from(log));
+    if let Some(mechanism) = mechanism {
+        command.env("FACTORY_REVIEW_MECHANISM", mechanism);
+    }
+    let status = command.status().expect("reviewer");
     assert!(
         status.success(),
         "reviewer failed: {}",
@@ -615,6 +629,474 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     supervisor.stop();
     core.stop();
     drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+struct FixtureCandidate {
+    candidate_id: String,
+    commit_sha: String,
+    tree_sha: String,
+    action_spec_sha256: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_fixture_campaign_to_candidate(
+    client: &reqwest::Client,
+    base_url: &str,
+    project_id: &str,
+    supervisor_url: &str,
+    image: &str,
+    suffix: &str,
+    objective: &str,
+    content: &str,
+) -> FixtureCandidate {
+    let action: Value = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": objective,
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "idempotency_key": format!("{suffix}-action"),
+            "allowed_paths": ["src"],
+            "checks": [
+                {
+                    "id": "functional",
+                    "kind": "functional",
+                    "description": "candidate content exists",
+                    "command": ["grep", "-q", "fixture candidate", "src/fixture.txt"],
+                    "expectExit": 0,
+                    "timeoutSecs": 30
+                },
+                {
+                    "id": "negative",
+                    "kind": "negative",
+                    "description": "absent content is rejected",
+                    "command": ["grep", "-q", "absent", "src/fixture.txt"],
+                    "expectExit": 1,
+                    "timeoutSecs": 30
+                }
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    let action_spec_sha256 = action["spec_sha256"].as_str().unwrap().to_owned();
+    let campaign: Value = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id": action_id, "idempotency_key": format!("{suffix}-campaign")})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    let authorized = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/authorize"),
+        Some(json!({
+            "authorization_id": format!("{suffix}-auth"),
+            "risk_class": "R0",
+            "execution_mode": "FIXTURE",
+            "actor": "semantic-review-e2e",
+            "rationale": "deterministic semantic review fixture",
+            "authorized_paths": ["src"],
+            "max_attempts": 1
+        })),
+    )
+    .await;
+    assert_eq!(authorized.status(), StatusCode::CREATED);
+    let run: Value = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let attempt: Value = operator(
+        client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(attempt["id"].is_string());
+
+    let worker_log = File::create(
+        std::env::temp_dir().join(format!("factory-semantic-review-worker-{suffix}.log")),
+    )
+    .unwrap();
+    let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+        .env("FACTORY_CORE_URL", base_url)
+        .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FACTORY_WORKER_ID", format!("worker-{suffix}"))
+        .env(
+            "FACTORY_WORKER_REGISTRATION_KEY",
+            format!("registration-{suffix}"),
+        )
+        .env("FACTORY_SUPERVISOR_URL", supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", image)
+        .env("FACTORY_WORKER_ONCE", "1")
+        .env("FACTORY_FIXTURE_FILE", "src/fixture.txt")
+        .env("FACTORY_FIXTURE_CONTENT", content)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(worker_log.try_clone().unwrap()))
+        .stderr(Stdio::from(worker_log))
+        .status()
+        .expect("worker");
+    assert!(worker_status.success(), "Worker failed for {suffix}");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let candidates: Value = operator(
+            client,
+            reqwest::Method::GET,
+            format!("{base_url}/candidates"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        if let Some(candidate) = candidates.as_array().and_then(|items| {
+            items
+                .iter()
+                .find(|candidate| candidate["action_spec_sha256"] == action_spec_sha256)
+        }) {
+            return FixtureCandidate {
+                candidate_id: candidate["id"].as_str().unwrap().to_owned(),
+                commit_sha: candidate["commit_sha"].as_str().unwrap().to_owned(),
+                tree_sha: candidate["tree_sha"].as_str().unwrap().to_owned(),
+                action_spec_sha256,
+            };
+        }
+        assert!(Instant::now() < deadline, "no candidate for {suffix}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn run_fixture_verifier(
+    root: &Path,
+    base_url: &str,
+    candidate_id: &str,
+    principal: &str,
+    suffix: &str,
+    image: &str,
+) {
+    let verifier_log = File::create(root.join(format!("verifier-{suffix}.log"))).unwrap();
+    let verifier_status = Command::new(env!("CARGO_BIN_EXE_factory-verifier"))
+        .env("FACTORY_CORE_URL", base_url)
+        .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
+        .env("FACTORY_CANDIDATE_ID", candidate_id)
+        .env("FACTORY_VERIFIER_PRINCIPAL", principal)
+        .env(
+            "FACTORY_VERIFIER_WORKSPACE",
+            root.join(format!("verifier-workspaces-{suffix}")),
+        )
+        .env("FACTORY_VERIFIER_IMAGE", image)
+        .env("FACTORY_VERIFIER_TEST_BACKEND", "local")
+        .env(
+            "FACTORY_VERIFIER_TEST_VOLUME_ROOT",
+            root.join(format!("verifier-volumes-{suffix}")),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(verifier_log.try_clone().unwrap()))
+        .stderr(Stdio::from(verifier_log))
+        .status()
+        .expect("verifier");
+    assert!(
+        verifier_status.success(),
+        "verifier failed: {}",
+        std::fs::read_to_string(root.join(format!("verifier-{suffix}.log"))).unwrap_or_default()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malformed_output() {
+    use axum::{Router, routing::post};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct MockModel {
+        content: Arc<Mutex<String>>,
+        calls: Arc<Mutex<u64>>,
+    }
+    async fn chat(
+        axum::extract::State(state): axum::extract::State<MockModel>,
+    ) -> axum::Json<Value> {
+        *state.calls.lock().unwrap() += 1;
+        axum::Json(json!({
+            "choices":[{"message":{"content": state.content.lock().unwrap().clone()}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30,"cost_micros":25}
+        }))
+    }
+    let model_content = Arc::new(Mutex::new(String::new()));
+    let model_calls = Arc::new(Mutex::new(0));
+    let model_app = Router::new()
+        .route("/chat/completions", post(chat))
+        .with_state(MockModel {
+            content: model_content.clone(),
+            calls: model_calls.clone(),
+        });
+    let model_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_url = format!("http://{}", model_listener.local_addr().unwrap());
+    let model_server = tokio::spawn(async move {
+        axum::serve(model_listener, model_app).await.unwrap();
+    });
+
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-semantic-review-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Semantic Review E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "semantic-review@example.invalid"],
+    );
+    std::fs::write(
+        repository.join("seed.txt"),
+        "seed
+",
+    )
+    .unwrap();
+    git(&repository, &["add", "seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let database = root.join("factory.sqlite");
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core =
+        CoreProcess::start_with_lead_model(&database, port, &root.join("core.log"), &model_url);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "semantic-review-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: FIXTURE_IMAGE,
+        local_backend: true,
+        core_url: &base_url,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+
+    let first = drive_fixture_campaign_to_candidate(
+        &client,
+        &base_url,
+        &project_id,
+        &supervisor_url,
+        FIXTURE_IMAGE,
+        "first",
+        "Add the bounded fixture content.",
+        "fixture candidate
+",
+    )
+    .await;
+    run_fixture_verifier(
+        &root,
+        &base_url,
+        &first.candidate_id,
+        "semantic-verifier-first",
+        "first",
+        FIXTURE_IMAGE,
+    )
+    .await;
+    *model_content.lock().unwrap() = json!({
+        "schemaRevision": 1,
+        "candidateCommitSha": first.commit_sha,
+        "candidateTreeSha": first.tree_sha,
+        "actionSpecSha256": first.action_spec_sha256,
+        "verdict": "approve",
+        "summary": "The bounded fixture satisfies the frozen objective.",
+        "confidence": 93,
+        "findings": []
+    })
+    .to_string();
+    run_reviewer_with(
+        &root,
+        &base_url,
+        &first.candidate_id,
+        "semantic-reviewer-model",
+        "reviewer-first.log",
+        Some("MODEL"),
+    );
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{}/gate", first.candidate_id),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(gate["outcome"], "ACCEPTED", "{gate}");
+    let receipts: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!(
+            "{base_url}/quality/candidates/{}/receipts",
+            first.candidate_id
+        ),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reviewer = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|receipt| receipt["role"] == "reviewer")
+        .unwrap()
+        .clone();
+    assert_eq!(reviewer["result"], "PASS");
+    assert_eq!(reviewer["mechanism"], "MODEL");
+    assert_eq!(reviewer["model_provider"], "opencode");
+    assert_eq!(reviewer["model_name"], "deepseek-v4.1-flash");
+    assert_eq!(reviewer["input_tokens"], 10);
+    assert_eq!(reviewer["output_tokens"], 20);
+    assert_eq!(reviewer["total_tokens"], 30);
+    assert_eq!(reviewer["cost_micros"], 25);
+    assert_eq!(reviewer["usage_known"], true);
+    let reservation_id = reviewer["model_reservation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ledger = factory_native::db::Database::open(&database).await.unwrap();
+    let calls = ledger
+        .model_calls_for_scope(&first.candidate_id)
+        .await
+        .unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].reservation_id, reservation_id);
+    assert_eq!(calls[0].state, "SETTLED");
+    assert_eq!(
+        calls[0].role,
+        factory_native::db::ModelCallRole::SemanticReviewer
+    );
+    assert_eq!(calls[0].input_tokens, 10);
+    assert_eq!(calls[0].output_tokens, 20);
+    assert_eq!(calls[0].cost_micros, 25);
+    ledger.close().await;
+
+    let second = drive_fixture_campaign_to_candidate(
+        &client,
+        &base_url,
+        &project_id,
+        &supervisor_url,
+        FIXTURE_IMAGE,
+        "second",
+        "Add a second bounded fixture content.",
+        "fixture candidate two
+",
+    )
+    .await;
+    run_fixture_verifier(
+        &root,
+        &base_url,
+        &second.candidate_id,
+        "semantic-verifier-second",
+        "second",
+        FIXTURE_IMAGE,
+    )
+    .await;
+    *model_content.lock().unwrap() = r#"{"verdict":"approve"}"#.into();
+    run_reviewer_with(
+        &root,
+        &base_url,
+        &second.candidate_id,
+        "semantic-reviewer-model",
+        "reviewer-second.log",
+        Some("MODEL"),
+    );
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{}/gate", second.candidate_id),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_ne!(gate["outcome"], "ACCEPTED", "{gate}");
+    let receipts: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!(
+            "{base_url}/quality/candidates/{}/receipts",
+            second.candidate_id
+        ),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let reviewer = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|receipt| receipt["role"] == "reviewer")
+        .unwrap()
+        .clone();
+    assert_eq!(reviewer["result"], "FAIL");
+    assert_eq!(reviewer["mechanism"], "MODEL");
+    assert!(
+        reviewer["findings"]
+            .as_array()
+            .is_some_and(|findings| !findings.is_empty())
+    );
+    assert_eq!(*model_calls.lock().unwrap(), 2);
+
+    supervisor.stop();
+    model_server.abort();
+    core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
 

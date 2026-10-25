@@ -258,6 +258,26 @@ struct QualityReceiptRequest {
     tree_sha: String,
     result: ReceiptResult,
     evidence: EvidenceKind,
+    #[serde(default)]
+    findings: Vec<factory_native::review::ReviewFinding>,
+    #[serde(default)]
+    mechanism: factory_native::db::ReviewMechanism,
+    #[serde(default, rename = "modelProvider")]
+    model_provider: String,
+    #[serde(default, rename = "modelName")]
+    model_name: String,
+    #[serde(default, rename = "modelReservationId")]
+    model_reservation_id: String,
+    #[serde(default, rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(default, rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(default, rename = "totalTokens")]
+    total_tokens: u64,
+    #[serde(default, rename = "costMicros")]
+    cost_micros: u64,
+    #[serde(default, rename = "usageKnown")]
+    usage_known: bool,
 }
 
 #[tokio::main]
@@ -1448,6 +1468,16 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
         tree_sha: input.tree_sha,
         result: input.result,
         evidence: input.evidence,
+        findings: input.findings,
+        mechanism: input.mechanism,
+        model_provider: input.model_provider,
+        model_name: input.model_name,
+        model_reservation_id: input.model_reservation_id,
+        input_tokens: input.input_tokens,
+        output_tokens: input.output_tokens,
+        total_tokens: input.total_tokens,
+        cost_micros: input.cost_micros,
+        usage_known: input.usage_known,
     };
     match app
         .db
@@ -1925,7 +1955,7 @@ async fn quality_receipts(
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    if !authorized(&headers, &app.operator_token) {
+    if !authorized(&headers, &app.operator_token) && quality_role(&app, &headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     result_list(app.db.quality_receipts(&id).await)
