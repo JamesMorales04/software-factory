@@ -8,11 +8,12 @@
 
 use std::{env, time::Duration};
 
-use factory_native::db::{ActionSpec, ProviderTerminal};
+use factory_native::db::{ActionSpec, ProviderTerminal, ProviderTurnAuthorization};
 use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
 };
+use factory_native::provider_egress::{SharedTurnPolicy, TurnPolicy};
 use factory_native::provider_patch::{
     ProviderAction, ProviderUsage, command_matches_frozen_check, extract_action, extract_plan,
     extract_usage,
@@ -521,6 +522,7 @@ struct ProviderContext<'a> {
     base_url: &'a str,
     password: &'a str,
     directory: &'a str,
+    turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
 }
@@ -603,11 +605,13 @@ async fn execute_provider_assignment(
         .ok_or("Core provider intent returned no record id")?
         .to_owned();
 
-    let (base_url, password, sandbox) = match start_provider_runtime(
+    let turn_policy: SharedTurnPolicy = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (base_url, password, sandbox, egress_turn_policy) = match start_provider_runtime(
         &provider_dir,
         assignment.deadline_secs,
         &assignment.model,
         assignment.max_turns,
+        &turn_policy,
     )
     .await
     {
@@ -644,6 +648,7 @@ async fn execute_provider_assignment(
             base_url: base_url.as_str(),
             password: &password,
             directory: &directory,
+            turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
         })
@@ -658,6 +663,7 @@ async fn execute_provider_assignment(
             base_url: base_url.as_str(),
             password: &password,
             directory: &directory,
+            turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
         })
@@ -739,7 +745,16 @@ async fn start_provider_runtime(
     deadline_secs: u64,
     model: &str,
     max_turns: u32,
-) -> Result<(String, String, Option<ProviderSandbox>), Box<dyn std::error::Error>> {
+    turn_policy: &SharedTurnPolicy,
+) -> Result<
+    (
+        String,
+        String,
+        Option<ProviderSandbox>,
+        Option<SharedTurnPolicy>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
         "bwrap" => {
@@ -781,7 +796,8 @@ async fn start_provider_runtime(
                         allow_test_upstream,
                     )?
                     .with_model(model.to_owned())
-                    .with_max_requests(max_turns as usize + 1);
+                    .with_max_requests(max_turns as usize + 1)
+                    .with_turn_policy(turn_policy.clone());
                     (Some(config), Some(std::path::PathBuf::from(bridge)))
                 }
                 Err(_) => (None, None),
@@ -807,6 +823,7 @@ async fn start_provider_runtime(
                 sandbox.base_url().to_owned(),
                 sandbox.password().to_owned(),
                 Some(sandbox),
+                Some(turn_policy.clone()),
             ))
         }
         "unconfined" => {
@@ -831,7 +848,7 @@ async fn start_provider_runtime(
                 return Err("FACTORY_PROVIDER_PASSWORD must be at least 16 bytes".into());
             }
             factory_native::telemetry::register_secret(&password);
-            Ok((base_url.to_string(), password, None))
+            Ok((base_url.to_string(), password, None, None))
         }
         _ => Err("provider sandbox is not configured; refusing an unconfined provider".into()),
     }
@@ -936,7 +953,12 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut call_ids = std::collections::BTreeSet::new();
     for _ in 0..context.assignment.max_turns {
-        factory_native::runtime::submit_opencode_prompt(
+        let turn = if context.turn_policy.is_some() {
+            Some(authorize_provider_turn(context, &prompt).await?)
+        } else {
+            None
+        };
+        if let Err(error) = factory_native::runtime::submit_opencode_prompt(
             &http,
             context.base_url,
             context.password,
@@ -944,8 +966,14 @@ async fn run_provider_tool_loop(
             &session_id,
             &prompt,
         )
-        .await?;
-        let terminal = tokio::time::timeout(
+        .await
+        {
+            if let Some(turn) = &turn {
+                release_provider_turn(context, &turn.reservation_id).await;
+            }
+            return Err(error.into());
+        }
+        let terminal = match tokio::time::timeout(
             Duration::from_secs(context.assignment.deadline_secs),
             factory_native::runtime::wait_for_opencode_prompt_terminal(
                 &mut event_stream,
@@ -955,22 +983,48 @@ async fn run_provider_tool_loop(
             ),
         )
         .await
-        .map_err(|_| "provider deadline exceeded")??;
+        {
+            Ok(Ok(terminal)) => terminal,
+            Ok(Err(error)) => {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err(error.into());
+            }
+            Err(_) => {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err("provider deadline exceeded".into());
+            }
+        };
         let message = match &terminal {
             factory_native::runtime::OpenCodePromptTerminal::Idle {
                 cancel_requested: false,
                 ..
-            } => {
-                factory_native::runtime::read_opencode_assistant_message(
-                    &http,
-                    context.base_url,
-                    context.password,
-                    &directory,
-                    &session_id,
-                )
-                .await?
+            } => match factory_native::runtime::read_opencode_assistant_message(
+                &http,
+                context.base_url,
+                context.password,
+                &directory,
+                &session_id,
+            )
+            .await
+            {
+                Ok(message) => message,
+                Err(error) => {
+                    if let Some(turn) = &turn {
+                        release_provider_turn(context, &turn.reservation_id).await;
+                    }
+                    return Err(error.into());
+                }
+            },
+            _ => {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err("provider turn did not complete normally".into());
             }
-            _ => return Err("provider turn did not complete normally".into()),
         };
         let outcome =
             factory_native::runtime::reconcile_opencode_prompt(&session_id, terminal, &message)?;
@@ -978,9 +1032,17 @@ async fn run_provider_tool_loop(
             factory_native::runtime::OpenCodePromptOutcome::Completed { message_id, .. } => {
                 message_id
             }
-            _ => return Err("provider turn failed".into()),
+            _ => {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err("provider turn failed".into());
+            }
         };
         let turn_usage = extract_usage(&message);
+        if let Some(turn) = &turn {
+            settle_provider_turn(context, &turn.reservation_id, &turn_usage).await?;
+        }
         usage.input_tokens = usage.input_tokens.saturating_add(turn_usage.input_tokens);
         usage.output_tokens = usage.output_tokens.saturating_add(turn_usage.output_tokens);
         usage.total_tokens = usage.total_tokens.saturating_add(turn_usage.total_tokens);
@@ -1301,6 +1363,110 @@ fn request_digest(value: &serde_json::Value) -> Result<String, Box<dyn std::erro
     factory_native::attempt_grant::request_digest(value).map_err(Into::into)
 }
 
+async fn authorize_provider_turn(
+    context: &ProviderContext<'_>,
+    prompt: &serde_json::Value,
+) -> Result<ProviderTurnAuthorization, Box<dyn std::error::Error>> {
+    let Some(policy) = context.turn_policy else {
+        return Err("provider turn authorization requires an egress policy".into());
+    };
+    let digest = request_digest(prompt)?;
+    let response = context
+        .client
+        .post(context.core.join("worker/provider_turn_authorize")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "requested_output_tokens": 1024,
+            "request_sha256": digest
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Core refused provider turn authorization: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    let authorization: ProviderTurnAuthorization = response.json().await?;
+    *policy.lock().map_err(|_| "provider turn policy lock")? = Some(TurnPolicy {
+        reservation_id: authorization.reservation_id.clone(),
+        max_input_tokens: authorization.max_input_tokens,
+        max_output_tokens: authorization.max_output_tokens,
+        max_total_tokens: authorization.max_total_tokens,
+        max_cost_micros: authorization.max_cost_micros,
+        model: authorization.model.clone(),
+        request_sha256: authorization.request_sha256.clone(),
+        expires_at_ms: authorization.expires_at_ms,
+        requests: 0,
+        max_requests: 1,
+    });
+    Ok(authorization)
+}
+
+async fn settle_provider_turn(
+    context: &ProviderContext<'_>,
+    reservation_id: &str,
+    usage: &ProviderUsage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(policy) = context.turn_policy {
+        *policy.lock().map_err(|_| "provider turn policy lock")? = None;
+    }
+    let response = context
+        .client
+        .post(context.core.join("worker/provider_turn_settle")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "usage": {
+                "reservation_id": reservation_id,
+                "worker_id": context.worker_id,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+                "cost_micros": usage.cost_micros,
+                "usage_known": usage.known
+            }
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Core rejected provider turn usage: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn release_provider_turn(context: &ProviderContext<'_>, reservation_id: &str) {
+    if let Some(policy) = context.turn_policy
+        && let Ok(mut policy) = policy.lock()
+    {
+        *policy = None;
+    }
+    let _ = context
+        .client
+        .post(
+            context
+                .core
+                .join("worker/provider_turn_release")
+                .unwrap_or_else(|_| context.core.clone()),
+        )
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "reservation_id": reservation_id,
+            "worker_id": context.worker_id
+        }))
+        .send()
+        .await;
+}
+
 async fn request_workspace_operation(
     request: WorkspaceOperation<'_>,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -1550,7 +1716,12 @@ async fn run_provider_patch(
         &provider_session_id,
     )
     .await?;
-    factory_native::runtime::submit_opencode_prompt(
+    let turn = if context.turn_policy.is_some() {
+        Some(authorize_provider_turn(context, &prompt).await?)
+    } else {
+        None
+    };
+    if let Err(error) = factory_native::runtime::submit_opencode_prompt(
         &http,
         context.base_url,
         context.password,
@@ -1558,8 +1729,14 @@ async fn run_provider_patch(
         &provider_session_id,
         &prompt,
     )
-    .await?;
-    let terminal = tokio::time::timeout(
+    .await
+    {
+        if let Some(turn) = &turn {
+            release_provider_turn(context, &turn.reservation_id).await;
+        }
+        return Err(error.into());
+    }
+    let terminal = match tokio::time::timeout(
         Duration::from_secs(context.assignment.deadline_secs),
         factory_native::runtime::wait_for_opencode_prompt_terminal(
             &mut event_stream,
@@ -1569,7 +1746,21 @@ async fn run_provider_patch(
         ),
     )
     .await
-    .map_err(|_| "provider deadline exceeded")??;
+    {
+        Ok(Ok(terminal)) => terminal,
+        Ok(Err(error)) => {
+            if let Some(turn) = &turn {
+                release_provider_turn(context, &turn.reservation_id).await;
+            }
+            return Err(error.into());
+        }
+        Err(_) => {
+            if let Some(turn) = &turn {
+                release_provider_turn(context, &turn.reservation_id).await;
+            }
+            return Err("provider deadline exceeded".into());
+        }
+    };
     let response = match &terminal {
         factory_native::runtime::OpenCodePromptTerminal::Idle {
             cancel_requested: false,
@@ -1597,6 +1788,9 @@ async fn run_provider_patch(
             message_id,
         } => (session_id, message_id),
         factory_native::runtime::OpenCodePromptOutcome::Failed { session_id, error } => {
+            if let Some(turn) = &turn {
+                release_provider_turn(context, &turn.reservation_id).await;
+            }
             let _ = factory_native::runtime::delete_opencode_session(
                 &http,
                 context.base_url,
@@ -1608,6 +1802,9 @@ async fn run_provider_patch(
             return Err(format!("provider session {session_id} failed: {error}").into());
         }
         factory_native::runtime::OpenCodePromptOutcome::AbortRequestedAndIdle { session_id } => {
+            if let Some(turn) = &turn {
+                release_provider_turn(context, &turn.reservation_id).await;
+            }
             let _ = factory_native::runtime::delete_opencode_session(
                 &http,
                 context.base_url,
@@ -1693,6 +1890,9 @@ async fn run_provider_patch(
         }
     }
     let usage = extract_usage(&response);
+    if let Some(turn) = &turn {
+        settle_provider_turn(context, &turn.reservation_id, &usage).await?;
+    }
     let allocation = WorkspaceAllocation {
         attempt_id: context.assignment.lease.attempt_id.clone(),
         repository: context.assignment.repository.clone(),

@@ -8,7 +8,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -35,6 +35,22 @@ pub enum EgressError {
     Upstream(String),
 }
 
+#[derive(Clone, Debug)]
+pub struct TurnPolicy {
+    pub reservation_id: String,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_cost_micros: u64,
+    pub model: String,
+    pub request_sha256: String,
+    pub expires_at_ms: i64,
+    pub requests: usize,
+    pub max_requests: usize,
+}
+
+pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
+
 #[derive(Clone)]
 pub struct EgressConfig {
     host: String,
@@ -45,6 +61,7 @@ pub struct EgressConfig {
     timeout: Duration,
     max_requests: usize,
     allowed_model: Option<String>,
+    turn_policy: Option<SharedTurnPolicy>,
 }
 
 impl std::fmt::Debug for EgressConfig {
@@ -110,6 +127,7 @@ impl EgressConfig {
             timeout: Duration::from_secs(120),
             max_requests: 8,
             allowed_model: None,
+            turn_policy: None,
         })
     }
 
@@ -129,6 +147,15 @@ impl EgressConfig {
     pub fn with_max_requests(mut self, max_requests: usize) -> Self {
         self.max_requests = max_requests.max(1);
         self
+    }
+
+    pub fn with_turn_policy(mut self, policy: SharedTurnPolicy) -> Self {
+        self.turn_policy = Some(policy);
+        self
+    }
+
+    pub fn turn_policy(&self) -> Option<SharedTurnPolicy> {
+        self.turn_policy.clone()
     }
 }
 
@@ -234,7 +261,75 @@ async fn handle(
         write_status(&mut stream, 429, "request budget exhausted").await?;
         return Ok(());
     }
-    if let Some(model) = &config.allowed_model {
+    let mut body = body;
+    if let Some(policy) = &config.turn_policy {
+        if path == "/v1/models" && method == "GET" {
+            // Catalog reads do not consume model spend.
+        } else {
+            let decision: Result<Vec<u8>, (u16, &str)> = {
+                let mut guard = policy
+                    .lock()
+                    .map_err(|_| EgressError::Invalid("turn policy lock".into()))?;
+                if guard.is_none() {
+                    Err((403, "no provider turn is authorized"))
+                } else {
+                    let turn = guard.as_mut().expect("checked");
+                    if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
+                        || turn.requests >= turn.max_requests
+                    {
+                        Err((429, "provider turn budget is exhausted"))
+                    } else {
+                        match serde_json::from_slice::<serde_json::Value>(&body) {
+                            Err(_) => Err((400, "request body is not JSON")),
+                            Ok(mut value) => {
+                                if value.get("model").and_then(serde_json::Value::as_str)
+                                    != Some(turn.model.as_str())
+                                {
+                                    Err((403, "model is not authorized"))
+                                } else {
+                                    let digest = crate::attempt_grant::request_digest(&value)
+                                        .map_err(|_| {
+                                            EgressError::Invalid("request digest".into())
+                                        })?;
+                                    if digest != turn.request_sha256 {
+                                        Err((403, "provider turn request does not match"))
+                                    } else {
+                                        let max_output =
+                                            turn.max_output_tokens.min(u64::from(u32::MAX));
+                                        let field = if path == "/v1/responses" {
+                                            "max_output_tokens"
+                                        } else {
+                                            "max_tokens"
+                                        };
+                                        if let Some(object) = value.as_object_mut() {
+                                            object.insert(
+                                                field.into(),
+                                                serde_json::Value::from(max_output),
+                                            );
+                                        }
+                                        match serde_json::to_vec(&value) {
+                                            Ok(encoded) => {
+                                                turn.requests = turn.requests.saturating_add(1);
+                                                Ok(encoded)
+                                            }
+                                            Err(_) => Err((500, "request encoding failed")),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            match decision {
+                Ok(encoded) => body = encoded,
+                Err((status, message)) => {
+                    write_status(&mut stream, status, message).await?;
+                    return Ok(());
+                }
+            }
+        }
+    } else if let Some(model) = &config.allowed_model {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
             write_status(&mut stream, 400, "request body is not JSON").await?;
             return Ok(());

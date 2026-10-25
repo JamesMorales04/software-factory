@@ -12,7 +12,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use factory_native::provider_egress::{EgressBroker, EgressConfig, start_loopback_bridge};
+use factory_native::{
+    attempt_grant::request_digest,
+    provider_egress::{
+        EgressBroker, EgressConfig, SharedTurnPolicy, TurnPolicy, start_loopback_bridge,
+    },
+};
 
 #[derive(Clone)]
 struct Upstream {
@@ -111,6 +116,126 @@ async fn broker_injects_credential_and_restricts_routes() {
             .status(),
         StatusCode::BAD_GATEWAY
     );
+    bridge.abort();
+    broker.stop();
+    server.abort();
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
+    use axum::{Router, extract::State, http::HeaderMap, routing::post};
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Upstream {
+        seen: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    async fn responses(
+        State(state): State<Upstream>,
+        headers: HeaderMap,
+        body: String,
+    ) -> axum::Json<serde_json::Value> {
+        state.seen.lock().unwrap().push((
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+            body,
+        ));
+        axum::Json(
+            serde_json::json!({"id":"resp","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}),
+        )
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/v1/responses", post(responses))
+        .with_state(Upstream { seen: seen.clone() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let body = serde_json::json!({"model":"mock-model","input":"hello"});
+    let policy: SharedTurnPolicy = Arc::new(Mutex::new(Some(TurnPolicy {
+        reservation_id: "reservation".into(),
+        max_input_tokens: 100,
+        max_output_tokens: 5,
+        max_total_tokens: 105,
+        max_cost_micros: 1000,
+        model: "mock-model".into(),
+        request_sha256: request_digest(&body).unwrap(),
+        expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        requests: 0,
+        max_requests: 2,
+    })));
+    let socket = std::env::temp_dir().join(format!("tp-{}", uuid::Uuid::new_v4().simple()));
+    let config = EgressConfig::new(
+        &format!("http://{upstream}"),
+        "real-upstream-credential-0123456789".into(),
+        "egress-token-0123456789abcdef0123456789abcdef".into(),
+        true,
+    )
+    .unwrap()
+    .with_turn_policy(policy);
+    let broker = EgressBroker::start(config, &socket).await.unwrap();
+    let (address, bridge) = start_loopback_bridge(&socket).await.unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/v1/responses");
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&serde_json::json!({"model":"other","input":"hello"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen.iter()
+            .all(|(auth, _)| auth == "Bearer real-upstream-credential-0123456789")
+    );
+    for (_, body) in seen {
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["max_output_tokens"], 5);
+    }
     bridge.abort();
     broker.stop();
     server.abort();

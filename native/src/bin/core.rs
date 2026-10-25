@@ -28,6 +28,7 @@ struct App {
     reviewer_token: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
+    lead_model: Option<factory_native::lead_model::ModelLeadConfig>,
     attempt_grant_key: Vec<u8>,
 }
 
@@ -36,6 +37,29 @@ struct App {
 struct NewProject {
     repository: String,
     idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderTurnAuthorize {
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+    requested_output_tokens: u64,
+    request_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderTurnRelease {
+    reservation_id: String,
+    worker_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderTurnSettle {
+    usage: factory_native::db::ProviderTurnUsage,
 }
 
 #[derive(Deserialize)]
@@ -263,6 +287,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
             == Some("1"),
+        lead_model: match env::var("FACTORY_LEAD_MODEL_URL") {
+            Ok(url) => {
+                let token = env::var("FACTORY_LEAD_MODEL_TOKEN")
+                    .map_err(|_| "FACTORY_LEAD_MODEL_TOKEN required")?;
+                factory_native::telemetry::register_secret(&token);
+                Some(factory_native::lead_model::ModelLeadConfig {
+                    url,
+                    token,
+                    model: env::var("FACTORY_LEAD_MODEL_NAME")
+                        .unwrap_or_else(|_| "lead-model".into()),
+                    timeout: std::time::Duration::from_secs(60),
+                })
+            }
+            Err(_) => None,
+        },
         attempt_grant_key: attempt_grant_key.into_bytes(),
     });
     let router = build_router(app);
@@ -329,6 +368,18 @@ fn api_router(app: Arc<App>) -> Router {
             post(worker_provider_tool_event),
         )
         .route("/worker/provider_state", post(worker_provider_state))
+        .route(
+            "/worker/provider_turn_authorize",
+            post(worker_provider_turn_authorize),
+        )
+        .route(
+            "/worker/provider_turn_settle",
+            post(worker_provider_turn_settle),
+        )
+        .route(
+            "/worker/provider_turn_release",
+            post(worker_provider_turn_release),
+        )
         .route("/provider/sessions", get(provider_sessions))
         .route(
             "/worker/provider_unresolved",
@@ -892,6 +943,62 @@ async fn worker_workspace_operation(
     }
 }
 
+async fn worker_provider_turn_authorize(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderTurnAuthorize>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .authorize_provider_turn(
+            &input.session_record_id,
+            &input.worker_id,
+            input.generation,
+            input.requested_output_tokens,
+            &input.request_sha256,
+        )
+        .await
+    {
+        Ok(authorization) => (StatusCode::CREATED, Json(authorization)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_turn_release(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderTurnRelease>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .release_provider_turn(&input.reservation_id, "worker released turn")
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_turn_settle(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderTurnSettle>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.usage.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.settle_provider_turn(&input.usage).await {
+        Ok(usage) => Json(usage).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn provider_sessions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1203,13 +1310,6 @@ async fn assess_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !app.lead_fixture_assessor {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"error":"no provider assessor is authorized; set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
-        )
-            .into_response();
-    }
     let request = match app.db.lead_request(&id).await {
         Ok(request) => request,
         Err(error) => return api_error(error),
@@ -1226,6 +1326,13 @@ async fn assess_lead_request(
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
+    if app.lead_model.is_none() && !app.lead_fixture_assessor {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"error":"no provider assessor is authorized; configure FACTORY_LEAD_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
+        )
+            .into_response();
+    }
     if request.state == factory_native::lead::LeadRequestState::Submitted
         && let Err(error) = app.db.begin_lead_assessment(&id).await
     {
@@ -1236,26 +1343,58 @@ async fn assess_lead_request(
         project_id: action.project_id.clone(),
         status: factory_native::lead::ActionStatus::Pending,
     };
-    let (mut assessment, mut proposal) = match factory_native::lead::fixture_lead_assessment(
-        &request.id,
-        &config,
-        &action_binding,
-        &action.spec,
-        &request.objective,
-        &grant,
-        chrono::Utc::now(),
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = app.db.block_lead_request(&id, &error.to_string()).await;
-            return api_error(error.into());
+    let mechanism = if app.lead_model.is_some() {
+        "MODEL"
+    } else {
+        "FIXTURE"
+    };
+    let (mut assessment, mut proposal) = if let Some(model) = &app.lead_model {
+        match factory_native::lead_model::assess(
+            model,
+            factory_native::lead_model::AssessmentRequest {
+                request_id: &request.id,
+                project: &config,
+                action: &action_binding,
+                action_spec: &action.spec,
+                objective: &request.objective,
+                grant: &grant,
+                now: chrono::Utc::now(),
+            },
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = app.db.block_lead_request(&id, &error.to_string()).await;
+                return api_error(error.into());
+            }
+        }
+    } else {
+        match factory_native::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &action_binding,
+            &action.spec,
+            &request.objective,
+            &grant,
+            chrono::Utc::now(),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = app.db.block_lead_request(&id, &error.to_string()).await;
+                return api_error(error.into());
+            }
         }
     };
-    let requested_units = env::var("FACTORY_LEAD_FIXTURE_UNITS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 8);
+    let requested_units = if app.lead_fixture_assessor {
+        env::var("FACTORY_LEAD_FIXTURE_UNITS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 8)
+    } else {
+        1
+    };
     if requested_units > 1 {
         let fanin = env::var("FACTORY_LEAD_FIXTURE_MODE").ok().as_deref() == Some("fanin");
         proposal.budget.max_attempts = 1;
@@ -1289,10 +1428,10 @@ async fn assess_lead_request(
         .db
         .record_lead_assessment(
             &id,
-            "FIXTURE",
+            mechanism,
             &assessment,
             &input,
-            &format!("fixture-assessment:{id}"),
+            &format!("{mechanism}-assessment:{id}"),
         )
         .await
     {
@@ -1301,7 +1440,7 @@ async fn assess_lead_request(
     };
     let proposal_record = match app
         .db
-        .record_lead_proposal(&id, &proposal, &format!("fixture-proposal:{id}"))
+        .record_lead_proposal(&id, &proposal, &format!("{mechanism}-proposal:{id}"))
         .await
     {
         Ok(record) => record,
@@ -1629,6 +1768,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();
@@ -1750,6 +1890,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
@@ -1880,6 +2021,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
@@ -1933,6 +2075,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();
