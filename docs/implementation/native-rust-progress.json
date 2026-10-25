@@ -74,7 +74,7 @@
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
   "security_status": "PARTIAL/BLOCKED: trusted Worker holds long-lived credentials and host authority. Deterministic provider is bubblewrap-confined; allocation/workspace reuse and operation grants are generation-bound; operation grants are one-time, request-digest-bound and live-lease-bound; egress is pinned to an authenticated broker with model/request limits; quotas and confined recovery primitives exist. Independent model review HIGH findings repaired. Human certification, hard storage quota, long-operation revocation, real provider egress configuration, full crash E2E and ISOLATED remain absent; ISOLATED fail-closed.",
-  "delivery_status": "PR #17 Draft at 48646ea2d08827fd9cd1a295cf891d4d1e25e226; Rust-only tree; provider hardening and CI green; independent model review repairs pending follow-up, human certification/live coding/ISOLATED absent.",
+  "delivery_status": "PR #17 Draft at ba0d7216d0de916101cc943d8da6fd7702d59f93; Rust-only tree; provider hardening and CI green; independent model review/follow-up repairs recorded; human certification, live coding and ISOLATED absent.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
   "next_task": "Record exact-head CI and rerun the independent review on the repaired candidate; then complete full confined crash E2E, hard storage quota and real OpenCode/Codex egress configuration before requesting live authorization.",
@@ -87,8 +87,8 @@
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: candidate boundary and independent model review exist; human certification, hard quota and compromised-Worker isolation absent",
-    "G9": "PARTIAL: exact-head Rust CI green at 48646ea2d08827fd9cd1a295cf891d4d1e25e226; Podman real tests NOT_RUN; human acceptance absent",
-    "G10": "PASS: architecture, PR-impact and strict hygiene at 48646ea2d08827fd9cd1a295cf891d4d1e25e226",
+    "G9": "PARTIAL: exact-head Rust CI green at ba0d7216d0de916101cc943d8da6fd7702d59f93; Podman real tests NOT_RUN; human acceptance absent",
+    "G10": "PASS: architecture, PR-impact and strict hygiene at ba0d7216d0de916101cc943d8da6fd7702d59f93",
     "G11": "PARTIAL: independent Codex model review and follow-up completed; HIGH repairs at 0c70a85; human security certification absent",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
@@ -116,7 +116,7 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI pending for code candidate 0c70a85.",
+  "ci_at_update": "Exact-head CI at ba0d7216d0de916101cc943d8da6fd7702d59f93: Native Rust both runs, Office both runs and governance PASS; bubblewrap/prlimit smoke, real bwrap host/network/credential tests, egress broker, quota kill, confined recovery identity and confined provider E2E executed. Podman real tests remain NOT_RUN in CI.",
   "author_verification_at_code_sha": {
     "sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
     "binding": "AUTHOR_RUN_WORKING_TREE",

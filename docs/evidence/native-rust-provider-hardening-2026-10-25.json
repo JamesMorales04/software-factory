@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
   "candidate_sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
-  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
   "independent_review": {
     "reviewer": "independent Codex subagent gpt-6-sol high",
     "reviewed_sha": "e0bb7d2f06a7949bd4bb23be2f6edbd7ee89c8c3",
@@ -49,7 +49,7 @@
     "ordinary_file_secret_negatives": "PASS",
     "multi_turn_provider_e2e": "PASS",
     "office_browser": "PASS",
-    "exact_head_ci": "PASS at 48646ea2d08827fd9cd1a295cf891d4d1e25e226: Native Rust both runs, Office both runs, governance, executed bubblewrap/prlimit/egress/quota/recovery tests and confined provider E2E"
+    "exact_head_ci": "PASS at ba0d7216d0de916101cc943d8da6fd7702d59f93: Native Rust both runs, Office both runs, governance, executed bubblewrap/prlimit/egress/quota/recovery tests and confined provider E2E"
   },
   "not_claimed": [
     "human security certification",
@@ -61,5 +61,5 @@
     "merge or deployment authorization"
   ],
   "provider_paid_turns": 0,
-  "exact_head_sha": "48646ea2d08827fd9cd1a295cf891d4d1e25e226"
+  "exact_head_sha": "ba0d7216d0de916101cc943d8da6fd7702d59f93"
 }

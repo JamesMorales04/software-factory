@@ -4,11 +4,14 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "exact_head_sha": "48646ea2d08827fd9cd1a295cf891d4d1e25e226",
-  "code_candidate_sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+  "exact_head_sha": "ba0d7216d0de916101cc943d8da6fd7702d59f93",
+  "code_candidate_sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
   "binding": "EXACT_HEAD_GITHUB_ACTIONS",
-  "native_rust_runs": [40203601982, 40203606413],
-  "governance_run": 40203606423,
+  "native_rust_runs": [
+    40205378314,
+    40205384410
+  ],
+  "governance_run": 40205384412,
   "bubblewrap_install_and_smoke": "PASS",
   "prlimit_smoke": "PASS",
   "real_bwrap_host_network_credential_tests": "PASS (executed)",
