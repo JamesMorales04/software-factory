@@ -3,7 +3,7 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -30,6 +30,7 @@ struct App {
     lead_autonomous_start: bool,
     lead_model: Option<factory_native::lead_model::ModelLeadConfig>,
     attempt_grant_key: Vec<u8>,
+    observability: factory_native::observability::ExporterHandle,
 }
 
 #[derive(Deserialize)]
@@ -277,8 +278,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     factory_native::telemetry::register_secret(&attempt_grant_key);
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
     let addr: SocketAddr = validate_bind(&bind, container_mode)?;
+    let db = Database::open(Path::new(&database)).await?;
+    let observability = match factory_native::observability::Config::from_env() {
+        Ok(Some(config)) => match factory_native::observability::start(db.clone(), config) {
+            Ok(handle) => handle,
+            Err(error) => {
+                tracing::warn!(%error, "OTLP export disabled");
+                factory_native::observability::ExporterHandle::disabled_with_error(
+                    error.to_string(),
+                )
+            }
+        },
+        Ok(None) => factory_native::observability::ExporterHandle::disabled(),
+        Err(error) => {
+            tracing::warn!(%error, "OTLP export disabled");
+            factory_native::observability::ExporterHandle::disabled_with_error(error.to_string())
+        }
+    };
     let app = Arc::new(App {
-        db: Database::open(Path::new(&database)).await?,
+        db,
         operator_token,
         worker_bootstrap_token,
         verifier_token,
@@ -303,12 +321,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         },
         attempt_grant_key: attempt_grant_key.into_bytes(),
+        observability,
     });
-    let router = build_router(app);
+    let router = build_router(Arc::clone(&app));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "native Factory Core listening");
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    app.observability.shutdown().await;
+    app.db.close().await;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 fn build_router(app: Arc<App>) -> Router {
@@ -347,6 +391,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
         .route("/events", get(events))
+        .route("/observability", get(observability_status))
         .route("/worker/register", post(register_worker))
         .route("/worker/claim", post(worker_claim))
         .route("/worker/heartbeat", post(worker_heartbeat))
@@ -729,11 +774,39 @@ async fn attempts(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     }
     result_list(app.db.attempts().await)
 }
-async fn events(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+#[derive(Deserialize, Default)]
+struct EventsQuery {
+    after: Option<i64>,
+    limit: Option<usize>,
+}
+
+async fn events(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
+) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.events().await)
+    if query.after.is_none() && query.limit.is_none() {
+        return result_list(app.db.events().await);
+    }
+    let after = query.after.unwrap_or(0);
+    if after < 0 {
+        return api_error(Error::Invalid("event cursor"));
+    }
+    let limit = query
+        .limit
+        .unwrap_or(100)
+        .clamp(1, factory_native::db::EVENTS_PAGE_MAX);
+    result_list(app.db.events_after(after, limit).await)
+}
+
+async fn observability_status(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(app.observability.status()).into_response()
 }
 async fn register_worker(
     State(app): State<Arc<App>>,
@@ -1770,6 +1843,7 @@ mod tests {
             lead_autonomous_start: false,
             lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1892,6 +1966,7 @@ mod tests {
             lead_autonomous_start: false,
             lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -2023,6 +2098,7 @@ mod tests {
             lead_autonomous_start: false,
             lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -2077,6 +2153,7 @@ mod tests {
             lead_autonomous_start: false,
             lead_model: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
