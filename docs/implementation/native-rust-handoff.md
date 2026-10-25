@@ -788,7 +788,7 @@ CAP-014 integration, browser test server, telemetry and human certification
 remain open.
 
 
-## Full budget and model Lead E2E (2026-10-25) — code `3d76e8ed61173a08a029e3c44e3743d3823cf5da`
+## Full budget and model Lead E2E (2026-10-25) — `f732b7a615c0c978f8d4219b3c498d350e561fce` (code `3d76e8ed61173a08a029e3c44e3743d3823cf5da`)
 
 The deterministic fixture provider now consumes the scoped egress broker on
 every prompt. Four prompts traverse Worker → Core per-turn authorization →
@@ -805,3 +805,10 @@ Remaining: semantic Reviewer, CAP-014 integration, Factory-managed browser test
 server, WorkGraph cancellation/restart E2E, Office multi-unit/recovery
 projections, telemetry/OTLP, hard quota/cgroup limits, full crash E2E, human
 certification and live coding.
+
+
+Exact-head CI at `f732b7a615c0c978f8d4219b3c498d350e561fce` passed Native Rust (both runs), Office browser (both
+runs) and governance. The next required product milestone is the independently
+configured semantic Reviewer, followed by CAP-014 integration, browser test
+server, WorkGraph cancellation/restart, Office multi-unit/recovery and
+telemetry.

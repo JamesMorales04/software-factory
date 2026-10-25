@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
   "candidate_sha": "3d76e8ed61173a08a029e3c44e3743d3823cf5da",
-  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
   "per_turn_budget": {
     "core_authorization": "POST /worker/provider_turn_authorize",
     "core_settlement": "POST /worker/provider_turn_settle",
@@ -48,13 +48,13 @@
     "live provider coding",
     "ISOLATED certification"
   ],
-  "exact_head_sha": "e402b04ca13924279b41288793dafc2d744726b8",
+  "exact_head_sha": "f732b7a615c0c978f8d4219b3c498d350e561fce",
   "exact_head_ci": {
     "native_rust_runs": [
-      40223702500,
-      40223707316
+      40230909416,
+      40230914664
     ],
-    "governance_run": 40223707308,
+    "governance_run": 40230914676,
     "result": "PASS"
   }
 }
