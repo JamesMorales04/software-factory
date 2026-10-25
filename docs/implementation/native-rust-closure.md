@@ -13,7 +13,7 @@ replace candidate-bound test output, independent review or protected approval.
 | PR #17 branch | `native-rust-replacement-20261023` |
 | Product | Software Factory, independent Rust implementation |
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
-| Integration candidate | `067d26b9d229113b17c934dde0f5290af7008403` (local author-run gates; exact-head CI pending) |
+| Integration candidate | `067d26b9d229113b17c934dde0f5290af7008403` (local author-run gates); exact-head PR checks are authoritative |
 | Merge state | PR #17 Draft; protected merge requires exact-head CI and owner authorization |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
@@ -62,7 +62,7 @@ portfolio; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; bubblewrap and egress hardening are implemented. Monitor-based storage limits, running model-call revocation and human certification remain open. ISOLATED remains blocked. |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, deterministic reviewer, model semantic reviewer with mandatory deterministic pre-review, and deterministic gate pass; no live model-quality or human acceptance |
 | M8 Office | `IMPLEMENTED_UNVERIFIED` | Rust Office browser journey passes with WorkGraph, plan, findings, model-call budgets, telemetry, cancellation and runtime projections |
-| M9 Testing | `PARTIAL` | 317 Rust tests discovered; workspace tests, browser real-Chromium E2E, CAP-014, observability, WorkGraph, recovery/cancellation, provider and Office journeys pass locally; exact-head CI pending |
+| M9 Testing | `PARTIAL` | 317 Rust tests discovered; workspace tests, browser real-Chromium E2E, CAP-014, observability, WorkGraph, recovery/cancellation, provider and Office journeys pass locally; exact-head PR checks are authoritative |
 | M10 Governance | `PARTIAL` | Rust architecture checker, roadmap regeneration and strict hygiene pass; browser real-Chromium lane added to the office job; conditional Podman/provider-compat lanes remain manual |
 | M11 Independent review | `PARTIAL` | Independent same-model security/architecture/release reviews were performed and findings repaired; human security certification remains absent |
 | M12 Delivery authorization | `PENDING` | Product Owner merge decision and exact-head CI remain |

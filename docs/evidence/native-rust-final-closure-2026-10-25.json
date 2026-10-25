@@ -4,8 +4,8 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "candidate_sha": "PENDING_EXACT_HEAD",
-  "binding": "AUTHOR_RUN_LOCAL_UAT_PLUS_PENDING_EXACT_HEAD_CI",
+  "candidate_sha": "3d1cd98b2aab1442f8ba9fa93ac3e61cf9a08fce",
+  "binding": "AUTHOR_RUN_LOCAL_UAT_PLUS_EXACT_HEAD_PR_CHECKS",
   "scope": "Linux local developer preview; TRUSTED_LOCAL and deterministic fixture/provider tests only. No ISOLATED certification, live paid model-quality certification, Windows support or production deployment is claimed.",
   "migration_count": 18,
   "rust": {
@@ -178,5 +178,6 @@
       "name": "uat7_full_lifecycle",
       "pass": true
     }
-  ]
+  ],
+  "ci": "Exact-head PR #17 checks are the authoritative CI binding; local author-run gates are recorded in this file."
 }
