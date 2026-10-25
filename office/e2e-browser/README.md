@@ -5,7 +5,11 @@ The authoritative end-to-end journey is `rust-journey.mjs`, run by
 the real Rust Core, Supervisor, Worker and Vite Office in disposable state and
 drives Chromium through Project registration, Action creation, Campaign
 authorization, Run/Attempt dispatch, the independent verifier/reviewer and an
-`ACCEPTED` Quality Gate, plus the Workers and Lead views and reload paths.
+`ACCEPTED` Quality Gate, plus the Workers and Lead views and reload paths. It
+also checks the pending reviewer projection before reviewer evidence exists,
+the decoded Lead assessment/proposal/plan, a Lead-started Campaign WorkGraph,
+the authorization budget projection and an explicit operator Campaign
+cancellation with its recorded recovery state.
 
 `harness.mjs`, `browser-close.test.mjs` and `launch-timeout.test.mjs` retain
 generic bounded browser shutdown and launch-timeout fault coverage. They do not

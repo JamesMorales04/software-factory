@@ -1,16 +1,6 @@
 import { useEffect, useState } from "react";
-import {
-  CoreApiError,
-  coreApi,
-  type ProviderSession,
-} from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
-
-function cleanupClass(state: string) {
-  if (state === "CLEANED" || state === "COMPLETED") return "pill recovery-confirmed";
-  if (state === "ORPHANED" || state === "FAILED") return "pill recovery-blocked";
-  return "pill";
-}
+import { CoreApiError, coreApi, type ProviderSession } from "../coreApi";
+import { formatTimestamp, sessionStateClass, shortId } from "../format";
 
 export function Runtime() {
   const [sessions, setSessions] = useState<ProviderSession[]>([]);
@@ -44,7 +34,9 @@ export function Runtime() {
   }, []);
 
   const unresolved = sessions.filter((session) =>
-    ["INTENT", "ACTIVE", "CANCEL_REQUESTED", "ORPHANED"].includes(session.state),
+    ["INTENT", "ACTIVE", "CANCEL_REQUESTED", "ORPHANED"].includes(
+      session.state,
+    ),
   ).length;
 
   return (
@@ -93,7 +85,7 @@ export function Runtime() {
                   <span className="muted">{session.provider_mode}</span>
                 </td>
                 <td>
-                  <span className={cleanupClass(session.state)}>
+                  <span className={sessionStateClass(session.state)}>
                     {session.state}
                   </span>
                 </td>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { CancelCampaign } from "../CancelCampaign";
 import {
   type Action,
   type Attempt,
@@ -166,6 +167,22 @@ export function Campaigns() {
     }
   }
 
+  async function onCancelled(campaign: Campaign) {
+    setNotice(
+      `Campaign ${shortId(campaign.id)} is ${campaign.status}. Core records the cancellation; provider termination can remain unconfirmed.`,
+    );
+    setError(null);
+    try {
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Failed to refresh Campaigns after cancellation.",
+      );
+    }
+  }
+
   const actionById = new Map(actions.map((action) => [action.id, action]));
   const runByCampaign = new Map<string, Run>();
   for (const run of runs) {
@@ -245,7 +262,9 @@ export function Campaigns() {
               return (
                 <tr key={campaign.id}>
                   <td>
-                    <code>{shortId(campaign.id)}</code>
+                    <Link to={`/campaigns/${campaign.id}`}>
+                      <code>{shortId(campaign.id)}</code>
+                    </Link>
                   </td>
                   <td>
                     {action ? (
@@ -289,6 +308,11 @@ export function Campaigns() {
                       </button>
                     )}
                     {run && <span className="muted">run {run.status}</span>}
+                    <CancelCampaign
+                      campaign={campaign}
+                      disabled={busy}
+                      onCancelled={onCancelled}
+                    />
                   </td>
                 </tr>
               );
