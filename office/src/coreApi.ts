@@ -189,6 +189,24 @@ export type ReceiptResult =
 export type EvidenceKind = "EXECUTED" | "MOCKED" | "UNKNOWN";
 export type QualityRole = "verifier" | "reviewer";
 
+export type ReviewMechanism = "DETERMINISTIC" | "MODEL";
+export type FindingSeverity = "blocking" | "warning" | "info";
+export type FindingCategory =
+  | "functional"
+  | "architecture"
+  | "security"
+  | "testing"
+  | "scope"
+  | "other";
+
+export interface ReviewFinding {
+  id: string;
+  severity: FindingSeverity;
+  category: FindingCategory;
+  message: string;
+  evidence_refs: string[];
+}
+
 export interface QualityReceipt {
   receipt_id: string;
   candidate_id: string;
@@ -199,7 +217,51 @@ export interface QualityReceipt {
   tree_sha: string;
   result: ReceiptResult;
   evidence: EvidenceKind;
+  findings: ReviewFinding[];
+  mechanism: ReviewMechanism;
+  model_provider: string;
+  model_name: string;
+  model_reservation_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micros: number;
+  usage_known: boolean;
   received_at: string;
+}
+
+export type ModelCallRole = "Lead" | "SemanticReviewer" | "Evaluation";
+
+export interface ModelCallRecord {
+  reservation_id: string;
+  role: ModelCallRole;
+  principal_id: string;
+  project_id: string;
+  objective_id: string;
+  scope_id: string;
+  provider: string;
+  model: string;
+  purpose: string;
+  request_sha256: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micros: number;
+  usage_known: boolean;
+  state: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ObservabilityStatus {
+  enabled: boolean;
+  cursor: number;
+  exported: number;
+  dropped: number;
+  failed_attempts: number;
+  pending: number;
+  last_error: string | null;
 }
 
 export interface Health {
@@ -552,6 +614,9 @@ export const coreApi = {
   listEvents: () => request<FactoryEvent[]>("/events"),
   listWorkers: () => request<WorkerSummary[]>("/workers"),
   listProviderSessions: () => request<ProviderSession[]>("/provider/sessions"),
+  listModelCalls: (limit = 100) =>
+    request<ModelCallRecord[]>(`/model/calls?limit=${limit}`),
+  getObservability: () => request<ObservabilityStatus>("/observability"),
   getCandidateReceipts: (candidateId: string) =>
     request<QualityReceipt[]>(
       `/quality/candidates/${encodeURIComponent(candidateId)}/receipts`,

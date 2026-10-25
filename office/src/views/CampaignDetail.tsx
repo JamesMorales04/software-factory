@@ -728,6 +728,50 @@ export function CampaignDetail() {
                     })}
                   </tbody>
                 </table>
+                {candidateReceipts.some(
+                  (receipt) => receipt.findings.length > 0,
+                ) && (
+                  <div data-testid="review-findings">
+                    <h5>Review findings</h5>
+                    {candidateReceipts
+                      .filter((receipt) => receipt.findings.length > 0)
+                      .map((receipt) => (
+                        <div key={receipt.receipt_id}>
+                          <p className="muted">
+                            {receipt.role} / {receipt.mechanism}
+                            {receipt.model_provider
+                              ? ` / ${receipt.model_provider} ${receipt.model_name}`
+                              : ""}
+                            {receipt.model_reservation_id
+                              ? ` / reservation ${shortId(receipt.model_reservation_id)}`
+                              : ""}
+                            {receipt.mechanism === "MODEL"
+                              ? ` / ${receipt.usage_known ? `${receipt.total_tokens} tokens, ${formatCostMicros(receipt.cost_micros)}` : "usage UNKNOWN"}`
+                              : ""}
+                          </p>
+                          <ul className="findings">
+                            {receipt.findings.map((finding) => (
+                              <li key={finding.id}>
+                                <span
+                                  className={`pill check-${finding.severity === "blocking" ? "FAIL" : finding.severity === "warning" ? "CHANGES_REQUESTED" : "PENDING"}`}
+                                >
+                                  {finding.severity}
+                                </span>{" "}
+                                <strong>{finding.category}</strong>:{" "}
+                                {finding.message}
+                                {finding.evidence_refs.length > 0 && (
+                                  <span className="muted">
+                                    {" "}
+                                    ({finding.evidence_refs.join(", ")})
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                  </div>
+                )}
                 <h5>Quality Gate</h5>
                 {gate ? (
                   <>

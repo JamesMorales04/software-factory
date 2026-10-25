@@ -110,8 +110,7 @@ try {
   }
   if (text) {
     await page.waitForFunction(
-      (expected) =>
-        (document.body?.innerText ?? "").includes(expected),
+      (expected) => (document.body?.innerText ?? "").includes(expected),
       text,
       { timeout: timeoutMs },
     );
