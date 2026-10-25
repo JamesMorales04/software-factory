@@ -348,8 +348,12 @@ fn request_digest(config: &ModelGatewayConfig, request: &ModelCallRequest<'_>) -
 }
 
 fn estimate_tokens(system_prompt: &str, user_prompt: &str) -> u64 {
+    // UTF-8 tokenizers cannot emit more tokens than input bytes, and a model
+    // call also has a small fixed conversation framing overhead. Reserving up
+    // to the byte count is conservative but prevents a measured input from
+    // exceeding its pre-request reservation.
     let bytes = system_prompt.len().saturating_add(user_prompt.len()) as u64;
-    bytes.saturating_add(2) / 3
+    bytes.max(64)
 }
 
 fn estimate_cost(config: &ModelGatewayConfig, input: u64, output: u64) -> u64 {
@@ -462,5 +466,228 @@ mod tests {
         assert_eq!(estimate_cost(&gateway.config, 1_000_000, 0), 150_000);
         assert_eq!(estimate_cost(&gateway.config, 0, 1_000_000), 600_000);
         assert_eq!(estimate_cost(&gateway.config, 1, 1), 2);
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone, Copy)]
+    enum Behavior {
+        Success,
+        NoUsage,
+        Timeout,
+        Reject,
+    }
+
+    #[derive(Clone)]
+    struct Upstream {
+        behavior: Behavior,
+        calls: Arc<Mutex<usize>>,
+    }
+
+    async fn chat(
+        axum::extract::State(state): axum::extract::State<Upstream>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        *state.calls.lock().await += 1;
+        match state.behavior {
+            Behavior::Success => axum::Json(json!({
+                "choices":[{"message":{"content":"{\"ok\":true}"}}],
+                "usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19,"cost_micros":11}
+            }))
+            .into_response(),
+            Behavior::NoUsage => axum::Json(json!({
+                "choices":[{"message":{"content":"{\"ok\":true}"}}]
+            }))
+            .into_response(),
+            Behavior::Timeout => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                axum::Json(json!({"choices":[{"message":{"content":"late"}}]})).into_response()
+            }
+            Behavior::Reject => (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error":"invalid request"})),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn upstream(
+        behavior: Behavior,
+    ) -> (String, Arc<Mutex<usize>>, tokio::task::JoinHandle<()>) {
+        use axum::{Router, routing::post};
+        let calls = Arc::new(Mutex::new(0));
+        let app = Router::new()
+            .route("/chat/completions", post(chat))
+            .with_state(Upstream {
+                behavior,
+                calls: calls.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (url, calls, server)
+    }
+
+    fn gateway(url: &str, timeout_ms: u64) -> ModelGateway {
+        ModelGateway::new(ModelGatewayConfig {
+            base_url: url.into(),
+            credential: "test-credential-1234567890".into(),
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            timeout: Duration::from_millis(timeout_ms),
+            input_micros_per_million: 150_000,
+            output_micros_per_million: 600_000,
+            lead_policy: ModelCallPolicy {
+                max_input_tokens: 32_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 200_000,
+            },
+            reviewer_policy: ModelCallPolicy {
+                max_input_tokens: 64_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 300_000,
+            },
+            evaluation_policy: ModelCallPolicy {
+                max_input_tokens: 200_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 2_000_000,
+            },
+            allow_loopback_http: true,
+        })
+        .unwrap()
+    }
+
+    fn request<'a>(scope: &'a str, prompt: &'a str) -> ModelCallRequest<'a> {
+        ModelCallRequest {
+            role: ModelCallRole::Evaluation,
+            principal_id: "evaluator",
+            project_id: "evaluation",
+            objective_id: scope,
+            scope_id: scope,
+            purpose: "evaluation",
+            system_prompt: "Return JSON.",
+            user_prompt: prompt,
+            max_output_tokens: 100,
+        }
+    }
+
+    async fn database() -> (std::path::PathBuf, Database) {
+        let path = std::env::temp_dir().join(format!(
+            "factory-gateway-{}-{}.sqlite",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let database = Database::open(&path).await.unwrap();
+        (path, database)
+    }
+
+    #[tokio::test]
+    async fn success_settles_and_replays_without_a_second_upstream_call() {
+        let (path, database) = database().await;
+        let (url, calls, server) = upstream(Behavior::Success).await;
+        let gateway = gateway(&url, 5_000);
+        let first = gateway
+            .call(&database, request("gateway-success", "prompt"))
+            .await
+            .unwrap();
+        assert_eq!(first.content, "{\"ok\":true}");
+        assert_eq!(first.total_tokens, 19);
+        assert_eq!(*calls.lock().await, 1);
+        let second = gateway
+            .call(&database, request("gateway-success", "prompt"))
+            .await
+            .unwrap();
+        assert_eq!(second.reservation_id, first.reservation_id);
+        assert_eq!(*calls.lock().await, 1);
+        database.close().await;
+        let _ = std::fs::remove_file(path);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_usage_marks_the_call_unknown_and_blocks_retry() {
+        let (path, database) = database().await;
+        let (url, calls, server) = upstream(Behavior::NoUsage).await;
+        let gateway = gateway(&url, 5_000);
+        assert!(
+            gateway
+                .call(&database, request("gateway-unknown", "prompt"))
+                .await
+                .is_err()
+        );
+        let records = database
+            .model_calls_for_scope("gateway-unknown")
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, "UNKNOWN");
+        assert!(
+            gateway
+                .call(&database, request("gateway-unknown", "prompt"))
+                .await
+                .is_err()
+        );
+        assert_eq!(*calls.lock().await, 1);
+        database.close().await;
+        let _ = std::fs::remove_file(path);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn timeout_is_ambiguous_and_never_retries_automatically() {
+        let (path, database) = database().await;
+        let (url, calls, server) = upstream(Behavior::Timeout).await;
+        let gateway = gateway(&url, 100);
+        assert!(matches!(
+            gateway
+                .call(&database, request("gateway-timeout", "prompt"))
+                .await,
+            Err(ModelGatewayError::Ambiguous(_))
+        ));
+        let records = database
+            .model_calls_for_scope("gateway-timeout")
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, "AMBIGUOUS");
+        assert!(
+            gateway
+                .call(&database, request("gateway-timeout", "prompt"))
+                .await
+                .is_err()
+        );
+        assert_eq!(*calls.lock().await, 1);
+        database.close().await;
+        let _ = std::fs::remove_file(path);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_error_releases_the_reservation() {
+        let (path, database) = database().await;
+        let (url, _, server) = upstream(Behavior::Reject).await;
+        let gateway = gateway(&url, 5_000);
+        assert!(
+            gateway
+                .call(&database, request("gateway-rejected", "prompt"))
+                .await
+                .is_err()
+        );
+        let records = database
+            .model_calls_for_scope("gateway-rejected")
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, "RELEASED");
+        database.close().await;
+        let _ = std::fs::remove_file(path);
+        server.abort();
     }
 }
