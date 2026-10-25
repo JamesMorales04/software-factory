@@ -1,0 +1,32 @@
+name: Native Rust provider compatibility
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compatibility:
+    if: vars.FACTORY_PROVIDER_COMPAT_CI == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install actual provider executables
+        run: |
+          npm install -g opencode-ai@1.18.32 @openai/codex@0.156.1
+          command -v opencode
+          find "$(npm root -g)" -type f -path '*vendor*x86_64*bin/codex' | head -1
+      - name: Actual OpenCode compatibility
+        run: |
+          OPENCODE_BIN="$(command -v opencode)" \
+            cargo +1.90.0 test --locked --test provider_sandbox actual_opencode_executable_uses_the_egress_broker
+      - name: Actual Codex compatibility
+        run: |
+          CODEX_BIN="$(find "$(npm root -g)" -type f -path '*vendor*x86_64*bin/codex' | head -1)" \
+            cargo +1.90.0 test --locked --test provider_egress actual_codex_executable_uses_the_egress_broker

@@ -68,3 +68,20 @@ remain monitor-based; the egress broker bounds requests and response bytes but
 does not itself enforce Core token/cost accounting; full Worker-kill/restart E2E
 at every boundary and human certification remain absent. Live provider coding
 and ISOLATED remain fail-closed.
+
+
+## Runtime-reliability follow-up at `7117bba45de8e39da858e45d77378da39d2b2cac`
+
+- Running-operation fencing now has a Core validation endpoint and a Supervisor
+  watcher that cancels the active container after two failed checks. The
+  manager-level kill/late-retry test passes; full Supervisor/Core long-operation
+  E2E is not run.
+- Real rootless Podman named-volume and Alpine confinement tests pass on the
+  local host. The conditional Podman CI lane is not run by ordinary GitHub CI.
+- Actual OpenCode 1.18.32 and Codex 0.156.1 executables both reached a
+  deterministic mock upstream through the egress broker with injected real
+  credentials and no paid calls. This is host-level executable compatibility,
+  not sandboxed full-work-turn certification.
+- The writable session mount still uses a monitor rather than an OS quota;
+  cgroup PID/memory/CPU limits and Core per-turn token/cost broker accounting
+  remain open.
