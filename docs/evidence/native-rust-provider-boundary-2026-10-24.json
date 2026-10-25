@@ -4,7 +4,7 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "candidate_sha": "81978fd146f79aa9335791e0bd9111f738701b56",
+  "candidate_sha": "3979e32bc94b387571d1d3c715022740c2fd216d",
   "binding": "EXACT_HEAD_GITHUB_ACTIONS",
   "topology": {
     "provider_process": "bubblewrap --unshare-all user/pid/net/ipc/uts/cgroup namespace; empty HOME; read-only /usr; private 0700 session directory; no host repository, /run/user socket or external network",
@@ -27,7 +27,7 @@
     "attempt_grant_binding": "PASS: grant for another Attempt rejected; expired grant rejected",
     "recovery": "PASS: explicitly unconfined fixture orphan cleanup after Core restart; sandboxed-session recovery NOT_IMPLEMENTED",
     "office_browser": "PASS",
-    "exact_head_ci": "PASS at 38eb8e932ebeca8846acbd3a2254d1c233ddb226: Native Rust both runs (40175570079, 40175573776), Office browser both runs, architecture edited-run (40175573804), executed bubblewrap tests, confined provider E2E, recovery restart, migrations and strict hygiene"
+    "exact_head_ci": "PASS at 3979e32bc94b387571d1d3c715022740c2fd216d: Native Rust both runs (40177074993, 40177078932), Office browser both runs, architecture edited-run (40177078903), executed bubblewrap tests, confined provider E2E, recovery restart, migrations and strict hygiene"
   },
   "not_claimed": [
     "independent security review",
@@ -41,5 +41,5 @@
     "merge or deployment authorization"
   ],
   "provider_paid_turns": 0,
-  "exact_head_sha": "38eb8e932ebeca8846acbd3a2254d1c233ddb226"
+  "exact_head_sha": "3979e32bc94b387571d1d3c715022740c2fd216d"
 }
