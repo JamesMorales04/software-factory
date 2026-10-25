@@ -601,6 +601,8 @@ pub struct WorkspaceManager<B: VolumeBackend> {
     project_roots: Vec<PathBuf>,
     backend: B,
     lock: Arc<tokio::sync::Mutex<()>>,
+    active: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    cancelled: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl<B: VolumeBackend> WorkspaceManager<B> {
@@ -632,6 +634,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             project_roots,
             backend,
             lock: Arc::new(tokio::sync::Mutex::new(())),
+            active: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            cancelled: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
     }
 
@@ -761,6 +765,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         let mut record = self.find_by_id(workspace_id)?;
         if record.status != WorkspaceStatus::Allocated {
             return Err(ExecutionError::Conflict);
@@ -781,6 +788,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         record.container = Some(container.clone());
         record.updated_at_ms = now_ms();
         self.write_record(&record)?;
+        self.active
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned(), container.clone());
         let result = self
             .backend
             .run(
@@ -791,6 +802,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 Duration::from_secs(input.timeout_secs),
             )
             .await;
+        self.active.lock().unwrap().remove(workspace_id);
         let exported = self.backend.export_volume(&record.volume).await;
         let _ = self.backend.remove_container(&container).await;
         let _ = self.backend.remove_volume(&record.volume).await;
@@ -844,6 +856,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
     ) -> Result<CandidateRevision, ExecutionError> {
         validate_workspace_id(workspace_id)?;
         let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
@@ -874,6 +889,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         validate_workspace_id(workspace_id)?;
         validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             return record.candidate.ok_or_else(|| {
@@ -922,6 +940,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             ));
         }
         let _write = self.lock.lock().await;
+        if self.cancelled.lock().unwrap().remove(workspace_id) {
+            return Err(ExecutionError::Conflict);
+        }
         let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
             let candidate = record.candidate.clone().ok_or_else(|| {
@@ -965,6 +986,10 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         record.snapshot_sha256 = Some(snapshot.sha256.clone());
         record.updated_at_ms = now_ms();
         self.write_record(&record)?;
+        self.active
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned(), container.clone());
         let outcome = async {
             let result = self
                 .backend
@@ -999,6 +1024,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             Ok((result, Some(candidate)))
         }
         .await;
+        self.active.lock().unwrap().remove(workspace_id);
         record.container = None;
         record.updated_at_ms = now_ms();
         let outcome = match outcome {
@@ -1044,8 +1070,24 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         })
     }
 
+    pub async fn cancel_active(&self, workspace_id: &str) -> Result<bool, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        self.cancelled
+            .lock()
+            .unwrap()
+            .insert(workspace_id.to_owned());
+        let container = self.active.lock().unwrap().get(workspace_id).cloned();
+        if let Some(container) = container {
+            self.backend.remove_container(&container).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub async fn cleanup(&self, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_workspace_id(workspace_id)?;
+        self.cancelled.lock().unwrap().remove(workspace_id);
         let _write = self.lock.lock().await;
         let record = self.find_by_id(workspace_id)?;
         if let Some(container) = &record.container {
@@ -1484,6 +1526,7 @@ mod tests {
     struct LocalBackend {
         volumes: Mutex<HashMap<String, PathBuf>>,
         root: Mutex<Option<PathBuf>>,
+        children: Arc<Mutex<HashMap<String, u32>>>,
     }
 
     impl LocalBackend {
@@ -1491,6 +1534,7 @@ mod tests {
             Self {
                 volumes: Mutex::new(HashMap::new()),
                 root: Mutex::new(Some(root)),
+                children: Arc::new(Mutex::new(HashMap::new())),
             }
         }
         fn volume_path(&self, name: &str) -> Result<PathBuf, ExecutionError> {
@@ -1545,7 +1589,7 @@ mod tests {
         async fn run(
             &self,
             volume: &str,
-            _container: &str,
+            container: &str,
             image: &str,
             argv: &[String],
             _timeout: Duration,
@@ -1553,13 +1597,21 @@ mod tests {
             assert_eq!(image, "test/image:1");
             let path = self.volume_path(volume)?;
             let argv = argv.to_vec();
+            let container = container.to_owned();
+            let children = self.children.clone();
             let output = tokio::task::spawn_blocking(move || {
-                StdCommand::new(&argv[0])
+                let child = StdCommand::new(&argv[0])
                     .args(&argv[1..])
                     .current_dir(path)
                     .env_clear()
                     .env("PATH", "/usr/bin:/bin")
-                    .output()
+                    .spawn()?;
+                if let Some(pid) = Some(child.id()) {
+                    children.lock().unwrap().insert(container.clone(), pid);
+                }
+                let output = child.wait_with_output();
+                children.lock().unwrap().remove(&container);
+                output
             })
             .await
             .map_err(|error| ExecutionError::Volume(format!("test runner: {error}")))??;
@@ -1572,7 +1624,13 @@ mod tests {
             })
         }
 
-        async fn remove_container(&self, _name: &str) -> Result<(), ExecutionError> {
+        async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
+            if let Some(pid) = self.children.lock().unwrap().get(name).copied() {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
             Ok(())
         }
     }
@@ -1645,6 +1703,62 @@ mod tests {
             "git {args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_a_running_execution_and_blocks_a_late_retry() {
+        let fixture = Fixture::new();
+        let base = fixture.base();
+        let allocation = WorkspaceAllocation {
+            attempt_id: "cancel-run".into(),
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base,
+            generation: 1,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
+        };
+        let handle = fixture.manager.allocate(&allocation).await.unwrap();
+        let input = ExecuteWorkspace {
+            image: "test/image:1".into(),
+            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
+            timeout_secs: 30,
+        };
+        let execution =
+            fixture
+                .manager
+                .execute(&handle.workspace_id, &input, Duration::from_secs(30));
+        tokio::pin!(execution);
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+            result = &mut execution => panic!("execution completed before cancellation: {result:?}"),
+        }
+        assert!(
+            fixture
+                .manager
+                .cancel_active(&handle.workspace_id)
+                .await
+                .unwrap()
+        );
+        let result = execution.await.unwrap();
+        assert!(result.candidate.is_none());
+        assert_eq!(result.workspace.status, WorkspaceStatus::Failed);
+        let retry = fixture
+            .manager
+            .execute(
+                &handle.workspace_id,
+                &ExecuteWorkspace {
+                    image: "test/image:1".into(),
+                    argv: vec!["/bin/true".into()],
+                    timeout_secs: 5,
+                },
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(
+            matches!(retry, Err(ExecutionError::Conflict)),
+            "retry was {retry:?}"
+        );
+        let _ = fixture.manager.cleanup(&handle.workspace_id).await;
     }
 
     #[tokio::test]

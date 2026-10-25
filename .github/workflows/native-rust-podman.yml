@@ -1,0 +1,25 @@
+name: Native Rust Podman certification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  podman:
+    if: vars.FACTORY_PODMAN_CI == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Install rootless Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman info --format '{{.Host.Security.Rootless}}'
+      - name: Pull pinned fixture image
+        run: podman pull docker.io/library/alpine:3.20
+      - name: Real rootless Podman confinement tests
+        run: cargo +1.90.0 test --workspace --locked -- --ignored

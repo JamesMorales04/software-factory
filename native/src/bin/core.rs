@@ -40,6 +40,12 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WorkspaceOperationValidation {
+    grant: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkspaceOperationRequest {
     attempt_id: String,
     worker_id: String,
@@ -309,6 +315,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/worker/workspace_operation",
             post(worker_workspace_operation),
+        )
+        .route(
+            "/supervisor/workspace_operation_valid",
+            post(supervisor_workspace_operation_valid),
         )
         .route("/worker/provider_intent", post(worker_provider_intent))
         .route("/worker/provider_active", post(worker_provider_active))
@@ -785,6 +795,43 @@ async fn worker_report(
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => api_error(error),
+    }
+}
+
+async fn supervisor_workspace_operation_valid(
+    State(app): State<Arc<App>>,
+    Json(input): Json<WorkspaceOperationValidation>,
+) -> Response {
+    let Ok(claims) = factory_native::attempt_grant::parse_operation(&input.grant) else {
+        return StatusCode::CONFLICT.into_response();
+    };
+    if factory_native::attempt_grant::verify_operation(
+        &app.attempt_grant_key,
+        &input.grant,
+        &claims,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .is_err()
+    {
+        return StatusCode::CONFLICT.into_response();
+    }
+    match app
+        .db
+        .workspace_operation_authorization(
+            &claims.attempt_id,
+            &claims.worker_id,
+            claims.generation,
+            &claims.operation,
+        )
+        .await
+    {
+        Ok(authorization)
+            if authorization.allowed_paths == claims.allowed_paths
+                && authorization.checks == claims.checks =>
+        {
+            Json(json!({"valid": true})).into_response()
+        }
+        _ => StatusCode::CONFLICT.into_response(),
     }
 }
 

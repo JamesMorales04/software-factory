@@ -215,6 +215,7 @@ struct App<B: factory_native::execution::VolumeBackend> {
     attempt_grant_key: Vec<u8>,
     capability_key: Vec<u8>,
     operation_nonces: Mutex<HashMap<String, i64>>,
+    core_url: reqwest::Url,
 }
 
 #[tokio::main]
@@ -239,6 +240,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     factory_native::telemetry::register_secret(&attempt_grant_key);
     factory_native::telemetry::register_secret(&capability_key);
+    let core_url = reqwest::Url::parse(
+        &env::var("FACTORY_CORE_URL").map_err(|_| "FACTORY_CORE_URL required")?,
+    )?;
+    if !matches!(core_url.host_str(), Some("127.0.0.1" | "localhost"))
+        || core_url.scheme() != "http"
+        || core_url.port().is_none()
+        || !matches!(core_url.path(), "" | "/")
+    {
+        return Err("FACTORY_CORE_URL must be a loopback HTTP origin with a port".into());
+    }
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
     let images = parse_images(
@@ -293,6 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attempt_grant_key: attempt_grant_key.into_bytes(),
         capability_key: capability_key.into_bytes(),
         operation_nonces: Mutex::new(HashMap::new()),
+        core_url,
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -360,7 +372,7 @@ async fn allocate<B: factory_native::execution::VolumeBackend>(
     }
 }
 
-async fn execute<B: factory_native::execution::VolumeBackend>(
+async fn execute<B: factory_native::execution::VolumeBackend + 'static>(
     State(app): State<Arc<App<B>>>,
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
@@ -383,11 +395,20 @@ async fn execute<B: factory_native::execution::VolumeBackend>(
     if let Err(message) = validate_execute(&app, &input) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
     }
-    match app
+    let Some(grant) = headers
+        .get("x-factory-operation-grant")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
+    let result = app
         .manager
         .execute(&workspace_id, &input, app.max_runtime)
-        .await
-    {
+        .await;
+    fence.abort();
+    match result {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -451,7 +472,7 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     }
 }
 
-async fn run_tool<B: factory_native::execution::VolumeBackend>(
+async fn run_tool<B: factory_native::execution::VolumeBackend + 'static>(
     State(app): State<Arc<App<B>>>,
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
@@ -507,7 +528,17 @@ async fn run_tool<B: factory_native::execution::VolumeBackend>(
         )
             .into_response();
     }
-    match app.manager.run_tool(&workspace_id, &input).await {
+    let Some(grant) = headers
+        .get("x-factory-operation-grant")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let fence = spawn_operation_fence(app.clone(), workspace_id.clone(), grant);
+    let result = app.manager.run_tool(&workspace_id, &input).await;
+    fence.abort();
+    match result {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => execution_error(error),
     }
@@ -737,6 +768,49 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
         return None;
     }
     Some(claims)
+}
+
+fn spawn_operation_fence<B: factory_native::execution::VolumeBackend + 'static>(
+    app: Arc<App<B>>,
+    workspace_id: String,
+    grant: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_proxy()
+            .build()
+            .expect("fence client");
+        let url = app
+            .core_url
+            .join("supervisor/workspace_operation_valid")
+            .ok();
+        let Some(url) = url else {
+            return;
+        };
+        let mut failures = 0u8;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let valid = match client
+                .post(url.clone())
+                .json(&json!({"grant": &grant}))
+                .send()
+                .await
+            {
+                Ok(response) => response.status().is_success(),
+                Err(_) => false,
+            };
+            if valid {
+                failures = 0;
+            } else {
+                failures = failures.saturating_add(1);
+                if failures >= 2 {
+                    let _ = app.manager.cancel_active(&workspace_id).await;
+                    return;
+                }
+            }
+        }
+    })
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -1013,6 +1087,7 @@ mod tests {
                 attempt_grant_key: TEST_GRANT_KEY.to_vec(),
                 capability_key: TEST_CAPABILITY_KEY.to_vec(),
                 operation_nonces: Mutex::new(HashMap::new()),
+                core_url: reqwest::Url::parse("http://127.0.0.1:1").unwrap(),
             }),
             root,
             repository,

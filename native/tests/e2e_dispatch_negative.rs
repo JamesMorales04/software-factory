@@ -95,12 +95,13 @@ struct SupervisorProcess {
 }
 
 impl SupervisorProcess {
-    fn start(root: &Path, repository: &Path) -> (Self, String) {
+    fn start(root: &Path, repository: &Path, core_url: &str) -> (Self, String) {
         let port = free_port();
         let log = root.join("supervisor.log");
         let file = File::create(&log).expect("supervisor log");
         let child = Command::new(env!("CARGO_BIN_EXE_factory-supervisor"))
             .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+            .env("FACTORY_CORE_URL", core_url)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env(
                 "FACTORY_SUPERVISOR_CAPABILITY_KEY",
@@ -462,7 +463,8 @@ async fn candidate_outside_frozen_allowed_paths_is_rejected_without_record() {
     )
     .await;
     let fixture = authorize_and_start_attempt(&client, &base_url, &action, "scope", &["src"]).await;
-    let (_supervisor, supervisor_url) = SupervisorProcess::start(root.path(), &repository);
+    let (_supervisor, supervisor_url) =
+        SupervisorProcess::start(root.path(), &repository, &base_url);
 
     let status = run_worker_once(
         root.path(),
@@ -536,7 +538,8 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
     )
     .await;
     let fixture = authorize_and_start_attempt(&client, &base_url, &action, "check", &["src"]).await;
-    let (_supervisor, supervisor_url) = SupervisorProcess::start(root.path(), &repository);
+    let (_supervisor, supervisor_url) =
+        SupervisorProcess::start(root.path(), &repository, &base_url);
 
     let status = run_worker_once(
         root.path(),

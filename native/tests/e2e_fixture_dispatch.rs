@@ -91,6 +91,7 @@ struct SupervisorSpec<'a> {
     volume_root: &'a Path,
     image: &'a str,
     local_backend: bool,
+    core_url: &'a str,
 }
 
 impl SupervisorProcess {
@@ -99,6 +100,7 @@ impl SupervisorProcess {
         let mut command = Command::new(env!("CARGO_BIN_EXE_factory-supervisor"));
         command
             .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+            .env("FACTORY_CORE_URL", spec.core_url)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env(
                 "FACTORY_SUPERVISOR_CAPABILITY_KEY",
@@ -456,6 +458,7 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         volume_root: &root.join("supervisor-volumes"),
         image: fixture_image,
         local_backend: !podman_backend,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
@@ -822,6 +825,7 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
@@ -1126,6 +1130,7 @@ async fn parallel_workgraph_reaches_accepted_on_integrated_candidate() {
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
@@ -1599,6 +1604,7 @@ async fn restarted_fanin_workgraph_reaches_accepted_on_integrated_base() {
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
     let map = json!({
@@ -1954,6 +1960,7 @@ async fn failed_fanin_dependency_is_not_dispatched() {
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
     let map = json!({
@@ -2291,6 +2298,7 @@ async fn failed_fanin_integration_propagates_without_dependent_dispatch() {
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
     let map = json!({
@@ -2978,6 +2986,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         volume_root: &root.join("supervisor-volumes"),
         image: FIXTURE_IMAGE,
         local_backend: true,
+        core_url: &base_url,
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
