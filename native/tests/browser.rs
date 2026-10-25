@@ -368,3 +368,23 @@ async fn detached_state_round_trip_supports_stop_and_cleanup() {
     assert!(!std::path::Path::new(&loaded.stdout_log).exists());
     let _ = fs::remove_dir_all(root);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_owner_is_a_cancellation_cleanup() {
+    let (config, root) = config("cancel");
+    let server = ManagedTestServer::start(config)
+        .await
+        .expect("managed server starts");
+    let process_group = server.process_group();
+    assert!(group_exists(process_group));
+    drop(server);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while group_exists(process_group) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !group_exists(process_group),
+        "cancellation left process group {process_group} alive"
+    );
+    let _ = fs::remove_dir_all(root);
+}
