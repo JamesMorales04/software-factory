@@ -28,7 +28,7 @@ use serde_json::json;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8766";
 const MIN_TOKEN_BYTES: usize = 32;
-const MAX_BODY_BYTES: usize = 64 * 1024;
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ARGV_ITEMS: usize = 256;
 const MAX_ARG_BYTES: usize = 16 * 1024;
 const MAX_ARGV_BYTES: usize = 64 * 1024;
