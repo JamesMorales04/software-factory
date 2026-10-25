@@ -74,6 +74,12 @@ head_sha: {self.head}
         self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], body, self.base, "c" * 40)[0])
         self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], body, "d" * 40, self.head)[0])
 
+    def test_stale_edited_event_uses_the_current_pull_request_head(self):
+        self.assertEqual(
+            impact_check.resolved_head(self.head, "c" * 40), "c" * 40
+        )
+        self.assertEqual(impact_check.resolved_head(self.head, "not-a-sha"), self.head)
+
     def test_workflow_runs_for_every_pr_and_body_edits(self):
         workflow = Path(".github/workflows/governance.yml").read_text(encoding="utf-8")
         trigger = workflow.split("  pull_request:", 1)[1].split("  push:", 1)[0]
