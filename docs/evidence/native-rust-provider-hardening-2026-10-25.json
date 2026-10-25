@@ -4,7 +4,7 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "candidate_sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+  "candidate_sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
   "binding": "AUTHOR_RUN_WORKING_TREE",
   "independent_review": {
     "reviewer": "independent Codex subagent gpt-6-sol high",
@@ -14,7 +14,10 @@
     "high_findings": 3,
     "high_repaired": 3,
     "residual_high": "trusted Worker host authority and credentials; not isolated",
-    "human_certification": "NOT_OBTAINED"
+    "human_certification": "NOT_OBTAINED",
+    "follow_up_reviewed_sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+    "follow_up_repairs_sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
+    "follow_up_disposition": "Prior HIGH allocation/scope/replay gaps repaired; Worker, hard quota, long-operation revocation, egress token/cost accounting and human certification remain open"
   },
   "implemented": [
     "Core-signed 5-second operation grants bound to live lease, worker, generation, workspace, operation, allowed paths and frozen checks",
@@ -25,7 +28,11 @@
     "Provider intent records directory before process start",
     "GITHUB_TOKEN/gh_token/token-assignment source filtering",
     "Pinned OpenAI-compatible egress broker with per-run token, injected credential, exact routes, public-address resolution, no redirects, bounded request/response/time",
-    "Loopback TCP-to-Unix bridge inside the provider sandbox"
+    "Loopback TCP-to-Unix bridge inside the provider sandbox",
+    "Generation-bound allocation grants and workspace reuse rejection",
+    "One-time nonce and request-digest-bound operation grants",
+    "Recovery identity stored outside the provider-writable session directory",
+    "Egress proxy-disable, special-use address rejection, read deadline, authorized model and request-count bounds"
   ],
   "author_tests": {
     "rust_tests_passed": 264,
@@ -41,7 +48,8 @@
     "host_home_repository_socket_network_negatives": "PASS",
     "ordinary_file_secret_negatives": "PASS",
     "multi_turn_provider_e2e": "PASS",
-    "office_browser": "PASS"
+    "office_browser": "PASS",
+    "exact_head_ci": "PASS at 48646ea2d08827fd9cd1a295cf891d4d1e25e226: Native Rust both runs, Office both runs, governance, executed bubblewrap/prlimit/egress/quota/recovery tests and confined provider E2E"
   },
   "not_claimed": [
     "human security certification",
@@ -52,5 +60,6 @@
     "compromised Worker confinement",
     "merge or deployment authorization"
   ],
-  "provider_paid_turns": 0
+  "provider_paid_turns": 0,
+  "exact_head_sha": "48646ea2d08827fd9cd1a295cf891d4d1e25e226"
 }

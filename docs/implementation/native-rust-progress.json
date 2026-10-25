@@ -73,8 +73,8 @@
     "dependency_count": 276
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
-  "security_status": "PARTIAL/BLOCKED: trusted Worker holds long-lived credentials and host authority. Deterministic provider is bubblewrap-confined with no host HOME/repository/runtime socket or unrestricted network; Supervisor mutations require live-lease-bound Core operation grants and signed scope; egress is pinned to an authenticated broker; quotas and confined recovery primitives exist. Independent model review HIGH findings repaired. Human certification, hard storage quota, real provider egress configuration, full crash E2E and ISOLATED remain absent; ISOLATED fail-closed.",
-  "delivery_status": "PR #17 Draft at 3979e32bc94b387571d1d3c715022740c2fd216d; Rust-only tree; confined provider boundary, Office and architecture CI green; independent security review, live provider coding, ISOLATED and merge authorization outstanding.",
+  "security_status": "PARTIAL/BLOCKED: trusted Worker holds long-lived credentials and host authority. Deterministic provider is bubblewrap-confined; allocation/workspace reuse and operation grants are generation-bound; operation grants are one-time, request-digest-bound and live-lease-bound; egress is pinned to an authenticated broker with model/request limits; quotas and confined recovery primitives exist. Independent model review HIGH findings repaired. Human certification, hard storage quota, long-operation revocation, real provider egress configuration, full crash E2E and ISOLATED remain absent; ISOLATED fail-closed.",
+  "delivery_status": "PR #17 Draft at 48646ea2d08827fd9cd1a295cf891d4d1e25e226; Rust-only tree; provider hardening and CI green; independent model review repairs pending follow-up, human certification/live coding/ISOLATED absent.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
   "next_task": "Record exact-head CI and rerun the independent review on the repaired candidate; then complete full confined crash E2E, hard storage quota and real OpenCode/Codex egress configuration before requesting live authorization.",
@@ -87,9 +87,9 @@
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: candidate boundary and independent model review exist; human certification, hard quota and compromised-Worker isolation absent",
-    "G9": "PARTIAL: 264 local Rust tests pass with 2 ignored; exact-head CI and human acceptance pending",
-    "G10": "PASS: architecture edited-run, PR-impact and strict hygiene at 3979e32bc94b387571d1d3c715022740c2fd216d",
-    "G11": "PARTIAL: independent Codex model review completed at e0bb7d2 with HIGH repairs; human security certification absent",
+    "G9": "PARTIAL: exact-head Rust CI green at 48646ea2d08827fd9cd1a295cf891d4d1e25e226; Podman real tests NOT_RUN; human acceptance absent",
+    "G10": "PASS: architecture, PR-impact and strict hygiene at 48646ea2d08827fd9cd1a295cf891d4d1e25e226",
+    "G11": "PARTIAL: independent Codex model review and follow-up completed; HIGH repairs at 0c70a85; human security certification absent",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
   },
@@ -108,7 +108,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+  "verified_code_commit_sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -116,13 +116,13 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI pending for the provider-hardening candidate.",
+  "ci_at_update": "Exact-head CI pending for code candidate 0c70a85.",
   "author_verification_at_code_sha": {
-    "sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+    "sha": "0c70a85e897af56fc4cb08f7e453933e7db1ad35",
     "binding": "AUTHOR_RUN_WORKING_TREE",
     "rust": "PASS: 264 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit (276 dependencies), architecture, strict hygiene",
     "provider_e2e": "PASS: bubblewrap-confined multi-turn provider to ACCEPTED",
-    "security_tests": "PASS: operation grant lease/scope/cancellation, bridge framing, egress injection/route restrictions, quota kill, identity/termination and confined recovery receipt",
+    "security_tests": "PASS: generation mismatch, one-time nonce/request digest, scope, cancellation, bridge framing, egress proxy/address/model/request limits, quota kill, identity placement and confined recovery receipt",
     "office_browser": "PASS",
     "independent_review": "Independent Codex model review; HIGH repairs; human certification absent",
     "provider_paid_turns": 0

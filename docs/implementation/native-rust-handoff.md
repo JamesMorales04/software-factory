@@ -702,7 +702,7 @@ trusted Worker remains a host-authority process. Live provider coding and
 ISOLATED execution remain fail-closed.
 
 
-## Provider hardening and independent review (2026-10-25) — `90f9302340e8452c958454ef229ae8308bc5c709`
+## Provider hardening and independent review (2026-10-25) — `48646ea2d08827fd9cd1a295cf891d4d1e25e226` (code `90f9302340e8452c958454ef229ae8308bc5c709`)
 
 An independent Codex model review of `e0bb7d2` found three HIGH issues: stale
 workspace authority, caller-supplied frozen scope and unbounded provider
@@ -721,3 +721,20 @@ Residual blockers: trusted Worker host authority/credentials, monitor-based
 rather than OS-enforced storage quota, no full Worker-kill/restart E2E at every
 boundary, no verified real OpenCode/Codex egress configuration, no human
 certification and no ISOLATED claim. Live provider coding remains fail-closed.
+
+
+## Follow-up security repairs (2026-10-25) — code `0c70a85e897af56fc4cb08f7e453933e7db1ad35`
+
+The independent follow-up review found remaining allocation-generation, grant
+replay/request-binding, provider-mode `execute`, recovery-identity placement and
+egress-proxy/limit gaps. Code `0c70a85e897af56fc4cb08f7e453933e7db1ad35` compares allocation generations and
+rejects generation-mismatched workspace reuse, binds operation grants to a
+one-time nonce and request SHA-256, restricts `execute` to FIXTURE, stores
+sandbox identity outside the provider-writable mount, and disables environment
+proxies while enforcing egress address/model/request bounds.
+
+Residual blockers remain: long `/execute`/`/run` can outlive a lease change,
+cleanup is capability-based, the Worker is trusted, storage limits are
+monitor-based, the egress broker does not enforce Core token/cost accounting,
+full Worker-kill/restart E2E is incomplete and human certification is absent.
+Live provider coding and ISOLATED remain fail-closed.

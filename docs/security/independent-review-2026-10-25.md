@@ -36,3 +36,35 @@ same-UID resistance, live provider behavior or human certification.
   explicitly in the trusted computing base.
 - Complete confined-session kill/restart E2E at every durable boundary.
 - Keep live provider coding and ISOLATED fail-closed until separately authorized.
+
+## Follow-up review of `90f9302`
+
+A second read-only pass reviewed the first repair candidate. It confirmed that
+signed `/write`, `/apply` and `/run` scope closed the original caller-supplied
+scope bypass, but found remaining gaps: allocation generation was not compared,
+operation grants were reusable and not bound to the request, `execute` was
+available to provider-mode Attempts, recovery identity lived in the
+provider-writable session directory, egress did not disable environment
+proxies or enforce request/model limits, and the egress socket had no read
+deadline.
+
+Those gaps were repaired in code candidate `0c70a85`:
+
+- allocation grant generation is compared with the request and existing
+  workspace records;
+- capability and operation grants are generation-bound;
+- operation grants carry a one-time nonce and a request SHA-256;
+- `execute` is restricted to FIXTURE Attempts;
+- sandbox identity is stored outside the provider-writable mount;
+- egress disables environment proxies, rejects special-use addresses, bounds
+  request reads, and enforces authorized model and request-count limits;
+- tests cover generation mismatch, operation scope/digest/expiry and identity
+  placement outside the writable session directory.
+
+Remaining open items: long-running `/execute` or `/run` can complete after a
+lease change because the Supervisor cannot consult Core during the operation;
+cleanup remains capability-based; the Worker is still trusted; storage limits
+remain monitor-based; the egress broker bounds requests and response bytes but
+does not itself enforce Core token/cost accounting; full Worker-kill/restart E2E
+at every boundary and human certification remain absent. Live provider coding
+and ISOLATED remain fail-closed.
