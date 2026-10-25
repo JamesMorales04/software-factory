@@ -1,0 +1,209 @@
+//! Tool-free provider output extraction.
+//!
+//! The provider returns only a bounded JSON file patch. It cannot execute a
+//! tool in this mode; the trusted Worker validates paths/content and asks the
+//! Supervisor to apply the patch to the exact Attempt worktree.
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::{lead::is_safe_relative_path, workspace::path_covered};
+
+pub const MAX_FILES: usize = 64;
+pub const MAX_FILE_BYTES: usize = 256 * 1024;
+pub const MAX_TOTAL_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderPatch {
+    pub files: Vec<PatchFile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProviderUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub known: bool,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PatchError {
+    #[error("provider message is not an object")]
+    MessageShape,
+    #[error("provider message contains a non-text part: {0}")]
+    NonTextPart(String),
+    #[error("provider message has no text output")]
+    MissingText,
+    #[error("provider output is not a JSON patch: {0}")]
+    InvalidJson(String),
+    #[error("provider patch has no files or exceeds the file bound")]
+    FileCount,
+    #[error("provider file path is unsafe or outside the allowed scope: {0}")]
+    Path(String),
+    #[error("provider patch has duplicate paths")]
+    DuplicatePath,
+    #[error("provider file exceeds the content bound")]
+    FileSize,
+    #[error("provider patch exceeds the total content bound")]
+    TotalSize,
+}
+
+pub fn extract_patch(
+    message: &Value,
+    allowed_paths: &[String],
+) -> Result<Vec<PatchFile>, PatchError> {
+    let parts = message
+        .get("parts")
+        .and_then(Value::as_array)
+        .ok_or(PatchError::MessageShape)?;
+    let mut text = String::new();
+    for part in parts {
+        let kind = part
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or(PatchError::MessageShape)?;
+        match kind {
+            "text" => {
+                let value = part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or(PatchError::MessageShape)?;
+                text.push_str(value);
+            }
+            "step-start" | "step-finish" => {}
+            other if other.contains("tool") => {
+                return Err(PatchError::NonTextPart(other.into()));
+            }
+            _ => {}
+        }
+    }
+    if text.trim().is_empty() {
+        return Err(PatchError::MissingText);
+    }
+    let text = strip_fence(text.trim());
+    let patch: ProviderPatch =
+        serde_json::from_str(text).map_err(|error| PatchError::InvalidJson(error.to_string()))?;
+    validate_patch(patch, allowed_paths)
+}
+
+pub fn extract_usage(message: &Value) -> ProviderUsage {
+    let info = message.get("info").unwrap_or(&Value::Null);
+    let tokens = info.get("tokens").unwrap_or(&Value::Null);
+    let input = tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
+    let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
+    let total = tokens
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| input.saturating_add(output));
+    let cost = info
+        .get("cost")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0);
+    let known = info.get("tokens").is_some() && info.get("cost").is_some();
+    ProviderUsage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+        cost_micros: (cost * 1_000_000.0).round().min(u64::MAX as f64) as u64,
+        known,
+    }
+}
+
+fn validate_patch(
+    patch: ProviderPatch,
+    allowed_paths: &[String],
+) -> Result<Vec<PatchFile>, PatchError> {
+    if patch.files.is_empty() || patch.files.len() > MAX_FILES {
+        return Err(PatchError::FileCount);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0usize;
+    for file in &patch.files {
+        if file.path.is_empty()
+            || !is_safe_relative_path(&file.path)
+            || !path_covered(&file.path, allowed_paths)
+        {
+            return Err(PatchError::Path(file.path.clone()));
+        }
+        if !seen.insert(file.path.clone()) {
+            return Err(PatchError::DuplicatePath);
+        }
+        if file.content.len() > MAX_FILE_BYTES {
+            return Err(PatchError::FileSize);
+        }
+        total = total.saturating_add(file.content.len());
+    }
+    if total > MAX_TOTAL_BYTES {
+        return Err(PatchError::TotalSize);
+    }
+    Ok(patch.files)
+}
+
+fn strip_fence(text: &str) -> &str {
+    let text = text
+        .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```"))
+        .unwrap_or(text);
+    text.strip_suffix("```").unwrap_or(text).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn message(text: &str) -> Value {
+        json!({"info":{"id":"msg","role":"assistant","tokens":{"input":10,"output":20,"total":30},"cost":0.0001},"parts":[{"type":"text","text":text}]})
+    }
+
+    #[test]
+    fn extracts_a_bounded_text_patch_and_usage() {
+        let files = extract_patch(
+            &message("```json\n{\"files\":[{\"path\":\"src/a.txt\",\"content\":\"a\"}]}\n```"),
+            &["src".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            files,
+            vec![PatchFile {
+                path: "src/a.txt".into(),
+                content: "a".into()
+            }]
+        );
+        let usage = extract_usage(&message(""));
+        assert!(usage.known);
+        assert_eq!(usage.total_tokens, 30);
+        assert_eq!(usage.cost_micros, 100);
+    }
+
+    #[test]
+    fn rejects_tool_parts_out_of_scope_paths_and_duplicates() {
+        let tool = json!({"info":{"id":"msg"},"parts":[{"type":"tool","tool":"shell"}]});
+        assert!(matches!(
+            extract_patch(&tool, &["src".into()]),
+            Err(PatchError::NonTextPart(_))
+        ));
+        let out = message("{\"files\":[{\"path\":\"../escape\",\"content\":\"x\"}]}");
+        assert!(matches!(
+            extract_patch(&out, &["src".into()]),
+            Err(PatchError::Path(_))
+        ));
+        let duplicate = message(
+            "{\"files\":[{\"path\":\"src/a\",\"content\":\"a\"},{\"path\":\"src/a\",\"content\":\"b\"}]}",
+        );
+        assert_eq!(
+            extract_patch(&duplicate, &["src".into()]),
+            Err(PatchError::DuplicatePath)
+        );
+    }
+}

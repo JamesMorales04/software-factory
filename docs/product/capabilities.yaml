@@ -409,8 +409,11 @@ capabilities:
     - docs/contracts/run-worker-s2.md
     source:
     - native/src/provider_session.rs
+    - native/src/provider_patch.rs
+    - native/src/bin/worker.rs
     test:
-    - native/src/runtime.rs
+    - native/tests/e2e_fixture_dispatch.rs
+    - native/src/db/provider_sessions.rs
   acceptance:
     deterministic: Applicable worker and direct-provider integration contract, negative and regression checks pass on an
       exact candidate.
@@ -419,12 +422,14 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
+    - docs/evidence/native-rust-provider-fixture-2026-10-24.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Direct-provider coding is not implemented; provider and ISOLATED dispatch remain fail-closed.
+  - A deterministic tool-free provider patch path is implemented end-to-end. Live Codex/OpenCode coding, provider
+    tool mediation, source-context delivery and ISOLATED dispatch remain fail-closed.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
 - id: CAP-005

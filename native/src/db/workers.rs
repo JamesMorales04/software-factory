@@ -151,8 +151,8 @@ impl Database {
             .map(|(lease, _)| lease))
     }
 
-    /// Claim a fixture-authorized Attempt and return the frozen assignment data
-    /// the Worker needs. Provider/isolated modes are not returned by this slice.
+    /// Claim an authorized Attempt and return the frozen assignment data the
+    /// Worker needs. Isolated mode is never returned.
     pub async fn claim_assignment(
         &self,
         worker_id: &str,
@@ -184,7 +184,16 @@ impl Database {
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
                     COALESCE(aps.kind,'UNIT') AS kind,
                     COALESCE(aps.integration_candidates_json,'[]') AS integration_candidates,
-                    ca.execution_mode
+                    ca.execution_mode,COALESCE(ca.provider,'') AS provider,
+                    COALESCE(ca.model,'') AS model,COALESCE(ca.provider_mode,'') AS provider_mode,
+                    COALESCE(ca.delegation_id,'') AS delegation_id,
+                    COALESCE(ca.max_sessions,0) AS max_sessions,
+                    COALESCE(ca.max_turns,0) AS max_turns,
+                    COALESCE(ca.max_input_tokens,0) AS max_input_tokens,
+                    COALESCE(ca.max_output_tokens,0) AS max_output_tokens,
+                    COALESCE(ca.max_cost_micros,0) AS max_cost_micros,
+                    COALESCE(ca.deadline_secs,0) AS deadline_secs,
+                    COALESCE(ca.allowed_tools_json,'[]') AS allowed_tools
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
@@ -209,9 +218,51 @@ impl Database {
             .map_err(|_| Error::Invalid("stored integration candidates"))?;
         let execution_mode: Option<String> = row.try_get("execution_mode")?;
         let execution_mode = execution_mode.unwrap_or_else(|| "ISOLATED".into());
-        if execution_mode != "FIXTURE" {
+        if !matches!(
+            execution_mode.as_str(),
+            "FIXTURE" | "TRUSTED_LOCAL_PROVIDER"
+        ) {
             return Err(Error::Forbidden(
-                "only deterministic fixture assignments are enabled".into(),
+                "assignment execution mode is not enabled".into(),
+            ));
+        }
+        let unresolved: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT session_record_id FROM provider_sessions
+             WHERE attempt_id=?1 AND state IN ('INTENT','ACTIVE') LIMIT 1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if unresolved.is_some() {
+            return Err(Error::Forbidden(
+                "unresolved provider session blocks replacement dispatch".into(),
+            ));
+        }
+        let provider: String = row.try_get("provider")?;
+        let model: String = row.try_get("model")?;
+        let provider_mode: String = row.try_get("provider_mode")?;
+        let delegation_id: String = row.try_get("delegation_id")?;
+        let max_sessions: i64 = row.try_get("max_sessions")?;
+        let max_turns: i64 = row.try_get("max_turns")?;
+        let max_input_tokens: i64 = row.try_get("max_input_tokens")?;
+        let max_output_tokens: i64 = row.try_get("max_output_tokens")?;
+        let max_cost_micros: i64 = row.try_get("max_cost_micros")?;
+        let deadline_secs: i64 = row.try_get("deadline_secs")?;
+        let allowed_tools: String = row.try_get("allowed_tools")?;
+        if execution_mode == "TRUSTED_LOCAL_PROVIDER"
+            && (provider.is_empty()
+                || model.is_empty()
+                || provider_mode.is_empty()
+                || delegation_id.is_empty()
+                || max_sessions < 1
+                || max_turns != 1
+                || max_input_tokens < 1
+                || max_output_tokens < 1
+                || max_cost_micros < 1
+                || deadline_secs < 1)
+        {
+            return Err(Error::Forbidden(
+                "provider assignment has incomplete authorization".into(),
             ));
         }
         let spec: ActionSpec = serde_json::from_str(&spec_json)
@@ -233,6 +284,24 @@ impl Database {
             execution_mode,
             kind,
             integration_candidates,
+            provider,
+            model,
+            provider_mode,
+            delegation_id,
+            max_sessions: u32::try_from(max_sessions)
+                .map_err(|_| Error::Invalid("stored provider session budget"))?,
+            max_turns: u32::try_from(max_turns)
+                .map_err(|_| Error::Invalid("stored provider turn budget"))?,
+            max_input_tokens: u64::try_from(max_input_tokens)
+                .map_err(|_| Error::Invalid("stored provider input budget"))?,
+            max_output_tokens: u64::try_from(max_output_tokens)
+                .map_err(|_| Error::Invalid("stored provider output budget"))?,
+            max_cost_micros: u64::try_from(max_cost_micros)
+                .map_err(|_| Error::Invalid("stored provider cost budget"))?,
+            deadline_secs: u64::try_from(deadline_secs)
+                .map_err(|_| Error::Invalid("stored provider deadline"))?,
+            allowed_tools: serde_json::from_str(&allowed_tools)
+                .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
         })
     }
 
@@ -280,7 +349,7 @@ impl Database {
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
-             AND ca.execution_mode='FIXTURE'
+             AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
              ORDER BY a.created_at,a.id LIMIT 1",
         )

@@ -38,16 +38,16 @@ portfolio; this ledger is the current status authority.
 |---|---|---|---|---|
 | A1 | Semantic intake and typed assessment | `PARTIAL` | Strict typed assessment/storage; deterministic fixture assessor and operator routes; no model assessor | Add direct provider assessor, observation, Action creation, reconciliation, process tests |
 | A2 | Proposal validation and frozen plan | `PARTIAL` | Validation, config binding, freeze revalidation, per-unit specs, parallel/fan-in plans and Campaign/Run/Attempt creation | Full plan projection and crash recovery |
-| A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, pre-model release | Campaign integration and ratified autonomous policy |
-| A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically | Ratified issuer policy, provider mode and browser multi-unit evidence |
-| A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed | Provider session reconciliation and independent cleanup evidence remain |
+| A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation and pre-model release; provider authorization reserves request/session/attempt budget atomically | Ratified autonomous policy and broader provider spend controls |
+| A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically; explicit trusted-local provider authorization is available | Ratified issuer policy, live provider mode and browser multi-unit evidence |
+| A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed; unresolved provider sessions block replacement dispatch | Provider-session cancellation reconciliation and independent cleanup evidence remain |
 | A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, persisted units, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, pre-dispatch restart and integration-node failure process tests pass; in-flight root-lease recovery and operator cancellation pass | Browser graph projection; valid disjoint scopes make a natural Git conflict unreachable in the fixture |
 | A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, sequential/fan-in promotion, integrated candidate recording; failed dependency and failed integration reach terminal FAILED without dependent dispatch; frozen fan-in graph resumes after Core restart; cancellation fences runs, attempts, tasks, integrations and leases across restart | Process-level in-flight integration cancellation and browser recovery projection remain untested |
 | A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final and fan-in E2E to ACCEPTED; integration failure retains exact root-candidate lineage and produces no integrated candidate | Adversarial cross-project integration and conflict-path assessment |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel and fan-in E2E reach ACCEPTED | Crash-injection and restart scheduler coverage |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen Rust corpus, baseline, blinded scoring, thresholds and CLI tests | Independent model score and separately authorized live run remain absent; no CAP-014 certification |
 | A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead submit/assess/freeze/reload, Campaign detail and WorkGraph task projection are browser-tested | Browser multi-unit graph and recovery/cleanup visibility |
-| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed read-only provider smoke | Core-owned budget/session ledger and governed S4-D harness |
+| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed read-only provider smoke; durable provider intent/terminal/usage ledger and exact candidate path | Governed S4-D live harness and separately authorized live certification |
 
 ## Merge-readiness gates
 
@@ -57,11 +57,11 @@ portfolio; this ledger is the current status authority.
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; provider coding fail-closed |
-| M6 Security | `BLOCKED` | Credential confinement, provider-in-sandbox and independent isolation are not certified |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic tool-free fake-provider Attempt reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
+| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; no provider tool execution; credential confinement, provider-in-sandbox and independent isolation are still not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 235 Rust tests + 2 ignored, audit, architecture, process E2E and Office browser pass at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` exact-head CI; independent acceptance absent |
+| M9 Testing | `PARTIAL` | 241 Rust tests + 2 ignored, audit, architecture, process E2E, fake-provider E2E and Office browser pass locally; exact-head CI and independent acceptance pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -83,6 +83,22 @@ At the author checkpoint:
 Candidate-bound evidence lives under [docs/evidence](../evidence). None of it is
 provider coding, OS isolation certification, independent human acceptance or
 deployment authorization.
+
+## Trusted-local provider fixture path
+
+At the current code candidate, a deterministic fake OpenCode server proves the
+complete path: authorized Action → Campaign → Worker claim → durable provider
+intent → bounded tool-free provider response → Supervisor validated file apply →
+immutable CandidateRevision → independent verifier → deterministic reviewer →
+`ACCEPTED` gate. Core enforces an exact provider/model/mode route, active
+delegation, allowed paths, session/turn/token/cost limits, a deadline and an
+empty provider-tool list. The Worker holds the provider credential; the
+Supervisor and sandbox never receive it. Provider tool parts, out-of-scope
+paths, duplicate files and unmeasured usage are rejected. Completed sessions
+require confirmed deletion and known usage; unresolved intent/active sessions
+block replacement dispatch. This is deterministic fixture evidence, not live
+model certification. Evidence:
+[native-rust-provider-fixture-2026-10-24.json](../evidence/native-rust-provider-fixture-2026-10-24.json).
 
 ## Legacy retirement
 

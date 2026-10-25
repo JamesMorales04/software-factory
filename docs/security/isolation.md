@@ -1,12 +1,13 @@
 # Isolation, credentials and trust boundaries
 
-**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. Rootless Podman is still not certified isolation, and the authenticated provider/tool credential boundary is **not certified**. Provider-backed and ISOLATED execution stay fail-closed. See [SEC-01 results](../evidence/history/security/SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. For the first provider path, the trusted Worker holds the provider credential and the provider runs outside the project sandbox in tool-free patch-generation mode; the Supervisor applies validated file patches to the exact Attempt worktree. Rootless Podman is still not certified isolation, and credential confinement is **not certified**. Live provider coding with tools and ISOLATED execution stay fail-closed. See [ADR-0022](../architecture/decisions/ADR-0022-tool-free-provider-patch-mediation.md), [SEC-01 results](../evidence/history/security/SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
 
 ## Execution modes
 
 | Mode | Meaning | SEC-01 disposition |
 |---|---|---|
 | TRUSTED_LOCAL | Owner-authorized local execution with broad host access within user privileges. Accepted risk, not a boundary. | SEC-01-STRICT not required; historical FAIL/NOT TESTED findings remain valid observations but do not block this mode. |
+| TRUSTED_LOCAL_PROVIDER | Authorized provider patch generation: credential stays in the trusted Worker; provider receives an empty session directory and returns a bounded file patch; Supervisor applies it to the exact Attempt worktree; no provider tools. | Not certified isolation or credential confinement; live provider coding with tools remains fail-closed. |
 | ISOLATED | Execution claiming an OS-enforced boundary between credentials and untrusted tools. | SEC-01-ISOLATED available-only-where-verified against actually tested paths; never inferred from a single fixture PASS. |
 | RESTRICTED | Credential-free synthetic or disposable-fixture execution (current F1-S2 scope). | Broker-certification obligations (mandatory mediation of all native paths) apply here and to ISOLATED; they do not gate TRUSTED_LOCAL. |
 
@@ -19,7 +20,7 @@ Rules:
 
 ## Authority
 
-The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. provider owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
+The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. The provider adapter owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
 
 ## Per-Run workspaces
 

@@ -128,6 +128,20 @@ pub struct ExecuteWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppliedFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ApplyFilesRequest {
+    pub allowed_paths: Vec<String>,
+    pub files: Vec<AppliedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionResult {
     pub exit_code: Option<i32>,
@@ -660,6 +674,95 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
+    pub async fn apply_files(
+        &self,
+        workspace_id: &str,
+        input: &ApplyFilesRequest,
+    ) -> Result<CandidateRevision, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        if input.allowed_paths.is_empty() {
+            return Err(ExecutionError::Invalid(
+                "applying provider files requires an explicit allowed-path scope".into(),
+            ));
+        }
+        if input.files.is_empty() || input.files.len() > 64 {
+            return Err(ExecutionError::Invalid(
+                "provider apply requires 1..=64 files".into(),
+            ));
+        }
+        let mut total = 0usize;
+        for file in &input.files {
+            if !crate::workspace::is_safe_repository_path(&file.path)
+                || !crate::workspace::path_covered(&file.path, &input.allowed_paths)
+            {
+                return Err(ExecutionError::Invalid(format!(
+                    "provider file path {:?} is outside the allowed scope",
+                    file.path
+                )));
+            }
+            if file.content.len() > 256 * 1024 {
+                return Err(ExecutionError::Invalid(
+                    "provider file exceeds the per-file bound".into(),
+                ));
+            }
+            total = total.saturating_add(file.content.len());
+        }
+        if total > 1024 * 1024 {
+            return Err(ExecutionError::Invalid(
+                "provider files exceed the total bound".into(),
+            ));
+        }
+        let _write = self.lock.lock().await;
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status == WorkspaceStatus::Completed {
+            return record.candidate.ok_or_else(|| {
+                ExecutionError::Invalid("completed workspace has no candidate".into())
+            });
+        }
+        if record.status == WorkspaceStatus::Failed {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.reset_to_base()?;
+        let result = (|| -> Result<CandidateRevision, ExecutionError> {
+            for file in &input.files {
+                let target = workspace.path().join(&file.path);
+                let parent = target
+                    .parent()
+                    .ok_or_else(|| ExecutionError::Invalid("file path has no parent".into()))?;
+                ensure_no_symlink_components(workspace.path(), parent)?;
+                std::fs::create_dir_all(parent)?;
+                if let Ok(metadata) = std::fs::symlink_metadata(&target)
+                    && (metadata.file_type().is_symlink() || !metadata.is_file())
+                {
+                    return Err(ExecutionError::Invalid(
+                        "provider target is not a regular file".into(),
+                    ));
+                }
+                std::fs::write(&target, &file.content)?;
+            }
+            workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+            Ok(workspace.commit_all(&format!("factory provider attempt {}", record.attempt_id))?)
+        })();
+        record.updated_at_ms = now_ms();
+        match result {
+            Ok(candidate) => {
+                record.status = WorkspaceStatus::Completed;
+                record.candidate = Some(candidate.clone());
+                record.error = None;
+                self.write_record(&record)?;
+                let _ = self.backend.remove_volume(&record.volume).await;
+                Ok(candidate)
+            }
+            Err(error) => {
+                record.status = WorkspaceStatus::Failed;
+                record.error = Some(error.to_string());
+                let _ = self.write_record(&record);
+                Err(error)
+            }
+        }
+    }
+
     pub async fn execute(
         &self,
         workspace_id: &str,
@@ -976,6 +1079,27 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(), ExecutionError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ExecutionError::Invalid("path escapes the workspace".into()))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ExecutionError::Invalid(
+                    "path contains a symlink component".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ExecutionError::Io(error)),
+        }
+    }
+    Ok(())
 }
 
 fn confinement(image: &str) -> ConfinementEvidence {

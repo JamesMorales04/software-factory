@@ -18,7 +18,7 @@ use axum::{
 };
 use factory_native::{
     execution::{
-        BoundedOutput, ExecuteWorkspace, ExecutionError, MAX_EXECUTION_RUNTIME,
+        ApplyFilesRequest, BoundedOutput, ExecuteWorkspace, ExecutionError, MAX_EXECUTION_RUNTIME,
         RootlessPodmanVolumes, VolumeBackend, WorkspaceAllocation, WorkspaceManager,
     },
     workspace::WorkspaceError,
@@ -281,6 +281,7 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces", post(allocate))
         .route("/v1/workspaces/{workspace_id}", get(status).delete(cleanup))
         .route("/v1/workspaces/{workspace_id}/execute", post(execute))
+        .route("/v1/workspaces/{workspace_id}/apply", post(apply_files))
         .route("/v1/integrate", post(integrate))
         .route("/v1/reconcile", post(reconcile))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -328,6 +329,21 @@ async fn execute<B: factory_native::execution::VolumeBackend>(
         .await
     {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn apply_files<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<ApplyFilesRequest>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.apply_files(&workspace_id, &input).await {
+        Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
 }

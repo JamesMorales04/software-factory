@@ -13,6 +13,10 @@ const SUITES: &[(&str, &str)] = &[
         "negatives",
         "deterministic scope, verification, authorization and lease negatives",
     ),
+    (
+        "provider",
+        "deterministic fake-provider Attempt through Core, Worker, Supervisor and gate",
+    ),
 ];
 
 pub(crate) fn list() -> Result<(), String> {
@@ -50,6 +54,17 @@ pub(crate) fn office() -> Result<(), String> {
     crate::process::run(command).map_err(|error| {
         format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
     })
+}
+
+pub(crate) fn provider() -> Result<(), String> {
+    cargo_run(&[
+        "test",
+        "--workspace",
+        "--locked",
+        "--test",
+        "e2e_fixture_dispatch",
+        "provider_backed_campaign_reaches_accepted_gate_without_tools",
+    ])
 }
 
 pub(crate) fn negatives() -> Result<(), String> {

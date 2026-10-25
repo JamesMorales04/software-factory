@@ -45,6 +45,8 @@ jobs:
         run: cargo +1.90.0 xtask e2e dispatch
       - name: Authorization, scope and lease negatives
         run: cargo +1.90.0 xtask e2e negatives
+      - name: Deterministic fake-provider execution E2E
+        run: cargo +1.90.0 xtask e2e provider
       - name: Native architecture consistency
         run: |
           if [ -n "$GITHUB_BASE_REF" ]; then

@@ -2680,3 +2680,475 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use axum::{
+        Router,
+        extract::{Query, State},
+        response::{IntoResponse, Response},
+    };
+
+    #[derive(Clone)]
+    struct FakeProvider {
+        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
+        receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>>>,
+        deleted: Arc<AtomicBool>,
+    }
+
+    async fn fake_events(State(state): State<FakeProvider>) -> Response {
+        let Some(receiver) = state.receiver.lock().unwrap().take() else {
+            return reqwest::StatusCode::CONFLICT.into_response();
+        };
+        let _ = state
+            .sender
+            .send(b"data: {\"type\":\"server.connected\"}\n\n".to_vec())
+            .await;
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|chunk| {
+                (
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(chunk)),
+                    receiver,
+                )
+            })
+        });
+        let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
+        response
+    }
+
+    async fn fake_create_session(
+        State(state): State<FakeProvider>,
+        Query(query): Query<std::collections::HashMap<String, String>>,
+    ) -> axum::Json<serde_json::Value> {
+        let directory = query.get("directory").cloned().unwrap_or_default();
+        let _ = state
+            .sender
+            .send(b"data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_fixture\",\"info\":{\"id\":\"ses_fixture\"}}}\n\n".to_vec())
+            .await;
+        axum::Json(json!({"id":"ses_fixture","directory":directory}))
+    }
+
+    async fn fake_prompt(State(state): State<FakeProvider>) -> reqwest::StatusCode {
+        let _ = state
+            .sender
+            .send(b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n".to_vec())
+            .await;
+        reqwest::StatusCode::NO_CONTENT
+    }
+
+    async fn fake_message(State(state): State<FakeProvider>) -> Response {
+        if state.deleted.load(Ordering::SeqCst) {
+            return reqwest::StatusCode::NOT_FOUND.into_response();
+        }
+        axum::Json(json!([{
+            "info": {
+                "id": "msg_fixture",
+                "role": "assistant",
+                "sessionID": "ses_fixture",
+                "tokens": {"input": 10, "output": 20, "total": 30},
+                "cost": 0.0001
+            },
+            "parts": [{
+                "type": "text",
+                "text": "{\"files\":[{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}]}"
+            }]
+        }]))
+        .into_response()
+    }
+
+    async fn fake_delete(State(state): State<FakeProvider>) -> axum::Json<bool> {
+        state.deleted.store(true, Ordering::SeqCst);
+        axum::Json(true)
+    }
+
+    async fn fake_get(State(state): State<FakeProvider>) -> Response {
+        if state.deleted.load(Ordering::SeqCst) {
+            reqwest::StatusCode::NOT_FOUND.into_response()
+        } else {
+            axum::Json(json!({"id":"ses_fixture"})).into_response()
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-provider-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Provider E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "provider@example.invalid"],
+    );
+    std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+    git(&repository, &["add", "seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
+    let fake = FakeProvider {
+        sender: event_sender,
+        receiver: Arc::new(Mutex::new(Some(event_receiver))),
+        deleted: Arc::new(AtomicBool::new(false)),
+    };
+    let app = Router::new()
+        .route("/event", axum::routing::get(fake_events))
+        .route("/session", axum::routing::post(fake_create_session))
+        .route(
+            "/session/{id}/prompt_async",
+            axum::routing::post(fake_prompt),
+        )
+        .route("/session/{id}/message", axum::routing::get(fake_message))
+        .route(
+            "/session/{id}",
+            axum::routing::delete(fake_delete).get(fake_get),
+        )
+        .with_state(fake);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_address = listener.local_addr().unwrap();
+    let provider_url = format!("http://{provider_address}");
+    let provider_server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let provider_password = "fake-provider-password-1234567890";
+
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start(&root.join("factory.sqlite"), port, &root.join("core.log"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "provider-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "Create the provider candidate file.",
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "idempotency_key": "provider-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30},
+                {"id":"negative","kind":"negative","description":"absent content","command":["grep","-q","absent","src/provider.txt"],"expectExit":1,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    let grant = json!({
+        "id":"provider-grant",
+        "principalId":"owner",
+        "auditId":"audit",
+        "projectId":project_id,
+        "revision":1,
+        "objectiveClasses":["feature"],
+        "allowedPaths":["src"],
+        "capabilities":["repository-edit","generic-toolchain"],
+        "riskClasses":["R0"],
+        "autonomousStart":false,
+        "autonomousRiskClasses":[],
+        "route":{"provider":"opencode","model":"deepseek-v4.1-flash","mode":"build"},
+        "maxAttempts":2,
+        "maxTimeoutSecs":300,
+        "maxRepairCycles":0,
+        "maxWallClockSecs":1800,
+        "maxParallel":1,
+        "maxSessions":2,
+        "maxRequests":2,
+        "maxCumulativeSessions":8,
+        "maxCumulativeAttempts":16,
+        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
+    });
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/delegations"),
+            Some(json!({"delegation":grant,"idempotency_key":"provider-grant-key"})),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id":action_id,"idempotency_key":"provider-campaign"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    for (label, override_fields) in [
+        ("wrong model", json!({"model":"other-model"})),
+        ("provider tools", json!({"allowed_tools":["shell"]})),
+        ("missing delegation", json!({"delegation_id":""})),
+    ] {
+        let mut body = json!({
+            "authorization_id": format!("provider-auth-{label}"),
+            "risk_class":"R0",
+            "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+            "actor":"e2e-operator",
+            "rationale":"negative provider authorization",
+            "authorized_paths":["src"],
+            "max_attempts":1,
+            "provider":"opencode",
+            "model":"deepseek-v4.1-flash",
+            "provider_mode":"build",
+            "delegation_id":"provider-grant",
+            "max_sessions":1,
+            "max_turns":1,
+            "max_input_tokens":1000,
+            "max_output_tokens":1000,
+            "max_cost_micros":10000,
+            "deadline_secs":30,
+            "allowed_tools":[]
+        });
+        for (key, value) in override_fields.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        let response = operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(body),
+        )
+        .await;
+        assert!(
+            response.status().is_client_error(),
+            "negative provider authorization {label} should fail, got {}",
+            response.status()
+        );
+    }
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(json!({
+                "authorization_id":"provider-auth",
+                "risk_class":"R0",
+                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+                "actor":"e2e-operator",
+                "rationale":"deterministic fake-provider acceptance",
+                "authorized_paths":["src"],
+                "max_attempts":1,
+                "provider":"opencode",
+                "model":"deepseek-v4.1-flash",
+                "provider_mode":"build",
+                "delegation_id":"provider-grant",
+                "max_sessions":1,
+                "max_turns":1,
+                "max_input_tokens":1000,
+                "max_output_tokens":1000,
+                "max_cost_micros":10000,
+                "deadline_secs":30,
+                "allowed_tools":[]
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: FIXTURE_IMAGE,
+        local_backend: true,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+
+    let worker_log = File::create(root.join("provider-worker.log")).unwrap();
+    let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FACTORY_WORKER_ID", "provider-worker")
+        .env("FACTORY_WORKER_REGISTRATION_KEY", "provider-registration")
+        .env("FACTORY_SUPERVISOR_URL", &supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
+        .env("FACTORY_PROVIDER_BASE_URL", &provider_url)
+        .env("FACTORY_PROVIDER_PASSWORD", provider_password)
+        .env("FACTORY_WORKER_ONCE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(worker_log.try_clone().unwrap()))
+        .stderr(Stdio::from(worker_log))
+        .status()
+        .expect("provider worker");
+    assert!(
+        worker_status.success(),
+        "provider Worker failed: {}",
+        std::fs::read_to_string(root.join("provider-worker.log")).unwrap_or_default()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let candidates: Value = loop {
+        let value: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/candidates"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        if value.as_array().is_some_and(|items| items.len() == 1) {
+            break value;
+        }
+        assert!(Instant::now() < deadline, "provider candidate missing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let candidate = &candidates[0];
+    let candidate_id = candidate["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        git(
+            &repository,
+            &[
+                "show",
+                &format!(
+                    "{}:src/provider.txt",
+                    candidate["commit_sha"].as_str().unwrap()
+                )
+            ]
+        ),
+        "provider candidate"
+    );
+
+    let verifier_log = File::create(root.join("provider-verifier.log")).unwrap();
+    let verifier_status = Command::new(env!("CARGO_BIN_EXE_factory-verifier"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
+        .env("FACTORY_CANDIDATE_ID", &candidate_id)
+        .env("FACTORY_VERIFIER_PRINCIPAL", "provider-verifier")
+        .env(
+            "FACTORY_VERIFIER_WORKSPACE",
+            root.join("provider-verifier-work"),
+        )
+        .env("FACTORY_VERIFIER_IMAGE", FIXTURE_IMAGE)
+        .env("FACTORY_VERIFIER_TEST_BACKEND", "local")
+        .env(
+            "FACTORY_VERIFIER_TEST_VOLUME_ROOT",
+            root.join("provider-verifier-volumes"),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(verifier_log.try_clone().unwrap()))
+        .stderr(Stdio::from(verifier_log))
+        .status()
+        .expect("provider verifier");
+    assert!(
+        verifier_status.success(),
+        "provider verifier failed: {}",
+        std::fs::read_to_string(root.join("provider-verifier.log")).unwrap_or_default()
+    );
+    run_reviewer(
+        &root,
+        &base_url,
+        &candidate_id,
+        "provider-reviewer",
+        "provider-reviewer.log",
+    );
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{candidate_id}/gate"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(gate["outcome"], "ACCEPTED");
+
+    let database = root.join("factory.sqlite");
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&database)
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let session: (String, i64, i64, i64, i64, Option<String>) = sqlx::query_as::query_as(
+        "SELECT state,total_tokens,cost_micros,usage_known,input_tokens,cleanup_receipt
+         FROM provider_sessions WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1)",
+    )
+    .bind(&candidate_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(session.0, "COMPLETED");
+    assert_eq!(session.1, 30);
+    assert_eq!(session.2, 100);
+    assert_eq!(session.3, 1);
+    assert_eq!(session.4, 10);
+    assert_eq!(session.5.as_deref(), Some("session_delete_verified_absent"));
+    pool.close().await;
+    let supervisor_log = std::fs::read_to_string(root.join("supervisor.log")).unwrap_or_default();
+    assert!(!supervisor_log.contains(provider_password));
+    provider_server.abort();
+    supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(root);
+}

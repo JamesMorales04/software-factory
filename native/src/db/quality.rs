@@ -514,9 +514,14 @@ fn require_live_lease(
     generation: i64,
     now_ms: i64,
 ) -> Result<(), Error> {
-    if context.campaign_status != "AUTHORIZED" || context.execution_mode != "FIXTURE" {
+    if context.campaign_status != "AUTHORIZED"
+        || !matches!(
+            context.execution_mode.as_str(),
+            "FIXTURE" | "TRUSTED_LOCAL_PROVIDER"
+        )
+    {
         return Err(Error::Forbidden(
-            "campaign lacks an active deterministic execution authorization".into(),
+            "campaign lacks an active execution authorization".into(),
         ));
     }
     if context.attempt_status != "LEASED"
@@ -919,7 +924,9 @@ async fn load_gate_policy(
     .await?;
     let (campaign_status, risk, execution_mode) = row.ok_or(Error::NotFound)?;
     let authorization = match (campaign_status.as_str(), execution_mode.as_deref()) {
-        ("AUTHORIZED", Some("FIXTURE")) => AuthorizationStatus::Authorized,
+        ("AUTHORIZED", Some("FIXTURE" | "TRUSTED_LOCAL_PROVIDER")) => {
+            AuthorizationStatus::Authorized
+        }
         ("BLOCKED_AUTHORIZATION", _) => AuthorizationStatus::HumanApprovalRequired,
         _ => AuthorizationStatus::Denied,
     };

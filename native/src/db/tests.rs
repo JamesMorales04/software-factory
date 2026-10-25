@@ -43,7 +43,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        10
+        11
     );
     insert_project(&db, "project", "/fixture", "base").await;
     db.close().await;
@@ -51,7 +51,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let reopened = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        10
+        11
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
@@ -87,7 +87,7 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        10
+        11
     );
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,
@@ -317,6 +317,7 @@ async fn authorized_attempt(db: &Database) -> String {
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
             max_attempts: 1,
+            ..Default::default()
         },
     )
     .await
@@ -436,6 +437,7 @@ async fn p6_concurrent_workers_claim_distinct_attempts() {
             rationale: "fixture setup".into(),
             authorized_paths: vec!["seed.txt".into()],
             max_attempts: 1,
+            ..Default::default()
         },
     )
     .await
@@ -690,6 +692,7 @@ async fn candidate_fixture() -> CandidateFixture {
             rationale: "quality fixture".into(),
             authorized_paths: vec!["seed.txt".into()],
             max_attempts: 1,
+            ..Default::default()
         },
     )
     .await
@@ -1050,6 +1053,7 @@ async fn authorization_rejects_unratified_risk_and_execution_modes() {
                     rationale: "negative authorization".into(),
                     authorized_paths: vec!["src".into()],
                     max_attempts: 1,
+                    ..Default::default()
                 },
             )
             .await;
@@ -1106,6 +1110,7 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
             rationale: "scope negative".into(),
             authorized_paths: vec!["src".into()],
             max_attempts: 1,
+            ..Default::default()
         },
     )
     .await

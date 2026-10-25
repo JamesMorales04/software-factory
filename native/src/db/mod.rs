@@ -14,6 +14,8 @@ use crate::quality::{
 };
 use crate::workspace::verify_candidate_commit;
 
+pub use provider_sessions::{NewProviderIntent, ProviderSessionRecord, ProviderTerminal};
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("database error: {0}")]
@@ -123,6 +125,17 @@ pub struct WorkerAssignment {
     pub execution_mode: String,
     pub kind: String,
     pub integration_candidates: Vec<String>,
+    pub provider: String,
+    pub model: String,
+    pub provider_mode: String,
+    pub delegation_id: String,
+    pub max_sessions: u32,
+    pub max_turns: u32,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_cost_micros: u64,
+    pub deadline_secs: u64,
+    pub allowed_tools: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,6 +192,8 @@ pub const EVENT_KINDS: &[&str] = &[
     "lead.started",
     "lead.state_changed",
     "lead.work_failed",
+    "provider.session_intended",
+    "provider.session_terminal",
     "project.config_updated",
     "project.registered",
     "quality.gate_decided",
@@ -547,6 +562,7 @@ mod lead;
 pub use lead::LeadTaskRecord;
 mod lifecycle;
 mod project_configs;
+mod provider_sessions;
 pub use project_configs::NewProjectConfig;
 mod projects;
 mod quality;

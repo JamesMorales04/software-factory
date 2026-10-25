@@ -8,10 +8,13 @@
 
 use std::{env, time::Duration};
 
-use factory_native::db::ActionSpec;
+use factory_native::db::{ActionSpec, ProviderTerminal};
 use factory_native::execution::{
-    ExecuteWorkspace, ExecutionResult, WorkspaceAllocation, WorkspaceHandle, WorkspaceStatus,
+    ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, WorkspaceAllocation, WorkspaceHandle,
+    WorkspaceStatus,
 };
+use factory_native::provider_patch::{ProviderUsage, extract_patch, extract_usage};
+use factory_native::runtime::execute_opencode_prompt_with_response;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -36,6 +39,28 @@ struct Assignment {
     execution_mode: String,
     kind: String,
     integration_candidates: Vec<String>,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    provider_mode: String,
+    #[serde(default)]
+    delegation_id: String,
+    #[serde(default)]
+    max_sessions: u32,
+    #[serde(default)]
+    max_turns: u32,
+    #[serde(default)]
+    max_input_tokens: u64,
+    #[serde(default)]
+    max_output_tokens: u64,
+    #[serde(default)]
+    max_cost_micros: u64,
+    #[serde(default)]
+    deadline_secs: u64,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +156,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         };
-        if assignment.execution_mode != "FIXTURE" {
+        if !matches!(
+            assignment.execution_mode.as_str(),
+            "FIXTURE" | "TRUSTED_LOCAL_PROVIDER"
+        ) {
             return Err(format!(
                 "Worker refuses unverified execution mode {}",
                 assignment.execution_mode
@@ -167,7 +195,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
-        let execution = execute_assignment(&assignment, &supervisor).await;
+        let execution = if assignment.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+            execute_provider_assignment(
+                &client,
+                &core,
+                &session_token,
+                &worker_id,
+                &assignment,
+                &supervisor,
+            )
+            .await
+        } else {
+            execute_assignment(&assignment, &supervisor).await
+        };
         heartbeat.abort();
         match execution {
             Ok(candidate) => {
@@ -234,6 +274,274 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     }
+}
+
+struct ProviderRun {
+    candidate: factory_native::workspace::CandidateRevision,
+    provider_session_id: String,
+    turn_id: String,
+    usage: ProviderUsage,
+}
+
+async fn execute_provider_assignment(
+    client: &reqwest::Client,
+    core: &reqwest::Url,
+    session_token: &str,
+    worker_id: &str,
+    assignment: &Assignment,
+    supervisor: &Supervisor,
+) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    if !assignment.allowed_tools.is_empty() {
+        return Err("provider tool mediation is not implemented; assignment has tools".into());
+    }
+    if assignment.deadline_secs == 0
+        || assignment.max_turns != 1
+        || assignment.max_sessions == 0
+        || assignment.max_input_tokens == 0
+        || assignment.max_output_tokens == 0
+        || assignment.max_cost_micros == 0
+        || assignment.delegation_id.is_empty()
+    {
+        return Err("provider assignment has an unsupported deadline or budget".into());
+    }
+    let base_url = validated_loopback_url(
+        &env::var("FACTORY_PROVIDER_BASE_URL")
+            .map_err(|_| "FACTORY_PROVIDER_BASE_URL required for provider execution")?,
+        "FACTORY_PROVIDER_BASE_URL",
+    )?;
+    let password = env::var("FACTORY_PROVIDER_PASSWORD")
+        .map_err(|_| "FACTORY_PROVIDER_PASSWORD required for provider execution")?;
+    if password.len() < 16 {
+        return Err("FACTORY_PROVIDER_PASSWORD must be at least 16 bytes".into());
+    }
+    factory_native::telemetry::register_secret(&password);
+
+    let intent: serde_json::Value = client
+        .post(core.join("worker/provider_intent")?)
+        .bearer_auth(session_token)
+        .json(&json!({
+            "attempt_id": assignment.lease.attempt_id,
+            "worker_id": worker_id,
+            "generation": assignment.lease.generation,
+            "provider": assignment.provider,
+            "model": assignment.model,
+            "provider_mode": assignment.provider_mode
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let session_record_id = intent
+        .get("session_record_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("Core provider intent returned no record id")?
+        .to_owned();
+
+    let result = run_provider_patch(base_url.as_str(), &password, assignment, supervisor).await;
+    match result {
+        Ok(run) => {
+            if !run.usage.known {
+                let terminal = ProviderTerminal {
+                    session_record_id: session_record_id.clone(),
+                    worker_id: worker_id.into(),
+                    generation: assignment.lease.generation,
+                    state: "FAILED".into(),
+                    provider_session_id: run.provider_session_id.clone(),
+                    turn_id: run.turn_id.clone(),
+                    input_tokens: run.usage.input_tokens,
+                    output_tokens: run.usage.output_tokens,
+                    total_tokens: run.usage.total_tokens,
+                    cost_micros: run.usage.cost_micros,
+                    usage_known: run.usage.known,
+                    cleanup_receipt: String::new(),
+                    error: "provider usage was not measurable".into(),
+                };
+                let _ = post_provider_terminal(client, core, session_token, &terminal).await;
+                return Err(
+                    "provider usage was not measurable; refusing an unaccounted candidate".into(),
+                );
+            }
+            let terminal = ProviderTerminal {
+                session_record_id: session_record_id.clone(),
+                worker_id: worker_id.into(),
+                generation: assignment.lease.generation,
+                state: "COMPLETED".into(),
+                provider_session_id: run.provider_session_id.clone(),
+                turn_id: run.turn_id.clone(),
+                input_tokens: run.usage.input_tokens,
+                output_tokens: run.usage.output_tokens,
+                total_tokens: run.usage.total_tokens,
+                cost_micros: run.usage.cost_micros,
+                usage_known: run.usage.known,
+                cleanup_receipt: "session_delete_verified_absent".into(),
+                error: String::new(),
+            };
+            post_provider_terminal(client, core, session_token, &terminal).await?;
+            Ok(run.candidate)
+        }
+        Err(error) => {
+            let terminal = ProviderTerminal {
+                session_record_id: session_record_id.clone(),
+                worker_id: worker_id.into(),
+                generation: assignment.lease.generation,
+                state: "FAILED".into(),
+                provider_session_id: String::new(),
+                turn_id: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+                cleanup_receipt: String::new(),
+                error: error.to_string(),
+            };
+            let _ = post_provider_terminal(client, core, session_token, &terminal).await;
+            Err(error)
+        }
+    }
+}
+
+async fn run_provider_patch(
+    base_url: &str,
+    password: &str,
+    assignment: &Assignment,
+    supervisor: &Supervisor,
+) -> Result<ProviderRun, Box<dyn std::error::Error>> {
+    let provider_dir = std::env::temp_dir().join(format!(
+        "factory-provider-{}-{}",
+        assignment.lease.attempt_id,
+        Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir(&provider_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&provider_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let directory = provider_dir.canonicalize()?.to_string_lossy().to_string();
+    let allowed = assignment.action_spec.allowed_paths.join(", ");
+    let prompt = json!({
+        "model": {
+            "providerID": assignment.provider,
+            "modelID": assignment.model
+        },
+        "parts": [{
+            "type": "text",
+            "text": format!(
+                "You are a bounded code generator. Do not call tools. Return ONLY a JSON object of the form {{\"files\":[{{\"path\":\"relative/path\",\"content\":\"...\"}}]}}. Allowed paths: {allowed}. Objective: {}",
+                assignment.action_spec.objective
+            )
+        }]
+    });
+    let (outcome, message) = tokio::time::timeout(
+        Duration::from_secs(assignment.deadline_secs),
+        execute_opencode_prompt_with_response(
+            base_url,
+            password,
+            &directory,
+            &format!("Factory provider attempt {}", assignment.lease.attempt_id),
+            &prompt,
+            false,
+        ),
+    )
+    .await
+    .map_err(|_| "provider deadline exceeded")??;
+    let outcome = match outcome {
+        factory_native::runtime::OpenCodePromptOutcome::Completed {
+            session_id,
+            message_id,
+        } => (session_id, message_id),
+        factory_native::runtime::OpenCodePromptOutcome::Failed { session_id, error } => {
+            return Err(format!("provider session {session_id} failed: {error}").into());
+        }
+        factory_native::runtime::OpenCodePromptOutcome::AbortRequestedAndIdle { session_id } => {
+            return Err(format!("provider session {session_id} was aborted").into());
+        }
+    };
+    let files = extract_patch(&message, &assignment.action_spec.allowed_paths)
+        .map_err(|error| format!("provider patch rejected: {error}"))?;
+    let usage = extract_usage(&message);
+    let allocation = WorkspaceAllocation {
+        attempt_id: assignment.lease.attempt_id.clone(),
+        repository: assignment.repository.clone(),
+        base_commit: assignment.action_spec.base_commit.clone(),
+    };
+    let response = supervisor
+        .client
+        .post(supervisor.base.join("v1/workspaces")?)
+        .bearer_auth(&supervisor.token)
+        .json(&allocation)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Supervisor refused provider workspace allocation: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    let handle: WorkspaceHandle = response.json().await?;
+    let apply = ApplyFilesRequest {
+        allowed_paths: assignment.action_spec.allowed_paths.clone(),
+        files: files
+            .into_iter()
+            .map(|file| factory_native::execution::AppliedFile {
+                path: file.path,
+                content: file.content,
+            })
+            .collect(),
+    };
+    let response = supervisor
+        .client
+        .post(
+            supervisor
+                .base
+                .join(&format!("v1/workspaces/{}/apply", handle.workspace_id))?,
+        )
+        .bearer_auth(&supervisor.token)
+        .json(&apply)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let _ = cleanup(supervisor, &handle.workspace_id).await;
+        return Err(format!("Supervisor provider apply failed: {status} {body}").into());
+    }
+    let candidate: factory_native::workspace::CandidateRevision = response.json().await?;
+    cleanup(supervisor, &handle.workspace_id).await?;
+    let _ = std::fs::remove_dir_all(provider_dir);
+    Ok(ProviderRun {
+        candidate,
+        provider_session_id: outcome.0,
+        turn_id: outcome.1,
+        usage,
+    })
+}
+
+async fn post_provider_terminal(
+    client: &reqwest::Client,
+    core: &reqwest::Url,
+    session_token: &str,
+    terminal: &ProviderTerminal,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .post(core.join("worker/provider_terminal")?)
+        .bearer_auth(session_token)
+        .json(terminal)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Core rejected provider terminal evidence: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 async fn execute_assignment(

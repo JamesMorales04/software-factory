@@ -109,6 +109,28 @@ struct AuthorizeCampaign {
     rationale: String,
     authorized_paths: Vec<String>,
     max_attempts: u32,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    provider_mode: String,
+    #[serde(default)]
+    delegation_id: String,
+    #[serde(default)]
+    max_sessions: u32,
+    #[serde(default)]
+    max_turns: u32,
+    #[serde(default)]
+    max_input_tokens: u64,
+    #[serde(default)]
+    max_output_tokens: u64,
+    #[serde(default)]
+    max_cost_micros: u64,
+    #[serde(default)]
+    deadline_secs: u64,
+    #[serde(default)]
+    allowed_tools: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -234,6 +256,8 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/worker/claim", post(worker_claim))
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
+        .route("/worker/provider_intent", post(worker_provider_intent))
+        .route("/worker/provider_terminal", post(worker_provider_terminal))
         .route("/worker/candidate", post(worker_candidate))
         .route(
             "/worker/integrated_candidate",
@@ -677,6 +701,34 @@ async fn worker_report(
     }
 }
 
+async fn worker_provider_intent(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<factory_native::db::NewProviderIntent>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.record_provider_intent(&input).await {
+        Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_terminal(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<factory_native::db::ProviderTerminal>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.record_provider_terminal(&input).await {
+        Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn worker_candidate(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -1066,6 +1118,17 @@ async fn authorize_campaign(
         rationale: input.rationale,
         authorized_paths: input.authorized_paths,
         max_attempts: input.max_attempts,
+        provider: input.provider,
+        model: input.model,
+        provider_mode: input.provider_mode,
+        delegation_id: input.delegation_id,
+        max_sessions: input.max_sessions,
+        max_turns: input.max_turns,
+        max_input_tokens: input.max_input_tokens,
+        max_output_tokens: input.max_output_tokens,
+        max_cost_micros: input.max_cost_micros,
+        deadline_secs: input.deadline_secs,
+        allowed_tools: input.allowed_tools,
     };
     match app.db.authorize_campaign(&id, &authorization).await {
         Ok((record, created)) => (

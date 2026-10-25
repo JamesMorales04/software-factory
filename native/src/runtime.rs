@@ -708,14 +708,14 @@ fn validate_opencode_session_id(session_id: &str) -> Result<(), Error> {
 /// Exercises an OpenCode prompt through its loopback HTTP and SSE APIs. When
 /// `abort_after_submit` is set, the result remains `AbortRequestedAndIdle` until
 /// the provider exposes stronger interruption evidence.
-pub async fn execute_opencode_prompt(
+async fn run_opencode_prompt(
     base_url: &str,
     password: &str,
     directory: &str,
     title: &str,
     prompt: &serde_json::Value,
     abort_after_submit: bool,
-) -> Result<OpenCodePromptOutcome, Error> {
+) -> Result<(OpenCodePromptOutcome, serde_json::Value), Error> {
     let base_url = validate_opencode_base_url(base_url)?;
     let client = opencode_http_client(Duration::from_secs(30))?;
     let event_response =
@@ -729,6 +729,7 @@ pub async fn execute_opencode_prompt(
         .ok_or_else(|| Error::Incompatible("OpenCode session/create returned no id".into()))?
         .to_owned();
 
+    let mut assistant_message = serde_json::Value::Null;
     let outcome = async {
         if created.get("directory").and_then(serde_json::Value::as_str) != Some(directory) {
             return Err(Error::Incompatible(
@@ -768,6 +769,7 @@ pub async fn execute_opencode_prompt(
             }
             | OpenCodePromptTerminal::Failed { .. } => serde_json::Value::Null,
         };
+        assistant_message = response.clone();
         reconcile_opencode_prompt(&session_id, terminal, &response)
     }
     .await;
@@ -775,7 +777,7 @@ pub async fn execute_opencode_prompt(
     let cleanup =
         delete_opencode_session(&client, &base_url, password, directory, &session_id).await;
     match (outcome, cleanup) {
-        (Ok(result), Ok(())) => Ok(result),
+        (Ok(result), Ok(())) => Ok((result, assistant_message)),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(Error::Incompatible(format!(
             "OpenCode session {session_id} cleanup unconfirmed: {cleanup}"
@@ -784,6 +786,48 @@ pub async fn execute_opencode_prompt(
             "{error}; OpenCode session {session_id} cleanup unconfirmed: {cleanup}"
         ))),
     }
+}
+
+/// Exercises the OpenCode prompt lifecycle without exposing assistant content.
+pub async fn execute_opencode_prompt(
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    title: &str,
+    prompt: &serde_json::Value,
+    abort_after_submit: bool,
+) -> Result<OpenCodePromptOutcome, Error> {
+    run_opencode_prompt(
+        base_url,
+        password,
+        directory,
+        title,
+        prompt,
+        abort_after_submit,
+    )
+    .await
+    .map(|(outcome, _)| outcome)
+}
+
+/// Exercises the OpenCode prompt lifecycle and returns the exact assistant
+/// message for a Factory-mediated, tool-free patch extraction step.
+pub async fn execute_opencode_prompt_with_response(
+    base_url: &str,
+    password: &str,
+    directory: &str,
+    title: &str,
+    prompt: &serde_json::Value,
+    abort_after_submit: bool,
+) -> Result<(OpenCodePromptOutcome, serde_json::Value), Error> {
+    run_opencode_prompt(
+        base_url,
+        password,
+        directory,
+        title,
+        prompt,
+        abort_after_submit,
+    )
+    .await
 }
 
 fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {

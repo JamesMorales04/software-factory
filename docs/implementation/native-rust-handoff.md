@@ -610,3 +610,30 @@ consistency` (PR impact, checker tests and capability registry/roadmap). Provide
 coding, durable session recovery, credential confinement, ISOLATED execution,
 recovery/cleanup Office visibility and independent human review remain open and
 fail-closed.
+
+## Deterministic provider execution checkpoint (2026-10-24)
+
+The Rust-only tree now proves a complete provider-backed Attempt using a
+deterministic loopback OpenCode fake server:
+
+`authorized Action → Campaign → Worker claim → durable provider intent →
+tool-free JSON file patch → Core/Worker scope validation → Supervisor apply to
+the exact Attempt worktree → immutable CandidateRevision → sandboxed verifier →
+deterministic reviewer → ACCEPTED gate`.
+
+Core authorizes `TRUSTED_LOCAL_PROVIDER` only with an active standing
+delegation, exact `opencode/deepseek-v4.1-flash/build` route, allowed paths,
+one session/turn, token/cost ceilings, a deadline and an empty provider-tool
+list. The trusted Worker holds the provider credential; the Supervisor and
+sandbox never receive it. Provider tool parts, unsafe/duplicate/oversized
+paths, unmeasured usage and completed sessions without confirmed cleanup are
+rejected. Durable intent/terminal rows and usage are persisted; unresolved
+sessions block replacement dispatch. See ADR-0022 and
+`docs/evidence/native-rust-provider-fixture-2026-10-24.json`.
+
+Author-run: `cargo xtask check` PASS (241 tests + 2 ignored, format, strict
+Clippy, build, docs, eleven migrations, audit); `cargo xtask e2e provider` and
+`cargo xtask e2e office` PASS; strict hygiene and architecture PASS. No paid
+provider call was made. Live coding with tools, source-context delivery,
+provider-session restart/cancellation reconciliation, credential-confinement
+certification and ISOLATED execution remain open and fail-closed.
