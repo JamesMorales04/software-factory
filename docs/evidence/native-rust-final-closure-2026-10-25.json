@@ -1,0 +1,115 @@
+{
+  "schema": "factory.native-rust-final-closure.v1",
+  "recorded_utc": "2026-10-25",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "PENDING_EXACT_HEAD",
+  "binding": "AUTHOR_RUN_LOCAL_UAT_PLUS_PENDING_EXACT_HEAD_CI",
+  "scope": "Linux local developer preview; TRUSTED_LOCAL and deterministic fixture/provider tests only. No ISOLATED certification, live paid model-quality certification, Windows support or production deployment is claimed.",
+  "migration_count": 18,
+  "rust": {
+    "toolchain": "1.90.0",
+    "discovered_tests": 317,
+    "ignored": [
+      "sandbox::tests::rootless_alpine_fixture_is_confined_and_workspace_is_writable (requires an explicit rootless-Podman run)"
+    ],
+    "format": "PASS",
+    "clippy_all_targets_all_features_deny_warnings": "PASS",
+    "tests": "PASS (cargo test --workspace --locked)",
+    "build_bins": "PASS",
+    "doc": "PASS",
+    "cargo_audit": "PASS (0 vulnerabilities reported)",
+    "migrations": "PASS (0015 model calls, 0016 observability, 0017 semantic review, 0018 review request identity applied from a clean SQLite database)",
+    "architecture_check": "PASS",
+    "strict_repository_hygiene": "PASS (0 tracked Go files; 0 findings)"
+  },
+  "model_gateway": {
+    "candidate": "Core-owned model-call reservations with per-scope and global token/cost caps",
+    "tests": [
+      "native/src/model_gateway.rs success settlement and idempotent replay without a second upstream call",
+      "missing usage and unusable responses settle UNKNOWN and block retry",
+      "transport timeout marks AMBIGUOUS and blocks automatic replay",
+      "client error releases the reservation",
+      "native/src/db/tests.rs duplicate, exhaustion, global cap and operator-resolution fencing"
+    ],
+    "lead_e2e": "PASS: model assessment -> frozen plan -> Campaign -> Worker -> verifier -> reviewer -> ACCEPTED; model reservation settled with measured usage",
+    "not_claimed": "paid live model quality or exact external spend"
+  },
+  "semantic_reviewer": {
+    "mechanism": "DETERMINISTIC pre-review is mandatory; MODEL approval can corroborate or block but never alone grants gate acceptance",
+    "strict_contract": "closed JSON Schema, exact candidate/spec identity, findings, severity, evidence refs, confidence",
+    "durable_receipt": "migration 0017 plus reservation/request digest binding in migration 0018",
+    "e2e": "PASS: model approval with deterministic approval reaches ACCEPTED; malformed output produces durable FAIL and REPAIR_REQUIRED, never ACCEPTED",
+    "not_claimed": "live model quality, human security certification or model-family-independent review"
+  },
+  "cap014": {
+    "execution_e2e": "PASS: 11 frozen fixtures executed through Core /model/calls with 11 SETTLED Evaluation reservations and measured usage",
+    "budget_exhaustion": "PASS: first denied call produces FAILED evidence and non-zero exit; no upstream call is made",
+    "scoring": "Independent blinded score sheets and compare remain separate; no CAP-014 quality pass is claimed"
+  },
+  "observability": {
+    "exporter": "bounded, sanitized OTLP/HTTP JSON logs with durable cursor and drop accounting",
+    "tests": [
+      "sanitized batch and stable correlation",
+      "collector failure isolated from Core request handling",
+      "restart resumes from the durable cursor",
+      "process-level unreachable collector does not fail Core"
+    ],
+    "not_claimed": "real OpenTelemetry Collector interoperability, traces or metrics completeness"
+  },
+  "browser": {
+    "capability": "managed external test server, readiness, real Chromium check, bounded evidence and verified process/port cleanup",
+    "uat5": {
+      "result": "PASS",
+      "browser_version": "156.0.8078.4",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "port_closed": true,
+      "process_group_absent": true,
+      "evidence": "docs/evidence/native-rust-final-closure-2026-10-25/uat5-browser-run.json"
+    },
+    "not_claimed": "frozen Project-config and Worker/Core browser wiring; OS isolation; a TRUSTED_LOCAL server may ignore HOST/PORT"
+  },
+  "workgraph": {
+    "tests": [
+      "parallel roots, fan-in and final integration reach ACCEPTED",
+      "failed dependency is not dispatched",
+      "failed fan-in integration does not release dependent work",
+      "frozen fan-in graph resumes after Core restart",
+      "campaign cancellation fences runs, attempts, tasks, integrations and leases across restart"
+    ],
+    "not_claimed": "live-provider multi-unit execution, browser graph projection, adversarial Git conflict path"
+  },
+  "uat7_full_lifecycle": {
+    "result": "PASS",
+    "steps": [
+      "built the Core/Office container image",
+      "factory start created and started Core plus host Supervisor/Worker",
+      "factory doctor PASS",
+      "Office HTTP endpoint served",
+      "registered Project, Action, Campaign and Attempt",
+      "Worker produced a candidate",
+      "independent verifier and deterministic reviewer reached ACCEPTED",
+      "factory stop, factory start reused the data volume",
+      "Project, Campaign and ACCEPTED gate persisted after restart",
+      "factory stop removed the container; the test data volume was removed manually"
+    ],
+    "evidence": [
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-start.log",
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-doctor.log",
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-gate.json",
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-projects-after-restart.json",
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-campaign-detail.json",
+      "docs/evidence/native-rust-final-closure-2026-10-25/uat7-restart.log"
+    ],
+    "not_claimed": "deployment, Windows, ISOLATED mode or paid live coding"
+  },
+  "not_claimed": [
+    "human acceptance or human security certification",
+    "SEC-01 ISOLATED certification",
+    "paid live provider coding or CAP-014 live semantic quality",
+    "Windows or production deployment",
+    "model-family-independent review (all AI agents used DeepSeek V4.1 Flash)"
+  ]
+}

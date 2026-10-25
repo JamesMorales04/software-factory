@@ -13,7 +13,10 @@ use std::{env, path::Path, time::Duration};
 use factory_native::{
     db::{CandidateInspection, QualityReceiptRecord, QualityRole, ReviewMechanism},
     quality::{EvidenceKind, ReceiptResult},
-    review::{FindingCategory, FindingSeverity, ReviewFinding, ReviewRequest, ReviewVerdict},
+    review::{
+        FindingCategory, FindingSeverity, ReviewEvidence, ReviewFinding, ReviewRequest,
+        ReviewVerdict,
+    },
     semantic_review::{
         ReviewBundleRequest, SemanticReviewBundle, SemanticReviewInput, SemanticReviewMechanism,
         SemanticVerdict, VerifierEvidence, build_review_bundle, mechanism_from_env,
@@ -30,6 +33,7 @@ struct ModelCallResponse {
     reservation_id: String,
     provider: String,
     model: String,
+    request_sha256: String,
     content: String,
     input_tokens: u64,
     output_tokens: u64,
@@ -77,15 +81,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = match mechanism {
         SemanticReviewMechanism::Deterministic => deterministic_outcome(inspection).await?,
         SemanticReviewMechanism::Model => {
-            model_outcome(
-                &client,
-                &core,
-                &token,
-                &principal,
-                &candidate_id,
-                inspection,
-            )
-            .await?
+            let deterministic = deterministic_evidence(&inspection).await?;
+            if deterministic.verdict == ReviewVerdict::RequestChanges {
+                CompletedOutcome {
+                    commit_sha: deterministic.commit_sha,
+                    tree_sha: deterministic.tree_sha,
+                    result: ReceiptResult::ChangesRequested,
+                    evidence: EvidenceKind::Executed,
+                    findings: Vec::new(),
+                    mechanism: ReviewMechanism::Deterministic,
+                    provider: String::new(),
+                    model: String::new(),
+                    reservation_id: String::new(),
+                    request_sha256: String::new(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                }
+            } else {
+                model_outcome(
+                    &client,
+                    &core,
+                    &token,
+                    &principal,
+                    &candidate_id,
+                    inspection,
+                    deterministic,
+                )
+                .await?
+            }
         }
     };
     let receipt = client
@@ -105,6 +131,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "modelProvider": outcome.provider,
             "modelName": outcome.model,
             "modelReservationId": outcome.reservation_id,
+            "modelRequestSha256": outcome.request_sha256,
             "inputTokens": outcome.input_tokens,
             "outputTokens": outcome.output_tokens,
             "totalTokens": outcome.total_tokens,
@@ -132,6 +159,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "modelProvider": outcome.provider,
             "modelName": outcome.model,
             "modelReservationId": outcome.reservation_id,
+            "modelRequestSha256": outcome.request_sha256,
             "findings": outcome.findings,
             "inputTokens": outcome.input_tokens,
             "outputTokens": outcome.output_tokens,
@@ -153,6 +181,7 @@ struct CompletedOutcome {
     provider: String,
     model: String,
     reservation_id: String,
+    request_sha256: String,
     input_tokens: u64,
     output_tokens: u64,
     total_tokens: u64,
@@ -160,25 +189,34 @@ struct CompletedOutcome {
     usage_known: bool,
 }
 
-async fn deterministic_outcome(
-    inspection: CandidateInspection,
-) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
-    let evidence = tokio::task::spawn_blocking(move || {
-        let repository = Path::new(&inspection.repository);
-        let lineage = inspection
-            .integration
-            .then_some(inspection.lineage.as_slice());
+async fn deterministic_evidence(
+    inspection: &CandidateInspection,
+) -> Result<ReviewEvidence, Box<dyn std::error::Error>> {
+    let repository = inspection.repository.clone();
+    let base_commit = inspection.base_commit.clone();
+    let commit_sha = inspection.candidate.commit_sha.clone();
+    let tree_sha = inspection.candidate.tree_sha.clone();
+    let allowed_paths = inspection.action_spec.allowed_paths.clone();
+    let lineage = inspection.integration.then_some(inspection.lineage.clone());
+    tokio::task::spawn_blocking(move || {
         factory_native::review::review_candidate(&ReviewRequest {
-            repository,
-            base_commit: &inspection.base_commit,
-            commit_sha: &inspection.candidate.commit_sha,
-            tree_sha: &inspection.candidate.tree_sha,
-            allowed_paths: &inspection.action_spec.allowed_paths,
-            integration_lineage: lineage,
+            repository: Path::new(&repository),
+            base_commit: &base_commit,
+            commit_sha: &commit_sha,
+            tree_sha: &tree_sha,
+            allowed_paths: &allowed_paths,
+            integration_lineage: lineage.as_deref(),
         })
     })
     .await
-    .map_err(|error| format!("review task failed: {error}"))??;
+    .map_err(|error| format!("review task failed: {error}"))?
+    .map_err(Into::into)
+}
+
+async fn deterministic_outcome(
+    inspection: CandidateInspection,
+) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
+    let evidence = deterministic_evidence(&inspection).await?;
     let result = match evidence.verdict {
         ReviewVerdict::Approve => ReceiptResult::Pass,
         ReviewVerdict::RequestChanges => ReceiptResult::ChangesRequested,
@@ -193,12 +231,25 @@ async fn deterministic_outcome(
         provider: String::new(),
         model: String::new(),
         reservation_id: String::new(),
+        request_sha256: String::new(),
         input_tokens: 0,
         output_tokens: 0,
         total_tokens: 0,
         cost_micros: 0,
         usage_known: false,
     })
+}
+
+fn combine_review_verdicts(deterministic: ReviewVerdict, semantic: ReceiptResult) -> ReceiptResult {
+    match (deterministic, semantic) {
+        (ReviewVerdict::RequestChanges, _) => ReceiptResult::ChangesRequested,
+        (ReviewVerdict::Approve, ReceiptResult::Pass) => ReceiptResult::Pass,
+        (ReviewVerdict::Approve, ReceiptResult::ChangesRequested) => {
+            ReceiptResult::ChangesRequested
+        }
+        (ReviewVerdict::Approve, ReceiptResult::NotTested) => ReceiptResult::NotTested,
+        (ReviewVerdict::Approve, ReceiptResult::Fail) => ReceiptResult::Fail,
+    }
 }
 
 async fn model_outcome(
@@ -208,10 +259,11 @@ async fn model_outcome(
     principal: &str,
     candidate_id: &str,
     inspection: CandidateInspection,
+    deterministic: ReviewEvidence,
 ) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
     let project_id = inspection.action_spec.project_id.clone();
-    let commit_sha = inspection.candidate.commit_sha.clone();
-    let tree_sha = inspection.candidate.tree_sha.clone();
+    let commit_sha = deterministic.commit_sha.clone();
+    let tree_sha = deterministic.tree_sha.clone();
     let receipts: Vec<QualityReceiptRecord> = match client
         .get(core.join(&format!("quality/candidates/{candidate_id}/receipts"))?)
         .bearer_auth(token)
@@ -335,6 +387,7 @@ async fn model_outcome(
                     provider: call.provider,
                     model: call.model,
                     reservation_id: call.reservation_id,
+                    request_sha256: call.request_sha256,
                     input_tokens: call.input_tokens,
                     output_tokens: call.output_tokens,
                     total_tokens: call.total_tokens,
@@ -343,21 +396,29 @@ async fn model_outcome(
                 });
             }
         };
-    let result = match review.verdict {
+    let semantic_result = match review.verdict {
         SemanticVerdict::Approve => ReceiptResult::Pass,
         SemanticVerdict::RequestChanges => ReceiptResult::ChangesRequested,
         SemanticVerdict::Uncertain => ReceiptResult::NotTested,
     };
+    let result = combine_review_verdicts(deterministic.verdict, semantic_result);
+    let mut findings: Vec<ReviewFinding> = deterministic
+        .findings
+        .into_iter()
+        .filter(|finding| !finding.evidence_refs.is_empty())
+        .collect();
+    findings.extend(review.findings);
     Ok(CompletedOutcome {
         commit_sha,
         tree_sha,
         result,
         evidence: EvidenceKind::Executed,
-        findings: review.findings,
+        findings,
         mechanism: ReviewMechanism::Model,
         provider: call.provider,
         model: call.model,
         reservation_id: call.reservation_id,
+        request_sha256: call.request_sha256,
         input_tokens: call.input_tokens,
         output_tokens: call.output_tokens,
         total_tokens: call.total_tokens,
@@ -415,6 +476,9 @@ fn failed_model_outcome(
         model: call.map(|call| call.model.clone()).unwrap_or_default(),
         reservation_id: call
             .map(|call| call.reservation_id.clone())
+            .unwrap_or_default(),
+        request_sha256: call
+            .map(|call| call.request_sha256.clone())
             .unwrap_or_default(),
         input_tokens: call.map(|call| call.input_tokens).unwrap_or_default(),
         output_tokens: call.map(|call| call.output_tokens).unwrap_or_default(),
@@ -477,6 +541,30 @@ mod tests {
         ] {
             assert!(validated_core_url(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn deterministic_approval_is_required_for_a_model_review_pass() {
+        assert_eq!(
+            combine_review_verdicts(ReviewVerdict::Approve, ReceiptResult::Pass),
+            ReceiptResult::Pass
+        );
+        assert_eq!(
+            combine_review_verdicts(ReviewVerdict::RequestChanges, ReceiptResult::Pass),
+            ReceiptResult::ChangesRequested
+        );
+        assert_eq!(
+            combine_review_verdicts(ReviewVerdict::Approve, ReceiptResult::ChangesRequested),
+            ReceiptResult::ChangesRequested
+        );
+        assert_eq!(
+            combine_review_verdicts(ReviewVerdict::Approve, ReceiptResult::NotTested),
+            ReceiptResult::NotTested
+        );
+        assert_eq!(
+            combine_review_verdicts(ReviewVerdict::Approve, ReceiptResult::Fail),
+            ReceiptResult::Fail
+        );
     }
 
     #[test]

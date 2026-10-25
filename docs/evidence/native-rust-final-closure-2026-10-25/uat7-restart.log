@@ -1,0 +1,12 @@
+Factory start
+Image: localhost/software-factory-core:dev
+Container: factory-uat-1792970085
+Data volume: factory-uat-data-1792970085
+Token file: /tmp/factory-uat-lifecycle-Eri2XV/core.env
+Data volume factory-uat-data-1792970085: reused
+Container factory-uat-1792970085: started (a973d4d0e705)
+Office URL: http://127.0.0.1:8877
+Core health: HTTP 200
+Host execution: enabled
+Sandbox Supervisor: http://127.0.0.1:8878
+Host runtime state: /tmp/factory-uat-lifecycle-Eri2XV/runtime

@@ -154,6 +154,9 @@ async fn check(
         evidence_path: evidence.clone(),
         screenshot: Some(screenshot.clone()),
         tooling,
+        server_pid: None,
+        server_process_group: None,
+        server_start_time_ticks: None,
     })
     .await;
     if expect_pass {
@@ -314,6 +317,9 @@ async fn missing_browser_tooling_is_not_tested_and_never_passed() {
             chromium_executable: None,
             browsers_path: None,
         },
+        server_pid: None,
+        server_process_group: None,
+        server_start_time_ticks: None,
     })
     .await;
     assert_eq!(report.status, BrowserCheckStatus::NotTested);

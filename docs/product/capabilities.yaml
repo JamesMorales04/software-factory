@@ -295,6 +295,7 @@ capabilities:
     real: Exercise registered projects in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -336,6 +337,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -468,6 +470,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -509,6 +512,7 @@ capabilities:
       verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -551,6 +555,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -593,6 +598,7 @@ capabilities:
       outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -610,7 +616,7 @@ capabilities:
   decision_status: approved
   implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -625,19 +631,25 @@ capabilities:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
     contract:
     - docs/contracts/browser-test-server-s4c06.md
+    source:
+    - native/src/browser.rs
+    test:
+    - native/tests/browser.rs
   acceptance:
     deterministic: Applicable factory-managed browser capability contract, negative and regression checks pass on
       an exact candidate.
     real: Exercise factory-managed browser capability in a genuine authorized project journey and independently
       verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - The Rust runtime does not yet implement a Factory-managed browser test server or browser capability.
+  - Standalone managed test server and real Chromium check are implemented; frozen Project-config and Worker/Core wiring remain.
+  - TRUSTED_LOCAL control-plane policy only; a server can still ignore HOST/PORT. Not OS isolation.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
 - id: CAP-010
@@ -674,6 +686,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -748,8 +761,10 @@ capabilities:
     - docs/contracts/factory-events-s1.md
     source:
     - native/src/telemetry.rs
+    - native/src/observability.rs
     test:
     - native/src/telemetry.rs
+    - native/tests/observability.rs
   acceptance:
     deterministic: Applicable durable events and telemetry contract, negative and regression checks pass on an exact
       candidate.
@@ -757,6 +772,7 @@ capabilities:
       the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
     live_agent: []
@@ -787,13 +803,14 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: [native/src/lead.rs, native/src/db/lead.rs]
-    test: [native/src/lead.rs, native/src/db/lead.rs]
+    source: [native/src/lead.rs, native/src/lead_model.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs, native/tests/e2e_fixture_dispatch.rs]
   acceptance:
     deterministic: Applicable intelligent lead contract, negative and regression checks pass on an exact candidate.
     real: Exercise intelligent lead in a genuine authorized project journey and independently verify the outcome.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
@@ -822,8 +839,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: [native/src/evaluation.rs, native/src/lead.rs]
-    test: [native/src/evaluation.rs]
+    source: [native/src/evaluation.rs, native/src/model_gateway.rs, native/src/lead_model.rs]
+    test: [native/src/evaluation.rs, native/tests/e2e_cap014.rs]
   acceptance:
     deterministic: Classify meaningful mechanisms as DETERMINISTIC, MODEL or HYBRID; reject self-authorizing judgments;
       compare representative semantic decisions with a reasonable deterministic baseline, including ambiguous
@@ -833,6 +850,7 @@ capabilities:
       a separate long-running session for each small judgment.
   evidence:
     deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-s4d-deterministic-2026-10-24.json
 
     live_agent: []
@@ -862,8 +880,8 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: [native/src/lead.rs, native/src/db/lead.rs]
-    test: [native/src/lead.rs, native/src/db/lead.rs]
+    source: [native/src/lead.rs, native/src/lead_model.rs, native/src/db/lead.rs]
+    test: [native/src/lead.rs, native/src/db/lead.rs, native/tests/e2e_fixture_dispatch.rs]
   acceptance:
     deterministic: Applicable frozen executable planning contract, negative and regression checks pass on an exact
       candidate.
@@ -1061,9 +1079,9 @@ capabilities:
   purpose: Assess code design security and evidence separately from author
   product_objective: Trustworthy acceptance
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1075,21 +1093,30 @@ capabilities:
   target_milestone: F1-S4-E
   refs:
     adr: []
-    contract: []
-    source: []
-    test: []
+    contract:
+    - docs/contracts/semantic-review-s4c.md
+    source:
+    - native/src/semantic_review.rs
+    - native/src/bin/reviewer.rs
+    - native/src/db/quality.rs
+    test:
+    - native/src/semantic_review.rs
+    - native/tests/e2e_fixture_dispatch.rs
   acceptance:
     deterministic: Applicable independent semantic reviewer contract, negative and regression checks pass on an
       exact candidate.
     real: Exercise independent semantic reviewer in a genuine authorized project journey and independently verify
       the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Model-backed review is exercised only against deterministic fake upstreams; no live paid model review or independent human certification.
+  - Same-model review is role-separated, not model-family independent.
   blockers: []
 - id: CAP-022
   name: Parallel WorkUnits
@@ -1097,9 +1124,9 @@ capabilities:
   purpose: Execute independent tasks concurrently with conflict controls
   product_objective: Efficient autonomy
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1111,18 +1138,23 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source:
+    - native/src/db/lead.rs
+    - native/src/execution.rs
+    test:
+    - native/tests/e2e_fixture_dispatch.rs
   acceptance:
     deterministic: Applicable parallel workunits contract, negative and regression checks pass on an exact candidate.
     real: Exercise parallel workunits in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/native-rust-final-closure-2026-10-25.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Parallel/fan-in execution is fixture-verified; no live provider multi-unit or browser graph journey.
   blockers: []
 - id: CAP-023
   name: Context and knowledge resolver

@@ -84,5 +84,9 @@ jobs:
         working-directory: office/e2e-browser
       - name: Install Chromium
         run: npx --yes playwright@1.64.1 install --with-deps chromium
+      - name: Factory-managed browser capability (real Chromium)
+        env:
+          FACTORY_PLAYWRIGHT_CORE: ${{ github.workspace }}/office/e2e-browser/node_modules/playwright-core
+        run: cargo +1.90.0 test --locked -p factory-native --test browser
       - name: Rust Office browser journey
         run: cargo +1.90.0 xtask e2e office

@@ -30,3 +30,4 @@ Each completed contract must specify owner, version and stability level; input/o
 - [Multi-project registry, capabilities and browser capability (F1-S4-C)](multi-project-s4c.md) — Project-bound specs, capability matching, Factory-managed Playwright and cross-project rejection.
 - [Bounded autonomous Implementer recovery (F1-S4-C-03)](campaign-recovery-s4c03.md) — failure classes, fenced recovery Runs, explicit attempt budgets and immutable oracle evidence.
 - [Worker-managed browser test server (F1-S4-C-06)](browser-test-server-s4c06.md) — declarative startup, readiness, ownership, cleanup and evidence boundary.
+- [Semantic review (S4-D)](semantic-review-s4c.md) — Core-authorized model review, strict schema, findings and deterministic gate boundary.

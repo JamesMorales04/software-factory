@@ -358,6 +358,8 @@ pub struct QualityReceiptInput {
     #[serde(default)]
     pub model_reservation_id: String,
     #[serde(default)]
+    pub model_request_sha256: String,
+    #[serde(default)]
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
@@ -385,6 +387,8 @@ pub struct QualityReceiptRecord {
     pub model_provider: String,
     pub model_name: String,
     pub model_reservation_id: String,
+    #[serde(default)]
+    pub model_request_sha256: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,

@@ -12,9 +12,17 @@ the final decision mechanism.
 ## Mechanism
 
 `FACTORY_REVIEW_MECHANISM=DETERMINISTIC` (default) runs the existing bounded
-static review. `FACTORY_REVIEW_MECHANISM=MODEL` builds a bounded bundle and
-calls `POST /model/calls` with role `semantic_reviewer`, `objectiveId` and
+static review. `FACTORY_REVIEW_MECHANISM=MODEL` first runs that deterministic
+pre-review. A deterministic `request_changes` result is final and no model call
+is made. Only an approved pre-review proceeds to build a bounded bundle and
+call `POST /model/calls` with role `semantic_reviewer`, `objectiveId` and
 `scopeId` equal to the candidate ID, and purpose `semantic_review`.
+
+A model `approve` is corroborating advice, not acceptance authority. The final
+`PASS` receipt requires **both** a deterministic `approve` and a model
+`approve`. A model or deterministic `request_changes` yields
+`CHANGES_REQUESTED`; model uncertainty yields `NOT_TESTED`. This preserves the
+invariant that model output never grants Quality Gate acceptance.
 
 The model call is reserved and settled by Core. The response supplies
 `reservationId`, `provider`, `model`, token usage, cost and `usageKnown`.
@@ -41,7 +49,8 @@ Malformed or uncertain output is never converted into approval.
 
 | Semantic verdict | Receipt result | Gate effect |
 | --- | --- | --- |
-| `approve` | `PASS` | May contribute to `ACCEPTED` |
+| `approve` with deterministic `approve` | `PASS` | May contribute to `ACCEPTED` |
+| `approve` without deterministic `approve` | `CHANGES_REQUESTED` | `REPAIR_REQUIRED` |
 | `request_changes` | `CHANGES_REQUESTED` | `REPAIR_REQUIRED` |
 | `uncertain` | `NOT_TESTED` | Never `ACCEPTED` |
 | rejected/malformed output | `FAIL` | `REPAIR_REQUIRED` |

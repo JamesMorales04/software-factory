@@ -1,7 +1,8 @@
 # CAP-014 semantic evaluation (Rust)
 
-**Status:** deterministic evaluator implemented; live model evaluation not
-authorized and not performed.
+**Status:** deterministic evaluator and Core-authorized raw-output collection
+implemented. Independent blinded scoring is still required; no live paid model
+quality run or CAP-014 pass is claimed.
 
 ## Frozen corpus
 
@@ -46,10 +47,20 @@ cargo run --locked --bin factory-s4d-evaluate -- corpus
 cargo run --locked --bin factory-s4d-evaluate -- baseline
 cargo run --locked --bin factory-s4d-evaluate -- validate native/fixtures/s4d-evaluation-corpus.json
 cargo run --locked --bin factory-s4d-evaluate -- compare CORPUS MODEL_SHEET BASELINE_SHEET
+FACTORY_OPERATOR_TOKEN=... cargo run --locked --bin factory-s4d-evaluate -- \
+  execute http://127.0.0.1:8765 EVALUATION_ID OUTPUT_JSON
 ```
 
-The compare command exits non-zero when thresholds fail. No command contacts a
-provider.
+The compare command exits non-zero when thresholds fail.
+
+`execute` calls the Core-owned `/model/calls` endpoint for every frozen fixture
+under role `evaluation`. Core reserves a bounded token/cost envelope, calls the
+configured provider, settles measured usage and records a durable reservation
+for each fixture. The output contains the exact corpus identity, per-fixture raw
+content, reservation identity, provider/model provenance and usage totals. It
+does not score the content. A denied or exhausted budget writes `FAILED`
+evidence and exits non-zero; it never reports completion. Independent blinded
+score sheets remain the only input to `evaluate`/`compare`.
 
 ## Evidence limits
 

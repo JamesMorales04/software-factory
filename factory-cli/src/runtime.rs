@@ -99,6 +99,7 @@ pub(crate) fn start(
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("FACTORY_SUPERVISOR_TOKEN", &supervisor_token)
+        .env("FACTORY_CORE_URL", core_url)
         .env("FACTORY_ATTEMPT_GRANT_KEY", &attempt_grant_key)
         .env("FACTORY_SUPERVISOR_CAPABILITY_KEY", &capability_key)
         .env(

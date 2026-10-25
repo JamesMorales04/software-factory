@@ -143,6 +143,9 @@ async fn run(cli: Cli) -> ExitCode {
         evidence_path: inputs.evidence,
         screenshot: inputs.screenshot,
         tooling: inputs.tooling,
+        server_pid: Some(server.pid()),
+        server_process_group: Some(server.process_group()),
+        server_start_time_ticks: Some(server.start_time_ticks()),
     })
     .await;
     let receipt = match server.stop().await {
@@ -245,6 +248,9 @@ async fn check(cli: Cli) -> ExitCode {
         evidence_path: evidence_path.clone(),
         screenshot: cli.path("screenshot"),
         tooling: tooling_from(&cli),
+        server_pid: None,
+        server_process_group: None,
+        server_start_time_ticks: None,
     })
     .await;
     let exit = exit_for(report.status);

@@ -417,8 +417,8 @@ impl Database {
         let rows = sqlx::query::query(
             "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
                     result,evidence,findings_json,mechanism,model_provider,model_name,
-                    model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
-                    usage_known,received_at
+                    model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+                    total_tokens,cost_micros,usage_known,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
         )
         .bind(candidate_id)
@@ -697,6 +697,7 @@ async fn insert_receipt(
         model_provider: input.model_provider.clone(),
         model_name: input.model_name.clone(),
         model_reservation_id: input.model_reservation_id.clone(),
+        model_request_sha256: input.model_request_sha256.clone(),
         input_tokens: input.input_tokens,
         output_tokens: input.output_tokens,
         total_tokens: input.total_tokens,
@@ -708,9 +709,9 @@ async fn insert_receipt(
         "INSERT INTO quality_receipts
          (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
           result,evidence,findings_json,mechanism,model_provider,model_name,
-          model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
-          usage_known,received_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+          model_reservation_id,model_request_sha256,input_tokens,output_tokens,total_tokens,
+          cost_micros,usage_known,received_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
     )
     .bind(&receipt.receipt_id)
     .bind(&receipt.candidate_id)
@@ -726,6 +727,7 @@ async fn insert_receipt(
     .bind(&receipt.model_provider)
     .bind(&receipt.model_name)
     .bind(&receipt.model_reservation_id)
+    .bind(&receipt.model_request_sha256)
     .bind(i64::try_from(receipt.input_tokens).map_err(|_| Error::Invalid("quality receipt usage"))?)
     .bind(
         i64::try_from(receipt.output_tokens)
@@ -758,6 +760,7 @@ type ModelReviewReservationRow = (
     String,
     String,
     String,
+    String,
     i64,
     i64,
     i64,
@@ -786,15 +789,20 @@ async fn validate_model_review_receipt(
         || input.model_provider.trim().is_empty()
         || input.model_name.trim().is_empty()
         || input.model_reservation_id.trim().is_empty()
+        || input.model_request_sha256.len() != 64
+        || !input
+            .model_request_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(Error::Forbidden(
             "model review approval requires settled model provenance and known usage".into(),
         ));
     }
     let row: Option<ModelReviewReservationRow> = sqlx::query_as::query_as(
-        "SELECT m.role,m.provider,m.model,m.input_tokens,m.output_tokens,m.total_tokens,
-                    m.cost_micros,m.usage_known,m.state,m.scope_id,m.objective_id,m.principal_id,
-                    ac.project_id
+        "SELECT m.role,m.provider,m.model,m.request_sha256,m.input_tokens,m.output_tokens,
+                    m.total_tokens,m.cost_micros,m.usage_known,m.state,m.scope_id,m.objective_id,
+                    m.principal_id,ac.project_id
              FROM model_call_reservations m
              JOIN candidates cd ON cd.id=?2
              JOIN attempts a ON a.id=cd.attempt_id
@@ -811,6 +819,7 @@ async fn validate_model_review_receipt(
         role,
         provider,
         model,
+        request_sha256,
         input_tokens,
         output_tokens,
         total_tokens,
@@ -835,6 +844,7 @@ async fn validate_model_review_receipt(
         || principal_id != input.principal_id
         || provider != input.model_provider
         || model != input.model_name
+        || request_sha256 != input.model_request_sha256.to_ascii_lowercase()
         || u64::try_from(input_tokens).ok() != Some(input.input_tokens)
         || u64::try_from(output_tokens).ok() != Some(input.output_tokens)
         || u64::try_from(total_tokens).ok() != Some(input.total_tokens)
@@ -995,6 +1005,7 @@ fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
         model_provider: row.try_get("model_provider")?,
         model_name: row.try_get("model_name")?,
         model_reservation_id: row.try_get("model_reservation_id")?,
+        model_request_sha256: row.try_get("model_request_sha256")?,
         input_tokens: u64::try_from(input_tokens)
             .map_err(|_| Error::Invalid("stored quality receipt usage is invalid"))?,
         output_tokens: u64::try_from(output_tokens)
@@ -1015,8 +1026,8 @@ async fn load_receipt_by_id(
     let row = sqlx::query::query(
         "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
                 result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
-                usage_known,received_at
+                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+                total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE receipt_id=?1",
     )
     .bind(receipt_id)
@@ -1033,8 +1044,8 @@ async fn load_receipt_by_role(
     let row = sqlx::query::query(
         "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
                 result,evidence,findings_json,mechanism,model_provider,model_name,
-                model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
-                usage_known,received_at
+                model_reservation_id,model_request_sha256,input_tokens,output_tokens,
+                total_tokens,cost_micros,usage_known,received_at
          FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
     )
     .bind(candidate_id)
@@ -1056,6 +1067,7 @@ fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput)
         && existing.model_provider == input.model_provider
         && existing.model_name == input.model_name
         && existing.model_reservation_id == input.model_reservation_id
+        && existing.model_request_sha256 == input.model_request_sha256
         && existing.input_tokens == input.input_tokens
         && existing.output_tokens == input.output_tokens
         && existing.total_tokens == input.total_tokens

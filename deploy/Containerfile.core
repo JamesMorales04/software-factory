@@ -45,6 +45,7 @@ COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
 COPY factory-cli/src factory-cli/src
 COPY native/Cargo.toml native/Cargo.toml
 COPY native/src native/src
+COPY native/fixtures native/fixtures
 COPY xtask/Cargo.toml xtask/Cargo.toml
 COPY xtask/src xtask/src
 COPY migrations migrations

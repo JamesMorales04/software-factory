@@ -395,6 +395,10 @@ impl ManagedTestServer {
         self.process_group
     }
 
+    pub fn start_time_ticks(&self) -> u64 {
+        self.start_time_ticks
+    }
+
     pub fn stdout_log(&self) -> &Path {
         &self.stdout_log
     }
@@ -870,6 +874,10 @@ pub struct BrowserCheckConfig {
     pub evidence_path: PathBuf,
     pub screenshot: Option<PathBuf>,
     pub tooling: BrowserTooling,
+    /// Set only when this process owns the managed server that is being checked.
+    pub server_pid: Option<u32>,
+    pub server_process_group: Option<i32>,
+    pub server_start_time_ticks: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -884,6 +892,14 @@ pub struct BrowserEvidence {
     pub screenshot: Option<String>,
     #[serde(default)]
     pub profile_removed: bool,
+    #[serde(default)]
+    pub managed_server_owned: bool,
+    #[serde(default)]
+    pub server_pid: Option<u32>,
+    #[serde(default)]
+    pub server_process_group: Option<i32>,
+    #[serde(default)]
+    pub server_start_time_ticks: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1059,6 +1075,12 @@ pub async fn run_browser_check(config: BrowserCheckConfig) -> BrowserCheckReport
         }
     };
     evidence.profile_removed = cleanup_ok;
+    evidence.managed_server_owned = config.server_pid.is_some()
+        && config.server_process_group.is_some()
+        && config.server_start_time_ticks.is_some();
+    evidence.server_pid = config.server_pid;
+    evidence.server_process_group = config.server_process_group;
+    evidence.server_start_time_ticks = config.server_start_time_ticks;
     if let Some(screenshot) = &config.screenshot {
         let bounded = fs::metadata(screenshot)
             .map(|metadata| metadata.is_file() && metadata.len() <= MAX_SCREENSHOT_BYTES)

@@ -321,9 +321,10 @@ pub fn render_semantic_review_prompt(bundle: &SemanticReviewBundle) -> (String, 
         "You are an independent semantic code reviewer. Return ONLY one JSON object that \
 exactly matches the supplied JSON Schema. Do not emit prose, markdown, comments, duplicate \
 fields or unknown fields. Never edit candidate code. A verdict is advisory: Core revalidates \
-every identity and finding, and the deterministic Quality Gate makes the final decision. \
-Approve only when the exact diff plausibly satisfies the frozen objective without blocking \
-functional, architectural, security, testing or scope defects. Use request_changes with \
+every identity and finding, a deterministic pre-review must also approve, and the deterministic \
+Quality Gate makes the final decision. Your approval is corroborating advice, not acceptance \
+authority. Approve only when the exact diff plausibly satisfies the frozen objective without \
+blocking functional, architectural, security, testing or scope defects. Use request_changes with \
 blocking findings for defects, and uncertain with at least one concrete finding when evidence \
 is insufficient. Never approve from the candidate description alone.\n\nJSON Schema:\n{schema}"
     );

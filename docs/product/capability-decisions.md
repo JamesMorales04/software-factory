@@ -44,20 +44,20 @@ product roadmap, and it does not mean rejected.**
 | CAP-006 | Independent verification and review | ADOPT boundary | F1-S4-C | REQUIRED_FOR_MIGRATION | Sandboxed verifier; reviewer is receipt-only | Verifier process, reviewer process, evidence contracts |
 | CAP-007 | Deterministic Quality Gate | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Fixture-verified immutable gate | Core quality policy |
 | CAP-008 | Scoped capability grants | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Partial project/capability scoping | Core authorization |
-| CAP-009 | Factory-managed browser capability | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Not implemented in Rust | Worker browser wrapper and managed test server |
+| CAP-009 | Factory-managed browser capability | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Standalone managed test server and real Chromium check; frozen Project-config/Worker wiring absent | Worker browser wrapper and managed test server |
 | CAP-010 | Bounded deterministic recovery | ADAPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Lease/retry primitives; no real corrective cycle | Core recovery policy |
 | CAP-011 | Factory Office | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Rust Office with Lead, Campaign detail/WorkGraph and fixture browser journey | React Office projection |
-| CAP-012 | Durable events and telemetry | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Durable event ledger; no cursor/SSE contract | Core events and telemetry |
-| CAP-013 | Intelligent Lead | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Typed Lead scaffold; no model assessor | Lead application service and provider assessor |
-| CAP-014 | Intent and semantic assessment | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Strict schema, deterministic fixture assessor, CAP-014 corpus/baseline/evaluator | Assessment domain and direct model assessor |
+| CAP-012 | Durable events and telemetry | ADOPT | F1-S4-C | REQUIRED_FOR_MIGRATION | Durable event ledger, bounded sanitized OTLP log export, cursor API; traces/metrics incomplete | Core events and telemetry |
+| CAP-013 | Intelligent Lead | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Core-authorized model assessment, strict schema, frozen plan and mock-model Campaign E2E; live model quality untested | Lead application service and provider assessor |
+| CAP-014 | Intent and semantic assessment | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Strict schema, deterministic fixture assessor, frozen corpus/baseline/evaluator, Core-authorized raw-output execution; independent scoring/live quality absent | Assessment domain and direct model assessor |
 | CAP-015 | Frozen executable planning | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Proposal/freeze, per-unit specs and Campaign/Run/Attempt creation | Full plan projection and recovery |
-| CAP-016 | Dependency-aware WorkGraph | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Bounded validation plus sequential task persistence/scheduling | Parallel/fan-in and integration node |
+| CAP-016 | Dependency-aware WorkGraph | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Bounded validation, parallel roots, fan-in, final integration and restart/cancellation fixture E2E | WorkGraph scheduler hardening |
 | CAP-017 | Standing delegation contract | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Sealed grants, atomic reservation, revocation containment and default-off autonomous policy | Ratified issuer/risk policy and provider modes |
 | CAP-018 | Agent Composer | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Deterministic composition service |
 | CAP-019 | Operation Supervisor | ADAPT | F1-S4-E | FUTURE_FEATURE | Core-owned deterministic coordination only | Core supervision policy; no second controller |
 | CAP-020 | Specialist agent roles | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Scoped role prompts through provider ports |
-| CAP-021 | Independent semantic Reviewer | ADOPT boundary | F1-S4-E | REQUIRED_FOR_VERIFICATION | Receipt-only reviewer | Reviewer process and quality contract |
-| CAP-022 | Parallel WorkUnits | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Not executed | WorkGraph scheduler |
+| CAP-021 | Independent semantic Reviewer | ADOPT boundary | F1-S4-E | REQUIRED_FOR_VERIFICATION | Model-backed reviewer process with strict schema, durable findings/provenance and fake-upstream E2E; live/human certification absent | Reviewer process and quality contract |
+| CAP-022 | Parallel WorkUnits | ADAPT | F1-S4-D | REQUIRED_FOR_PR16_PARITY | Parallel/fan-in fixture E2E reaches ACCEPTED; live provider and browser multi-unit absent | WorkGraph scheduler |
 | CAP-023 | Context and knowledge resolver | ADAPT | F1-S4-E | FUTURE_FEATURE | Not implemented | Bounded retrieval port; simple source reads first |
 | CAP-024 | GitHub PR delivery | ADAPT | F1-S5 | FUTURE_FEATURE | Not implemented | Core delivery adapter |
 | CAP-025 | CI and review reconciliation | ADAPT | F1-S5 | FUTURE_FEATURE | Not implemented | Delivery reconciliation |

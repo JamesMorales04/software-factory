@@ -86,6 +86,7 @@ pub struct ModelCallResult {
     pub role: ModelCallRole,
     pub provider: String,
     pub model: String,
+    pub request_sha256: String,
     pub content: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -139,6 +140,7 @@ type SettleRow = (
     String,
     String,
     String,
+    String,
     i64,
     i64,
     i64,
@@ -161,6 +163,7 @@ type IdentityRow = (
     String,
 );
 type ReplayRow = (
+    String,
     String,
     String,
     String,
@@ -352,9 +355,9 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let row: Option<SettleRow> = sqlx::query_as::query_as(
-            "SELECT state,role,provider,model,max_input_tokens,max_output_tokens,
-                    max_total_tokens,max_cost_micros,COALESCE(response_text,''),
-                    COALESCE(error,'')
+            "SELECT state,role,provider,model,request_sha256,max_input_tokens,
+                    max_output_tokens,max_total_tokens,max_cost_micros,
+                    COALESCE(response_text,''),COALESCE(error,'')
              FROM model_call_reservations WHERE reservation_id=?1",
         )
         .bind(&usage.reservation_id)
@@ -365,6 +368,7 @@ impl Database {
             role,
             provider,
             model,
+            request_sha256,
             max_input,
             max_output,
             max_total,
@@ -470,6 +474,7 @@ impl Database {
             role,
             provider,
             model,
+            request_sha256,
             content: usage.content.clone(),
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -858,8 +863,8 @@ async fn replay_model_call_by_id(
     reservation_id: &str,
 ) -> Result<ModelCallResult, Error> {
     let row: Option<ReplayRow> = sqlx::query_as::query_as(
-        "SELECT role,provider,model,COALESCE(response_text,''),state,input_tokens,
-                    output_tokens,total_tokens,cost_micros,usage_known
+        "SELECT role,provider,model,request_sha256,COALESCE(response_text,''),state,
+                    input_tokens,output_tokens,total_tokens,cost_micros,usage_known
              FROM model_call_reservations WHERE reservation_id=?1",
     )
     .bind(reservation_id)
@@ -869,6 +874,7 @@ async fn replay_model_call_by_id(
         role,
         provider,
         model,
+        request_sha256,
         content,
         state,
         input_tokens,
@@ -888,6 +894,7 @@ async fn replay_model_call_by_id(
         role: ModelCallRole::parse(&role).ok_or(Error::Invalid("stored model call role"))?,
         provider,
         model,
+        request_sha256,
         content,
         input_tokens: u64::try_from(input_tokens)
             .map_err(|_| Error::Invalid("stored model call input"))?,

@@ -268,6 +268,8 @@ struct QualityReceiptRequest {
     model_name: String,
     #[serde(default, rename = "modelReservationId")]
     model_reservation_id: String,
+    #[serde(default, rename = "modelRequestSha256")]
+    model_request_sha256: String,
     #[serde(default, rename = "inputTokens")]
     input_tokens: u64,
     #[serde(default, rename = "outputTokens")]
@@ -1426,6 +1428,7 @@ async fn model_call(
             "reservationId": result.reservation_id,
             "provider": result.provider,
             "model": result.model,
+            "requestSha256": result.request_sha256,
             "content": result.content,
             "inputTokens": result.input_tokens,
             "outputTokens": result.output_tokens,
@@ -1473,6 +1476,7 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
         model_provider: input.model_provider,
         model_name: input.model_name,
         model_reservation_id: input.model_reservation_id,
+        model_request_sha256: input.model_request_sha256,
         input_tokens: input.input_tokens,
         output_tokens: input.output_tokens,
         total_tokens: input.total_tokens,
