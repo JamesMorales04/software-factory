@@ -37,26 +37,34 @@
     "Per-run provider bridge capability; long-lived provider credential never enters the provider sandbox",
     "Core-signed Attempt grants for Supervisor allocation and per-Attempt workspace capabilities replacing broad-bearer workspace operations",
     "Adversarial provider-boundary tests for host HOME/repository/socket access, external network, credential environment leakage and cross-Attempt capability reuse",
-    "Content-based exclusion of credential-shaped source under ordinary filenames"
+    "Content-based exclusion of credential-shaped source under ordinary filenames",
+    "Core-signed short-lived operation grants bound to live lease, generation, workspace, operation and frozen scope",
+    "Pinned OpenAI-compatible provider egress broker with per-run token, injected credential, exact routes and no redirects",
+    "Provider sandbox prlimit/tmpfs/session-monitor/stderr/lifetime resource bounds",
+    "Durable sandbox process identity and confined terminate/absence recovery primitive",
+    "Independent Codex model security review with HIGH findings repaired"
   ],
   "not_implemented": [
     "Live Codex/OpenCode provider coding with sandboxed model egress",
-    "Sandboxed provider-session recovery after Worker crash",
     "Model-backed Lead assessment",
     "Provider credential-confinement certification and ISOLATED execution",
     "Factory-managed browser test server lifecycle",
     "In-flight WorkGraph integration cancellation process coverage and recovery/cleanup Office projections",
     "Semantic/model reviewer and independent CAP-014 model score",
     "Windows/Podman Machine acceptance",
-    "Independent human full-diff/security review and Product Owner merge authorization"
+    "Independent human full-diff/security review and Product Owner merge authorization",
+    "Real OpenCode/Codex egress configuration and live provider coding",
+    "Full Worker-kill/restart E2E at every confined durable boundary",
+    "Hard OS filesystem quota for the provider session bind mount",
+    "Human security certification and compromised-Worker isolation"
   ],
   "provider_versions": {
     "codex": "0.156.1",
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 253,
-  "current_test_inventory": "Author-run: 253 Rust tests passed, 2 ignored (255 total); thirteen migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office, real bubblewrap provider-boundary tests and strict hygiene pass. Exact-head CI pending.",
+  "local_unit_tests_passed": 264,
+  "current_test_inventory": "Author-run: 264 Rust tests passed, 2 ignored; thirteen migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office, operation-grant, bridge, egress, quota, identity and bubblewrap tests pass. Exact-head CI pending.",
   "dependency_audit": {
     "tool": "cargo-audit",
     "version": "0.22.2",
@@ -65,23 +73,23 @@
     "dependency_count": 276
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
-  "security_status": "PARTIAL/BLOCKED: long-lived provider credential stays in the trusted Worker; the deterministic provider runs under bubblewrap with no host HOME/repository/runtime socket or external network; a per-run bridge capability replaces long-lived credential delivery. Supervisor allocation requires a Core-signed Attempt grant and workspace operations require a per-Attempt capability. Credential-confinement certification, sandboxed model egress, sandboxed-session recovery, live provider coding and independent isolation remain unverified; ISOLATED is fail-closed.",
+  "security_status": "PARTIAL/BLOCKED: trusted Worker holds long-lived credentials and host authority. Deterministic provider is bubblewrap-confined with no host HOME/repository/runtime socket or unrestricted network; Supervisor mutations require live-lease-bound Core operation grants and signed scope; egress is pinned to an authenticated broker; quotas and confined recovery primitives exist. Independent model review HIGH findings repaired. Human certification, hard storage quota, real provider egress configuration, full crash E2E and ISOLATED remain absent; ISOLATED fail-closed.",
   "delivery_status": "PR #17 Draft at 3979e32bc94b387571d1d3c715022740c2fd216d; Rust-only tree; confined provider boundary, Office and architecture CI green; independent security review, live provider coding, ISOLATED and merge authorization outstanding.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Record exact-head CI and independent security review; then implement sandboxed provider-session recovery and live model egress mediation, followed by model Lead assessment and remaining recovery/Office gaps.",
+  "next_task": "Record exact-head CI and rerun the independent review on the repaired candidate; then complete full confined crash E2E, hard storage quota and real OpenCode/Codex egress configuration before requesting live authorization.",
   "completion_gates": {
     "G1": "PARTIAL: one Rust architecture; provider execution and isolation incomplete",
     "G2": "PARTIAL: read-only provider smokes only; coding lifecycle absent",
     "G3": "PASS: zero tracked Go files; strict hygiene passes locally and in exact-head CI",
     "G4": "PASS: only Rust-native Native Rust and Governance consistency workflows are active",
-    "G5": "PARTIAL: deterministic bubblewrap-confined multi-turn source-aware provider plan with mediated tools and permission denial reaches ACCEPTED; live provider coding blocked",
+    "G5": "PARTIAL: bubblewrap-confined multi-turn provider with scoped egress and operation grants reaches ACCEPTED; live provider coding blocked",
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
-    "G8": "BLOCKED: candidate host/network/credential boundary is author-tested; credential-confinement certification and independent isolation remain absent",
-    "G9": "PARTIAL: exact-head Rust CI green at 3979e32bc94b387571d1d3c715022740c2fd216d with executed bubblewrap tests; independent human acceptance absent",
+    "G8": "BLOCKED: candidate boundary and independent model review exist; human certification, hard quota and compromised-Worker isolation absent",
+    "G9": "PARTIAL: 264 local Rust tests pass with 2 ignored; exact-head CI and human acceptance pending",
     "G10": "PASS: architecture edited-run, PR-impact and strict hygiene at 3979e32bc94b387571d1d3c715022740c2fd216d",
-    "G11": "NOT_STARTED: independent human full-diff/security review; no independent review result at this candidate",
+    "G11": "PARTIAL: independent Codex model review completed at e0bb7d2 with HIGH repairs; human security certification absent",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
   },
@@ -100,7 +108,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "3979e32bc94b387571d1d3c715022740c2fd216d",
+  "verified_code_commit_sha": "90f9302340e8452c958454ef229ae8308bc5c709",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -108,15 +116,15 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI at 3979e32bc94b387571d1d3c715022740c2fd216d: Native Rust (both runs), Office browser (both runs) and architecture edited-run PASS; bubblewrap installed and smoke-tested with --disable-userns and --cap-drop ALL, real host/network/credential boundary tests executed, confined provider E2E, recovery restart, migrations and strict hygiene PASS.",
+  "ci_at_update": "Exact-head CI pending for the provider-hardening candidate.",
   "author_verification_at_code_sha": {
-    "sha": "81978fd146f79aa9335791e0bd9111f738701b56",
-    "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
-    "rust": "PASS: 253 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit (276 dependencies), architecture, strict hygiene",
-    "provider_e2e": "PASS: bubblewrap-confined deterministic multi-turn provider to ACCEPTED",
-    "provider_boundary": "PASS: host HOME/repository/socket, network, credential-environment and capability-reuse negatives",
+    "sha": "90f9302340e8452c958454ef229ae8308bc5c709",
+    "binding": "AUTHOR_RUN_WORKING_TREE",
+    "rust": "PASS: 264 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit (276 dependencies), architecture, strict hygiene",
+    "provider_e2e": "PASS: bubblewrap-confined multi-turn provider to ACCEPTED",
+    "security_tests": "PASS: operation grant lease/scope/cancellation, bridge framing, egress injection/route restrictions, quota kill, identity/termination and confined recovery receipt",
     "office_browser": "PASS",
-    "independent_review": "Not started",
+    "independent_review": "Independent Codex model review; HIGH repairs; human certification absent",
     "provider_paid_turns": 0
   }
 }

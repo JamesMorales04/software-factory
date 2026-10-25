@@ -57,13 +57,13 @@ portfolio; this ledger is the current status authority.
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3979e32bc94b387571d1d3c715022740c2fd216d` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan in a bubblewrap-confined provider process with mediated write_file/run_command and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
-| M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; the deterministic provider runs under bubblewrap with no host HOME/repository/runtime socket or external network and a per-run bridge capability; Supervisor allocation requires a Core-signed Attempt grant and workspace operations require a per-Attempt capability. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records remaining Worker/disk/recovery risks. Credential confinement and independent isolation remain uncertified. |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan in a bubblewrap-confined provider process with mediated write_file/run_command, scoped egress broker and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
+| M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; the deterministic provider runs under bubblewrap with no host HOME/repository/runtime socket or unrestricted network. Supervisor allocation uses a Core-signed Attempt grant; mutations require a live-lease-bound operation grant and signed scope. A narrow egress broker, quotas and confined recovery primitives are implemented. The [independent model review](../security/independent-review-2026-10-25.md) HIGH findings are repaired; Worker compromise, monitor-based storage limits and human certification remain open. |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 253 Rust tests passed + 2 ignored, audit, architecture, process E2E, bubblewrap provider-boundary tests, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `3979e32bc94b387571d1d3c715022740c2fd216d`; independent acceptance absent |
+| M9 Testing | `PARTIAL` | 264 Rust tests passed + 2 ignored, audit, architecture, operation-grant negatives, bridge/egress/quota/identity tests, bubblewrap provider E2E, recovery/cancellation and Office browser pass locally; exact-head CI and human acceptance pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3979e32bc94b387571d1d3c715022740c2fd216d`; legacy workflows removed |
-| M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
+| M11 Independent review | `PARTIAL` | Independent Codex model review completed at `e0bb7d2`; HIGH findings repaired; human security certification absent |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed; all selected CAP IDs and opportunities present; strict independence audit remains required |
 
@@ -107,7 +107,14 @@ HOME, no host repository or `/run/user` socket, no external network, and no
 long-lived provider credential; a loopback bridge requires a per-run Basic-auth
 capability. Supervisor allocation requires a Core-signed Attempt grant; workspace
 operations require a per-Attempt capability and reject the broad admin bearer.
-Evidence: [native-rust-provider-boundary-2026-10-24.json](../evidence/native-rust-provider-boundary-2026-10-24.json) and
+Mutation authority is now a short-lived Core-signed operation grant bound to
+the live lease, generation, workspace, operation and frozen scope. Provider
+egress is confined to a pinned OpenAI-compatible broker with a per-run token and
+injected credential. Sandbox CPU, memory, file-size, descriptor, lifetime,
+output and session-size limits are enforced; confined recovery verifies process
+absence or terminates a confirmed survivor. Evidence:
+[native-rust-provider-hardening-2026-10-25.json](../evidence/native-rust-provider-hardening-2026-10-25.json),
+[native-rust-provider-boundary-2026-10-24.json](../evidence/native-rust-provider-boundary-2026-10-24.json) and
 [native-rust-provider-tools-2026-10-24.json](../evidence/native-rust-provider-tools-2026-10-24.json).
 This is an author-run candidate boundary, not independent isolation
 certification.

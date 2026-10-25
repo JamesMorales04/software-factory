@@ -700,3 +700,24 @@ security review and credential-confinement certification are absent; sandboxed m
 are not implemented; the provider session directory has no disk quota; the
 trusted Worker remains a host-authority process. Live provider coding and
 ISOLATED execution remain fail-closed.
+
+
+## Provider hardening and independent review (2026-10-25) — `90f9302340e8452c958454ef229ae8308bc5c709`
+
+An independent Codex model review of `e0bb7d2` found three HIGH issues: stale
+workspace authority, caller-supplied frozen scope and unbounded provider
+resources. The candidate now requires short-lived Core-signed operation grants
+bound to the live lease, generation, workspace, operation and frozen paths/
+checks; the Supervisor rejects caller scope and the broad admin bearer for
+mutations. The bridge rejects chunked/pipelined framing, forces connection close
+and bounds connections/bodies/time. Provider egress uses a pinned
+OpenAI-compatible broker with a per-run token and injected credential, exact
+routes, public-address resolution, no redirects and bounded responses. The
+sandbox has prlimit/tmpfs/session/stderr/lifetime bounds and durable process
+identity for confined recovery.
+
+The review is an independent **model** review, not human security certification.
+Residual blockers: trusted Worker host authority/credentials, monitor-based
+rather than OS-enforced storage quota, no full Worker-kill/restart E2E at every
+boundary, no verified real OpenCode/Codex egress configuration, no human
+certification and no ISOLATED claim. Live provider coding remains fail-closed.
