@@ -195,7 +195,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
-        let execution = if assignment.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+        let execution = if assignment.kind == "INTEGRATION" {
+            execute_assignment(&assignment, &supervisor).await
+        } else if assignment.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
             execute_provider_assignment(
                 &client,
                 &core,
