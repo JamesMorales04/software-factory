@@ -55,14 +55,14 @@ portfolio; this ledger is the current status authority.
 |---|---|---|
 | M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. Provider coding and isolation remain fail-closed. |
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
-| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `a1779a97fe4c22e313cf4279271659a7759399a4` |
+| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `38eb8e932ebeca8846acbd3a2254d1c233ddb226` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan in a bubblewrap-confined provider process with mediated write_file/run_command and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
 | M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; the deterministic provider runs under bubblewrap with no host HOME/repository/runtime socket or external network and a per-run bridge capability; Supervisor allocation requires a Core-signed Attempt grant and workspace operations require a per-Attempt capability. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records remaining Worker/disk/recovery risks. Credential confinement and independent isolation remain uncertified. |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 253 Rust tests passed + 2 ignored, audit, architecture, process E2E, bubblewrap provider-boundary tests, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `a1779a97fe4c22e313cf4279271659a7759399a4`; independent acceptance absent |
-| M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `a1779a97fe4c22e313cf4279271659a7759399a4`; legacy workflows removed |
+| M9 Testing | `PARTIAL` | 253 Rust tests passed + 2 ignored, audit, architecture, process E2E, bubblewrap provider-boundary tests, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `38eb8e932ebeca8846acbd3a2254d1c233ddb226`; independent acceptance absent |
+| M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `38eb8e932ebeca8846acbd3a2254d1c233ddb226`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
 | M13 Product independence | `PARTIAL` | Predecessor assessment removed; all selected CAP IDs and opportunities present; strict independence audit remains required |

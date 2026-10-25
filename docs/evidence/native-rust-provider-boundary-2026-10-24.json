@@ -27,7 +27,7 @@
     "attempt_grant_binding": "PASS: grant for another Attempt rejected; expired grant rejected",
     "recovery": "PASS: explicitly unconfined fixture orphan cleanup after Core restart; sandboxed-session recovery NOT_IMPLEMENTED",
     "office_browser": "PASS",
-    "exact_head_ci": "PASS at a1779a97fe4c22e313cf4279271659a7759399a4: Native Rust both runs, Office browser both runs, bubblewrap tests executed, confined provider E2E and architecture edited-run"
+    "exact_head_ci": "PASS at 38eb8e932ebeca8846acbd3a2254d1c233ddb226: Native Rust both runs (40175570079, 40175573776), Office browser both runs, architecture edited-run (40175573804), executed bubblewrap tests, confined provider E2E, recovery restart, migrations and strict hygiene"
   },
   "not_claimed": [
     "independent security review",
@@ -41,5 +41,5 @@
     "merge or deployment authorization"
   ],
   "provider_paid_turns": 0,
-  "exact_head_sha": "a1779a97fe4c22e313cf4279271659a7759399a4"
+  "exact_head_sha": "38eb8e932ebeca8846acbd3a2254d1c233ddb226"
 }
