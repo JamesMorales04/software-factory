@@ -1,12 +1,13 @@
 # Isolation, credentials and trust boundaries
 
-**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Technology demonstrated in disposable fixtures:** rootless Podman isolated checked host paths, but the actual authenticated provider/tool boundary is **not certified**. **F1-S3-ISOLATED blocker:** real Paseo isolation and credential behavior. S3-TRUSTED_LOCAL proceeds under its own entry conditions per ADR-0009. See [SEC-01 results](SEC-01-results-2026-10-18.md); further strict-isolation tests paused by the product owner.
+**Agreed:** sandbox by default; host access only through an explicit, audited, scoped exception — except in owner-authorized TRUSTED_LOCAL mode, where broad local access is explicitly accepted with documented risks (see [ADR-0009](../architecture/decisions/ADR-0009-trusted-local-execution.md) and [trusted-local policy](trusted-local.md)). **Rust execution boundary:** the Supervisor snapshots a per-Attempt worktree into a Podman named volume and never passes a host workspace pathname to the runtime; path replacement fails closed. The trusted Worker holds the long-lived provider credential; the deterministic provider runs in a bubblewrap namespace with a private session directory and no host HOME/repository/runtime socket or unrestricted external network. Supervisor allocation requires a Core-signed Attempt grant; each mutating workspace operation additionally requires a short-lived Core-signed operation grant bound to the live lease, generation and frozen scope. Optional provider egress uses a per-run authenticated OpenAI-compatible broker with a pinned public destination, injected credential and bounded requests/responses. Rootless Podman is still not certified isolation, and credential confinement is **not certified**. Live provider coding with tools and ISOLATED execution stay fail-closed. See the [provider boundary assessment](provider-boundary-assessment-2026-10-24.md), [ADR-0022](../architecture/decisions/ADR-0022-source-aware-provider-plan-mediation.md), [SEC-01 results](../evidence/history/security/SEC-01-results-2026-10-18.md) and [migration closure](../implementation/native-rust-closure.md).
 
 ## Execution modes
 
 | Mode | Meaning | SEC-01 disposition |
 |---|---|---|
 | TRUSTED_LOCAL | Owner-authorized local execution with broad host access within user privileges. Accepted risk, not a boundary. | SEC-01-STRICT not required; historical FAIL/NOT TESTED findings remain valid observations but do not block this mode. |
+| TRUSTED_LOCAL_PROVIDER | Authorized provider execution: the long-lived credential stays in the trusted Worker; the deterministic provider runs in a bubblewrap namespace with a private session directory, no host HOME/repository/runtime socket and no unrestricted external network; optional egress is confined to the authenticated broker; tools are mediated by the Worker and executed only by the Supervisor. | Candidate boundary only; not certified isolation or credential confinement. A narrow egress broker is implemented and fixture-tested, but real provider configuration and live provider coding remain fail-closed. |
 | ISOLATED | Execution claiming an OS-enforced boundary between credentials and untrusted tools. | SEC-01-ISOLATED available-only-where-verified against actually tested paths; never inferred from a single fixture PASS. |
 | RESTRICTED | Credential-free synthetic or disposable-fixture execution (current F1-S2 scope). | Broker-certification obligations (mandatory mediation of all native paths) apply here and to ISOLATED; they do not gate TRUSTED_LOCAL. |
 
@@ -19,7 +20,7 @@ Rules:
 
 ## Authority
 
-The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. Paseo owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
+The Core owns delivery credentials, authorization policy, budgets, canonical state and resource governance. Workers materialize strictly scoped assignments. The provider adapter owns agent sessions, not Factory acceptance or GitHub merge authority. Repository tests, downloaded skill scripts and agent shell commands are **potentially untrusted**.
 
 ## Per-Run workspaces
 
@@ -45,14 +46,14 @@ host-operation and transparency rules that DO apply there).
 The tests below are the acceptance obligations for ISOLATED execution (and
 the applicable subset for RESTRICTED fixtures). TRUSTED_LOCAL has its own
 acceptance — the bounded readiness test in
-[paseo-readiness](paseo-readiness.md) — and is never subjected to, nor
+[provider-readiness](../evidence/history/security/provider-readiness-legacy.md) — and is never subjected to, nor
 claimed to pass, these isolation tests.
 
 1. Untrusted execution cannot read or mutate host/other-project files.
 2. Untrusted scripts cannot inspect Core secrets or provider authentication artifacts within the defined threat model.
 3. Alternative shell/MCP/skill invocation cannot bypass capabilities.
-4. A real Paseo agent can start, run, be inspected and end while the boundary holds.
+4. A real provider agent can start, run, be inspected and end while the boundary holds.
 5. Required egress works and forbidden destinations fail.
 6. Crash/restart/cleanup do not leak privileged orphan sessions, processes or workspaces.
 
-These are actual test obligations, not proof of absolute security. Follow [SEC-01](paseo-sandbox-spike.md).
+These are actual test obligations, not proof of absolute security. Follow [SEC-01](../evidence/history/security/provider-sandbox-spike-legacy.md).

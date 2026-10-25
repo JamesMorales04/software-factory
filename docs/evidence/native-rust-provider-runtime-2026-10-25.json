@@ -1,0 +1,72 @@
+{
+  "schema": "factory.provider-runtime-evidence.v1",
+  "recorded_utc": "2026-10-25",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "7117bba45de8e39da858e45d77378da39d2b2cac",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "running_operation_revocation": {
+    "core_validation_endpoint": "POST /supervisor/workspace_operation_valid",
+    "supervisor_watcher": "polls Core every 500ms; two failures cancel the active container",
+    "manager_test": "PASS: cancellation kills a running local command and blocks a late retry",
+    "full_supervisor_core_e2e": "NOT_RUN"
+  },
+  "resource_limits": {
+    "prlimit": "fsize, CPU, address space, nofile",
+    "tmpfs": "64 MiB /tmp",
+    "session_monitor": "64 MiB/1024 files, 200ms, SIGKILL",
+    "quota_kill_test": "PASS",
+    "os_filesystem_quota": "NOT_IMPLEMENTED",
+    "cgroup_pid_memory_cpu": "NOT_IMPLEMENTED"
+  },
+  "confined_recovery": {
+    "identity_location": "sibling file outside provider-writable session mount",
+    "identity_fields": [
+      "pid",
+      "process start time",
+      "boot id"
+    ],
+    "termination_and_absence_tests": "PASS",
+    "worker_kill_restart_e2e": "NOT_RUN"
+  },
+  "real_podman": {
+    "host": "local CachyOS rootless Podman 6.1.4",
+    "real_named_volume_execution": "PASS",
+    "rootless_alpine_confinement": "PASS",
+    "ci_lane": ".github/workflows/native-rust-podman.yml (conditional, NOT_RUN in ordinary CI)"
+  },
+  "actual_provider_compatibility": {
+    "opencode": "1.18.32 actual executable -> egress broker -> mock /v1/chat/completions PASS",
+    "codex": "0.156.1 native executable -> egress broker -> mock /v1/responses SSE PASS",
+    "paid_model_calls": 0,
+    "sandboxed_opencode_executable": "NOT_RUN (host compatibility path only)",
+    "codex_tool_permission_abort_usage": "protocol fixtures only; actual full work turn NOT_RUN"
+  },
+  "product": {
+    "office_runtime_view": "PASS in Chromium journey; provider-session state, usage, cleanup receipt and unresolved count",
+    "browser_test": "PASS"
+  },
+  "not_claimed": [
+    "human security certification",
+    "ISOLATED certification",
+    "live provider coding",
+    "Core-enforced per-turn token/cost budget through the egress broker",
+    "full Supervisor/Core long-operation E2E",
+    "OS filesystem quota or cgroup resource enforcement",
+    "full Worker-kill/restart recovery at every boundary",
+    "merge or deployment authorization"
+  ],
+  "exact_head_sha": "2dcf03c888003b4f6bcb592a65934e66358e14bc",
+  "exact_head_ci": {
+    "native_rust_runs": [
+      40218235978,
+      40218240657
+    ],
+    "governance_run": 40218240697,
+    "result": "PASS",
+    "podman_lane": "NOT_RUN",
+    "provider_compat_lane": "NOT_RUN",
+    "actual_provider_tests_in_ci": "SKIPPED_NO_EXECUTABLES; passed locally with CODEX_BIN and installed OpenCode"
+  }
+}

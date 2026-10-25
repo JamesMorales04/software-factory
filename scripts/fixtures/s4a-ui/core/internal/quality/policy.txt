@@ -1,0 +1,2 @@
+Simulated protected policy fixture for orchestration acceptance.
+This file is test data, not executable Go code.

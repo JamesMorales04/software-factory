@@ -1,0 +1,96 @@
+# Native Factory
+
+This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end; live provider coding, provider tool mediation and ISOLATED mode remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
+
+Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+cargo build --bins
+cargo sqlx migrate run --source migrations   # disposable DATABASE_URL; CI check
+```
+
+Core requires distinct `FACTORY_OPERATOR_TOKEN`, `FACTORY_WORKER_BOOTSTRAP_TOKEN`, `FACTORY_VERIFIER_TOKEN` and `FACTORY_REVIEWER_TOKEN`; role tokens are at least 32 bytes. Core and the Supervisor additionally share `FACTORY_ATTEMPT_GRANT_KEY`; the Supervisor requires `FACTORY_SUPERVISOR_CAPABILITY_KEY`. These two keys are never given to the Worker. Core optionally accepts `FACTORY_DATABASE` and a loopback bind, and permits `0.0.0.0` only with explicit `FACTORY_CONTAINER_MODE=1`. Optional OTLP/HTTP log export is enabled only when `FACTORY_OTLP_ENDPOINT` names an absolute http(s) collector URL (a bare origin gains `/v1/logs`); export is bounded, sanitized and never gates Core writes. The Worker requires the bootstrap token, stable identity, registration key and `FACTORY_SUPERVISOR_URL`/`FACTORY_SUPERVISOR_TOKEN`; it does not access project paths or run project code. `TRUSTED_LOCAL_PROVIDER` assignments require `FACTORY_PROVIDER_SANDBOX=bwrap` and `FACTORY_PROVIDER_BINARY` (an absolute provider executable that listens on `FACTORY_PROVIDER_SOCKET`). The long-lived provider credential stays in the trusted Worker and is never sent to the Supervisor or sandbox. Optional model egress uses `FACTORY_PROVIDER_UPSTREAM_URL` (fixed upstream origin), `FACTORY_PROVIDER_UPSTREAM_TOKEN` (injected only by the host broker), `FACTORY_PROVIDER_EGRESS_BRIDGE` (absolute bridge binary) and an optional per-run `FACTORY_PROVIDER_EGRESS_TOKEN`; the sandbox receives only the bridge address and per-run token. `FACTORY_ALLOW_TEST_UPSTREAM=1` permits a loopback fake upstream only for tests. `FACTORY_PROVIDER_SANDBOX=unconfined` is a clearly labeled non-isolated fallback and requires explicit `FACTORY_ALLOW_UNCONFINED_PROVIDER=1` plus loopback `FACTORY_PROVIDER_BASE_URL`/`FACTORY_PROVIDER_PASSWORD`; it never activates implicitly. The Supervisor requires a private workspace/state root, explicit project roots, an exact image allowlist and a loopback bind. Keep all values out of Git and logs.
+
+Core APIs: `GET /health`; operator-authenticated `GET/POST /projects`, `GET/POST /actions`, `GET/POST /campaigns`, `POST /campaigns/{id}/cancel`, `GET /runs`, `GET /attempts`, `GET /events` (optional bounded `?after=<sequence>&limit=<n>`), `GET /observability`, `GET/POST /model/calls`, `POST /model/calls/{id}/resolve`, and quality reads under `GET /quality/candidates/{id}` (plus `/receipts`, `/gate` and `/inspection`); bootstrap-authenticated `POST /worker/register`; session-authenticated `POST /worker/claim`, `/worker/heartbeat`, `/worker/report`, and `/worker/candidate`; verifier/reviewer-authenticated `POST /quality/receipts`; and session-authenticated `POST /worker/provider_intent` and `/worker/provider_terminal` for durable provider-session accounting. Create requests need an `idempotency_key`. Actions remain `HUMAN_REQUIRED` with `UNASSESSED` risk. Their versioned ActionSpecs are frozen execution inputs, not execution authorization. The Worker claim route returns a leased assignment only for an explicitly authorized R0 Campaign; provider mode requires `TRUSTED_LOCAL_PROVIDER` and ISOLATED remains disabled. The Worker sends the assignment to the Supervisor, which snapshots the worktree into a Podman named volume, executes, validates the exported tree and commits the candidate. No host workspace path is passed to Podman. Candidate scope is checked against the frozen ActionSpec and the Campaign authorization. Candidate and quality receipt rows are immutable; the deterministic gate is written once when independent verifier and reviewer receipts exist. The `factory-verifier` executes frozen checks in an independent named-volume sandbox; `factory-reviewer` independently re-verifies candidate identity, scope and bounded diff facts and submits the reviewer receipt. Provider mode supports a bounded tool-free patch and an authorized multi-turn tool loop. The provider may request only `write_file` or a frozen-check `run_command`; the Worker records each request/decision/result in Core, validates paths and commands, and the Supervisor applies writes or runs the exact check in the Attempt sandbox. The deterministic provider process runs under bubblewrap with no host HOME, repository, runtime socket or external network; the long-lived credential is not in that process.
+
+Container runtime: the Core accepts `FACTORY_CONTAINER_MODE=1` with an explicit `0.0.0.0` bind for container publication; the host CLI publishes only `127.0.0.1`. When `FACTORY_OFFICE_DIR` is set, Core also serves the built React Office and exposes the same API under `/core-api` for the browser client. The `factory-supervisor` binary owns durable per-Attempt worktrees, named-volume execution and restart reconciliation. It is not isolation-certified. The verifier executes frozen checks in an independent named-volume sandbox.
+
+## Core-owned model calls
+
+Lead assessment, semantic review and CAP-014 evaluation share one Core-owned
+authorization path. Core reserves a bounded token/cost envelope before any
+upstream request, records measured usage, and refuses automatic retries after an
+ambiguous or unknown outcome. The provider credential stays in Core; a Worker,
+reviewer or evaluator never receives it.
+
+```sh
+export FACTORY_MODEL_URL=https://provider.example/v1
+export FACTORY_MODEL_TOKEN=...                 # >= 16 bytes; never commit it
+export FACTORY_MODEL_PROVIDER=opencode-go
+export FACTORY_MODEL_NAME=deepseek-v4.1-flash
+export FACTORY_MODEL_TIMEOUT_SECS=60
+export FACTORY_LEAD_MODEL_MAX_COST_MICROS=300000
+export FACTORY_REVIEW_MODEL_MAX_COST_MICROS=1000000
+export FACTORY_EVALUATION_MODEL_MAX_COST_MICROS=2000000
+export FACTORY_MODEL_GLOBAL_MAX_COST_MICROS=10000000
+```
+
+`FACTORY_ALLOW_TEST_UPSTREAM=1` permits plain loopback HTTP for deterministic
+tests only. The legacy `FACTORY_LEAD_MODEL_URL` name is retired and Core refuses
+to start with it. `POST /model/calls` accepts `semantic_reviewer` under the
+reviewer credential and `evaluation` under the operator credential; `lead` is
+internal-only and cannot be called over HTTP. An `AMBIGUOUS` or `UNKNOWN`
+reservation blocks the same request identity until an operator resolves it via
+`POST /model/calls/{id}/resolve`.
+
+`factory-reviewer` remains deterministic by default. Set
+`FACTORY_REVIEW_MECHANISM=MODEL` to request a strict, schema-validated semantic
+review; malformed or uncertain output can never become `ACCEPTED`.
+
+CAP-014 raw model-output collection is explicit and budgeted:
+
+```sh
+FACTORY_OPERATOR_TOKEN=... cargo run --locked --bin factory-s4d-evaluate -- \
+  execute http://127.0.0.1:8765 cap014-run-1 /tmp/cap014-run-1.json
+```
+
+The command writes frozen-corpus, per-fixture raw-output, model provenance and
+usage evidence. It does not score the outputs; independent blinded scoring and
+`compare` remain separate. A failed or budget-exhausted run writes `FAILED`
+evidence and exits non-zero.
+
+## Factory-managed browser checks
+
+`factory-browser` provides a bounded external test-server lifecycle and a real
+Chromium check through the pinned Playwright tooling. It is a Worker-side
+capability, not an isolation claim:
+
+```sh
+FACTORY_PLAYWRIGHT_CORE=$PWD/office/e2e-browser/node_modules/playwright-core \
+PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright \
+cargo run --locked --bin factory-browser -- run \
+  --cwd /abs/attempt/workspace \
+  --log-dir /abs/worker-registry/browser/run-1 \
+  --endpoint http://127.0.0.1:4173 \
+  --ready-path /health \
+  --selector '#app-ready' \
+  --evidence /abs/worker-registry/browser/run-1/evidence.json \
+  -- npm start
+```
+
+Missing browser tooling exits 3 (`NOT_TESTED`), never `PASS`.
+
+The read-only native probes are:
+
+```sh
+cargo run --bin factory-provider-probe -- codex
+cargo run --bin factory-provider-probe -- opencode
+cargo run --bin factory-provider-probe -- codex-reconcile <thread-id>
+cargo run --bin factory-repo-hygiene -- --mode strict
+cargo run --bin factory-architecture-check -- --root . --base-ref origin/main
+```
+
+These start and stop provider servers but do not create paid turns. The Codex probe checks initialization and model discovery only. `codex-reconcile` queries a **new** App Server for indexed and locally loaded thread metadata; absence cannot prove cleanup by an earlier process. The OpenCode probe uses a generated per-process password on loopback, reads the server's own bound address, hashes its OpenAPI schema, checks the first SSE `server.connected` event, and creates, inspects, then deletes one session bound to the canonical workspace. This does not test prompt progress, completion, reconnect, or real coding. Probe results are preflight observations, not a provider execution certificate. The hygiene tool enforces the strict zero-legacy tracked-tree gate in CI. Lead fixture assessment is available only with explicit `FACTORY_LEAD_FIXTURE_ASSESSOR=1`; it is not a model and cannot start a Campaign. CAP-014 commands are `cargo run --bin factory-s4d-evaluate -- corpus|baseline|validate|compare|execute`.

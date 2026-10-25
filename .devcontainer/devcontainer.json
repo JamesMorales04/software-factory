@@ -1,0 +1,35 @@
+{
+  "$schema": "https://containers.dev/schemas/devContainer.base.schema.json",
+  "name": "Software Factory (Rust, container-first)",
+  "build": {
+    "dockerfile": "Containerfile",
+    "context": "..",
+    "args": {
+      "NODE_VERSION": "22.23.2",
+      "RUST_VERSION": "1.90.0",
+      "SQLX_CLI_VERSION": "0.8.6",
+      "USER_UID": "1000",
+      "USER_GID": "1000"
+    }
+  },
+  "workspaceFolder": "/workspaces/software-factory",
+  "containerUser": "factory",
+  "remoteUser": "factory",
+  "privileged": false,
+  "capAdd": [],
+  "securityOpt": [
+    "no-new-privileges"
+  ],
+  "init": true,
+  "mounts": [],
+  "runArgs": [],
+  "shutdownAction": "stopContainer",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}

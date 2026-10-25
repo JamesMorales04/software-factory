@@ -1,0 +1,92 @@
+name: Native Rust
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches:
+      - main
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Record candidate SHA
+        run: |
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal --component clippy,rustfmt
+      - name: Install pinned cargo-audit
+        run: cargo +1.90.0 install cargo-audit --version 0.22.2 --locked
+      - name: Audit locked dependencies
+        run: cargo +1.90.0 audit --file Cargo.lock
+      - name: Install and verify bubblewrap for provider-boundary tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --unshare-all --die-with-parent --ro-bind /usr /usr             --ro-bind-try /bin /bin --ro-bind-try /lib /lib             --ro-bind-try /lib64 /lib64 --proc /proc /bin/true
+      - name: Install pinned SQLx CLI
+        run: cargo +1.90.0 install sqlx-cli --version 0.8.6 --no-default-features --features sqlite --locked
+      - name: Verify migrations from a clean database
+        run: cargo +1.90.0 xtask migrate
+      - name: Format
+        run: cargo +1.90.0 fmt --all -- --check
+      - name: Clippy
+        run: cargo +1.90.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo +1.90.0 test --workspace --locked
+      - name: Build
+        run: cargo +1.90.0 build --bins --locked
+      - name: Documentation
+        run: cargo +1.90.0 doc --workspace --no-deps --locked
+      - name: Deterministic process-level recovery E2E
+        run: cargo +1.90.0 xtask e2e recovery
+      - name: Deterministic fixture dispatch E2E
+        run: cargo +1.90.0 xtask e2e dispatch
+      - name: Authorization, scope and lease negatives
+        run: cargo +1.90.0 xtask e2e negatives
+      - name: Deterministic fake-provider execution E2E
+        run: cargo +1.90.0 xtask e2e provider
+      - name: Native architecture consistency
+        run: |
+          if [ -n "$GITHUB_BASE_REF" ]; then
+            cargo +1.90.0 run --locked --bin factory-architecture-check -- --root . --base-ref "origin/$GITHUB_BASE_REF"
+          else
+            cargo +1.90.0 xtask validate-architecture
+          fi
+      - name: Strict zero-legacy repository hygiene
+        run: cargo +1.90.0 run --locked --bin factory-repo-hygiene -- --mode strict
+
+  office-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Build Core and Worker
+        run: cargo +1.90.0 build --locked --bins
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Install Office dependencies
+        run: npm ci
+        working-directory: office
+      - name: Install browser test dependencies
+        run: npm ci
+        working-directory: office/e2e-browser
+      - name: Install Chromium
+        run: npx --yes playwright@1.64.1 install --with-deps chromium
+      - name: Factory-managed browser capability (real Chromium)
+        env:
+          FACTORY_PLAYWRIGHT_CORE: ${{ github.workspace }}/office/e2e-browser/node_modules/playwright-core
+        run: cargo +1.90.0 test --locked -p factory-native --test browser
+      - name: Rust Office browser journey
+        run: cargo +1.90.0 xtask e2e office

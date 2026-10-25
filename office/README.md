@@ -1,35 +1,43 @@
-# Factory Office (F1-S1 … F1-S3-C)
+# Factory Office
 
-React + TypeScript UI over the Core API and durable event ledger.
-Renders server-authoritative state only: Dashboard, Actions, Runs (queue a
-safe synthetic Run, watch its lifecycle, cancel), Run detail (Attempts,
-per-Attempt Paseo session bindings, bounded evidence and lifecycle
-lineage), Workers (observed liveness only — never fabricated activity),
-and Agents (real recorded Paseo sessions, grouped as pending intent,
-active and historical, with `TRUSTED_LOCAL` labels and explicit
-disconnected/orphaned states).
+React + TypeScript Office backed by the Rust Core API. The only API client is
+the Rust Core client; former provider-specific views were removed. The app
+renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 
-Browser journeys: `office/e2e-browser/journey.mjs` (S1),
-`office/e2e-browser/s2-journey.mjs` (S2 Runs/Workers), and
-`office/e2e-browser/s3c-journey.mjs` (S3-C Agents/Run session
-observability), runnable via their scripts from the repo root.
+Current views: Dashboard, Projects, Actions, Lead, Campaigns/Campaign detail,
+Runs, Workers and Runtime. Campaign detail projects the
+Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
+Candidate → Verifier → Reviewer → Gate workflow from Core data. It shows
+per-unit dependencies/status, candidate receipts, honest pending states for
+missing evidence, deterministic Gate outcome and reasons, provider-session
+usage/cleanup and a compact authorization budget projection. Operators can
+request Campaign cancellation with an explicit confirmation; cancelled and
+unconfirmed provider termination are shown from the API rather than inferred.
+Lead detail decodes the recorded assessment, proposal and frozen plan and links
+a started Lead request to its Campaign.
 
-## Toolchain (pinned in `package.json` + `package-lock.json`)
+## Toolchain
 
 Node `22.23.2` (`.nvmrc`), Vite `7.3.7`, React `19.3.1`,
 `react-router-dom` `7.18.4`, TypeScript `5.9.3`, Biome `2.5.15`.
+Dependencies are pinned by `package.json` and `package-lock.json`.
 
-## Commands (run from `office/`)
+## Commands (from `office/`)
 
 ```sh
-npm ci            # reproducible install
-npm run typecheck # tsc --noEmit
-npm run lint      # biome check src e2e-browser
-npm run build     # typecheck + production bundle into dist/
-npm run dev       # vite dev server (proxies /api to 127.0.0.1:8471)
+npm ci
+npm run typecheck
+npm run lint
+npm run build
+npm run dev
 ```
 
-The token gate keeps the API token in `sessionStorage` only; the event
-stream resumes from the last `globalSeq` cursor on reconnect (no EventSource:
-`fetch` + `ReadableStream` so the token stays in the header).
-Hash routing is used so the Core static fallback serves deep links.
+The Vite dev server proxies `/core-api` to `http://127.0.0.1:8765` and strips
+the prefix. The operator token stays in `sessionStorage`.
+
+## Status
+
+The Rust-backed views typecheck, lint and build. `cargo xtask e2e office` runs
+the real Chromium journey against the Rust Core, Supervisor and Worker; see
+`e2e-browser/README.md`. That journey is author-run and CI evidence, not
+independent acceptance or isolation certification.

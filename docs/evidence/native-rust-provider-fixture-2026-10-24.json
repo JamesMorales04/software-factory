@@ -1,0 +1,53 @@
+{
+  "schema": "factory.provider-fixture-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
+  "provider_mode": "TRUSTED_LOCAL_PROVIDER",
+  "provider": "opencode",
+  "model": "deepseek-v4.1-flash",
+  "fixture": "deterministic loopback OpenCode HTTP/SSE fake server",
+  "flow": [
+    "exact project/action/delegation/campaign authorization",
+    "Worker claim with lease generation",
+    "durable provider intent before external effect",
+    "tool-free provider file patch",
+    "Core/Worker path and size validation",
+    "Supervisor apply to exact Attempt worktree",
+    "immutable CandidateRevision",
+    "sandboxed verifier",
+    "independent deterministic reviewer",
+    "ACCEPTED deterministic Quality Gate"
+  ],
+  "negative_coverage": {
+    "wrong_model_route": "authorization rejected",
+    "nonempty_provider_tools": "authorization rejected",
+    "missing_delegation": "authorization rejected",
+    "tool_part_in_provider_output": "provider_patch unit test rejects",
+    "out_of_scope_or_duplicate_path": "provider_patch unit test rejects",
+    "usage_over_budget": "provider session terminal test records usage and forbids completion",
+    "completed_without_cleanup": "provider session terminal test rejects before mutation",
+    "credential_exposure": "Supervisor log asserted not to contain the provider password"
+  },
+  "author_run_checks": {
+    "cargo xtask check": "PASS (242 tests + 2 ignored, fmt, strict Clippy, build, docs, eleven migrations, audit clean for 276 dependencies)",
+    "cargo xtask e2e provider": "PASS",
+    "cargo xtask e2e office": "PASS",
+    "repository hygiene strict": "PASS (0 findings)",
+    "architecture": "PASS"
+  },
+  "not_claimed": [
+    "live model coding compatibility",
+    "provider tool mediation",
+    "provider-in-sandbox execution",
+    "credential confinement certification",
+    "ISOLATED certification",
+    "independent human acceptance",
+    "merge or deployment authorization"
+  ],
+  "provider_paid_turns": 0,
+  "result": "PASS",
+  "candidate_sha": "f49520ba4dc743caf2c86c17ed3e4c8e3c389f61"
+}

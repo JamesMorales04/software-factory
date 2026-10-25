@@ -9,6 +9,7 @@
 /core/factory-core
 dist/
 /build/
+/target/
 __pycache__/
 *.pyc
 # Agent browser sessions/evidence are runtime artifacts.

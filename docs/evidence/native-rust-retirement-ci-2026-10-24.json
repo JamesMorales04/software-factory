@@ -1,0 +1,44 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "3f229f37ebd856ef3fba37b7e6456a2406ad3284",
+  "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
+  "tracked_go_files": 0,
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "passing": {
+    "native-rust-runs": [40134428414, 40134431483],
+    "office-browser": "PASS (both runs)",
+    "architecture-consistency": 40134431481,
+    "strict_hygiene": "PASS (0 findings; native rust job)",
+    "migrations": "PASS (native rust job)",
+    "process_recovery_dispatch_negatives": "PASS (native rust job)"
+  },
+  "active_workflows": [
+    "Native Rust",
+    "Governance consistency"
+  ],
+  "removed_legacy_workflows": [
+    "s1",
+    "s2",
+    "s3a",
+    "s3b",
+    "s3c",
+    "s3d",
+    "s4a",
+    "s4b",
+    "s4c"
+  ],
+  "known_governance_artifact": "The push-triggered governance run can fail before the PR body head_sha is rebound; a later edited-event run at the same SHA passed.",
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "independent human acceptance",
+    "provider coding",
+    "durable provider-session recovery",
+    "credential confinement",
+    "ISOLATED certification",
+    "deployment or merge authorization"
+  ]
+}

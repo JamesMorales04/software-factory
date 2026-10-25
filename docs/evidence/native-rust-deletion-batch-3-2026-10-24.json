@@ -1,0 +1,28 @@
+{
+  "schema": "factory.deletion-batch-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "base_code_candidate": "14506eab7345df3af2b2bc57658224906291be33",
+  "tracked_go_before": 96,
+  "tracked_go_after": 94,
+  "deleted": [
+    "core/internal/recovery/classify_test.go",
+    "core/internal/project/repository_test.go"
+  ],
+  "replacement": {
+    "core/internal/recovery/classify_test.go": "native/src/recovery.rs tests: recoverable, blocking, unresolved/ambiguous, cleanup uncertainty, stage fallback, bounded/serialized class",
+    "core/internal/project/repository_test.go": "native/src/repository.rs tests: path-independent identity, base-tip validation, unrelated repository, unsafe/unknown refs, revalidation"
+  },
+  "commands": {
+    "cargo test --workspace --locked": "PASS (235 tests, 2 ignored) at 14506ea",
+    "go test ./internal/recovery ./internal/project": "PASS; both packages report [no test files]"
+  },
+  "limits": [
+    "production Go classifier and repository code remain in the connected Go module",
+    "Go CI still runs the remaining legacy tests and workflows",
+    "no claim of zero-Go cutover"
+  ],
+  "provider_paid_turns": 0
+}

@@ -1,77 +1,64 @@
-import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, type Worker } from "../api";
+import { useEffect, useState } from "react";
+import { CoreApiError, coreApi, type WorkerSummary } from "../coreApi";
+import { formatTimestamp } from "../format";
 
-// Workers view: Core-observed Worker liveness only — identity, status,
-// last heartbeat and last assignment. Activity, providers and token usage
-// are never rendered because the Core never records them.
 export function Workers() {
-  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [workers, setWorkers] = useState<WorkerSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const list = await api.listWorkers();
-      if (!signal?.aborted) {
-        setWorkers(list);
-      }
-    } catch (e) {
-      if (!signal?.aborted) {
-        setError(e instanceof ApiError ? e.message : "Failed to load workers.");
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const next = await coreApi.listWorkers();
+        if (active) {
+          setWorkers(next);
+          setError(null);
+        }
+      } catch (cause) {
+        if (active) {
+          setError(
+            cause instanceof CoreApiError
+              ? cause.message
+              : "Failed to load Workers.",
+          );
+        }
       }
     }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = setInterval(() => void refresh(controller.signal), 2000);
+    void load();
+    const timer = setInterval(() => void load(), 3000);
     return () => {
-      controller.abort();
+      active = false;
       clearInterval(timer);
     };
-  }, [refresh]);
+  }, []);
 
-  if (error) {
-    return <p className="error">{error}</p>;
-  }
   return (
     <div>
       <h2>Workers</h2>
+      <p className="muted">
+        Registered Worker credentials only. This view does not fabricate
+        liveness, heartbeat, or execution state.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <h3>Registered Workers ({workers.length})</h3>
       {workers.length === 0 ? (
-        <p className="muted">
-          No Workers registered. Start one with{" "}
-          <code>factory worker start</code> — it appears here after its first
-          heartbeat.
-        </p>
+        <p className="muted">No Workers registered.</p>
       ) : (
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Status</th>
-              <th>Version</th>
-              <th>Last heartbeat</th>
-              <th>Last Run</th>
+              <th>Worker</th>
+              <th>Credential updated</th>
             </tr>
           </thead>
           <tbody>
-            {workers.map((w) => (
-              <tr key={w.id}>
+            {workers.map((worker) => (
+              <tr key={worker.worker_id}>
                 <td>
-                  <code>{w.id}</code>
+                  <code>{worker.worker_id}</code>
                 </td>
-                <td>
-                  <span className={`pill ${w.status}`}>{w.status}</span>
-                </td>
-                <td className="muted">{w.version || "—"}</td>
-                <td className="muted">
-                  {w.lastHeartbeat
-                    ? new Date(w.lastHeartbeat).toLocaleString()
-                    : "never"}
-                </td>
-                <td className="muted">
-                  {w.lastRunId ? w.lastRunId.slice(0, 8) : "—"}
-                </td>
+                <td className="muted">{formatTimestamp(worker.updated_at)}</td>
               </tr>
             ))}
           </tbody>

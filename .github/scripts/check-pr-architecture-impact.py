@@ -41,8 +41,8 @@ def is_protected(path: str) -> bool:
     prefixes = (
         ".agents/",
         ".github/",
-        "core/",
-        "worker/",
+        "native/",
+        "migrations/",
         "docs/architecture/",
         "docs/contracts/",
         "docs/engineering/",
@@ -135,6 +135,36 @@ def evaluate(
     return True, category, "Protected changes have a PR-scoped impact assessment."
 
 
+def resolved_head(event_head: str, fetched_head: str) -> str:
+    """Prefer the branch's current head so stale edited events do not fail.
+
+    A PR body edit triggers an `edited` event whose payload still names the old
+    head. The workflow fetches the pull request ref and passes its current head
+    here; body binding and the diff are then evaluated against the same commit.
+    """
+    return fetched_head if FULL_SHA.fullmatch(fetched_head) else event_head
+
+
+def fetch_current_head(number: int, event_head: str) -> str:
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repository or not number:
+        return event_head
+    result = subprocess.run(
+        ["git", "fetch", "--quiet", "origin", f"pull/{number}/head"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return event_head
+    fetched = subprocess.run(
+        ["git", "rev-parse", "FETCH_HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    return resolved_head(event_head, fetched)
+
+
 def main() -> int:
     event_path = os.environ.get("GITHUB_EVENT_PATH", "")
     if not event_path:
@@ -144,7 +174,8 @@ def main() -> int:
         event = json.loads(Path(event_path).read_text(encoding="utf-8"))
         pr = event["pull_request"]
         base = pr["base"]["sha"]
-        head = pr["head"]["sha"]
+        event_head = pr["head"]["sha"]
+        head = fetch_current_head(pr.get("number", 0), event_head)
         body = pr.get("body") or ""
         paths = changed_paths(base, head)
     except (OSError, KeyError, TypeError, json.JSONDecodeError, ValueError, subprocess.CalledProcessError) as exc:
@@ -156,6 +187,7 @@ def main() -> int:
     report = {
         "pull_request": pr.get("number"),
         "base_sha": base,
+        "event_head_sha": event_head,
         "head_sha": head,
         "changed_paths": paths,
         "protected_paths": [path for path in paths if is_protected(path)],

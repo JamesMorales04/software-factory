@@ -1,246 +1,392 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { CancelCampaign } from "../CancelCampaign";
 import {
   type Action,
-  type ActionSpec,
-  ApiError,
-  api,
+  type Attempt,
   type Campaign,
+  type Candidate,
+  CoreApiError,
+  coreApi,
+  type Gate,
   newIdempotencyKey,
-  type Project,
-} from "../api";
+  type Run,
+} from "../coreApi";
+import { formatTimestamp, shortId } from "../format";
 
 export function Campaigns() {
-  const navigate = useNavigate();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [specs, setSpecs] = useState<ActionSpec[]>([]);
-  const [projectFilter, setProjectFilter] = useState("");
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [gates, setGates] = useState<Record<string, Gate | null>>({});
   const [actionId, setActionId] = useState("");
-  const [specId, setSpecId] = useState("");
-  const [repairs, setRepairs] = useState(1);
-  const [maxAttempts, setMaxAttempts] = useState(4);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const [nextCampaigns, nextActions, nextProjects] = await Promise.all([
-        api.listCampaigns(projectFilter ? { projectId: projectFilter } : {}),
-        api.listActions(projectFilter ? { projectId: projectFilter } : {}),
-        api.listProjects(),
-      ]);
-      setCampaigns(nextCampaigns);
-      setActions(nextActions);
-      setProjects(nextProjects);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Failed to load campaigns.");
-    }
-  }, [projectFilter]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const attemptKey = useRef(newIdempotencyKey());
 
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(timer);
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!actionId) {
-      setSpecs([]);
-      setSpecId("");
-      return;
+    let active = true;
+    async function load() {
+      try {
+        const [
+          nextCampaigns,
+          nextActions,
+          nextCandidates,
+          nextAttempts,
+          nextRuns,
+        ] = await Promise.all([
+          coreApi.listCampaigns(),
+          coreApi.listActions(),
+          coreApi.listCandidates(),
+          coreApi.listAttempts(),
+          coreApi.listRuns(),
+        ]);
+        const nextGates: Record<string, Gate | null> = {};
+        await Promise.all(
+          nextCandidates.map(async (candidate) => {
+            nextGates[candidate.id] = await coreApi.getGate(candidate.id);
+          }),
+        );
+        if (!active) {
+          return;
+        }
+        setCampaigns(nextCampaigns);
+        setActions(nextActions);
+        setCandidates(nextCandidates);
+        setAttempts(nextAttempts);
+        setRuns(nextRuns);
+        setGates(nextGates);
+        setActionId((current) => current || nextActions[0]?.id || "");
+      } catch (cause) {
+        if (active) {
+          setError(
+            cause instanceof CoreApiError
+              ? cause.message
+              : "Failed to load Campaigns.",
+          );
+        }
+      }
     }
-    let live = true;
-    api
-      .listActionSpecs(actionId)
-      .then((next) => {
-        if (live) {
-          setSpecs(next);
-          setSpecId(next[0]?.id ?? "");
-        }
-      })
-      .catch(() => {
-        if (live) {
-          setSpecs([]);
-          setSpecId("");
-        }
-      });
+    void load();
+    const timer = setInterval(() => void load(), 4000);
     return () => {
-      live = false;
+      active = false;
+      clearInterval(timer);
     };
-  }, [actionId]);
+  }, []);
 
-  const canCreate = useMemo(
-    () => actionId !== "" && specId !== "",
-    [actionId, specId],
-  );
+  async function refresh() {
+    const [nextCampaigns, nextActions, nextCandidates, nextAttempts, nextRuns] =
+      await Promise.all([
+        coreApi.listCampaigns(),
+        coreApi.listActions(),
+        coreApi.listCandidates(),
+        coreApi.listAttempts(),
+        coreApi.listRuns(),
+      ]);
+    setCampaigns(nextCampaigns);
+    setActions(nextActions);
+    setCandidates(nextCandidates);
+    setAttempts(nextAttempts);
+    setRuns(nextRuns);
+    const nextGates: Record<string, Gate | null> = {};
+    await Promise.all(
+      nextCandidates.map(async (candidate) => {
+        nextGates[candidate.id] = await coreApi.getGate(candidate.id);
+      }),
+    );
+    setGates(nextGates);
+  }
 
-  async function onCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canCreate) {
-      return;
-    }
+  async function onCreate(event: React.FormEvent) {
+    event.preventDefault();
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const { data: created } = await api.createCampaign(
-        {
-          specId,
-          maxRepairCycles: repairs,
-          maxWallClockSecs: 1800,
-          maxParallel: 2,
-          maxImplementerAttempts: maxAttempts,
-        },
-        newIdempotencyKey(),
+      const campaign = await coreApi.createCampaign({
+        action_id: actionId,
+        idempotency_key: attemptKey.current,
+      });
+      attemptKey.current = newIdempotencyKey();
+      setNotice(
+        `Created Campaign ${shortId(campaign.id)} (${campaign.status}).`,
       );
-      await api.startCampaign(created.campaign.id);
-      navigate(`/campaigns/${created.campaign.id}`);
-    } catch (err) {
+      await refresh();
+    } catch (cause) {
       setError(
-        err instanceof ApiError ? err.message : "Campaign creation failed.",
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Campaign creation failed.",
       );
     } finally {
       setBusy(false);
     }
   }
 
+  async function onAuthorize(campaign: Campaign) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const authorization = await coreApi.authorizeFixtureCampaign(campaign.id);
+      setNotice(
+        `Authorized Campaign ${shortId(campaign.id)} as ${authorization.risk_class} ${authorization.execution_mode}.`,
+      );
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Fixture authorization failed.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onQueueRun(campaign: Campaign) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const run = await coreApi.createCampaignRun(campaign.id);
+      setNotice(
+        `Queued Run ${shortId(run.id)}. Open Runs to queue its Attempt.`,
+      );
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError ? cause.message : "Run queueing failed.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCancelled(campaign: Campaign) {
+    setNotice(
+      `Campaign ${shortId(campaign.id)} is ${campaign.status}. Core records the cancellation; provider termination can remain unconfirmed.`,
+    );
+    setError(null);
+    try {
+      await refresh();
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Failed to refresh Campaigns after cancellation.",
+      );
+    }
+  }
+
+  const actionById = new Map(actions.map((action) => [action.id, action]));
+  const runByCampaign = new Map<string, Run>();
+  for (const run of runs) {
+    if (!runByCampaign.has(run.campaign_id)) {
+      runByCampaign.set(run.campaign_id, run);
+    }
+  }
+  const attemptById = new Map(attempts.map((attempt) => [attempt.id, attempt]));
+  const runById = new Map(runs.map((run) => [run.id, run]));
+
+  function campaignForCandidate(candidate: Candidate): string | undefined {
+    const attempt = attemptById.get(candidate.attempt_id);
+    return attempt ? runById.get(attempt.run_id)?.campaign_id : undefined;
+  }
+
   return (
     <div>
       <h2>Campaigns</h2>
+      <p className="muted">
+        A Campaign starts blocked, requires explicit R0 fixture authorization,
+        then admits one Run and one Attempt.
+      </p>
       {error && <p className="error">{error}</p>}
-      <form className="create" onSubmit={onCreate}>
-        <h3>Start an engineering campaign</h3>
-        <label>
-          Project filter
-          <select
-            data-testid="campaign-project-filter"
-            value={projectFilter}
-            onChange={(e) => {
-              setProjectFilter(e.target.value);
-              setActionId("");
-            }}
-          >
-            <option value="">All Projects</option>
-            {projects
-              .filter((project) => project.registrationStatus === "registered")
-              .map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name} ({project.id})
+      {notice && <p className="notice">{notice}</p>}
+
+      {actions.length === 0 ? (
+        <p className="notice">
+          Create an Action before starting a Campaign.{" "}
+          <Link to="/actions">Open Actions</Link>
+        </p>
+      ) : (
+        <form className="create" onSubmit={onCreate}>
+          <h3>Create a Campaign</h3>
+          <label>
+            Action
+            <select
+              data-testid="campaign-action"
+              value={actionId}
+              onChange={(event) => {
+                setActionId(event.target.value);
+                attemptKey.current = newIdempotencyKey();
+              }}
+              required
+            >
+              {actions.map((action) => (
+                <option key={action.id} value={action.id}>
+                  {action.objective} ({shortId(action.id)})
                 </option>
               ))}
-          </select>
-        </label>
-        <label>
-          Action
-          <select
-            data-testid="campaign-action"
-            value={actionId}
-            onChange={(e) => setActionId(e.target.value)}
-            required
-          >
-            <option value="">Select an Action…</option>
-            {actions.map((action) => (
-              <option key={action.id} value={action.id}>
-                {action.title} ({action.status})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Frozen ActionSpec
-          <select
-            data-testid="campaign-spec"
-            value={specId}
-            onChange={(e) => setSpecId(e.target.value)}
-            required
-            disabled={specs.length === 0}
-          >
-            {specs.length === 0 && <option value="">No frozen spec</option>}
-            {specs.map((spec) => (
-              <option key={spec.id} value={spec.id}>
-                {spec.id.slice(0, 8)} · {spec.riskClass} · {spec.policyRevision}{" "}
-                · {spec.qualityProfile}
-              </option>
-            ))}
-          </select>
-          {actionId && specs.length === 0 && (
-            <span className="muted">This Action has no frozen ActionSpec.</span>
-          )}
-        </label>
-        <div className="grid-2">
-          <label>
-            Repair budget (0–3)
-            <input
-              data-testid="campaign-repairs"
-              type="number"
-              min={0}
-              max={3}
-              value={repairs}
-              onChange={(e) => setRepairs(Number(e.target.value))}
-            />
+            </select>
           </label>
-          <label>
-            Implementer attempt budget (1–24)
-            <input
-              data-testid="campaign-attempts"
-              type="number"
-              min={1}
-              max={24}
-              value={maxAttempts}
-              onChange={(e) => setMaxAttempts(Number(e.target.value))}
-            />
-          </label>
-        </div>
-        <button type="submit" disabled={busy || !canCreate}>
-          {busy ? "Starting…" : "Create & start campaign"}
-        </button>
-      </form>
+          <button type="submit" disabled={busy || actionId === ""}>
+            {busy ? "Creating…" : "Create Campaign"}
+          </button>
+        </form>
+      )}
 
-      <h3>All campaigns</h3>
+      <h3>All Campaigns ({campaigns.length})</h3>
       {campaigns.length === 0 ? (
-        <p className="muted">No campaigns yet.</p>
+        <p className="muted">No Campaigns yet.</p>
       ) : (
         <table>
           <thead>
             <tr>
               <th>Campaign</th>
-              <th>Project</th>
               <th>Action</th>
               <th>Status</th>
-              <th>Repairs</th>
-              <th>Updated</th>
+              <th>Run</th>
+              <th>Created</th>
+              <th>Control</th>
             </tr>
           </thead>
           <tbody>
-            {campaigns.map((campaign) => (
-              <tr key={campaign.id}>
-                <td>
-                  <Link to={`/campaigns/${campaign.id}`}>
-                    <code>{campaign.id.slice(0, 8)}</code>
-                  </Link>
-                </td>
-                <td>
-                  <code>{campaign.projectId}</code>
-                </td>
-                <td>
-                  <Link to={`/actions/${campaign.actionId}`}>
-                    <code>{campaign.actionId.slice(0, 8)}</code>
-                  </Link>
-                </td>
-                <td>
-                  <span className={`pill campaign-${campaign.status}`}>
-                    {campaign.status}
-                  </span>
-                </td>
-                <td>
-                  {campaign.repairCycles}/{campaign.maxRepairCycles}
-                </td>
-                <td className="muted">
-                  {new Date(campaign.updatedAt).toLocaleString()}
-                </td>
-              </tr>
-            ))}
+            {campaigns.map((campaign) => {
+              const action = actionById.get(campaign.action_id);
+              const run = runByCampaign.get(campaign.id);
+              return (
+                <tr key={campaign.id}>
+                  <td>
+                    <Link to={`/campaigns/${campaign.id}`}>
+                      <code>{shortId(campaign.id)}</code>
+                    </Link>
+                  </td>
+                  <td>
+                    {action ? (
+                      action.objective
+                    ) : (
+                      <code>{shortId(campaign.action_id)}</code>
+                    )}
+                  </td>
+                  <td>
+                    <span className="pill">{campaign.status}</span>
+                  </td>
+                  <td>
+                    {run ? (
+                      <Link to="/runs">
+                        <code>{shortId(run.id)}</code>
+                      </Link>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td className="muted">
+                    {formatTimestamp(campaign.created_at)}
+                  </td>
+                  <td>
+                    {campaign.status === "BLOCKED_AUTHORIZATION" && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void onAuthorize(campaign)}
+                      >
+                        Authorize R0 fixture
+                      </button>
+                    )}
+                    {campaign.status === "AUTHORIZED" && !run && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void onQueueRun(campaign)}
+                      >
+                        Queue Run
+                      </button>
+                    )}
+                    {run && <span className="muted">run {run.status}</span>}
+                    <CancelCampaign
+                      campaign={campaign}
+                      disabled={busy}
+                      onCancelled={onCancelled}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      <h3>Candidates and quality gates ({candidates.length})</h3>
+      <p className="muted">
+        Gate decisions are Core-owned and appear only after verifier and
+        reviewer receipts exist. No gate means the candidate is still pending.
+      </p>
+      {candidates.length === 0 ? (
+        <p className="muted">No candidates recorded.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Candidate</th>
+              <th>Commit</th>
+              <th>Attempt</th>
+              <th>Implementer</th>
+              <th>Campaign</th>
+              <th>Gate</th>
+              <th>Reasons</th>
+              <th>Recorded</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((candidate) => {
+              const gate = gates[candidate.id];
+              const campaignId = campaignForCandidate(candidate);
+              return (
+                <tr key={candidate.id}>
+                  <td>
+                    <code>{shortId(candidate.id)}</code>
+                  </td>
+                  <td>
+                    <code title={candidate.commit_sha}>
+                      {shortId(candidate.commit_sha, 12)}
+                    </code>
+                  </td>
+                  <td>
+                    <code>{shortId(candidate.attempt_id)}</code>
+                  </td>
+                  <td>
+                    <code>{candidate.implementer_id}</code>
+                  </td>
+                  <td>
+                    {campaignId ? (
+                      <code>{shortId(campaignId)}</code>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    {gate ? (
+                      <span
+                        className={`pill gate-${gate.outcome.toLowerCase()}`}
+                      >
+                        {gate.outcome}
+                      </span>
+                    ) : (
+                      <span className="muted">PENDING</span>
+                    )}
+                  </td>
+                  <td className="muted">{gate?.reasons.join("; ") || "—"}</td>
+                  <td className="muted">
+                    {formatTimestamp(candidate.created_at)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

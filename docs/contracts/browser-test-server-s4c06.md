@@ -36,7 +36,7 @@ A Project granting `browser` may declare:
    registry lock.
 
 Startup/readiness/port-ownership failures are `INFRASTRUCTURE_BLOCKED` before
-any Paseo session. They are not model failures.
+any provider session. They are not model failures.
 
 ## Evidence boundary
 

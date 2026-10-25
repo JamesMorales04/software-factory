@@ -1,0 +1,6 @@
+Factory stop
+Container: factory-uat-1792970085
+Data volume: factory-uat-data-1792970085
+Container factory-uat-1792970085: stopped
+Container factory-uat-1792970085: removed
+Data volume factory-uat-data-1792970085: kept

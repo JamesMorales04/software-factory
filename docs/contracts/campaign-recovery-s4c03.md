@@ -39,7 +39,7 @@ attempt budget, S3-D recovery state and cleanup status. It never calls a model.
 
 On an eligible failure:
 
-1. The failed Run, Attempt, Paseo binding/session, error and event remain
+1. The failed Run, Attempt, provider binding/session, error and event remain
    immutable.
 2. Core inserts a `campaign_recoveries` row with campaign/task, attempt index,
    failure class, bounded reason, previous Run/Attempt and (after dispatch)

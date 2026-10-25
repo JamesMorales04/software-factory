@@ -1,0 +1,14 @@
+Factory status
+Container: factory-uat-1792970085
+Data volume: factory-uat-data-1792970085
+Image: localhost/software-factory-core:dev
+Core URL: http://127.0.0.1:8877
+Token file: /tmp/factory-uat-lifecycle-Eri2XV/core.env
+PASS    Podman executable: podman version 6.1.4
+Project roots: 1
+PASS    Sandbox Supervisor: running
+PASS    Host Worker: running
+PASS    Podman rootless: true
+PASS    Container state: running
+PASS    OCI runtime image: localhost/software-factory-core:dev is present
+PASS    Core health: HTTP 200 {"healthy":true,"version":"0.1.0"}

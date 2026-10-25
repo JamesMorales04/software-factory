@@ -1,0 +1,44 @@
+{
+  "schema": "factory.author-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "c0ed31d6694ad1047c0ac932474486453e21c387",
+  "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
+  "scope": [
+    "Core and Supervisor credential redaction",
+    "registered role-secret masking",
+    "bearer and keyed credential forms"
+  ],
+  "commands": {
+    "cargo xtask check": "PASS",
+    "cargo xtask e2e office": "PASS (real Chromium, independent reviewer, Workers view)"
+  },
+  "test_inventory": {
+    "passed": 235,
+    "failed": 0,
+    "ignored": 2,
+    "migrations": 10
+  },
+  "dependency_audit": {
+    "command": "cargo audit --file Cargo.lock",
+    "result": "PASS",
+    "dependency_count": 276
+  },
+  "limits": [
+    "redaction is best effort and does not authorize logging prompts, source bodies or secrets",
+    "Worker/verifier/reviewer stderr is not routed through the tracing writer",
+    "OTLP export and exporter-outage behavior remain unimplemented"
+  ],
+  "not_claimed": [
+    "independent human acceptance",
+    "paid provider coding",
+    "provider-in-sandbox execution",
+    "credential confinement",
+    "ISOLATED or OS isolation certification",
+    "exact-head GitHub CI",
+    "deployment or merge authorization"
+  ],
+  "provider_paid_turns": 0
+}

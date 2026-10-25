@@ -1,12 +1,12 @@
 ---
 name: factory-real-e2e
-description: Exercise and record a bounded real Factory Core, Worker, Paseo and model engineering Campaign, then bind independent acceptance to its frozen candidate.
+description: Exercise and record a bounded real Factory Core, Worker, provider and model engineering Campaign, then bind independent acceptance to its frozen candidate.
 allowed-tools: Bash(python3 scripts/validate-live-certification.py:*) Bash(bash scripts/e2e-s4c-07-live.sh:*) Bash(bash scripts/e2e-s4c.sh:*) Bash(bash scripts/e2e-s4b.sh:*)
 ---
 
 # Factory real engineering Campaign certification
 
-Use this skill when a change affects Core orchestration, Worker/Paseo execution,
+Use this skill when a change affects Core orchestration, Worker/provider execution,
 capability provisioning, agent workflows, quality integration, or execution
 against an external project. It guides a bounded real product run and evidence
 review. It does not itself grant a paid-session budget, external credentials,
@@ -17,7 +17,7 @@ delivery authority, or acceptance authority.
 - Deterministic simulations and regressions establish only their deterministic
   claims. They cannot establish that a real provider session or model-mediated
   interaction occurred.
-- `REAL_PASEO_E2E_VERIFIED` is bound to the Factory implementation SHA, frozen
+- `REAL_PROVIDER_E2E_VERIFIED` is bound to the Factory implementation SHA, frozen
   spec, Project, Campaign, Run/Attempt, any required provider/model session,
   frozen candidate and independent acceptance records. Apply browser, CLI,
   backend and recovery requirements from the frozen ActionSpec; do not infer
@@ -41,7 +41,7 @@ delivery authority, or acceptance authority.
    `bash scripts/e2e-s4b.sh`). Preserve its full exit status and evidence. A
    simulator pass is not live evidence.
 3. **Check real provider/model availability without starting a session.** Use
-   `paseo provider ls` and `paseo provider models <provider>` and compare the
+   `provider provider ls` and `provider provider models <provider>` and compare the
    returned exact provider/model to the frozen ActionSpec. Do not silently
    select a fallback. If unavailable or unauthorized, record `LIVE_BLOCKED` or
    `LIVE_NOT_TESTED`; do not claim acceptance.
@@ -51,11 +51,11 @@ delivery authority, or acceptance authority.
    for GOV-01 or infer authority from an earlier unused budget. For a future
    authorized C-07 run, use `FACTORY_S4C_LIVE=1 bash scripts/e2e-s4c-07-live.sh`;
    it starts real Core, Worker, verifier, reviewer and Office components,
-   checks Paseo availability, and executes the Factory-managed Campaign.
+   checks provider availability, and executes the Factory-managed Campaign.
    Never run a paid lane unless its exact budget and objective are authorized.
 5. **Observe the real lifecycle.** Preserve the generated sanitized evidence
    file. Check that it identifies Project, Action, frozen ActionSpec/Campaign,
-   Run, Attempt, Worker, any required Paseo workspace/session and
+   Run, Attempt, Worker, any required provider workspace/session and
    provider/model/mode, and exact candidate SHA. Read the capabilities and
    executable acceptance criteria from the frozen ActionSpec. If it requires
    browser capability, confirm the actual Implementer model-mediated browser
@@ -70,7 +70,7 @@ delivery authority, or acceptance authority.
    reviewer opinion cannot override a rejected gate. Preserve identities and
    status for each decision.
 7. **Check lifecycle cleanup.** Verify the managed server stopped, its port is
-   closed, the Paseo session is closed/archived, and no workspace remains
+   closed, the provider session is closed/archived, and no workspace remains
    active. Record unresolved cleanup as incomplete, not PASS. Do not kill
    processes outside the lane's managed resources.
 8. **Freeze and validate.** Confirm the implementation SHA still matches the
@@ -94,7 +94,7 @@ delivery authority, or acceptance authority.
    obtain a newly authorized bounded run. Never rewrite a historical result to
    the new SHA.
 10. **Report dimensions separately.** Report deterministic verification, live
-    Paseo execution, candidate-bound independent verification/review/gate,
+    provider execution, candidate-bound independent verification/review/gate,
     Product Owner UAT, deployment readiness, and security/isolation status
     separately. Include failures, retries, resource use, cleanup, and anything
     blocked or not tested. A real model failure remains in the record.

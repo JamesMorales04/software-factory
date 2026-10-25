@@ -1,6 +1,6 @@
 # Software Factory Roadmap
 
-This page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `scripts/check-architecture-consistency --write-roadmap`.
+This page is generated from `docs/product/capabilities.yaml`. Edit the registry and run `cargo run --manifest-path native/Cargo.toml --bin factory-architecture-check -- --root . --write-roadmap`.
 
 ## F1-S4-C — Completed governed multi-project baseline
 
@@ -12,18 +12,18 @@ Decision: `approved`
 
 ### Capabilities
 
-- CAP-001 — Registered projects (approved, implemented)
-- CAP-002 — Action and frozen specification (approved, implemented)
-- CAP-003 — Campaign orchestration (approved, implemented)
-- CAP-004 — Worker and Paseo integration (approved, implemented)
-- CAP-005 — Candidate revision lineage (approved, implemented)
-- CAP-006 — Independent verification and review (approved, implemented)
-- CAP-007 — Deterministic Quality Gate (approved, implemented)
-- CAP-008 — Scoped capability grants (approved, implemented)
-- CAP-009 — Factory-managed browser capability (approved, implemented)
-- CAP-010 — Bounded deterministic recovery (approved, implemented)
-- CAP-011 — Factory Office (approved, implemented)
-- CAP-012 — Durable events and telemetry (approved, implemented)
+- CAP-001 — Registered projects (approved, in_progress)
+- CAP-002 — Action and frozen specification (approved, in_progress)
+- CAP-003 — Campaign orchestration (approved, in_progress)
+- CAP-004 — Worker and provider integration (approved, in_progress)
+- CAP-005 — Candidate revision lineage (approved, in_progress)
+- CAP-006 — Independent verification and review (approved, in_progress)
+- CAP-007 — Deterministic Quality Gate (approved, in_progress)
+- CAP-008 — Scoped capability grants (approved, in_progress)
+- CAP-009 — Factory-managed browser capability (approved, in_progress)
+- CAP-010 — Bounded deterministic recovery (approved, in_progress)
+- CAP-011 — Factory Office (approved, in_progress)
+- CAP-012 — Durable events and telemetry (approved, in_progress)
 
 ### Deliverables
 
@@ -67,12 +67,13 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-013 — Intelligent Lead (proposed, not_implemented)
-- CAP-014 — Intent and semantic assessment (proposed, not_implemented)
-- CAP-015 — Frozen executable planning (proposed, not_implemented)
-- CAP-016 — Dependency-aware WorkGraph (proposed, not_implemented)
-- CAP-017 — Standing delegation contract (proposed, not_implemented)
-- CAP-043 — Autonomous product development (approved, not_implemented)
+- CAP-013 — Intelligent Lead (proposed, in_progress)
+- CAP-014 — Intent and semantic assessment (proposed, in_progress)
+- CAP-015 — Frozen executable planning (proposed, in_progress)
+- CAP-016 — Dependency-aware WorkGraph (proposed, in_progress)
+- CAP-017 — Standing delegation contract (proposed, in_progress)
+- CAP-022 — Parallel WorkUnits (proposed, in_progress)
+- CAP-043 — Autonomous product development (approved, in_progress)
 
 ### Deliverables
 
@@ -103,7 +104,7 @@ Decision: `proposed`
 
 ### Real acceptance
 
-- Natural-language request becomes an authorized executable plan through a real Paseo run without manual per-role orchestration
+- Natural-language request becomes an authorized executable plan through a real direct-provider run without manual per-role orchestration
 - Independently demonstrate better practical semantic decision quality than the deterministic baseline without granting model output Core authority
 
 ### Product Owner decisions
@@ -124,8 +125,7 @@ Decision: `proposed`
 - CAP-018 — Agent Composer (proposed, not_implemented)
 - CAP-019 — Operation Supervisor (proposed, not_implemented)
 - CAP-020 — Specialist agent roles (proposed, not_implemented)
-- CAP-021 — Independent semantic Reviewer (proposed, not_implemented)
-- CAP-022 — Parallel WorkUnits (proposed, not_implemented)
+- CAP-021 — Independent semantic Reviewer (proposed, in_progress)
 - CAP-023 — Context and knowledge resolver (proposed, not_implemented)
 
 ### Deliverables
@@ -373,7 +373,7 @@ Decision: `proposed`
 - CAP-039 — Remote Workers (proposed, not_implemented)
 - CAP-040 — Extended Factory Office (proposed, not_implemented)
 - CAP-041 — Reliability analytics (proposed, not_implemented)
-- CAP-042 — Optional context integrations (deferred, not_implemented)
+- CAP-042 — Optional context integrations (proposed, not_implemented)
 
 ### Deliverables
 

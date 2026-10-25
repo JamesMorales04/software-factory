@@ -45,7 +45,7 @@ scope, functional or reviewer requirements. See
 
 ## Independent real-user verification
 
-For each accepted slice: relevant unit/contract/integration tests → Implementer runs the actual built product and repairs issues → freeze exact candidate → **Independent Verifier** starts it on clean resources, checks CLI/HTTP/Playwright/Paseo user journeys and negative paths, and records separate evidence → Reviewer checks design/security/results → deterministic Quality Gate accepts or blocks.
+For each accepted slice: relevant unit/contract/integration tests → Implementer runs the actual built product and repairs issues → freeze exact candidate → **Independent Verifier** starts it on clean resources, checks CLI/HTTP/Playwright/provider user journeys and negative paths, and records separate evidence → Reviewer checks design/security/results → deterministic Quality Gate accepts or blocks.
 
 Author-written mocks and only-author-run tests cannot substitute for independent end-to-end acceptance. Verifier must not edit candidate or protected test oracles. Repairs require a new candidate and revalidation.
 

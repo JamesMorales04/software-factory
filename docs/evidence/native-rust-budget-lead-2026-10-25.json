@@ -1,0 +1,60 @@
+{
+  "schema": "factory.provider-budget-lead-evidence.v1",
+  "recorded_utc": "2026-10-25",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "3d76e8ed61173a08a029e3c44e3743d3823cf5da",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "per_turn_budget": {
+    "core_authorization": "POST /worker/provider_turn_authorize",
+    "core_settlement": "POST /worker/provider_turn_settle",
+    "core_release": "/worker/provider_turn_release",
+    "binding": "session, attempt, lease generation, provider, model, request SHA-256, expiry",
+    "reservation": "atomic output/total/cost reservation with one active turn per session",
+    "output_cap": "egress broker rewrites max_output_tokens/max_tokens from the Core grant",
+    "unknown_usage": "FAIL_CLOSED and session FAILED",
+    "tests": [
+      "authorization success",
+      "duplicate settlement idempotency",
+      "different duplicate rejected",
+      "budget exhaustion",
+      "stale generation rejected",
+      "cancelled campaign rejected",
+      "unknown usage failed closed",
+      "broker output rewrite and request-count exhaustion"
+    ],
+    "worker_full_mock_upstream_e2e": "PASS: four prompts -> Core authorization -> egress broker -> mock /v1/chat/completions -> four SETTLED reservations -> ACCEPTED candidate; upstream calls=4, injected credential only",
+    "token_cost_exactness": "NOT_CLAIMED; strongest pre-request bounds plus post-response reconciliation",
+    "request_digest": "PASS: fixture sends the canonical Core-authorized body; broker verifies digest before output rewrite"
+  },
+  "model_lead": {
+    "core_config": "FACTORY_LEAD_MODEL_URL/TOKEN/NAME",
+    "mechanism": "MODEL",
+    "strict_validation": "generated JSON Schema, typed decode, identity/evidence/WorkGraph/scope/route/budget validation",
+    "unit_mock_model_test": "PASS",
+    "objective_to_frozen_campaign_e2e": "PASS: model assessment -> validated WorkGraph proposal -> frozen plan -> authorized Campaign -> Worker/verifier/reviewer -> ACCEPTED"
+  },
+  "tests": {
+    "rust_tests_passed": 271,
+    "rust_tests_ignored": 2,
+    "migrations": 14,
+    "provider_e2e": "PASS",
+    "office_browser": "PASS"
+  },
+  "not_claimed": [
+    "mathematically exact external spend ceiling",
+    "human security certification",
+    "live provider coding",
+    "ISOLATED certification"
+  ],
+  "exact_head_sha": "f732b7a615c0c978f8d4219b3c498d350e561fce",
+  "exact_head_ci": {
+    "native_rust_runs": [
+      40230909416,
+      40230914664
+    ],
+    "governance_run": 40230914676,
+    "result": "PASS"
+  }
+}

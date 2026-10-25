@@ -4,7 +4,7 @@
 
 ## Scope
 
-This policy governs TRUSTED_LOCAL runs only: real local Paseo/agent sessions operating within the owner's user privileges on the owner's machine. It does not govern ISOLATED or RESTRICTED execution, which keep their own evidence-bound gates (see [isolation policy](isolation.md)).
+This policy governs TRUSTED_LOCAL runs only: real local provider/agent sessions operating within the owner's user privileges on the owner's machine. It does not govern ISOLATED or RESTRICTED execution, which keep their own evidence-bound gates (see [isolation policy](isolation.md)).
 
 ## Secret handling
 

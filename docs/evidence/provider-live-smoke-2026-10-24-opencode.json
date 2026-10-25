@@ -1,0 +1,41 @@
+{
+  "provider": "opencode",
+  "provider_version": "1.18.32",
+  "model": "opencode/deepseek-v4.1-flash",
+  "authorization_id": "po-directive-2026-10-24-readonly-smoke",
+  "candidate_sha": "9a7c3e80af107ea6d51780d2448b85db654867e2",
+  "schema_sha256": "8f491d2fa7dfe9883e4aacd38cd01feffa33eba1f57435657dff0126d8d17b78",
+  "structured_output_supported": false,
+  "protocol_verified": false,
+  "structured_output_verified": false,
+  "turn_id": "msg_16b9e3470002Lp7osbA1a7a6t6",
+  "session_id": "ses_e9461cd89ffeXN6grdYWrKr85D",
+  "usage": {
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": { "read": 0, "write": 0 }
+    },
+    "cost": 0
+  },
+  "output": null,
+  "cleanup": {
+    "deleted": true,
+    "method": "opencode session delete",
+    "after_delete_verified_absent": true
+  },
+  "requests": 1,
+  "classification": "LIVE_PROVIDER_CREDENTIAL_BLOCKED",
+  "error": {
+    "kind": "APIError",
+    "status_code": 401,
+    "is_retryable": false,
+    "message": "Upstream request failed: Invalid credential",
+    "provider": "opencode",
+    "model": "deepseek-v4.1-flash",
+    "session": "ses_e9461cd89ffeXN6grdYWrKr85D",
+    "note": "No model tokens or cost were reported. The read-only prompt reached the provider endpoint but the configured OpenCode credential was rejected. No retry was made."
+  },
+  "duration_ms": 72618
+}

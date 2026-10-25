@@ -6,8 +6,8 @@
 
 | Surface | Required default | Additional gate / conditions |
 |---|---|---|
-| Go (ratified Core/Worker) | `gofmt`, `go vet`, `go test` | `golangci-lint` with a pinned supported release and curated analyzers; `go test -race` for affected concurrency code |
-| TypeScript / React / Paseo adapter | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | React-specific checks; use ESLint + `typescript-eslint` only if Biome lacks a required rule; avoid overlapping tools |
+| Rust Core/Worker/tools (required) | `cargo fmt --check`, strict Clippy, `cargo test`, `cargo build`, `cargo doc`, `cargo audit` | Pinned Rust 1.90.0 and locked Cargo; see [rust-standards](rust-standards.md) |
+| TypeScript / React Office | TypeScript `tsc --noEmit`, Biome formatter/linter (`biome check`) | React-specific checks; use ESLint + `typescript-eslint` only if Biome lacks a required rule; avoid overlapping tools |
 | Markdown documentation | `markdownlint-cli2` | Automated relative-link and code-fence validation; check external links in a bounded, reliable lane |
 | Shell scripts (if introduced) | `shellcheck` and `shfmt` | Test important scripts in disposable environments |
 | YAML / JSON / GitHub Actions (if introduced) | Schema validation and formatting | `actionlint` for GitHub Actions workflows |
@@ -18,9 +18,24 @@ Versions and configurations must be pinned in repository manifests/lockfiles or 
 
 Prefer Biome for fast formatting and general linting plus `tsc` for type checking. If semantic React hooks or security rules require ESLint, install only the missing focused plugin/rules, document why, and avoid duplicate formatters. Avoid unchecked `any`; provide explicit boundary types and schema validation for untrusted payloads.
 
-### Selected Go toolchain
+### Selected Rust toolchain
 
-[ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md) ratifies Go for Core and Workers. At the first Go implementation slice, pin the Go version and lint configuration, prove local and CI commands on actual source, and test concurrency using the race detector when applicable. No parallel Rust toolchain, CI lane or comparative TECH-01 benchmark is required. This language decision does not waive SEC-01.
+[ADR-0018](../architecture/decisions/ADR-0018-native-rust-replacement.md) ratifies Rust for Core, Workers, provider adapters, persistence and governance tools. Rust 1.90.0 is pinned by `rust-toolchain.toml`; dependencies are locked by `Cargo.lock`. These commands are required and run on the exact candidate:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+cargo doc --workspace --no-deps --locked
+cargo audit --file Cargo.lock
+```
+
+The RustSec audit tool/version is pinned in CI. `cargo-nextest` and `cargo-deny` may be evaluated before adoption; do not add them speculatively. This language decision does not waive SEC-01 isolation.
+
+### Historical Rust toolchain
+
+[ADR-0005](../architecture/decisions/ADR-0005-go-core-worker-language.md) is superseded by ADR-0018. Legacy Go files, workflows and lint commands remain in the tree only until the Rust replacement and its acceptance evidence are complete; they are not the target toolchain. Do not add new Rust code or extend Go CI.
 
 ## Gate rules
 

@@ -4,6 +4,11 @@
 Project/Run capability. Research and disposition: **CLI adopted, MCP deferred**.
 TRUSTED_LOCAL only; no isolation/certification claim.
 
+The Worker-side managed test server and deterministic Chromium check are
+documented in [Factory-managed browser server and check](factory-browser-cli.md).
+It is infrastructure/capability plumbing; its health is not independent
+acceptance evidence.
+
 ## Primary tool: pinned Playwright CLI + existing Chromium harness
 
 - Package: `@playwright/cli` **0.1.22**, pinned in

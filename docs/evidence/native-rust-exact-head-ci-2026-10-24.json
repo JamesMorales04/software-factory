@@ -1,0 +1,45 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "b91bd9624cf7987500ade363565fa445ecb64aae",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "passing": {
+    "native-rust-runs": [40119554531, 40119372998],
+    "office-browser": "PASS",
+    "architecture-consistency": 40119554382,
+    "s1-core": "PASS",
+    "s1-e2e": "PASS",
+    "s1-office": "PASS",
+    "s2-e2e": "PASS",
+    "s3a-e2e": "PASS",
+    "s3b-e2e": "PASS",
+    "s4a-core-quality": "PASS",
+    "s4a-office": "PASS",
+    "s4b-core-campaign": "PASS",
+    "s4b-office": "PASS",
+    "s4c-core": "PASS",
+    "s4c-office": "PASS"
+  },
+  "failing_legacy_jobs": {
+    "s2-browser": "legacy Office selectors/API removed",
+    "s3c-e2e": "legacy Paseo/Agents Office journey",
+    "s3d-e2e": "legacy Paseo recovery Office journey",
+    "s4a-e2e": "legacy Paseo/Office journey",
+    "s4b-e2e": "legacy Paseo/Office journey",
+    "s4c-e2e": "legacy Paseo/Office journey",
+    "s4c-regressions": "legacy Paseo/Office journey"
+  },
+  "legacy_failure_classification": "NOT_RUST_EVIDENCE; these workflows still target removed Go/Paseo Office surfaces and are a deletion/migration blocker, not a regression in the native Rust checks.",
+  "known_governance_artifact": "An earlier push-triggered architecture-consistency run at the same SHA failed before the PR body head_sha was rebound; the later run 40119554382 passed with the exact head.",
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "independent human acceptance",
+    "zero-Go cutover",
+    "provider coding",
+    "isolation certification",
+    "deployment or merge authorization"
+  ]
+}

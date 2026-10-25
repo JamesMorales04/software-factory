@@ -7,21 +7,21 @@ fixtures atomically ([ADR-0006](../architecture/decisions/ADR-0006-early-develop
 S3-C covers exactly the read-only observability slice below. It adds **no**
 agent runtime, event ledger, lifecycle authority or external effect. Factory
 Core remains authoritative for Runs, Attempts, lease generations, session
-bindings, policy, results and events. Paseo remains the owner of real agent
+bindings, policy, results and events. The provider adapter remains the owner of real agent
 sessions and native timelines. Factory Office only projects Core-owned state.
 
 ## 1. Sources of truth
 
 | Projection | Authoritative source |
 | --- | --- |
-| Session identity, routing, binding status | `paseo_bindings` (S3-A) |
+| Session identity, routing, binding status | durable provider-session binding (target) |
 | Run status and requested route | `runs` |
 | Attempt history | `attempts` |
 | Lifecycle timeline | durable `events` ledger (S1 transport) |
 | Bounded final evidence | Worker result persisted by the S2/S3-B report path |
-| External session state | Paseo only; Core records observations, never remote truth |
+| External session state | provider only; Core records observations, never remote truth |
 
-`orphaned` means a Paseo session may still exist externally while its
+`orphaned` means a provider session may still exist externally while its
 generation is superseded or its outcome is unconfirmed. It is never proof
 that the session is running.
 
@@ -83,21 +83,21 @@ snapshot and never implies that an agent stopped.
 
 ### Run detail
 
-For `paseo-task` Runs, Run detail renders every Attempt's session binding
+For `provider-task` Runs, Run detail renders every Attempt's session binding
 separately; generations are never collapsed. The observed route is the final
-Paseo `inspect` identity reported by the Worker, not the frozen requested
+provider `inspect` identity reported by the Worker, not the frozen requested
 binding. It shows requested versus observed route when final evidence
 recorded one, session/workspace IDs,
 Worker, execution mode, timestamps, binding reason, bounded evidence and
 orphan warnings. A Core-cancelled Run with an unconfirmed external session
 is described as orphaned, never as externally stopped. Runs with no binding
-say so accurately; synthetic Runs state that no Paseo session applies.
+say so accurately; synthetic Runs state that no provider session applies.
 
 ## 4. Evidence levels
 
 **Level 1 — authoritative lifecycle:** `RunQueued`, `RunLeased`,
-`RunStarted`, `PaseoSessionIntended`, `PaseoSessionActive`,
-`PaseoSessionSucceeded/Failed/Cancelled/Orphaned`, and terminal Run events,
+`RunStarted`, `ProviderSessionIntended`, `ProviderSessionActive`,
+`ProviderSessionSucceeded/Failed/Cancelled/Orphaned`, and terminal Run events,
 read from the durable ledger in `globalSeq` order. Reload and reconnect use
 the existing cursor/replay transport.
 
@@ -107,16 +107,13 @@ format/test exit codes, nudge count and cleanup confirmation. Office labels
 this as a final summary observed at session close, not individual live tool
 events.
 
-**Level 3 — live individual tool activity: NOT IMPLEMENTED in S3-C.**
-Paseo 0.9.1 exposes curated `logs --follow`/`attach` text and a typed
-`@getpaseo/client` timeline subscription. The current supported Worker
-integration is the Go CLI adapter, whose supported observation path is the
-curated text/flags surface; live ingestion from it would require a new
-typed client/runtime dependency plus a reconnection, replacement and
-idempotent-ingestion contract. S3-C does not claim live per-tool streaming,
-does not infer individual edits from a final diff, and does not fabricate
-timestamps. Any expansion requires explicit authorization and a new contract
-revision.
+**Level 3 — live individual tool activity: NOT IMPLEMENTED.** The Rust
+implementation has deterministic provider-session fixtures but no production
+Codex/OpenCode work lifecycle. Live ingestion requires a direct-provider event
+contract plus reconnection, replacement, permission and redaction design.
+S3-C does not claim live per-tool streaming, does not infer individual edits
+from a final diff, and does not fabricate timestamps. Any expansion requires
+explicit authorization and a new contract revision.
 
 ## 5. Security and redaction
 
@@ -140,7 +137,7 @@ revision.
 
 Per ADR-0006 this is an additive read-only projection with no compatibility
 shims or dual state. Acceptance covers: the real Core/Worker lifecycle
-through a deterministic Paseo CLI stub; pending/active live Agents
+through a deterministic direct-provider fixture; pending/active live Agents
 appearance; multi-Attempt/generation separation; provider/model/mode/
 Worker/Attempt identity; Run-detail evidence; ordered timeline equality;
 reload and malformed-SSE reconnect without duplicates; cancellation/orphan

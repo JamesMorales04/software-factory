@@ -1,29 +1,25 @@
 # Live certification policy for Factory engineering campaigns
 
 **Status:** Adopted 2026-10-21 UTC (F1-S4-C-01). Applies to campaigns that change
-Core orchestration, Worker/Paseo execution, capability provisioning, agent
+Core orchestration, Worker/provider execution, capability provisioning, agent
 workflows, quality integration or external-project execution.
 
 ## Evidence levels
 
-The machine-checkable companion format is described by
-[`certification-manifests.schema.json`](certification-manifests.schema.json),
-and validated with `python3 scripts/validate-live-certification.py` after
-installing `scripts/requirements-certification.txt`. The validator applies the
-Draft 2020-12 JSON Schema and then checks semantic identity and evidence
-correlation. Its output reports schema validity and repository correlation
-separately from optional external candidate Git verification and independent
-provider/runtime observation. A manifest never proves an external event by
-itself, and the validator must never upgrade evidence levels.
+The legacy validator and schema were retired with the former implementation and
+are archived under [docs/evidence/history/quality](../evidence/history/quality).
+A Rust-era certification validator is not implemented. Until it is, live
+certification labels are policy vocabulary only and must not be claimed from
+unvalidated manifests. A manifest never proves an external event by itself, and
+no validator may upgrade evidence levels.
 
-Manifest schema version 1 preserves the historical C-07 browser shape.
-Version 2 supports capability-specific acceptance. The validator reads
-capabilities from the source record for the frozen ActionSpec, correlates its
-spec and binding identities, and checks those capabilities against the Run.
-For a model-backed version 2 record, explicit authorization binds the campaign,
-exact provider/model route and positive session ceiling to the source
-authorization and recorded spend. Version 1 remains the historical C-07 format.
-Browser requirements apply only when that frozen spec includes `browser`.
+The historical manifest versions remain archived for provenance. A future Rust
+validator must read capabilities from the source record for the frozen
+ActionSpec, correlate spec and binding identities, and check those capabilities
+against the Run. For a model-backed record, explicit authorization must bind the
+campaign, exact provider/model route and positive session ceiling to the source
+authorization and recorded spend. Browser requirements apply only when the
+frozen spec includes `browser`.
 Non-browser Actions must have executable acceptance criteria in their frozen
 spec and a passing corresponding Quality Gate check. A recovery claim requires
 the failed Implementer Attempt, its matching Campaign recovery record, and a
@@ -34,20 +30,20 @@ Manifest labels cannot choose or weaken the profile.
 
 Real functional, negative, regression, security and concurrency oracles pass
 against the exact candidate. Real Core, Worker, verifier, reviewer, Git and
-Chromium processes may be used; a deterministic Paseo/model simulation is
+Chromium processes may be used; a deterministic provider/model simulation is
 allowed only for the agent-decision step. The claim must name the exact
 implementation SHA and the executable oracle.
 
-### REAL_PASEO_E2E_VERIFIED
+### REAL_PROVIDER_E2E_VERIFIED
 
-At least one bounded, genuine Factory-managed Paseo/model Run has exercised the
-relevant affected execution capability. A successful deterministic or non-Paseo
+At least one bounded, genuine Factory-managed provider/model Run has exercised the
+relevant affected execution capability. A successful deterministic or non-provider
 Run cannot satisfy this level, even when its other acceptance records pass. Record:
 
 - exact Factory implementation SHA;
 - provider, model and mode;
 - Factory Project, Action, ActionSpec and Campaign IDs;
-- Paseo workspace/session IDs and Run/Attempt/gate generation;
+- provider workspace/session IDs and Run/Attempt/gate generation;
 - candidate SHA and independent verifier/reviewer/gate evidence;
 - cleanup status and any unresolved external lifecycle state;
 - whether the live test was invalidated by later runtime changes.
@@ -83,10 +79,10 @@ the owner's manual acceptance on their behalf.
   `LIVE_NOT_TESTED` or `LIVE_BLOCKED`. The campaign may be reported
   `MERGE-READY` only with an explicit, recorded Product Owner exception.
 - Simulated records and real records remain distinguishable in evidence.
-- A REAL_PASEO_E2E_VERIFIED record must bind implementation SHA, Project,
+- A REAL_PROVIDER_E2E_VERIFIED record must bind implementation SHA, Project,
   Action, frozen spec, Campaign, Run, Attempt, frozen candidate, independent
   verifier and reviewer, Quality Gate decision, and explicit cleanup. The source
-  Run must be a Paseo workload with matching provider, model, mode, session,
+  Run must be a provider workload with matching provider, model, mode, session,
   workspace and successful terminal binding identities. Capability-specific
   observations are checked against the frozen ActionSpec. Simulation evidence
   cannot satisfy the live level. A subsequent runtime change invalidates the
@@ -110,7 +106,7 @@ the owner's manual acceptance on their behalf.
   protected browser oracle against the exact candidate. This is UI quality evidence.
 - **Agent browser-capability certification:** the Factory-managed Implementer
   records successful model-mediated `open` + observation/interaction commands
-  in the authorized Paseo session. This is capability-use evidence.
+  in the authorized provider session. This is capability-use evidence.
 
 F1-S4-C/C-04 requires both. A future ADR may let certain projects require only
 product acceptance, but cannot retroactively alter the frozen Vlog contract or
@@ -119,7 +115,7 @@ historical gate decisions.
 ## Current F1-S4-C disposition (2026-10-21 UTC)
 
 - `DETERMINISTIC_VERIFIED`: the S4-C/C-03 lane passed with two external
-  Projects, real Chromium, deterministic Paseo simulation and forced R1–R8
+  Projects, real Chromium, deterministic provider simulation and forced R1–R8
   recovery scenarios. Independent clean-checkout verification and GPT-6 Luna
   read-only review were performed.
 - Historical C-05 Vlog result: **not achieved for that implementation.** Vlog
@@ -127,7 +123,7 @@ historical gate decisions.
   independent browser PASS but recorded no Playwright invocation, so the gate
   returned `REPAIR_REQUIRED`. Calculator accepted on the non-browser path at
   `5fa3c1c`; the final `cfa250e` delta is browser-only.
-- **C-07 final live result: `REAL_PASEO_E2E_VERIFIED` for the bounded Vlog
+- **Historical C-07 final live result (retired implementation): the historical provider-certification label for the bounded Vlog
   path on tested Factory head `9567bc5` / runtime `14133cb7`.** One paid
   `opencode/opencode-go/deepseek-v4.1-flash` build session produced candidate
   `e49f62d`; the Implementer ran model-mediated `open,snapshot,click,snapshot,
@@ -135,7 +131,7 @@ historical gate decisions.
   Independent verifier PASS, reviewer `APPROVE`, gate `ACCEPTED`; session,
   workspace and server cleanup confirmed. One of two authorized sessions was
   conserved; no repair cycle was used.
-- `REAL_PASEO_E2E_VERIFIED` is candidate-bound to that tested head and does not
+- The historical C-07 result is provenance only and is not Rust certification. It does not
   by itself prove later runtime changes, isolation or delivery.
 - C-04 same-session completion remains deterministic-verified; the live C-07
   run did not need the continuation because initial-turn evidence was complete.

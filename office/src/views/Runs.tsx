@@ -1,152 +1,169 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ApiError, api, newIdempotencyKey, type Run } from "../api";
+import { useEffect, useState } from "react";
+import { type Attempt, CoreApiError, coreApi, type Run } from "../coreApi";
+import { formatTimestamp, shortId } from "../format";
 
-// Runs view: real Core Run projections — queue a permitted synthetic Run,
-// watch its lifecycle, inspect Attempts and cancel when needed. Nothing
-// here is fabricated: every row comes from an authoritative Core snapshot.
 export function Runs() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [message, setMessage] = useState("hello-factory");
-  const [steps, setSteps] = useState("2");
+  const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const list = await api.listRuns();
-      if (!signal?.aborted) {
-        setRuns(list);
-      }
-    } catch (e) {
-      if (!signal?.aborted) {
-        setError(e instanceof ApiError ? e.message : "Failed to load runs.");
-      }
-    }
-  }, []);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void refresh(controller.signal);
-    const timer = setInterval(() => void refresh(controller.signal), 2000);
+    let active = true;
+    async function load() {
+      try {
+        const [nextRuns, nextAttempts] = await Promise.all([
+          coreApi.listRuns(),
+          coreApi.listAttempts(),
+        ]);
+        if (active) {
+          setRuns(nextRuns);
+          setAttempts(nextAttempts);
+        }
+      } catch (cause) {
+        if (active) {
+          setError(
+            cause instanceof CoreApiError
+              ? cause.message
+              : "Failed to load Runs.",
+          );
+        }
+      }
+    }
+    void load();
+    const timer = setInterval(() => void load(), 2000);
     return () => {
-      controller.abort();
+      active = false;
       clearInterval(timer);
     };
-  }, [refresh]);
+  }, []);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function onQueueAttempt(run: Run) {
+    setBusyId(run.id);
     setError(null);
     setNotice(null);
-    setSubmitting(true);
     try {
-      const parsedSteps = Math.max(
-        1,
-        Math.min(10, Number.parseInt(steps, 10) || 1),
-      );
-      const { data } = await api.createRun(
-        { message: message.trim(), steps: parsedSteps, stepMs: 5 },
-        newIdempotencyKey(),
-      );
+      const attempt = await coreApi.createRunAttempt(run.id);
       setNotice(
-        `Queued Run ${data.run.id.slice(0, 8)} — watch it lease, start and complete below.`,
+        `Queued Attempt ${shortId(attempt.id)} for Run ${shortId(run.id)}.`,
       );
-      await refresh();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Queue failed.");
+      const [nextRuns, nextAttempts] = await Promise.all([
+        coreApi.listRuns(),
+        coreApi.listAttempts(),
+      ]);
+      setRuns(nextRuns);
+      setAttempts(nextAttempts);
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Attempt queueing failed.",
+      );
     } finally {
-      setSubmitting(false);
+      setBusyId(null);
     }
   }
 
-  async function onCancel(id: string) {
-    setError(null);
-    try {
-      await api.cancelRun(id);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Cancel failed.");
-    }
+  const attemptsByRun = new Map<string, Attempt[]>();
+  for (const attempt of attempts) {
+    const list = attemptsByRun.get(attempt.run_id) ?? [];
+    list.push(attempt);
+    attemptsByRun.set(attempt.run_id, list);
   }
 
   return (
     <div>
       <h2>Runs</h2>
+      <p className="muted">
+        Runs are created from an authorized Campaign. Queue one Attempt per
+        queued Run; Worker leasing and execution are observed here and not
+        triggered by the Office.
+      </p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
-      <form className="create" onSubmit={onSubmit}>
-        <h3>New synthetic Run (credential-free fixture)</h3>
-        <label>
-          Message (≤256 chars)
-          <input
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            maxLength={256}
-            required
-            placeholder="short marker echoed by the fixture"
-          />
-        </label>
-        <label>
-          Steps (1–10)
-          <input
-            value={steps}
-            onChange={(e) => setSteps(e.target.value)}
-            inputMode="numeric"
-            pattern="[0-9]*"
-          />
-        </label>
-        <button type="submit" disabled={submitting || message.trim() === ""}>
-          {submitting ? "Queueing…" : "Queue Run"}
-        </button>
-      </form>
-      <h3>All Runs</h3>
+
+      <h3>All Runs ({runs.length})</h3>
       {runs.length === 0 ? (
         <p className="muted">
-          No Runs yet — queue one above to see Core–Worker dispatch.
+          No Runs yet. Authorize a Campaign and queue a Run first.
         </p>
       ) : (
         <table>
           <thead>
             <tr>
-              <th>ID</th>
+              <th>Run</th>
+              <th>Campaign</th>
               <th>Status</th>
               <th>Attempts</th>
-              <th>Worker</th>
-              <th>Updated</th>
-              <th>Action</th>
+              <th>Created</th>
+              <th>Control</th>
             </tr>
           </thead>
           <tbody>
-            {runs.map((r) => (
-              <tr key={r.id}>
+            {runs.map((run) => {
+              const runAttempts = attemptsByRun.get(run.id) ?? [];
+              return (
+                <tr key={run.id}>
+                  <td>
+                    <code>{shortId(run.id)}</code>
+                  </td>
+                  <td>
+                    <code>{shortId(run.campaign_id)}</code>
+                  </td>
+                  <td>
+                    <span className="pill">{run.status}</span>
+                  </td>
+                  <td>{runAttempts.length}</td>
+                  <td className="muted">{formatTimestamp(run.created_at)}</td>
+                  <td>
+                    {run.status === "QUEUED" && runAttempts.length === 0 ? (
+                      <button
+                        type="button"
+                        disabled={busyId === run.id}
+                        onClick={() => void onQueueAttempt(run)}
+                      >
+                        {busyId === run.id ? "Queueing…" : "Queue Attempt"}
+                      </button>
+                    ) : (
+                      <span className="muted">
+                        {runAttempts.length > 0 ? "attempt queued" : "—"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      <h3>All Attempts ({attempts.length})</h3>
+      {attempts.length === 0 ? (
+        <p className="muted">No Attempts queued.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Attempt</th>
+              <th>Run</th>
+              <th>Status</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {attempts.map((attempt) => (
+              <tr key={attempt.id}>
                 <td>
-                  <Link to={`/runs/${r.id}`}>
-                    <code>{r.id.slice(0, 8)}</code>
-                  </Link>
+                  <code>{shortId(attempt.id)}</code>
                 </td>
                 <td>
-                  <span className={`pill ${r.status}`}>{r.status}</span>
+                  <code>{shortId(attempt.run_id)}</code>
                 </td>
                 <td>
-                  {r.attemptCount}/{r.maxAttempts}
+                  <span className="pill">{attempt.status}</span>
                 </td>
-                <td className="muted">{r.leaseOwner || "—"}</td>
-                <td className="muted">
-                  {new Date(r.updatedAt).toLocaleString()}
-                </td>
-                <td>
-                  {!["succeeded", "failed", "cancelled"].includes(r.status) && (
-                    <button
-                      type="button"
-                      className="linklike"
-                      onClick={() => void onCancel(r.id)}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </td>
+                <td className="muted">{formatTimestamp(attempt.created_at)}</td>
               </tr>
             ))}
           </tbody>
