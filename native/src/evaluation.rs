@@ -692,3 +692,375 @@ mod tests {
         );
     }
 }
+
+/// A bounded, Core-authorized CAP-014 model evaluation run. Raw model outputs
+/// are evidence for an independent scorer; they are never an acceptance claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEvaluationFixture {
+    pub fixture_id: String,
+    pub status: String,
+    pub reservation_id: String,
+    pub provider: String,
+    pub model: String,
+    pub content: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub usage_known: bool,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEvaluationEvidence {
+    pub schema: String,
+    pub corpus_id: String,
+    pub corpus_sha256: String,
+    pub evaluation_id: String,
+    pub recorded_at: String,
+    pub status: String,
+    pub provider: String,
+    pub model: String,
+    pub fixtures: Vec<ModelEvaluationFixture>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelEvaluationConfig {
+    pub core_url: String,
+    pub operator_token: String,
+    pub evaluation_id: String,
+    pub timeout: std::time::Duration,
+}
+
+pub async fn execute_model_evaluation(
+    corpus: &EvaluationCorpus,
+    config: &ModelEvaluationConfig,
+) -> Result<ModelEvaluationEvidence, EvaluationError> {
+    let url = reqwest::Url::parse(&config.core_url)
+        .map_err(|_| EvaluationError::Invalid("core URL is invalid".into()))?;
+    if url.scheme() != "http"
+        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+        || url.port().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(EvaluationError::Invalid(
+            "core URL must be a loopback HTTP origin with an explicit port".into(),
+        ));
+    }
+    if config.operator_token.len() < 16 || config.evaluation_id.trim().is_empty() {
+        return Err(EvaluationError::Invalid(
+            "operator token or evaluation identity is invalid".into(),
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(config.timeout)
+        .no_proxy()
+        .build()
+        .map_err(|_| EvaluationError::Invalid("evaluation client".into()))?;
+    let mut evidence = ModelEvaluationEvidence {
+        schema: "factory.cap014-model-evaluation.v1".into(),
+        corpus_id: corpus.id.clone(),
+        corpus_sha256: CORPUS_SHA256.into(),
+        evaluation_id: config.evaluation_id.clone(),
+        recorded_at: chrono::Utc::now().to_rfc3339(),
+        status: "COMPLETE".into(),
+        provider: String::new(),
+        model: String::new(),
+        fixtures: Vec::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_micros: 0,
+        error: String::new(),
+    };
+    for fixture in &corpus.fixtures {
+        let (system_prompt, user_prompt) = evaluation_prompt(fixture);
+        let response = client
+            .post(
+                url.join("model/calls")
+                    .map_err(|_| EvaluationError::Invalid("evaluation core route".into()))?,
+            )
+            .bearer_auth(&config.operator_token)
+            .json(&serde_json::json!({
+                "role": "evaluation",
+                "principalId": "s4d-evaluator",
+                "projectId": "evaluation",
+                "objectiveId": config.evaluation_id,
+                "scopeId": config.evaluation_id,
+                "purpose": "cap014_evaluation",
+                "systemPrompt": system_prompt,
+                "userPrompt": user_prompt,
+                "maxOutputTokens": 1024
+            }))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                evidence.status = "FAILED".into();
+                evidence.error = format!("evaluation request failed: {error}");
+                evidence
+                    .fixtures
+                    .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+                return Ok(evidence);
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            evidence.status = "FAILED".into();
+            evidence.error = format!(
+                "evaluation model call failed with HTTP {status}: {}",
+                bound_text(&body, 512)
+            );
+            evidence
+                .fixtures
+                .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+            return Ok(evidence);
+        }
+        let value: serde_json::Value = match response.json().await {
+            Ok(value) => value,
+            Err(_) => {
+                evidence.status = "FAILED".into();
+                evidence.error = "evaluation response is not JSON".into();
+                evidence
+                    .fixtures
+                    .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+                return Ok(evidence);
+            }
+        };
+        let Some(content) = value.get("content").and_then(serde_json::Value::as_str) else {
+            evidence.status = "FAILED".into();
+            evidence.error = "evaluation response has no content".into();
+            evidence
+                .fixtures
+                .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+            return Ok(evidence);
+        };
+        let provider = value
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let model = value
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if evidence.provider.is_empty() {
+            evidence.provider = provider.into();
+            evidence.model = model.into();
+        } else if evidence.provider != provider || evidence.model != model {
+            evidence.status = "FAILED".into();
+            evidence.error = "evaluation changed provider or model mid-run".into();
+            evidence
+                .fixtures
+                .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+            return Ok(evidence);
+        }
+        let input = value
+            .get("inputTokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let output = value
+            .get("outputTokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let total = value
+            .get("totalTokens")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let cost = value
+            .get("costMicros")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let usage_known = value
+            .get("usageKnown")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if !usage_known || content.trim().is_empty() {
+            evidence.status = "FAILED".into();
+            evidence.error = "evaluation returned unknown usage or empty content".into();
+            evidence
+                .fixtures
+                .push(failed_evaluation_fixture(fixture, evidence.error.clone()));
+            return Ok(evidence);
+        }
+        evidence.input_tokens = evidence.input_tokens.saturating_add(input);
+        evidence.output_tokens = evidence.output_tokens.saturating_add(output);
+        evidence.total_tokens = evidence.total_tokens.saturating_add(total);
+        evidence.cost_micros = evidence.cost_micros.saturating_add(cost);
+        evidence.fixtures.push(ModelEvaluationFixture {
+            fixture_id: fixture.id.clone(),
+            status: "PASS".into(),
+            reservation_id: value
+                .get("reservationId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .into(),
+            provider: provider.into(),
+            model: model.into(),
+            content: bound_text(content, 64 * 1024),
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: total,
+            cost_micros: cost,
+            usage_known,
+            error: String::new(),
+        });
+    }
+    Ok(evidence)
+}
+
+fn evaluation_prompt(fixture: &EvaluationFixture) -> (String, String) {
+    let evidence = serde_json::to_string(&fixture.evidence).unwrap_or_default();
+    (
+        "You are the CAP-014 semantic evaluator. Return one strict JSON object with keys \
+intent, route, scope, unresolved, unknowns, questions, plan, effortBands, confidence, \
+evidenceRefs, authority. Do not add prose or markdown. Model output is advisory."
+            .into(),
+        format!(
+            "Request: {}\nEvidence JSON: {}\nReturn the assessment only.",
+            fixture.request, evidence
+        ),
+    )
+}
+
+fn failed_evaluation_fixture(fixture: &EvaluationFixture, error: String) -> ModelEvaluationFixture {
+    ModelEvaluationFixture {
+        fixture_id: fixture.id.clone(),
+        status: "FAILED".into(),
+        reservation_id: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        content: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_micros: 0,
+        usage_known: false,
+        error,
+    }
+}
+
+fn bound_text(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_owned();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    async fn mock_core(
+        axum::extract::State(state): axum::extract::State<(Arc<AtomicUsize>, usize)>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        let (calls, fail_at) = state;
+        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if fail_at != 0 && call == fail_at {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error":"budget exhausted"})),
+            )
+                .into_response();
+        }
+        (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "reservationId": format!("reservation-{call}"),
+                "provider": "opencode-go",
+                "model": "deepseek-v4.1-flash",
+                "content": "{\"intent\":\"change\"}",
+                "inputTokens": 10,
+                "outputTokens": 20,
+                "totalTokens": 30,
+                "costMicros": 5,
+                "usageKnown": true
+            })),
+        )
+            .into_response()
+    }
+
+    async fn start(
+        calls: Arc<AtomicUsize>,
+        fail_at: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::{Router, routing::post};
+        let app = Router::new()
+            .route("/model/calls", post(mock_core))
+            .with_state((calls, fail_at));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn evaluation_records_every_fixture_and_totals() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (url, server) = start(calls.clone(), 0).await;
+        let corpus = frozen_corpus().unwrap();
+        let evidence = execute_model_evaluation(
+            &corpus,
+            &ModelEvaluationConfig {
+                core_url: url,
+                operator_token: "operator-token-1234567890".into(),
+                evaluation_id: "evaluation-1".into(),
+                timeout: std::time::Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(evidence.status, "COMPLETE");
+        assert_eq!(evidence.fixtures.len(), 11);
+        assert_eq!(calls.load(Ordering::SeqCst), 11);
+        assert_eq!(evidence.input_tokens, 110);
+        assert_eq!(evidence.output_tokens, 220);
+        assert_eq!(evidence.cost_micros, 55);
+        assert!(evidence.fixtures.iter().all(|f| f.status == "PASS"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn evaluation_stops_on_denied_budget_and_never_claims_complete() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (url, server) = start(calls.clone(), 6).await;
+        let corpus = frozen_corpus().unwrap();
+        let evidence = execute_model_evaluation(
+            &corpus,
+            &ModelEvaluationConfig {
+                core_url: url,
+                operator_token: "operator-token-1234567890".into(),
+                evaluation_id: "evaluation-2".into(),
+                timeout: std::time::Duration::from_secs(10),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(evidence.status, "FAILED");
+        assert_eq!(evidence.fixtures.len(), 6);
+        assert!(evidence.error.contains("HTTP 403"));
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
+        server.abort();
+    }
+}

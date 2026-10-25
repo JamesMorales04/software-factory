@@ -1,7 +1,8 @@
 use std::{env, fs, process::ExitCode};
 
 use factory_native::evaluation::{
-    EvaluationCorpus, EvaluationScoreSheet, baseline, compare, evaluate, frozen_corpus,
+    EvaluationCorpus, EvaluationScoreSheet, ModelEvaluationConfig, baseline, compare, evaluate,
+    execute_model_evaluation, frozen_corpus,
 };
 
 fn main() -> ExitCode {
@@ -51,9 +52,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("CAP-014 thresholds were not met".into());
             }
         }
+        [command, core_url, evaluation_id, output_path] if command == "execute" => {
+            let token = env::var("FACTORY_OPERATOR_TOKEN")
+                .map_err(|_| "FACTORY_OPERATOR_TOKEN required for CAP-014 execution")?;
+            let corpus = frozen_corpus()?;
+            let evidence = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(execute_model_evaluation(
+                    &corpus,
+                    &ModelEvaluationConfig {
+                        core_url: core_url.clone(),
+                        operator_token: token,
+                        evaluation_id: evaluation_id.clone(),
+                        timeout: std::time::Duration::from_secs(180),
+                    },
+                ))?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            let mut file = options.open(output_path)?;
+            use std::io::Write;
+            file.write_all(serde_json::to_string_pretty(&evidence)?.as_bytes())?;
+            file.write_all(b"\n")?;
+            println!(
+                "{} evaluation fixtures recorded in {output_path}",
+                evidence.fixtures.len()
+            );
+            if evidence.status != "COMPLETE" {
+                return Err(
+                    format!("CAP-014 execution did not complete: {}", evidence.error).into(),
+                );
+            }
+        }
         _ => {
             return Err(
-                "usage: factory-s4d-evaluate <corpus|baseline|validate CORPUS|compare CORPUS MODEL BAseline>"
+                "usage: factory-s4d-evaluate <corpus|baseline|validate CORPUS|compare CORPUS MODEL BASELINE|execute CORE_URL EVALUATION_ID OUTPUT>"
                     .into(),
             );
         }
