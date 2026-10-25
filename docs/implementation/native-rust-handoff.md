@@ -743,7 +743,7 @@ human certification is absent. Live provider coding and ISOLATED remain
 fail-closed.
 
 
-## Runtime reliability and provider compatibility (2026-10-25) — code `7117bba45de8e39da858e45d77378da39d2b2cac`
+## Runtime reliability and provider compatibility (2026-10-25) — `2dcf03c888003b4f6bcb592a65934e66358e14bc` (code `7117bba45de8e39da858e45d77378da39d2b2cac`)
 
 Running-operation fencing now has a Core validation endpoint and Supervisor
 watcher; the manager kill/late-retry test passes. Actual OpenCode 1.18.32 and
@@ -757,3 +757,12 @@ Still open: full Supervisor/Core long-operation E2E, OS filesystem quota and
 cgroup PID/memory/CPU enforcement, full Worker-kill/restart E2E, Core per-turn
 token/cost accounting through the egress broker, sandboxed actual-provider work
 turns, model Lead, semantic reviewer, CAP-014 integration and telemetry.
+
+
+Exact-head CI at `2dcf03c888003b4f6bcb592a65934e66358e14bc` passed Native Rust (both runs), Office browser (both
+runs) and governance. Actual OpenCode/Codex compatibility and real rootless
+Podman tests pass locally; their conditional CI lanes are NOT_RUN in ordinary
+GitHub CI. Still open: full Supervisor/Core long-operation E2E, OS quota/cgroup
+limits, Core per-turn token/cost broker accounting, full Worker-kill/restart
+E2E, sandboxed actual-provider work turns, model Lead, semantic reviewer,
+CAP-014 integration and telemetry.

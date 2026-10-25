@@ -5,7 +5,7 @@
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
   "candidate_sha": "7117bba45de8e39da858e45d77378da39d2b2cac",
-  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
   "running_operation_revocation": {
     "core_validation_endpoint": "POST /supervisor/workspace_operation_valid",
     "supervisor_watcher": "polls Core every 500ms; two failures cancel the active container",
@@ -22,7 +22,11 @@
   },
   "confined_recovery": {
     "identity_location": "sibling file outside provider-writable session mount",
-    "identity_fields": ["pid", "process start time", "boot id"],
+    "identity_fields": [
+      "pid",
+      "process start time",
+      "boot id"
+    ],
     "termination_and_absence_tests": "PASS",
     "worker_kill_restart_e2e": "NOT_RUN"
   },
@@ -52,5 +56,17 @@
     "OS filesystem quota or cgroup resource enforcement",
     "full Worker-kill/restart recovery at every boundary",
     "merge or deployment authorization"
-  ]
+  ],
+  "exact_head_sha": "2dcf03c888003b4f6bcb592a65934e66358e14bc",
+  "exact_head_ci": {
+    "native_rust_runs": [
+      40218235978,
+      40218240657
+    ],
+    "governance_run": 40218240697,
+    "result": "PASS",
+    "podman_lane": "NOT_RUN",
+    "provider_compat_lane": "NOT_RUN",
+    "actual_provider_tests_in_ci": "SKIPPED_NO_EXECUTABLES; passed locally with CODEX_BIN and installed OpenCode"
+  }
 }

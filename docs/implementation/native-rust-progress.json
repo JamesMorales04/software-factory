@@ -74,7 +74,7 @@
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
   "security_status": "PARTIAL/BLOCKED: trusted Worker holds long-lived credentials and host authority. Deterministic provider is bubblewrap-confined; allocation/workspace reuse and operation grants are generation-bound; operation grants are one-time, request-digest-bound and live-lease-bound; egress is pinned to an authenticated broker with model/request limits; quotas and confined recovery primitives exist. Independent model review HIGH findings repaired. Human certification, hard storage quota, long-operation revocation, real provider egress configuration, full crash E2E and ISOLATED remain absent; ISOLATED fail-closed.",
-  "delivery_status": "PR #17 Draft at ba0d7216d0de916101cc943d8da6fd7702d59f93; Rust-only tree; provider hardening and CI green; independent model review/follow-up repairs recorded; human certification, live coding and ISOLATED absent.",
+  "delivery_status": "PR #17 Draft at 2dcf03c888003b4f6bcb592a65934e66358e14bc; runtime reliability and Office Runtime projection; actual provider/Podman local evidence; human certification/live coding/ISOLATED absent.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
   "next_task": "Record exact-head CI; then implement Core per-turn token/cost broker accounting, full Supervisor/Core long-operation E2E and hard storage/cgroup limits, then continue model Lead, semantic reviewer, CAP-014 and telemetry.",
@@ -87,8 +87,8 @@
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: running-operation fencing and real Podman evidence added; OS quota/cgroups, human certification and ISOLATED absent",
-    "G9": "PARTIAL: 267 local Rust tests, actual provider compatibility and real Podman pass locally; exact-head CI and human acceptance pending",
-    "G10": "PASS: architecture, PR-impact and strict hygiene at ba0d7216d0de916101cc943d8da6fd7702d59f93",
+    "G9": "PARTIAL: exact-head Rust CI green at 2dcf03c888003b4f6bcb592a65934e66358e14bc; actual provider/Podman lanes local or conditional; human acceptance absent",
+    "G10": "PASS: architecture, PR-impact and strict hygiene at 2dcf03c888003b4f6bcb592a65934e66358e14bc; conditional Podman/provider-compat lanes not run",
     "G11": "PARTIAL: independent model review/follow-ups and actual provider compatibility; human security certification absent",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
@@ -116,7 +116,7 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI at ba0d7216d0de916101cc943d8da6fd7702d59f93: Native Rust both runs, Office both runs and governance PASS; bubblewrap/prlimit smoke, real bwrap host/network/credential tests, egress broker, quota kill, confined recovery identity and confined provider E2E executed. Podman real tests remain NOT_RUN in CI.",
+  "ci_at_update": "Exact-head CI at 2dcf03c888003b4f6bcb592a65934e66358e14bc: Native Rust both runs, Office both runs and governance PASS. Actual OpenCode/Codex and real rootless Podman evidence is local/conditional; Podman and provider-compat CI lanes NOT_RUN in ordinary CI.",
   "author_verification_at_code_sha": {
     "sha": "7117bba45de8e39da858e45d77378da39d2b2cac",
     "binding": "AUTHOR_RUN_WORKING_TREE",
