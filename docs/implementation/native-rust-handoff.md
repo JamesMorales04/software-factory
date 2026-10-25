@@ -679,7 +679,7 @@ identity.
 
 Exact-head CI at `62fa6bcbb80575cc06f1855299e92a483c2d798e` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40170904316`), multi-turn provider E2E, recovery restart, Codex permission fixture, migrations and strict hygiene. Reconnection to an existing live session, live provider tool execution and independent security certification remain unimplemented. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records the exact residual host-access blocker.
 
-## Provider trust-boundary checkpoint (2026-10-24)
+## Provider trust-boundary checkpoint (2026-10-24) — `81978fd146f79aa9335791e0bd9111f738701b56`
 
 The deterministic provider now runs under bubblewrap with an empty HOME, a
 private session directory, a read-only system image, no host repository or

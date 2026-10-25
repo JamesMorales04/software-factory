@@ -4,7 +4,7 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "candidate_sha": "PENDING_EXACT_HEAD",
+  "candidate_sha": "81978fd146f79aa9335791e0bd9111f738701b56",
   "binding": "AUTHOR_RUN_WORKING_TREE",
   "topology": {
     "provider_process": "bubblewrap --unshare-all user/pid/net/ipc/uts/cgroup namespace; empty HOME; read-only /usr; private 0700 session directory; no host repository, /run/user socket or external network",

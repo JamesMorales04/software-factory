@@ -100,7 +100,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "PENDING_EXACT_HEAD",
+  "verified_code_commit_sha": "81978fd146f79aa9335791e0bd9111f738701b56",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -110,8 +110,8 @@
   },
   "ci_at_update": "Exact-head CI pending for the provider-boundary candidate.",
   "author_verification_at_code_sha": {
-    "sha": "PENDING_EXACT_HEAD",
-    "binding": "AUTHOR_RUN_WORKING_TREE",
+    "sha": "81978fd146f79aa9335791e0bd9111f738701b56",
+    "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
     "rust": "PASS: 253 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit (276 dependencies), architecture, strict hygiene",
     "provider_e2e": "PASS: bubblewrap-confined deterministic multi-turn provider to ACCEPTED",
     "provider_boundary": "PASS: host HOME/repository/socket, network, credential-environment and capability-reuse negatives",

@@ -86,8 +86,7 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-At the current provider-boundary checkpoint, a deterministic fake OpenCode
-server runs under bubblewrap and proves the source-aware, tool-mediated path: authorized Action → Campaign → Worker claim → durable provider intent →
+At `81978fd146f79aa9335791e0bd9111f738701b56`, a deterministic fake OpenCode server runs under bubblewrap and proves the source-aware, tool-mediated path: authorized Action → Campaign → Worker claim → durable provider intent →
 ACTIVE session binding → bounded source context → provider file plan plus a
 frozen-check command → Supervisor mediated write/run/finalize → immutable
 CandidateRevision → sandboxed verifier → independent reviewer → `ACCEPTED` gate.
