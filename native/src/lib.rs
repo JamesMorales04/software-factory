@@ -1,4 +1,5 @@
 pub mod attempt_grant;
+pub mod browser;
 pub mod db;
 pub mod evaluation;
 pub mod execution;

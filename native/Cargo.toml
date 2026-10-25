@@ -81,5 +81,13 @@ path = "src/bin/repo_hygiene.rs"
 name = "factory-architecture-check"
 path = "src/bin/architecture_check.rs"
 
+[[bin]]
+name = "factory-browser"
+path = "src/bin/browser.rs"
+
+[[bin]]
+name = "factory-browser-fixture"
+path = "src/bin/browser_fixture_server.rs"
+
 [dev-dependencies]
 tower = { version = "0.5.2", features = ["util"] }
