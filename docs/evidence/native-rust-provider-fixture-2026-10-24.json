@@ -32,7 +32,7 @@
     "credential_exposure": "Supervisor log asserted not to contain the provider password"
   },
   "author_run_checks": {
-    "cargo xtask check": "PASS (241 tests + 2 ignored, fmt, strict Clippy, build, docs, eleven migrations, audit clean for 276 dependencies)",
+    "cargo xtask check": "PASS (242 tests + 2 ignored, fmt, strict Clippy, build, docs, eleven migrations, audit clean for 276 dependencies)",
     "cargo xtask e2e provider": "PASS",
     "cargo xtask e2e office": "PASS",
     "repository hygiene strict": "PASS (0 findings)",
@@ -49,5 +49,5 @@
   ],
   "provider_paid_turns": 0,
   "result": "PASS",
-  "candidate_sha": "fea5cded4b428da52e3fa3d9aef469b1ee9ba956"
+  "candidate_sha": "f49520ba4dc743caf2c86c17ed3e4c8e3c389f61"
 }

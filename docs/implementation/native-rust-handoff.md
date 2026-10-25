@@ -611,9 +611,9 @@ coding, durable session recovery, credential confinement, ISOLATED execution,
 recovery/cleanup Office visibility and independent human review remain open and
 fail-closed.
 
-## Deterministic provider execution checkpoint (2026-10-24) — `fea5cded4b428da52e3fa3d9aef469b1ee9ba956`
+## Deterministic provider execution checkpoint (2026-10-24) — `f49520ba4dc743caf2c86c17ed3e4c8e3c389f61`
 
-At `fea5cded4b428da52e3fa3d9aef469b1ee9ba956`, the Rust-only tree proves a complete provider-backed Attempt using a
+At `f49520ba4dc743caf2c86c17ed3e4c8e3c389f61`, the Rust-only tree proves a complete provider-backed Attempt using a
 deterministic loopback OpenCode fake server:
 
 `authorized Action → Campaign → Worker claim → durable provider intent →
@@ -631,8 +631,19 @@ rejected. Durable intent/terminal rows and usage are persisted; unresolved
 sessions block replacement dispatch. See ADR-0022 and
 `docs/evidence/native-rust-provider-fixture-2026-10-24.json`.
 
-Author-run at `fea5cded4b428da52e3fa3d9aef469b1ee9ba956`: `cargo xtask check` PASS (241 tests + 2 ignored, format, strict
+Author-run at `f49520ba4dc743caf2c86c17ed3e4c8e3c389f61`: `cargo xtask check` PASS (242 tests + 2 ignored, format, strict
 Clippy, build, docs, eleven migrations, audit); `cargo xtask e2e provider` and
 `cargo xtask e2e office` PASS; strict hygiene and architecture PASS. Exact-head CI at `02d7c04f451386de77ff8e35d2302e4364c636e4` passed Native Rust (both runs), Office browser (both runs) and architecture consistency (`40146566843`), including the provider fixture E2E and strict hygiene. No paid provider call was made. Live coding with tools, source-context delivery,
 provider-session restart/cancellation reconciliation, credential-confinement
 certification and ISOLATED execution remain open and fail-closed.
+
+## Live provider coding authorization request (2026-10-24)
+
+A separately bounded live request is recorded in
+[provider-live-authorization-request-2026-10-24.md](provider-live-authorization-request-2026-10-24.md):
+one `opencode-go/deepseek-v4.1-flash` build session, one turn, no tools, exact
+`src` scope, explicit token/cost/deadline ceilings, no retries, confirmed
+cleanup and full candidate/verifier/reviewer/gate evidence. **No live call is
+authorized until the Product Owner approves that envelope.** The current
+deterministic path is a real provider-protocol fixture, not a live-model
+certification.

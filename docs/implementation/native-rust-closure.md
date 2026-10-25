@@ -61,7 +61,7 @@ portfolio; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; no provider tool execution; credential confinement, provider-in-sandbox and independent isolation are still not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 241 Rust tests + 2 ignored, audit, architecture, process E2E, fake-provider E2E and Office browser pass locally; exact-head CI and independent acceptance pending |
+| M9 Testing | `PARTIAL` | 242 Rust tests + 2 ignored, audit, architecture, process E2E, fake-provider E2E and Office browser pass locally; exact-head CI and independent acceptance pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -86,7 +86,7 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-At `fea5cded4b428da52e3fa3d9aef469b1ee9ba956`, a deterministic fake OpenCode server proves the complete path: authorized Action → Campaign → Worker claim → durable provider
+At `f49520ba4dc743caf2c86c17ed3e4c8e3c389f61`, a deterministic fake OpenCode server proves the complete path: authorized Action → Campaign → Worker claim → durable provider
 intent → bounded tool-free provider response → Supervisor validated file apply →
 immutable CandidateRevision → independent verifier → deterministic reviewer →
 `ACCEPTED` gate. Core enforces an exact provider/model/mode route, active
