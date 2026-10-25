@@ -315,6 +315,10 @@ async fn sandbox_broker_requires_capability_and_rejects_unbounded_paths() {
         factory_native::provider_sandbox::verify_sandbox_identity(&session_dir).unwrap(),
         factory_native::provider_sandbox::SandboxProcessState::Alive
     );
+    assert!(
+        !session_dir.join("sandbox.json").exists(),
+        "provider identity must not live in the writable session directory"
+    );
     sandbox.stop().await.unwrap();
     assert_eq!(
         factory_native::provider_sandbox::verify_sandbox_identity(&session_dir).unwrap(),

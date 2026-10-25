@@ -412,7 +412,7 @@ impl ProviderSandbox {
 }
 
 pub fn verify_sandbox_identity(session_dir: &Path) -> Result<SandboxProcessState, SandboxError> {
-    let path = session_dir.join("sandbox.json");
+    let path = identity_path(session_dir);
     let bytes = std::fs::read(&path)
         .map_err(|_| SandboxError::NotReady("sandbox identity is absent".into()))?;
     let identity: SandboxIdentity = serde_json::from_slice(&bytes)
@@ -466,7 +466,7 @@ pub fn terminate_sandbox_identity(session_dir: &Path) -> Result<SandboxProcessSt
     if verify_sandbox_identity(session_dir)? == SandboxProcessState::Gone {
         return Ok(SandboxProcessState::Gone);
     }
-    let bytes = std::fs::read(session_dir.join("sandbox.json"))?;
+    let bytes = std::fs::read(identity_path(session_dir))?;
     let identity: SandboxIdentity = serde_json::from_slice(&bytes)
         .map_err(|_| SandboxError::Invalid("sandbox identity is malformed".into()))?;
     #[cfg(unix)]
@@ -510,7 +510,7 @@ fn write_sandbox_identity(session_dir: &Path, pid: u32, socket: &Path) -> Result
         socket: socket.to_string_lossy().into_owned(),
         created_at_ms: chrono::Utc::now().timestamp_millis(),
     };
-    let path = session_dir.join("sandbox.json");
+    let path = identity_path(session_dir);
     let bytes = serde_json::to_vec(&identity)
         .map_err(|_| SandboxError::Invalid("sandbox identity encoding failed".into()))?;
     std::fs::write(&path, bytes)?;
@@ -520,6 +520,10 @@ fn write_sandbox_identity(session_dir: &Path, pid: u32, socket: &Path) -> Result
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+fn identity_path(session_dir: &Path) -> PathBuf {
+    session_dir.with_extension("identity.json")
 }
 
 fn process_start_time(pid: u32) -> Result<Option<u64>, SandboxError> {

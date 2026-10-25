@@ -643,7 +643,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let _write = self.lock.lock().await;
         if let Some(mut record) = self.load_record(&input.attempt_id)? {
             let authorized = self.authorize_repository(&record.repository)?;
-            if !record.base_commit.eq_ignore_ascii_case(&input.base_commit)
+            if record.generation != input.generation
+                || !record.base_commit.eq_ignore_ascii_case(&input.base_commit)
                 || !authorized
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&input.repository)

@@ -138,6 +138,8 @@ pub struct OperationGrantClaims {
     pub operation: String,
     pub allowed_paths: Vec<String>,
     pub checks: Vec<Vec<String>>,
+    pub request_sha256: String,
+    pub nonce: String,
     pub expires_at_ms: i64,
 }
 
@@ -208,6 +210,11 @@ pub fn verify_operation(
         return Err("Operation grant signature is invalid".into());
     }
     Ok(())
+}
+
+pub fn request_digest(value: &serde_json::Value) -> Result<String, String> {
+    let bytes = serde_json::to_vec(value).map_err(|_| "request digest encoding failed")?;
+    Ok(hex(Sha256::digest(&bytes).as_ref()))
 }
 
 pub fn digest(claims: &AttemptGrantClaims) -> Result<String, String> {
@@ -287,6 +294,8 @@ mod tests {
             operation: "write".into(),
             allowed_paths: vec!["src".into()],
             checks: vec![vec!["grep".into(), "-q".into(), "ok".into()]],
+            request_sha256: "b".repeat(64),
+            nonce: "nonce-a".into(),
             expires_at_ms: 2_000,
         };
         let grant = sign_operation(key, &claims).unwrap();
@@ -298,8 +307,11 @@ mod tests {
         let mut changed = claims.clone();
         changed.allowed_paths = vec!["README.md".into()];
         assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
-        let mut changed = claims;
+        let mut changed = claims.clone();
         changed.operation = "finalize".into();
+        assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
+        let mut changed = claims;
+        changed.request_sha256 = "c".repeat(64);
         assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
     }
 }

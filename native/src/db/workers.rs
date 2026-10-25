@@ -428,12 +428,14 @@ impl Database {
         let now_ms = Utc::now().timestamp_millis();
         let row = sqlx::query::query(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status AS campaign_status,
+                    ca.execution_mode AS execution_mode,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN actions ac ON ac.id=c.action_id
              JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.id=?1",
@@ -450,6 +452,7 @@ impl Database {
         let lease_expiry: Option<i64> = row.try_get("expires_at_ms")?;
         let attempt_status: String = row.try_get("status")?;
         let campaign_status: String = row.try_get("campaign_status")?;
+        let execution_mode: Option<String> = row.try_get("execution_mode")?;
         if lease_worker.as_deref() != Some(worker_id)
             || lease_generation != Some(generation)
             || lease_expiry.is_none_or(|expiry| expiry <= now_ms)
@@ -458,6 +461,11 @@ impl Database {
         {
             return Err(Error::Forbidden(
                 "workspace operation is not authorized by the current lease".into(),
+            ));
+        }
+        if operation == "execute" && execution_mode.as_deref() != Some("FIXTURE") {
+            return Err(Error::Forbidden(
+                "execute operation is reserved for FIXTURE attempts".into(),
             ));
         }
         if matches!(operation, "write" | "run" | "finalize" | "apply") {

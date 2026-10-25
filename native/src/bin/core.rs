@@ -46,6 +46,7 @@ struct WorkspaceOperationRequest {
     generation: i64,
     workspace_id: String,
     operation: String,
+    request_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -799,6 +800,11 @@ async fn worker_workspace_operation(
         || input.workspace_id.len() > 128
         || input.attempt_id.is_empty()
         || input.generation <= 0
+        || input.request_sha256.len() != 64
+        || !input
+            .request_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     {
         return api_error(Error::Invalid("workspace operation request"));
     }
@@ -823,6 +829,8 @@ async fn worker_workspace_operation(
                 operation: input.operation,
                 allowed_paths: authorization.allowed_paths,
                 checks: authorization.checks,
+                request_sha256: input.request_sha256,
+                nonce: uuid::Uuid::new_v4().to_string(),
                 expires_at_ms,
             };
             match factory_native::attempt_grant::sign_operation(&app.attempt_grant_key, &claims) {

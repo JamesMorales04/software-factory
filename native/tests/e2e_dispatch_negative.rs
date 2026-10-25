@@ -548,7 +548,9 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
     );
     assert!(
         status.success(),
-        "Worker failed before producing a candidate"
+        "Worker failed before producing a candidate: {} core: {}",
+        std::fs::read_to_string(root.path().join("worker-worker-check.log")).unwrap_or_default(),
+        std::fs::read_to_string(root.path().join("core.log")).unwrap_or_default()
     );
 
     let candidates: Value = operator(

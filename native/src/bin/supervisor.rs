@@ -7,7 +7,14 @@
 //! sandbox mount. The service never exposes the Podman socket, provider
 //! credentials, Core tokens or host HOME. Failures are closed.
 
-use std::{collections::BTreeSet, env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    env,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -207,6 +214,7 @@ struct App<B: factory_native::execution::VolumeBackend> {
     workspace_root: PathBuf,
     attempt_grant_key: Vec<u8>,
     capability_key: Vec<u8>,
+    operation_nonces: Mutex<HashMap<String, i64>>,
 }
 
 #[tokio::main]
@@ -284,6 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_root,
         attempt_grant_key: attempt_grant_key.into_bytes(),
         capability_key: capability_key.into_bytes(),
+        operation_nonces: Mutex::new(HashMap::new()),
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -360,7 +369,15 @@ async fn execute<B: factory_native::execution::VolumeBackend>(
     let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if operation_grant(&headers, &app, &handle, "execute").is_none() {
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "image": &input.image,
+        "argv": &input.argv,
+        "timeout_secs": input.timeout_secs,
+        "operation": "execute"
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "execute", &digest).is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(message) = validate_execute(&app, &input) {
@@ -385,7 +402,13 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
     let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(grant) = operation_grant(&headers, &app, &handle, "apply") else {
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "files": &input.files,
+        "operation": "apply"
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "apply", &digest) else {
         return StatusCode::FORBIDDEN.into_response();
     };
     if input.allowed_paths != grant.allowed_paths {
@@ -408,7 +431,13 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(grant) = operation_grant(&headers, &app, &handle, "write") else {
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "files": &input.files,
+        "reset": input.reset
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "write", &digest) else {
         return StatusCode::FORBIDDEN.into_response();
     };
     if input.allowed_paths != grant.allowed_paths {
@@ -431,7 +460,13 @@ async fn run_tool<B: factory_native::execution::VolumeBackend>(
     let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(grant) = operation_grant(&headers, &app, &handle, "run") else {
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "argv": &input.argv,
+        "timeout_secs": input.timeout_secs
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "run", &digest) else {
         return StatusCode::FORBIDDEN.into_response();
     };
     if !grant.checks.iter().any(|check| check == &input.argv) {
@@ -486,7 +521,13 @@ async fn finalize<B: factory_native::execution::VolumeBackend>(
     let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if operation_grant(&headers, &app, &handle, "finalize").is_none() {
+    let Ok(digest) = factory_native::attempt_grant::request_digest(&json!({
+        "operation": "finalize",
+        "workspace_id": workspace_id
+    })) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "finalize", &digest).is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
     match app.manager.finalize_workspace(&workspace_id).await {
@@ -625,6 +666,7 @@ fn verify_allocation_grant<B: factory_native::execution::VolumeBackend>(
     // must match the signed attempt, repository, base commit and spec digest.
     let grant = factory_native::attempt_grant::parse(&input.attempt_grant)?;
     if grant.attempt_id != claims.attempt_id
+        || grant.generation != input.generation
         || grant.repository != claims.repository
         || !grant.base_commit.eq_ignore_ascii_case(&claims.base_commit)
         || grant.action_spec_sha256 != claims.action_spec_sha256
@@ -664,6 +706,7 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
     app: &App<B>,
     handle: &factory_native::execution::WorkspaceHandle,
     operation: &str,
+    request_sha256: &str,
 ) -> Option<factory_native::attempt_grant::OperationGrantClaims> {
     let token = headers
         .get("x-factory-operation-grant")
@@ -673,6 +716,7 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
         || claims.generation != handle.generation
         || claims.workspace_id != handle.workspace_id
         || claims.operation != operation
+        || claims.request_sha256 != request_sha256
     {
         return None;
     }
@@ -683,6 +727,15 @@ fn operation_grant<B: factory_native::execution::VolumeBackend>(
         chrono::Utc::now().timestamp_millis(),
     )
     .ok()?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut nonces = app.operation_nonces.lock().ok()?;
+    nonces.retain(|_, expiry| *expiry > now);
+    if nonces
+        .insert(claims.nonce.clone(), claims.expires_at_ms)
+        .is_some()
+    {
+        return None;
+    }
     Some(claims)
 }
 
@@ -959,6 +1012,7 @@ mod tests {
                 workspace_root: root.join("integration-work"),
                 attempt_grant_key: TEST_GRANT_KEY.to_vec(),
                 capability_key: TEST_CAPABILITY_KEY.to_vec(),
+                operation_nonces: Mutex::new(HashMap::new()),
             }),
             root,
             repository,
@@ -1026,7 +1080,31 @@ mod tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
-    fn operation_grant(handle: &serde_json::Value, operation: &str) -> String {
+    fn operation_grant(
+        handle: &serde_json::Value,
+        operation: &str,
+        body: &serde_json::Value,
+    ) -> String {
+        let request_sha256 = match operation {
+            "execute" => factory_native::attempt_grant::request_digest(&json!({
+                "image": &body["image"],
+                "argv": &body["argv"],
+                "timeout_secs": body["timeoutSecs"],
+                "operation": "execute"
+            }))
+            .unwrap(),
+            "write" => factory_native::attempt_grant::request_digest(&json!({
+                "files": &body["files"],
+                "reset": true
+            }))
+            .unwrap(),
+            "run" => factory_native::attempt_grant::request_digest(&json!({
+                "argv": &body["argv"],
+                "timeout_secs": body["timeoutSecs"]
+            }))
+            .unwrap(),
+            _ => "b".repeat(64),
+        };
         let claims = factory_native::attempt_grant::OperationGrantClaims {
             attempt_id: handle["attemptId"].as_str().unwrap().into(),
             worker_id: "worker-test".into(),
@@ -1039,6 +1117,8 @@ mod tests {
                 "-c".into(),
                 "printf 'http\\n' > result.txt".into(),
             ]],
+            request_sha256,
+            nonce: uuid::Uuid::new_v4().to_string(),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         };
         factory_native::attempt_grant::sign_operation(TEST_GRANT_KEY, &claims).unwrap()
@@ -1152,7 +1232,7 @@ mod tests {
             .oneshot(operation_request(
                 &format!("/v1/workspaces/{workspace_id}/execute"),
                 &capability,
-                &operation_grant(&handle, "execute"),
+                &operation_grant(&handle, "execute", &execution),
                 &execution,
             ))
             .await
@@ -1272,6 +1352,15 @@ mod tests {
         .await;
         let workspace_id = handle["workspaceId"].as_str().unwrap();
         let capability = handle["capability"].as_str().unwrap();
+        let mismatched_scope = json!({
+            "allowedPaths": ["README.md"],
+            "files": [{"path":"README.md","content":"x"}]
+        });
+        let write_digest = factory_native::attempt_grant::request_digest(&json!({
+            "files": &mismatched_scope["files"],
+            "reset": true
+        }))
+        .unwrap();
         let mut claims = factory_native::attempt_grant::OperationGrantClaims {
             attempt_id: "attempt-op".into(),
             worker_id: "worker-test".into(),
@@ -1280,13 +1369,11 @@ mod tests {
             operation: "write".into(),
             allowed_paths: vec!["src".into()],
             checks: vec![vec!["/bin/true".into()]],
+            request_sha256: write_digest,
+            nonce: uuid::Uuid::new_v4().to_string(),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         };
         let grant = factory_native::attempt_grant::sign_operation(TEST_GRANT_KEY, &claims).unwrap();
-        let mismatched_scope = json!({
-            "allowedPaths": ["README.md"],
-            "files": [{"path":"README.md","content":"x"}]
-        });
         assert_eq!(
             status(
                 &router,
@@ -1301,13 +1388,14 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         let run = json!({"image":"test/image:1","argv":["/bin/false"],"timeoutSecs":30});
+        let run_grant = operation_grant(&handle, "run", &run);
         assert_eq!(
             status(
                 &router,
                 operation_request(
                     &format!("/v1/workspaces/{workspace_id}/run"),
                     capability,
-                    &grant,
+                    &run_grant,
                     &run,
                 ),
             )
@@ -1347,6 +1435,16 @@ mod tests {
             status(
                 &router,
                 json_request("/v1/workspaces", Some(TEST_TOKEN), &wrong)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        let mut stale_generation = allocation_body("attempt-grant-a", &fixture.repository);
+        stale_generation["generation"] = json!(2);
+        assert_eq!(
+            status(
+                &router,
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &stale_generation)
             )
             .await,
             StatusCode::FORBIDDEN

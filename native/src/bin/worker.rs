@@ -551,8 +551,15 @@ async fn execute_provider_assignment(
     }
     let provider_root = env::var_os("FACTORY_PROVIDER_SESSION_ROOT")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("factory-provider-sessions-{}", std::process::id()))
+        });
     std::fs::create_dir_all(&provider_root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&provider_root, std::fs::Permissions::from_mode(0o700))?;
+    }
     let provider_dir = provider_root.join(format!("p-{}", Uuid::new_v4().simple()));
     std::fs::create_dir(&provider_dir)?;
     #[cfg(unix)]
@@ -596,30 +603,36 @@ async fn execute_provider_assignment(
         .ok_or("Core provider intent returned no record id")?
         .to_owned();
 
-    let (base_url, password, sandbox) =
-        match start_provider_runtime(&provider_dir, assignment.deadline_secs).await {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                let terminal = ProviderTerminal {
-                    session_record_id: session_record_id.clone(),
-                    worker_id: worker_id.into(),
-                    generation: assignment.lease.generation,
-                    state: "FAILED".into(),
-                    provider_session_id: String::new(),
-                    turn_id: String::new(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
-                    cost_micros: 0,
-                    usage_known: false,
-                    cleanup_receipt: "no_external_session".into(),
-                    error: error.to_string(),
-                };
-                let _ = post_provider_terminal(client, core, session_token, &terminal).await;
-                let _ = std::fs::remove_dir_all(&provider_dir);
-                return Err(error);
-            }
-        };
+    let (base_url, password, sandbox) = match start_provider_runtime(
+        &provider_dir,
+        assignment.deadline_secs,
+        &assignment.model,
+        assignment.max_turns,
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let terminal = ProviderTerminal {
+                session_record_id: session_record_id.clone(),
+                worker_id: worker_id.into(),
+                generation: assignment.lease.generation,
+                state: "FAILED".into(),
+                provider_session_id: String::new(),
+                turn_id: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+                cleanup_receipt: "no_external_session".into(),
+                error: error.to_string(),
+            };
+            let _ = post_provider_terminal(client, core, session_token, &terminal).await;
+            let _ = std::fs::remove_dir_all(&provider_dir);
+            return Err(error);
+        }
+    };
 
     let result = if assignment.allowed_tools.is_empty() {
         run_provider_patch(&ProviderContext {
@@ -724,6 +737,8 @@ async fn execute_provider_assignment(
 async fn start_provider_runtime(
     session_dir: &std::path::Path,
     deadline_secs: u64,
+    model: &str,
+    max_turns: u32,
 ) -> Result<(String, String, Option<ProviderSandbox>), Box<dyn std::error::Error>> {
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
@@ -764,7 +779,9 @@ async fn start_provider_runtime(
                         credential,
                         token,
                         allow_test_upstream,
-                    )?;
+                    )?
+                    .with_model(model.to_owned())
+                    .with_max_requests(max_turns as usize + 1);
                     (Some(config), Some(std::path::PathBuf::from(bridge)))
                 }
                 Err(_) => (None, None),
@@ -1273,6 +1290,11 @@ struct WorkspaceOperation<'a> {
     generation: i64,
     workspace_id: &'a str,
     operation: &'a str,
+    request_sha256: String,
+}
+
+fn request_digest(value: &serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
+    factory_native::attempt_grant::request_digest(value).map_err(Into::into)
 }
 
 async fn request_workspace_operation(
@@ -1287,7 +1309,8 @@ async fn request_workspace_operation(
             "worker_id": request.worker_id,
             "generation": request.generation,
             "workspace_id": request.workspace_id,
-            "operation": request.operation
+            "operation": request.operation,
+            "request_sha256": request.request_sha256
         }))
         .send()
         .await?;
@@ -1314,6 +1337,7 @@ async fn supervisor_write(
     files: Vec<factory_native::execution::AppliedFile>,
     reset: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let digest = request_digest(&json!({"files": &files, "reset": reset}))?;
     let operation = request_workspace_operation(WorkspaceOperation {
         client: context.client,
         core: context.core,
@@ -1323,6 +1347,7 @@ async fn supervisor_write(
         generation: context.assignment.lease.generation,
         workspace_id,
         operation: "write",
+        request_sha256: digest,
     })
     .await?;
     let response = context
@@ -1356,6 +1381,7 @@ async fn supervisor_run(
     argv: &[String],
     timeout_secs: u64,
 ) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
+    let digest = request_digest(&json!({"argv": argv, "timeout_secs": timeout_secs}))?;
     let operation = request_workspace_operation(WorkspaceOperation {
         client: context.client,
         core: context.core,
@@ -1365,6 +1391,7 @@ async fn supervisor_run(
         generation: context.assignment.lease.generation,
         workspace_id,
         operation: "run",
+        request_sha256: digest,
     })
     .await?;
     let response = context
@@ -1396,6 +1423,7 @@ async fn supervisor_finalize(
     workspace_id: &str,
     capability: &str,
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    let digest = request_digest(&json!({"operation": "finalize", "workspace_id": workspace_id}))?;
     let operation = request_workspace_operation(WorkspaceOperation {
         client: context.client,
         core: context.core,
@@ -1405,6 +1433,7 @@ async fn supervisor_finalize(
         generation: context.assignment.lease.generation,
         workspace_id,
         operation: "finalize",
+        request_sha256: digest,
     })
     .await?;
     let response = context
@@ -1698,6 +1727,7 @@ async fn run_provider_patch(
             allowed_paths: context.assignment.action_spec.allowed_paths.clone(),
             files,
         };
+        let digest = request_digest(&json!({"files": &apply.files, "operation": "apply"}))?;
         let operation = request_workspace_operation(WorkspaceOperation {
             client: context.client,
             core: context.core,
@@ -1707,6 +1737,7 @@ async fn run_provider_patch(
             generation: context.assignment.lease.generation,
             workspace_id: &handle.workspace_id,
             operation: "apply",
+            request_sha256: digest,
         })
         .await?;
         let response = context
@@ -1927,6 +1958,12 @@ async fn execute_assignment(
         ],
         timeout_secs: supervisor.timeout_secs,
     };
+    let digest = request_digest(&json!({
+        "image": &request.image,
+        "argv": &request.argv,
+        "timeout_secs": request.timeout_secs,
+        "operation": "execute"
+    }))?;
     let operation = request_workspace_operation(WorkspaceOperation {
         client,
         core,
@@ -1936,6 +1973,7 @@ async fn execute_assignment(
         generation: assignment.lease.generation,
         workspace_id: &handle.workspace_id,
         operation: "execute",
+        request_sha256: digest,
     })
     .await?;
     let response = supervisor

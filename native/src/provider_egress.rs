@@ -17,6 +17,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixListener, UnixStream},
     task::JoinHandle,
+    time,
 };
 
 const MAX_HEADER_BYTES: usize = 32 * 1024;
@@ -42,6 +43,8 @@ pub struct EgressConfig {
     credential: String,
     token: String,
     timeout: Duration,
+    max_requests: usize,
+    allowed_model: Option<String>,
 }
 
 impl std::fmt::Debug for EgressConfig {
@@ -105,6 +108,8 @@ impl EgressConfig {
             credential,
             token,
             timeout: Duration::from_secs(120),
+            max_requests: 8,
+            allowed_model: None,
         })
     }
 
@@ -114,6 +119,16 @@ impl EgressConfig {
 
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn with_model(mut self, model: String) -> Self {
+        self.allowed_model = Some(model);
+        self
+    }
+
+    pub fn with_max_requests(mut self, max_requests: usize) -> Self {
+        self.max_requests = max_requests.max(1);
+        self
     }
 }
 
@@ -131,6 +146,7 @@ impl EgressBroker {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
         }
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let task = tokio::spawn({
             async move {
                 let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
@@ -142,8 +158,9 @@ impl EgressBroker {
                         continue;
                     };
                     let config = config.clone();
+                    let requests = requests.clone();
                     tokio::spawn(async move {
-                        let _ = handle(stream, &config).await;
+                        let _ = handle(stream, &config, &requests).await;
                         drop(permit);
                     });
                 }
@@ -167,8 +184,19 @@ impl Drop for EgressBroker {
     }
 }
 
-async fn handle(mut stream: UnixStream, config: &EgressConfig) -> Result<(), EgressError> {
-    let request = read_request(&mut stream).await?;
+async fn handle(
+    mut stream: UnixStream,
+    config: &EgressConfig,
+    requests: &std::sync::atomic::AtomicUsize,
+) -> Result<(), EgressError> {
+    let request = match time::timeout(Duration::from_secs(10), read_request(&mut stream)).await {
+        Ok(Ok(request)) => request,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            write_status(&mut stream, 408, "request timed out").await?;
+            return Ok(());
+        }
+    };
     let (headers, body) = split_request(&request)?;
     if !authorized(&headers, &config.token) {
         write_status(&mut stream, 401, "unauthorized").await?;
@@ -201,7 +229,23 @@ async fn handle(mut stream: UnixStream, config: &EgressConfig) -> Result<(), Egr
         write_status(&mut stream, 413, "request is too large").await?;
         return Ok(());
     }
+    let previous = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if previous >= config.max_requests {
+        write_status(&mut stream, 429, "request budget exhausted").await?;
+        return Ok(());
+    }
+    if let Some(model) = &config.allowed_model {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            write_status(&mut stream, 400, "request body is not JSON").await?;
+            return Ok(());
+        };
+        if value.get("model").and_then(serde_json::Value::as_str) != Some(model.as_str()) {
+            write_status(&mut stream, 403, "model is not authorized").await?;
+            return Ok(());
+        }
+    }
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(config.timeout)
         .redirect(Policy::none())
         .resolve(&config.host, config.address)
@@ -384,20 +428,30 @@ fn resolve_public(
 fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
+            let octets = ip.octets();
             !(ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
                 || ip.is_broadcast()
                 || ip.is_documentation()
                 || ip.is_multicast()
-                || ip.is_unspecified())
+                || ip.is_unspecified()
+                || octets[0] == 100 && (64..=127).contains(&octets[1])
+                || octets[0] == 198 && (18..=19).contains(&octets[1])
+                || octets[0] >= 240
+                || octets[..3] == [192, 0, 0]
+                || octets[..3] == [192, 0, 2]
+                || octets[..3] == [198, 51, 100]
+                || octets[..3] == [203, 0, 113])
         }
         IpAddr::V6(ip) => {
+            let segments = ip.segments();
             !(ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
                 || ip.is_unique_local()
-                || ip.is_unicast_link_local())
+                || ip.is_unicast_link_local()
+                || segments[0] == 0x2001 && segments[1] == 0x0db8)
         }
     }
 }
@@ -437,6 +491,9 @@ mod tests {
         assert!(!is_public_ip("169.254.169.254".parse().unwrap()));
         assert!(!is_public_ip("10.0.0.1".parse().unwrap()));
         assert!(!is_public_ip("fc00::1".parse().unwrap()));
+        assert!(!is_public_ip("100.64.0.1".parse().unwrap()));
+        assert!(!is_public_ip("198.18.0.1".parse().unwrap()));
+        assert!(!is_public_ip("240.0.0.1".parse().unwrap()));
         assert!(is_public_ip("8.8.8.8".parse().unwrap()));
         assert!(
             EgressConfig::new(
