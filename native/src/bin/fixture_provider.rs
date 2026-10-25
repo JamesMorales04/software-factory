@@ -7,7 +7,7 @@ use std::{
     env,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -25,12 +25,21 @@ use futures_util::{StreamExt, stream};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
+#[derive(Clone, Copy)]
+struct Usage {
+    input: u64,
+    output: u64,
+    total: u64,
+    cost: u64,
+}
+
 #[derive(Clone)]
 struct Fixture {
     sender: broadcast::Sender<Vec<u8>>,
     deleted: Arc<AtomicBool>,
     step: Arc<AtomicUsize>,
     directory: PathBuf,
+    usage: Arc<Mutex<Option<Usage>>>,
 }
 
 #[tokio::main]
@@ -52,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         deleted: Arc::new(AtomicBool::new(false)),
         step: Arc::new(AtomicUsize::new(0)),
         directory: directory.clone(),
+        usage: Arc::new(Mutex::new(None)),
     };
     let app = Router::new()
         .route("/global/health", get(health))
@@ -138,6 +148,46 @@ async fn create_session(
 
 async fn prompt(State(state): State<Fixture>, Json(body): Json<Value>) -> StatusCode {
     append_prompt(&state.directory, &body);
+    if env::var("FACTORY_FIXTURE_PROVIDER_USE_EGRESS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let base = env::var("OPENAI_BASE_URL").unwrap_or_default();
+        let key = env::var("OPENAI_API_KEY").unwrap_or_default();
+        let model = env::var("FACTORY_FIXTURE_PROVIDER_MODEL").unwrap_or_default();
+        let request = json!({"model": model, "input": body});
+        let result = reqwest::Client::new()
+            .post(format!("{base}/chat/completions"))
+            .bearer_auth(key)
+            .json(&request)
+            .send()
+            .await;
+        let Ok(response) = result else {
+            return StatusCode::BAD_GATEWAY;
+        };
+        if !response.status().is_success() {
+            return StatusCode::BAD_GATEWAY;
+        }
+        let Ok(value) = response.json::<Value>().await else {
+            return StatusCode::BAD_GATEWAY;
+        };
+        let input = value
+            .pointer("/usage/prompt_tokens")
+            .and_then(Value::as_u64);
+        let output = value
+            .pointer("/usage/completion_tokens")
+            .and_then(Value::as_u64);
+        let total = value.pointer("/usage/total_tokens").and_then(Value::as_u64);
+        if let (Some(input), Some(output), Some(total)) = (input, output, total) {
+            *state.usage.lock().unwrap() = Some(Usage {
+                input,
+                output,
+                total,
+                cost: 100,
+            });
+        }
+    }
     state.step.fetch_add(1, Ordering::SeqCst);
     let _ = state.sender.send(
         b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n"
@@ -151,6 +201,12 @@ async fn message(State(state): State<Fixture>) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
     let step = state.step.load(Ordering::SeqCst);
+    let usage = state.usage.lock().unwrap().unwrap_or(Usage {
+        input: 10,
+        output: 20,
+        total: 30,
+        cost: 100,
+    });
     let text = match step {
         1 => {
             "{\"type\":\"tool_request\",\"call_id\":\"call-1\",\"tool\":\"read_file\",\"path\":\"src/seed.txt\"}"
@@ -168,8 +224,8 @@ async fn message(State(state): State<Fixture>) -> Response {
             "id": format!("msg_fixture_{step}"),
             "role": "assistant",
             "sessionID": "ses_fixture",
-            "tokens": {"input": 10, "output": 20, "total": 30},
-            "cost": 0.0001
+            "tokens": {"input": usage.input, "output": usage.output, "total": usage.total},
+            "cost": usage.cost as f64 / 1_000_000.0
         },
         "parts": [{"type": "text", "text": text}]
     }]))

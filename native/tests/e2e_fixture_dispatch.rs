@@ -65,6 +65,34 @@ impl CoreProcess {
         }
     }
 
+    fn start_with_lead_model(database: &Path, port: u16, log: &Path, model_url: &str) -> Self {
+        let file = File::create(log).expect("core log");
+        let child = Command::new(env!("CARGO_BIN_EXE_factory-core"))
+            .env("FACTORY_DATABASE", database)
+            .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
+            .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
+            .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+            .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
+            .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
+            .env("FACTORY_ENABLE_AUTONOMOUS_START", "1")
+            .env("FACTORY_LEAD_MODEL_URL", model_url)
+            .env(
+                "FACTORY_LEAD_MODEL_TOKEN",
+                "lead-model-token-0123456789abcdef",
+            )
+            .env("FACTORY_LEAD_MODEL_NAME", "lead-model")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(file))
+            .spawn()
+            .expect("spawn factory-core");
+        Self {
+            child,
+            log: log.to_path_buf(),
+        }
+    }
+
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -592,10 +620,36 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
 }
 
 #[tokio::test]
-async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
+async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
+    use axum::{Router, routing::post};
     use factory_native::lead::{
-        Capability, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegation,
+        ActionBinding, ActionStatus, Capability, ObjectiveClass, ProjectConfig, ProviderRoute,
+        RiskClass, StandingDelegation,
     };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct MockModel {
+        content: Arc<Mutex<String>>,
+    }
+    async fn chat(
+        axum::extract::State(state): axum::extract::State<MockModel>,
+    ) -> axum::Json<Value> {
+        axum::Json(
+            json!({"choices":[{"message":{"content": state.content.lock().unwrap().clone()}}]}),
+        )
+    }
+    let model_content = Arc::new(Mutex::new(String::new()));
+    let model_app = Router::new()
+        .route("/chat/completions", post(chat))
+        .with_state(MockModel {
+            content: model_content.clone(),
+        });
+    let model_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model_url = format!("http://{}", model_listener.local_addr().unwrap());
+    let model_server = tokio::spawn(async move {
+        axum::serve(model_listener, model_app).await.unwrap();
+    });
 
     let root = std::env::temp_dir().join(format!(
         "factory-e2e-lead-{}-{}",
@@ -621,7 +675,8 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     let database = root.join("factory.sqlite");
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
-    let mut core = CoreProcess::start(&database, port, &root.join("core.log"));
+    let mut core =
+        CoreProcess::start_with_lead_model(&database, port, &root.join("core.log"), &model_url);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -783,6 +838,24 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     .await
     .unwrap();
     let request_id = lead["id"].as_str().unwrap().to_owned();
+    let project_config: ProjectConfig = serde_json::from_value(config.clone()).unwrap();
+    let action_spec: factory_native::db::ActionSpec =
+        serde_json::from_value(action["spec"].clone()).unwrap();
+    let (assessment, _) = factory_native::lead::fixture_lead_assessment(
+        &request_id,
+        &project_config,
+        &ActionBinding {
+            id: action_id.clone(),
+            project_id: project_id.clone(),
+            status: ActionStatus::Pending,
+        },
+        &action_spec,
+        "Implement the fixture.",
+        &grant,
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    *model_content.lock().unwrap() = serde_json::to_string(&assessment).unwrap();
 
     let assessed = operator(
         &client,
@@ -794,6 +867,7 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     let assessed_status = assessed.status();
     let assessed_body = assessed.text().await.unwrap_or_default();
     assert_eq!(assessed_status, StatusCode::OK, "{assessed_body}");
+    assert!(assessed_body.contains("\"MODEL\""), "{assessed_body}");
     let frozen = operator(
         &client,
         reqwest::Method::POST,
@@ -917,6 +991,7 @@ async fn lead_fixture_start_dispatches_through_supervisor_to_accepted_gate() {
     assert_eq!(gate["outcome"], "ACCEPTED");
 
     supervisor.stop();
+    model_server.abort();
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2975,6 +3050,46 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     )
     .await;
 
+    use axum::{Router, routing::post};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Upstream {
+        calls: Arc<Mutex<usize>>,
+        auth: Arc<Mutex<Vec<String>>>,
+    }
+    async fn chat(
+        axum::extract::State(state): axum::extract::State<Upstream>,
+        headers: axum::http::HeaderMap,
+    ) -> axum::Json<Value> {
+        *state.calls.lock().unwrap() += 1;
+        state.auth.lock().unwrap().push(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        axum::Json(json!({
+            "id":"chatcmpl-mock","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}
+        }))
+    }
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream_auth = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/v1/chat/completions", post(chat))
+        .with_state(Upstream {
+            calls: upstream_calls.clone(),
+            auth: upstream_auth.clone(),
+        });
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_url = format!("http://{}", upstream_listener.local_addr().unwrap());
+    let upstream_server = tokio::spawn(async move {
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+
     let supervisor_port = free_port();
     let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
     let mut supervisor = SupervisorProcess::start(SupervisorSpec {
@@ -3014,6 +3129,17 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         )
         .env("FACTORY_PROVIDER_SESSION_ROOT", &provider_session_root)
         .env("FACTORY_PROVIDER_KEEP_SESSION", "1")
+        .env("FACTORY_PROVIDER_UPSTREAM_URL", &upstream_url)
+        .env(
+            "FACTORY_PROVIDER_UPSTREAM_TOKEN",
+            "real-upstream-credential-0123456789",
+        )
+        .env(
+            "FACTORY_PROVIDER_EGRESS_BRIDGE",
+            env!("CARGO_BIN_EXE_factory-egress-bridge"),
+        )
+        .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
+        .env("FACTORY_FIXTURE_PROVIDER_USE_EGRESS", "1")
         .env("FACTORY_WORKER_ONCE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(worker_log.try_clone().unwrap()))
@@ -3183,6 +3309,29 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     assert_eq!(session.3, 1);
     assert_eq!(session.4, 40);
     assert_eq!(session.5.as_deref(), Some("session_delete_verified_absent"));
+    let turns: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT state,input_tokens,output_tokens,total_tokens,cost_micros
+         FROM provider_turn_reservations
+         WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1)
+         ORDER BY created_at",
+    )
+    .bind(&candidate_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(turns.len(), 4);
+    assert!(turns.iter().all(|turn| turn.0 == "SETTLED"));
+    assert_eq!(turns.iter().map(|turn| turn.1).sum::<i64>(), 40);
+    assert_eq!(turns.iter().map(|turn| turn.2).sum::<i64>(), 80);
+    assert_eq!(turns.iter().map(|turn| turn.4).sum::<i64>(), 400);
+    assert_eq!(*upstream_calls.lock().unwrap(), 4);
+    assert!(
+        upstream_auth
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|value| value == "Bearer real-upstream-credential-0123456789")
+    );
     let events: Vec<(String, String, String)> = sqlx::query_as::query_as(
         "SELECT call_id,tool,decision FROM provider_tool_events
          WHERE session_record_id=(SELECT session_record_id FROM provider_sessions
@@ -3200,6 +3349,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     pool.close().await;
     let supervisor_log = std::fs::read_to_string(root.join("supervisor.log")).unwrap_or_default();
     assert!(!supervisor_log.contains("fake-provider-password"));
+    upstream_server.abort();
     supervisor.stop();
     core.stop();
     let _ = std::fs::remove_dir_all(&provider_session_root);

@@ -802,6 +802,15 @@ async fn start_provider_runtime(
                 }
                 Err(_) => (None, None),
             };
+            let mut sandbox_env = Vec::new();
+            if env::var("FACTORY_FIXTURE_PROVIDER_USE_EGRESS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                sandbox_env.push(("FACTORY_FIXTURE_PROVIDER_USE_EGRESS".into(), "1".into()));
+                sandbox_env.push(("FACTORY_FIXTURE_PROVIDER_MODEL".into(), model.to_owned()));
+            }
             let sandbox = ProviderSandbox::start(ProviderSandboxConfig {
                 binary: std::path::PathBuf::from(binary),
                 session_dir: session_dir.to_path_buf(),
@@ -816,6 +825,7 @@ async fn start_provider_runtime(
                     .unwrap_or(4 * 1024 * 1024 * 1024),
                 egress,
                 egress_bridge,
+                env: sandbox_env,
                 ..Default::default()
             })
             .await?;
@@ -1370,7 +1380,8 @@ async fn authorize_provider_turn(
     let Some(policy) = context.turn_policy else {
         return Err("provider turn authorization requires an egress policy".into());
     };
-    let digest = request_digest(prompt)?;
+    let canonical = json!({"model": context.assignment.model, "input": prompt});
+    let digest = request_digest(&canonical)?;
     let response = context
         .client
         .post(context.core.join("worker/provider_turn_authorize")?)
