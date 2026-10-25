@@ -272,6 +272,41 @@ try {
     },
     verifier,
   );
+  const officeCampaigns = await api("/campaigns");
+  const fixtureCampaign = officeCampaigns[0];
+  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
+  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
+  await page.locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`).click();
+  await page
+    .getByRole("heading", {
+      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
+    })
+    .waitFor();
+  const workflow = page.getByTestId("workflow-projection");
+  await workflow.getByText("WorkGraph").waitFor();
+  await workflow.getByText("Verifier").waitFor();
+  await workflow.getByText("Reviewer").waitFor();
+  await page
+    .getByRole("heading", { name: "Authorization, budget and observed usage" })
+    .waitFor();
+  await page.getByText("Unmeasured sessions", { exact: true }).waitFor();
+  const pendingCandidate = page.getByTestId("candidate-panel");
+  await pendingCandidate
+    .getByRole("row", { name: /verifier\s+PASS\s+EXECUTED/i })
+    .waitFor();
+  await pendingCandidate
+    .getByRole("row", { name: /reviewer\s+PENDING/i })
+    .waitFor();
+  await pendingCandidate.getByText("GATE PENDING").waitFor();
+  await pendingCandidate
+    .getByText("no Core gate decision is recorded", { exact: false })
+    .waitFor();
+  assert.equal(
+    await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
+    0,
+    "a reviewer-less candidate must not render ACCEPTED",
+  );
+
   const reviewerProcess = launch(reviewerBin, [], {
     cwd: temp,
     env: {
@@ -286,6 +321,24 @@ try {
     reviewerProcess.on("exit", resolvePromise),
   );
   assert.equal(reviewerExit, 0, "independent reviewer process must pass");
+
+  await page.reload();
+  await page
+    .getByRole("heading", {
+      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
+    })
+    .waitFor();
+  const acceptedCandidate = page.getByTestId("candidate-panel");
+  await acceptedCandidate
+    .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
+    .waitFor({ timeout: 15000 });
+  await acceptedCandidate
+    .getByText("ACCEPTED", { exact: true })
+    .first()
+    .waitFor();
+  await page
+    .getByText("No unresolved provider session is recorded", { exact: false })
+    .waitFor();
 
   await page.getByRole("link", { name: "Workers", exact: true }).click();
   await page.getByRole("heading", { name: "Workers", exact: true }).waitFor();
@@ -366,8 +419,8 @@ try {
         allowedPaths: ["src"],
         capabilities: ["repository-edit", "generic-toolchain"],
         riskClasses: ["R0", "R1"],
-        autonomousStart: false,
-        autonomousRiskClasses: [],
+        autonomousStart: true,
+        autonomousRiskClasses: ["R0"],
         route: {
           provider: "opencode",
           model: "deepseek-v4.1-flash",
@@ -386,17 +439,6 @@ try {
       },
     }),
   });
-  const _leadRequest = await api("/lead/requests", {
-    method: "POST",
-    body: JSON.stringify({
-      project_id: _leadProject.id,
-      action_id: _leadAction.id,
-      delegation_id: _leadDelegation.id,
-      objective: "Lead fixture objective",
-      project_config_hash: _leadConfig.configHash,
-      idempotency_key: "office-lead-request",
-    }),
-  });
   await page.getByRole("link", { name: "Lead", exact: true }).click();
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
   await page.getByTestId("lead-project").selectOption(_leadProject.id);
@@ -404,6 +446,16 @@ try {
   await page.getByTestId("lead-delegation").selectOption(_leadDelegation.id);
   await page.getByTestId("lead-objective").fill("Lead fixture objective");
   await page.getByRole("button", { name: "Submit Lead request" }).click();
+  let _leadRequest;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const records = await api("/lead/requests");
+    _leadRequest = records.find(
+      (record) => record.action_id === _leadAction.id,
+    );
+    if (_leadRequest) break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  assert.ok(_leadRequest, "the Lead form must persist a request");
   await page
     .getByText(_leadRequest.id.slice(0, 8), { exact: false })
     .first()
@@ -412,12 +464,92 @@ try {
   await page.getByText("PLANNED", { exact: true }).first().waitFor();
   await page.getByRole("button", { name: "Freeze plan" }).first().click();
   await page.getByText("READY", { exact: true }).first().waitFor();
+  const leadAssessment = page.getByTestId("lead-assessment");
+  await leadAssessment.getByText("change", { exact: true }).waitFor();
+  await leadAssessment.getByText("small", { exact: true }).waitFor();
+  const leadProposal = page.getByTestId("lead-proposal");
+  await leadProposal
+    .getByText("implementation", { exact: true })
+    .first()
+    .waitFor();
+  await page.getByTestId("lead-plan").waitFor();
   await page.reload();
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
   await page
     .getByText("READY", { exact: true })
     .first()
     .waitFor({ timeout: 15000 });
+
+  await api(`/actions/${_leadAction.id}/classify`, {
+    method: "POST",
+    body: JSON.stringify({
+      risk_class: "R0",
+      actor: "office-e2e",
+      rationale: "deterministic fixture classification",
+      idempotency_key: "office-lead-classify",
+    }),
+  });
+  const leadStart = await api(`/lead/requests/${_leadRequest.id}/start`, {
+    method: "POST",
+  });
+  const leadCampaign = leadStart.campaign;
+
+  await page.reload();
+  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
+  const leadRow = page.getByRole("row", {
+    name: new RegExp(_leadRequest.id.slice(0, 8)),
+  });
+  await leadRow.getByRole("button", { name: "View" }).click();
+  await page.getByText("RUNNING", { exact: true }).first().waitFor();
+  await page
+    .getByRole("link", {
+      name: `Open Campaign ${leadCampaign.id.slice(0, 8)}`,
+    })
+    .waitFor();
+
+  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
+  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
+  await page.locator(`a[href="#/campaigns/${leadCampaign.id}"]`).click();
+  await page
+    .getByRole("heading", { name: `Campaign ${leadCampaign.id.slice(0, 8)}` })
+    .waitFor();
+  const leadWorkflow = page.getByTestId("workflow-projection");
+  await leadWorkflow
+    .getByRole("row", { name: /Lead request.*RUNNING/i })
+    .waitFor();
+  await leadWorkflow.getByText("FIXTURE mechanism", { exact: false }).waitFor();
+  await leadWorkflow.getByText("1 unit", { exact: false }).waitFor();
+
+  const cancelCampaign = await api("/campaigns", {
+    method: "POST",
+    body: JSON.stringify({
+      action_id: _leadAction.id,
+      idempotency_key: "office-cancel-campaign",
+    }),
+  });
+  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
+  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
+  const cancelRow = page.getByRole("row", {
+    name: new RegExp(cancelCampaign.id.slice(0, 8)),
+  });
+  await cancelRow.getByRole("button", { name: "Cancel Campaign" }).click();
+  await page.getByTestId("cancel-reason").fill("operator e2e cancellation");
+  await page.getByRole("button", { name: "Confirm cancellation" }).click();
+  await page
+    .getByText(`Campaign ${cancelCampaign.id.slice(0, 8)} is CANCELLED`, {
+      exact: false,
+    })
+    .waitFor();
+  await page.locator(`a[href="#/campaigns/${cancelCampaign.id}"]`).click();
+  await page
+    .getByRole("heading", { name: `Campaign ${cancelCampaign.id.slice(0, 8)}` })
+    .waitFor();
+  await page.getByText("campaign.cancelled").first().waitFor();
+  await page
+    .getByText("operator e2e cancellation", { exact: false })
+    .first()
+    .waitFor();
+  await page.getByText("Campaign state:", { exact: false }).waitFor();
 
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();

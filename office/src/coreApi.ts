@@ -167,7 +167,39 @@ export interface CampaignAuthorization {
   rationale: string;
   authorized_paths: string[];
   max_attempts: number;
+  provider: string;
+  model: string;
+  provider_mode: string;
+  delegation_id: string;
+  max_sessions: number;
+  max_turns: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  max_cost_micros: number;
+  deadline_secs: number;
+  allowed_tools: string[];
   created_at: string;
+}
+
+export type ReceiptResult =
+  | "PASS"
+  | "FAIL"
+  | "CHANGES_REQUESTED"
+  | "NOT_TESTED";
+export type EvidenceKind = "EXECUTED" | "MOCKED" | "UNKNOWN";
+export type QualityRole = "verifier" | "reviewer";
+
+export interface QualityReceipt {
+  receipt_id: string;
+  candidate_id: string;
+  role: QualityRole;
+  principal_id: string;
+  action_spec_sha256: string;
+  commit_sha: string;
+  tree_sha: string;
+  result: ReceiptResult;
+  evidence: EvidenceKind;
+  received_at: string;
 }
 
 export interface Health {
@@ -254,19 +286,103 @@ export interface LeadRequestRecord {
   project_config_hash: string;
   state: string;
   failure_reason: string | null;
+  campaign_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface LeadAssessmentRecord {
+  id: string;
+  request_id: string;
+  mechanism: string;
+  assessment_json: string;
+  schema_sha256: string;
+  created_at: string;
+}
+
+export interface LeadProposalRecord {
+  id: string;
+  request_id: string;
+  assessment_id: string;
+  proposal_json: string;
+  proposal_hash: string;
+  created_at: string;
+}
+
+export interface FrozenLeadPlanRecord {
+  id: string;
+  request_id: string;
+  proposal_id: string;
+  plan_hash: string;
+  config_hash: string;
+  delegation_hash: string;
+  created_at: string;
+}
+
 export interface LeadRequestProjection {
   request: LeadRequestRecord;
-  assessment: { assessment_json: string } | null;
-  proposal: { proposal_json: string } | null;
-  plan: {
-    plan_hash: string;
-    config_hash: string;
-    delegation_hash: string;
-  } | null;
+  assessment: LeadAssessmentRecord | null;
+  proposal: LeadProposalRecord | null;
+  plan: FrozenLeadPlanRecord | null;
+}
+
+export interface EffortEstimateView {
+  status: string;
+  unit: string;
+  minPersonHours: number;
+  maxPersonHours: number;
+  assumptions: string[];
+  unknownReason: string;
+}
+
+export interface LeadAssessmentView {
+  schemaRevision: number;
+  projectId: string;
+  actionId: string;
+  requestId: string;
+  evidenceRefs: string[];
+  intent: string;
+  complexity: string;
+  effortEstimate: EffortEstimateView;
+  knowledgeGaps: string[];
+  changeImpact: string[];
+  validationNeeds: string[];
+  assumptions: string[];
+  uncertainty: string[];
+  suggestedNextAction: string;
+}
+
+export interface LeadWorkUnitView {
+  id: string;
+  kind: string;
+  description: string;
+  dependsOn: string[];
+  allowedPaths: string[];
+  capabilities: string[];
+  acceptanceCriteria: SpecCheck[];
+  negativeCases: SpecCheck[];
+}
+
+export interface LeadPlanProposalView {
+  projectId: string;
+  actionId: string;
+  baseRevision: string;
+  projectConfigHash: string;
+  objective: string;
+  class: string;
+  assumptions: string[];
+  risks: string[];
+  acceptanceCriteria: SpecCheck[];
+  negativeCases: SpecCheck[];
+  qualityProfile: string;
+  riskClass: string;
+  budget: { maxAttempts: number; timeoutSecs: number };
+  route: ProviderRoute;
+  maxRepairCycles: number;
+  maxWallClockSecs: number;
+  maxParallel: number;
+  maxSessions: number;
+  workUnits: LeadWorkUnitView[];
 }
 
 export interface NewLeadRequest {
@@ -401,6 +517,11 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  cancelCampaign: (campaignId: string, reason: string) =>
+    request<Campaign>(`/campaigns/${encodeURIComponent(campaignId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   authorizeFixtureCampaign: (campaignId: string) =>
     request<CampaignAuthorization>(
       `/campaigns/${encodeURIComponent(campaignId)}/authorize`,
@@ -430,8 +551,11 @@ export const coreApi = {
   listCandidates: () => request<Candidate[]>("/candidates"),
   listEvents: () => request<FactoryEvent[]>("/events"),
   listWorkers: () => request<WorkerSummary[]>("/workers"),
-  listProviderSessions: () =>
-    request<ProviderSession[]>("/provider/sessions"),
+  listProviderSessions: () => request<ProviderSession[]>("/provider/sessions"),
+  getCandidateReceipts: (candidateId: string) =>
+    request<QualityReceipt[]>(
+      `/quality/candidates/${encodeURIComponent(candidateId)}/receipts`,
+    ),
   getGate: async (candidateId: string): Promise<Gate | null> => {
     try {
       return await request<Gate>(

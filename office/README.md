@@ -5,9 +5,16 @@ the Rust Core client; former provider-specific views were removed. The app
 renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 
 Current views: Dashboard, Projects, Actions, Lead, Campaigns/Campaign detail,
-Runs and Workers. Campaigns show WorkGraph tasks, candidates and deterministic
-Quality Gate outcomes; Runs queues Attempts. Recovery/cleanup projection and
-detailed provider-session evidence remain future work.
+Runs, Workers and Runtime. Campaign detail projects the
+Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
+Candidate → Verifier → Reviewer → Gate workflow from Core data. It shows
+per-unit dependencies/status, candidate receipts, honest pending states for
+missing evidence, deterministic Gate outcome and reasons, provider-session
+usage/cleanup and a compact authorization budget projection. Operators can
+request Campaign cancellation with an explicit confirmation; cancelled and
+unconfirmed provider termination are shown from the API rather than inferred.
+Lead detail decodes the recorded assessment, proposal and frozen plan and links
+a started Lead request to its Campaign.
 
 ## Toolchain
 

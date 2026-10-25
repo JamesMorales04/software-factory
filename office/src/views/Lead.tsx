@@ -1,15 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   type Action,
   CoreApiError,
   coreApi,
+  type LeadAssessmentView,
+  type LeadPlanProposalView,
   type LeadRequestProjection,
   type LeadRequestRecord,
+  type LeadWorkUnitView,
   newIdempotencyKey,
   type Project,
   type StandingDelegation,
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
+
+function parseJson<T>(raw: string | undefined): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function list(values: string[]): string {
+  return values.length === 0 ? "none" : values.join("; ");
+}
+
+function checksSummary(unit: LeadWorkUnitView): string {
+  return `${unit.acceptanceCriteria.length} acceptance · ${unit.negativeCases.length} negative`;
+}
 
 export function Lead() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -127,12 +148,31 @@ export function Lead() {
     }
   }
 
+  async function view(id: string) {
+    setError(null);
+    try {
+      setSelected(await coreApi.getLeadRequest(id));
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Failed to load the Lead request.",
+      );
+    }
+  }
+
   const projectActions = actions.filter(
     (action) => action.project_id === projectId,
   );
   const projectDelegations = delegations.filter(
     (delegation) => delegation.projectId === projectId && !delegation.revokedAt,
   );
+  const selectedAssessment = selected
+    ? parseJson<LeadAssessmentView>(selected.assessment?.assessment_json)
+    : null;
+  const selectedProposal = selected
+    ? parseJson<LeadPlanProposalView>(selected.proposal?.proposal_json)
+    : null;
 
   return (
     <div>
@@ -228,6 +268,7 @@ export function Lead() {
               <th>ID</th>
               <th>State</th>
               <th>Objective</th>
+              <th>Campaign</th>
               <th>Updated</th>
               <th>Actions</th>
             </tr>
@@ -240,14 +281,18 @@ export function Lead() {
                 </td>
                 <td>{request.state}</td>
                 <td>{request.objective}</td>
+                <td>
+                  {request.campaign_id ? (
+                    <Link to={`/campaigns/${request.campaign_id}`}>
+                      <code>{shortId(request.campaign_id)}</code>
+                    </Link>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
                 <td className="muted">{formatTimestamp(request.updated_at)}</td>
                 <td>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void coreApi.getLeadRequest(request.id).then(setSelected)
-                    }
-                  >
+                  <button type="button" onClick={() => void view(request.id)}>
                     View
                   </button>
                   {["SUBMITTED", "ASSESSING"].includes(request.state) && (
@@ -276,23 +321,240 @@ export function Lead() {
       )}
 
       {selected && (
-        <section>
+        <section data-testid="lead-selected">
           <h3>Selected request</h3>
-          <p>
-            State: <strong>{selected.request.state}</strong> · Plan hash:{" "}
-            <code>{selected.plan?.plan_hash ?? "not frozen"}</code>
-          </p>
+          <div className="view-head">
+            <p>
+              State: <strong>{selected.request.state}</strong> · Created{" "}
+              {formatTimestamp(selected.request.created_at)} · Updated{" "}
+              {formatTimestamp(selected.request.updated_at)}
+            </p>
+            {selected.request.campaign_id && (
+              <Link to={`/campaigns/${selected.request.campaign_id}`}>
+                Open Campaign {shortId(selected.request.campaign_id)}
+              </Link>
+            )}
+          </div>
+          <dl className="detail">
+            <dt>Request</dt>
+            <dd>
+              <code>{shortId(selected.request.id)}</code>
+            </dd>
+            <dt>Project</dt>
+            <dd>
+              <code>{shortId(selected.request.project_id)}</code>
+            </dd>
+            <dt>Action</dt>
+            <dd>
+              <code>{shortId(selected.request.action_id)}</code>
+            </dd>
+            <dt>Delegation</dt>
+            <dd>
+              <code>{selected.request.delegation_id}</code>
+            </dd>
+            <dt>Config hash</dt>
+            <dd>
+              <code title={selected.request.project_config_hash}>
+                {shortId(selected.request.project_config_hash, 12)}
+              </code>
+            </dd>
+          </dl>
           {selected.request.failure_reason && (
             <p className="error">{selected.request.failure_reason}</p>
           )}
+
           <h4>Assessment</h4>
-          <pre>
-            {selected.assessment?.assessment_json ?? "No assessment recorded."}
-          </pre>
+          {selected.assessment ? (
+            <>
+              <p className="muted">
+                Mechanism <strong>{selected.assessment.mechanism}</strong> ·
+                recorded {formatTimestamp(selected.assessment.created_at)} ·
+                schema{" "}
+                <code>{shortId(selected.assessment.schema_sha256, 12)}</code>
+              </p>
+              {selectedAssessment ? (
+                <dl className="detail" data-testid="lead-assessment">
+                  <dt>Intent</dt>
+                  <dd>{selectedAssessment.intent}</dd>
+                  <dt>Complexity</dt>
+                  <dd>{selectedAssessment.complexity}</dd>
+                  <dt>Effort</dt>
+                  <dd>
+                    {selectedAssessment.effortEstimate.status === "estimated"
+                      ? `${selectedAssessment.effortEstimate.minPersonHours}–${selectedAssessment.effortEstimate.maxPersonHours} ${selectedAssessment.effortEstimate.unit}`
+                      : `${selectedAssessment.effortEstimate.status.replaceAll("_", " ")}${
+                          selectedAssessment.effortEstimate.unknownReason
+                            ? `: ${selectedAssessment.effortEstimate.unknownReason}`
+                            : ""
+                        }`}
+                  </dd>
+                  <dt>Evidence refs</dt>
+                  <dd>{list(selectedAssessment.evidenceRefs)}</dd>
+                  <dt>Change impact</dt>
+                  <dd>{list(selectedAssessment.changeImpact)}</dd>
+                  <dt>Validation needs</dt>
+                  <dd>{list(selectedAssessment.validationNeeds)}</dd>
+                  <dt>Knowledge gaps</dt>
+                  <dd>{list(selectedAssessment.knowledgeGaps)}</dd>
+                  <dt>Assumptions</dt>
+                  <dd>{list(selectedAssessment.assumptions)}</dd>
+                  <dt>Uncertainty</dt>
+                  <dd>{list(selectedAssessment.uncertainty)}</dd>
+                  <dt>Suggested next action</dt>
+                  <dd>{selectedAssessment.suggestedNextAction}</dd>
+                </dl>
+              ) : (
+                <p className="error">
+                  Recorded assessment JSON could not be decoded.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="muted">No assessment recorded.</p>
+          )}
+
           <h4>Proposal</h4>
-          <pre>
-            {selected.proposal?.proposal_json ?? "No proposal recorded."}
-          </pre>
+          {selected.proposal ? (
+            <>
+              <p className="muted">
+                Proposal <code>{shortId(selected.proposal.id)}</code> · hash{" "}
+                <code>{shortId(selected.proposal.proposal_hash, 12)}</code> ·
+                recorded {formatTimestamp(selected.proposal.created_at)}
+              </p>
+              {selectedProposal ? (
+                <div data-testid="lead-proposal">
+                  <dl className="detail">
+                    <dt>Class / risk</dt>
+                    <dd>
+                      {selectedProposal.class} / {selectedProposal.riskClass}
+                    </dd>
+                    <dt>Quality profile</dt>
+                    <dd>{selectedProposal.qualityProfile}</dd>
+                    <dt>Route</dt>
+                    <dd>
+                      {selectedProposal.route.provider}/
+                      {selectedProposal.route.model} (
+                      {selectedProposal.route.mode})
+                    </dd>
+                    <dt>Base revision</dt>
+                    <dd>
+                      <code title={selectedProposal.baseRevision}>
+                        {shortId(selectedProposal.baseRevision, 12)}
+                      </code>
+                    </dd>
+                    <dt>Budget</dt>
+                    <dd>
+                      {selectedProposal.budget.maxAttempts} attempt
+                      {selectedProposal.budget.maxAttempts === 1 ? "" : "s"} ·{" "}
+                      {selectedProposal.budget.timeoutSecs}s timeout ·{" "}
+                      {selectedProposal.maxRepairCycles} repair cycle
+                      {selectedProposal.maxRepairCycles === 1 ? "" : "s"} ·{" "}
+                      {selectedProposal.maxSessions} session
+                      {selectedProposal.maxSessions === 1 ? "" : "s"}
+                    </dd>
+                    <dt>Parallel / wall clock</dt>
+                    <dd>
+                      {selectedProposal.maxParallel} parallel ·{" "}
+                      {selectedProposal.maxWallClockSecs}s wall clock
+                    </dd>
+                    <dt>Assumptions</dt>
+                    <dd>{list(selectedProposal.assumptions)}</dd>
+                    <dt>Risks</dt>
+                    <dd>{list(selectedProposal.risks)}</dd>
+                  </dl>
+                  <h5>Work units ({selectedProposal.workUnits.length})</h5>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Unit</th>
+                        <th>Kind</th>
+                        <th>Depends on</th>
+                        <th>Paths</th>
+                        <th>Checks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedProposal.workUnits.map((unit, index) => (
+                        <tr key={unit.id}>
+                          <td>{index + 1}</td>
+                          <td>
+                            <code>{unit.id}</code>
+                            <div className="muted">{unit.description}</div>
+                          </td>
+                          <td>{unit.kind}</td>
+                          <td>{unit.dependsOn.join(", ") || "none"}</td>
+                          <td>
+                            {unit.allowedPaths.join(", ") || "none"}
+                            <div className="muted">
+                              capabilities{" "}
+                              {unit.capabilities.join(", ") || "none"}
+                            </div>
+                          </td>
+                          <td>{checksSummary(unit)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="error">
+                  Recorded proposal JSON could not be decoded.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="muted">No proposal recorded.</p>
+          )}
+
+          <h4>Frozen plan</h4>
+          {selected.plan ? (
+            <dl className="detail" data-testid="lead-plan">
+              <dt>Plan</dt>
+              <dd>
+                <code>{shortId(selected.plan.id)}</code>
+              </dd>
+              <dt>Plan hash</dt>
+              <dd>
+                <code title={selected.plan.plan_hash}>
+                  {shortId(selected.plan.plan_hash, 12)}
+                </code>
+              </dd>
+              <dt>Config hash</dt>
+              <dd>
+                <code title={selected.plan.config_hash}>
+                  {shortId(selected.plan.config_hash, 12)}
+                </code>
+              </dd>
+              <dt>Delegation hash</dt>
+              <dd>
+                <code title={selected.plan.delegation_hash}>
+                  {shortId(selected.plan.delegation_hash, 12)}
+                </code>
+              </dd>
+              <dt>Proposal</dt>
+              <dd>
+                <code>{shortId(selected.plan.proposal_id)}</code>
+              </dd>
+              <dt>Frozen</dt>
+              <dd>{formatTimestamp(selected.plan.created_at)}</dd>
+            </dl>
+          ) : (
+            <p className="muted">No frozen plan recorded.</p>
+          )}
+
+          {selected.assessment && (
+            <details>
+              <summary>Raw assessment JSON</summary>
+              <pre>{selected.assessment.assessment_json}</pre>
+            </details>
+          )}
+          {selected.proposal && (
+            <details>
+              <summary>Raw proposal JSON</summary>
+              <pre>{selected.proposal.proposal_json}</pre>
+            </details>
+          )}
           <p className="muted">
             Autonomy, budget expansion, provider execution and delivery are not
             granted by this view.

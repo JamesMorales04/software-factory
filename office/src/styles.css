@@ -394,3 +394,43 @@ td {
 .candidate-panel table {
   margin-top: 0.5rem;
 }
+
+button.danger {
+  border-color: #b3261e;
+  color: #b3261e;
+}
+
+.cancel-confirm {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid #b3261e;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+  text-align: left;
+}
+
+.cancel-confirm p {
+  margin: 0;
+}
+
+.cancel-confirm .row {
+  margin: 0;
+}
+
+td button + button,
+td .cancel-confirm + button {
+  margin-left: 0.4rem;
+}
+
+.pill.cancelled,
+.pill.blocked,
+.pill.failed,
+.pill.check-CHANGES_REQUESTED {
+  border-style: dashed;
+  font-weight: 700;
+}
+
+.candidate-panel h5 {
+  margin: 1rem 0 0.35rem;
+}
