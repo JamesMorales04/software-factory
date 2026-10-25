@@ -60,7 +60,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if principal.trim().is_empty() || principal.len() > 128 {
         return Err("FACTORY_REVIEWER_PRINCIPAL is invalid".into());
     }
-    let mechanism = mechanism_from_env(env::var("FACTORY_REVIEW_MECHANISM").ok().as_deref());
+    let mechanism = mechanism_from_env(env::var("FACTORY_REVIEW_MECHANISM").ok().as_deref())
+        .map_err(|error| format!("invalid FACTORY_REVIEW_MECHANISM: {error}"))?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(90))
         .build()?;

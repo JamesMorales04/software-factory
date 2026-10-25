@@ -521,10 +521,10 @@ fn model_gateway_from_env()
     let timeout_secs = env_u64("FACTORY_MODEL_TIMEOUT_SECS", 60)?;
     let input_micros = env_u64("FACTORY_MODEL_INPUT_MICROS_PER_MILLION", 150_000)?;
     let output_micros = env_u64("FACTORY_MODEL_OUTPUT_MICROS_PER_MILLION", 600_000)?;
-    let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 32_000, 8_192, 200_000)?;
-    let reviewer_policy = policy_from_env("FACTORY_REVIEW_MODEL", 64_000, 8_192, 300_000)?;
-    let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 200_000, 8_192, 2_000_000)?;
-    let global_policy = policy_from_env("FACTORY_MODEL_GLOBAL", 1_000_000, 100_000, 5_000_000)?;
+    let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000)?;
+    let reviewer_policy = policy_from_env("FACTORY_REVIEW_MODEL", 400_000, 8_192, 1_000_000)?;
+    let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000)?;
+    let global_policy = policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000)?;
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
     Ok(Some(factory_native::model_gateway::ModelGateway::new(
         factory_native::model_gateway::ModelGatewayConfig {

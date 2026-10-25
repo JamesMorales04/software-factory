@@ -395,10 +395,16 @@ pub enum SemanticReviewMechanism {
     Model,
 }
 
-pub fn mechanism_from_env(value: Option<&str>) -> SemanticReviewMechanism {
+pub fn mechanism_from_env(
+    value: Option<&str>,
+) -> Result<SemanticReviewMechanism, SemanticReviewError> {
     match value {
-        Some(value) if value.eq_ignore_ascii_case("MODEL") => SemanticReviewMechanism::Model,
-        _ => SemanticReviewMechanism::Deterministic,
+        None => Ok(SemanticReviewMechanism::Deterministic),
+        Some(value) if value.eq_ignore_ascii_case("MODEL") => Ok(SemanticReviewMechanism::Model),
+        Some(value) if value.eq_ignore_ascii_case("DETERMINISTIC") => {
+            Ok(SemanticReviewMechanism::Deterministic)
+        }
+        Some(_) => invalid("unsupported review mechanism"),
     }
 }
 
@@ -548,12 +554,13 @@ mod tests {
         assert!(is_secret_shaped_path("src/token_store.rs"));
         assert!(!is_secret_shaped_path("src/review.rs"));
         assert_eq!(
-            mechanism_from_env(Some("model")),
+            mechanism_from_env(Some("model")).unwrap(),
             SemanticReviewMechanism::Model
         );
         assert_eq!(
-            mechanism_from_env(Some("anything-else")),
+            mechanism_from_env(None).unwrap(),
             SemanticReviewMechanism::Deterministic
         );
+        assert!(mechanism_from_env(Some("anything-else")).is_err());
     }
 }

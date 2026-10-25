@@ -494,10 +494,10 @@ mod tests {
             timeout: Duration::from_secs(10),
             input_micros_per_million: 150_000,
             output_micros_per_million: 600_000,
-            lead_policy: policy(32_000, 8_192, 200_000),
-            reviewer_policy: policy(64_000, 8_192, 300_000),
+            lead_policy: policy(128_000, 8_192, 300_000),
+            reviewer_policy: policy(400_000, 8_192, 1_000_000),
             evaluation_policy: policy(200_000, 8_192, 2_000_000),
-            global_policy: policy(1_000_000, 100_000, 5_000_000),
+            global_policy: policy(2_000_000, 100_000, 10_000_000),
             allow_loopback_http: true,
         }
     }
@@ -619,14 +619,14 @@ mod integration_tests {
             input_micros_per_million: 150_000,
             output_micros_per_million: 600_000,
             lead_policy: ModelCallPolicy {
-                max_input_tokens: 32_000,
-                max_output_tokens: 8_192,
-                max_cost_micros: 200_000,
-            },
-            reviewer_policy: ModelCallPolicy {
-                max_input_tokens: 64_000,
+                max_input_tokens: 128_000,
                 max_output_tokens: 8_192,
                 max_cost_micros: 300_000,
+            },
+            reviewer_policy: ModelCallPolicy {
+                max_input_tokens: 400_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 1_000_000,
             },
             evaluation_policy: ModelCallPolicy {
                 max_input_tokens: 200_000,
@@ -634,9 +634,9 @@ mod integration_tests {
                 max_cost_micros: 2_000_000,
             },
             global_policy: ModelCallPolicy {
-                max_input_tokens: 1_000_000,
+                max_input_tokens: 2_000_000,
                 max_output_tokens: 100_000,
-                max_cost_micros: 5_000_000,
+                max_cost_micros: 10_000_000,
             },
             allow_loopback_http: true,
         })

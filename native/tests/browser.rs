@@ -37,6 +37,13 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+static BROWSER_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    BROWSER_TEST_LOCK.lock().await
+}
+
 fn free_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
@@ -170,6 +177,7 @@ async fn check(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_server_serves_real_browser_and_cleans_up_descendants() {
+    let _serial = serial().await;
     let (config, root) = config("roundtrip");
     let port = config.endpoint.as_ref().unwrap().port;
     let max_log_bytes = config.max_log_bytes;
@@ -229,6 +237,7 @@ async fn managed_server_serves_real_browser_and_cleans_up_descendants() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn already_occupied_port_is_rejected_without_adoption() {
+    let _serial = serial().await;
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let root = temp_root("occupied");
@@ -258,6 +267,7 @@ async fn already_occupied_port_is_rejected_without_adoption() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_timeout_stops_the_owned_group_and_releases_the_port() {
+    let _serial = serial().await;
     let root = temp_root("timeout");
     let app = root.join("app");
     let logs = root.join("logs");
@@ -285,6 +295,7 @@ async fn startup_timeout_stops_the_owned_group_and_releases_the_port() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_browser_tooling_is_not_tested_and_never_passed() {
+    let _serial = serial().await;
     let root = temp_root("not-tested");
     let endpoint = LoopbackEndpoint::parse("http://127.0.0.1:9").unwrap();
     let report = run_browser_check(BrowserCheckConfig {
@@ -313,6 +324,7 @@ async fn missing_browser_tooling_is_not_tested_and_never_passed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn detached_state_round_trip_supports_stop_and_cleanup() {
+    let _serial = serial().await;
     use factory_native::browser::{cleanup_state_dir, read_state, state_path, stop_from_state};
 
     let root = temp_root("detached");
@@ -371,6 +383,7 @@ async fn detached_state_round_trip_supports_stop_and_cleanup() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_the_owner_is_a_cancellation_cleanup() {
+    let _serial = serial().await;
     let (config, root) = config("cancel");
     let server = ManagedTestServer::start(config)
         .await
