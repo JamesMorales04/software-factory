@@ -111,5 +111,72 @@
     "paid live provider coding or CAP-014 live semantic quality",
     "Windows or production deployment",
     "model-family-independent review (all AI agents used DeepSeek V4.1 Flash)"
+  ],
+  "result": "PASS",
+  "checks": [
+    {
+      "name": "format",
+      "pass": true
+    },
+    {
+      "name": "clippy_all_targets_all_features_deny_warnings",
+      "pass": true
+    },
+    {
+      "name": "workspace_tests",
+      "pass": true
+    },
+    {
+      "name": "build_bins",
+      "pass": true
+    },
+    {
+      "name": "documentation",
+      "pass": true
+    },
+    {
+      "name": "cargo_audit",
+      "pass": true
+    },
+    {
+      "name": "migrations_clean_database",
+      "pass": true
+    },
+    {
+      "name": "e2e_recovery",
+      "pass": true
+    },
+    {
+      "name": "e2e_dispatch",
+      "pass": true
+    },
+    {
+      "name": "e2e_negatives",
+      "pass": true
+    },
+    {
+      "name": "e2e_provider",
+      "pass": true
+    },
+    {
+      "name": "e2e_office_chromium",
+      "pass": true
+    },
+    {
+      "name": "browser_real_chromium",
+      "pass": true
+    },
+    {
+      "name": "architecture_consistency",
+      "pass": true
+    },
+    {
+      "name": "strict_repository_hygiene",
+      "pass": true
+    },
+    {
+      "name": "uat7_full_lifecycle",
+      "pass": true
+    }
   ]
 }

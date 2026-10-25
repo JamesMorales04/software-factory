@@ -72,7 +72,7 @@ Decision: `proposed`
 - CAP-015 — Frozen executable planning (proposed, in_progress)
 - CAP-016 — Dependency-aware WorkGraph (proposed, in_progress)
 - CAP-017 — Standing delegation contract (proposed, in_progress)
-- CAP-022 — Parallel WorkUnits (proposed, not_implemented)
+- CAP-022 — Parallel WorkUnits (proposed, in_progress)
 - CAP-043 — Autonomous product development (approved, in_progress)
 
 ### Deliverables
@@ -125,7 +125,7 @@ Decision: `proposed`
 - CAP-018 — Agent Composer (proposed, not_implemented)
 - CAP-019 — Operation Supervisor (proposed, not_implemented)
 - CAP-020 — Specialist agent roles (proposed, not_implemented)
-- CAP-021 — Independent semantic Reviewer (proposed, not_implemented)
+- CAP-021 — Independent semantic Reviewer (proposed, in_progress)
 - CAP-023 — Context and knowledge resolver (proposed, not_implemented)
 
 ### Deliverables
