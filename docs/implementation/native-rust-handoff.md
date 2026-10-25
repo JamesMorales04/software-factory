@@ -677,6 +677,4 @@ secret value. The Codex App Server protocol fixture separately exercises two
 turns with explicit accept/cancel approval decisions and exact thread/turn
 identity.
 
-Reconnection to an existing live session and live provider tool execution remain
-unimplemented. The deterministic fixture is not independent security
-certification.
+Exact-head CI at `62fa6bcbb80575cc06f1855299e92a483c2d798e` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40170904316`), multi-turn provider E2E, recovery restart, Codex permission fixture, migrations and strict hygiene. Reconnection to an existing live session, live provider tool execution and independent security certification remain unimplemented. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records the exact residual host-access blocker.

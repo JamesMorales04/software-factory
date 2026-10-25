@@ -1,8 +1,9 @@
 # Bounded live provider coding authorization request
 
 **Status:** REQUEST ONLY — no paid provider call is authorized by this document.
-The deterministic fake-provider path passes; a live coding turn requires the
-Product Owner's explicit approval of this envelope.
+The deterministic multi-turn fake-provider path passes; this live multi-turn
+coding envelope requires the Product Owner's explicit approval and is
+**UNAPPROVED** until that approval is recorded.
 
 ## Requested envelope
 
@@ -21,7 +22,7 @@ Product Owner's explicit approval of this envelope.
 | Allowed filesystem path | `src` only; bounded source context up to 16 files/64 KiB; credential-shaped names excluded |
 | Retries | none |
 | Cleanup | session DELETE followed by GET 404; otherwise the session is unresolved and blocks replacement |
-| Candidate path | Worker → durable intent → provider patch → Supervisor validated apply → CandidateRevision → sandboxed verifier → independent reviewer → deterministic gate |
+| Candidate path | Worker → durable intent → provider tool turns with permission decisions → Supervisor mediated write/run/finalize → CandidateRevision → sandboxed verifier → independent reviewer → deterministic gate |
 
 ## Preconditions
 
@@ -32,8 +33,8 @@ Product Owner's explicit approval of this envelope.
   requesting at most one mediated tool per turn. The Supervisor executes allowed
   writes/frozen-check commands in the sandbox; denied requests are recorded and
   returned to the provider. The provider never receives host workspace access or
-  credentials. This envelope does not authorize live multi-turn tool execution
-  beyond the deterministic fixture.
+  credentials. This is the requested live multi-turn envelope; it remains
+  unapproved and must not be executed until the Product Owner records approval.
 - No retry, alternate model or silent provider substitution is permitted.
 
 ## Required evidence after a run
@@ -47,6 +48,7 @@ Product Owner's explicit approval of this envelope.
 - truthful classification of the result, including failure or unresolved
   cleanup.
 
-This request does not authorize tool mediation, source-context delivery,
-ISOLATED execution, merge or deployment. Any expansion requires a new bounded
+This request does not authorize ISOLATED execution, merge or deployment. It
+explicitly requests trusted-local tool mediation and bounded source-context
+delivery within the envelope above. Any expansion requires a new bounded
 authorization.

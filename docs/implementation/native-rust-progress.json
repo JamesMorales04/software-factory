@@ -73,9 +73,9 @@
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: credential confinement and independent isolation not verified",
-    "G9": "PARTIAL: exact-head Rust CI green at c5ea92b8bb8424a87773056ceb7c40712c4fda00; independent human acceptance absent",
+    "G9": "PARTIAL: exact-head Rust CI green at 62fa6bcbb80575cc06f1855299e92a483c2d798e; independent human acceptance absent",
     "G10": "PASS: architecture, PR-impact and strict zero-legacy hygiene gates pass in CI",
-    "G11": "NOT_STARTED: independent human full-diff review",
+    "G11": "NOT_STARTED: independent human full-diff/security review",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
   },
@@ -102,7 +102,7 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI at c5ea92b8bb8424a87773056ceb7c40712c4fda00: Native Rust (both runs), Office browser (both runs) and architecture consistency PASS; source-aware provider E2E, recovery restart, cancellation state, migrations and strict hygiene PASS.",
+  "ci_at_update": "Exact-head CI at 62fa6bcbb80575cc06f1855299e92a483c2d798e: Native Rust (both runs), Office browser (both runs) and architecture consistency PASS; multi-turn provider E2E, recovery restart, Codex permission fixture, migrations and strict hygiene PASS.",
   "author_verification_at_code_sha": {
     "sha": "c0e822b2b09fa494c36bc218baa37537c32a1869",
     "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",

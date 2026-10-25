@@ -58,10 +58,10 @@ portfolio; this ledger is the current status authority.
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
 | M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan with mediated write_file/run_command and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
-| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; provider writes/frozen-check commands are validated by Core/Worker and executed only by the Supervisor in the exact Attempt workspace; credential-confinement certification, live provider coding and independent isolation are still not certified |
+| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; provider tool requests are validated and executed only by the Supervisor; the author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records that a compromised Worker/provider process can still reach host resources. Credential confinement and independent isolation remain uncertified. |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 247 Rust tests + 2 ignored, audit, architecture, process E2E, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally; exact-head CI and independent acceptance pending |
+| M9 Testing | `PARTIAL` | 247 Rust tests + 2 ignored, audit, architecture, process E2E, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `62fa6bcbb80575cc06f1855299e92a483c2d798e`; independent acceptance absent |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -103,7 +103,7 @@ credential-shaped source names are excluded from context. Durable
 INTENT/ACTIVE/terminal/cleanup states support a recovery Worker that deletes a
 confirmed orphan after Core restart; unresolved sessions block replacement
 dispatch; cancellation/revocation mark sessions `CANCEL_REQUESTED`. The
-tool-free file-only mode remains available. Evidence:
+tool-free file-only mode remains available. Exact-head CI passed at `62fa6bcbb80575cc06f1855299e92a483c2d798e`. Evidence:
 [native-rust-provider-tools-2026-10-24.json](../evidence/native-rust-provider-tools-2026-10-24.json).
 
 ## Legacy retirement
