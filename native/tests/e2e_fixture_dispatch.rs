@@ -361,6 +361,50 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     )
     .await;
     assert_eq!(authorized.status(), StatusCode::CREATED);
+    let second_campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id":action_id,"idempotency_key":"provider-campaign-2"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let exhausted = operator(
+        &client,
+        reqwest::Method::POST,
+        format!(
+            "{base_url}/campaigns/{}/authorize",
+            second_campaign["id"].as_str().unwrap()
+        ),
+        Some(json!({
+            "authorization_id":"provider-auth-exhausted",
+            "risk_class":"R0",
+            "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+            "actor":"e2e-operator",
+            "rationale":"delegation request budget exhaustion",
+            "authorized_paths":["src"],
+            "max_attempts":1,
+            "provider":"opencode",
+            "model":"deepseek-v4.1-flash",
+            "provider_mode":"build",
+            "delegation_id":"provider-grant",
+            "max_sessions":1,
+            "max_turns":1,
+            "max_input_tokens":1000,
+            "max_output_tokens":1000,
+            "max_cost_micros":10000,
+            "deadline_secs":30,
+            "allowed_tools":[]
+        })),
+    )
+    .await;
+    assert!(
+        exhausted.status().is_client_error(),
+        "delegation request budget should reject a second provider authorization"
+    );
+
     let run: Value = operator(
         &client,
         reqwest::Method::POST,
@@ -2887,7 +2931,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
         "maxWallClockSecs":1800,
         "maxParallel":1,
         "maxSessions":2,
-        "maxRequests":2,
+        "maxRequests":1,
         "maxCumulativeSessions":8,
         "maxCumulativeAttempts":16,
         "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
