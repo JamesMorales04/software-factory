@@ -92,6 +92,7 @@ impl ModelGateway {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| ModelGatewayError::Invalid("model HTTP client".into()))?;
         Ok(Self { config, client })
@@ -194,7 +195,7 @@ impl ModelGateway {
         let status = response.status();
         if !status.is_success() {
             let message = response.text().await.unwrap_or_default();
-            let detail = bounded(&message, 4096);
+            let detail = bounded(&crate::telemetry::redact(&message), 4096);
             if status.is_client_error() {
                 let _ = database
                     .release_model_call(
@@ -348,7 +349,7 @@ fn request_digest(config: &ModelGatewayConfig, request: &ModelCallRequest<'_>) -
 
 fn estimate_tokens(system_prompt: &str, user_prompt: &str) -> u64 {
     let bytes = system_prompt.len().saturating_add(user_prompt.len()) as u64;
-    bytes.saturating_add(3) / 4
+    bytes.saturating_add(2) / 3
 }
 
 fn estimate_cost(config: &ModelGatewayConfig, input: u64, output: u64) -> u64 {
