@@ -57,11 +57,11 @@ portfolio; this ledger is the current status authority.
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic tool-free fake-provider Attempt reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
-| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; no provider tool execution; credential confinement, provider-in-sandbox and independent isolation are still not certified |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware provider plan with mediated write_file/run_command reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
+| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; provider writes/frozen-check commands are validated by Core/Worker and executed only by the Supervisor in the exact Attempt workspace; credential-confinement certification, live provider coding and independent isolation are still not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 242 Rust tests + 2 ignored, audit, architecture, process E2E, fake-provider E2E and Office browser pass locally; exact-head CI and independent acceptance pending |
+| M9 Testing | `PARTIAL` | 245 Rust tests + 2 ignored, audit, architecture, process E2E, source-aware provider E2E, recovery/cancellation tests and Office browser pass locally; exact-head CI and independent acceptance pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -86,18 +86,23 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-At `f49520ba4dc743caf2c86c17ed3e4c8e3c389f61`, a deterministic fake OpenCode server proves the complete path: authorized Action → Campaign → Worker claim → durable provider
-intent → bounded tool-free provider response → Supervisor validated file apply →
-immutable CandidateRevision → independent verifier → deterministic reviewer →
-`ACCEPTED` gate. Core enforces an exact provider/model/mode route, active
-delegation, allowed paths, session/turn/token/cost limits, a deadline and an
-empty provider-tool list. The Worker holds the provider credential; the
-Supervisor and sandbox never receive it. Provider tool parts, out-of-scope
-paths, duplicate files and unmeasured usage are rejected. Completed sessions
-require confirmed deletion and known usage; unresolved intent/active sessions
-block replacement dispatch. This is deterministic fixture evidence, not live
-model certification. Exact-head CI passed at `02d7c04f451386de77ff8e35d2302e4364c636e4`. Evidence:
-[native-rust-provider-fixture-2026-10-24.json](../evidence/native-rust-provider-fixture-2026-10-24.json).
+A deterministic fake OpenCode server proves the source-aware, tool-mediated
+path: authorized Action → Campaign → Worker claim → durable provider intent →
+ACTIVE session binding → bounded source context → provider file plan plus a
+frozen-check command → Supervisor mediated write/run/finalize → immutable
+CandidateRevision → sandboxed verifier → independent reviewer → `ACCEPTED` gate.
+Core enforces an exact provider/model/mode route, active delegation, allowed
+paths, session/turn/token/cost limits, a deadline and an explicit
+`write_file`/`run_command` subset. Commands must exactly match a frozen
+ActionSpec check. The Worker holds the provider credential; the Supervisor and
+sandbox never receive it. Sensitive source names are excluded from context.
+Provider tool parts, unauthorized tools, out-of-scope paths, duplicate files,
+non-frozen commands and unmeasured usage are rejected. Durable
+INTENT/ACTIVE/terminal/cleanup states support a recovery Worker that deletes a
+confirmed orphan after Core restart; unresolved sessions block replacement
+dispatch; cancellation/revocation mark sessions `CANCEL_REQUESTED`. The
+tool-free file-only mode remains available. Evidence:
+[native-rust-provider-tools-2026-10-24.json](../evidence/native-rust-provider-tools-2026-10-24.json).
 
 ## Legacy retirement
 

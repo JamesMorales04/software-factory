@@ -2726,7 +2726,7 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
+async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() {
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -2743,6 +2743,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
         sender: tokio::sync::mpsc::Sender<Vec<u8>>,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>>>,
         deleted: Arc<AtomicBool>,
+        seen_prompt: Arc<Mutex<serde_json::Value>>,
     }
 
     async fn fake_events(State(state): State<FakeProvider>) -> Response {
@@ -2781,7 +2782,11 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
         axum::Json(json!({"id":"ses_fixture","directory":directory}))
     }
 
-    async fn fake_prompt(State(state): State<FakeProvider>) -> reqwest::StatusCode {
+    async fn fake_prompt(
+        State(state): State<FakeProvider>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> reqwest::StatusCode {
+        *state.seen_prompt.lock().unwrap() = body;
         let _ = state
             .sender
             .send(b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n".to_vec())
@@ -2803,7 +2808,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
             },
             "parts": [{
                 "type": "text",
-                "text": "{\"files\":[{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}]}"
+                "text": "{\"files\":[{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}],\"commands\":[{\"argv\":[\"grep\",\"-q\",\"provider candidate\",\"src/provider.txt\"],\"timeout_secs\":30}]}"
             }]
         }]))
         .into_response()
@@ -2840,7 +2845,9 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
         &["config", "user.email", "provider@example.invalid"],
     );
     std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
-    git(&repository, &["add", "seed.txt"]);
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(repository.join("src/seed.txt"), "seed context\n").unwrap();
+    git(&repository, &["add", "seed.txt", "src/seed.txt"]);
     git(&repository, &["commit", "-qm", "seed"]);
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
@@ -2848,7 +2855,9 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
         sender: event_sender,
         receiver: Arc::new(Mutex::new(Some(event_receiver))),
         deleted: Arc::new(AtomicBool::new(false)),
+        seen_prompt: Arc::new(Mutex::new(serde_json::Value::Null)),
     };
+    let seen_prompt = fake.seen_prompt.clone();
     let app = Router::new()
         .route("/event", axum::routing::get(fake_events))
         .route("/session", axum::routing::post(fake_create_session))
@@ -3022,7 +3031,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
                 "max_output_tokens":1000,
                 "max_cost_micros":10000,
                 "deadline_secs":30,
-                "allowed_tools":[]
+                "allowed_tools":["write_file","run_command"]
             })),
         )
         .await
@@ -3162,6 +3171,15 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
     .await
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
+    let seen_prompt = seen_prompt.lock().unwrap().clone();
+    let prompt_text = seen_prompt
+        .pointer("/parts/0/text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        prompt_text.contains("src/seed.txt") && prompt_text.contains("seed context"),
+        "provider prompt must contain bounded source context: {seen_prompt}"
+    );
 
     let database = root.join("factory.sqlite");
     let pool = sqlx_sqlite::SqlitePoolOptions::new()
@@ -3193,6 +3211,283 @@ async fn provider_backed_campaign_reaches_accepted_gate_without_tools() {
     assert!(!supervisor_log.contains(provider_password));
     provider_server.abort();
     supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use axum::{
+        Router,
+        extract::State,
+        response::{IntoResponse, Response},
+    };
+
+    #[derive(Clone)]
+    struct CleanupProvider {
+        deleted: Arc<AtomicBool>,
+    }
+
+    async fn cleanup_delete(State(state): State<CleanupProvider>) -> axum::Json<bool> {
+        state.deleted.store(true, Ordering::SeqCst);
+        axum::Json(true)
+    }
+
+    async fn cleanup_get(State(state): State<CleanupProvider>) -> Response {
+        if state.deleted.load(Ordering::SeqCst) {
+            reqwest::StatusCode::NOT_FOUND.into_response()
+        } else {
+            axum::Json(json!({"id":"ses_recovery"})).into_response()
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-provider-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Recovery E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "recovery@example.invalid"],
+    );
+    std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+    git(&repository, &["add", "seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let provider = CleanupProvider {
+        deleted: Arc::new(AtomicBool::new(false)),
+    };
+    let app = Router::new()
+        .route(
+            "/session/{id}",
+            axum::routing::delete(cleanup_delete).get(cleanup_get),
+        )
+        .with_state(provider);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_url = format!("http://{}", listener.local_addr().unwrap());
+    let provider_server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let provider_password = "recovery-provider-password-123456";
+
+    let database = root.join("factory.sqlite");
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start(&database, port, &root.join("core.log"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository":repository,"idempotency_key":"recovery-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id":project_id,
+            "objective":"Recovery provider action.",
+            "provider":"opencode",
+            "model":"deepseek-v4.1-flash",
+            "idempotency_key":"recovery-action",
+            "allowed_paths":["src"],
+            "checks":[{"id":"content","kind":"functional","description":"content","command":["true"],"expectExit":0,"timeoutSecs":30}]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/delegations"),
+            Some(json!({
+                "idempotency_key":"recovery-grant-key",
+                "delegation":{
+                    "id":"recovery-grant","principalId":"owner","auditId":"audit",
+                    "projectId":project_id,"revision":1,
+                    "objectiveClasses":["feature"],"allowedPaths":["src"],
+                    "capabilities":["repository-edit","generic-toolchain"],
+                    "riskClasses":["R0"],"autonomousStart":false,"autonomousRiskClasses":[],
+                    "route":{"provider":"opencode","model":"deepseek-v4.1-flash","mode":"build"},
+                    "maxAttempts":2,"maxTimeoutSecs":300,"maxRepairCycles":0,
+                    "maxWallClockSecs":1800,"maxParallel":1,"maxSessions":2,"maxRequests":2,
+                    "maxCumulativeSessions":8,"maxCumulativeAttempts":16,
+                    "expiresAt":(chrono::Utc::now()+chrono::Duration::days(1)).to_rfc3339()
+                }
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id":action_id,"idempotency_key":"recovery-campaign"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(json!({
+                "authorization_id":"recovery-auth","risk_class":"R0",
+                "execution_mode":"TRUSTED_LOCAL_PROVIDER","actor":"e2e",
+                "rationale":"recovery fixture","authorized_paths":["src"],"max_attempts":1,
+                "provider":"opencode","model":"deepseek-v4.1-flash","provider_mode":"build",
+                "delegation_id":"recovery-grant","max_sessions":1,"max_turns":1,
+                "max_input_tokens":1000,"max_output_tokens":1000,"max_cost_micros":10000,
+                "deadline_secs":30,"allowed_tools":[]
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let attempt: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let attempt_id = attempt["id"].as_str().unwrap().to_owned();
+    core.stop();
+
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&database)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO provider_sessions
+         (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,state,
+          provider_session_id,provider_directory,created_at,updated_at)
+         VALUES ('recovery-session',?1,'recovery-worker',1,'opencode','deepseek-v4.1-flash',
+                 'build','ACTIVE','ses_recovery','/tmp/recovery-provider',?2,?2)",
+    )
+    .bind(&attempt_id)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    core = CoreProcess::start(&database, port, &root.join("core.log"));
+    wait_healthy(&client, &base_url, &mut core).await;
+    let registration = client
+        .post(format!("{base_url}/worker/register"))
+        .bearer_auth(BOOTSTRAP_TOKEN)
+        .json(&json!({"worker_id":"recovery-worker","registration_key":"recovery-registration"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registration.status(), StatusCode::OK);
+    let session: Value = registration.json().await.unwrap();
+    let blocked = client
+        .post(format!("{base_url}/worker/claim"))
+        .bearer_auth(session["session_token"].as_str().unwrap())
+        .json(&json!({"worker_id":"recovery-worker"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        blocked.status().is_client_error(),
+        "unresolved provider session must block dispatch"
+    );
+
+    let worker_log = File::create(root.join("recovery-worker.log")).unwrap();
+    let recovery_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FACTORY_WORKER_ID", "recovery-worker")
+        .env("FACTORY_WORKER_REGISTRATION_KEY", "recovery-registration")
+        .env("FACTORY_SUPERVISOR_URL", "http://127.0.0.1:1")
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_PROVIDER_BASE_URL", &provider_url)
+        .env("FACTORY_PROVIDER_PASSWORD", provider_password)
+        .env("FACTORY_WORKER_RECOVER", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(worker_log.try_clone().unwrap()))
+        .stderr(Stdio::from(worker_log))
+        .status()
+        .expect("recovery worker");
+    assert!(
+        recovery_status.success(),
+        "recovery Worker failed: {}",
+        std::fs::read_to_string(root.join("recovery-worker.log")).unwrap_or_default()
+    );
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(&database)
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let (state, cleanup): (String, Option<String>) = sqlx::query_as::query_as(
+        "SELECT state,cleanup_receipt FROM provider_sessions WHERE session_record_id='recovery-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "CLEANED");
+    assert_eq!(cleanup.as_deref(), Some("session_delete_verified_absent"));
+    pool.close().await;
+    provider_server.abort();
     core.stop();
     let _ = std::fs::remove_dir_all(root);
 }

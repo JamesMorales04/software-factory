@@ -1,9 +1,9 @@
 //! Explicit Campaign execution authorization.
 //!
-//! Only deterministic fixture execution is enabled in this slice. Provider and
-//! isolated modes fail closed until their credential, sandbox and budget gates
-//! exist. Authorization never moves risk, delivery or quality policy to a
-//! model, Worker or container label.
+//! Fixture and trusted-local provider execution are explicit modes. Provider
+//! mode requires an active delegation, exact route, paths, budgets, deadline
+//! and tool subset; isolated mode remains fail-closed. Authorization never
+//! moves risk, delivery or quality policy to a model, Worker or container label.
 
 use super::*;
 
@@ -168,9 +168,15 @@ impl Database {
             )));
         }
         if provider {
-            if !input.allowed_tools.is_empty() {
+            let allowed = ["write_file", "run_command"];
+            let mut seen = std::collections::BTreeSet::new();
+            if input
+                .allowed_tools
+                .iter()
+                .any(|tool| !allowed.contains(&tool.as_str()) || !seen.insert(tool))
+            {
                 return Err(Error::Forbidden(
-                    "provider tool mediation is not implemented; allowedTools must be empty".into(),
+                    "provider tools must be a unique subset of write_file and run_command".into(),
                 ));
             }
             if input.provider.is_empty()
@@ -235,6 +241,11 @@ impl Database {
                 input.max_attempts,
             )
             .await?;
+        }
+        if fixture && !input.allowed_tools.is_empty() {
+            return Err(Error::Forbidden(
+                "fixture authorization cannot grant provider tools".into(),
+            ));
         }
         let now = Utc::now().to_rfc3339();
         let record = CampaignAuthorizationRecord {

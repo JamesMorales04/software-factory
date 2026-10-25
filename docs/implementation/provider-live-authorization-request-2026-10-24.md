@@ -17,8 +17,8 @@ Product Owner's explicit approval of this envelope.
 | Input / output / total token ceiling | 8,000 / 2,000 / 10,000 |
 | Cost ceiling | 0.02 USD equivalent (2,000,000 micros) |
 | Deadline | 120 seconds |
-| Provider tools | none; `allowedTools=[]`; any tool part fails the Attempt |
-| Allowed filesystem path | `src` only |
+| Provider tools | `write_file` and `run_command` only; every command must exactly match a frozen ActionSpec check |
+| Allowed filesystem path | `src` only; bounded source context up to 16 files/64 KiB; credential-shaped names excluded |
 | Retries | none |
 | Cleanup | session DELETE followed by GET 404; otherwise the session is unresolved and blocks replacement |
 | Candidate path | Worker → durable intent → provider patch → Supervisor validated apply → CandidateRevision → sandboxed verifier → independent reviewer → deterministic gate |
@@ -28,9 +28,11 @@ Product Owner's explicit approval of this envelope.
 - The credential is renewed and the operator confirms the `opencode-go` route.
 - The fake-provider E2E and exact-head CI remain green.
 - The Worker holds the credential; the Supervisor/sandbox never receives it.
-- The provider receives only the bounded objective/allowed-path prompt and an
-  empty session directory in this tool-free slice. A live run therefore proves
-  the execution and evidence path, not full repository-context coding.
+- The provider receives bounded source context and may return file writes plus a
+  frozen-check command. The Supervisor executes the command in the sandbox; the
+  provider never receives host workspace access or credentials. Multi-turn
+  provider tool events and permission decisions remain out of scope for this
+  envelope.
 - No retry, alternate model or silent provider substitution is permitted.
 
 ## Required evidence after a run

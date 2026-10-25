@@ -142,6 +142,21 @@ pub struct ApplyFilesRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WriteFilesRequest {
+    pub allowed_paths: Vec<String>,
+    pub files: Vec<AppliedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ToolRunRequest {
+    pub image: String,
+    pub argv: Vec<String>,
+    pub timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionResult {
     pub exit_code: Option<i32>,
@@ -674,44 +689,153 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         Ok(record.handle())
     }
 
+    pub async fn write_files(
+        &self,
+        workspace_id: &str,
+        input: &WriteFilesRequest,
+    ) -> Result<WorkspaceHandle, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        validate_files(&input.allowed_paths, &input.files)?;
+        let _write = self.lock.lock().await;
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Allocated {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.reset_to_base()?;
+        write_files_to_workspace(&workspace, &input.files)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        Ok(record.handle())
+    }
+
+    pub async fn run_tool(
+        &self,
+        workspace_id: &str,
+        input: &ToolRunRequest,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        if input.timeout_secs == 0
+            || Duration::from_secs(input.timeout_secs) > MAX_EXECUTION_RUNTIME
+        {
+            return Err(ExecutionError::Invalid(
+                "tool timeout is outside the configured bound".into(),
+            ));
+        }
+        let _write = self.lock.lock().await;
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status != WorkspaceStatus::Allocated {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        let snapshot = tokio::task::spawn_blocking({
+            let path = workspace.path().to_owned();
+            move || workspace_archive::snapshot(&path)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("snapshot task: {error}")))??;
+        self.backend
+            .import_volume(&record.volume, &snapshot.bytes)
+            .await?;
+        let container = format!("{CONTAINER_PREFIX}{}", Uuid::new_v4());
+        record.status = WorkspaceStatus::Running;
+        record.container = Some(container.clone());
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        let result = self
+            .backend
+            .run(
+                &record.volume,
+                &container,
+                &input.image,
+                &input.argv,
+                Duration::from_secs(input.timeout_secs),
+            )
+            .await;
+        let exported = self.backend.export_volume(&record.volume).await;
+        let _ = self.backend.remove_container(&container).await;
+        let _ = self.backend.remove_volume(&record.volume).await;
+        record.container = None;
+        record.updated_at_ms = now_ms();
+        let (result, exported) = match (result, exported) {
+            (Ok(result), Ok(exported)) => (result, exported),
+            (Err(error), _) | (_, Err(error)) => {
+                record.status = WorkspaceStatus::Failed;
+                record.error = Some(error.to_string());
+                let _ = self.write_record(&record);
+                return Err(error);
+            }
+        };
+        let staging = self
+            .workspace_root
+            .join(format!("stage-{}", Uuid::new_v4()));
+        tokio::task::spawn_blocking({
+            let bytes = exported;
+            let staging = staging.clone();
+            move || workspace_archive::extract(&bytes, &staging)
+        })
+        .await
+        .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))??;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        workspace.replace_contents(&staging)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        record.status = WorkspaceStatus::Allocated;
+        record.error = if result.exit_code == Some(0) {
+            None
+        } else {
+            Some(format!("tool exited with {:?}", result.exit_code))
+        };
+        self.write_record(&record)?;
+        Ok(ExecutionResult {
+            exit_code: result.exit_code,
+            stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+            stdout_truncated: result.stdout_truncated,
+            stderr_truncated: result.stderr_truncated,
+            candidate: None,
+            snapshot_sha256: snapshot.sha256,
+            workspace: record.handle(),
+            confinement: confinement(&input.image),
+        })
+    }
+
+    pub async fn finalize_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<CandidateRevision, ExecutionError> {
+        validate_workspace_id(workspace_id)?;
+        let _write = self.lock.lock().await;
+        let mut record = self.find_by_id(workspace_id)?;
+        if record.status == WorkspaceStatus::Completed {
+            return record.candidate.ok_or_else(|| {
+                ExecutionError::Invalid("completed workspace has no candidate".into())
+            });
+        }
+        if record.status != WorkspaceStatus::Allocated {
+            return Err(ExecutionError::Conflict);
+        }
+        let workspace = self.open_existing(&record)?;
+        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        let candidate =
+            workspace.commit_all(&format!("factory provider attempt {}", record.attempt_id))?;
+        record.status = WorkspaceStatus::Completed;
+        record.candidate = Some(candidate.clone());
+        record.error = None;
+        record.updated_at_ms = now_ms();
+        self.write_record(&record)?;
+        let _ = self.backend.remove_volume(&record.volume).await;
+        Ok(candidate)
+    }
+
     pub async fn apply_files(
         &self,
         workspace_id: &str,
         input: &ApplyFilesRequest,
     ) -> Result<CandidateRevision, ExecutionError> {
         validate_workspace_id(workspace_id)?;
-        if input.allowed_paths.is_empty() {
-            return Err(ExecutionError::Invalid(
-                "applying provider files requires an explicit allowed-path scope".into(),
-            ));
-        }
-        if input.files.is_empty() || input.files.len() > 64 {
-            return Err(ExecutionError::Invalid(
-                "provider apply requires 1..=64 files".into(),
-            ));
-        }
-        let mut total = 0usize;
-        for file in &input.files {
-            if !crate::workspace::is_safe_repository_path(&file.path)
-                || !crate::workspace::path_covered(&file.path, &input.allowed_paths)
-            {
-                return Err(ExecutionError::Invalid(format!(
-                    "provider file path {:?} is outside the allowed scope",
-                    file.path
-                )));
-            }
-            if file.content.len() > 256 * 1024 {
-                return Err(ExecutionError::Invalid(
-                    "provider file exceeds the per-file bound".into(),
-                ));
-            }
-            total = total.saturating_add(file.content.len());
-        }
-        if total > 1024 * 1024 {
-            return Err(ExecutionError::Invalid(
-                "provider files exceed the total bound".into(),
-            ));
-        }
+        validate_files(&input.allowed_paths, &input.files)?;
         let _write = self.lock.lock().await;
         let mut record = self.find_by_id(workspace_id)?;
         if record.status == WorkspaceStatus::Completed {
@@ -725,22 +849,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let workspace = self.open_existing(&record)?;
         workspace.reset_to_base()?;
         let result = (|| -> Result<CandidateRevision, ExecutionError> {
-            for file in &input.files {
-                let target = workspace.path().join(&file.path);
-                let parent = target
-                    .parent()
-                    .ok_or_else(|| ExecutionError::Invalid("file path has no parent".into()))?;
-                ensure_no_symlink_components(workspace.path(), parent)?;
-                std::fs::create_dir_all(parent)?;
-                if let Ok(metadata) = std::fs::symlink_metadata(&target)
-                    && (metadata.file_type().is_symlink() || !metadata.is_file())
-                {
-                    return Err(ExecutionError::Invalid(
-                        "provider target is not a regular file".into(),
-                    ));
-                }
-                std::fs::write(&target, &file.content)?;
-            }
+            write_files_to_workspace(&workspace, &input.files)?;
             workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
             Ok(workspace.commit_all(&format!("factory provider attempt {}", record.attempt_id))?)
         })();
@@ -1079,6 +1188,65 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+fn validate_files(allowed_paths: &[String], files: &[AppliedFile]) -> Result<(), ExecutionError> {
+    if allowed_paths.is_empty() {
+        return Err(ExecutionError::Invalid(
+            "provider files require an explicit allowed-path scope".into(),
+        ));
+    }
+    if files.is_empty() || files.len() > 64 {
+        return Err(ExecutionError::Invalid(
+            "provider files require 1..=64 entries".into(),
+        ));
+    }
+    let mut total = 0usize;
+    for file in files {
+        if !crate::workspace::is_safe_repository_path(&file.path)
+            || !crate::workspace::path_covered(&file.path, allowed_paths)
+        {
+            return Err(ExecutionError::Invalid(format!(
+                "provider file path {:?} is outside the allowed scope",
+                file.path
+            )));
+        }
+        if file.content.len() > 256 * 1024 {
+            return Err(ExecutionError::Invalid(
+                "provider file exceeds the per-file bound".into(),
+            ));
+        }
+        total = total.saturating_add(file.content.len());
+    }
+    if total > 1024 * 1024 {
+        return Err(ExecutionError::Invalid(
+            "provider files exceed the total bound".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_files_to_workspace(
+    workspace: &crate::workspace::AttemptWorkspace,
+    files: &[AppliedFile],
+) -> Result<(), ExecutionError> {
+    for file in files {
+        let target = workspace.path().join(&file.path);
+        let parent = target
+            .parent()
+            .ok_or_else(|| ExecutionError::Invalid("file path has no parent".into()))?;
+        ensure_no_symlink_components(workspace.path(), parent)?;
+        std::fs::create_dir_all(parent)?;
+        if let Ok(metadata) = std::fs::symlink_metadata(&target)
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            return Err(ExecutionError::Invalid(
+                "provider target is not a regular file".into(),
+            ));
+        }
+        std::fs::write(&target, &file.content)?;
+    }
+    Ok(())
 }
 
 fn ensure_no_symlink_components(root: &Path, path: &Path) -> Result<(), ExecutionError> {

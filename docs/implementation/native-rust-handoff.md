@@ -647,3 +647,20 @@ cleanup and full candidate/verifier/reviewer/gate evidence. **No live call is
 authorized until the Product Owner approves that envelope.** The current
 deterministic path is a real provider-protocol fixture, not a live-model
 certification.
+
+## Source-aware mediated-provider checkpoint (2026-10-24)
+
+The provider fixture now supplies bounded source context and mediates tools:
+the trusted Worker reads up to 16 allowed files (64 KiB total), excludes
+credential-shaped names, and sends the context to the provider. The provider
+returns file writes plus commands that must exactly match a frozen ActionSpec
+check. Core authorizes only `write_file`/`run_command`; the Supervisor writes
+files, executes the command in the rootless-Podman sandbox, and finalizes the
+exact candidate. The tool-free file-only mode remains available.
+
+Durable lifecycle coverage now includes INTENT → ACTIVE binding before prompt,
+terminal usage/cleanup receipts, CANCEL_REQUESTED on campaign cancellation or
+delegation revocation, unresolved-session dispatch blocking, and a recovery
+Worker that deletes a confirmed orphan after Core restart. The process-level
+recovery test passes. Multi-turn provider tool events, permission decisions and
+live model coding remain unimplemented and fail-closed.

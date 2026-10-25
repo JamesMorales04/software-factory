@@ -225,6 +225,24 @@ impl Database {
             .execute(&mut *transaction)
             .await?;
             sqlx::query::query(
+                "UPDATE provider_sessions
+                 SET state='CANCEL_REQUESTED',
+                     error='delegation revoked; external termination unconfirmed',
+                     updated_at=?2
+                 WHERE state IN ('INTENT','ACTIVE','ORPHANED')
+                   AND attempt_id IN (
+                     SELECT a.id FROM attempts a
+                     JOIN runs r ON r.id=a.run_id
+                     JOIN campaigns c ON c.id=r.campaign_id
+                     JOIN lead_requests l ON l.action_id=c.action_id
+                     WHERE l.delegation_id=?1
+                   )",
+            )
+            .bind(id)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query::query(
                 "DELETE FROM worker_leases
                  WHERE attempt_id IN (
                    SELECT a.id FROM attempts a

@@ -63,7 +63,7 @@ pub(crate) fn provider() -> Result<(), String> {
         "--locked",
         "--test",
         "e2e_fixture_dispatch",
-        "provider_backed_campaign_reaches_accepted_gate_without_tools",
+        "provider_backed_campaign_reaches_accepted_gate_with_source_and_tools",
     ])
 }
 

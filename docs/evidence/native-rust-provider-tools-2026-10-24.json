@@ -1,0 +1,52 @@
+{
+  "schema": "factory.provider-fixture-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "result": "PASS",
+  "provider_mode": "TRUSTED_LOCAL_PROVIDER",
+  "provider": "opencode",
+  "model": "deepseek-v4.1-flash",
+  "fixture": "deterministic loopback OpenCode fake server with delayed/faultable responses",
+  "flow": [
+    "exact project/action/delegation/campaign authorization with tool subset and budget",
+    "Worker claim and durable provider intent",
+    "provider session creation, ACTIVE identity binding before prompt",
+    "bounded source context from frozen allowed paths",
+    "provider file plan plus command selected from frozen checks",
+    "Supervisor file write, sandboxed command execution and finalize",
+    "immutable CandidateRevision",
+    "sandboxed verifier, independent reviewer and ACCEPTED gate",
+    "session delete plus GET 404 cleanup receipt"
+  ],
+  "negative_coverage": [
+    "wrong model route and missing delegation rejected",
+    "tool outside write_file/run_command rejected",
+    "out-of-scope/duplicate/oversized file rejected",
+    "command not matching a frozen check rejected",
+    "usage over budget records truthful usage and blocks completion",
+    "completed without cleanup rejected before mutation",
+    "unresolved session blocks replacement dispatch",
+    "recovery Worker cleans orphaned session after Core restart and confirms absence",
+    "campaign cancellation marks unresolved provider sessions CANCEL_REQUESTED",
+    "provider prompt does not contain the credential and Supervisor log is asserted clean"
+  ],
+  "author_run_checks": {
+    "cargo xtask check": "PASS (245 tests + 2 ignored, fmt, strict Clippy, build, docs, twelve migrations, audit clean for 276 dependencies)",
+    "cargo xtask e2e provider": "PASS",
+    "cargo xtask e2e office": "PASS",
+    "repository hygiene strict": "PASS (0 findings)",
+    "architecture": "PASS"
+  },
+  "not_claimed": [
+    "live model coding compatibility",
+    "multi-turn provider tool-event reconciliation",
+    "provider credential-confinement certification",
+    "ISOLATED execution certification",
+    "independent human acceptance",
+    "merge or deployment authorization"
+  ],
+  "provider_paid_turns": 0
+}

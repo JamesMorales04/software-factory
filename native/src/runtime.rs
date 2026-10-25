@@ -528,7 +528,7 @@ pub async fn probe_opencode(workspace: &Path) -> Result<ProbeResult, Error> {
 
 /// Opens the authenticated OpenCode event stream after verifying that credentials
 /// will only be sent to a loopback origin.
-async fn open_opencode_event_stream(
+pub async fn open_opencode_event_stream(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -557,7 +557,7 @@ async fn open_opencode_event_stream(
 
 /// Creates one OpenCode session through the loopback provider API and checks
 /// that the returned session is bound to the requested workspace.
-async fn create_opencode_session(
+pub async fn create_opencode_session(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -585,7 +585,7 @@ async fn create_opencode_session(
 
 /// Submits a prompt asynchronously to one exact session. The accepted HTTP
 /// request is not terminal completion; callers must reconcile the session SSE.
-async fn submit_opencode_prompt(
+pub async fn submit_opencode_prompt(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -613,7 +613,7 @@ async fn submit_opencode_prompt(
 
 /// Requests abort for the exact session. A true HTTP response only confirms
 /// that the abort request was accepted; it does not prove interruption.
-async fn request_opencode_abort(
+pub async fn request_opencode_abort(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -640,7 +640,7 @@ async fn request_opencode_abort(
 }
 
 /// Deletes a session and confirms absence with a follow-up read.
-async fn delete_opencode_session(
+pub async fn delete_opencode_session(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -830,7 +830,7 @@ pub async fn execute_opencode_prompt_with_response(
     .await
 }
 
-fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
+pub fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
     Ok(reqwest::Client::builder()
         .timeout(timeout)
         .no_proxy()
@@ -838,7 +838,7 @@ fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
         .build()?)
 }
 
-async fn read_opencode_assistant_message(
+pub async fn read_opencode_assistant_message(
     client: &reqwest::Client,
     base_url: &str,
     password: &str,
@@ -874,7 +874,7 @@ async fn read_opencode_assistant_message(
     Ok(assistant)
 }
 
-async fn wait_for_session_created_event<S, B, E>(
+pub async fn wait_for_session_created_event<S, B, E>(
     stream: &mut S,
     parser: &mut SseParser,
     session_id: &str,

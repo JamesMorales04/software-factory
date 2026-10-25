@@ -61,6 +61,7 @@ pub struct ProviderSessionRecord {
     pub provider_mode: String,
     pub state: String,
     pub provider_session_id: String,
+    pub provider_directory: String,
     pub turn_id: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -179,6 +180,7 @@ impl Database {
             provider_mode: input.provider_mode.clone(),
             state: "INTENT".into(),
             provider_session_id: String::new(),
+            provider_directory: String::new(),
             turn_id: String::new(),
             input_tokens: 0,
             output_tokens: 0,
@@ -285,13 +287,18 @@ impl Database {
             || next_output > max_output
             || next_total > max_total
             || next_cost > max_cost;
+        let cancel_requested = state == "CANCEL_REQUESTED";
         let stored_state = if over_budget {
             "FAILED"
+        } else if cancel_requested && input.state == "COMPLETED" {
+            "CANCELLED"
         } else {
             input.state.as_str()
         };
         let error = if over_budget {
             "provider usage exceeded the authorized budget"
+        } else if cancel_requested && input.state == "COMPLETED" {
+            "cancellation was requested before provider completion"
         } else {
             input.error.as_str()
         };
@@ -330,7 +337,114 @@ impl Database {
                 "provider usage exceeded the authorized budget".into(),
             ));
         }
+        if cancel_requested && input.state == "COMPLETED" {
+            return Err(Error::Forbidden(
+                "provider cancellation was requested before completion".into(),
+            ));
+        }
         Ok(record)
+    }
+
+    pub async fn mark_provider_active(
+        &self,
+        session_record_id: &str,
+        worker_id: &str,
+        generation: i64,
+        provider_session_id: &str,
+        provider_directory: &str,
+    ) -> Result<ProviderSessionRecord, Error> {
+        if provider_session_id.trim().is_empty() {
+            return Err(Error::Invalid("provider session id"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let changed = sqlx::query::query(
+            "UPDATE provider_sessions
+             SET state='ACTIVE',provider_session_id=?1,provider_directory=?2,updated_at=?3
+             WHERE session_record_id=?4 AND worker_id=?5 AND generation=?6 AND state='INTENT'",
+        )
+        .bind(provider_session_id)
+        .bind(provider_directory)
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_record_id)
+        .bind(worker_id)
+        .bind(generation)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict("provider session is not an owned intent"));
+        }
+        record_event(
+            &mut transaction,
+            session_record_id,
+            "provider.session_active",
+            "provider session identity bound after external creation",
+        )
+        .await?;
+        let record = load_provider_session(&mut transaction, session_record_id).await?;
+        transaction.commit().await?;
+        Ok(record)
+    }
+
+    pub async fn record_provider_cleanup(
+        &self,
+        session_record_id: &str,
+        worker_id: &str,
+        generation: i64,
+        cleanup_receipt: &str,
+    ) -> Result<ProviderSessionRecord, Error> {
+        if cleanup_receipt.trim().is_empty() {
+            return Err(Error::Invalid("provider cleanup receipt"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let changed = sqlx::query::query(
+            "UPDATE provider_sessions
+             SET state='CLEANED',cleanup_receipt=?1,updated_at=?2
+             WHERE session_record_id=?3 AND worker_id=?4 AND generation=?5
+               AND state IN ('INTENT','ACTIVE','CANCEL_REQUESTED','CANCELLED','ORPHANED')",
+        )
+        .bind(cleanup_receipt)
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_record_id)
+        .bind(worker_id)
+        .bind(generation)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict(
+                "provider session is not cleanable by this owner",
+            ));
+        }
+        record_event(
+            &mut transaction,
+            session_record_id,
+            "provider.session_cleaned",
+            "external cleanup confirmed",
+        )
+        .await?;
+        let record = load_provider_session(&mut transaction, session_record_id).await?;
+        transaction.commit().await?;
+        Ok(record)
+    }
+
+    /// Recovery Worker view: sessions whose external lifecycle is not terminal.
+    pub async fn unresolved_provider_sessions(&self) -> Result<Vec<ProviderSessionRecord>, Error> {
+        let ids: Vec<(String,)> = sqlx::query_as::query_as(
+            "SELECT session_record_id FROM provider_sessions
+             WHERE state IN ('INTENT','ACTIVE','CANCEL_REQUESTED','ORPHANED')
+             ORDER BY created_at,session_record_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut connection = self.pool.acquire().await?;
+        let mut records = Vec::with_capacity(ids.len());
+        for (id,) in ids {
+            records.push(load_provider_session(&mut connection, &id).await?);
+        }
+        Ok(records)
     }
 
     pub async fn provider_session(
@@ -371,7 +485,9 @@ async fn load_provider_session(
     use sqlx::row::Row;
     let row = sqlx::query::query(
         "SELECT session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,
-                state,COALESCE(provider_session_id,'') AS provider_session_id,COALESCE(turn_id,'') AS turn_id,input_tokens,output_tokens,
+                state,COALESCE(provider_session_id,'') AS provider_session_id,
+                COALESCE(provider_directory,'') AS provider_directory,
+                COALESCE(turn_id,'') AS turn_id,input_tokens,output_tokens,
                 total_tokens,cost_micros,usage_known,COALESCE(cleanup_receipt,'') AS cleanup_receipt,COALESCE(error,'') AS error,
                 created_at,updated_at
          FROM provider_sessions WHERE session_record_id=?1",
@@ -390,6 +506,7 @@ async fn load_provider_session(
         provider_mode: row.try_get("provider_mode")?,
         state: row.try_get("state")?,
         provider_session_id: row.try_get("provider_session_id")?,
+        provider_directory: row.try_get("provider_directory")?,
         turn_id: row.try_get("turn_id")?,
         input_tokens: u64::try_from(row.try_get::<i64, _>("input_tokens")?)
             .map_err(|_| Error::Invalid("stored provider input usage"))?,

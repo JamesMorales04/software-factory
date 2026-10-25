@@ -7,7 +7,10 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{lead::is_safe_relative_path, workspace::path_covered};
+use crate::{
+    lead::{SpecCheck, is_safe_relative_path},
+    workspace::path_covered,
+};
 
 pub const MAX_FILES: usize = 64;
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
@@ -23,7 +26,28 @@ pub struct PatchFile {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderPatch {
+    #[serde(default)]
     pub files: Vec<PatchFile>,
+    #[serde(default)]
+    pub commands: Vec<ProviderCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCommand {
+    pub argv: Vec<String>,
+    #[serde(default = "default_command_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_command_timeout() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPlan {
+    pub files: Vec<PatchFile>,
+    pub commands: Vec<ProviderCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,12 +79,20 @@ pub enum PatchError {
     FileSize,
     #[error("provider patch exceeds the total content bound")]
     TotalSize,
+    #[error("provider plan contains too many commands")]
+    TooManyCommands,
+    #[error("provider plan contains an invalid command")]
+    InvalidCommand,
 }
 
 pub fn extract_patch(
     message: &Value,
     allowed_paths: &[String],
 ) -> Result<Vec<PatchFile>, PatchError> {
+    Ok(extract_plan(message, allowed_paths)?.files)
+}
+
+pub fn extract_plan(message: &Value, allowed_paths: &[String]) -> Result<ProviderPlan, PatchError> {
     let parts = message
         .get("parts")
         .and_then(Value::as_array)
@@ -95,6 +127,10 @@ pub fn extract_patch(
     validate_patch(patch, allowed_paths)
 }
 
+pub fn command_matches_frozen_check(argv: &[String], checks: &[SpecCheck]) -> bool {
+    checks.iter().any(|check| check.command == argv)
+}
+
 pub fn extract_usage(message: &Value) -> ProviderUsage {
     let info = message.get("info").unwrap_or(&Value::Null);
     let tokens = info.get("tokens").unwrap_or(&Value::Null);
@@ -122,9 +158,26 @@ pub fn extract_usage(message: &Value) -> ProviderUsage {
 fn validate_patch(
     patch: ProviderPatch,
     allowed_paths: &[String],
-) -> Result<Vec<PatchFile>, PatchError> {
+) -> Result<ProviderPlan, PatchError> {
     if patch.files.is_empty() || patch.files.len() > MAX_FILES {
         return Err(PatchError::FileCount);
+    }
+    if patch.commands.len() > 8 {
+        return Err(PatchError::TooManyCommands);
+    }
+    for command in &patch.commands {
+        if command.argv.is_empty()
+            || command.argv.len() > 64
+            || command
+                .argv
+                .iter()
+                .any(|value| value.len() > 4096 || value.contains('\0'))
+            || command.argv.iter().map(String::len).sum::<usize>() > 16 * 1024
+            || command.timeout_secs == 0
+            || command.timeout_secs > 300
+        {
+            return Err(PatchError::InvalidCommand);
+        }
     }
     let mut seen = std::collections::BTreeSet::new();
     let mut total = 0usize;
@@ -146,7 +199,10 @@ fn validate_patch(
     if total > MAX_TOTAL_BYTES {
         return Err(PatchError::TotalSize);
     }
-    Ok(patch.files)
+    Ok(ProviderPlan {
+        files: patch.files,
+        commands: patch.commands,
+    })
 }
 
 fn strip_fence(text: &str) -> &str {
@@ -184,6 +240,44 @@ mod tests {
         assert!(usage.known);
         assert_eq!(usage.total_tokens, 30);
         assert_eq!(usage.cost_micros, 100);
+    }
+
+    #[test]
+    fn extracts_bounded_commands_and_rejects_malformed_ones() {
+        let plan = message(
+            "{\"files\":[{\"path\":\"src/a\",\"content\":\"a\"}],\"commands\":[{\"argv\":[\"cargo\",\"test\"],\"timeout_secs\":30}]}",
+        );
+        let extracted = extract_plan(&plan, &["src".into()]).unwrap();
+        assert_eq!(extracted.commands.len(), 1);
+        assert_eq!(extracted.commands[0].argv, vec!["cargo", "test"]);
+        let bad = message(
+            "{\"files\":[{\"path\":\"src/a\",\"content\":\"a\"}],\"commands\":[{\"argv\":[],\"timeout_secs\":30}]}",
+        );
+        assert_eq!(
+            extract_plan(&bad, &["src".into()]),
+            Err(PatchError::InvalidCommand)
+        );
+    }
+
+    #[test]
+    fn provider_commands_require_an_exact_frozen_check_match() {
+        let checks = vec![SpecCheck {
+            id: "functional".into(),
+            kind: crate::lead::CheckKind::Functional,
+            description: "functional".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 30,
+        }];
+        assert!(command_matches_frozen_check(
+            &["cargo".into(), "test".into()],
+            &checks
+        ));
+        assert!(!command_matches_frozen_check(
+            &["cargo".into(), "test".into(), "--all".into()],
+            &checks
+        ));
+        assert!(!command_matches_frozen_check(&["sh".into()], &checks));
     }
 
     #[test]

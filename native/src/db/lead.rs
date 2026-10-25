@@ -918,6 +918,22 @@ impl Database {
         .execute(&mut *transaction)
         .await?;
         sqlx::query::query(
+            "UPDATE provider_sessions
+             SET state='CANCEL_REQUESTED',
+                 error='campaign cancelled; external termination unconfirmed',
+                 updated_at=?2
+             WHERE state IN ('INTENT','ACTIVE','ORPHANED')
+               AND attempt_id IN (
+                 SELECT a.id FROM attempts a
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE r.campaign_id=?1
+               )",
+        )
+        .bind(&id)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
             "DELETE FROM worker_leases
              WHERE attempt_id IN (
                SELECT a.id FROM attempts a
@@ -2853,6 +2869,18 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query::query(
+            "INSERT INTO provider_sessions
+             (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,state,
+              provider_session_id,provider_directory,created_at,updated_at)
+             VALUES ('provider-cancel','attempt-cancel','worker-cancel',1,'opencode',
+                     'deepseek-v4.1-flash','build','ACTIVE','ses_cancel','/tmp/provider',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
         let cancelled = db
             .cancel_campaign("campaign-cancel", "operator", "owner request")
             .await
@@ -2903,6 +2931,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(integration_status, "CANCELLED");
+        let (provider_state,): (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_sessions WHERE session_record_id='provider-cancel'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(provider_state, "CANCEL_REQUESTED");
 
         let again = db
             .cancel_campaign("campaign-cancel", "operator", "repeat")

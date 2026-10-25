@@ -405,6 +405,7 @@ capabilities:
   refs:
     adr:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
+    - docs/architecture/decisions/ADR-0022-source-aware-provider-plan-mediation.md
     contract:
     - docs/contracts/run-worker-s2.md
     source:
@@ -428,8 +429,9 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - A deterministic tool-free provider patch path is implemented end-to-end. Live Codex/OpenCode coding, provider
-    tool mediation, source-context delivery and ISOLATED dispatch remain fail-closed.
+  - A deterministic source-aware provider plan path supports bounded file writes and frozen-check command execution
+    through the Supervisor. Multi-turn provider tool events, live Codex/OpenCode coding and ISOLATED dispatch remain
+    fail-closed.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
 - id: CAP-005

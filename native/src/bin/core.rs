@@ -36,6 +36,34 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ProviderSessionRef {
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderActive {
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+    provider_session_id: String,
+    #[serde(default)]
+    provider_directory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderCleanup {
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+    cleanup_receipt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CancelCampaignRequest {
     #[serde(default)]
     reason: String,
@@ -257,7 +285,14 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
         .route("/worker/provider_intent", post(worker_provider_intent))
+        .route("/worker/provider_active", post(worker_provider_active))
         .route("/worker/provider_terminal", post(worker_provider_terminal))
+        .route("/worker/provider_cleanup", post(worker_provider_cleanup))
+        .route("/worker/provider_state", post(worker_provider_state))
+        .route(
+            "/worker/provider_unresolved",
+            get(worker_provider_unresolved),
+        )
         .route("/worker/candidate", post(worker_candidate))
         .route(
             "/worker/integrated_candidate",
@@ -713,6 +748,86 @@ async fn worker_provider_intent(
         Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn worker_provider_active(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderActive>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .mark_provider_active(
+            &input.session_record_id,
+            &input.worker_id,
+            input.generation,
+            &input.provider_session_id,
+            &input.provider_directory,
+        )
+        .await
+    {
+        Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_cleanup(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderCleanup>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_provider_cleanup(
+            &input.session_record_id,
+            &input.worker_id,
+            input.generation,
+            &input.cleanup_receipt,
+        )
+        .await
+    {
+        Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_state(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderSessionRef>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.provider_session(&input.session_record_id).await {
+        Ok(record)
+            if record.worker_id == input.worker_id && record.generation == input.generation =>
+        {
+            Json(record).into_response()
+        }
+        Ok(_) => StatusCode::FORBIDDEN.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_unresolved(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(worker_id) = query.get("worker_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !worker_session_authorized(&app, &headers, worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.unresolved_provider_sessions().await)
 }
 
 async fn worker_provider_terminal(

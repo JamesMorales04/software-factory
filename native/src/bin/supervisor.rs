@@ -19,7 +19,8 @@ use axum::{
 use factory_native::{
     execution::{
         ApplyFilesRequest, BoundedOutput, ExecuteWorkspace, ExecutionError, MAX_EXECUTION_RUNTIME,
-        RootlessPodmanVolumes, VolumeBackend, WorkspaceAllocation, WorkspaceManager,
+        RootlessPodmanVolumes, ToolRunRequest, VolumeBackend, WorkspaceAllocation,
+        WorkspaceManager, WriteFilesRequest,
     },
     workspace::WorkspaceError,
     workspace_archive::ArchiveError,
@@ -282,6 +283,9 @@ fn build_router<B: factory_native::execution::VolumeBackend + 'static>(app: Arc<
         .route("/v1/workspaces/{workspace_id}", get(status).delete(cleanup))
         .route("/v1/workspaces/{workspace_id}/execute", post(execute))
         .route("/v1/workspaces/{workspace_id}/apply", post(apply_files))
+        .route("/v1/workspaces/{workspace_id}/write", post(write_files))
+        .route("/v1/workspaces/{workspace_id}/run", post(run_tool))
+        .route("/v1/workspaces/{workspace_id}/finalize", post(finalize))
         .route("/v1/integrate", post(integrate))
         .route("/v1/reconcile", post(reconcile))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -343,6 +347,85 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.apply_files(&workspace_id, &input).await {
+        Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn write_files<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<WriteFilesRequest>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.write_files(&workspace_id, &input).await {
+        Ok(handle) => (StatusCode::OK, Json(handle)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn run_tool<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(input): Json<ToolRunRequest>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !app.allowed_images.contains(&input.image) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"image is not allowlisted"})),
+        )
+            .into_response();
+    }
+    if input.argv.is_empty() || input.argv.len() > MAX_ARGV_ITEMS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid tool argv"})),
+        )
+            .into_response();
+    }
+    let mut total = 0usize;
+    for argument in &input.argv {
+        if argument.len() > MAX_ARG_BYTES || argument.as_bytes().contains(&0) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid tool argument"})),
+            )
+                .into_response();
+        }
+        total = total.saturating_add(argument.len());
+    }
+    if total > MAX_ARGV_BYTES
+        || input.timeout_secs == 0
+        || Duration::from_secs(input.timeout_secs) > app.max_runtime
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"tool request exceeds bounds"})),
+        )
+            .into_response();
+    }
+    match app.manager.run_tool(&workspace_id, &input).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => execution_error(error),
+    }
+}
+
+async fn finalize<B: factory_native::execution::VolumeBackend>(
+    State(app): State<Arc<App<B>>>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+) -> Response {
+    if !authorized(&headers, &app.token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.manager.finalize_workspace(&workspace_id).await {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
     }
