@@ -768,7 +768,7 @@ E2E, sandboxed actual-provider work turns, model Lead, semantic reviewer,
 CAP-014 integration and telemetry.
 
 
-## Per-turn budget and model Lead checkpoint (2026-10-25) — code `a16f9f35df88e95904547a6fe6212f94f1b4e396`
+## Per-turn budget and model Lead checkpoint (2026-10-25) — `e402b04ca13924279b41288793dafc2d744726b8` (code `a16f9f35df88e95904547a6fe6212f94f1b4e396`)
 
 Core now issues short-lived per-turn reservations bound to the provider session,
 Attempt, lease generation, provider, model, request digest and expiry. It
@@ -781,5 +781,8 @@ exhaustion, cancellation, stale generation and unknown usage.
 A provider-backed Lead assessor is implemented with strict generated-schema and
 domain validation; a deterministic mock-model unit test passes. The full
 Worker→broker→Core turn-budget E2E and objective→assessment→frozen Campaign E2E
-remain to be run. Fourteen migrations and 271 tests pass locally; exact-head CI
-pending.
+remain to be run. Fourteen migrations and 271 tests pass locally. Exact-head CI at `e402b04ca13924279b41288793dafc2d744726b8` passed Native Rust (both runs), Office browser (both
+runs) and governance. Full Worker→broker→Core per-turn budget E2E and
+objective→assessment→frozen Campaign E2E are still NOT_RUN. Semantic Reviewer,
+CAP-014 integration, browser test server, telemetry and human certification
+remain open.
