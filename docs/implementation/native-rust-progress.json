@@ -80,17 +80,17 @@
   "delivery_status": "PR #17 Draft at e402b04ca13924279b41288793dafc2d744726b8; per-turn budget reservations and strict model Lead assessor; full E2E, semantic Reviewer, CAP-014, telemetry and human certification absent.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Record exact-head CI; then complete Worker/broker/Core per-turn E2E, model Lead objective-to-frozen-Campaign E2E, semantic Reviewer, CAP-014 and telemetry.",
+  "next_task": "Record exact-head CI; then implement semantic Reviewer, CAP-014 integration, browser test server, WorkGraph cancellation/restart, Office multi-unit/recovery and telemetry.",
   "completion_gates": {
     "G1": "PARTIAL: one Rust architecture; provider execution and isolation incomplete",
     "G2": "PARTIAL: read-only provider smokes only; coding lifecycle absent",
     "G3": "PASS: zero tracked Go files; strict hygiene passes locally and in exact-head CI",
     "G4": "PASS: only Rust-native Native Rust and Governance consistency workflows are active",
-    "G5": "PARTIAL: per-turn budget authorization and model Lead assessor added; full Worker/broker/Core and Lead Campaign E2E pending",
+    "G5": "PASS: per-turn budgeted provider and model Lead Campaign reach ACCEPTED deterministically",
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: running-operation fencing and real Podman evidence added; OS quota/cgroups, human certification and ISOLATED absent",
-    "G9": "PARTIAL: exact-head Rust CI green at e402b04ca13924279b41288793dafc2d744726b8; full budget/Lead E2E and human acceptance absent",
+    "G9": "PARTIAL: 271 local Rust tests and full budget/Lead E2E pass; exact-head CI and human acceptance pending",
     "G10": "PASS: architecture, PR-impact and strict hygiene at e402b04ca13924279b41288793dafc2d744726b8",
     "G11": "PARTIAL: independent model review/follow-ups and actual provider compatibility; human certification absent",
     "G12": "PENDING: final merge/scope authorization",
@@ -111,7 +111,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "a16f9f35df88e95904547a6fe6212f94f1b4e396",
+  "verified_code_commit_sha": "3d76e8ed61173a08a029e3c44e3743d3823cf5da",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -119,13 +119,13 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI at e402b04ca13924279b41288793dafc2d744726b8: Native Rust both runs, Office both runs and governance PASS. Per-turn budget and model Lead unit tests pass; full Worker/broker/Core and Lead Campaign E2E remain NOT_RUN.",
+  "ci_at_update": "Exact-head CI pending for code candidate 3d76e8e.",
   "author_verification_at_code_sha": {
-    "sha": "a16f9f35df88e95904547a6fe6212f94f1b4e396",
+    "sha": "3d76e8ed61173a08a029e3c44e3743d3823cf5da",
     "binding": "AUTHOR_RUN_WORKING_TREE",
     "rust": "PASS: 271 tests + 2 ignored, fmt, strict Clippy, build, docs, fourteen migrations, audit, architecture, strict hygiene",
-    "per_turn_budget": "PASS: Core authorization/settlement, exhaustion, stale generation, cancellation, unknown usage and broker policy tests",
-    "model_lead": "PARTIAL: strict model assessor unit test; objective-to-Campaign E2E not run",
+    "per_turn_budget": "PASS: full Worker -> Core -> egress broker -> mock upstream -> four settled reservations -> ACCEPTED",
+    "model_lead": "PASS: model assessment -> frozen plan -> authorized Campaign -> Worker/verifier/reviewer -> ACCEPTED",
     "provider_e2e": "PASS",
     "office_browser": "PASS",
     "provider_paid_turns": 0

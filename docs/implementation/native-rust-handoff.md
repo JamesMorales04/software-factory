@@ -786,3 +786,22 @@ runs) and governance. Full Worker→broker→Core per-turn budget E2E and
 objective→assessment→frozen Campaign E2E are still NOT_RUN. Semantic Reviewer,
 CAP-014 integration, browser test server, telemetry and human certification
 remain open.
+
+
+## Full budget and model Lead E2E (2026-10-25) — code `3d76e8ed61173a08a029e3c44e3743d3823cf5da`
+
+The deterministic fixture provider now consumes the scoped egress broker on
+every prompt. Four prompts traverse Worker → Core per-turn authorization →
+egress broker → mock `/v1/chat/completions`, verify the canonical outbound
+digest, inject the upstream credential and settle four Core reservations. The
+resulting candidate passes the verifier, reviewer and deterministic gate.
+
+The model-backed Lead path now runs objective → model assessment → strict typed
+validation → bounded WorkGraph proposal → frozen plan → authorized Campaign →
+Worker/verifier/reviewer → ACCEPTED. The mock model receives the strict schema
+request; malformed/invalid output is rejected by Core validation.
+
+Remaining: semantic Reviewer, CAP-014 integration, Factory-managed browser test
+server, WorkGraph cancellation/restart E2E, Office multi-unit/recovery
+projections, telemetry/OTLP, hard quota/cgroup limits, full crash E2E, human
+certification and live coding.

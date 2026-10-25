@@ -4,8 +4,8 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "candidate_sha": "a16f9f35df88e95904547a6fe6212f94f1b4e396",
-  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "candidate_sha": "3d76e8ed61173a08a029e3c44e3743d3823cf5da",
+  "binding": "AUTHOR_RUN_WORKING_TREE",
   "per_turn_budget": {
     "core_authorization": "POST /worker/provider_turn_authorize",
     "core_settlement": "POST /worker/provider_turn_settle",
@@ -24,15 +24,16 @@
       "unknown usage failed closed",
       "broker output rewrite and request-count exhaustion"
     ],
-    "worker_full_mock_upstream_e2e": "NOT_RUN",
-    "token_cost_exactness": "NOT_CLAIMED; strongest pre-request bounds plus post-response reconciliation"
+    "worker_full_mock_upstream_e2e": "PASS: four prompts -> Core authorization -> egress broker -> mock /v1/chat/completions -> four SETTLED reservations -> ACCEPTED candidate; upstream calls=4, injected credential only",
+    "token_cost_exactness": "NOT_CLAIMED; strongest pre-request bounds plus post-response reconciliation",
+    "request_digest": "PASS: fixture sends the canonical Core-authorized body; broker verifies digest before output rewrite"
   },
   "model_lead": {
     "core_config": "FACTORY_LEAD_MODEL_URL/TOKEN/NAME",
     "mechanism": "MODEL",
     "strict_validation": "generated JSON Schema, typed decode, identity/evidence/WorkGraph/scope/route/budget validation",
     "unit_mock_model_test": "PASS",
-    "objective_to_frozen_campaign_e2e": "NOT_RUN"
+    "objective_to_frozen_campaign_e2e": "PASS: model assessment -> validated WorkGraph proposal -> frozen plan -> authorized Campaign -> Worker/verifier/reviewer -> ACCEPTED"
   },
   "tests": {
     "rust_tests_passed": 271,
@@ -42,9 +43,7 @@
     "office_browser": "PASS"
   },
   "not_claimed": [
-    "full Worker -> broker -> Core turn-budget E2E",
     "mathematically exact external spend ceiling",
-    "model Lead objective-to-frozen-Campaign E2E",
     "human security certification",
     "live provider coding",
     "ISOLATED certification"
