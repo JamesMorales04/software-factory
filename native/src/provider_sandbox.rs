@@ -77,8 +77,12 @@ impl ProviderSandbox {
         let mut command = Command::new(bwrap_binary());
         command
             .arg("--unshare-all")
+            .arg("--unshare-user")
             .arg("--die-with-parent")
             .arg("--new-session")
+            .arg("--disable-userns")
+            .arg("--cap-drop")
+            .arg("ALL")
             .arg("--clearenv")
             .arg("--ro-bind")
             .arg("/usr")
