@@ -139,6 +139,10 @@ pub struct WorkerAssignment {
     pub max_cost_micros: u64,
     pub deadline_secs: u64,
     pub allowed_tools: Vec<String>,
+    /// Populated by Core immediately before returning a claim. The database
+    /// layer never invents or stores this capability.
+    #[serde(default)]
+    pub attempt_grant: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

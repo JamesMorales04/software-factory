@@ -26,6 +26,8 @@ const bootstrap = token();
 const verifier = token();
 const reviewer = token();
 const supervisorToken = token();
+const attemptGrantKey = token();
+const supervisorCapabilityKey = token();
 const temp = join(
   tmpdir(),
   `factory-rust-office-${randomBytes(6).toString("hex")}`,
@@ -124,6 +126,7 @@ try {
       FACTORY_DATABASE: database,
       FACTORY_BIND: `127.0.0.1:${corePort}`,
       FACTORY_OPERATOR_TOKEN: operator,
+      FACTORY_ATTEMPT_GRANT_KEY: attemptGrantKey,
       FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
       FACTORY_VERIFIER_TOKEN: verifier,
       FACTORY_REVIEWER_TOKEN: reviewer,
@@ -139,6 +142,8 @@ try {
     env: {
       ...process.env,
       FACTORY_SUPERVISOR_TOKEN: supervisorToken,
+      FACTORY_ATTEMPT_GRANT_KEY: attemptGrantKey,
+      FACTORY_SUPERVISOR_CAPABILITY_KEY: supervisorCapabilityKey,
       FACTORY_SUPERVISOR_BIND: `127.0.0.1:${supervisorPort}`,
       FACTORY_SUPERVISOR_WORKSPACE_ROOT: supervisorWork,
       FACTORY_SUPERVISOR_STATE_ROOT: supervisorState,

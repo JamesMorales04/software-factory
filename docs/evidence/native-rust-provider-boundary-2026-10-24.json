@@ -1,0 +1,43 @@
+{
+  "schema": "factory.provider-boundary-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "PENDING_EXACT_HEAD",
+  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "topology": {
+    "provider_process": "bubblewrap --unshare-all user/pid/net/ipc/uts/cgroup namespace; empty HOME; read-only /usr; private 0700 session directory; no host repository, /run/user socket or external network",
+    "provider_transport": "host loopback TCP bridge requiring per-run Basic-auth capability; forwards only /event, /global/health, /doc and /session* to the sandbox Unix socket",
+    "long_lived_provider_credential": "trusted Worker only; never placed in the provider sandbox",
+    "supervisor_allocation": "Core-signed Attempt grant binding attempt, worker, generation, repository, base commit, ActionSpec digest and expiry",
+    "supervisor_workspace_operations": "per-Attempt HMAC capability bound to workspace, attempt and expiry; broad admin bearer rejected",
+    "tool_execution": "Supervisor rootless Podman named-volume container with no network, read-only root, dropped capabilities, no-new-privileges and resource limits"
+  },
+  "author_tests": {
+    "rust_tests_passed": 253,
+    "rust_tests_ignored": 2,
+    "migrations": 13,
+    "bubblewrap_unit_probe": "PASS: host HOME/repository/runtime socket absent; external TCP egress fails; credential env absent",
+    "bubblewrap_provider_broker": "PASS: missing/wrong capability 401; unbounded path 403; health 200",
+    "confined_multi_turn_provider_e2e": "PASS: four turns, denied read_file, mediated write_file/run_command, ACCEPTED gate",
+    "credential_environment": "PASS: provider environment has no FACTORY_PROVIDER_PASSWORD, operator/bootstrap/Supervisor tokens or Core URL",
+    "source_context": "PASS: .env and ordinary config.txt synthetic secrets absent from every provider prompt",
+    "capability_reuse": "PASS: capability for workspace A rejected on workspace B; admin bearer rejected; tampered capability rejected",
+    "attempt_grant_binding": "PASS: grant for another Attempt rejected; expired grant rejected",
+    "recovery": "PASS: explicitly unconfined fixture orphan cleanup after Core restart; sandboxed-session recovery NOT_IMPLEMENTED",
+    "office_browser": "PASS"
+  },
+  "not_claimed": [
+    "independent security review",
+    "credential-confinement certification",
+    "ISOLATED certification",
+    "live provider coding or sandboxed model egress",
+    "sandboxed provider-session recovery after Worker crash",
+    "disk quota isolation for the provider session bind mount",
+    "compromised Worker confinement",
+    "rootless Podman or bubblewrap kernel isolation certification",
+    "merge or deployment authorization"
+  ],
+  "provider_paid_turns": 0
+}

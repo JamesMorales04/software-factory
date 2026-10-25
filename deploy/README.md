@@ -38,6 +38,7 @@ the Core container.
 | `FACTORY_BIND` | CLI `0.0.0.0:8765` | Container interface; host publication stays loopback |
 | `FACTORY_CONTAINER_MODE` | CLI `1` | Container-mode opt-in |
 | `FACTORY_OPERATOR_TOKEN` | token env file | Operator API credential |
+| `FACTORY_ATTEMPT_GRANT_KEY` | token env file | Core-signed Supervisor allocation grant key |
 | `FACTORY_WORKER_BOOTSTRAP_TOKEN` | token env file | Worker registration credential |
 | `FACTORY_VERIFIER_TOKEN` | token env file | Verifier credential |
 | `FACTORY_REVIEWER_TOKEN` | token env file | Reviewer credential |
@@ -46,7 +47,7 @@ the Core container.
 | `FACTORY_SUPERVISOR_IMAGES` | host CLI | Exact fixture image allowlist |
 | `FACTORY_WORKER_FIXTURE_IMAGE` | host CLI | Fixture image passed to the Supervisor |
 
-The CLI generates four distinct role tokens into a mode `0600` env file
+The CLI generates six distinct secrets (four role tokens and two Supervisor/ Core keys) into a mode `0600` env file
 (`$XDG_CONFIG_HOME/factory/core.env` by default, or `FACTORY_ENV_FILE`) and
 passes it with `--env-file`. It prints only the file path, never the tokens.
 

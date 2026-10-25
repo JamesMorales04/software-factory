@@ -678,3 +678,22 @@ turns with explicit accept/cancel approval decisions and exact thread/turn
 identity.
 
 Exact-head CI at `62fa6bcbb80575cc06f1855299e92a483c2d798e` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40170904316`), multi-turn provider E2E, recovery restart, Codex permission fixture, migrations and strict hygiene. Reconnection to an existing live session, live provider tool execution and independent security certification remain unimplemented. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records the exact residual host-access blocker.
+
+## Provider trust-boundary checkpoint (2026-10-24)
+
+The deterministic provider now runs under bubblewrap with an empty HOME, a
+private session directory, a read-only system image, no host repository or
+`/run/user` socket and no external network. The Worker reaches it through a
+loopback bridge requiring a per-run Basic-auth capability; the long-lived
+provider password remains in the trusted Worker. Supervisor allocation requires
+a Core-signed Attempt grant, and workspace operations require a per-Attempt
+capability instead of the broad admin bearer. Adversarial tests cover host
+HOME/repository/socket access, external network egress, credential environment
+leakage, ordinary-filename secret context, and capability/grant reuse across
+Attempts.
+
+Remaining blockers: independent security review and credential-confinement
+certification are absent; sandboxed model egress and sandboxed-session recovery
+are not implemented; the provider session directory has no disk quota; the
+trusted Worker remains a host-authority process. Live provider coding and
+ISOLATED execution remain fail-closed.

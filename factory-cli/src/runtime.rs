@@ -52,6 +52,10 @@ pub(crate) fn start(
     let supervisor_token = load_or_create_supervisor_token(&runtime_dir).map_err(Failure::usage)?;
     let bootstrap =
         tokens::read(token_file, "FACTORY_WORKER_BOOTSTRAP_TOKEN").map_err(Failure::usage)?;
+    let attempt_grant_key =
+        tokens::read(token_file, "FACTORY_ATTEMPT_GRANT_KEY").map_err(Failure::usage)?;
+    let capability_key =
+        tokens::read(token_file, "FACTORY_SUPERVISOR_CAPABILITY_KEY").map_err(Failure::usage)?;
     let bin_dir = binary_dir()?;
     let supervisor_bin = bin_dir.join("factory-supervisor");
     let worker_bin = bin_dir.join("factory-worker");
@@ -95,6 +99,8 @@ pub(crate) fn start(
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("FACTORY_SUPERVISOR_TOKEN", &supervisor_token)
+        .env("FACTORY_ATTEMPT_GRANT_KEY", &attempt_grant_key)
+        .env("FACTORY_SUPERVISOR_CAPABILITY_KEY", &capability_key)
         .env(
             "FACTORY_SUPERVISOR_BIND",
             format!("127.0.0.1:{supervisor_port}"),

@@ -57,11 +57,11 @@ portfolio; this ledger is the current status authority.
 | M2 PR #16 parity | `PARTIAL` | A1–A12 product concepts not complete; see table |
 | M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes locally and in exact-head CI at `3f229f37ebd856ef3fba37b7e6456a2406ad3284` |
 | M4 Runtime | `PARTIAL` | Deployed Core + managed Supervisor/Worker + named-volume execution verified at `5a323f8` |
-| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan with mediated write_file/run_command and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
-| M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; provider tool requests are validated and executed only by the Supervisor; the author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records that a compromised Worker/provider process can still reach host resources. Credential confinement and independent isolation remain uncertified. |
+| M5 Functional execution | `PARTIAL` | R0/FIXTURE and single-unit Lead Campaign end-to-end verified; deterministic source-aware multi-turn provider plan in a bubblewrap-confined provider process with mediated write_file/run_command and permission denial reaches independent verifier, reviewer and ACCEPTED gate; live provider coding fail-closed |
+| M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; the deterministic provider runs under bubblewrap with no host HOME/repository/runtime socket or external network and a per-run bridge capability; Supervisor allocation requires a Core-signed Attempt grant and workspace operations require a per-Attempt capability. The author [provider boundary assessment](../security/provider-boundary-assessment-2026-10-24.md) records remaining Worker/disk/recovery risks. Credential confinement and independent isolation remain uncertified. |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 247 Rust tests + 2 ignored, audit, architecture, process E2E, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `62fa6bcbb80575cc06f1855299e92a483c2d798e`; independent acceptance absent |
+| M9 Testing | `PARTIAL` | 253 Rust tests passed + 2 ignored, audit, architecture, process E2E, bubblewrap provider-boundary tests, multi-turn source-aware provider E2E, Codex permission fixture, recovery/cancellation tests and Office browser pass locally; exact-head CI and independent acceptance pending |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -86,8 +86,8 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-At `e31e3a12fdedea5e5baad77e1949cbcdbf11640a`, a deterministic fake OpenCode server proves the source-aware,
-tool-mediated path: authorized Action → Campaign → Worker claim → durable provider intent →
+At the current provider-boundary checkpoint, a deterministic fake OpenCode
+server runs under bubblewrap and proves the source-aware, tool-mediated path: authorized Action → Campaign → Worker claim → durable provider intent →
 ACTIVE session binding → bounded source context → provider file plan plus a
 frozen-check command → Supervisor mediated write/run/finalize → immutable
 CandidateRevision → sandboxed verifier → independent reviewer → `ACCEPTED` gate.
@@ -103,8 +103,15 @@ credential-shaped source names are excluded from context. Durable
 INTENT/ACTIVE/terminal/cleanup states support a recovery Worker that deletes a
 confirmed orphan after Core restart; unresolved sessions block replacement
 dispatch; cancellation/revocation mark sessions `CANCEL_REQUESTED`. The
-tool-free file-only mode remains available. Exact-head CI passed at `62fa6bcbb80575cc06f1855299e92a483c2d798e`. Evidence:
+tool-free file-only mode remains available. The provider process has an empty
+HOME, no host repository or `/run/user` socket, no external network, and no
+long-lived provider credential; a loopback bridge requires a per-run Basic-auth
+capability. Supervisor allocation requires a Core-signed Attempt grant; workspace
+operations require a per-Attempt capability and reject the broad admin bearer.
+Evidence: [native-rust-provider-boundary-2026-10-24.json](../evidence/native-rust-provider-boundary-2026-10-24.json) and
 [native-rust-provider-tools-2026-10-24.json](../evidence/native-rust-provider-tools-2026-10-24.json).
+This is an author-run candidate boundary, not independent isolation
+certification.
 
 ## Legacy retirement
 

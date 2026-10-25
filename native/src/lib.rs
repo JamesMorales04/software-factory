@@ -1,3 +1,4 @@
+pub mod attempt_grant;
 pub mod db;
 pub mod evaluation;
 pub mod execution;
@@ -5,6 +6,7 @@ pub mod lead;
 pub mod model_output;
 pub mod protocol;
 pub mod provider_patch;
+pub mod provider_sandbox;
 pub mod provider_session;
 pub mod quality;
 pub mod recovery;

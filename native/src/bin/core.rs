@@ -8,12 +8,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use factory_native::db::{
-    Database, Error, NewCampaignAuthorization, NewCandidate, NewIntegratedCandidate,
-    NewProjectConfig, QualityReceiptInput, QualityRole, WorkerReport,
-};
 use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
+use factory_native::{
+    attempt_grant::AttemptGrantClaims,
+    db::{
+        Database, Error, NewCampaignAuthorization, NewCandidate, NewIntegratedCandidate,
+        NewProjectConfig, QualityReceiptInput, QualityRole, WorkerAssignment, WorkerReport,
+    },
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -25,6 +28,7 @@ struct App {
     reviewer_token: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
+    attempt_grant_key: Vec<u8>,
 }
 
 #[derive(Deserialize)]
@@ -224,6 +228,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         factory_native::telemetry::register_secret(token);
     }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
+    let attempt_grant_key =
+        env::var("FACTORY_ATTEMPT_GRANT_KEY").map_err(|_| "FACTORY_ATTEMPT_GRANT_KEY required")?;
+    if attempt_grant_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES {
+        return Err("FACTORY_ATTEMPT_GRANT_KEY must be at least 32 bytes".into());
+    }
+    factory_native::telemetry::register_secret(&attempt_grant_key);
     let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
     let addr: SocketAddr = validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
@@ -236,6 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
             == Some("1"),
+        attempt_grant_key: attempt_grant_key.into_bytes(),
     });
     let router = build_router(app);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -685,11 +696,14 @@ async fn worker_claim(
         )
         .await
     {
-        Ok(Some(assignment)) => Json(json!({
-            "dispatch_supported": true,
-            "assignment": assignment
-        }))
-        .into_response(),
+        Ok(Some(mut assignment)) => match sign_assignment_grant(&app, &mut assignment) {
+            Ok(()) => Json(json!({
+                "dispatch_supported": true,
+                "assignment": assignment
+            }))
+            .into_response(),
+            Err(error) => api_error(error),
+        },
         Ok(None) => Json(json!({
             "dispatch_supported": true,
             "assignment": null
@@ -697,6 +711,25 @@ async fn worker_claim(
         .into_response(),
         Err(error) => api_error(error),
     }
+}
+
+fn sign_assignment_grant(app: &App, assignment: &mut WorkerAssignment) -> Result<(), Error> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let expires_at_ms = now_ms
+        .checked_add(30 * 60 * 1000)
+        .ok_or(Error::Invalid("Attempt grant expiry overflow"))?;
+    let claims = AttemptGrantClaims {
+        attempt_id: assignment.lease.attempt_id.clone(),
+        worker_id: assignment.lease.worker_id.clone(),
+        generation: assignment.lease.generation,
+        repository: assignment.repository.clone(),
+        base_commit: assignment.action_spec.base_commit.clone(),
+        action_spec_sha256: assignment.action_spec_sha256.clone(),
+        expires_at_ms,
+    };
+    assignment.attempt_grant = factory_native::attempt_grant::sign(&app.attempt_grant_key, &claims)
+        .map_err(|_| Error::Invalid("Attempt grant signing failed"))?;
+    Ok(())
 }
 
 async fn worker_heartbeat(
@@ -1470,6 +1503,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1590,6 +1624,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1719,6 +1754,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
         let request = axum::http::Request::builder()
@@ -1771,6 +1807,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();
         headers.insert(

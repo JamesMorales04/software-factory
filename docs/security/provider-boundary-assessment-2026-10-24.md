@@ -1,8 +1,9 @@
 # Trusted-local provider boundary assessment (2026-10-24)
 
-**Status:** Author assessment for deterministic fixtures. It is not independent
-security certification, not an isolation certificate and not authorization for
-live provider coding. TRUSTED_LOCAL_PROVIDER is never ISOLATED.
+**Status:** Author assessment for the confined deterministic provider path. It
+is not independent security certification, not an isolation certificate and not
+authorization for live provider coding. TRUSTED_LOCAL_PROVIDER is never
+ISOLATED.
 
 ## Scope and assets
 
@@ -19,21 +20,31 @@ orphaned provider session.
    TRUSTED_LOCAL, not an isolation boundary. A compromised Worker can exfiltrate
    its credential. Mitigation requires OS/credential confinement that is not
    implemented or independently verified.
-2. **Compromised provider process.** The provider server currently runs outside
-   the project sandbox. A compromised provider process therefore has the host
-   user's filesystem authority even though model output itself cannot execute
-   tools. This is the principal blocker to claiming credential confinement for
-   live provider coding. The deterministic fake server is test code only.
+2. **Compromised provider process.** The deterministic provider now runs in a
+   bubblewrap user/pid/net/ipc/uts/cgroup namespace with an empty HOME, a
+   read-only system image, only its private 0700 session directory writable, no
+   host repository, no host HOME, no `/run/user` runtime socket and no external
+   network namespace. The Worker reaches it through a loopback bridge requiring
+   a per-run Basic-auth capability. The long-lived provider password is not
+   placed in the sandbox. This is a candidate boundary, not certified isolation.
+   A real OpenCode model process cannot yet reach model egress through this
+   sandbox, so live provider coding remains fail-closed.
 3. **Supervisor boundary.** The Supervisor receives no provider credential, no
    Podman socket and no host HOME. It owns the exact Attempt worktree, imports
    content into a rootless Podman named volume, and applies only validated files
-   or frozen-check commands. Provider writes are path-scoped; commands must
-   exactly match a frozen ActionSpec check. A denied `read_file` tool never
-   executes.
+   or frozen-check commands. Allocation requires a Core-signed grant bound to
+   the exact Attempt, worker, generation, repository, base commit and ActionSpec
+   digest. Workspace operations require a per-Attempt capability bound to the
+   workspace and attempt; the broad Supervisor admin bearer is not accepted.
+   Provider writes are path-scoped; commands must exactly match a frozen
+   ActionSpec check. A denied `read_file` tool never executes.
 4. **Source context.** The Worker sends at most 16 allowed files / 64 KiB.
    Credential-shaped names (`.env`, `.npmrc`, `.netrc`, private keys, names
-   containing secret/credential/password) are excluded. The provider fixture
-   asserts a synthetic `SUPER_SECRET` value never enters any prompt.
+   containing secret/credential/password) and files whose ordinary content
+   matches credential patterns (`api_key`, `token`, `secret`, `password`,
+   `authorization:`, private-key markers) are excluded. The provider fixture
+   asserts synthetic secrets in both `.env` and an ordinary `config.txt` never
+   enter any prompt.
 5. **Durability.** Session intent is recorded before external effects, ACTIVE
    identity before the prompt, and tool REQUEST/ALLOW/DENY/RESULT plus terminal
    usage/cleanup receipts are durable. Unresolved sessions block replacement
@@ -46,17 +57,26 @@ orphaned provider session.
 ## Residual risks / exact blockers
 
 - No independent verification of host/credential confinement.
-- A compromised Worker or provider process can reach host resources.
-- Live provider coding is not authorized and must not be treated as certified.
-- Reconnection to an existing live session is not implemented; recovery deletes
-  confirmed orphans rather than resuming them.
+- The trusted Worker still holds the provider credential and can reach host
+  resources; it is not an isolation boundary.
+- The provider session directory is a writable host bind mount; its size is not
+  quota-bounded, so a compromised provider could exhaust host disk.
+- Sandboxed-session recovery after a Worker crash is not implemented; recovery
+  currently handles explicitly unconfined fixture sessions and confirmed
+  external orphans.
+- Live provider model egress through the sandbox is not implemented; live
+  provider coding is unapproved and fail-closed.
 - Same-UID pathname races outside the Supervisor's named-volume boundary are not
   fully eliminated.
+- Bubblewrap and rootless Podman are candidate runtimes, not certified
+  isolation. Independent review is outstanding.
 
 ## Required next work
 
 Run the provider process inside a separately verified confinement boundary that
 has no provider credential and can reach tools only through the authenticated
 Supervisor broker; prove bypass negatives and independent isolation before any
-ISOLATED claim. Until then, only deterministic fake-provider execution and the
-explicitly unapproved live envelope may be discussed.
+ISOLATED claim. The current bwrap candidate provides host/network/credential
+negatives but is not independently certified. Until then, only deterministic
+fake-provider execution and the explicitly unapproved live envelope may be
+discussed.

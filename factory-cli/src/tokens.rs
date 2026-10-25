@@ -7,11 +7,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const TOKEN_KEYS: [&str; 4] = [
+pub(crate) const TOKEN_KEYS: [&str; 6] = [
     "FACTORY_OPERATOR_TOKEN",
     "FACTORY_WORKER_BOOTSTRAP_TOKEN",
     "FACTORY_VERIFIER_TOKEN",
     "FACTORY_REVIEWER_TOKEN",
+    "FACTORY_ATTEMPT_GRANT_KEY",
+    "FACTORY_SUPERVISOR_CAPABILITY_KEY",
 ];
 
 const TOKEN_BYTES: usize = 32;

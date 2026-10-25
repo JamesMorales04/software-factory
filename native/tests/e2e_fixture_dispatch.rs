@@ -19,6 +19,8 @@ const OPERATOR_TOKEN: &str = "operator-token-e2e-dispatch";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
 const VERIFIER_TOKEN: &str = "verifier-token-1234567890123456789012";
 const REVIEWER_TOKEN: &str = "reviewer-token-1234567890123456789012";
+const ATTEMPT_GRANT_KEY: &str = "attempt-grant-key-0123456789abcdef";
+const SUPERVISOR_CAPABILITY_KEY: &str = "capability-key-0123456789abcdef0";
 const SUPERVISOR_TOKEN: &str = "supervisor-token-123456789012345678901234";
 const FIXTURE_IMAGE: &str = "test/image:1";
 
@@ -44,6 +46,7 @@ impl CoreProcess {
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
+            .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
@@ -96,6 +99,11 @@ impl SupervisorProcess {
         let mut command = Command::new(env!("CARGO_BIN_EXE_factory-supervisor"));
         command
             .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+            .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env(
+                "FACTORY_SUPERVISOR_CAPABILITY_KEY",
+                SUPERVISOR_CAPABILITY_KEY,
+            )
             .env(
                 "FACTORY_SUPERVISOR_BIND",
                 format!("127.0.0.1:{}", spec.port),
@@ -2727,118 +2735,6 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use axum::{
-        Router,
-        extract::{Query, State},
-        response::{IntoResponse, Response},
-    };
-
-    #[derive(Clone)]
-    struct FakeProvider {
-        sender: tokio::sync::mpsc::Sender<Vec<u8>>,
-        receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>>>,
-        deleted: Arc<AtomicBool>,
-        seen_prompts: Arc<Mutex<Vec<serde_json::Value>>>,
-        step: Arc<Mutex<usize>>,
-    }
-
-    async fn fake_events(State(state): State<FakeProvider>) -> Response {
-        let Some(receiver) = state.receiver.lock().unwrap().take() else {
-            return reqwest::StatusCode::CONFLICT.into_response();
-        };
-        let _ = state
-            .sender
-            .send(b"data: {\"type\":\"server.connected\"}\n\n".to_vec())
-            .await;
-        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|chunk| {
-                (
-                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(chunk)),
-                    receiver,
-                )
-            })
-        });
-        let mut response = axum::response::Response::new(axum::body::Body::from_stream(stream));
-        response.headers_mut().insert(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("text/event-stream"),
-        );
-        response
-    }
-
-    async fn fake_create_session(
-        State(state): State<FakeProvider>,
-        Query(query): Query<std::collections::HashMap<String, String>>,
-    ) -> axum::Json<serde_json::Value> {
-        let directory = query.get("directory").cloned().unwrap_or_default();
-        let _ = state
-            .sender
-            .send(b"data: {\"type\":\"session.created\",\"properties\":{\"sessionID\":\"ses_fixture\",\"info\":{\"id\":\"ses_fixture\"}}}\n\n".to_vec())
-            .await;
-        axum::Json(json!({"id":"ses_fixture","directory":directory}))
-    }
-
-    async fn fake_prompt(
-        State(state): State<FakeProvider>,
-        axum::Json(body): axum::Json<serde_json::Value>,
-    ) -> reqwest::StatusCode {
-        state.seen_prompts.lock().unwrap().push(body);
-        *state.step.lock().unwrap() += 1;
-        let _ = state
-            .sender
-            .send(b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n".to_vec())
-            .await;
-        reqwest::StatusCode::NO_CONTENT
-    }
-
-    async fn fake_message(State(state): State<FakeProvider>) -> Response {
-        if state.deleted.load(Ordering::SeqCst) {
-            return reqwest::StatusCode::NOT_FOUND.into_response();
-        }
-        let step = *state.step.lock().unwrap();
-        let text = match step {
-            1 => {
-                "{\"type\":\"tool_request\",\"call_id\":\"call-1\",\"tool\":\"read_file\",\"path\":\"src/seed.txt\"}"
-            }
-            2 => {
-                "{\"type\":\"tool_request\",\"call_id\":\"call-2\",\"tool\":\"write_file\",\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}"
-            }
-            3 => {
-                "{\"type\":\"tool_request\",\"call_id\":\"call-3\",\"tool\":\"run_command\",\"argv\":[\"grep\",\"-q\",\"provider candidate\",\"src/provider.txt\"],\"timeout_secs\":30}"
-            }
-            _ => "{\"type\":\"final\",\"files\":[]}",
-        };
-        axum::Json(json!([{
-            "info": {
-                "id": format!("msg_fixture_{step}"),
-                "role": "assistant",
-                "sessionID": "ses_fixture",
-                "tokens": {"input": 10, "output": 20, "total": 30},
-                "cost": 0.0001
-            },
-            "parts": [{"type": "text", "text": text}]
-        }]))
-        .into_response()
-    }
-
-    async fn fake_delete(State(state): State<FakeProvider>) -> axum::Json<bool> {
-        state.deleted.store(true, Ordering::SeqCst);
-        axum::Json(true)
-    }
-
-    async fn fake_get(State(state): State<FakeProvider>) -> Response {
-        if state.deleted.load(Ordering::SeqCst) {
-            reqwest::StatusCode::NOT_FOUND.into_response()
-        } else {
-            axum::Json(json!({"id":"ses_fixture"})).into_response()
-        }
-    }
-
     let root = std::env::temp_dir().join(format!(
         "factory-e2e-provider-{}-{}",
         std::process::id(),
@@ -2860,41 +2756,22 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     std::fs::create_dir_all(repository.join("src")).unwrap();
     std::fs::write(repository.join("src/seed.txt"), "seed context\n").unwrap();
     std::fs::write(repository.join("src/.env"), "SUPER_SECRET=canary\n").unwrap();
+    std::fs::write(
+        repository.join("src/config.txt"),
+        "API_TOKEN=ordinary-file-secret\n",
+    )
+    .unwrap();
     git(
         &repository,
-        &["add", "seed.txt", "src/seed.txt", "src/.env"],
+        &[
+            "add",
+            "seed.txt",
+            "src/seed.txt",
+            "src/.env",
+            "src/config.txt",
+        ],
     );
     git(&repository, &["commit", "-qm", "seed"]);
-
-    let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
-    let fake = FakeProvider {
-        sender: event_sender,
-        receiver: Arc::new(Mutex::new(Some(event_receiver))),
-        deleted: Arc::new(AtomicBool::new(false)),
-        seen_prompts: Arc::new(Mutex::new(Vec::new())),
-        step: Arc::new(Mutex::new(0)),
-    };
-    let seen_prompts = fake.seen_prompts.clone();
-    let app = Router::new()
-        .route("/event", axum::routing::get(fake_events))
-        .route("/session", axum::routing::post(fake_create_session))
-        .route(
-            "/session/{id}/prompt_async",
-            axum::routing::post(fake_prompt),
-        )
-        .route("/session/{id}/message", axum::routing::get(fake_message))
-        .route(
-            "/session/{id}",
-            axum::routing::delete(fake_delete).get(fake_get),
-        )
-        .with_state(fake);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let provider_address = listener.local_addr().unwrap();
-    let provider_url = format!("http://{provider_address}");
-    let provider_server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    let provider_password = "fake-provider-password-1234567890";
 
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
@@ -3087,6 +2964,14 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
+    let provider_session_root = std::env::temp_dir().join(format!(
+        "fp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let worker_log = File::create(root.join("provider-worker.log")).unwrap();
     let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
         .env("FACTORY_CORE_URL", &base_url)
@@ -3096,8 +2981,13 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         .env("FACTORY_SUPERVISOR_URL", &supervisor_url)
         .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
         .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
-        .env("FACTORY_PROVIDER_BASE_URL", &provider_url)
-        .env("FACTORY_PROVIDER_PASSWORD", provider_password)
+        .env("FACTORY_PROVIDER_SANDBOX", "bwrap")
+        .env(
+            "FACTORY_PROVIDER_BINARY",
+            env!("CARGO_BIN_EXE_factory-fixture-provider"),
+        )
+        .env("FACTORY_PROVIDER_SESSION_ROOT", &provider_session_root)
+        .env("FACTORY_PROVIDER_KEEP_SESSION", "1")
         .env("FACTORY_WORKER_ONCE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(worker_log.try_clone().unwrap()))
@@ -3188,7 +3078,17 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
-    let prompts = seen_prompts.lock().unwrap().clone();
+    let session_dir = std::fs::read_dir(&provider_session_root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .expect("provider session directory");
+    let prompts = std::fs::read_to_string(session_dir.join("prompts.jsonl")).unwrap();
+    let prompts: Vec<serde_json::Value> = prompts
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert!(prompts.len() >= 4, "expected four provider turns");
     let first_prompt = prompts[0]
         .pointer("/parts/0/text")
@@ -3209,9 +3109,27 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     assert!(
         prompts
             .iter()
-            .all(|prompt| !prompt.to_string().contains("SUPER_SECRET")),
+            .all(|prompt| !prompt.to_string().contains("SUPER_SECRET")
+                && !prompt.to_string().contains("ordinary-file-secret")),
         "credential-shaped source must never enter provider context"
     );
+    let environment = std::fs::read_to_string(session_dir.join("environment.txt")).unwrap();
+    for forbidden in [
+        "FACTORY_PROVIDER_PASSWORD",
+        "FACTORY_OPERATOR_TOKEN",
+        "FACTORY_SUPERVISOR_TOKEN",
+        "FACTORY_WORKER_BOOTSTRAP_TOKEN",
+        "FACTORY_CORE_URL",
+    ] {
+        assert!(
+            !environment.contains(forbidden),
+            "sandboxed provider environment leaked {forbidden}: {environment}"
+        );
+    }
+    let probe = std::fs::read_to_string(session_dir.join("probe.txt")).unwrap();
+    assert!(probe.contains("host_home_exists=false"), "{probe}");
+    assert!(probe.contains("podman_socket_exists=false"), "{probe}");
+    assert!(probe.contains("network_egress=false"), "{probe}");
 
     let database = root.join("factory.sqlite");
     let pool = sqlx_sqlite::SqlitePoolOptions::new()
@@ -3254,10 +3172,10 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     assert!(events.iter().any(|event| event.2 == "RESULT"));
     pool.close().await;
     let supervisor_log = std::fs::read_to_string(root.join("supervisor.log")).unwrap_or_default();
-    assert!(!supervisor_log.contains(provider_password));
-    provider_server.abort();
+    assert!(!supervisor_log.contains("fake-provider-password"));
     supervisor.stop();
     core.stop();
+    let _ = std::fs::remove_dir_all(&provider_session_root);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -3501,6 +3419,8 @@ async fn recovery_worker_cleans_an_orphaned_provider_session_after_restart() {
         .env("FACTORY_WORKER_REGISTRATION_KEY", "recovery-registration")
         .env("FACTORY_SUPERVISOR_URL", "http://127.0.0.1:1")
         .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_PROVIDER_SANDBOX", "unconfined")
+        .env("FACTORY_ALLOW_UNCONFINED_PROVIDER", "1")
         .env("FACTORY_PROVIDER_BASE_URL", &provider_url)
         .env("FACTORY_PROVIDER_PASSWORD", provider_password)
         .env("FACTORY_WORKER_RECOVER", "1")

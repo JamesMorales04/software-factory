@@ -17,8 +17,9 @@ factory stop [--purge]
 `start` validates Podman rootless and the local image, creates or reuses the
 data volume, runs the container with a read-only root, dropped capabilities,
 `no-new-privileges`, a loopback-only published port, no host network and no
-Podman socket, then waits for `/health`. It generates four distinct role
-tokens into a private `0600` env file if absent and never prints token values.
+Podman socket, then waits for `/health`. It generates six distinct secrets
+(four role tokens plus the Attempt-grant and Supervisor-capability keys) into a
+private `0600` env file if absent and never prints token values.
 When `FACTORY_PROJECT_ROOTS` is set it also starts a private host Supervisor and
 Worker, creates a separate Supervisor token file, and stops both on
 `factory stop`.

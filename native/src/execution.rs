@@ -65,6 +65,12 @@ pub struct WorkspaceAllocation {
     pub attempt_id: String,
     pub repository: String,
     pub base_commit: String,
+    #[serde(default)]
+    pub action_spec_sha256: String,
+    /// Core-signed Attempt grant. The Supervisor rejects allocation without a
+    /// valid, unexpired grant.
+    #[serde(default)]
+    pub attempt_grant: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +81,10 @@ pub struct WorkspaceHandle {
     pub base_commit: String,
     pub status: WorkspaceStatus,
     pub candidate: Option<CandidateRevision>,
+    #[serde(default)]
+    pub capability: String,
+    #[serde(default)]
+    pub capability_expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +115,8 @@ pub struct WorkspaceRecord {
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub error: Option<String>,
+    #[serde(default)]
+    pub capability_expires_at_ms: i64,
 }
 
 impl WorkspaceRecord {
@@ -115,6 +127,8 @@ impl WorkspaceRecord {
             base_commit: self.base_commit.clone(),
             status: self.status.clone(),
             candidate: self.candidate.clone(),
+            capability: String::new(),
+            capability_expires_at_ms: self.capability_expires_at_ms,
         }
     }
 }
@@ -640,6 +654,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                     &candidate.commit_sha,
                     &candidate.tree_sha,
                 )?;
+                record.capability_expires_at_ms = (now_ms() as i64)
+                    .saturating_add(MAX_EXECUTION_RUNTIME.as_millis() as i64 + 60_000);
+                self.write_record(&record)?;
                 return Ok(record.handle());
             }
             if let Ok(workspace) = self.open_existing(&record) {
@@ -650,6 +667,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
                 record.container = None;
                 record.error = None;
                 record.updated_at_ms = now_ms();
+                record.capability_expires_at_ms = (now_ms() as i64)
+                    .saturating_add(MAX_EXECUTION_RUNTIME.as_millis() as i64 + 60_000);
                 self.write_record(&record)?;
                 self.backend
                     .create_volume(&record.volume, &record.workspace_id)
@@ -682,6 +701,8 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
             error: None,
+            capability_expires_at_ms: (now_ms() as i64)
+                .saturating_add(MAX_EXECUTION_RUNTIME.as_millis() as i64 + 60_000),
         };
         if let Err(error) = self.write_record(&record) {
             let _ = workspace.cleanup();
@@ -1626,6 +1647,8 @@ mod tests {
             attempt_id: "attempt-1".into(),
             repository: fixture.repository.to_string_lossy().into_owned(),
             base_commit: base.clone(),
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let result = fixture
@@ -1707,6 +1730,8 @@ mod tests {
                 attempt_id: "outside".into(),
                 repository: outside.to_string_lossy().into_owned(),
                 base_commit: fixture.base(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
             })
             .await
             .unwrap_err();
@@ -1716,6 +1741,8 @@ mod tests {
             attempt_id: "conflict".into(),
             repository: fixture.repository.to_string_lossy().into_owned(),
             base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
         };
         fixture.manager.allocate(&allocation).await.unwrap();
         let mut changed = allocation;
@@ -1745,6 +1772,8 @@ mod tests {
                 attempt_id: "real-podman".into(),
                 repository: fixture.repository.to_string_lossy().into_owned(),
                 base_commit: base.clone(),
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
             })
             .await
             .unwrap();
@@ -1803,6 +1832,8 @@ mod tests {
             attempt_id: "completed-reopen".into(),
             repository: fixture.repository.to_string_lossy().into_owned(),
             base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let result = fixture
@@ -1836,6 +1867,8 @@ mod tests {
             attempt_id: "failed-retry".into(),
             repository: fixture.repository.to_string_lossy().into_owned(),
             base_commit: base,
+            action_spec_sha256: String::new(),
+            attempt_grant: String::new(),
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let failed = fixture
@@ -1886,6 +1919,8 @@ mod tests {
                 attempt_id: "replace-race".into(),
                 repository,
                 base_commit: base,
+                action_spec_sha256: String::new(),
+                attempt_grant: String::new(),
             })
             .await
             .unwrap();

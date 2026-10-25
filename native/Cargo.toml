@@ -45,6 +45,10 @@ name = "factory-reviewer"
 path = "src/bin/reviewer.rs"
 
 [[bin]]
+name = "factory-fixture-provider"
+path = "src/bin/fixture_provider.rs"
+
+[[bin]]
 name = "factory-supervisor"
 path = "src/bin/supervisor.rs"
 

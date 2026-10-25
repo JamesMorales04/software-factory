@@ -205,6 +205,8 @@ struct App<B: factory_native::execution::VolumeBackend> {
     allowed_images: BTreeSet<String>,
     project_roots: Vec<PathBuf>,
     workspace_root: PathBuf,
+    attempt_grant_key: Vec<u8>,
+    capability_key: Vec<u8>,
 }
 
 #[tokio::main]
@@ -218,6 +220,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     validate_supervisor_token(&token)?;
     ensure_distinct_from_other_roles(&token)?;
     factory_native::telemetry::register_secret(&token);
+    let attempt_grant_key =
+        env::var("FACTORY_ATTEMPT_GRANT_KEY").map_err(|_| "FACTORY_ATTEMPT_GRANT_KEY required")?;
+    let capability_key = env::var("FACTORY_SUPERVISOR_CAPABILITY_KEY")
+        .map_err(|_| "FACTORY_SUPERVISOR_CAPABILITY_KEY required")?;
+    if attempt_grant_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES
+        || capability_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES
+    {
+        return Err("Attempt grant and capability keys must be at least 32 bytes".into());
+    }
+    factory_native::telemetry::register_secret(&attempt_grant_key);
+    factory_native::telemetry::register_secret(&capability_key);
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
     let images = parse_images(
@@ -269,6 +282,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         allowed_images: images,
         project_roots,
         workspace_root,
+        attempt_grant_key: attempt_grant_key.into_bytes(),
+        capability_key: capability_key.into_bytes(),
     });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "Factory sandbox supervisor listening");
@@ -309,8 +324,28 @@ async fn allocate<B: factory_native::execution::VolumeBackend>(
     if !authorized(&headers, &app.token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if let Err(message) = verify_allocation_grant(&app, &input) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": message}))).into_response();
+    }
     match app.manager.allocate(&input).await {
-        Ok(handle) => (StatusCode::CREATED, Json(handle)).into_response(),
+        Ok(mut handle) => {
+            match factory_native::attempt_grant::workspace_capability(
+                &app.capability_key,
+                &handle.workspace_id,
+                &handle.attempt_id,
+                handle.capability_expires_at_ms,
+            ) {
+                Ok(capability) => {
+                    handle.capability = capability;
+                    (StatusCode::CREATED, Json(handle)).into_response()
+                }
+                Err(message) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": message})),
+                )
+                    .into_response(),
+            }
+        }
         Err(error) => execution_error(error),
     }
 }
@@ -321,7 +356,7 @@ async fn execute<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ExecuteWorkspace>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if let Err(message) = validate_execute(&app, &input) {
@@ -343,7 +378,7 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ApplyFilesRequest>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.apply_files(&workspace_id, &input).await {
@@ -358,7 +393,7 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<WriteFilesRequest>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.write_files(&workspace_id, &input).await {
@@ -373,7 +408,7 @@ async fn run_tool<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ToolRunRequest>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if !app.allowed_images.contains(&input.image) {
@@ -422,7 +457,7 @@ async fn finalize<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.finalize_workspace(&workspace_id).await {
@@ -436,7 +471,7 @@ async fn status<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.status(&workspace_id) {
@@ -450,7 +485,7 @@ async fn cleanup<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized(&headers, &app.token) {
+    if !authorized_workspace(&headers, &app, &workspace_id) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.cleanup(&workspace_id).await {
@@ -542,6 +577,66 @@ async fn reconcile<B: factory_native::execution::VolumeBackend>(
         Ok(removed) => (StatusCode::OK, Json(json!({"removed": removed}))).into_response(),
         Err(error) => execution_error(error),
     }
+}
+
+fn verify_allocation_grant<B: factory_native::execution::VolumeBackend>(
+    app: &App<B>,
+    input: &WorkspaceAllocation,
+) -> Result<(), String> {
+    let claims = factory_native::attempt_grant::AttemptGrantClaims {
+        attempt_id: input.attempt_id.clone(),
+        worker_id: String::new(),
+        generation: 0,
+        repository: input.repository.clone(),
+        base_commit: input.base_commit.clone(),
+        action_spec_sha256: input.action_spec_sha256.clone(),
+        expires_at_ms: 0,
+    };
+    // The grant is verified against its own signed claims; the allocation fields
+    // must match the signed attempt, repository, base commit and spec digest.
+    let grant = factory_native::attempt_grant::parse(&input.attempt_grant)?;
+    if grant.attempt_id != claims.attempt_id
+        || grant.repository != claims.repository
+        || !grant.base_commit.eq_ignore_ascii_case(&claims.base_commit)
+        || grant.action_spec_sha256 != claims.action_spec_sha256
+    {
+        return Err("Attempt grant does not match the allocation".into());
+    }
+    factory_native::attempt_grant::verify(
+        &app.attempt_grant_key,
+        &input.attempt_grant,
+        &grant,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+fn authorized_workspace<B: factory_native::execution::VolumeBackend>(
+    headers: &HeaderMap,
+    app: &App<B>,
+    workspace_id: &str,
+) -> bool {
+    let Some(token) = bearer_token(headers) else {
+        return false;
+    };
+    let Ok(handle) = app.manager.status(workspace_id) else {
+        return false;
+    };
+    factory_native::attempt_grant::verify_workspace_capability(
+        &app.capability_key,
+        token,
+        &handle.workspace_id,
+        &handle.attempt_id,
+        handle.capability_expires_at_ms,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .is_ok()
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -691,6 +786,8 @@ mod tests {
     use uuid::Uuid;
 
     const TEST_TOKEN: &str = "supervisor-token-0123456789abcdef0123456789abcdef";
+    const TEST_GRANT_KEY: &[u8] = b"attempt-grant-key-0123456789abcdef";
+    const TEST_CAPABILITY_KEY: &[u8] = b"capability-key-0123456789abcdef0";
 
     #[derive(Default)]
     struct TestBackend {
@@ -806,6 +903,8 @@ mod tests {
                 allowed_images: images,
                 project_roots: vec![repository.clone()],
                 workspace_root: root.join("integration-work"),
+                attempt_grant_key: TEST_GRANT_KEY.to_vec(),
+                capability_key: TEST_CAPABILITY_KEY.to_vec(),
             }),
             root,
             repository,
@@ -837,6 +936,28 @@ mod tests {
         .unwrap()
         .trim()
         .into()
+    }
+
+    fn allocation_body(attempt_id: &str, repository: &Path) -> serde_json::Value {
+        let base = base(repository);
+        let spec_sha256 = "a".repeat(64);
+        let claims = factory_native::attempt_grant::AttemptGrantClaims {
+            attempt_id: attempt_id.into(),
+            worker_id: "worker-test".into(),
+            generation: 1,
+            repository: repository.to_string_lossy().into_owned(),
+            base_commit: base.clone(),
+            action_spec_sha256: spec_sha256.clone(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        };
+        let grant = factory_native::attempt_grant::sign(TEST_GRANT_KEY, &claims).unwrap();
+        json!({
+            "attemptId": attempt_id,
+            "repository": repository,
+            "baseCommit": base,
+            "actionSpecSha256": spec_sha256,
+            "attemptGrant": grant
+        })
     }
 
     fn json_request(uri: &str, token: Option<&str>, body: &serde_json::Value) -> Request<Body> {
@@ -920,11 +1041,7 @@ mod tests {
     async fn allocates_executes_and_cleans_a_workspace_over_http() {
         let fixture = fixture();
         let router = build_router(fixture.app.clone());
-        let allocate = json!({
-            "attemptId": "attempt-1",
-            "repository": fixture.repository,
-            "baseCommit": base(&fixture.repository)
-        });
+        let allocate = allocation_body("attempt-1", &fixture.repository);
         let response = router
             .clone()
             .oneshot(json_request("/v1/workspaces", Some(TEST_TOKEN), &allocate))
@@ -934,6 +1051,7 @@ mod tests {
         let handle = body_json(response).await;
         assert_eq!(handle["status"], "ALLOCATED");
         let workspace_id = handle["workspaceId"].as_str().unwrap().to_owned();
+        let capability = handle["capability"].as_str().unwrap().to_owned();
 
         let execution = json!({
             "image": "test/image:1",
@@ -944,7 +1062,7 @@ mod tests {
             .clone()
             .oneshot(json_request(
                 &format!("/v1/workspaces/{workspace_id}/execute"),
-                Some(TEST_TOKEN),
+                Some(&capability),
                 &execution,
             ))
             .await
@@ -978,7 +1096,7 @@ mod tests {
                 Request::builder()
                     .method("DELETE")
                     .uri(format!("/v1/workspaces/{workspace_id}"))
-                    .header("authorization", format!("Bearer {TEST_TOKEN}"))
+                    .header("authorization", format!("Bearer {capability}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -988,16 +1106,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_capability_is_bound_to_one_attempt_and_expiry() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let first = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body("attempt-cap-a", &fixture.repository),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let second = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body("attempt-cap-b", &fixture.repository),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let first_id = first["workspaceId"].as_str().unwrap();
+        let second_id = second["workspaceId"].as_str().unwrap();
+        let first_capability = first["capability"].as_str().unwrap();
+        let second_capability = second["capability"].as_str().unwrap();
+        assert_ne!(first_capability, second_capability);
+
+        let status_request = |id: &str, token: &str| {
+            Request::builder()
+                .uri(format!("/v1/workspaces/{id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            status(&router, status_request(first_id, first_capability)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(&router, status_request(second_id, first_capability)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(&router, status_request(first_id, TEST_TOKEN)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(&router, status_request(first_id, "tampered")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn allocation_requires_a_grant_for_that_exact_attempt() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let mut wrong = allocation_body("attempt-grant-a", &fixture.repository);
+        let signed_for_other = allocation_body("attempt-grant-b", &fixture.repository);
+        wrong["attemptGrant"] = signed_for_other["attemptGrant"].clone();
+        assert_eq!(
+            status(
+                &router,
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &wrong)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        let mut expired = allocation_body("attempt-grant-expired", &fixture.repository);
+        let claims = factory_native::attempt_grant::AttemptGrantClaims {
+            attempt_id: "attempt-grant-expired".into(),
+            worker_id: "worker-test".into(),
+            generation: 1,
+            repository: fixture.repository.to_string_lossy().into_owned(),
+            base_commit: base(&fixture.repository),
+            action_spec_sha256: expired["actionSpecSha256"].as_str().unwrap().into(),
+            expires_at_ms: 1,
+        };
+        expired["attemptGrant"] =
+            json!(factory_native::attempt_grant::sign(TEST_GRANT_KEY, &claims).unwrap());
+        assert_eq!(
+            status(
+                &router,
+                json_request("/v1/workspaces", Some(TEST_TOKEN), &expired)
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_input_and_unknown_fields() {
         let fixture = fixture();
         let router = build_router(fixture.app.clone());
         let outside = fixture.root.join("outside");
         fs::create_dir(&outside).unwrap();
-        let outside_body = json!({
-            "attemptId": "outside",
-            "repository": outside,
-            "baseCommit": base(&fixture.repository)
-        });
+        let outside_body = allocation_body("outside", &outside);
         assert_eq!(
             status(
                 &router,
@@ -1006,11 +1216,7 @@ mod tests {
             .await,
             StatusCode::BAD_REQUEST
         );
-        let allocate = json!({
-            "attemptId": "attempt-2",
-            "repository": fixture.repository,
-            "baseCommit": base(&fixture.repository)
-        });
+        let allocate = allocation_body("attempt-2", &fixture.repository);
         let handle = body_json(
             router
                 .clone()
@@ -1020,6 +1226,7 @@ mod tests {
         )
         .await;
         let workspace_id = handle["workspaceId"].as_str().unwrap();
+        let capability = handle["capability"].as_str().unwrap();
         for execution in [
             json!({"image": "test/image:1", "argv": [], "timeoutSecs": 30}),
             json!({"image": "other/image:1", "argv": ["/bin/true"], "timeoutSecs": 30}),
@@ -1032,7 +1239,7 @@ mod tests {
                     &router,
                     json_request(
                         &format!("/v1/workspaces/{workspace_id}/execute"),
-                        Some(TEST_TOKEN),
+                        Some(capability),
                         &execution
                     )
                 )

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 const OPERATOR_TOKEN: &str = "operator-token-e2e-recovery";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
 const VERIFIER_TOKEN: &str = "verifier-token-1234567890123456789012";
+const ATTEMPT_GRANT_KEY: &str = "attempt-grant-key-0123456789abcdef";
 const REVIEWER_TOKEN: &str = "reviewer-token-1234567890123456789012";
 
 struct CoreProcess {
@@ -32,6 +33,7 @@ impl CoreProcess {
             .env("FACTORY_DATABASE", database)
             .env("FACTORY_BIND", format!("127.0.0.1:{port}"))
             .env("FACTORY_OPERATOR_TOKEN", OPERATOR_TOKEN)
+            .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
             .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)

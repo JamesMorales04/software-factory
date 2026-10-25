@@ -302,6 +302,7 @@ impl Database {
                 .map_err(|_| Error::Invalid("stored provider deadline"))?,
             allowed_tools: serde_json::from_str(&allowed_tools)
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
+            attempt_grant: String::new(),
         })
     }
 
