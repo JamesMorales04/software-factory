@@ -28,7 +28,7 @@ struct App {
     reviewer_token: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
-    lead_model: Option<factory_native::lead_model::ModelLeadConfig>,
+    model_gateway: Option<factory_native::model_gateway::ModelGateway>,
     attempt_grant_key: Vec<u8>,
 }
 
@@ -218,6 +218,20 @@ struct NewLeadRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ModelCallHttpRequest {
+    role: factory_native::db::ModelCallRole,
+    principal_id: String,
+    project_id: String,
+    objective_id: String,
+    scope_id: String,
+    purpose: String,
+    system_prompt: String,
+    user_prompt: String,
+    max_output_tokens: u64,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QualityReceiptRequest {
     candidate_id: String,
@@ -287,21 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             == Some("1"),
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
             == Some("1"),
-        lead_model: match env::var("FACTORY_LEAD_MODEL_URL") {
-            Ok(url) => {
-                let token = env::var("FACTORY_LEAD_MODEL_TOKEN")
-                    .map_err(|_| "FACTORY_LEAD_MODEL_TOKEN required")?;
-                factory_native::telemetry::register_secret(&token);
-                Some(factory_native::lead_model::ModelLeadConfig {
-                    url,
-                    token,
-                    model: env::var("FACTORY_LEAD_MODEL_NAME")
-                        .unwrap_or_else(|_| "lead-model".into()),
-                    timeout: std::time::Duration::from_secs(60),
-                })
-            }
-            Err(_) => None,
-        },
+        model_gateway: model_gateway_from_env()?,
         attempt_grant_key: attempt_grant_key.into_bytes(),
     });
     let router = build_router(app);
@@ -391,6 +391,7 @@ fn api_router(app: Arc<App>) -> Router {
             post(worker_integrated_candidate),
         )
         .route("/quality/receipts", post(quality_receipt))
+        .route("/model/calls", post(model_call))
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
         .route("/quality/candidates/{id}/gate", get(quality_gate))
@@ -418,6 +419,72 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .with_state(app)
+}
+
+fn model_gateway_from_env()
+-> Result<Option<factory_native::model_gateway::ModelGateway>, Box<dyn std::error::Error>> {
+    if env::var_os("FACTORY_LEAD_MODEL_URL").is_some() {
+        return Err(
+            "FACTORY_LEAD_MODEL_URL is retired; configure FACTORY_MODEL_URL/TOKEN/NAME".into(),
+        );
+    }
+    let url = match env::var("FACTORY_MODEL_URL") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(error) => return Err(Box::new(error)),
+    };
+    let token = env::var("FACTORY_MODEL_TOKEN").map_err(|_| "FACTORY_MODEL_TOKEN required")?;
+    if token.len() < 16 {
+        return Err("FACTORY_MODEL_TOKEN must be at least 16 bytes".into());
+    }
+    factory_native::telemetry::register_secret(&token);
+    let provider = env::var("FACTORY_MODEL_PROVIDER").unwrap_or_else(|_| "opencode-go".into());
+    let model = env::var("FACTORY_MODEL_NAME").unwrap_or_else(|_| "deepseek-v4.1-flash".into());
+    let timeout_secs = env_u64("FACTORY_MODEL_TIMEOUT_SECS", 60)?;
+    let input_micros = env_u64("FACTORY_MODEL_INPUT_MICROS_PER_MILLION", 150_000)?;
+    let output_micros = env_u64("FACTORY_MODEL_OUTPUT_MICROS_PER_MILLION", 600_000)?;
+    let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 32_000, 8_192, 200_000)?;
+    let reviewer_policy = policy_from_env("FACTORY_REVIEW_MODEL", 64_000, 8_192, 300_000)?;
+    let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 200_000, 8_192, 2_000_000)?;
+    let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    Ok(Some(factory_native::model_gateway::ModelGateway::new(
+        factory_native::model_gateway::ModelGatewayConfig {
+            base_url: url,
+            credential: token,
+            provider,
+            model,
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            input_micros_per_million: input_micros,
+            output_micros_per_million: output_micros,
+            lead_policy,
+            reviewer_policy,
+            evaluation_policy,
+            allow_loopback_http,
+        },
+    )?))
+}
+
+fn env_u64(name: &str, default: u64) -> Result<u64, Box<dyn std::error::Error>> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| format!("{name} must be a nonnegative integer").into()),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn policy_from_env(
+    prefix: &str,
+    input_default: u64,
+    output_default: u64,
+    cost_default: u64,
+) -> Result<factory_native::db::ModelCallPolicy, Box<dyn std::error::Error>> {
+    Ok(factory_native::db::ModelCallPolicy {
+        max_input_tokens: env_u64(&format!("{prefix}_MAX_INPUT_TOKENS"), input_default)?,
+        max_output_tokens: env_u64(&format!("{prefix}_MAX_OUTPUT_TOKENS"), output_default)?,
+        max_cost_micros: env_u64(&format!("{prefix}_MAX_COST_MICROS"), cost_default)?,
+    })
 }
 
 fn validate_bind(
@@ -1164,6 +1231,82 @@ async fn worker_integrated_candidate(
     }
 }
 
+async fn model_call(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ModelCallHttpRequest>,
+) -> Response {
+    let role = input.role;
+    let authenticated = match role {
+        factory_native::db::ModelCallRole::SemanticReviewer => {
+            quality_role(&app, &headers) == Some(QualityRole::Reviewer)
+        }
+        factory_native::db::ModelCallRole::Evaluation => authorized(&headers, &app.operator_token),
+        factory_native::db::ModelCallRole::Lead => false,
+    };
+    if !authenticated {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if matches!(
+        role,
+        factory_native::db::ModelCallRole::SemanticReviewer
+            | factory_native::db::ModelCallRole::Evaluation
+    ) && input.scope_id != input.objective_id
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"model call scope must identify the objective"})),
+        )
+            .into_response();
+    }
+    let Some(gateway) = &app.model_gateway else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"model gateway is not configured"})),
+        )
+            .into_response();
+    };
+    match gateway
+        .call(
+            &app.db,
+            factory_native::model_gateway::ModelCallRequest {
+                role,
+                principal_id: &input.principal_id,
+                project_id: &input.project_id,
+                objective_id: &input.objective_id,
+                scope_id: &input.scope_id,
+                purpose: &input.purpose,
+                system_prompt: &input.system_prompt,
+                user_prompt: &input.user_prompt,
+                max_output_tokens: input.max_output_tokens,
+            },
+        )
+        .await
+    {
+        Ok(result) => Json(json!({
+            "reservationId": result.reservation_id,
+            "provider": result.provider,
+            "model": result.model,
+            "content": result.content,
+            "inputTokens": result.input_tokens,
+            "outputTokens": result.output_tokens,
+            "totalTokens": result.total_tokens,
+            "costMicros": result.cost_micros,
+            "usageKnown": result.usage_known
+        }))
+        .into_response(),
+        Err(factory_native::model_gateway::ModelGatewayError::Invalid(message)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response()
+        }
+        Err(factory_native::model_gateway::ModelGatewayError::Database(error)) => api_error(error),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1326,10 +1469,10 @@ async fn assess_lead_request(
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
-    if app.lead_model.is_none() && !app.lead_fixture_assessor {
+    if app.model_gateway.is_none() && !app.lead_fixture_assessor {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"error":"no provider assessor is authorized; configure FACTORY_LEAD_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
+            Json(json!({"error":"no model gateway is authorized; configure FACTORY_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
         )
             .into_response();
     }
@@ -1343,14 +1486,15 @@ async fn assess_lead_request(
         project_id: action.project_id.clone(),
         status: factory_native::lead::ActionStatus::Pending,
     };
-    let mechanism = if app.lead_model.is_some() {
+    let mechanism = if app.model_gateway.is_some() {
         "MODEL"
     } else {
         "FIXTURE"
     };
-    let (mut assessment, mut proposal) = if let Some(model) = &app.lead_model {
+    let (mut assessment, mut proposal) = if let Some(gateway) = &app.model_gateway {
         match factory_native::lead_model::assess(
-            model,
+            gateway,
+            &app.db,
             factory_native::lead_model::AssessmentRequest {
                 request_id: &request.id,
                 project: &config,
@@ -1768,7 +1912,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
-            lead_model: None,
+            model_gateway: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();
@@ -1890,7 +2034,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
-            lead_model: None,
+            model_gateway: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
@@ -2021,7 +2165,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
-            lead_model: None,
+            model_gateway: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         });
         let router = build_router(app);
@@ -2075,7 +2219,7 @@ mod tests {
             reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
-            lead_model: None,
+            model_gateway: None,
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
         };
         let mut headers = HeaderMap::new();

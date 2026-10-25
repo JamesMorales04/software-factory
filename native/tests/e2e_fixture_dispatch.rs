@@ -76,12 +76,11 @@ impl CoreProcess {
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
             .env("FACTORY_ENABLE_AUTONOMOUS_START", "1")
-            .env("FACTORY_LEAD_MODEL_URL", model_url)
-            .env(
-                "FACTORY_LEAD_MODEL_TOKEN",
-                "lead-model-token-0123456789abcdef",
-            )
-            .env("FACTORY_LEAD_MODEL_NAME", "lead-model")
+            .env("FACTORY_MODEL_URL", model_url)
+            .env("FACTORY_MODEL_TOKEN", "lead-model-token-0123456789abcdef")
+            .env("FACTORY_MODEL_PROVIDER", "opencode")
+            .env("FACTORY_MODEL_NAME", "deepseek-v4.1-flash")
+            .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(file))
@@ -635,9 +634,10 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     async fn chat(
         axum::extract::State(state): axum::extract::State<MockModel>,
     ) -> axum::Json<Value> {
-        axum::Json(
-            json!({"choices":[{"message":{"content": state.content.lock().unwrap().clone()}}]}),
-        )
+        axum::Json(json!({
+            "choices":[{"message":{"content": state.content.lock().unwrap().clone()}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30,"cost_micros":25}
+        }))
     }
     let model_content = Arc::new(Mutex::new(String::new()));
     let model_app = Router::new()
@@ -868,6 +868,15 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     let assessed_body = assessed.text().await.unwrap_or_default();
     assert_eq!(assessed_status, StatusCode::OK, "{assessed_body}");
     assert!(assessed_body.contains("\"MODEL\""), "{assessed_body}");
+    let ledger = factory_native::db::Database::open(&database).await.unwrap();
+    let calls = ledger.model_calls_for_scope("lead-grant").await.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].role, factory_native::db::ModelCallRole::Lead);
+    assert_eq!(calls[0].state, "SETTLED");
+    assert_eq!(calls[0].input_tokens, 10);
+    assert_eq!(calls[0].output_tokens, 20);
+    assert!(calls[0].cost_micros > 0);
+    ledger.close().await;
     let frozen = operator(
         &client,
         reqwest::Method::POST,

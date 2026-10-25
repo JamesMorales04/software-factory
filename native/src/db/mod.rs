@@ -208,6 +208,11 @@ pub const EVENT_KINDS: &[&str] = &[
     "lead.started",
     "lead.state_changed",
     "lead.work_failed",
+    "model.call_ambiguous",
+    "model.call_authorized",
+    "model.call_released",
+    "model.call_resolved",
+    "model.call_settled",
     "provider.session_active",
     "provider.tool_event",
     "provider.session_cancel_requested",
@@ -581,7 +586,12 @@ mod authorization;
 pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod lead;
+mod model_calls;
 pub use lead::LeadTaskRecord;
+pub use model_calls::{
+    ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
+    ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
+};
 mod lifecycle;
 mod project_configs;
 mod provider_sessions;

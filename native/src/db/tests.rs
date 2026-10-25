@@ -43,7 +43,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        14
+        15
     );
     insert_project(&db, "project", "/fixture", "base").await;
     db.close().await;
@@ -51,7 +51,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let reopened = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        14
+        15
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
@@ -87,7 +87,7 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        14
+        15
     );
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,
@@ -1192,6 +1192,147 @@ async fn event_kind_vocabulary_is_closed() {
         Err(Error::Invalid("unknown event kind"))
     ));
     transaction.rollback().await.unwrap();
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+fn model_call_input(
+    digest: &str,
+    scope: &str,
+    estimated_input: u64,
+    requested_output: u64,
+    estimated_cost: u64,
+    policy: ModelCallPolicy,
+) -> NewModelCallAuthorization {
+    NewModelCallAuthorization {
+        role: ModelCallRole::Evaluation,
+        principal_id: "evaluator".into(),
+        project_id: "evaluation".into(),
+        objective_id: scope.into(),
+        scope_id: scope.into(),
+        provider: "opencode-go".into(),
+        model: "deepseek-v4.1-flash".into(),
+        purpose: "evaluation".into(),
+        request_sha256: digest.into(),
+        estimated_input_tokens: estimated_input,
+        requested_output_tokens: requested_output,
+        estimated_cost_micros: estimated_cost,
+        policy,
+    }
+}
+
+fn model_call_policy(input: u64, output: u64, cost: u64) -> ModelCallPolicy {
+    ModelCallPolicy {
+        max_input_tokens: input,
+        max_output_tokens: output,
+        max_cost_micros: cost,
+    }
+}
+
+#[tokio::test]
+async fn model_call_reservations_settle_replay_and_fence_duplicates() {
+    let (path, db) = temp_db("factory-model-calls").await;
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let input = model_call_input(&"a".repeat(64), "evaluation-1", 120, 300, 200, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&input).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    assert_eq!(grant.max_output_tokens, 300);
+    assert!(matches!(
+        db.authorize_model_call(&input).await,
+        Err(Error::Conflict("model call is already in flight"))
+    ));
+    let usage = ModelCallUsage {
+        reservation_id: grant.reservation_id.clone(),
+        input_tokens: 100,
+        output_tokens: 200,
+        total_tokens: 300,
+        cost_micros: 150,
+        usage_known: true,
+        content: "{\"ok\":true}".into(),
+    };
+    db.settle_model_call(&usage).await.unwrap();
+    let replay = db.authorize_model_call(&input).await.unwrap();
+    let ModelCallDecision::Replayed(replay) = replay else {
+        panic!("expected a settled replay");
+    };
+    assert_eq!(replay.content, "{\"ok\":true}");
+    assert_eq!(replay.total_tokens, 300);
+    assert!(matches!(
+        db.settle_model_call(&ModelCallUsage {
+            reservation_id: grant.reservation_id.clone(),
+            input_tokens: 101,
+            output_tokens: 200,
+            total_tokens: 301,
+            cost_micros: 150,
+            usage_known: true,
+            content: "different".into(),
+        })
+        .await,
+        Err(Error::Conflict("model call already settled differently"))
+    ));
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
+    let (path, db) = temp_db("factory-model-call-safety").await;
+    let policy = model_call_policy(1_000, 500, 10_000);
+    let first = model_call_input(&"b".repeat(64), "evaluation-2", 120, 300, 200, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    assert!(matches!(
+        db.settle_model_call(&ModelCallUsage {
+            reservation_id: grant.reservation_id.clone(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            cost_micros: 0,
+            usage_known: false,
+            content: "unmeasured".into(),
+        })
+        .await,
+        Err(Error::Forbidden(_))
+    ));
+    assert!(matches!(
+        db.authorize_model_call(&first).await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let second = model_call_input(&"c".repeat(64), "evaluation-3", 900, 400, 1_000, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&second).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    db.release_model_call(&grant.reservation_id, "test release", false)
+        .await
+        .unwrap();
+    let ModelCallDecision::Reserved(_) = db.authorize_model_call(&second).await.unwrap() else {
+        panic!("released call should be retryable");
+    };
+
+    let third = model_call_input(&"d".repeat(64), "evaluation-4", 600, 100, 1_000, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&third).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    sqlx::query::query(
+        "UPDATE model_call_reservations SET expires_at_ms=0 WHERE reservation_id=?1",
+    )
+    .bind(&grant.reservation_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        db.authorize_model_call(&third).await,
+        Err(Error::Forbidden(_))
+    ));
+    db.resolve_ambiguous_model_call(&grant.reservation_id, "operator", "reconciled")
+        .await
+        .unwrap();
+    let ModelCallDecision::Reserved(_) = db.authorize_model_call(&third).await.unwrap() else {
+        panic!("resolved call should be retryable");
+    };
     db.close().await;
     let _ = std::fs::remove_file(path);
 }
