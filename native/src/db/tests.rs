@@ -37,13 +37,27 @@ async fn count(db: &Database, sql: &str) -> i64 {
     value
 }
 
+fn migration_file_count() -> i64 {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+    std::fs::read_dir(directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "sql")
+        })
+        .count() as i64
+}
+
 #[tokio::test]
 async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let path = temp_path("factory-migrations");
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        15
+        migration_file_count()
     );
     insert_project(&db, "project", "/fixture", "base").await;
     db.close().await;
@@ -51,7 +65,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let reopened = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        15
+        migration_file_count()
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
@@ -87,7 +101,7 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        15
+        migration_file_count()
     );
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,

@@ -1,6 +1,6 @@
 # Observability from the first slice
 
-**Status:** S1 onward implements transactional Core events, structured redacted logs and an OpenTelemetry tracing path (`native/src/store/sqlite.go`, `native/src/telemetry/log.go`, `tracing.go`). The broader metric/event vocabulary below remains a proposed target; its full coverage is not certified. Observability began with S1.
+**Status:** The Rust tree implements transactional Core events, structured redacted logs and a bounded, best-effort OTLP/HTTP JSON log exporter (`native/src/observability.rs`). Traces, metrics and the broader event vocabulary below remain a proposed target; their full coverage is not certified.
 
 ## Three distinct planes
 
@@ -33,6 +33,20 @@ Instrument HTTP and Core/Worker operations with parent/child spans and context p
 Begin with actual counters/histograms for Action outcomes, active/queued Runs, stage duration/errors, Worker wait/recovery time, retry/repair/first-pass rate, observed token/turn/cost usage with `KNOWN/PARTIAL/UNKNOWN` coverage, and resource consumption when available. Do not fabricate telemetry for unimplemented subsystems.
 
 Avoid high-cardinality metric labels: `actionId`, `runId` and `sessionId` belong in trace/log correlation, not generic aggregated metric tags. Correlate structured logs to trace/span IDs. Prefer standard structured logging for Go until its logging SDK path is tested.
+
+## Native OTLP log export
+
+`FACTORY_OTLP_ENDPOINT` enables export when it is an absolute http(s) URL; a
+bare origin gains `/v1/logs`. Core polls the durable `events` ledger in
+sequence order from the `observability_cursor` row and exports sanitized OTLP
+JSON log records. Detail bodies are not exported; correlation uses the event
+sequence, kind, subject ID and a `kind:subject` correlation ID, all redacted and
+bounded. The cursor advances only after the collector accepts a batch, so a
+restart resumes without replaying accepted records. A bounded wake queue and
+batch limit account for backpressure; a full queue drops only wake-up hints.
+Collector failure increments the failure count and records a bounded error in
+`GET /observability`, but never fails or blocks Core writes. Export is disabled
+when the variable is absent.
 
 ## Security, retention and reliability
 

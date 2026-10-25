@@ -185,6 +185,10 @@ pub struct WorkerSession {
     pub created: bool,
 }
 
+/// Maximum page returned by replay and exporter queries. Callers may request a
+/// smaller page; a larger request is clamped rather than rejected.
+pub const EVENTS_PAGE_MAX: usize = 500;
+
 pub const EVENT_KINDS: &[&str] = &[
     "action.classified",
     "action.created",
@@ -410,6 +414,90 @@ impl Database {
                 recorded_at,
             })
             .collect())
+    }
+
+    /// Return a bounded suffix of the ledger strictly after `after`.
+    pub async fn events_after(&self, after: i64, limit: usize) -> Result<Vec<Event>, Error> {
+        if after < 0 {
+            return Err(Error::Invalid("event cursor"));
+        }
+        let limit = limit.clamp(1, EVENTS_PAGE_MAX) as i64;
+        let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as::query_as(
+            "SELECT sequence,subject_id,kind,detail,recorded_at FROM events
+             WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
+        )
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(sequence, subject_id, kind, detail, recorded_at)| Event {
+                sequence,
+                subject_id,
+                kind,
+                detail,
+                recorded_at,
+            })
+            .collect())
+    }
+
+    /// Count events still ahead of the durable export cursor.
+    pub async fn event_count_after(&self, after: i64) -> Result<u64, Error> {
+        let (count,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM events WHERE sequence > ?1")
+                .bind(after)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Read the last event sequence confirmed by the OTLP collector.
+    pub async fn observability_cursor(&self) -> Result<i64, Error> {
+        let row: Option<(i64,)> =
+            sqlx::query_as::query_as("SELECT last_sequence FROM observability_cursor WHERE id=1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(sequence,)| sequence).unwrap_or(0))
+    }
+
+    /// Advance the durable export cursor monotonically. Callers persist this
+    /// only after the collector accepted the corresponding batch.
+    pub async fn advance_observability_cursor(&self, sequence: i64) -> Result<(), Error> {
+        if sequence < 0 {
+            return Err(Error::Invalid("event cursor"));
+        }
+        let _write = self.write_lock.lock().await;
+        sqlx::query::query(
+            "INSERT INTO observability_cursor(id,last_sequence,updated_at) VALUES (1,?1,?2)
+             ON CONFLICT(id) DO UPDATE SET
+               last_sequence=excluded.last_sequence,
+               updated_at=excluded.updated_at
+             WHERE excluded.last_sequence > observability_cursor.last_sequence",
+        )
+        .bind(sequence)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_event_for_test(
+        &self,
+        subject_id: &str,
+        kind: &str,
+        detail: &str,
+    ) -> Result<i64, Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        record_event(&mut transaction, subject_id, kind, detail).await?;
+        let (sequence,): (i64,) =
+            sqlx::query_as::query_as("SELECT sequence FROM events ORDER BY sequence DESC LIMIT 1")
+                .fetch_one(&mut *transaction)
+                .await?;
+        transaction.commit().await?;
+        Ok(sequence)
     }
 }
 
