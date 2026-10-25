@@ -1311,9 +1311,14 @@ fn prepare_log_dir(config: &ManagedTestServerConfig) -> Result<(), BrowserError>
             "server cwd must be an absolute directory".into(),
         ));
     }
+    let cwd = config.cwd.canonicalize()?;
+    if config.log_dir.starts_with(&cwd) {
+        return Err(BrowserError::Invalid(
+            "server logs must be written outside the repository".into(),
+        ));
+    }
     fs::create_dir_all(&config.log_dir)?;
     set_private_directory(&config.log_dir)?;
-    let cwd = config.cwd.canonicalize()?;
     let log_dir = config.log_dir.canonicalize()?;
     if log_dir == cwd || log_dir.starts_with(&cwd) {
         return Err(BrowserError::Invalid(
@@ -1849,6 +1854,27 @@ mod tests {
         assert!(truncated);
         assert_eq!(bytes, 4);
         assert_eq!(std::fs::read(&path).unwrap(), b"6789");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn logs_inside_the_workspace_are_rejected_before_creation() {
+        let root = std::env::temp_dir().join(format!("fbc-{}", Uuid::new_v4().simple()));
+        let workspace = root.join("repo");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let log_dir = workspace.join("logs");
+        let result = ManagedTestServer::start(ManagedTestServerConfig {
+            argv: vec!["/bin/true".into()],
+            cwd: workspace,
+            endpoint: None,
+            ready_path: "/".into(),
+            startup_timeout: Duration::from_secs(5),
+            log_dir: log_dir.clone(),
+            max_log_bytes: 4096,
+        })
+        .await;
+        assert!(matches!(result, Err(BrowserError::Invalid(_))));
+        assert!(!log_dir.exists(), "in-repository log directory was created");
         let _ = std::fs::remove_dir_all(root);
     }
 
