@@ -663,3 +663,20 @@ terminal usage/cleanup receipts, CANCEL_REQUESTED on campaign cancellation or
 delegation revocation, unresolved-session dispatch blocking, and a recovery
 Worker that deletes a confirmed orphan after Core restart. The process-level
 recovery test passes. Exact-head CI at `c5ea92b8bb8424a87773056ceb7c40712c4fda00` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40151910746`), source-aware provider E2E, recovery restart, cancellation state, migrations and strict hygiene. Multi-turn provider tool events, permission decisions, reconnection to an existing session and live model coding remain unimplemented and fail-closed.
+
+## Multi-turn provider tool-event checkpoint (2026-10-24)
+
+The OpenCode fake-provider process now exercises four turns in one session:
+an unauthorized `read_file` request is denied and recorded, then `write_file`
+and a frozen-check `run_command` are allowed and executed through the
+Supervisor, then a final action finalizes the candidate. Core persists
+REQUEST/ALLOW/DENY/RESULT events, exact call IDs and usage. The provider prompt
+contains bounded source context but no credential-shaped source; the Supervisor
+log and prompt are asserted not to contain the provider password or a synthetic
+secret value. The Codex App Server protocol fixture separately exercises two
+turns with explicit accept/cancel approval decisions and exact thread/turn
+identity.
+
+Reconnection to an existing live session and live provider tool execution remain
+unimplemented. The deterministic fixture is not independent security
+certification.

@@ -288,6 +288,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/worker/provider_active", post(worker_provider_active))
         .route("/worker/provider_terminal", post(worker_provider_terminal))
         .route("/worker/provider_cleanup", post(worker_provider_cleanup))
+        .route(
+            "/worker/provider_tool_event",
+            post(worker_provider_tool_event),
+        )
         .route("/worker/provider_state", post(worker_provider_state))
         .route(
             "/worker/provider_unresolved",
@@ -770,6 +774,20 @@ async fn worker_provider_active(
         .await
     {
         Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_tool_event(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<factory_native::db::ProviderToolEventInput>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.record_provider_tool_event(&input).await {
+        Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
         Err(error) => api_error(error),
     }
 }

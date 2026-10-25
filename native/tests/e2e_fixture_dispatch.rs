@@ -2743,7 +2743,8 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         sender: tokio::sync::mpsc::Sender<Vec<u8>>,
         receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Vec<u8>>>>>,
         deleted: Arc<AtomicBool>,
-        seen_prompt: Arc<Mutex<serde_json::Value>>,
+        seen_prompts: Arc<Mutex<Vec<serde_json::Value>>>,
+        step: Arc<Mutex<usize>>,
     }
 
     async fn fake_events(State(state): State<FakeProvider>) -> Response {
@@ -2786,7 +2787,8 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         State(state): State<FakeProvider>,
         axum::Json(body): axum::Json<serde_json::Value>,
     ) -> reqwest::StatusCode {
-        *state.seen_prompt.lock().unwrap() = body;
+        state.seen_prompts.lock().unwrap().push(body);
+        *state.step.lock().unwrap() += 1;
         let _ = state
             .sender
             .send(b"data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_fixture\"}}\n\n".to_vec())
@@ -2798,18 +2800,28 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         if state.deleted.load(Ordering::SeqCst) {
             return reqwest::StatusCode::NOT_FOUND.into_response();
         }
+        let step = *state.step.lock().unwrap();
+        let text = match step {
+            1 => {
+                "{\"type\":\"tool_request\",\"call_id\":\"call-1\",\"tool\":\"read_file\",\"path\":\"src/seed.txt\"}"
+            }
+            2 => {
+                "{\"type\":\"tool_request\",\"call_id\":\"call-2\",\"tool\":\"write_file\",\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}"
+            }
+            3 => {
+                "{\"type\":\"tool_request\",\"call_id\":\"call-3\",\"tool\":\"run_command\",\"argv\":[\"grep\",\"-q\",\"provider candidate\",\"src/provider.txt\"],\"timeout_secs\":30}"
+            }
+            _ => "{\"type\":\"final\",\"files\":[]}",
+        };
         axum::Json(json!([{
             "info": {
-                "id": "msg_fixture",
+                "id": format!("msg_fixture_{step}"),
                 "role": "assistant",
                 "sessionID": "ses_fixture",
                 "tokens": {"input": 10, "output": 20, "total": 30},
                 "cost": 0.0001
             },
-            "parts": [{
-                "type": "text",
-                "text": "{\"files\":[{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}],\"commands\":[{\"argv\":[\"grep\",\"-q\",\"provider candidate\",\"src/provider.txt\"],\"timeout_secs\":30}]}"
-            }]
+            "parts": [{"type": "text", "text": text}]
         }]))
         .into_response()
     }
@@ -2847,7 +2859,11 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
     std::fs::create_dir_all(repository.join("src")).unwrap();
     std::fs::write(repository.join("src/seed.txt"), "seed context\n").unwrap();
-    git(&repository, &["add", "seed.txt", "src/seed.txt"]);
+    std::fs::write(repository.join("src/.env"), "SUPER_SECRET=canary\n").unwrap();
+    git(
+        &repository,
+        &["add", "seed.txt", "src/seed.txt", "src/.env"],
+    );
     git(&repository, &["commit", "-qm", "seed"]);
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(8);
@@ -2855,9 +2871,10 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         sender: event_sender,
         receiver: Arc::new(Mutex::new(Some(event_receiver))),
         deleted: Arc::new(AtomicBool::new(false)),
-        seen_prompt: Arc::new(Mutex::new(serde_json::Value::Null)),
+        seen_prompts: Arc::new(Mutex::new(Vec::new())),
+        step: Arc::new(Mutex::new(0)),
     };
-    let seen_prompt = fake.seen_prompt.clone();
+    let seen_prompts = fake.seen_prompts.clone();
     let app = Router::new()
         .route("/event", axum::routing::get(fake_events))
         .route("/session", axum::routing::post(fake_create_session))
@@ -3026,7 +3043,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
                 "provider_mode":"build",
                 "delegation_id":"provider-grant",
                 "max_sessions":1,
-                "max_turns":1,
+                "max_turns":4,
                 "max_input_tokens":1000,
                 "max_output_tokens":1000,
                 "max_cost_micros":10000,
@@ -3171,14 +3188,29 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
-    let seen_prompt = seen_prompt.lock().unwrap().clone();
-    let prompt_text = seen_prompt
+    let prompts = seen_prompts.lock().unwrap().clone();
+    assert!(prompts.len() >= 4, "expected four provider turns");
+    let first_prompt = prompts[0]
         .pointer("/parts/0/text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     assert!(
-        prompt_text.contains("src/seed.txt") && prompt_text.contains("seed context"),
-        "provider prompt must contain bounded source context: {seen_prompt}"
+        first_prompt.contains("src/seed.txt") && first_prompt.contains("seed context"),
+        "provider prompt must contain bounded source context: {first_prompt}"
+    );
+    let later_prompt = prompts[1]
+        .pointer("/parts/0/text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        later_prompt.contains("tool_result") && later_prompt.contains("call-1"),
+        "provider must receive the mediated tool result: {later_prompt}"
+    );
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| !prompt.to_string().contains("SUPER_SECRET")),
+        "credential-shaped source must never enter provider context"
     );
 
     let database = root.join("factory.sqlite");
@@ -3201,11 +3233,25 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     assert_eq!(session.0, "COMPLETED");
-    assert_eq!(session.1, 30);
-    assert_eq!(session.2, 100);
+    assert_eq!(session.1, 120);
+    assert_eq!(session.2, 400);
     assert_eq!(session.3, 1);
-    assert_eq!(session.4, 10);
+    assert_eq!(session.4, 40);
     assert_eq!(session.5.as_deref(), Some("session_delete_verified_absent"));
+    let events: Vec<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT call_id,tool,decision FROM provider_tool_events
+         WHERE session_record_id=(SELECT session_record_id FROM provider_sessions
+           WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1))
+         ORDER BY sequence",
+    )
+    .bind(&candidate_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(events.contains(&("call-1".into(), "read_file".into(), "DENY".into())));
+    assert!(events.contains(&("call-2".into(), "write_file".into(), "ALLOW".into())));
+    assert!(events.contains(&("call-3".into(), "run_command".into(), "ALLOW".into())));
+    assert!(events.iter().any(|event| event.2 == "RESULT"));
     pool.close().await;
     let supervisor_log = std::fs::read_to_string(root.join("supervisor.log")).unwrap_or_default();
     assert!(!supervisor_log.contains(provider_password));

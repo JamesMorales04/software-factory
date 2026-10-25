@@ -43,7 +43,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        12
+        13
     );
     insert_project(&db, "project", "/fixture", "base").await;
     db.close().await;
@@ -51,7 +51,7 @@ async fn p1_p2_fresh_schema_uses_migrations_and_reopen_is_stable() {
     let reopened = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&reopened, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        12
+        13
     );
     assert_eq!(count(&reopened, "SELECT COUNT(*) FROM projects").await, 1);
     reopened.close().await;
@@ -87,7 +87,7 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     let db = Database::open(&path).await.unwrap();
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-        12
+        13
     );
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,

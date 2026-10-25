@@ -13,7 +13,10 @@ use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
 };
-use factory_native::provider_patch::{ProviderUsage, extract_plan, extract_usage};
+use factory_native::provider_patch::{
+    ProviderAction, ProviderUsage, command_matches_frozen_check, extract_action, extract_plan,
+    extract_usage,
+};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -462,7 +465,7 @@ async fn execute_provider_assignment(
         return Err("provider assignment has an unsupported tool permission".into());
     }
     if assignment.deadline_secs == 0
-        || assignment.max_turns != 1
+        || !(1..=4).contains(&assignment.max_turns)
         || assignment.max_sessions == 0
         || assignment.max_input_tokens == 0
         || assignment.max_output_tokens == 0
@@ -505,18 +508,33 @@ async fn execute_provider_assignment(
         .ok_or("Core provider intent returned no record id")?
         .to_owned();
 
-    let result = run_provider_patch(&ProviderContext {
-        client,
-        core,
-        session_token,
-        worker_id,
-        session_record_id: &session_record_id,
-        base_url: base_url.as_str(),
-        password: &password,
-        assignment,
-        supervisor,
-    })
-    .await;
+    let result = if assignment.allowed_tools.is_empty() {
+        run_provider_patch(&ProviderContext {
+            client,
+            core,
+            session_token,
+            worker_id,
+            session_record_id: &session_record_id,
+            base_url: base_url.as_str(),
+            password: &password,
+            assignment,
+            supervisor,
+        })
+        .await
+    } else {
+        run_provider_tool_loop(&ProviderContext {
+            client,
+            core,
+            session_token,
+            worker_id,
+            session_record_id: &session_record_id,
+            base_url: base_url.as_str(),
+            password: &password,
+            assignment,
+            supervisor,
+        })
+        .await
+    };
     match result {
         Ok(run) => {
             if !run.usage.known {
@@ -578,6 +596,523 @@ async fn execute_provider_assignment(
             Err(error)
         }
     }
+}
+
+async fn run_provider_tool_loop(
+    context: &ProviderContext<'_>,
+) -> Result<ProviderRun, Box<dyn std::error::Error>> {
+    let provider_dir = std::env::temp_dir().join(format!(
+        "factory-provider-{}-{}",
+        context.assignment.lease.attempt_id,
+        Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir(&provider_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&provider_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let directory = provider_dir.canonicalize()?.to_string_lossy().to_string();
+    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(
+        context.assignment.deadline_secs,
+    ))?;
+    let event_response = factory_native::runtime::open_opencode_event_stream(
+        &http,
+        context.base_url,
+        context.password,
+        &directory,
+    )
+    .await?;
+    let mut event_stream = event_response.bytes_stream();
+    let mut parser = factory_native::sse::SseParser::new(1_048_576);
+    let created = factory_native::runtime::create_opencode_session(
+        &http,
+        context.base_url,
+        context.password,
+        &directory,
+        &format!(
+            "Factory provider attempt {}",
+            context.assignment.lease.attempt_id
+        ),
+    )
+    .await?;
+    let session_id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("OpenCode session/create returned no id")?
+        .to_owned();
+    let _: serde_json::Value = context
+        .client
+        .post(context.core.join("worker/provider_active")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "provider_session_id": session_id,
+            "provider_directory": directory
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    factory_native::runtime::wait_for_session_created_event(
+        &mut event_stream,
+        &mut parser,
+        &session_id,
+    )
+    .await?;
+
+    let allocation = WorkspaceAllocation {
+        attempt_id: context.assignment.lease.attempt_id.clone(),
+        repository: context.assignment.repository.clone(),
+        base_commit: context.assignment.action_spec.base_commit.clone(),
+    };
+    let response = context
+        .supervisor
+        .client
+        .post(context.supervisor.base.join("v1/workspaces")?)
+        .bearer_auth(&context.supervisor.token)
+        .json(&allocation)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Supervisor refused provider workspace allocation: {}",
+            response.status()
+        )
+        .into());
+    }
+    let handle: WorkspaceHandle = response.json().await?;
+
+    let source_context = load_source_context(
+        &context.assignment.repository,
+        &context.assignment.action_spec.base_commit,
+        &context.assignment.action_spec.allowed_paths,
+    )?;
+    let mut prompt = json!({
+        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+        "parts": [{"type": "text", "text": format!(
+            "You are a bounded engineering agent. You may request only these tools: {}. Return ONE JSON object per turn: either {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...\"}} or {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}} or {{\"type\":\"final\",\"files\":[]}}. Allowed paths: {}. Objective: {}. Source context: {}",
+            context.assignment.allowed_tools.join(", "),
+            context.assignment.action_spec.allowed_paths.join(", "),
+            context.assignment.action_spec.objective,
+            serde_json::to_string(&source_context)?
+        )}]
+    });
+    let mut usage = ProviderUsage::default();
+    let mut written = false;
+    let mut call_ids = std::collections::BTreeSet::new();
+    for _ in 0..context.assignment.max_turns {
+        factory_native::runtime::submit_opencode_prompt(
+            &http,
+            context.base_url,
+            context.password,
+            &directory,
+            &session_id,
+            &prompt,
+        )
+        .await?;
+        let terminal = tokio::time::timeout(
+            Duration::from_secs(context.assignment.deadline_secs),
+            factory_native::runtime::wait_for_opencode_prompt_terminal(
+                &mut event_stream,
+                &mut parser,
+                &session_id,
+                false,
+            ),
+        )
+        .await
+        .map_err(|_| "provider deadline exceeded")??;
+        let message = match &terminal {
+            factory_native::runtime::OpenCodePromptTerminal::Idle {
+                cancel_requested: false,
+                ..
+            } => {
+                factory_native::runtime::read_opencode_assistant_message(
+                    &http,
+                    context.base_url,
+                    context.password,
+                    &directory,
+                    &session_id,
+                )
+                .await?
+            }
+            _ => return Err("provider turn did not complete normally".into()),
+        };
+        let outcome =
+            factory_native::runtime::reconcile_opencode_prompt(&session_id, terminal, &message)?;
+        let message_id = match outcome {
+            factory_native::runtime::OpenCodePromptOutcome::Completed { message_id, .. } => {
+                message_id
+            }
+            _ => return Err("provider turn failed".into()),
+        };
+        let turn_usage = extract_usage(&message);
+        usage.input_tokens = usage.input_tokens.saturating_add(turn_usage.input_tokens);
+        usage.output_tokens = usage.output_tokens.saturating_add(turn_usage.output_tokens);
+        usage.total_tokens = usage.total_tokens.saturating_add(turn_usage.total_tokens);
+        usage.cost_micros = usage.cost_micros.saturating_add(turn_usage.cost_micros);
+        usage.known = usage.known || turn_usage.known;
+        let action = extract_action(&message)
+            .map_err(|error| format!("provider action rejected: {error}"))?;
+        match action {
+            ProviderAction::Final { files } => {
+                if !files.is_empty() {
+                    if !context
+                        .assignment
+                        .allowed_tools
+                        .contains(&"write_file".into())
+                    {
+                        return Err("provider returned files without write_file permission".into());
+                    }
+                    let applied = files
+                        .into_iter()
+                        .map(|file| factory_native::execution::AppliedFile {
+                            path: file.path,
+                            content: file.content,
+                        })
+                        .collect::<Vec<_>>();
+                    supervisor_write(context, &handle.workspace_id, applied, !written).await?;
+                }
+                factory_native::runtime::delete_opencode_session(
+                    &http,
+                    context.base_url,
+                    context.password,
+                    &directory,
+                    &session_id,
+                )
+                .await?;
+                let candidate = supervisor_finalize(context, &handle.workspace_id).await?;
+                cleanup(context.supervisor, &handle.workspace_id).await?;
+                let _ = std::fs::remove_dir_all(provider_dir);
+                return Ok(ProviderRun {
+                    candidate,
+                    provider_session_id: session_id,
+                    turn_id: message_id,
+                    usage,
+                });
+            }
+            ProviderAction::ToolRequest {
+                call_id,
+                tool,
+                path,
+                content,
+                argv,
+                timeout_secs,
+            } => {
+                if call_id.trim().is_empty() || !call_ids.insert(call_id.clone()) {
+                    return Err("provider tool call id is empty or duplicated".into());
+                }
+                post_tool_event(context, &call_id, &tool, "REQUEST", "tool requested").await?;
+                let state = provider_state(context).await?;
+                if state == "CANCEL_REQUESTED" {
+                    let _ = factory_native::runtime::request_opencode_abort(
+                        &http,
+                        context.base_url,
+                        context.password,
+                        &directory,
+                        &session_id,
+                    )
+                    .await;
+                    let _ = factory_native::runtime::delete_opencode_session(
+                        &http,
+                        context.base_url,
+                        context.password,
+                        &directory,
+                        &session_id,
+                    )
+                    .await;
+                    return Err("provider cancellation was requested".into());
+                }
+                let decision = decide_tool(context, &tool, &path, &content, &argv, timeout_secs);
+                match decision {
+                    Ok(ToolDecision::Write) => {
+                        post_tool_event(context, &call_id, &tool, "ALLOW", "path authorized")
+                            .await?;
+                        let file = factory_native::execution::AppliedFile { path, content };
+                        match supervisor_write(context, &handle.workspace_id, vec![file], !written)
+                            .await
+                        {
+                            Ok(()) => {
+                                written = true;
+                                post_tool_event(
+                                    context,
+                                    &call_id,
+                                    &tool,
+                                    "RESULT",
+                                    "write applied",
+                                )
+                                .await?;
+                                prompt = tool_result(&call_id, "ok", "write applied", Some(0));
+                            }
+                            Err(error) => {
+                                post_tool_event(context, &call_id, &tool, "ERROR", "write failed")
+                                    .await?;
+                                prompt = tool_result(&call_id, "failed", &error.to_string(), None);
+                            }
+                        }
+                    }
+                    Ok(ToolDecision::Run) => {
+                        post_tool_event(
+                            context,
+                            &call_id,
+                            &tool,
+                            "ALLOW",
+                            "frozen check authorized",
+                        )
+                        .await?;
+                        match supervisor_run(context, &handle.workspace_id, &argv, timeout_secs)
+                            .await
+                        {
+                            Ok(result) => {
+                                let status = if result.exit_code == Some(0) {
+                                    "ok"
+                                } else {
+                                    "failed"
+                                };
+                                post_tool_event(
+                                    context,
+                                    &call_id,
+                                    &tool,
+                                    "RESULT",
+                                    &format!("exit={:?}", result.exit_code),
+                                )
+                                .await?;
+                                prompt =
+                                    tool_result(&call_id, status, &result.stderr, result.exit_code);
+                            }
+                            Err(error) => {
+                                post_tool_event(
+                                    context,
+                                    &call_id,
+                                    &tool,
+                                    "ERROR",
+                                    "command failed",
+                                )
+                                .await?;
+                                prompt = tool_result(&call_id, "failed", &error.to_string(), None);
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        post_tool_event(context, &call_id, &tool, "DENY", &reason).await?;
+                        prompt = tool_result(&call_id, "denied", &reason, None);
+                    }
+                }
+            }
+        }
+    }
+    let _ = factory_native::runtime::delete_opencode_session(
+        &http,
+        context.base_url,
+        context.password,
+        &directory,
+        &session_id,
+    )
+    .await;
+    let _ = cleanup(context.supervisor, &handle.workspace_id).await;
+    Err("provider exceeded the authorized turn budget".into())
+}
+
+enum ToolDecision {
+    Write,
+    Run,
+}
+
+fn decide_tool(
+    context: &ProviderContext<'_>,
+    tool: &str,
+    path: &str,
+    content: &str,
+    argv: &[String],
+    timeout_secs: u64,
+) -> Result<ToolDecision, String> {
+    if !context
+        .assignment
+        .allowed_tools
+        .iter()
+        .any(|allowed| allowed == tool)
+    {
+        return Err(format!("tool {tool} is not authorized"));
+    }
+    match tool {
+        "write_file" => {
+            if !factory_native::lead::is_safe_relative_path(path)
+                || !factory_native::workspace::path_covered(
+                    path,
+                    &context.assignment.action_spec.allowed_paths,
+                )
+            {
+                return Err("write path is outside the allowed scope".into());
+            }
+            if content.len() > 256 * 1024 {
+                return Err("write content exceeds the per-file bound".into());
+            }
+            Ok(ToolDecision::Write)
+        }
+        "run_command" => {
+            if !command_matches_frozen_check(argv, &context.assignment.action_spec.checks) {
+                return Err("command does not match a frozen acceptance check".into());
+            }
+            if timeout_secs == 0 || timeout_secs > 300 {
+                return Err("command timeout is outside the allowed bound".into());
+            }
+            Ok(ToolDecision::Run)
+        }
+        _ => Err(format!("unknown tool {tool}")),
+    }
+}
+
+fn tool_result(
+    call_id: &str,
+    status: &str,
+    output: &str,
+    exit_code: Option<i32>,
+) -> serde_json::Value {
+    json!({
+        "model": null,
+        "parts": [{"type": "text", "text": serde_json::to_string(&json!({
+            "type": "tool_result",
+            "call_id": call_id,
+            "status": status,
+            "output": output,
+            "exit_code": exit_code
+        })).unwrap_or_default()}]
+    })
+}
+
+async fn provider_state(
+    context: &ProviderContext<'_>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let state: serde_json::Value = context
+        .client
+        .post(context.core.join("worker/provider_state")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(state
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("UNKNOWN")
+        .to_owned())
+}
+
+async fn post_tool_event(
+    context: &ProviderContext<'_>,
+    call_id: &str,
+    tool: &str,
+    decision: &str,
+    detail: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = context
+        .client
+        .post(context.core.join("worker/provider_tool_event")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "call_id": call_id,
+            "tool": tool,
+            "decision": decision,
+            "detail": detail
+        }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Core rejected provider tool event: {}", response.status()).into());
+    }
+    Ok(())
+}
+
+async fn supervisor_write(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    files: Vec<factory_native::execution::AppliedFile>,
+    reset: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/write"))?,
+        )
+        .bearer_auth(&context.supervisor.token)
+        .json(&WriteFilesRequest {
+            allowed_paths: context.assignment.action_spec.allowed_paths.clone(),
+            files,
+            reset,
+        })
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Supervisor write failed: {}", response.status()).into());
+    }
+    Ok(())
+}
+
+async fn supervisor_run(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+    argv: &[String],
+    timeout_secs: u64,
+) -> Result<ExecutionResult, Box<dyn std::error::Error>> {
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/run"))?,
+        )
+        .bearer_auth(&context.supervisor.token)
+        .json(&ToolRunRequest {
+            image: context.supervisor.image.clone(),
+            argv: argv.to_vec(),
+            timeout_secs,
+        })
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Supervisor run failed: {}", response.status()).into());
+    }
+    Ok(response.json().await?)
+}
+
+async fn supervisor_finalize(
+    context: &ProviderContext<'_>,
+    workspace_id: &str,
+) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
+    let response = context
+        .supervisor
+        .client
+        .post(
+            context
+                .supervisor
+                .base
+                .join(&format!("v1/workspaces/{workspace_id}/finalize"))?,
+        )
+        .bearer_auth(&context.supervisor.token)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!("Supervisor finalize failed: {}", response.status()).into());
+    }
+    Ok(response.json().await?)
 }
 
 async fn run_provider_patch(
@@ -892,6 +1427,7 @@ async fn run_provider_patch(
     let write = WriteFilesRequest {
         allowed_paths: context.assignment.action_spec.allowed_paths.clone(),
         files,
+        reset: true,
     };
     let response = context
         .supervisor

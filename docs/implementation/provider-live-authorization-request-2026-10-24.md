@@ -13,11 +13,11 @@ Product Owner's explicit approval of this envelope.
 | Project | one disposable external Git fixture repository approved for this run |
 | Action | one R0 Action with a frozen ActionSpec, exact allowed path `src`, functional and negative checks |
 | Campaign / Run / Attempt | exactly one each |
-| Requests / sessions / turns | 1 / 1 / 1 |
+| Requests / sessions / turns | 1 / 1 / up to 4 |
 | Input / output / total token ceiling | 8,000 / 2,000 / 10,000 |
 | Cost ceiling | 0.02 USD equivalent (2,000,000 micros) |
 | Deadline | 120 seconds |
-| Provider tools | `write_file` and `run_command` only; every command must exactly match a frozen ActionSpec check |
+| Provider tools | `write_file` and `run_command` only; every command must exactly match a frozen ActionSpec check; permission denials are recorded and returned to the provider |
 | Allowed filesystem path | `src` only; bounded source context up to 16 files/64 KiB; credential-shaped names excluded |
 | Retries | none |
 | Cleanup | session DELETE followed by GET 404; otherwise the session is unresolved and blocks replacement |
@@ -28,11 +28,12 @@ Product Owner's explicit approval of this envelope.
 - The credential is renewed and the operator confirms the `opencode-go` route.
 - The fake-provider E2E and exact-head CI remain green.
 - The Worker holds the credential; the Supervisor/sandbox never receives it.
-- The provider receives bounded source context and may return file writes plus a
-  frozen-check command. The Supervisor executes the command in the sandbox; the
-  provider never receives host workspace access or credentials. Multi-turn
-  provider tool events and permission decisions remain out of scope for this
-  envelope.
+- The provider receives bounded source context and may use up to four turns,
+  requesting at most one mediated tool per turn. The Supervisor executes allowed
+  writes/frozen-check commands in the sandbox; denied requests are recorded and
+  returned to the provider. The provider never receives host workspace access or
+  credentials. This envelope does not authorize live multi-turn tool execution
+  beyond the deterministic fixture.
 - No retry, alternate model or silent provider substitution is permitted.
 
 ## Required evidence after a run

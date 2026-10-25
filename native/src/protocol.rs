@@ -159,6 +159,12 @@ pub struct RpcNotification {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerPermissionDecision {
+    Deny,
+    Allow,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnWaitOutcome {
     Completed(TurnCompletedParams),
@@ -170,6 +176,7 @@ pub struct JsonRpc<R, W> {
     writer: W,
     next_id: u64,
     notifications: VecDeque<RpcNotification>,
+    server_permission: ServerPermissionDecision,
 }
 
 impl<R, W> JsonRpc<R, W>
@@ -183,7 +190,12 @@ where
             writer,
             next_id: 1,
             notifications: VecDeque::new(),
+            server_permission: ServerPermissionDecision::Deny,
         }
+    }
+
+    pub fn set_server_permission(&mut self, decision: ServerPermissionDecision) {
+        self.server_permission = decision;
     }
 
     pub async fn notify(&mut self, method: &str, params: Value) -> Result<(), RpcError> {
@@ -375,7 +387,10 @@ where
     async fn answer_server_request(&mut self, id: Value, method: &str) -> Result<(), RpcError> {
         let result = match method {
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-                json!({"decision":"cancel"})
+                match self.server_permission {
+                    ServerPermissionDecision::Allow => json!({"decision":"accept"}),
+                    ServerPermissionDecision::Deny => json!({"decision":"cancel"}),
+                }
             }
             _ => {
                 return self
@@ -610,6 +625,100 @@ mod tests {
         let mismatched = rpc.next_notification().await.unwrap();
         assert_eq!(mismatched.method, "turn/completed");
         assert_eq!(mismatched.params["threadId"], "other-thread");
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn multi_turn_permission_decisions_are_explicit_and_identity_bound() {
+        let (client, server) = tokio::io::duplex(16_384);
+        let (client_read, client_write) = tokio::io::split(client);
+        let server_task = tokio::spawn(async move {
+            let mut io = BufReader::new(server);
+            let mut line = String::new();
+            io.read_line(&mut line).await.unwrap();
+            io.get_mut()
+                .write_all(b"{\"id\":1,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}\n")
+                .await
+                .unwrap();
+            for (turn, expected) in [("turn-1", "accept"), ("turn-2", "cancel")] {
+                line.clear();
+                io.read_line(&mut line).await.unwrap();
+                let start: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(start["method"], "turn/start");
+                io.get_mut()
+                    .write_all(format!(
+                        "{{\"id\":{},\"result\":{{\"turn\":{{\"id\":\"{turn}\",\"status\":\"inProgress\"}}}}}}\n",
+                        start["id"].as_u64().unwrap()
+                    ).as_bytes())
+                    .await
+                    .unwrap();
+                io.get_mut()
+                    .write_all(format!(
+                        "{{\"id\":99,\"method\":\"item/commandExecution/requestApproval\",\"params\":{{\"threadId\":\"thread-1\",\"turnId\":\"{turn}\",\"itemId\":\"item-1\",\"startedAtMs\":1}}}}\n"
+                    ).as_bytes())
+                    .await
+                    .unwrap();
+                line.clear();
+                io.read_line(&mut line).await.unwrap();
+                let decision: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(decision["result"]["decision"], expected);
+                io.get_mut()
+                    .write_all(format!(
+                        "{{\"method\":\"turn/completed\",\"params\":{{\"threadId\":\"thread-1\",\"turn\":{{\"id\":\"{turn}\",\"status\":\"completed\"}}}}}}\n"
+                    ).as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut rpc = JsonRpc::new(client_read, client_write);
+        let thread = rpc
+            .start_thread(ThreadStartParams {
+                cwd: "/tmp/project".into(),
+                approval_policy: DenyApprovalPolicy::Never,
+                sandbox: ReadOnlySandbox::ReadOnly,
+            })
+            .await
+            .unwrap();
+        rpc.set_server_permission(ServerPermissionDecision::Allow);
+        let first = rpc
+            .start_turn(TurnStartParams {
+                thread_id: thread.thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "first".into(),
+                }],
+                approval_policy: DenyApprovalPolicy::Never,
+                sandbox_policy: ReadOnlySandbox::ReadOnly,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rpc.wait_for_turn_completed("thread-1", &first.turn.id)
+                .await
+                .unwrap()
+                .turn
+                .status,
+            TurnStatus::Completed
+        );
+        rpc.set_server_permission(ServerPermissionDecision::Deny);
+        let second = rpc
+            .start_turn(TurnStartParams {
+                thread_id: thread.thread.id,
+                input: vec![UserInput::Text {
+                    text: "tool result".into(),
+                }],
+                approval_policy: DenyApprovalPolicy::Never,
+                sandbox_policy: ReadOnlySandbox::ReadOnly,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rpc.wait_for_turn_completed("thread-1", &second.turn.id)
+                .await
+                .unwrap()
+                .turn
+                .status,
+            TurnStatus::Completed
+        );
         server_task.await.unwrap();
     }
 

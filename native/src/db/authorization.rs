@@ -187,7 +187,7 @@ impl Database {
                 || input.model != action_spec.model
                 || input.max_sessions == 0
                 || input.max_sessions > 2
-                || input.max_turns != 1
+                || !(1..=4).contains(&input.max_turns)
                 || input.max_input_tokens == 0
                 || input.max_output_tokens == 0
                 || input.max_cost_micros == 0

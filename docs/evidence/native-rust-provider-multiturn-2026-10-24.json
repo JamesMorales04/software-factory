@@ -1,0 +1,47 @@
+{
+  "schema": "factory.provider-fixture-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "result": "PASS",
+  "open_code_fixture": {
+    "turns": 4,
+    "tool_events": "read_file denied, write_file allowed, run_command allowed, final",
+    "permission_mediation": "Core/Worker authorized tool subset plus exact frozen-check argv",
+    "source_context": "bounded allowed files, credential-shaped names excluded",
+    "credential_leak_negative": "SUPER_SECRET source value absent from every provider prompt and Supervisor log",
+    "candidate": "independent verifier + reviewer + ACCEPTED gate"
+  },
+  "codex_protocol_fixture": {
+    "multi_turn": true,
+    "permission_decisions": "explicit accept and cancel decisions over two turns",
+    "identity_binding": "exact thread and turn IDs"
+  },
+  "durable_lifecycle": [
+    "INTENT before external effect",
+    "ACTIVE session identity before prompt",
+    "durable tool REQUEST/ALLOW/DENY/RESULT events",
+    "terminal usage/cleanup receipt",
+    "CANCEL_REQUESTED on campaign cancellation/revocation",
+    "unresolved-session dispatch blocking",
+    "recovery Worker confirmed-absence cleanup after Core restart"
+  ],
+  "author_run_checks": {
+    "cargo xtask check": "PASS (247 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit clean for 276 dependencies)",
+    "cargo xtask e2e provider": "PASS",
+    "cargo xtask e2e office": "PASS",
+    "repository hygiene strict": "PASS (0 findings)",
+    "architecture": "PASS"
+  },
+  "not_claimed": [
+    "live model coding compatibility",
+    "reconnection to an existing provider session",
+    "provider credential-confinement certification",
+    "ISOLATED execution certification",
+    "independent human acceptance",
+    "merge or deployment authorization"
+  ],
+  "provider_paid_turns": 0
+}

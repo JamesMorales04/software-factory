@@ -14,7 +14,10 @@ use crate::quality::{
 };
 use crate::workspace::verify_candidate_commit;
 
-pub use provider_sessions::{NewProviderIntent, ProviderSessionRecord, ProviderTerminal};
+pub use provider_sessions::{
+    NewProviderIntent, ProviderSessionRecord, ProviderTerminal, ProviderToolEventInput,
+    ProviderToolEventRecord,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -193,6 +196,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "lead.state_changed",
     "lead.work_failed",
     "provider.session_active",
+    "provider.tool_event",
     "provider.session_cancel_requested",
     "provider.session_cleaned",
     "provider.session_intended",

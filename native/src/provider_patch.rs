@@ -50,6 +50,27 @@ pub struct ProviderPlan {
     pub commands: Vec<ProviderCommand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProviderAction {
+    ToolRequest {
+        call_id: String,
+        tool: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        content: String,
+        #[serde(default)]
+        argv: Vec<String>,
+        #[serde(default = "default_command_timeout")]
+        timeout_secs: u64,
+    },
+    Final {
+        #[serde(default)]
+        files: Vec<PatchFile>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProviderUsage {
     pub input_tokens: u64,
@@ -129,6 +150,37 @@ pub fn extract_plan(message: &Value, allowed_paths: &[String]) -> Result<Provide
 
 pub fn command_matches_frozen_check(argv: &[String], checks: &[SpecCheck]) -> bool {
     checks.iter().any(|check| check.command == argv)
+}
+
+pub fn extract_action(message: &Value) -> Result<ProviderAction, PatchError> {
+    let text = message_text(message)?;
+    let text = strip_fence(text.trim());
+    serde_json::from_str(text).map_err(|error| PatchError::InvalidJson(error.to_string()))
+}
+
+fn message_text(message: &Value) -> Result<String, PatchError> {
+    let parts = message
+        .get("parts")
+        .and_then(Value::as_array)
+        .ok_or(PatchError::MessageShape)?;
+    for part in parts {
+        let kind = part
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or(PatchError::MessageShape)?;
+        if kind.contains("tool") {
+            return Err(PatchError::NonTextPart(kind.into()));
+        }
+    }
+    let text = parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    if text.trim().is_empty() {
+        return Err(PatchError::MissingText);
+    }
+    Ok(text)
 }
 
 pub fn extract_usage(message: &Value) -> ProviderUsage {
@@ -257,6 +309,30 @@ mod tests {
             extract_plan(&bad, &["src".into()]),
             Err(PatchError::InvalidCommand)
         );
+    }
+
+    #[test]
+    fn parses_tool_requests_and_final_actions() {
+        let tool = message(
+            "{\"type\":\"tool_request\",\"call_id\":\"call-1\",\"tool\":\"run_command\",\"argv\":[\"cargo\",\"test\"],\"timeout_secs\":30}",
+        );
+        assert_eq!(
+            extract_action(&tool).unwrap(),
+            ProviderAction::ToolRequest {
+                call_id: "call-1".into(),
+                tool: "run_command".into(),
+                path: String::new(),
+                content: String::new(),
+                argv: vec!["cargo".into(), "test".into()],
+                timeout_secs: 30,
+            }
+        );
+        let final_action =
+            message("{\"type\":\"final\",\"files\":[{\"path\":\"src/a\",\"content\":\"a\"}]}");
+        assert!(matches!(
+            extract_action(&final_action).unwrap(),
+            ProviderAction::Final { files } if files.len() == 1
+        ));
     }
 
     #[test]

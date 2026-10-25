@@ -255,7 +255,7 @@ impl Database {
                 || provider_mode.is_empty()
                 || delegation_id.is_empty()
                 || max_sessions < 1
-                || max_turns != 1
+                || !(1..=4).contains(&max_turns)
                 || max_input_tokens < 1
                 || max_output_tokens < 1
                 || max_cost_micros < 1

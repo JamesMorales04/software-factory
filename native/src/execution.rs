@@ -146,6 +146,12 @@ pub struct ApplyFilesRequest {
 pub struct WriteFilesRequest {
     pub allowed_paths: Vec<String>,
     pub files: Vec<AppliedFile>,
+    #[serde(default = "default_true")]
+    pub reset: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -702,7 +708,9 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             return Err(ExecutionError::Conflict);
         }
         let workspace = self.open_existing(&record)?;
-        workspace.reset_to_base()?;
+        if input.reset {
+            workspace.reset_to_base()?;
+        }
         write_files_to_workspace(&workspace, &input.files)?;
         workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
         record.updated_at_ms = now_ms();

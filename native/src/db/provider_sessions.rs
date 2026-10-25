@@ -706,3 +706,131 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderToolEventInput {
+    pub session_record_id: String,
+    pub worker_id: String,
+    pub generation: i64,
+    pub call_id: String,
+    pub tool: String,
+    pub decision: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderToolEventRecord {
+    pub session_record_id: String,
+    pub sequence: i64,
+    pub call_id: String,
+    pub tool: String,
+    pub decision: String,
+    pub detail: String,
+    pub created_at: String,
+}
+
+impl Database {
+    pub async fn record_provider_tool_event(
+        &self,
+        input: &ProviderToolEventInput,
+    ) -> Result<ProviderToolEventRecord, Error> {
+        if input.call_id.trim().is_empty()
+            || input.tool.trim().is_empty()
+            || !matches!(
+                input.decision.as_str(),
+                "REQUEST" | "ALLOW" | "DENY" | "RESULT" | "ERROR"
+            )
+        {
+            return Err(Error::Invalid("provider tool event"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let row: Option<(String, i64)> = sqlx::query_as::query_as(
+            "SELECT worker_id,generation FROM provider_sessions
+             WHERE session_record_id=?1 AND state IN ('ACTIVE','CANCEL_REQUESTED')",
+        )
+        .bind(&input.session_record_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let (worker_id, generation) = row.ok_or(Error::Forbidden(
+            "provider tool event requires an active owned session".into(),
+        ))?;
+        if worker_id != input.worker_id || generation != input.generation {
+            return Err(Error::Forbidden(
+                "provider tool event owner mismatch".into(),
+            ));
+        }
+        let (sequence,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events WHERE session_record_id=?1",
+        )
+        .bind(&input.session_record_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let created_at = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO provider_tool_events
+             (session_record_id,sequence,call_id,tool,decision,detail,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        )
+        .bind(&input.session_record_id)
+        .bind(sequence)
+        .bind(&input.call_id)
+        .bind(&input.tool)
+        .bind(&input.decision)
+        .bind(&input.detail)
+        .bind(&created_at)
+        .execute(&mut *transaction)
+        .await?;
+        record_event(
+            &mut transaction,
+            &input.session_record_id,
+            "provider.tool_event",
+            &format!(
+                "call={} tool={} decision={}",
+                input.call_id, input.tool, input.decision
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(ProviderToolEventRecord {
+            session_record_id: input.session_record_id.clone(),
+            sequence,
+            call_id: input.call_id.clone(),
+            tool: input.tool.clone(),
+            decision: input.decision.clone(),
+            detail: input.detail.clone(),
+            created_at,
+        })
+    }
+
+    pub async fn provider_tool_events(
+        &self,
+        session_record_id: &str,
+    ) -> Result<Vec<ProviderToolEventRecord>, Error> {
+        let rows: Vec<(String, i64, String, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT session_record_id,sequence,call_id,tool,decision,detail,created_at
+                 FROM provider_tool_events WHERE session_record_id=?1 ORDER BY sequence",
+            )
+            .bind(session_record_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(session_record_id, sequence, call_id, tool, decision, detail, created_at)| {
+                    ProviderToolEventRecord {
+                        session_record_id,
+                        sequence,
+                        call_id,
+                        tool,
+                        decision,
+                        detail,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+}

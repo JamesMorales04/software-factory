@@ -30,7 +30,9 @@
     "Supervisor validated provider file-patch application to exact Attempt worktrees",
     "Durable provider ACTIVE session binding, cleanup receipt, cancellation state and recovery Worker for orphaned sessions after Core restart",
     "Source-aware provider plans with bounded source context, Core-authorized write_file/run_command tools and frozen-check command matching",
-    "Supervisor-mediated provider file writes, sandboxed tool command execution and candidate finalization"
+    "Supervisor-mediated provider file writes, sandboxed tool command execution and candidate finalization",
+    "Multi-turn provider tool loop with durable REQUEST/ALLOW/DENY/RESULT events and explicit permission mediation",
+    "Codex App Server multi-turn permission-decision protocol fixture"
   ],
   "not_implemented": [
     "Multi-turn provider tool events, permission mediation and live Codex/OpenCode coding",
@@ -47,8 +49,8 @@
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 245,
-  "current_test_inventory": "Author-run: 245 Rust tests passed, 2 ignored; twelve migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office and strict hygiene pass. Exact-head CI pending.",
+  "local_unit_tests_passed": 247,
+  "current_test_inventory": "Author-run: 247 Rust tests passed, 2 ignored; thirteen migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office and strict hygiene pass. Exact-head CI pending.",
   "dependency_audit": {
     "tool": "cargo-audit",
     "version": "0.22.2",
@@ -57,17 +59,17 @@
     "dependency_count": 276
   },
   "provider_live_status": "Read-only structured-output smokes passed for Codex and OpenCode Go before retirement. Provider coding remains NOT_IMPLEMENTED/fail-closed; no paid coding turn is authorized.",
-  "security_status": "PARTIAL/BLOCKED: provider credential stays in the trusted Worker; provider writes and frozen-check commands are validated by Core/Worker and executed only by the Supervisor in the exact Attempt workspace; no provider tools or credentials enter the sandbox. Credential-confinement certification, live provider coding, multi-turn tool mediation and independent isolation remain unverified; ISOLATED is fail-closed.",
+  "security_status": "PARTIAL/BLOCKED: provider credential stays in the trusted Worker; provider tool requests are validated by Core/Worker and executed only by the Supervisor in the exact Attempt workspace; denied tools and non-frozen commands never execute; credential-shaped source is excluded. Credential-confinement certification, live provider coding, session reconnection and independent isolation remain unverified; ISOLATED is fail-closed.",
   "delivery_status": "PR #17 Draft at 6a5519e33eace8e72d6328f7ff1aab86a7d41b84; Rust-only tree; deterministic provider fixture path and Office/architecture CI green; live provider coding, ISOLATED, independent review and merge authorization outstanding.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Record exact-head CI; then implement multi-turn provider tool-event reconciliation and permission decisions, followed by live authorization review and remaining Office/recovery gaps.",
+  "next_task": "Record exact-head CI; then implement reconnection to an existing provider session and live-provider authorization review, followed by model Lead assessment and remaining recovery/Office gaps.",
   "completion_gates": {
     "G1": "PARTIAL: one Rust architecture; provider execution and isolation incomplete",
     "G2": "PARTIAL: read-only provider smokes only; coding lifecycle absent",
     "G3": "PASS: zero tracked Go files; strict hygiene passes locally and in exact-head CI",
     "G4": "PASS: only Rust-native Native Rust and Governance consistency workflows are active",
-    "G5": "PARTIAL: deterministic source-aware provider plan with mediated write/run reaches ACCEPTED; live provider coding with multi-turn tools blocked",
+    "G5": "PARTIAL: deterministic multi-turn source-aware provider plan with mediated tools and permission denial reaches ACCEPTED; live provider coding blocked",
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: credential confinement and independent isolation not verified",
