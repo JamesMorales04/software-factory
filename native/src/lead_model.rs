@@ -11,7 +11,7 @@ use crate::{
         ActionBinding, AssessmentInput, LeadAssessment, LeadError, LeadPlanProposal, ProjectConfig,
         StandingDelegation,
     },
-    model_gateway::{ModelCallRequest, ModelGateway},
+    model_gateway::{ModelCallRequest, ModelGateway, ModelGatewayError},
     model_output::decode_lead_assessment,
 };
 
@@ -69,7 +69,17 @@ the delegation route and bounded work units. Model output is advisory; Core vali
             },
         )
         .await
-        .map_err(|error| LeadError::Assessment(error.to_string()))?;
+        .map_err(|error| match error {
+            ModelGatewayError::Ambiguous(_)
+            | ModelGatewayError::Upstream(_)
+            | ModelGatewayError::Usage(_) => {
+                LeadError::TransientAssessment(error.to_string())
+            }
+            ModelGatewayError::Database(
+                crate::db::Error::Forbidden(_) | crate::db::Error::Conflict(_),
+            ) => LeadError::TransientAssessment(error.to_string()),
+            other => LeadError::Assessment(other.to_string()),
+        })?;
     let assessment = decode_lead_assessment(result.content.as_bytes(), &input)
         .map_err(|error| LeadError::Assessment(error.to_string()))?;
     let proposal = assessment

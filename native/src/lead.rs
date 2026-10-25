@@ -43,6 +43,8 @@ pub enum LeadError {
     Delegation(String),
     #[error("invalid assessment: {0}")]
     Assessment(String),
+    #[error("transient model assessment failure: {0}")]
+    TransientAssessment(String),
     #[error("invalid proposal: {0}")]
     Proposal(String),
     #[error("invalid work graph: {0}")]

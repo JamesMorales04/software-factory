@@ -3,7 +3,7 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -219,6 +219,18 @@ struct NewLeadRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ResolveModelCall {
+    actor: String,
+    reason: String,
+}
+
+#[derive(Deserialize, Default)]
+struct ModelCallListQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ModelCallHttpRequest {
     role: factory_native::db::ModelCallRole,
     principal_id: String,
@@ -391,7 +403,8 @@ fn api_router(app: Arc<App>) -> Router {
             post(worker_integrated_candidate),
         )
         .route("/quality/receipts", post(quality_receipt))
-        .route("/model/calls", post(model_call))
+        .route("/model/calls", get(model_calls).post(model_call))
+        .route("/model/calls/{id}/resolve", post(resolve_model_call))
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
         .route("/quality/candidates/{id}/gate", get(quality_gate))
@@ -446,6 +459,7 @@ fn model_gateway_from_env()
     let lead_policy = policy_from_env("FACTORY_LEAD_MODEL", 32_000, 8_192, 200_000)?;
     let reviewer_policy = policy_from_env("FACTORY_REVIEW_MODEL", 64_000, 8_192, 300_000)?;
     let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 200_000, 8_192, 2_000_000)?;
+    let global_policy = policy_from_env("FACTORY_MODEL_GLOBAL", 1_000_000, 100_000, 5_000_000)?;
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
     Ok(Some(factory_native::model_gateway::ModelGateway::new(
         factory_native::model_gateway::ModelGatewayConfig {
@@ -459,6 +473,7 @@ fn model_gateway_from_env()
             lead_policy,
             reviewer_policy,
             evaluation_policy,
+            global_policy,
             allow_loopback_http,
         },
     )?))
@@ -1231,6 +1246,37 @@ async fn worker_integrated_candidate(
     }
 }
 
+async fn model_calls(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<ModelCallListQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    result_list(app.db.model_calls(limit).await)
+}
+
+async fn resolve_model_call(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ResolveModelCall>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .resolve_ambiguous_model_call(&id, &input.actor, &input.reason)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn model_call(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -1509,6 +1555,16 @@ async fn assess_lead_request(
         {
             Ok(value) => value,
             Err(error) => {
+                if matches!(
+                    error,
+                    factory_native::lead::LeadError::TransientAssessment(_)
+                ) {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"error": error.to_string()})),
+                    )
+                        .into_response();
+                }
                 let _ = app.db.block_lead_request(&id, &error.to_string()).await;
                 return api_error(error.into());
             }

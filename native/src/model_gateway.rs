@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -17,6 +18,7 @@ use crate::db::{
 
 pub const MAX_PROMPT_BYTES: usize = 512 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_UPSTREAM_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ModelGatewayConfig {
@@ -30,6 +32,7 @@ pub struct ModelGatewayConfig {
     pub lead_policy: ModelCallPolicy,
     pub reviewer_policy: ModelCallPolicy,
     pub evaluation_policy: ModelCallPolicy,
+    pub global_policy: ModelCallPolicy,
     pub allow_loopback_http: bool,
 }
 
@@ -139,6 +142,7 @@ impl ModelGateway {
                 requested_output_tokens: request.max_output_tokens,
                 estimated_cost_micros,
                 policy,
+                global_policy: Some(self.config.global_policy),
             })
             .await?;
         let grant = match decision {
@@ -194,8 +198,11 @@ impl ModelGateway {
         };
         let status = response.status();
         if !status.is_success() {
-            let message = response.text().await.unwrap_or_default();
-            let detail = bounded(&crate::telemetry::redact(&message), 4096);
+            let (message, _) = read_body(response, 4096).await.unwrap_or_default();
+            let detail = bounded(
+                &crate::telemetry::redact(&String::from_utf8_lossy(&message)),
+                4096,
+            );
             if status.is_client_error() {
                 let _ = database
                     .release_model_call(
@@ -217,16 +224,54 @@ impl ModelGateway {
                 .await;
             return Err(ModelGatewayError::Ambiguous(format!("HTTP {status}")));
         }
-        let value: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|_| ModelGatewayError::Upstream("response is not JSON".into()))?;
+        let (body, truncated) = match read_body(response, MAX_UPSTREAM_BYTES).await {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = database
+                    .release_model_call(
+                        &grant.reservation_id,
+                        "model upstream response stream failed",
+                        true,
+                    )
+                    .await;
+                return Err(ModelGatewayError::Ambiguous(
+                    "upstream response stream failed".into(),
+                ));
+            }
+        };
+        if truncated {
+            let _ = database
+                .release_model_call(
+                    &grant.reservation_id,
+                    "model upstream response exceeded the bounded body limit",
+                    true,
+                )
+                .await;
+            return Err(ModelGatewayError::Ambiguous(
+                "upstream response exceeded its body limit".into(),
+            ));
+        }
+        let value: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = database
+                    .release_model_call(
+                        &grant.reservation_id,
+                        "model upstream response is not JSON",
+                        true,
+                    )
+                    .await;
+                return Err(ModelGatewayError::Ambiguous(
+                    "upstream response is not JSON".into(),
+                ));
+            }
+        };
         let content = value
             .pointer("/choices/0/message/content")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         let (usage, usage_known) = parse_usage(&self.config, &value);
-        let content = if content.len() > MAX_RESPONSE_BYTES {
+        let content = if content.is_empty() || content.len() > MAX_RESPONSE_BYTES {
             String::new()
         } else {
             content.to_owned()
@@ -245,11 +290,6 @@ impl ModelGateway {
         if !usage_known {
             return Err(ModelGatewayError::Usage(
                 "upstream did not report measurable usage".into(),
-            ));
-        }
-        if content.is_empty() {
-            return Err(ModelGatewayError::Upstream(
-                "upstream returned no usable assistant content".into(),
             ));
         }
         Ok(settled)
@@ -281,7 +321,7 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
         || config.input_micros_per_million == 0
         || config.output_micros_per_million == 0
         || config.timeout.is_zero()
-        || config.timeout > Duration::from_secs(300)
+        || config.timeout > Duration::from_secs(90)
     {
         return Err(ModelGatewayError::Invalid(
             "provider, model, credential, rates or timeout".into(),
@@ -394,11 +434,32 @@ fn parse_usage(
     match (input, output) {
         (Some(input), Some(output)) => {
             let total = total.unwrap_or_else(|| input.saturating_add(output));
-            let cost = reported_cost.unwrap_or_else(|| estimate_cost(config, input, output));
+            let local = estimate_cost(config, input, output);
+            let cost = reported_cost.unwrap_or(0).max(local);
             ((input, output, total, cost), true)
         }
         _ => ((0, 0, 0, 0), false),
     }
+}
+
+async fn read_body(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len() >= limit {
+            return Ok((body, true));
+        }
+        let take = limit.saturating_sub(body.len()).min(chunk.len());
+        body.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            return Ok((body, true));
+        }
+    }
+    Ok((body, false))
 }
 
 fn bounded(value: &str, limit: usize) -> String {
@@ -436,6 +497,7 @@ mod tests {
             lead_policy: policy(32_000, 8_192, 200_000),
             reviewer_policy: policy(64_000, 8_192, 300_000),
             evaluation_policy: policy(200_000, 8_192, 2_000_000),
+            global_policy: policy(1_000_000, 100_000, 5_000_000),
             allow_loopback_http: true,
         }
     }
@@ -479,6 +541,8 @@ mod integration_tests {
     enum Behavior {
         Success,
         NoUsage,
+        Empty,
+        Oversized,
         Timeout,
         Reject,
     }
@@ -502,6 +566,16 @@ mod integration_tests {
             .into_response(),
             Behavior::NoUsage => axum::Json(json!({
                 "choices":[{"message":{"content":"{\"ok\":true}"}}]
+            }))
+            .into_response(),
+            Behavior::Empty => axum::Json(json!({
+                "choices":[{"message":{"content":""}}],
+                "usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}
+            }))
+            .into_response(),
+            Behavior::Oversized => axum::Json(json!({
+                "choices":[{"message":{"content":"x".repeat(MAX_RESPONSE_BYTES + 1)}}],
+                "usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}
             }))
             .into_response(),
             Behavior::Timeout => {
@@ -558,6 +632,11 @@ mod integration_tests {
                 max_input_tokens: 200_000,
                 max_output_tokens: 8_192,
                 max_cost_micros: 2_000_000,
+            },
+            global_policy: ModelCallPolicy {
+                max_input_tokens: 1_000_000,
+                max_output_tokens: 100_000,
+                max_cost_micros: 5_000_000,
             },
             allow_loopback_http: true,
         })
@@ -638,6 +717,36 @@ mod integration_tests {
         database.close().await;
         let _ = std::fs::remove_file(path);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn empty_and_oversized_content_never_settle_as_success() {
+        for (scope, behavior) in [
+            ("gateway-empty", Behavior::Empty),
+            ("gateway-oversized", Behavior::Oversized),
+        ] {
+            let (path, database) = database().await;
+            let (url, _, server) = upstream(behavior).await;
+            let gateway = gateway(&url, 5_000);
+            assert!(
+                gateway
+                    .call(&database, request(scope, "prompt"))
+                    .await
+                    .is_err()
+            );
+            let records = database.model_calls_for_scope(scope).await.unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].state, "UNKNOWN");
+            assert!(
+                gateway
+                    .call(&database, request(scope, "prompt"))
+                    .await
+                    .is_err()
+            );
+            database.close().await;
+            let _ = std::fs::remove_file(path);
+            server.abort();
+        }
     }
 
     #[tokio::test]

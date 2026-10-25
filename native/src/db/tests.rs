@@ -1218,6 +1218,7 @@ fn model_call_input(
         requested_output_tokens: requested_output,
         estimated_cost_micros: estimated_cost,
         policy,
+        global_policy: None,
     }
 }
 
@@ -1333,6 +1334,72 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
     let ModelCallDecision::Reserved(_) = db.authorize_model_call(&third).await.unwrap() else {
         panic!("resolved call should be retryable");
     };
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn model_call_scope_and_global_budgets_are_enforced() {
+    let (path, db) = temp_db("factory-model-call-budget").await;
+    let policy = model_call_policy(100, 50, 1_000);
+    let first = model_call_input(&"e".repeat(64), "evaluation-budget", 40, 10, 20, policy);
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
+        panic!("expected a reservation");
+    };
+    db.settle_model_call(&ModelCallUsage {
+        reservation_id: grant.reservation_id,
+        input_tokens: 40,
+        output_tokens: 10,
+        total_tokens: 50,
+        cost_micros: 20,
+        usage_known: true,
+        content: "{\"ok\":true}".into(),
+    })
+    .await
+    .unwrap();
+    let second = model_call_input(&"f".repeat(64), "evaluation-budget", 70, 10, 20, policy);
+    assert!(matches!(
+        db.authorize_model_call(&second).await,
+        Err(Error::Forbidden(_))
+    ));
+
+    let mut global_first = model_call_input(
+        &"1".repeat(64),
+        "evaluation-global-a",
+        80,
+        10,
+        20,
+        model_call_policy(1_000, 100, 1_000),
+    );
+    global_first.global_policy = Some(model_call_policy(150, 100, 1_000));
+    let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&global_first).await.unwrap()
+    else {
+        panic!("expected a reservation");
+    };
+    db.settle_model_call(&ModelCallUsage {
+        reservation_id: grant.reservation_id,
+        input_tokens: 80,
+        output_tokens: 10,
+        total_tokens: 90,
+        cost_micros: 20,
+        usage_known: true,
+        content: "{\"ok\":true}".into(),
+    })
+    .await
+    .unwrap();
+    let mut global_second = model_call_input(
+        &"2".repeat(64),
+        "evaluation-global-b",
+        80,
+        10,
+        20,
+        model_call_policy(1_000, 100, 1_000),
+    );
+    global_second.global_policy = Some(model_call_policy(150, 100, 1_000));
+    assert!(matches!(
+        db.authorize_model_call(&global_second).await,
+        Err(Error::Forbidden(_))
+    ));
     db.close().await;
     let _ = std::fs::remove_file(path);
 }

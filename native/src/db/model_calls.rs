@@ -64,6 +64,8 @@ pub struct NewModelCallAuthorization {
     pub requested_output_tokens: u64,
     pub estimated_cost_micros: u64,
     pub policy: ModelCallPolicy,
+    #[serde(default)]
+    pub global_policy: Option<ModelCallPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,35 +214,71 @@ impl Database {
             model_call_usage(&mut transaction, &input.scope_id).await?;
         let (reserved_input, reserved_output, reserved_cost) =
             model_call_reservations(&mut transaction, &input.scope_id).await?;
-        let remaining_input = input
+        let scope_remaining_input = input
             .policy
             .max_input_tokens
             .saturating_sub(used_input)
             .saturating_sub(reserved_input);
-        let remaining_output = input
+        let scope_remaining_output = input
             .policy
             .max_output_tokens
             .saturating_sub(used_output)
             .saturating_sub(reserved_output);
-        let remaining_cost = input
+        let scope_remaining_cost = input
             .policy
             .max_cost_micros
             .saturating_sub(used_cost)
             .saturating_sub(reserved_cost);
+        let (remaining_input, remaining_output, remaining_cost) = match input.global_policy {
+            Some(global) => {
+                let (global_used_input, global_used_output, global_used_cost) =
+                    model_call_role_usage(&mut transaction, input.role).await?;
+                let (global_reserved_input, global_reserved_output, global_reserved_cost) =
+                    model_call_role_reservations(&mut transaction, input.role).await?;
+                (
+                    scope_remaining_input.min(
+                        global
+                            .max_input_tokens
+                            .saturating_sub(global_used_input)
+                            .saturating_sub(global_reserved_input),
+                    ),
+                    scope_remaining_output.min(
+                        global
+                            .max_output_tokens
+                            .saturating_sub(global_used_output)
+                            .saturating_sub(global_reserved_output),
+                    ),
+                    scope_remaining_cost.min(
+                        global
+                            .max_cost_micros
+                            .saturating_sub(global_used_cost)
+                            .saturating_sub(global_reserved_cost),
+                    ),
+                )
+            }
+            None => (
+                scope_remaining_input,
+                scope_remaining_output,
+                scope_remaining_cost,
+            ),
+        };
+        // Reserve the whole remaining input/cost envelope rather than a
+        // tokenizer estimate. A measured response therefore cannot exceed the
+        // reservation merely because the estimate was low.
         if input.estimated_input_tokens > remaining_input
             || input.estimated_cost_micros > remaining_cost
+            || remaining_input == 0
+            || remaining_cost == 0
         {
             return Err(Error::Forbidden("model call budget is exhausted".into()));
         }
-        let max_output = input.requested_output_tokens.min(remaining_output).min(
-            remaining_input
-                .saturating_add(remaining_output)
-                .saturating_sub(input.estimated_input_tokens),
-        );
+        let max_input = remaining_input;
+        let max_output = input.requested_output_tokens.min(remaining_output);
         if max_output == 0 {
             return Err(Error::Forbidden("model call budget is exhausted".into()));
         }
-        let max_total = input.estimated_input_tokens.saturating_add(max_output);
+        let max_total = max_input.saturating_add(max_output);
+        let max_cost = remaining_cost;
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
         let expires_at_ms = now_ms.saturating_add(RESERVATION_LIFETIME_MS);
@@ -263,7 +301,7 @@ impl Database {
         .bind(&input.purpose)
         .bind(&request_sha256)
         .bind(
-            i64::try_from(input.estimated_input_tokens)
+            i64::try_from(max_input)
                 .map_err(|_| Error::Invalid("model call input token reservation"))?,
         )
         .bind(
@@ -274,10 +312,7 @@ impl Database {
             i64::try_from(max_total)
                 .map_err(|_| Error::Invalid("model call total token reservation"))?,
         )
-        .bind(
-            i64::try_from(input.estimated_cost_micros)
-                .map_err(|_| Error::Invalid("model call cost reservation"))?,
-        )
+        .bind(i64::try_from(max_cost).map_err(|_| Error::Invalid("model call cost reservation"))?)
         .bind(expires_at_ms)
         .bind(&now_text)
         .execute(&mut *transaction)
@@ -287,12 +322,10 @@ impl Database {
             &input.objective_id,
             "model.call_authorized",
             &format!(
-                "role={} reservation={reservation_id} provider={} model={} input={} output={max_output} cost={}",
+                "role={} reservation={reservation_id} provider={} model={} input={max_input} output={max_output} cost={max_cost}",
                 input.role.as_str(),
                 input.provider,
-                input.model,
-                input.estimated_input_tokens,
-                input.estimated_cost_micros
+                input.model
             ),
         )
         .await?;
@@ -300,10 +333,10 @@ impl Database {
         Ok(ModelCallDecision::Reserved(ModelCallGrant {
             reservation_id,
             role: input.role,
-            max_input_tokens: input.estimated_input_tokens,
+            max_input_tokens: max_input,
             max_output_tokens: max_output,
             max_total_tokens: max_total,
-            max_cost_micros: input.estimated_cost_micros,
+            max_cost_micros: max_cost,
             request_sha256,
             expires_at_ms,
         }))
@@ -377,6 +410,11 @@ impl Database {
             (
                 "UNKNOWN",
                 "model call usage is unknown; budget remains reserved",
+            )
+        } else if usage.content.trim().is_empty() {
+            (
+                "UNKNOWN",
+                "model call returned no usable response; budget remains reserved",
             )
         } else if exceeds {
             (
@@ -542,42 +580,21 @@ impl Database {
         .bind(scope_id)
         .fetch_all(&self.pool)
         .await?;
-        let mut records = Vec::with_capacity(rows.len());
-        for row in rows {
-            let role: String = row.try_get("role")?;
-            let input_tokens: i64 = row.try_get("input_tokens")?;
-            let output_tokens: i64 = row.try_get("output_tokens")?;
-            let total_tokens: i64 = row.try_get("total_tokens")?;
-            let cost_micros: i64 = row.try_get("cost_micros")?;
-            let usage_known: i64 = row.try_get("usage_known")?;
-            records.push(ModelCallRecord {
-                reservation_id: row.try_get("reservation_id")?,
-                role: ModelCallRole::parse(&role)
-                    .ok_or(Error::Invalid("stored model call role"))?,
-                principal_id: row.try_get("principal_id")?,
-                project_id: row.try_get("project_id")?,
-                objective_id: row.try_get("objective_id")?,
-                scope_id: row.try_get("scope_id")?,
-                provider: row.try_get("provider")?,
-                model: row.try_get("model")?,
-                purpose: row.try_get("purpose")?,
-                request_sha256: row.try_get("request_sha256")?,
-                input_tokens: u64::try_from(input_tokens)
-                    .map_err(|_| Error::Invalid("stored model call input"))?,
-                output_tokens: u64::try_from(output_tokens)
-                    .map_err(|_| Error::Invalid("stored model call output"))?,
-                total_tokens: u64::try_from(total_tokens)
-                    .map_err(|_| Error::Invalid("stored model call total"))?,
-                cost_micros: u64::try_from(cost_micros)
-                    .map_err(|_| Error::Invalid("stored model call cost"))?,
-                usage_known: usage_known != 0,
-                state: row.try_get("state")?,
-                error: row.try_get("error")?,
-                created_at: row.try_get("created_at")?,
-                updated_at: row.try_get("updated_at")?,
-            });
-        }
-        Ok(records)
+        model_call_records(rows)
+    }
+
+    pub async fn model_calls(&self, limit: usize) -> Result<Vec<ModelCallRecord>, Error> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query::query(
+            "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
+                    model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
+                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+             FROM model_call_reservations ORDER BY created_at DESC,reservation_id LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        model_call_records(rows)
     }
 
     async fn validate_model_call_scope(
@@ -885,6 +902,83 @@ async fn replay_model_call_by_id(
             .map_err(|_| Error::Invalid("stored model call cost"))?,
         usage_known: usage_known != 0,
     })
+}
+
+fn model_call_records(rows: Vec<sqlx_sqlite::SqliteRow>) -> Result<Vec<ModelCallRecord>, Error> {
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        let role: String = row.try_get("role")?;
+        let input_tokens: i64 = row.try_get("input_tokens")?;
+        let output_tokens: i64 = row.try_get("output_tokens")?;
+        let total_tokens: i64 = row.try_get("total_tokens")?;
+        let cost_micros: i64 = row.try_get("cost_micros")?;
+        let usage_known: i64 = row.try_get("usage_known")?;
+        records.push(ModelCallRecord {
+            reservation_id: row.try_get("reservation_id")?,
+            role: ModelCallRole::parse(&role).ok_or(Error::Invalid("stored model call role"))?,
+            principal_id: row.try_get("principal_id")?,
+            project_id: row.try_get("project_id")?,
+            objective_id: row.try_get("objective_id")?,
+            scope_id: row.try_get("scope_id")?,
+            provider: row.try_get("provider")?,
+            model: row.try_get("model")?,
+            purpose: row.try_get("purpose")?,
+            request_sha256: row.try_get("request_sha256")?,
+            input_tokens: u64::try_from(input_tokens)
+                .map_err(|_| Error::Invalid("stored model call input"))?,
+            output_tokens: u64::try_from(output_tokens)
+                .map_err(|_| Error::Invalid("stored model call output"))?,
+            total_tokens: u64::try_from(total_tokens)
+                .map_err(|_| Error::Invalid("stored model call total"))?,
+            cost_micros: u64::try_from(cost_micros)
+                .map_err(|_| Error::Invalid("stored model call cost"))?,
+            usage_known: usage_known != 0,
+            state: row.try_get("state")?,
+            error: row.try_get("error")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        });
+    }
+    Ok(records)
+}
+
+async fn model_call_role_usage(
+    connection: &mut SqliteConnection,
+    role: ModelCallRole,
+) -> Result<(u64, u64, u64), Error> {
+    let row: (i64, i64, i64) = sqlx::query_as::query_as(
+        "SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
+                COALESCE(SUM(cost_micros),0)
+         FROM model_call_reservations WHERE role=?1 AND state='SETTLED'",
+    )
+    .bind(role.as_str())
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok((
+        u64::try_from(row.0).map_err(|_| Error::Invalid("model usage"))?,
+        u64::try_from(row.1).map_err(|_| Error::Invalid("model usage"))?,
+        u64::try_from(row.2).map_err(|_| Error::Invalid("model usage"))?,
+    ))
+}
+
+async fn model_call_role_reservations(
+    connection: &mut SqliteConnection,
+    role: ModelCallRole,
+) -> Result<(u64, u64, u64), Error> {
+    let row: (i64, i64, i64) = sqlx::query_as::query_as(
+        "SELECT COALESCE(SUM(max_input_tokens),0),COALESCE(SUM(max_output_tokens),0),
+                COALESCE(SUM(max_cost_micros),0)
+         FROM model_call_reservations
+         WHERE role=?1 AND state IN ('RESERVED','AMBIGUOUS','UNKNOWN')",
+    )
+    .bind(role.as_str())
+    .fetch_one(&mut *connection)
+    .await?;
+    Ok((
+        u64::try_from(row.0).map_err(|_| Error::Invalid("model reservation"))?,
+        u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
+        u64::try_from(row.2).map_err(|_| Error::Invalid("model reservation"))?,
+    ))
 }
 
 async fn model_call_usage(
