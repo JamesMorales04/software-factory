@@ -633,16 +633,15 @@ impl Database {
                 }
             }
             ModelCallRole::SemanticReviewer => {
-                let row: Option<(String, String, String, String, String, String, String)> =
+                let row: Option<(String, String, String, String, String, String)> =
                     sqlx::query_as::query_as(
-                        "SELECT ac.project_id,p.status,cd.implementer_id,
+                        "SELECT ac.project_id,cd.implementer_id,
                                 COALESCE(ca.provider,''),COALESCE(ca.model,''),r.campaign_id,c.status
                          FROM candidates cd
                          JOIN attempts a ON a.id=cd.attempt_id
                          JOIN runs r ON r.id=a.run_id
                          JOIN campaigns c ON c.id=r.campaign_id
                          JOIN actions ac ON ac.id=c.action_id
-                         JOIN projects p ON p.id=ac.project_id
                          LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
                          WHERE cd.id=?1",
                     )
@@ -651,7 +650,6 @@ impl Database {
                     .await?;
                 let Some((
                     project_id,
-                    project_status,
                     implementer_id,
                     provider,
                     model,
@@ -663,11 +661,10 @@ impl Database {
                 };
                 if project_id != input.project_id
                     || input.scope_id != input.objective_id
-                    || project_status != "active"
                     || campaign_status != "AUTHORIZED"
                 {
                     return Err(Error::Forbidden(
-                        "review model call is not bound to an active candidate campaign".into(),
+                        "review model call is not bound to an authorized candidate campaign".into(),
                     ));
                 }
                 if input.principal_id == implementer_id {

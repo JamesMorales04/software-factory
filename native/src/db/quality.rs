@@ -1,7 +1,8 @@
 use super::*;
 
 use chrono::Utc;
-use sqlx_sqlite::SqliteConnection;
+use sqlx::row::Row;
+use sqlx_sqlite::{SqliteConnection, SqliteRow};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -167,6 +168,7 @@ impl Database {
             return Ok(QualityIngestResult { receipt, gate });
         }
         ensure_receipt_available(&mut transaction, candidate_id, role, input).await?;
+        validate_model_review_receipt(&mut transaction, candidate_id, role, input).await?;
         let receipt =
             insert_receipt(&mut transaction, candidate_id, role, input, &candidate).await?;
         let gate = decide_gate(&mut transaction, candidate_id, &candidate).await?;
@@ -412,14 +414,17 @@ impl Database {
         &self,
         candidate_id: &str,
     ) -> Result<Vec<QualityReceiptRecord>, Error> {
-        let rows: Vec<ReceiptColumns> = sqlx::query_as::query_as(
-            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+        let rows = sqlx::query::query(
+            "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+                    result,evidence,findings_json,mechanism,model_provider,model_name,
+                    model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
+                    usage_known,received_at
              FROM quality_receipts WHERE candidate_id=?1 ORDER BY role",
         )
         .bind(candidate_id)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter().map(receipt_from_columns).collect()
+        rows.iter().map(receipt_from_row).collect()
     }
 }
 
@@ -562,6 +567,37 @@ fn validate_receipt_input(input: &QualityReceiptInput) -> Result<(), Error> {
     {
         return Err(Error::Invalid("quality receipt"));
     }
+    crate::semantic_review::validate_findings(&input.findings)
+        .map_err(|_| Error::Invalid("quality receipt findings"))?;
+    for value in [
+        input.model_provider.as_str(),
+        input.model_name.as_str(),
+        input.model_reservation_id.as_str(),
+    ] {
+        if value.len() > 200 || value.chars().any(char::is_control) {
+            return Err(Error::Invalid("quality receipt model provenance"));
+        }
+    }
+    if input.mechanism == ReviewMechanism::Deterministic
+        && (!input.model_reservation_id.is_empty()
+            || input.input_tokens != 0
+            || input.output_tokens != 0
+            || input.total_tokens != 0
+            || input.cost_micros != 0
+            || input.usage_known)
+    {
+        return Err(Error::Invalid(
+            "deterministic receipt cannot claim model usage",
+        ));
+    }
+    if input.mechanism == ReviewMechanism::Model
+        && input.result != ReceiptResult::Pass
+        && input.findings.is_empty()
+    {
+        return Err(Error::Invalid(
+            "a non-passing model review requires a concrete finding",
+        ));
+    }
     Ok(())
 }
 
@@ -644,6 +680,8 @@ async fn insert_receipt(
     input: &QualityReceiptInput,
     candidate: &CandidateRecord,
 ) -> Result<QualityReceiptRecord, Error> {
+    let findings_json = serde_json::to_string(&input.findings)
+        .map_err(|_| Error::Invalid("quality receipt findings"))?;
     let receipt = QualityReceiptRecord {
         receipt_id: input.receipt_id.clone(),
         candidate_id: candidate_id.to_owned(),
@@ -654,21 +692,51 @@ async fn insert_receipt(
         tree_sha: candidate.tree_sha.clone(),
         result: input.result,
         evidence: input.evidence,
+        findings: input.findings.clone(),
+        mechanism: input.mechanism,
+        model_provider: input.model_provider.clone(),
+        model_name: input.model_name.clone(),
+        model_reservation_id: input.model_reservation_id.clone(),
+        input_tokens: input.input_tokens,
+        output_tokens: input.output_tokens,
+        total_tokens: input.total_tokens,
+        cost_micros: input.cost_micros,
+        usage_known: input.usage_known,
         received_at: Utc::now().to_rfc3339(),
     };
-    sqlx::query::query("INSERT INTO quality_receipts VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
-        .bind(&receipt.receipt_id)
-        .bind(&receipt.candidate_id)
-        .bind(role.as_str())
-        .bind(&receipt.principal_id)
-        .bind(&receipt.action_spec_sha256)
-        .bind(&receipt.commit_sha)
-        .bind(&receipt.tree_sha)
-        .bind(receipt_result_str(receipt.result))
-        .bind(evidence_kind_str(receipt.evidence))
-        .bind(&receipt.received_at)
-        .execute(&mut *connection)
-        .await?;
+    sqlx::query::query(
+        "INSERT INTO quality_receipts
+         (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+          result,evidence,findings_json,mechanism,model_provider,model_name,
+          model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
+          usage_known,received_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+    )
+    .bind(&receipt.receipt_id)
+    .bind(&receipt.candidate_id)
+    .bind(role.as_str())
+    .bind(&receipt.principal_id)
+    .bind(&receipt.action_spec_sha256)
+    .bind(&receipt.commit_sha)
+    .bind(&receipt.tree_sha)
+    .bind(receipt_result_str(receipt.result))
+    .bind(evidence_kind_str(receipt.evidence))
+    .bind(findings_json)
+    .bind(receipt.mechanism.as_str())
+    .bind(&receipt.model_provider)
+    .bind(&receipt.model_name)
+    .bind(&receipt.model_reservation_id)
+    .bind(i64::try_from(receipt.input_tokens).map_err(|_| Error::Invalid("quality receipt usage"))?)
+    .bind(
+        i64::try_from(receipt.output_tokens)
+            .map_err(|_| Error::Invalid("quality receipt usage"))?,
+    )
+    .bind(i64::try_from(receipt.total_tokens).map_err(|_| Error::Invalid("quality receipt usage"))?)
+    .bind(i64::try_from(receipt.cost_micros).map_err(|_| Error::Invalid("quality receipt usage"))?)
+    .bind(i64::from(receipt.usage_known))
+    .bind(&receipt.received_at)
+    .execute(&mut *connection)
+    .await?;
     record_event(
         connection,
         candidate_id,
@@ -684,6 +752,99 @@ async fn insert_receipt(
     )
     .await?;
     Ok(receipt)
+}
+
+type ModelReviewReservationRow = (
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+async fn validate_model_review_receipt(
+    connection: &mut SqliteConnection,
+    candidate_id: &str,
+    role: QualityRole,
+    input: &QualityReceiptInput,
+) -> Result<(), Error> {
+    if role != QualityRole::Reviewer
+        || input.mechanism != ReviewMechanism::Model
+        || input.result != ReceiptResult::Pass
+    {
+        return Ok(());
+    }
+    if !input.usage_known
+        || input.model_provider.trim().is_empty()
+        || input.model_name.trim().is_empty()
+        || input.model_reservation_id.trim().is_empty()
+    {
+        return Err(Error::Forbidden(
+            "model review approval requires settled model provenance and known usage".into(),
+        ));
+    }
+    let row: Option<ModelReviewReservationRow> = sqlx::query_as::query_as(
+        "SELECT m.role,m.provider,m.model,m.input_tokens,m.output_tokens,m.total_tokens,
+                    m.cost_micros,m.usage_known,m.state,m.scope_id,m.objective_id,m.principal_id,
+                    ac.project_id
+             FROM model_call_reservations m
+             JOIN candidates cd ON cd.id=?2
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             WHERE m.reservation_id=?1",
+    )
+    .bind(&input.model_reservation_id)
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((
+        role,
+        provider,
+        model,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cost_micros,
+        usage_known,
+        state,
+        scope_id,
+        objective_id,
+        principal_id,
+        _project_id,
+    )) = row
+    else {
+        return Err(Error::Forbidden(
+            "model review approval has no matching model-call reservation".into(),
+        ));
+    };
+    if role != "SEMANTIC_REVIEWER"
+        || state != "SETTLED"
+        || usage_known != 1
+        || scope_id != candidate_id
+        || objective_id != candidate_id
+        || principal_id != input.principal_id
+        || provider != input.model_provider
+        || model != input.model_name
+        || u64::try_from(input_tokens).ok() != Some(input.input_tokens)
+        || u64::try_from(output_tokens).ok() != Some(input.output_tokens)
+        || u64::try_from(total_tokens).ok() != Some(input.total_tokens)
+        || u64::try_from(cost_micros).ok() != Some(input.cost_micros)
+    {
+        return Err(Error::Forbidden(
+            "model review approval does not match a settled reservation for this candidate".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn decide_gate(
@@ -802,46 +963,48 @@ async fn load_candidate_for_attempt(
     Ok(row.map(candidate_from_columns))
 }
 
-type ReceiptColumns = (
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-);
-
-fn receipt_from_columns(columns: ReceiptColumns) -> Result<QualityReceiptRecord, Error> {
-    let (
-        receipt_id,
-        candidate_id,
-        role,
-        principal_id,
-        action_spec_sha256,
-        commit_sha,
-        tree_sha,
-        result,
-        evidence,
-        received_at,
-    ) = columns;
+fn receipt_from_row(row: &SqliteRow) -> Result<QualityReceiptRecord, Error> {
+    let role: String = row.try_get("role")?;
+    let result: String = row.try_get("result")?;
+    let evidence: String = row.try_get("evidence")?;
+    let findings: String = row.try_get("findings_json")?;
+    let mechanism: String = row.try_get("mechanism")?;
+    let input_tokens: i64 = row.try_get("input_tokens")?;
+    let output_tokens: i64 = row.try_get("output_tokens")?;
+    let total_tokens: i64 = row.try_get("total_tokens")?;
+    let cost_micros: i64 = row.try_get("cost_micros")?;
+    let usage_known: i64 = row.try_get("usage_known")?;
     Ok(QualityReceiptRecord {
-        receipt_id,
-        candidate_id,
+        receipt_id: row.try_get("receipt_id")?,
+        candidate_id: row.try_get("candidate_id")?,
         role: parse_role(&role)
             .map_err(|()| Error::Invalid("stored quality receipt role is invalid"))?,
-        principal_id,
-        action_spec_sha256,
-        commit_sha,
-        tree_sha,
+        principal_id: row.try_get("principal_id")?,
+        action_spec_sha256: row.try_get("action_spec_sha256")?,
+        commit_sha: row.try_get("commit_sha")?,
+        tree_sha: row.try_get("tree_sha")?,
         result: parse_receipt_result(&result)
             .ok_or(Error::Invalid("stored quality receipt result is invalid"))?,
         evidence: parse_evidence_kind(&evidence)
             .ok_or(Error::Invalid("stored quality receipt evidence is invalid"))?,
-        received_at,
+        findings: serde_json::from_str(&findings)
+            .map_err(|_| Error::Invalid("stored quality receipt findings are invalid"))?,
+        mechanism: ReviewMechanism::parse(&mechanism).ok_or(Error::Invalid(
+            "stored quality receipt mechanism is invalid",
+        ))?,
+        model_provider: row.try_get("model_provider")?,
+        model_name: row.try_get("model_name")?,
+        model_reservation_id: row.try_get("model_reservation_id")?,
+        input_tokens: u64::try_from(input_tokens)
+            .map_err(|_| Error::Invalid("stored quality receipt usage is invalid"))?,
+        output_tokens: u64::try_from(output_tokens)
+            .map_err(|_| Error::Invalid("stored quality receipt usage is invalid"))?,
+        total_tokens: u64::try_from(total_tokens)
+            .map_err(|_| Error::Invalid("stored quality receipt usage is invalid"))?,
+        cost_micros: u64::try_from(cost_micros)
+            .map_err(|_| Error::Invalid("stored quality receipt usage is invalid"))?,
+        usage_known: usage_known != 0,
+        received_at: row.try_get("received_at")?,
     })
 }
 
@@ -849,14 +1012,17 @@ async fn load_receipt_by_id(
     connection: &mut SqliteConnection,
     receipt_id: &str,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    let row: Option<ReceiptColumns> = sqlx::query_as::query_as(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+    let row = sqlx::query::query(
+        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+                result,evidence,findings_json,mechanism,model_provider,model_name,
+                model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
+                usage_known,received_at
          FROM quality_receipts WHERE receipt_id=?1",
     )
     .bind(receipt_id)
     .fetch_optional(connection)
     .await?;
-    row.map(receipt_from_columns).transpose()
+    row.as_ref().map(receipt_from_row).transpose()
 }
 
 async fn load_receipt_by_role(
@@ -864,15 +1030,18 @@ async fn load_receipt_by_role(
     candidate_id: &str,
     role: QualityRole,
 ) -> Result<Option<QualityReceiptRecord>, Error> {
-    let row: Option<ReceiptColumns> = sqlx::query_as::query_as(
-        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,result,evidence,received_at
+    let row = sqlx::query::query(
+        "SELECT receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+                result,evidence,findings_json,mechanism,model_provider,model_name,
+                model_reservation_id,input_tokens,output_tokens,total_tokens,cost_micros,
+                usage_known,received_at
          FROM quality_receipts WHERE candidate_id=?1 AND role=?2",
     )
     .bind(candidate_id)
     .bind(role.as_str())
     .fetch_optional(connection)
     .await?;
-    row.map(receipt_from_columns).transpose()
+    row.as_ref().map(receipt_from_row).transpose()
 }
 
 fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput) -> bool {
@@ -882,6 +1051,16 @@ fn receipt_matches(existing: &QualityReceiptRecord, input: &QualityReceiptInput)
         && existing.tree_sha.eq_ignore_ascii_case(&input.tree_sha)
         && existing.result == input.result
         && existing.evidence == input.evidence
+        && existing.findings == input.findings
+        && existing.mechanism == input.mechanism
+        && existing.model_provider == input.model_provider
+        && existing.model_name == input.model_name
+        && existing.model_reservation_id == input.model_reservation_id
+        && existing.input_tokens == input.input_tokens
+        && existing.output_tokens == input.output_tokens
+        && existing.total_tokens == input.total_tokens
+        && existing.cost_micros == input.cost_micros
+        && existing.usage_known == input.usage_known
 }
 
 async fn load_gate(

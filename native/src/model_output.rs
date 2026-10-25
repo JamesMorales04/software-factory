@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::lead::{AssessmentInput, LeadAssessment};
+use crate::semantic_review::{SemanticReview, SemanticReviewError, SemanticReviewInput};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelOutputError {
@@ -34,6 +35,42 @@ pub fn lead_assessment_schema_sha256() -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub fn semantic_review_schema() -> Value {
+    serde_json::to_value(schema_for!(SemanticReview))
+        .expect("generated semantic review schema is serializable")
+}
+
+pub fn semantic_review_schema_sha256() -> String {
+    let bytes = serde_json::to_vec(&semantic_review_schema())
+        .expect("generated semantic review schema is serializable");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Schema-validate then apply the strict semantic-review domain invariants.
+/// Malformed, off-identity or internally inconsistent output is rejected; it is
+/// never converted into an approval.
+pub fn decode_semantic_review(
+    raw: &[u8],
+    input: &SemanticReviewInput,
+) -> Result<SemanticReview, ModelOutputError> {
+    validate_semantic_review_schema(raw)?;
+    SemanticReview::from_json(raw, input)
+        .map_err(|error: SemanticReviewError| ModelOutputError::Domain(error.to_string()))
+}
+
+pub fn validate_semantic_review_schema(raw: &[u8]) -> Result<(), ModelOutputError> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let schema = semantic_review_schema();
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))?;
+    validator
+        .validate(&value)
+        .map_err(|error| ModelOutputError::Schema(error.to_string()))
 }
 
 /// Validate the raw value against the generated schema, then deserialize and
@@ -201,6 +238,80 @@ mod tests {
         assert!(matches!(
             decode_lead_assessment(&raw, &input()),
             Err(ModelOutputError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn generated_semantic_schema_is_closed_and_provider_compatible() {
+        let schema = semantic_review_schema();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
+        validate_provider_schema(&schema).unwrap();
+        assert_eq!(semantic_review_schema_sha256().len(), 64);
+        let required = schema["required"].as_array().unwrap();
+        for field in [
+            "schemaRevision",
+            "candidateCommitSha",
+            "candidateTreeSha",
+            "actionSpecSha256",
+            "verdict",
+            "summary",
+            "confidence",
+            "findings",
+        ] {
+            assert!(required.iter().any(|value| value == field), "{field}");
+        }
+    }
+
+    #[test]
+    fn semantic_decode_rejects_unknown_fields_wrong_candidate_and_blocking_approval() {
+        use crate::review::{FindingCategory, FindingSeverity, ReviewFinding};
+        use crate::semantic_review::{SemanticReview, SemanticReviewInput, SemanticVerdict};
+
+        let input = SemanticReviewInput {
+            candidate_commit_sha: "a".repeat(40),
+            candidate_tree_sha: "b".repeat(40),
+            action_spec_sha256: "c".repeat(64),
+        };
+        let review = SemanticReview {
+            schema_revision: 1,
+            candidate_commit_sha: "a".repeat(40),
+            candidate_tree_sha: "b".repeat(40),
+            action_spec_sha256: "c".repeat(64),
+            verdict: SemanticVerdict::Approve,
+            summary: "plausible".into(),
+            confidence: 90,
+            findings: Vec::new(),
+        };
+        let raw = serde_json::to_vec(&review).unwrap();
+        decode_semantic_review(&raw, &input).unwrap();
+
+        let mut medical: Value = serde_json::from_slice(&raw).unwrap();
+        medical["unexpected"] = serde_json::json!(true);
+        assert!(matches!(
+            decode_semantic_review(&serde_json::to_vec(&medical).unwrap(), &input),
+            Err(ModelOutputError::Schema(_))
+        ));
+
+        let mut wrong: Value = serde_json::from_slice(&raw).unwrap();
+        wrong["candidateCommitSha"] = serde_json::json!("d".repeat(40));
+        assert!(matches!(
+            decode_semantic_review(&serde_json::to_vec(&wrong).unwrap(), &input),
+            Err(ModelOutputError::Domain(_))
+        ));
+
+        let mut blocking: Value = serde_json::from_slice(&raw).unwrap();
+        blocking["findings"] = serde_json::to_value(vec![ReviewFinding {
+            id: "f1".into(),
+            severity: FindingSeverity::Blocking,
+            category: FindingCategory::Security,
+            message: "credential path".into(),
+            evidence_refs: vec!["src/credential.rs".into()],
+        }])
+        .unwrap();
+        assert!(matches!(
+            decode_semantic_review(&serde_json::to_vec(&blocking).unwrap(), &input),
+            Err(ModelOutputError::Domain(_))
         ));
     }
 

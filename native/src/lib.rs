@@ -17,6 +17,7 @@ pub mod repository;
 pub mod review;
 pub mod runtime;
 pub mod sandbox;
+pub mod semantic_review;
 pub mod sse;
 pub mod telemetry;
 pub mod workspace;

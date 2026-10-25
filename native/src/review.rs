@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::{self, WorkspaceError};
@@ -21,18 +22,36 @@ pub enum ReviewVerdict {
     RequestChanges,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum FindingSeverity {
     Blocking,
     Warning,
+    Info,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FindingCategory {
+    Functional,
+    Architecture,
+    Security,
+    Testing,
+    Scope,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ReviewFinding {
+    #[schemars(length(min = 1, max = 64))]
     pub id: String,
     pub severity: FindingSeverity,
+    pub category: FindingCategory,
+    #[schemars(length(min = 1, max = 2000))]
     pub message: String,
+    #[schemars(length(min = 1, max = 16))]
+    pub evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,7 +138,9 @@ fn evaluate_diff(
         add_finding(
             &mut findings,
             FindingSeverity::Blocking,
+            FindingCategory::Scope,
             "final diff changes too many paths for this bounded task",
+            &[],
         );
     }
     if !allowed_paths.is_empty()
@@ -130,14 +151,18 @@ fn evaluate_diff(
         add_finding(
             &mut findings,
             FindingSeverity::Blocking,
+            FindingCategory::Scope,
             &format!("candidate changed path {path:?} outside the frozen allowed paths"),
+            std::slice::from_ref(path),
         );
     }
     if diff.contains("Binary files ") {
         add_finding(
             &mut findings,
             FindingSeverity::Warning,
+            FindingCategory::Other,
             "final diff contains a binary file change",
+            &[],
         );
     }
     let source_change = changed_paths.iter().any(|path| {
@@ -147,7 +172,9 @@ fn evaluate_diff(
         add_finding(
             &mut findings,
             FindingSeverity::Blocking,
+            FindingCategory::Scope,
             "candidate changes no production source file",
+            &[],
         );
     }
     for line in workspace::added_lines(diff) {
@@ -166,13 +193,17 @@ fn evaluate_diff(
             add_finding(
                 &mut findings,
                 FindingSeverity::Blocking,
+                FindingCategory::Security,
                 "added line contains a secret-shaped value",
+                &[],
             );
         } else if lower.contains("child_process") || lower.contains("eval(") {
             add_finding(
                 &mut findings,
                 FindingSeverity::Warning,
+                FindingCategory::Security,
                 "added line introduces a high-risk dynamic execution primitive",
+                &[],
             );
         }
     }
@@ -195,12 +226,20 @@ fn evaluate_diff(
     }
 }
 
-fn add_finding(findings: &mut Vec<ReviewFinding>, severity: FindingSeverity, message: &str) {
+fn add_finding(
+    findings: &mut Vec<ReviewFinding>,
+    severity: FindingSeverity,
+    category: FindingCategory,
+    message: &str,
+    evidence_refs: &[String],
+) {
     if findings.len() < MAX_FINDINGS {
         findings.push(ReviewFinding {
             id: format!("review-{}", findings.len() + 1),
             severity,
+            category,
             message: message.into(),
+            evidence_refs: evidence_refs.to_vec(),
         });
     }
 }

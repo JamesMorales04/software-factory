@@ -752,7 +752,299 @@ fn quality_receipt(fixture: &CandidateFixture, id: &str, principal: &str) -> Qua
         tree_sha: fixture.tree_sha.clone(),
         result: ReceiptResult::Pass,
         evidence: EvidenceKind::Executed,
+        findings: Vec::new(),
+        mechanism: ReviewMechanism::Deterministic,
+        model_provider: String::new(),
+        model_name: String::new(),
+        model_reservation_id: String::new(),
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_micros: 0,
+        usage_known: false,
     }
+}
+
+async fn settled_reviewer_model_call(
+    db: &Database,
+    candidate_id: &str,
+    provider: &str,
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_micros: u64,
+) -> String {
+    let (project_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT ac.project_id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         JOIN actions ac ON ac.id=c.action_id WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let reservation_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO model_call_reservations
+         (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+          purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+          max_cost_micros,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+          response_text,state,expires_at_ms,created_at,updated_at)
+         VALUES (?1,'SEMANTIC_REVIEWER','reviewer-model',?2,?3,?3,?4,?5,'semantic_review',
+                 ?6,10000,4096,14096,100000,?7,?8,?9,?10,1,'{}','SETTLED',0,?11,?11)",
+    )
+    .bind(&reservation_id)
+    .bind(&project_id)
+    .bind(candidate_id)
+    .bind(provider)
+    .bind(model)
+    .bind(sha256_hex(b"review-request"))
+    .bind(i64::try_from(input_tokens).unwrap())
+    .bind(i64::try_from(output_tokens).unwrap())
+    .bind(i64::try_from(input_tokens + output_tokens).unwrap())
+    .bind(i64::try_from(cost_micros).unwrap())
+    .bind(&now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    reservation_id
+}
+
+#[allow(clippy::too_many_arguments)]
+fn model_review_receipt(
+    fixture: &CandidateFixture,
+    id: &str,
+    result: ReceiptResult,
+    reservation_id: &str,
+    provider: &str,
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_micros: u64,
+) -> QualityReceiptInput {
+    let findings = if result == ReceiptResult::Pass {
+        Vec::new()
+    } else {
+        vec![crate::review::ReviewFinding {
+            id: "semantic-1".into(),
+            severity: crate::review::FindingSeverity::Blocking,
+            category: crate::review::FindingCategory::Functional,
+            message: "bounded semantic defect".into(),
+            evidence_refs: vec!["seed.txt".into()],
+        }]
+    };
+    QualityReceiptInput {
+        receipt_id: id.into(),
+        principal_id: "reviewer-model".into(),
+        action_spec_sha256: fixture.spec_sha256.clone(),
+        commit_sha: fixture.commit_sha.clone(),
+        tree_sha: fixture.tree_sha.clone(),
+        result,
+        evidence: EvidenceKind::Executed,
+        findings,
+        mechanism: ReviewMechanism::Model,
+        model_provider: provider.into(),
+        model_name: model.into(),
+        model_reservation_id: reservation_id.into(),
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
+        cost_micros,
+        usage_known: true,
+    }
+}
+
+#[tokio::test]
+async fn model_review_approval_requires_matching_settled_reservation() {
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-model", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let reservation = settled_reviewer_model_call(
+        &fixture.db,
+        &fixture.candidate_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        10,
+        20,
+        25,
+    )
+    .await;
+    let mut wrong_usage = model_review_receipt(
+        &fixture,
+        "reviewer-model-wrong",
+        ReceiptResult::Pass,
+        &reservation,
+        "opencode",
+        "deepseek-v4.1-flash",
+        11,
+        20,
+        25,
+    );
+    wrong_usage.model_provider = "opencode".into();
+    assert!(matches!(
+        fixture
+            .db
+            .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &wrong_usage)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+    let accepted = fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &model_review_receipt(
+                &fixture,
+                "reviewer-model-pass",
+                ReceiptResult::Pass,
+                &reservation,
+                "opencode",
+                "deepseek-v4.1-flash",
+                10,
+                20,
+                25,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.gate.unwrap().outcome, GateOutcome::Accepted);
+    let receipts = fixture
+        .db
+        .quality_receipts(&fixture.candidate_id)
+        .await
+        .unwrap();
+    let reviewer = receipts
+        .iter()
+        .find(|receipt| receipt.role == QualityRole::Reviewer)
+        .unwrap();
+    assert_eq!(reviewer.mechanism, ReviewMechanism::Model);
+    assert_eq!(reviewer.model_provider, "opencode");
+    assert_eq!(reviewer.model_name, "deepseek-v4.1-flash");
+    assert_eq!(reviewer.model_reservation_id, reservation);
+    assert_eq!(reviewer.input_tokens, 10);
+    assert_eq!(reviewer.output_tokens, 20);
+    assert_eq!(reviewer.total_tokens, 30);
+    assert_eq!(reviewer.cost_micros, 25);
+    assert!(reviewer.usage_known);
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn changes_requested_and_uncertain_never_accept() {
+    let changed = candidate_fixture().await;
+    changed
+        .db
+        .record_quality_receipt(
+            &changed.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&changed, "verifier-change", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut requested = quality_receipt(&changed, "reviewer-change", "reviewer-1");
+    requested.result = ReceiptResult::ChangesRequested;
+    let result = changed
+        .db
+        .record_quality_receipt(&changed.candidate_id, QualityRole::Reviewer, &requested)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::RepairRequired);
+    changed.db.close().await;
+
+    let uncertain = candidate_fixture().await;
+    uncertain
+        .db
+        .record_quality_receipt(
+            &uncertain.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&uncertain, "verifier-uncertain", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut not_tested = quality_receipt(&uncertain, "reviewer-uncertain", "reviewer-1");
+    not_tested.result = ReceiptResult::NotTested;
+    let result = uncertain
+        .db
+        .record_quality_receipt(&uncertain.candidate_id, QualityRole::Reviewer, &not_tested)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::NotTested);
+    uncertain.db.close().await;
+}
+
+#[tokio::test]
+async fn model_review_findings_and_provenance_survive_restart() {
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-restart", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let reservation = settled_reviewer_model_call(
+        &fixture.db,
+        &fixture.candidate_id,
+        "opencode",
+        "deepseek-v4.1-flash",
+        7,
+        11,
+        13,
+    )
+    .await;
+    let mut receipt = model_review_receipt(
+        &fixture,
+        "reviewer-restart",
+        ReceiptResult::ChangesRequested,
+        &reservation,
+        "opencode",
+        "deepseek-v4.1-flash",
+        7,
+        11,
+        13,
+    );
+    receipt.principal_id = "reviewer-restart".into();
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &receipt)
+        .await
+        .unwrap();
+    let database_path = fixture.root.join("factory.sqlite");
+    fixture.db.close().await;
+
+    let reopened = Database::open(&database_path).await.unwrap();
+    let receipts = reopened
+        .quality_receipts(&fixture.candidate_id)
+        .await
+        .unwrap();
+    let reviewer = receipts
+        .iter()
+        .find(|receipt| receipt.role == QualityRole::Reviewer)
+        .unwrap();
+    assert_eq!(reviewer.result, ReceiptResult::ChangesRequested);
+    assert_eq!(reviewer.findings.len(), 1);
+    assert_eq!(reviewer.findings[0].id, "semantic-1");
+    assert_eq!(reviewer.model_reservation_id, reservation);
+    assert_eq!(reviewer.total_tokens, 18);
+    let gate = reopened
+        .gate_for_candidate(&fixture.candidate_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gate.outcome, GateOutcome::RepairRequired);
+    reopened.close().await;
 }
 
 #[tokio::test]
