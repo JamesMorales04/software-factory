@@ -648,7 +648,7 @@ authorized until the Product Owner approves that envelope.** The current
 deterministic path is a real provider-protocol fixture, not a live-model
 certification.
 
-## Source-aware mediated-provider checkpoint (2026-10-24)
+## Source-aware mediated-provider checkpoint (2026-10-24) — `e31e3a12fdedea5e5baad77e1949cbcdbf11640a`
 
 The provider fixture now supplies bounded source context and mediates tools:
 the trusted Worker reads up to 16 allowed files (64 KiB total), excludes

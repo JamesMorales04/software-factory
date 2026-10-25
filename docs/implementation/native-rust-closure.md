@@ -86,8 +86,8 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-A deterministic fake OpenCode server proves the source-aware, tool-mediated
-path: authorized Action → Campaign → Worker claim → durable provider intent →
+At `e31e3a12fdedea5e5baad77e1949cbcdbf11640a`, a deterministic fake OpenCode server proves the source-aware,
+tool-mediated path: authorized Action → Campaign → Worker claim → durable provider intent →
 ACTIVE session binding → bounded source context → provider file plan plus a
 frozen-check command → Supervisor mediated write/run/finalize → immutable
 CandidateRevision → sandboxed verifier → independent reviewer → `ACCEPTED` gate.
