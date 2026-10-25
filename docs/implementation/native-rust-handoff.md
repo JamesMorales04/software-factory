@@ -633,6 +633,6 @@ sessions block replacement dispatch. See ADR-0022 and
 
 Author-run at `fea5cded4b428da52e3fa3d9aef469b1ee9ba956`: `cargo xtask check` PASS (241 tests + 2 ignored, format, strict
 Clippy, build, docs, eleven migrations, audit); `cargo xtask e2e provider` and
-`cargo xtask e2e office` PASS; strict hygiene and architecture PASS. Exact-head CI at `6a5519e33eace8e72d6328f7ff1aab86a7d41b84` passed Native Rust (both runs), Office browser (both runs) and architecture consistency (`40146566843`), including the provider fixture E2E and strict hygiene. No paid provider call was made. Live coding with tools, source-context delivery,
+`cargo xtask e2e office` PASS; strict hygiene and architecture PASS. Exact-head CI at `02d7c04f451386de77ff8e35d2302e4364c636e4` passed Native Rust (both runs), Office browser (both runs) and architecture consistency (`40146566843`), including the provider fixture E2E and strict hygiene. No paid provider call was made. Live coding with tools, source-context delivery,
 provider-session restart/cancellation reconciliation, credential-confinement
 certification and ISOLATED execution remain open and fail-closed.
