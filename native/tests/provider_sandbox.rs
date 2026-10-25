@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use factory_native::{
-    provider_egress::EgressConfig,
+    provider_egress::{EgressBroker, EgressConfig},
     provider_sandbox::{ProviderSandbox, ProviderSandboxConfig},
 };
 
@@ -143,6 +143,200 @@ async fn confined_provider_reaches_only_the_scoped_egress_broker() {
     sandbox.stop().await.unwrap();
     server.abort();
     let _ = std::fs::remove_dir_all(session_dir);
+}
+
+#[tokio::test]
+async fn actual_opencode_executable_uses_the_egress_broker() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{Router, extract::State, http::HeaderMap, routing::post};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let opencode = std::env::var("OPENCODE_BIN").ok().or_else(|| {
+        std::process::Command::new("sh")
+            .args(["-c", "command -v opencode"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    });
+    let Some(opencode) = opencode.filter(|path| !path.is_empty()) else {
+        eprintln!("skipping actual OpenCode test: OPENCODE_BIN not available");
+        return;
+    };
+    #[derive(Clone)]
+    struct Upstream {
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    async fn chat(
+        State(state): State<Upstream>,
+        headers: HeaderMap,
+    ) -> axum::Json<serde_json::Value> {
+        state.seen.lock().unwrap().push(
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        axum::Json(serde_json::json!({
+            "id":"chatcmpl-mock","object":"chat.completion","created":1,"model":"mock-model",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"hello from mock"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}
+        }))
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/v1/chat/completions", post(chat))
+        .with_state(Upstream { seen: seen.clone() });
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = upstream_listener.local_addr().unwrap();
+    let upstream_server = tokio::spawn(async move {
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+    let socket = std::env::temp_dir().join(format!("oe-{}", uuid::Uuid::new_v4().simple()));
+    let token = "egress-token-0123456789abcdef0123456789abcdef";
+    let credential = "real-upstream-credential-0123456789";
+    let config = EgressConfig::new(
+        &format!("http://{upstream}"),
+        credential.into(),
+        token.into(),
+        true,
+    )
+    .unwrap();
+    let broker = EgressBroker::start(config, &socket).await.unwrap();
+    let (bridge_address, bridge) = factory_native::provider_egress::start_loopback_bridge(&socket)
+        .await
+        .unwrap();
+    let opencode_config = serde_json::json!({
+        "provider": {
+            "factorymock": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Factory Mock",
+                "options": {
+                    "baseURL": format!("http://{bridge_address}/v1"),
+                    "apiKey": token
+                },
+                "models": {
+                    "mock-model": {"name":"Mock","limit":{"context":10000,"output":1000}}
+                }
+            }
+        },
+        "model": "factorymock/mock-model"
+    });
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let mut child = tokio::process::Command::new(&opencode)
+        .args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--pure",
+        ])
+        .env("OPENCODE_SERVER_PASSWORD", "test")
+        .env(
+            "OPENCODE_CONFIG_CONTENT",
+            serde_json::to_string(&opencode_config).unwrap(),
+        )
+        .env("HOME", "/tmp")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start OpenCode");
+    let stdout = child.stdout.take().unwrap();
+    let mut lines = BufReader::new(stdout).lines();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
+        if line
+            .as_deref()
+            .is_some_and(|line| line.contains("server listening"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "OpenCode did not start"
+        );
+    }
+    let base = format!("http://127.0.0.1:{port}");
+    let client = factory_native::runtime::opencode_http_client(Duration::from_secs(30)).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let health = client
+            .get(format!("{base}/global/health"))
+            .basic_auth("opencode", Some("test"))
+            .send()
+            .await;
+        if health.is_ok_and(|response| response.status().is_success()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "OpenCode health did not become ready"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let created = factory_native::runtime::create_opencode_session(
+        &client,
+        &base,
+        "test",
+        "/tmp",
+        "Factory OpenCode compatibility",
+    )
+    .await
+    .expect("create OpenCode session");
+    let session_id = created["id"].as_str().unwrap().to_owned();
+    factory_native::runtime::submit_opencode_prompt(
+        &client,
+        &base,
+        "test",
+        "/tmp",
+        &session_id,
+        &serde_json::json!({
+            "model": {"providerID":"factorymock","modelID":"mock-model"},
+            "parts": [{"type":"text","text":"hello"}]
+        }),
+    )
+    .await
+    .expect("submit OpenCode prompt");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while seen.lock().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "OpenCode did not reach mock upstream"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let seen = seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "OpenCode made no model request");
+    assert!(
+        seen.iter()
+            .all(|value| value == &format!("Bearer {credential}")),
+        "OpenCode requests did not use the injected credential: {seen:?}"
+    );
+    let _ = factory_native::runtime::delete_opencode_session(
+        &client,
+        &base,
+        "test",
+        "/tmp",
+        &session_id,
+    )
+    .await;
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    bridge.abort();
+    broker.stop();
+    upstream_server.abort();
+    let _ = std::fs::remove_file(socket);
 }
 
 #[tokio::test]

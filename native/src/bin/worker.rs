@@ -794,6 +794,10 @@ async fn start_provider_runtime(
                 max_session_bytes,
                 max_lifetime: lifetime,
                 bridge_timeout: lifetime,
+                address_space_bytes: env::var("FACTORY_PROVIDER_MEMORY_LIMIT_BYTES")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(4 * 1024 * 1024 * 1024),
                 egress,
                 egress_bridge,
                 ..Default::default()

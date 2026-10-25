@@ -8,6 +8,7 @@ import { Dashboard } from "./views/Dashboard";
 import { Lead } from "./views/Lead";
 import { Projects } from "./views/Projects";
 import { Runs } from "./views/Runs";
+import { Runtime } from "./views/Runtime";
 import { Workers } from "./views/Workers";
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -79,6 +80,7 @@ export function App() {
           <NavItem to="/campaigns" label="Campaigns" />
           <NavItem to="/runs" label="Runs" />
           <NavItem to="/workers" label="Workers" />
+          <NavItem to="/runtime" label="Runtime" />
           <button
             type="button"
             className="linklike"
@@ -101,6 +103,7 @@ export function App() {
           <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
           <Route path="/runs" element={<Runs />} />
           <Route path="/workers" element={<Workers />} />
+          <Route path="/runtime" element={<Runtime />} />
           <Route path="*" element={<p className="error">Unknown route.</p>} />
         </Routes>
       </main>

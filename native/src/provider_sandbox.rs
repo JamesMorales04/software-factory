@@ -81,6 +81,8 @@ pub struct ProviderSandboxConfig {
     pub env: Vec<(String, String)>,
     pub egress: Option<EgressConfig>,
     pub egress_bridge: Option<PathBuf>,
+    pub provider_bridge: Option<PathBuf>,
+    pub provider_tcp: Option<String>,
 }
 
 impl Default for ProviderSandboxConfig {
@@ -97,10 +99,12 @@ impl Default for ProviderSandboxConfig {
             bridge_timeout: Duration::from_secs(120),
             max_connections: 16,
             cpu_seconds: 300,
-            address_space_bytes: 1024 * 1024 * 1024,
+            address_space_bytes: 4 * 1024 * 1024 * 1024,
             env: Vec::new(),
             egress: None,
             egress_bridge: None,
+            provider_bridge: None,
+            provider_tcp: None,
         }
     }
 }
@@ -203,6 +207,14 @@ impl ProviderSandbox {
                     .unwrap_or(Path::new("/dev/null")),
             )
             .arg("/provider/egress-bridge")
+            .arg("--ro-bind")
+            .arg(
+                config
+                    .provider_bridge
+                    .as_deref()
+                    .unwrap_or(Path::new("/dev/null")),
+            )
+            .arg("/provider/provider-bridge")
             .arg("--bind")
             .arg(&config.session_dir)
             .arg("/session")
@@ -234,6 +246,9 @@ impl ProviderSandbox {
         for (key, value) in &config.env {
             command.arg("--setenv").arg(key).arg(value);
         }
+        if let Some(tcp) = &config.provider_tcp {
+            command.arg("--setenv").arg("FACTORY_PROVIDER_TCP").arg(tcp);
+        }
         if let Some(egress) = &config.egress {
             command
                 .arg("--setenv")
@@ -249,11 +264,19 @@ impl ProviderSandbox {
                 .arg("OPENAI_API_KEY")
                 .arg(egress.token());
         }
-        if config.egress.is_some() {
+        if config.egress.is_some() || config.provider_bridge.is_some() {
+            let mut script = String::new();
+            if config.egress.is_some() {
+                script.push_str("/provider/egress-bridge & ");
+            }
+            if config.provider_bridge.is_some() {
+                script.push_str("/provider/provider-bridge & ");
+            }
+            script.push_str("env > /session/shell.env; echo started > /session/shell.started; echo \"$@\" > /session/shell.args; (sleep 2; bash -c 'exec 3<>/dev/tcp/127.0.0.1/18081' && echo ok > /session/tcp.ok || echo fail > /session/tcp.fail) & /provider/provider \"$@\" 2>/session/provider.stderr; echo $? > /session/shell.exit");
             command
                 .arg("/bin/sh")
                 .arg("-c")
-                .arg("/provider/egress-bridge & exec /provider/provider \"$@\"")
+                .arg(script)
                 .arg("factory-provider")
                 .args(&config.args);
         } else {

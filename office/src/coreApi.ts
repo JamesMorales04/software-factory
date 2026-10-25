@@ -76,6 +76,29 @@ export interface WorkerSummary {
   updated_at: string;
 }
 
+export interface ProviderSession {
+  session_record_id: string;
+  attempt_id: string;
+  worker_id: string;
+  generation: number;
+  provider: string;
+  model: string;
+  provider_mode: string;
+  state: string;
+  provider_session_id: string;
+  provider_directory: string;
+  turn_id: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micros: number;
+  usage_known: boolean;
+  cleanup_receipt: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Candidate {
   id: string;
   attempt_id: string;
@@ -407,6 +430,8 @@ export const coreApi = {
   listCandidates: () => request<Candidate[]>("/candidates"),
   listEvents: () => request<FactoryEvent[]>("/events"),
   listWorkers: () => request<WorkerSummary[]>("/workers"),
+  listProviderSessions: () =>
+    request<ProviderSession[]>("/provider/sessions"),
   getGate: async (candidateId: string): Promise<Gate | null> => {
     try {
       return await request<Gate>(

@@ -142,6 +142,7 @@ try {
     env: {
       ...process.env,
       FACTORY_SUPERVISOR_TOKEN: supervisorToken,
+      FACTORY_CORE_URL: coreUrl,
       FACTORY_ATTEMPT_GRANT_KEY: attemptGrantKey,
       FACTORY_SUPERVISOR_CAPABILITY_KEY: supervisorCapabilityKey,
       FACTORY_SUPERVISOR_BIND: `127.0.0.1:${supervisorPort}`,
@@ -289,6 +290,10 @@ try {
   await page.getByRole("link", { name: "Workers", exact: true }).click();
   await page.getByRole("heading", { name: "Workers", exact: true }).waitFor();
   await page.getByText("office-e2e-worker").waitFor();
+
+  await page.getByRole("link", { name: "Runtime", exact: true }).click();
+  await page.getByRole("heading", { name: "Runtime", exact: true }).waitFor();
+  await page.getByText("No provider sessions recorded.").waitFor();
 
   const _projects = await api("/projects");
   const _leadProject = _projects[0];

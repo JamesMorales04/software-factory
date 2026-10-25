@@ -458,6 +458,20 @@ impl Database {
         load_provider_session(&mut connection, session_record_id).await
     }
 
+    pub async fn provider_sessions(&self) -> Result<Vec<ProviderSessionRecord>, Error> {
+        let ids: Vec<(String,)> = sqlx::query_as::query_as(
+            "SELECT session_record_id FROM provider_sessions ORDER BY updated_at DESC LIMIT 100",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut connection = self.pool.acquire().await?;
+        let mut records = Vec::with_capacity(ids.len());
+        for (id,) in ids {
+            records.push(load_provider_session(&mut connection, &id).await?);
+        }
+        Ok(records)
+    }
+
     pub async fn provider_sessions_for_attempt(
         &self,
         attempt_id: &str,

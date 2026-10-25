@@ -329,6 +329,7 @@ fn api_router(app: Arc<App>) -> Router {
             post(worker_provider_tool_event),
         )
         .route("/worker/provider_state", post(worker_provider_state))
+        .route("/provider/sessions", get(provider_sessions))
         .route(
             "/worker/provider_unresolved",
             get(worker_provider_unresolved),
@@ -889,6 +890,13 @@ async fn worker_workspace_operation(
         }
         Err(error) => api_error(error),
     }
+}
+
+async fn provider_sessions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.provider_sessions().await)
 }
 
 async fn worker_provider_intent(

@@ -46,6 +46,10 @@ name = "factory-reviewer"
 path = "src/bin/reviewer.rs"
 
 [[bin]]
+name = "factory-provider-bridge"
+path = "src/bin/provider_bridge.rs"
+
+[[bin]]
 name = "factory-egress-bridge"
 path = "src/bin/egress_bridge.rs"
 
