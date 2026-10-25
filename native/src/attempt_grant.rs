@@ -95,13 +95,15 @@ pub fn workspace_capability(
     key: &[u8],
     workspace_id: &str,
     attempt_id: &str,
+    generation: i64,
     expires_at_ms: i64,
 ) -> Result<String, String> {
     if key.len() < MIN_KEY_BYTES {
         return Err("Workspace capability key must be at least 32 bytes".into());
     }
-    let payload =
-        format!("factory-workspace-capability-v1\0{workspace_id}\0{attempt_id}\0{expires_at_ms}");
+    let payload = format!(
+        "factory-workspace-capability-v1\0{workspace_id}\0{attempt_id}\0{generation}\0{expires_at_ms}"
+    );
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
     let tag = ring::hmac::sign(&key, payload.as_bytes());
     Ok(hex(tag.as_ref()))
@@ -112,15 +114,98 @@ pub fn verify_workspace_capability(
     capability: &str,
     workspace_id: &str,
     attempt_id: &str,
+    generation: i64,
     expires_at_ms: i64,
     now_ms: i64,
 ) -> Result<(), String> {
     if expires_at_ms <= now_ms {
         return Err("Workspace capability has expired".into());
     }
-    let expected = workspace_capability(key, workspace_id, attempt_id, expires_at_ms)?;
+    let expected = workspace_capability(key, workspace_id, attempt_id, generation, expires_at_ms)?;
     if !constant_time_eq(capability.as_bytes(), expected.as_bytes()) {
         return Err("Workspace capability is invalid".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationGrantClaims {
+    pub attempt_id: String,
+    pub worker_id: String,
+    pub generation: i64,
+    pub workspace_id: String,
+    pub operation: String,
+    pub allowed_paths: Vec<String>,
+    pub checks: Vec<Vec<String>>,
+    pub expires_at_ms: i64,
+}
+
+pub fn sign_operation(key: &[u8], claims: &OperationGrantClaims) -> Result<String, String> {
+    if key.len() < MIN_KEY_BYTES {
+        return Err("Operation grant key must be at least 32 bytes".into());
+    }
+    let payload = serde_json::to_vec(claims).map_err(|_| "Operation grant claims are invalid")?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let mut input = b"factory-operation-grant-v1\0".to_vec();
+    input.extend_from_slice(&payload);
+    let tag = ring::hmac::sign(&key, &input);
+    let envelope = serde_json::to_vec(&serde_json::json!({
+        "claims": claims,
+        "signature": hex(tag.as_ref())
+    }))
+    .map_err(|_| "Operation grant claims are invalid")?;
+    Ok(hex(&envelope))
+}
+
+pub fn parse_operation(grant: &str) -> Result<OperationGrantClaims, String> {
+    let bytes = decode_hex(grant)?;
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        claims: OperationGrantClaims,
+        signature: String,
+    }
+    let envelope: Envelope =
+        serde_json::from_slice(&bytes).map_err(|_| "Operation grant is malformed")?;
+    if envelope.signature.len() != 64
+        || !envelope
+            .signature
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Operation grant signature is malformed".into());
+    }
+    Ok(envelope.claims)
+}
+
+pub fn verify_operation(
+    key: &[u8],
+    grant: &str,
+    expected: &OperationGrantClaims,
+    now_ms: i64,
+) -> Result<(), String> {
+    if expected.expires_at_ms <= now_ms {
+        return Err("Operation grant has expired".into());
+    }
+    let bytes = decode_hex(grant)?;
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        claims: OperationGrantClaims,
+        signature: String,
+    }
+    let envelope: Envelope =
+        serde_json::from_slice(&bytes).map_err(|_| "Operation grant is malformed")?;
+    if envelope.claims != *expected {
+        return Err("Operation grant does not match the request".into());
+    }
+    let payload = serde_json::to_vec(expected).map_err(|_| "Operation grant claims are invalid")?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let mut input = b"factory-operation-grant-v1\0".to_vec();
+    input.extend_from_slice(&payload);
+    let expected_tag = ring::hmac::sign(&key, &input);
+    let expected_hex = hex(expected_tag.as_ref());
+    if !constant_time_eq(envelope.signature.as_bytes(), expected_hex.as_bytes()) {
+        return Err("Operation grant signature is invalid".into());
     }
     Ok(())
 }
@@ -189,5 +274,32 @@ mod tests {
         assert!(verify(key, &grant, &changed, 1_000).is_err());
         assert!(verify(b"short", &grant, &claims(), 1_000).is_err());
         assert!(verify(key, "not-hex", &claims(), 1_000).is_err());
+    }
+
+    #[test]
+    fn operation_grant_is_bound_to_workspace_generation_operation_and_scope() {
+        let key = b"attempt-grant-key-0123456789abcdef";
+        let claims = OperationGrantClaims {
+            attempt_id: "attempt-a".into(),
+            worker_id: "worker-a".into(),
+            generation: 4,
+            workspace_id: "workspace-a".into(),
+            operation: "write".into(),
+            allowed_paths: vec!["src".into()],
+            checks: vec![vec!["grep".into(), "-q".into(), "ok".into()]],
+            expires_at_ms: 2_000,
+        };
+        let grant = sign_operation(key, &claims).unwrap();
+        assert!(verify_operation(key, &grant, &claims, 1_000).is_ok());
+        assert!(verify_operation(key, &grant, &claims, 2_000).is_err());
+        let mut changed = claims.clone();
+        changed.generation = 5;
+        assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
+        let mut changed = claims.clone();
+        changed.allowed_paths = vec!["README.md".into()];
+        assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
+        let mut changed = claims;
+        changed.operation = "finalize".into();
+        assert!(verify_operation(key, &grant, &changed, 1_000).is_err());
     }
 }

@@ -40,6 +40,16 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WorkspaceOperationRequest {
+    attempt_id: String,
+    worker_id: String,
+    generation: i64,
+    workspace_id: String,
+    operation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderSessionRef {
     session_record_id: String,
     worker_id: String,
@@ -295,6 +305,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/worker/claim", post(worker_claim))
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
+        .route(
+            "/worker/workspace_operation",
+            post(worker_workspace_operation),
+        )
         .route("/worker/provider_intent", post(worker_provider_intent))
         .route("/worker/provider_active", post(worker_provider_active))
         .route("/worker/provider_terminal", post(worker_provider_terminal))
@@ -769,6 +783,55 @@ async fn worker_report(
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_workspace_operation(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<WorkspaceOperationRequest>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.workspace_id.is_empty()
+        || input.workspace_id.len() > 128
+        || input.attempt_id.is_empty()
+        || input.generation <= 0
+    {
+        return api_error(Error::Invalid("workspace operation request"));
+    }
+    match app
+        .db
+        .workspace_operation_authorization(
+            &input.attempt_id,
+            &input.worker_id,
+            input.generation,
+            &input.operation,
+        )
+        .await
+    {
+        Ok(authorization) => {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let expires_at_ms = now_ms.saturating_add(5_000);
+            let claims = factory_native::attempt_grant::OperationGrantClaims {
+                attempt_id: authorization.attempt_id,
+                worker_id: authorization.worker_id,
+                generation: authorization.generation,
+                workspace_id: input.workspace_id,
+                operation: input.operation,
+                allowed_paths: authorization.allowed_paths,
+                checks: authorization.checks,
+                expires_at_ms,
+            };
+            match factory_native::attempt_grant::sign_operation(&app.attempt_grant_key, &claims) {
+                Ok(grant) => {
+                    Json(json!({"grant": grant, "expires_at_ms": expires_at_ms})).into_response()
+                }
+                Err(_) => api_error(Error::Invalid("workspace operation grant signing")),
+            }
+        }
         Err(error) => api_error(error),
     }
 }

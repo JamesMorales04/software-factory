@@ -333,6 +333,7 @@ async fn allocate<B: factory_native::execution::VolumeBackend>(
                 &app.capability_key,
                 &handle.workspace_id,
                 &handle.attempt_id,
+                handle.generation,
                 handle.capability_expires_at_ms,
             ) {
                 Ok(capability) => {
@@ -356,8 +357,11 @@ async fn execute<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ExecuteWorkspace>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "execute").is_none() {
+        return StatusCode::FORBIDDEN.into_response();
     }
     if let Err(message) = validate_execute(&app, &input) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
@@ -378,9 +382,17 @@ async fn apply_files<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ApplyFilesRequest>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "apply") else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if input.allowed_paths != grant.allowed_paths {
+        return StatusCode::FORBIDDEN.into_response();
     }
+    let mut input = input;
+    input.allowed_paths = grant.allowed_paths;
     match app.manager.apply_files(&workspace_id, &input).await {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
         Err(error) => execution_error(error),
@@ -393,9 +405,17 @@ async fn write_files<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<WriteFilesRequest>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "write") else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if input.allowed_paths != grant.allowed_paths {
+        return StatusCode::FORBIDDEN.into_response();
     }
+    let mut input = input;
+    input.allowed_paths = grant.allowed_paths;
     match app.manager.write_files(&workspace_id, &input).await {
         Ok(handle) => (StatusCode::OK, Json(handle)).into_response(),
         Err(error) => execution_error(error),
@@ -408,8 +428,14 @@ async fn run_tool<B: factory_native::execution::VolumeBackend>(
     Path(workspace_id): Path<String>,
     Json(input): Json<ToolRunRequest>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(grant) = operation_grant(&headers, &app, &handle, "run") else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !grant.checks.iter().any(|check| check == &input.argv) {
+        return StatusCode::FORBIDDEN.into_response();
     }
     if !app.allowed_images.contains(&input.image) {
         return (
@@ -457,8 +483,11 @@ async fn finalize<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    let Some(handle) = authorized_workspace(&headers, &app, &workspace_id) else {
         return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if operation_grant(&headers, &app, &handle, "finalize").is_none() {
+        return StatusCode::FORBIDDEN.into_response();
     }
     match app.manager.finalize_workspace(&workspace_id).await {
         Ok(candidate) => (StatusCode::OK, Json(candidate)).into_response(),
@@ -471,7 +500,7 @@ async fn status<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    if authorized_workspace(&headers, &app, &workspace_id).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.status(&workspace_id) {
@@ -485,7 +514,7 @@ async fn cleanup<B: factory_native::execution::VolumeBackend>(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Response {
-    if !authorized_workspace(&headers, &app, &workspace_id) {
+    if authorized_workspace(&headers, &app, &workspace_id).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.manager.cleanup(&workspace_id).await {
@@ -614,22 +643,47 @@ fn authorized_workspace<B: factory_native::execution::VolumeBackend>(
     headers: &HeaderMap,
     app: &App<B>,
     workspace_id: &str,
-) -> bool {
-    let Some(token) = bearer_token(headers) else {
-        return false;
-    };
-    let Ok(handle) = app.manager.status(workspace_id) else {
-        return false;
-    };
+) -> Option<factory_native::execution::WorkspaceHandle> {
+    let token = bearer_token(headers)?;
+    let handle = app.manager.status(workspace_id).ok()?;
     factory_native::attempt_grant::verify_workspace_capability(
         &app.capability_key,
         token,
         &handle.workspace_id,
         &handle.attempt_id,
+        handle.generation,
         handle.capability_expires_at_ms,
         chrono::Utc::now().timestamp_millis(),
     )
-    .is_ok()
+    .ok()?;
+    Some(handle)
+}
+
+fn operation_grant<B: factory_native::execution::VolumeBackend>(
+    headers: &HeaderMap,
+    app: &App<B>,
+    handle: &factory_native::execution::WorkspaceHandle,
+    operation: &str,
+) -> Option<factory_native::attempt_grant::OperationGrantClaims> {
+    let token = headers
+        .get("x-factory-operation-grant")
+        .and_then(|value| value.to_str().ok())?;
+    let claims = factory_native::attempt_grant::parse_operation(token).ok()?;
+    if claims.attempt_id != handle.attempt_id
+        || claims.generation != handle.generation
+        || claims.workspace_id != handle.workspace_id
+        || claims.operation != operation
+    {
+        return None;
+    }
+    factory_native::attempt_grant::verify_operation(
+        &app.attempt_grant_key,
+        token,
+        &claims,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .ok()?;
+    Some(claims)
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -955,6 +1009,7 @@ mod tests {
             "attemptId": attempt_id,
             "repository": repository,
             "baseCommit": base,
+            "generation": 1,
             "actionSpecSha256": spec_sha256,
             "attemptGrant": grant
         })
@@ -969,6 +1024,40 @@ mod tests {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    fn operation_grant(handle: &serde_json::Value, operation: &str) -> String {
+        let claims = factory_native::attempt_grant::OperationGrantClaims {
+            attempt_id: handle["attemptId"].as_str().unwrap().into(),
+            worker_id: "worker-test".into(),
+            generation: handle["generation"].as_i64().unwrap_or(1),
+            workspace_id: handle["workspaceId"].as_str().unwrap().into(),
+            operation: operation.into(),
+            allowed_paths: vec!["src".into()],
+            checks: vec![vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'http\\n' > result.txt".into(),
+            ]],
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        };
+        factory_native::attempt_grant::sign_operation(TEST_GRANT_KEY, &claims).unwrap()
+    }
+
+    fn operation_request(
+        uri: &str,
+        capability: &str,
+        grant: &str,
+        body: &serde_json::Value,
+    ) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {capability}"))
+            .header("x-factory-operation-grant", grant)
+            .body(Body::from(body.to_string()))
+            .unwrap()
     }
 
     async fn status(router: &Router, request: Request<Body>) -> StatusCode {
@@ -1060,9 +1149,10 @@ mod tests {
         });
         let response = router
             .clone()
-            .oneshot(json_request(
+            .oneshot(operation_request(
                 &format!("/v1/workspaces/{workspace_id}/execute"),
-                Some(&capability),
+                &capability,
+                &operation_grant(&handle, "execute"),
                 &execution,
             ))
             .await
@@ -1161,6 +1251,88 @@ mod tests {
         assert_eq!(
             status(&router, status_request(first_id, "tampered")).await,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_mutations_require_a_matching_unexpired_operation_grant() {
+        let fixture = fixture();
+        let router = build_router(fixture.app.clone());
+        let handle = body_json(
+            router
+                .clone()
+                .oneshot(json_request(
+                    "/v1/workspaces",
+                    Some(TEST_TOKEN),
+                    &allocation_body("attempt-op", &fixture.repository),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let workspace_id = handle["workspaceId"].as_str().unwrap();
+        let capability = handle["capability"].as_str().unwrap();
+        let mut claims = factory_native::attempt_grant::OperationGrantClaims {
+            attempt_id: "attempt-op".into(),
+            worker_id: "worker-test".into(),
+            generation: 1,
+            workspace_id: workspace_id.into(),
+            operation: "write".into(),
+            allowed_paths: vec!["src".into()],
+            checks: vec![vec!["/bin/true".into()]],
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        };
+        let grant = factory_native::attempt_grant::sign_operation(TEST_GRANT_KEY, &claims).unwrap();
+        let mismatched_scope = json!({
+            "allowedPaths": ["README.md"],
+            "files": [{"path":"README.md","content":"x"}]
+        });
+        assert_eq!(
+            status(
+                &router,
+                operation_request(
+                    &format!("/v1/workspaces/{workspace_id}/write"),
+                    capability,
+                    &grant,
+                    &mismatched_scope,
+                ),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        let run = json!({"image":"test/image:1","argv":["/bin/false"],"timeoutSecs":30});
+        assert_eq!(
+            status(
+                &router,
+                operation_request(
+                    &format!("/v1/workspaces/{workspace_id}/run"),
+                    capability,
+                    &grant,
+                    &run,
+                ),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        claims.expires_at_ms = 1;
+        let expired =
+            factory_native::attempt_grant::sign_operation(TEST_GRANT_KEY, &claims).unwrap();
+        let write = json!({
+            "allowedPaths": ["src"],
+            "files": [{"path":"src/ok.txt","content":"ok"}]
+        });
+        assert_eq!(
+            status(
+                &router,
+                operation_request(
+                    &format!("/v1/workspaces/{workspace_id}/write"),
+                    capability,
+                    &expired,
+                    &write,
+                ),
+            )
+            .await,
+            StatusCode::FORBIDDEN
         );
     }
 

@@ -437,6 +437,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "jsonschema",
+ "libc",
  "regex",
  "reqwest",
  "ring",

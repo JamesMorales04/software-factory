@@ -412,6 +412,85 @@ impl Database {
         )))
     }
 
+    pub async fn workspace_operation_authorization(
+        &self,
+        attempt_id: &str,
+        worker_id: &str,
+        generation: i64,
+        operation: &str,
+    ) -> Result<WorkspaceOperationAuthorization, Error> {
+        if !matches!(
+            operation,
+            "write" | "run" | "finalize" | "apply" | "execute"
+        ) {
+            return Err(Error::Invalid("workspace operation"));
+        }
+        let now_ms = Utc::now().timestamp_millis();
+        let row = sqlx::query::query(
+            "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status AS campaign_status,
+                    COALESCE(aps.spec_json,s.spec_json) AS spec_json
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN actions ac ON ac.id=c.action_id
+             JOIN action_specs s ON s.action_id=ac.id
+             LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
+             LEFT JOIN worker_leases l ON l.attempt_id=a.id
+             WHERE a.id=?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Err(Error::NotFound);
+        };
+        use sqlx::row::Row;
+        let lease_worker: Option<String> = row.try_get("worker_id")?;
+        let lease_generation: Option<i64> = row.try_get("generation")?;
+        let lease_expiry: Option<i64> = row.try_get("expires_at_ms")?;
+        let attempt_status: String = row.try_get("status")?;
+        let campaign_status: String = row.try_get("campaign_status")?;
+        if lease_worker.as_deref() != Some(worker_id)
+            || lease_generation != Some(generation)
+            || lease_expiry.is_none_or(|expiry| expiry <= now_ms)
+            || attempt_status != "LEASED"
+            || campaign_status != "AUTHORIZED"
+        {
+            return Err(Error::Forbidden(
+                "workspace operation is not authorized by the current lease".into(),
+            ));
+        }
+        if matches!(operation, "write" | "run" | "finalize" | "apply") {
+            let provider_state: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT state FROM provider_sessions WHERE attempt_id=?1 AND generation=?2",
+            )
+            .bind(attempt_id)
+            .bind(generation)
+            .fetch_optional(&self.pool)
+            .await?;
+            if provider_state.as_ref().map(|(state,)| state.as_str()) != Some("ACTIVE") {
+                return Err(Error::Forbidden(
+                    "workspace operation requires an active provider session".into(),
+                ));
+            }
+        }
+        let spec_json: String = row.try_get("spec_json")?;
+        let spec: ActionSpec = serde_json::from_str(&spec_json)
+            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+        let checks = spec
+            .checks
+            .iter()
+            .map(|check| check.command.clone())
+            .collect();
+        Ok(WorkspaceOperationAuthorization {
+            attempt_id: attempt_id.into(),
+            worker_id: worker_id.into(),
+            generation,
+            allowed_paths: spec.allowed_paths,
+            checks,
+        })
+    }
+
     pub async fn heartbeat(
         &self,
         attempt_id: &str,

@@ -40,6 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/session"));
     std::fs::create_dir_all(&directory)?;
+    if let Ok(value) = env::var("FACTORY_FIXTURE_PROVIDER_FLOOD_BYTES") {
+        let bytes: usize = value.parse()?;
+        std::fs::write(directory.join("flood.bin"), vec![0u8; bytes])?;
+    }
     write_environment(&directory)?;
     write_probe(&directory);
     let (sender, _) = broadcast::channel(64);
@@ -47,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sender,
         deleted: Arc::new(AtomicBool::new(false)),
         step: Arc::new(AtomicUsize::new(0)),
-        directory,
+        directory: directory.clone(),
     };
     let app = Router::new()
         .route("/global/health", get(health))
@@ -63,6 +67,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    }
+    if env::var("FACTORY_FIXTURE_PROVIDER_EGRESS_TEST")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        let directory = directory.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let base = env::var("OPENAI_BASE_URL").unwrap_or_default();
+            let key = env::var("OPENAI_API_KEY").unwrap_or_default();
+            let result = reqwest::Client::new()
+                .post(format!("{base}/responses"))
+                .bearer_auth(key)
+                .json(&json!({"model":"fake","input":"hello"}))
+                .send()
+                .await;
+            let text = match result {
+                Ok(response) => format!("status={}\n", response.status()),
+                Err(error) => format!("error={error}\n"),
+            };
+            let _ = std::fs::write(directory.join("egress_result.txt"), text);
+        });
     }
     axum::serve(listener, app).await?;
     Ok(())
@@ -178,7 +205,16 @@ fn write_environment(directory: &std::path::Path) -> Result<(), std::io::Error> 
     entries.sort();
     let text = entries
         .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
+        .map(|(key, value)| {
+            if ["PASSWORD", "TOKEN", "KEY", "SECRET"]
+                .iter()
+                .any(|needle| key.contains(needle))
+            {
+                format!("{key}=<redacted>")
+            } else {
+                format!("{key}={value}")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(directory.join("environment.txt"), format!("{text}\n"))

@@ -43,22 +43,30 @@ In both shapes:
   immutable CandidateRevision;
 - Supervisor allocation requires a Core-signed grant bound to the exact
   Attempt, worker, generation, repository, base commit and ActionSpec digest;
-  workspace operations require a per-Attempt capability, not the broad
-  Supervisor admin bearer;
+  each mutating workspace operation also requires a short-lived Core-signed
+  operation grant bound to the live lease, generation, workspace, operation and
+  frozen paths/checks; a per-Attempt capability is never sufficient by itself;
+- provider egress, when configured, traverses a per-run authenticated
+  OpenAI-compatible broker with a pinned public destination, injected
+  credential, exact routes, bounded bodies/responses/time and no redirects;
+- the provider sandbox has CPU, address-space, file-size, descriptor, lifetime,
+  output and session-size bounds; the writable session mount remains a
+  candidate monitor rather than an OS quota;
 - durable provider intent, active-session identity, terminal usage and cleanup
   receipts are recorded in Core; unresolved sessions block replacement dispatch;
 - cancellations and revocations move unresolved sessions to
   `CANCEL_REQUESTED`, never to a claimed external stop.
 
-Live Codex work turns with real tool execution, live provider model egress
-through the sandbox and ISOLATED execution remain unimplemented and fail closed.
-Multi-turn OpenCode tool-event mediation, the bubblewrap provider boundary and
-Codex permission-decision protocol fixtures are deterministic only.
+Live Codex/OpenCode work turns against the real provider API, real provider
+configuration of the egress broker and ISOLATED execution remain unimplemented
+and fail closed. Multi-turn OpenCode tool-event mediation, the bubblewrap
+provider boundary, confined recovery primitives and Codex permission-decision
+protocol fixtures are deterministic only.
 
 ## Consequences
 
-This is a real source-aware, tool-mediated, process-confined fixture path, not a
-live-model or isolation certification. It preserves the tool-free restriction as
+This is a real source-aware, tool-mediated, process-confined fixture path with
+independent model review, not a live-model or human isolation certification. It preserves the tool-free restriction as
 a distinct mode, keeps the long-lived provider credential and host control
 outside the sandbox, and makes every provider-originated effect pass through
 Core authorization, path validation, frozen-command matching and Supervisor

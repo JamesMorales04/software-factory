@@ -2698,6 +2698,23 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
         .await
         .unwrap();
     assert!(next_claim["assignment"].is_null());
+    let cancelled_operation = client
+        .post(format!("{base_url}/worker/workspace_operation"))
+        .bearer_auth(session["session_token"].as_str().unwrap())
+        .json(&json!({
+            "attempt_id": attempt_id,
+            "worker_id": "cancel-worker",
+            "generation": 1,
+            "workspace_id": "ws-cancelled",
+            "operation": "write"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        cancelled_operation.status().is_client_error(),
+        "cancelled Attempt must not receive a workspace operation grant"
+    );
     let stale = client
         .post(format!("{base_url}/worker/report"))
         .bearer_auth(session["session_token"].as_str().unwrap())
@@ -2758,7 +2775,7 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     std::fs::write(repository.join("src/.env"), "SUPER_SECRET=canary\n").unwrap();
     std::fs::write(
         repository.join("src/config.txt"),
-        "API_TOKEN=ordinary-file-secret\n",
+        "API_TOKEN=ordinary-file-secret\nGITHUB_TOKEN=ordinary-github-secret\n",
     )
     .unwrap();
     git(
@@ -3110,7 +3127,8 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
         prompts
             .iter()
             .all(|prompt| !prompt.to_string().contains("SUPER_SECRET")
-                && !prompt.to_string().contains("ordinary-file-secret")),
+                && !prompt.to_string().contains("ordinary-file-secret")
+                && !prompt.to_string().contains("ordinary-github-secret")),
         "credential-shaped source must never enter provider context"
     );
     let environment = std::fs::read_to_string(session_dir.join("environment.txt")).unwrap();

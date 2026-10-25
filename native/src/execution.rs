@@ -66,6 +66,8 @@ pub struct WorkspaceAllocation {
     pub repository: String,
     pub base_commit: String,
     #[serde(default)]
+    pub generation: i64,
+    #[serde(default)]
     pub action_spec_sha256: String,
     /// Core-signed Attempt grant. The Supervisor rejects allocation without a
     /// valid, unexpired grant.
@@ -79,6 +81,8 @@ pub struct WorkspaceHandle {
     pub workspace_id: String,
     pub attempt_id: String,
     pub base_commit: String,
+    #[serde(default)]
+    pub generation: i64,
     pub status: WorkspaceStatus,
     pub candidate: Option<CandidateRevision>,
     #[serde(default)]
@@ -104,6 +108,7 @@ pub struct WorkspaceRecord {
     pub attempt_id: String,
     pub repository: String,
     pub base_commit: String,
+    pub generation: i64,
     pub worktree: String,
     pub worktree_device: u64,
     pub worktree_inode: u64,
@@ -125,6 +130,7 @@ impl WorkspaceRecord {
             workspace_id: self.workspace_id.clone(),
             attempt_id: self.attempt_id.clone(),
             base_commit: self.base_commit.clone(),
+            generation: self.generation,
             status: self.status.clone(),
             candidate: self.candidate.clone(),
             capability: String::new(),
@@ -690,6 +696,7 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
             attempt_id: input.attempt_id.clone(),
             repository: repository.to_string_lossy().into_owned(),
             base_commit: input.base_commit.to_lowercase(),
+            generation: input.generation,
             worktree: workspace.path().to_string_lossy().into_owned(),
             worktree_device: identity.0,
             worktree_inode: identity.1,
@@ -1649,6 +1656,7 @@ mod tests {
             base_commit: base.clone(),
             action_spec_sha256: String::new(),
             attempt_grant: String::new(),
+            generation: 1,
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let result = fixture
@@ -1732,6 +1740,7 @@ mod tests {
                 base_commit: fixture.base(),
                 action_spec_sha256: String::new(),
                 attempt_grant: String::new(),
+                generation: 1,
             })
             .await
             .unwrap_err();
@@ -1743,6 +1752,7 @@ mod tests {
             base_commit: base,
             action_spec_sha256: String::new(),
             attempt_grant: String::new(),
+            generation: 1,
         };
         fixture.manager.allocate(&allocation).await.unwrap();
         let mut changed = allocation;
@@ -1774,6 +1784,7 @@ mod tests {
                 base_commit: base.clone(),
                 action_spec_sha256: String::new(),
                 attempt_grant: String::new(),
+                generation: 1,
             })
             .await
             .unwrap();
@@ -1834,6 +1845,7 @@ mod tests {
             base_commit: base,
             action_spec_sha256: String::new(),
             attempt_grant: String::new(),
+            generation: 1,
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let result = fixture
@@ -1869,6 +1881,7 @@ mod tests {
             base_commit: base,
             action_spec_sha256: String::new(),
             attempt_grant: String::new(),
+            generation: 1,
         };
         let handle = fixture.manager.allocate(&allocation).await.unwrap();
         let failed = fixture
@@ -1921,6 +1934,7 @@ mod tests {
                 base_commit: base,
                 action_spec_sha256: String::new(),
                 attempt_grant: String::new(),
+                generation: 1,
             })
             .await
             .unwrap();

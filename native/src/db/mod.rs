@@ -145,6 +145,15 @@ pub struct WorkerAssignment {
     pub attempt_grant: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkspaceOperationAuthorization {
+    pub attempt_id: String,
+    pub worker_id: String,
+    pub generation: i64,
+    pub allowed_paths: Vec<String>,
+    pub checks: Vec<Vec<String>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerLease {
     pub attempt_id: String,

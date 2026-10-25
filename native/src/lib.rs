@@ -5,6 +5,7 @@ pub mod execution;
 pub mod lead;
 pub mod model_output;
 pub mod protocol;
+pub mod provider_egress;
 pub mod provider_patch;
 pub mod provider_sandbox;
 pub mod provider_session;

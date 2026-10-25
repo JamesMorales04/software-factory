@@ -21,6 +21,8 @@ pub struct NewProviderIntent {
     pub provider: String,
     pub model: String,
     pub provider_mode: String,
+    #[serde(default)]
+    pub provider_directory: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +182,7 @@ impl Database {
             provider_mode: input.provider_mode.clone(),
             state: "INTENT".into(),
             provider_session_id: String::new(),
-            provider_directory: String::new(),
+            provider_directory: input.provider_directory.clone(),
             turn_id: String::new(),
             input_tokens: 0,
             output_tokens: 0,
@@ -195,9 +197,9 @@ impl Database {
         sqlx::query::query(
             "INSERT INTO provider_sessions
              (session_record_id,attempt_id,worker_id,generation,provider,model,provider_mode,state,
-              provider_session_id,turn_id,input_tokens,output_tokens,total_tokens,cost_micros,
-              usage_known,cleanup_receipt,error,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'INTENT',NULL,NULL,0,0,0,0,0,NULL,NULL,?8,?8)",
+              provider_session_id,provider_directory,turn_id,input_tokens,output_tokens,total_tokens,
+              cost_micros,usage_known,cleanup_receipt,error,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'INTENT',NULL,?8,NULL,0,0,0,0,0,NULL,NULL,?9,?9)",
         )
         .bind(&record.session_record_id)
         .bind(&record.attempt_id)
@@ -206,6 +208,7 @@ impl Database {
         .bind(&record.provider)
         .bind(&record.model)
         .bind(&record.provider_mode)
+        .bind(nullable(&record.provider_directory))
         .bind(&record.created_at)
         .execute(&mut *transaction)
         .await?;
