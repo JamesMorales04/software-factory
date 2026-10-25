@@ -9,7 +9,7 @@
   "tracked_go_files": 0,
   "legacy_retirement": "The former tracked implementation, module, lint configuration, entrypoints, harnesses, scripts and legacy workflows were removed at 0b94e09ecd9b0e5067295d9a21c43799028c6015. Historical records are archived under docs/evidence/history.",
   "implemented": [
-    "Rust Core/Worker/Supervisor/Office workspace with SQLx/SQLite and thirteen versioned migrations",
+    "Rust Core/Worker/Supervisor/Office workspace with SQLx/SQLite and fourteen versioned migrations",
     "Canonical project repository identity from the symlink-resolved path and root commit set",
     "Immutable ActionSpec, project configuration revisions and closed durable event-kind vocabulary",
     "R0/FIXTURE Campaign authorization, leased Worker dispatch, deterministic candidates and negative dispatch coverage",
@@ -42,7 +42,10 @@
     "Pinned OpenAI-compatible provider egress broker with per-run token, injected credential, exact routes and no redirects",
     "Provider sandbox prlimit/tmpfs/session-monitor/stderr/lifetime resource bounds",
     "Durable sandbox process identity and confined terminate/absence recovery primitive",
-    "Independent Codex model security review with HIGH findings repaired"
+    "Independent Codex model security review with HIGH findings repaired",
+    "Core-issued per-turn provider budget reservations with atomic output/total/cost checks, durable settlement and unknown-usage fail-closed",
+    "Egress broker per-turn policy with Core-authorized model, output cap, request digest and request-count enforcement",
+    "Provider-backed Intelligent Lead assessor with strict schema/domain validation"
   ],
   "not_implemented": [
     "Live Codex/OpenCode provider coding with sandboxed model egress",
@@ -63,8 +66,8 @@
     "opencode": "1.18.32"
   },
   "provider_paid_turns": 0,
-  "local_unit_tests_passed": 267,
-  "current_test_inventory": "Author-run: 267 Rust tests passed, 2 ignored; thirteen migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office, running-cancellation, actual OpenCode/Codex compatibility, real rootless Podman, bridge/egress/quota/identity tests pass locally. Exact-head CI pending.",
+  "local_unit_tests_passed": 271,
+  "current_test_inventory": "Author-run: 271 Rust tests passed, 2 ignored; fourteen migrations; xtask check/architecture/e2e recovery/dispatch/negatives/provider/office, per-turn budget, model Lead, running-cancellation, actual provider/Podman and bridge/egress/quota tests pass locally. Exact-head CI pending.",
   "dependency_audit": {
     "tool": "cargo-audit",
     "version": "0.22.2",
@@ -77,19 +80,19 @@
   "delivery_status": "PR #17 Draft at 2dcf03c888003b4f6bcb592a65934e66358e14bc; runtime reliability and Office Runtime projection; actual provider/Podman local evidence; human certification/live coding/ISOLATED absent.",
   "unresolved_runtime_sessions": "A Codex pre-turn thread created during earlier no-paid probing was not found in a newly spawned App Server index; original ownership and cleanup remain unconfirmed. No paid provider coding session ran.",
   "remaining_authorized_provider_budget": "UNSPECIFIED_NO_PAID_EXECUTION_AUTHORIZED",
-  "next_task": "Record exact-head CI; then implement Core per-turn token/cost broker accounting, full Supervisor/Core long-operation E2E and hard storage/cgroup limits, then continue model Lead, semantic reviewer, CAP-014 and telemetry.",
+  "next_task": "Record exact-head CI; then complete Worker/broker/Core per-turn E2E, model Lead objective-to-frozen-Campaign E2E, semantic Reviewer, CAP-014 and telemetry.",
   "completion_gates": {
     "G1": "PARTIAL: one Rust architecture; provider execution and isolation incomplete",
     "G2": "PARTIAL: read-only provider smokes only; coding lifecycle absent",
     "G3": "PASS: zero tracked Go files; strict hygiene passes locally and in exact-head CI",
     "G4": "PASS: only Rust-native Native Rust and Governance consistency workflows are active",
-    "G5": "PARTIAL: bubblewrap-confined multi-turn provider with scoped egress and operation grants reaches ACCEPTED; live provider coding blocked",
+    "G5": "PARTIAL: per-turn budget authorization and model Lead assessor added; full Worker/broker/Core and Lead Campaign E2E pending",
     "G6": "PARTIAL: sandboxed verifier, deterministic reviewer and gate; model/semantic review absent",
     "G7": "PARTIAL: Lead/Campaign/Workers browser paths; recovery visibility absent",
     "G8": "BLOCKED: running-operation fencing and real Podman evidence added; OS quota/cgroups, human certification and ISOLATED absent",
-    "G9": "PARTIAL: exact-head Rust CI green at 2dcf03c888003b4f6bcb592a65934e66358e14bc; actual provider/Podman lanes local or conditional; human acceptance absent",
+    "G9": "PARTIAL: 271 local Rust tests pass; exact-head CI and human acceptance pending",
     "G10": "PASS: architecture, PR-impact and strict hygiene at 2dcf03c888003b4f6bcb592a65934e66358e14bc; conditional Podman/provider-compat lanes not run",
-    "G11": "PARTIAL: independent model review/follow-ups and actual provider compatibility; human security certification absent",
+    "G11": "PARTIAL: independent model review/follow-ups and actual provider compatibility; human certification absent",
     "G12": "PENDING: final merge/scope authorization",
     "G13": "PARTIAL: capability portfolio preserved; independence audit and registry closure pending"
   },
@@ -108,7 +111,7 @@
     "linux": "configuration present; image build not rerun in this retirement",
     "windows": "NOT_TESTED"
   },
-  "verified_code_commit_sha": "7117bba45de8e39da858e45d77378da39d2b2cac",
+  "verified_code_commit_sha": "a16f9f35df88e95904547a6fe6212f94f1b4e396",
   "cutover_campaign_checkpoint_2026_10_24": {
     "retirement_commit": "0b94e09ecd9b0e5067295d9a21c43799028c6015",
     "tracked_go_before": 94,
@@ -116,18 +119,15 @@
     "checks": "Exact-head CI at 3f229f37ebd856ef3fba37b7e6456a2406ad3284: Native Rust (2 runs), Office browser (2 runs), architecture (40134431481) PASS; migrations, strict hygiene, recovery/dispatch/negatives and Office E2E PASS. Tracked Go: 0.",
     "retirement_ci": "3f229f37ebd856ef3fba37b7e6456a2406ad3284"
   },
-  "ci_at_update": "Exact-head CI at 2dcf03c888003b4f6bcb592a65934e66358e14bc: Native Rust both runs, Office both runs and governance PASS. Actual OpenCode/Codex and real rootless Podman evidence is local/conditional; Podman and provider-compat CI lanes NOT_RUN in ordinary CI.",
+  "ci_at_update": "Exact-head CI pending for code candidate a16f9f3.",
   "author_verification_at_code_sha": {
-    "sha": "7117bba45de8e39da858e45d77378da39d2b2cac",
+    "sha": "a16f9f35df88e95904547a6fe6212f94f1b4e396",
     "binding": "AUTHOR_RUN_WORKING_TREE",
-    "rust": "PASS: 267 tests + 2 ignored, fmt, strict Clippy, build, docs, thirteen migrations, audit, architecture, strict hygiene",
-    "provider_e2e": "PASS: bubblewrap-confined multi-turn provider to ACCEPTED",
-    "security_tests": "PASS: generation mismatch, one-time nonce/request digest, scope, cancellation, bridge framing, egress proxy/address/model/request limits, quota kill, identity placement and confined recovery receipt",
+    "rust": "PASS: 271 tests + 2 ignored, fmt, strict Clippy, build, docs, fourteen migrations, audit, architecture, strict hygiene",
+    "per_turn_budget": "PASS: Core authorization/settlement, exhaustion, stale generation, cancellation, unknown usage and broker policy tests",
+    "model_lead": "PARTIAL: strict model assessor unit test; objective-to-Campaign E2E not run",
+    "provider_e2e": "PASS",
     "office_browser": "PASS",
-    "independent_review": "Independent Codex model review; HIGH repairs; human certification absent",
-    "provider_paid_turns": 0,
-    "provider_compatibility": "PASS: actual OpenCode 1.18.32 and Codex 0.156.1 through egress broker to mock upstream; no paid calls",
-    "podman": "PASS locally: real rootless named-volume execution and Alpine confinement",
-    "product": "PASS: Office Runtime provider-session/cleanup view in Chromium journey"
+    "provider_paid_turns": 0
   }
 }

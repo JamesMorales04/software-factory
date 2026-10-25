@@ -766,3 +766,20 @@ GitHub CI. Still open: full Supervisor/Core long-operation E2E, OS quota/cgroup
 limits, Core per-turn token/cost broker accounting, full Worker-kill/restart
 E2E, sandboxed actual-provider work turns, model Lead, semantic reviewer,
 CAP-014 integration and telemetry.
+
+
+## Per-turn budget and model Lead checkpoint (2026-10-25) — code `a16f9f35df88e95904547a6fe6212f94f1b4e396`
+
+Core now issues short-lived per-turn reservations bound to the provider session,
+Attempt, lease generation, provider, model, request digest and expiry. It
+atomically reserves output/total/cost, enforces one active turn per session,
+settles actual usage idempotently, rejects stale generation/cancellation and
+fails closed on unknown usage. The egress broker enforces the per-turn model,
+output cap and request count. Tests cover success, duplicate settlement,
+exhaustion, cancellation, stale generation and unknown usage.
+
+A provider-backed Lead assessor is implemented with strict generated-schema and
+domain validation; a deterministic mock-model unit test passes. The full
+Worker→broker→Core turn-budget E2E and objective→assessment→frozen Campaign E2E
+remain to be run. Fourteen migrations and 271 tests pass locally; exact-head CI
+pending.
