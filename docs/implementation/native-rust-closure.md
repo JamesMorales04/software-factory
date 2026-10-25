@@ -96,7 +96,7 @@ Supervisor and sandbox never receive it. Provider tool parts, out-of-scope
 paths, duplicate files and unmeasured usage are rejected. Completed sessions
 require confirmed deletion and known usage; unresolved intent/active sessions
 block replacement dispatch. This is deterministic fixture evidence, not live
-model certification. Evidence:
+model certification. Exact-head CI passed at `6a5519e33eace8e72d6328f7ff1aab86a7d41b84`. Evidence:
 [native-rust-provider-fixture-2026-10-24.json](../evidence/native-rust-provider-fixture-2026-10-24.json).
 
 ## Legacy retirement

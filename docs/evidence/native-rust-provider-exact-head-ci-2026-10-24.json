@@ -1,0 +1,28 @@
+{
+  "schema": "factory.exact-head-ci-evidence.v1",
+  "recorded_utc": "2026-10-24",
+  "repository": "JamesMorales04/software-factory",
+  "branch": "native-rust-replacement-20261023",
+  "pr": 17,
+  "candidate_sha": "6a5519e33eace8e72d6328f7ff1aab86a7d41b84",
+  "code_candidate_sha": "ea2186f6151d6d933df576511f8e08401cfdfc8b",
+  "binding": "EXACT_HEAD_GITHUB_ACTIONS",
+  "tracked_go_files": 0,
+  "passing": {
+    "native-rust-runs": [40146561986, 40146566857],
+    "office-browser": "PASS (both runs)",
+    "architecture-consistency": 40146566843,
+    "provider_fixture_e2e": "PASS",
+    "strict_hygiene": "PASS",
+    "migrations": "PASS"
+  },
+  "provider_paid_turns": 0,
+  "not_claimed": [
+    "live provider coding",
+    "provider tool mediation",
+    "credential-confinement certification",
+    "ISOLATED certification",
+    "independent human acceptance",
+    "merge or deployment authorization"
+  ]
+}
