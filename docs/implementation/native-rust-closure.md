@@ -86,8 +86,7 @@ deployment authorization.
 
 ## Trusted-local provider fixture path
 
-At the current code candidate, a deterministic fake OpenCode server proves the
-complete path: authorized Action → Campaign → Worker claim → durable provider
+At `ea2186f6151d6d933df576511f8e08401cfdfc8b`, a deterministic fake OpenCode server proves the complete path: authorized Action → Campaign → Worker claim → durable provider
 intent → bounded tool-free provider response → Supervisor validated file apply →
 immutable CandidateRevision → independent verifier → deterministic reviewer →
 `ACCEPTED` gate. Core enforces an exact provider/model/mode route, active

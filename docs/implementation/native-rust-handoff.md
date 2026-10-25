@@ -611,9 +611,9 @@ coding, durable session recovery, credential confinement, ISOLATED execution,
 recovery/cleanup Office visibility and independent human review remain open and
 fail-closed.
 
-## Deterministic provider execution checkpoint (2026-10-24)
+## Deterministic provider execution checkpoint (2026-10-24) — `ea2186f6151d6d933df576511f8e08401cfdfc8b`
 
-The Rust-only tree now proves a complete provider-backed Attempt using a
+At `ea2186f6151d6d933df576511f8e08401cfdfc8b`, the Rust-only tree proves a complete provider-backed Attempt using a
 deterministic loopback OpenCode fake server:
 
 `authorized Action → Campaign → Worker claim → durable provider intent →
@@ -631,7 +631,7 @@ rejected. Durable intent/terminal rows and usage are persisted; unresolved
 sessions block replacement dispatch. See ADR-0022 and
 `docs/evidence/native-rust-provider-fixture-2026-10-24.json`.
 
-Author-run: `cargo xtask check` PASS (241 tests + 2 ignored, format, strict
+Author-run at `ea2186f6151d6d933df576511f8e08401cfdfc8b`: `cargo xtask check` PASS (241 tests + 2 ignored, format, strict
 Clippy, build, docs, eleven migrations, audit); `cargo xtask e2e provider` and
 `cargo xtask e2e office` PASS; strict hygiene and architecture PASS. No paid
 provider call was made. Live coding with tools, source-context delivery,

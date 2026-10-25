@@ -4,7 +4,7 @@
   "repository": "JamesMorales04/software-factory",
   "branch": "native-rust-replacement-20261023",
   "pr": 17,
-  "binding": "AUTHOR_RUN_WORKING_TREE",
+  "binding": "AUTHOR_RUN_EXACT_CODE_HEAD",
   "provider_mode": "TRUSTED_LOCAL_PROVIDER",
   "provider": "opencode",
   "model": "deepseek-v4.1-flash",
@@ -48,5 +48,6 @@
     "merge or deployment authorization"
   ],
   "provider_paid_turns": 0,
-  "result": "PASS"
+  "result": "PASS",
+  "candidate_sha": "ea2186f6151d6d933df576511f8e08401cfdfc8b"
 }
