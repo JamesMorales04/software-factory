@@ -3,7 +3,7 @@
 
 > **Authority:** [ADR-0018](decisions/ADR-0018-native-rust-replacement.md) governs the native Rust architecture. Rust engineering rules are normative in [rust-standards.md](../engineering/rust-standards.md). Historical ADRs remain provenance; they are not current runtime authority.
 
-> **Status:** The current Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification and the deterministic gate are implemented; S4-D parity, provider coding and independent isolation remain open. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
+> **Status:** The current Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification, the deterministic gate, Core-owned model-call budgets, model-backed Lead, semantic Reviewer with deterministic pre-review, CAP-014 raw-output execution, bounded OTLP log export and a managed real-Chromium browser check are implemented. S4-D crash/browser-multi-unit/live-provider gaps, human review and independent isolation remain open. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
 
 ## 1. Product mission and priorities
 
