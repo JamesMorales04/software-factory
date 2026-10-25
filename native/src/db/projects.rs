@@ -104,7 +104,7 @@ impl Database {
         if objective.trim().is_empty() || objective.len() > 20_000 {
             return Err(Error::Invalid("objective length"));
         }
-        if !matches!(provider, "codex" | "opencode") {
+        if !matches!(provider, "codex" | "opencode" | "opencode-go") {
             return Err(Error::Invalid("provider"));
         }
         if model.trim().is_empty() || model.len() > 128 {

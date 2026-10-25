@@ -184,8 +184,9 @@ impl ProviderRoute {
             ),
             ("codex", "gpt-6-luna", "build" | "plan")
                 | ("opencode", "deepseek-v4.1-flash", "build" | "plan")
+                | ("opencode-go", "deepseek-v4.1-flash", "build" | "plan")
         ) || (cfg!(test)
-            && matches!(self.provider.as_str(), "codex" | "opencode")
+            && matches!(self.provider.as_str(), "codex" | "opencode" | "opencode-go")
             && self.model == "deepseek-v4.1-flash"
             && matches!(self.mode.as_str(), "build" | "plan"));
         if !supported {
@@ -1822,6 +1823,16 @@ mod tests {
                 .validate(&grant(), &project(), &action(), now())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn supports_explicit_opencode_go_provider_route() {
+        let route = ProviderRoute {
+            provider: "opencode-go".into(),
+            model: "deepseek-v4.1-flash".into(),
+            mode: "build".into(),
+        };
+        assert!(route.validate().is_ok());
     }
 
     #[test]
