@@ -61,7 +61,7 @@ portfolio; this ledger is the current status authority.
 | M6 Security | `BLOCKED` | Provider credentials remain in the trusted Worker and never enter the sandbox; provider writes/frozen-check commands are validated by Core/Worker and executed only by the Supervisor in the exact Attempt workspace; credential-confinement certification, live provider coding and independent isolation are still not certified |
 | M7 Quality | `PARTIAL` | Sandboxed verifier, independent deterministic reviewer process and deterministic gate pass; model review absent |
 | M8 Office | `PARTIAL` | Rust Office browser journey passes; recovery/cleanup visibility remains |
-| M9 Testing | `PARTIAL` | 245 Rust tests + 2 ignored, audit, architecture, process E2E, source-aware provider E2E, recovery/cancellation tests and Office browser pass locally; exact-head CI and independent acceptance pending |
+| M9 Testing | `PARTIAL` | 245 Rust tests + 2 ignored, audit, architecture, process E2E, source-aware provider E2E, recovery/cancellation tests and Office browser pass locally and in exact-head CI at `c5ea92b8bb8424a87773056ceb7c40712c4fda00`; independent acceptance absent |
 | M10 Governance | `PARTIAL` | Rust architecture checker, PR-impact gate and strict hygiene are the active CI path at `3f229f37ebd856ef3fba37b7e6456a2406ad3284`; legacy workflows removed |
 | M11 Independent review | `NOT_STARTED` | No independent full-diff/security review at the final candidate |
 | M12 Delivery authorization | `PENDING` | Product Owner merge/scope decisions not yet requested |
@@ -101,7 +101,7 @@ non-frozen commands and unmeasured usage are rejected. Durable
 INTENT/ACTIVE/terminal/cleanup states support a recovery Worker that deletes a
 confirmed orphan after Core restart; unresolved sessions block replacement
 dispatch; cancellation/revocation mark sessions `CANCEL_REQUESTED`. The
-tool-free file-only mode remains available. Evidence:
+tool-free file-only mode remains available. Exact-head CI passed at `c5ea92b8bb8424a87773056ceb7c40712c4fda00`. Evidence:
 [native-rust-provider-tools-2026-10-24.json](../evidence/native-rust-provider-tools-2026-10-24.json).
 
 ## Legacy retirement

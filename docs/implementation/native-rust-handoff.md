@@ -662,5 +662,4 @@ Durable lifecycle coverage now includes INTENT → ACTIVE binding before prompt,
 terminal usage/cleanup receipts, CANCEL_REQUESTED on campaign cancellation or
 delegation revocation, unresolved-session dispatch blocking, and a recovery
 Worker that deletes a confirmed orphan after Core restart. The process-level
-recovery test passes. Multi-turn provider tool events, permission decisions and
-live model coding remain unimplemented and fail-closed.
+recovery test passes. Exact-head CI at `c5ea92b8bb8424a87773056ceb7c40712c4fda00` passed Native Rust (both runs), Office browser (both runs), architecture consistency (`40151910746`), source-aware provider E2E, recovery restart, cancellation state, migrations and strict hygiene. Multi-turn provider tool events, permission decisions, reconnection to an existing session and live model coding remain unimplemented and fail-closed.
