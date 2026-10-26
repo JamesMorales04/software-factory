@@ -233,6 +233,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "quality.gate_decided",
     "quality.receipt_recorded",
     "run.created",
+    "run.status_changed",
     "worker.claimed",
     "worker.claim_released",
     "worker.registered",

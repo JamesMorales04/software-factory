@@ -360,6 +360,7 @@ async fn create_attempt(client: &reqwest::Client, base_url: &str, run_id: &str) 
 }
 
 struct AttemptFixture {
+    run_id: String,
     attempt_id: String,
     action_spec_sha256: String,
 }
@@ -386,6 +387,7 @@ async fn authorize_and_start_attempt(
     let run_id = create_run(client, base_url, campaign_id).await;
     let attempt_id = create_attempt(client, base_url, &run_id).await;
     AttemptFixture {
+        run_id,
         attempt_id,
         action_spec_sha256,
     }
@@ -445,6 +447,322 @@ fn run_verifier(root: &Path, base_url: &str, candidate_id: &str, principal: &str
         .stderr(Stdio::from(log))
         .status()
         .expect("verifier")
+}
+
+#[tokio::test]
+async fn campaign_detail_excludes_foreign_candidates_gates_receipts_and_events() {
+    let root = TestRoot::new("negative-campaign-projection");
+    let repository = create_repository(root.path());
+    let (mut core, client, base_url) = start_core(root.path()).await;
+    let project_id = create_project(&client, &base_url, &repository, "projection-project").await;
+    let action_a = create_action(
+        &client,
+        &base_url,
+        &project_id,
+        "projection-action-a",
+        &["src"],
+        json!([]),
+    )
+    .await;
+    let action_b = create_action(
+        &client,
+        &base_url,
+        &project_id,
+        "projection-action-b",
+        &["src"],
+        json!([]),
+    )
+    .await;
+    let campaign_a = create_campaign(
+        &client,
+        &base_url,
+        action_a["id"].as_str().unwrap(),
+        "projection-campaign-a",
+    )
+    .await;
+    let campaign_b = create_campaign(
+        &client,
+        &base_url,
+        action_b["id"].as_str().unwrap(),
+        "projection-campaign-b",
+    )
+    .await;
+    let campaign_a_id = campaign_a["id"].as_str().unwrap().to_owned();
+    let campaign_b_id = campaign_b["id"].as_str().unwrap().to_owned();
+    authorize_campaign(
+        &client,
+        &base_url,
+        &campaign_a_id,
+        "projection-authorization-a",
+        &["src"],
+    )
+    .await;
+    authorize_campaign(
+        &client,
+        &base_url,
+        &campaign_b_id,
+        "projection-authorization-b",
+        &["src"],
+    )
+    .await;
+    let run_a = create_run(&client, &base_url, &campaign_a_id).await;
+    let attempt_a = create_attempt(&client, &base_url, &run_a).await;
+    let run_b = create_run(&client, &base_url, &campaign_b_id).await;
+    let attempt_b = create_attempt(&client, &base_url, &run_b).await;
+
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(root.path().join("factory.sqlite"))
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let now = "2026-01-01T00:00:00Z";
+    sqlx::query::query(
+        "INSERT INTO standing_delegations
+         (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+         VALUES ('delegation-shared','owner','audit',?1,1,'hash','{}',?2)",
+    )
+    .bind(&project_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let seed_rows = [
+        (
+            "a",
+            action_a["id"].as_str().unwrap(),
+            action_a["spec_sha256"].as_str().unwrap(),
+            campaign_a_id.as_str(),
+            run_a.as_str(),
+            attempt_a.as_str(),
+        ),
+        (
+            "b",
+            action_b["id"].as_str().unwrap(),
+            action_b["spec_sha256"].as_str().unwrap(),
+            campaign_b_id.as_str(),
+            run_b.as_str(),
+            attempt_b.as_str(),
+        ),
+    ];
+    for (suffix, action_id, spec_sha256, campaign_id, run_id, attempt_id) in seed_rows {
+        let request_id = format!("request-{suffix}");
+        let task_id = format!("task-{suffix}");
+        let candidate_id = format!("candidate-{suffix}");
+        let commit_sha = suffix.repeat(40);
+        let tree_sha = suffix.to_uppercase().repeat(40);
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,campaign_id,created_at,updated_at)
+             VALUES (?1,?2,?3,'delegation-shared','projection objective','request-hash',
+                     'config-hash','RUNNING',?4,?5,?5)",
+        )
+        .bind(&request_id)
+        .bind(&project_id)
+        .bind(action_id)
+        .bind(campaign_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_tasks
+             (task_id,campaign_id,request_id,unit_id,sequence,status,base_commit,spec_json,
+              spec_sha256,depends_on_json,run_id,attempt_id,candidate_id,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,0,'RUNNING','base','{}',?5,'[]',?6,?7,?8,?9,?9)",
+        )
+        .bind(&task_id)
+        .bind(campaign_id)
+        .bind(&request_id)
+        .bind(format!("unit-{suffix}"))
+        .bind(spec_sha256)
+        .bind(run_id)
+        .bind(attempt_id)
+        .bind(&candidate_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES (?1,?2,?3,?4,?5,'worker',?6)",
+        )
+        .bind(&candidate_id)
+        .bind(attempt_id)
+        .bind(spec_sha256)
+        .bind(&commit_sha)
+        .bind(&tree_sha)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO quality_receipts
+             (receipt_id,candidate_id,role,principal_id,action_spec_sha256,commit_sha,tree_sha,
+              result,evidence,received_at)
+             VALUES (?1,?2,'verifier',?3,?4,?5,?6,'PASS','EXECUTED',?7)",
+        )
+        .bind(format!("receipt-{suffix}"))
+        .bind(&candidate_id)
+        .bind(format!("verifier-{suffix}"))
+        .bind(spec_sha256)
+        .bind(&commit_sha)
+        .bind(&tree_sha)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query("INSERT INTO gate_decisions VALUES (?1,'ACCEPTED','[]',?2)")
+            .bind(&candidate_id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (subject_id, kind) in [
+            (campaign_id, "campaign.created"),
+            (request_id.as_str(), "lead.request_created"),
+            (task_id.as_str(), "lead.plan_completed"),
+            (run_id, "run.status_changed"),
+            (attempt_id, "worker.claimed"),
+            (candidate_id.as_str(), "quality.gate_decided"),
+            (candidate_id.as_str(), "quality.receipt_recorded"),
+            ("delegation-shared", "delegation.released"),
+        ] {
+            sqlx::query::query(
+                "INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,'',?3)",
+            )
+            .bind(subject_id)
+            .bind(kind)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+    for (subject_id, kind) in [
+        ("lead-unrelated", "lead.request_created"),
+        ("delegation-foreign", "delegation.released"),
+    ] {
+        sqlx::query::query(
+            "INSERT INTO events(subject_id,kind,detail,recorded_at) VALUES (?1,?2,'',?3)",
+        )
+        .bind(subject_id)
+        .bind(kind)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+
+    let detail_a: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns/{campaign_a_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let candidates = detail_a["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(candidates, vec!["candidate-a"]);
+    let subjects = detail_a["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["subject_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    for expected in [
+        campaign_a_id.as_str(),
+        "request-a",
+        "task-a",
+        run_a.as_str(),
+        attempt_a.as_str(),
+        "candidate-a",
+        "delegation-shared",
+    ] {
+        assert!(
+            subjects.contains(&expected),
+            "missing {expected}: {subjects:?}"
+        );
+    }
+    for foreign in [
+        campaign_b_id.as_str(),
+        "request-b",
+        "task-b",
+        run_b.as_str(),
+        attempt_b.as_str(),
+        "candidate-b",
+        "lead-unrelated",
+        "delegation-foreign",
+    ] {
+        assert!(!subjects.contains(&foreign), "leaked {foreign}");
+    }
+
+    let detail_b: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns/{campaign_b_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let candidates = detail_b["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(candidates, vec!["candidate-b"]);
+    let subjects = detail_b["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["subject_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    for expected in [
+        campaign_b_id.as_str(),
+        "request-b",
+        "task-b",
+        run_b.as_str(),
+        attempt_b.as_str(),
+        "candidate-b",
+        "delegation-shared",
+    ] {
+        assert!(
+            subjects.contains(&expected),
+            "missing {expected}: {subjects:?}"
+        );
+    }
+    for foreign in [
+        campaign_a_id.as_str(),
+        "request-a",
+        "task-a",
+        run_a.as_str(),
+        attempt_a.as_str(),
+        "candidate-a",
+        "lead-unrelated",
+        "delegation-foreign",
+    ] {
+        assert!(!subjects.contains(&foreign), "leaked {foreign}");
+    }
+
+    core.stop();
+    drop(core);
+    drop(root);
 }
 
 #[tokio::test]
@@ -634,6 +952,24 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
     .unwrap();
     assert_ne!(gate["outcome"], "ACCEPTED");
     assert_eq!(gate["outcome"], "REPAIR_REQUIRED");
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == fixture.run_id)
+            .unwrap()["status"],
+        "REPAIR_REQUIRED"
+    );
 
     core.stop();
     drop(core);
@@ -824,6 +1160,24 @@ async fn stale_lease_generation_is_rejected_by_worker_api() {
     assert_eq!(attempt_id, fixture.attempt_id);
     let generation = lease["generation"].as_i64().unwrap();
     assert_eq!(generation, 1);
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == fixture.run_id)
+            .unwrap()["status"],
+        "RUNNING"
+    );
 
     let stale_heartbeat = client
         .post(format!("{base_url}/worker/heartbeat"))
@@ -926,6 +1280,24 @@ async fn stale_lease_generation_is_rejected_by_worker_api() {
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0]["id"], attempt_id);
     assert_eq!(attempts[0]["status"], "FAILED");
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == fixture.run_id)
+            .unwrap()["status"],
+        "FAILED"
+    );
 
     // Lease expiry needs more than the fixed 60s claim lease or a test-only
     // clock. It is covered by

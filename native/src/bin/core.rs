@@ -818,44 +818,73 @@ async fn campaign_detail(
         Ok(tasks) => tasks,
         Err(error) => return api_error(error),
     };
-    let runs = app
-        .db
-        .runs()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|run| run.campaign_id == id)
-        .collect::<Vec<_>>();
-    let attempts = app.db.attempts().await.unwrap_or_default();
-    let attempt_ids: std::collections::BTreeSet<String> =
-        attempts.iter().map(|attempt| attempt.id.clone()).collect();
+    let runs = match app.db.runs().await {
+        Ok(runs) => runs
+            .into_iter()
+            .filter(|run| run.campaign_id == id)
+            .collect::<Vec<_>>(),
+        Err(error) => return api_error(error),
+    };
     let run_ids: std::collections::BTreeSet<String> =
         runs.iter().map(|run| run.id.clone()).collect();
-    let attempts = attempts
-        .into_iter()
-        .filter(|attempt| run_ids.contains(&attempt.run_id))
-        .collect::<Vec<_>>();
-    let candidates = app
-        .db
-        .candidates()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
-        .collect::<Vec<_>>();
-    let events = app
-        .db
-        .events()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|event| {
-            event.subject_id == id
-                || event.subject_id.starts_with("lead")
-                || tasks
-                    .iter()
-                    .any(|task| task.campaign_id == event.subject_id)
+    let attempts = match app.db.attempts().await {
+        Ok(attempts) => attempts
+            .into_iter()
+            .filter(|attempt| run_ids.contains(&attempt.run_id))
+            .collect::<Vec<_>>(),
+        Err(error) => return api_error(error),
+    };
+    let attempt_ids: std::collections::BTreeSet<String> =
+        attempts.iter().map(|attempt| attempt.id.clone()).collect();
+    let candidates = match app.db.candidates().await {
+        Ok(candidates) => candidates
+            .into_iter()
+            .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
+            .collect::<Vec<_>>(),
+        Err(error) => return api_error(error),
+    };
+    let lead_requests = match app.db.lead_requests().await {
+        Ok(requests) => requests,
+        Err(error) => return api_error(error),
+    };
+    let related_requests = lead_requests
+        .iter()
+        .filter(|request| {
+            request.campaign_id.as_deref() == Some(id.as_str())
+                || tasks.iter().any(|task| task.request_id == request.id)
         })
+        .collect::<Vec<_>>();
+    let events = match app.db.events().await {
+        Ok(events) => events,
+        Err(error) => return api_error(error),
+    };
+    let mut related_subjects: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::from([id.clone()]);
+    for request in &related_requests {
+        related_subjects.insert(request.id.clone());
+        related_subjects.insert(request.delegation_id.clone());
+    }
+    if let Some(authorization) = &authorization
+        && !authorization.delegation_id.is_empty()
+    {
+        related_subjects.insert(authorization.delegation_id.clone());
+    }
+    for task in &tasks {
+        related_subjects.insert(task.task_id.clone());
+        related_subjects.insert(task.request_id.clone());
+    }
+    for run in &runs {
+        related_subjects.insert(run.id.clone());
+    }
+    for attempt in &attempts {
+        related_subjects.insert(attempt.id.clone());
+    }
+    for candidate in &candidates {
+        related_subjects.insert(candidate.id.clone());
+    }
+    let events = events
+        .into_iter()
+        .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
     Json(json!({
         "campaign": campaign,

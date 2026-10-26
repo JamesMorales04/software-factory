@@ -37,6 +37,82 @@ async fn count(db: &Database, sql: &str) -> i64 {
     value
 }
 
+async fn run_status(db: &Database, run_id: &str) -> String {
+    let (status,): (String,) = sqlx::query_as::query_as("SELECT status FROM runs WHERE id=?1")
+        .bind(run_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    status
+}
+
+async fn run_id_for_candidate(db: &Database, candidate_id: &str) -> String {
+    let (run_id,): (String,) = sqlx::query_as::query_as(
+        "SELECT r.id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    run_id
+}
+
+struct SeedRun<'a> {
+    run_id: &'a str,
+    campaign_id: &'a str,
+    run_status: &'a str,
+    attempt_id: &'a str,
+    attempt_status: &'a str,
+    spec_sha256: &'a str,
+    candidate_and_gate: Option<(&'a str, &'a str)>,
+}
+
+async fn seed_run(db: &Database, run: SeedRun<'_>) {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query::query("INSERT INTO runs VALUES (?1,?2,?3,?4)")
+        .bind(run.run_id)
+        .bind(run.campaign_id)
+        .bind(run.run_status)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query::query("INSERT INTO attempts(id,run_id,status,created_at) VALUES (?1,?2,?3,?4)")
+        .bind(run.attempt_id)
+        .bind(run.run_id)
+        .bind(run.attempt_status)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let Some((candidate_id, gate_outcome)) = run.candidate_and_gate else {
+        return;
+    };
+    sqlx::query::query(
+        "INSERT INTO candidates
+         (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+         VALUES (?1,?2,?3,?4,?5,'worker','now')",
+    )
+    .bind(candidate_id)
+    .bind(run.attempt_id)
+    .bind(run.spec_sha256)
+    .bind("a".repeat(40))
+    .bind("b".repeat(40))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query::query("INSERT INTO gate_decisions VALUES (?1,?2,'[]',?3)")
+        .bind(candidate_id)
+        .bind(gate_outcome)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+}
+
 fn migration_file_count() -> i64 {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
     std::fs::read_dir(directory)
@@ -106,6 +182,168 @@ async fn legacy_bootstrap_schema_is_adopted_without_data_loss() {
     assert_eq!(
         count(&db, "SELECT COUNT(*) FROM projects WHERE id='keep'").await,
         1
+    );
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn run_status_backfill_migration_is_conservative() {
+    let (path, db) = temp_db("factory-run-backfill").await;
+    insert_project(&db, "project", "/fixture", "base").await;
+    let action = db
+        .create_action_with_spec(
+            "project",
+            "backfill objective",
+            "opencode",
+            "test/model",
+            "backfill-action",
+            ActionSpecInput {
+                allowed_paths: &["seed.txt".to_string()],
+                checks: &[],
+            },
+        )
+        .await
+        .unwrap();
+    let gate_campaign = db
+        .create_campaign(&action.id, "backfill-gate-campaign")
+        .await
+        .unwrap();
+    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+        .bind(&gate_campaign.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let cancelled_campaign = db
+        .create_campaign(&action.id, "backfill-cancelled-campaign")
+        .await
+        .unwrap();
+    sqlx::query::query("UPDATE campaigns SET status='CANCELLED' WHERE id=?1")
+        .bind(&cancelled_campaign.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let spec_sha256 = action.spec_sha256.as_str();
+
+    for (run_id, status, attempt_id, attempt_status, candidate_and_gate) in [
+        (
+            "run-gate-accepted",
+            "QUEUED",
+            "attempt-gate-accepted",
+            "CANDIDATE_READY",
+            Some(("candidate-gate-accepted", "ACCEPTED")),
+        ),
+        (
+            "run-gate-repair",
+            "RUNNING",
+            "attempt-gate-repair",
+            "CANDIDATE_READY",
+            Some(("candidate-gate-repair", "REPAIR_REQUIRED")),
+        ),
+        (
+            "run-gate-blocked",
+            "QUEUED",
+            "attempt-gate-blocked",
+            "CANDIDATE_READY",
+            Some(("candidate-gate-blocked", "BLOCKED")),
+        ),
+        (
+            "run-gate-human",
+            "RUNNING",
+            "attempt-gate-human",
+            "CANDIDATE_READY",
+            Some(("candidate-gate-human", "HUMAN_REQUIRED")),
+        ),
+        (
+            "run-gate-not-tested",
+            "QUEUED",
+            "attempt-gate-not-tested",
+            "CANDIDATE_READY",
+            Some(("candidate-gate-not-tested", "NOT_TESTED")),
+        ),
+        (
+            "run-terminal-cancelled",
+            "CANCELLED",
+            "attempt-terminal-cancelled",
+            "CANDIDATE_READY",
+            Some(("candidate-terminal-cancelled", "ACCEPTED")),
+        ),
+        (
+            "run-untouched",
+            "QUEUED",
+            "attempt-untouched",
+            "QUEUED",
+            None,
+        ),
+        ("run-running", "RUNNING", "attempt-running", "LEASED", None),
+        ("run-failed", "RUNNING", "attempt-failed", "FAILED", None),
+    ] {
+        seed_run(
+            &db,
+            SeedRun {
+                run_id,
+                campaign_id: &gate_campaign.id,
+                run_status: status,
+                attempt_id,
+                attempt_status,
+                spec_sha256,
+                candidate_and_gate,
+            },
+        )
+        .await;
+    }
+    seed_run(
+        &db,
+        SeedRun {
+            run_id: "run-cancelled",
+            campaign_id: &cancelled_campaign.id,
+            run_status: "QUEUED",
+            attempt_id: "attempt-cancelled",
+            attempt_status: "QUEUED",
+            spec_sha256,
+            candidate_and_gate: None,
+        },
+    )
+    .await;
+    seed_run(
+        &db,
+        SeedRun {
+            run_id: "run-terminal-failed",
+            campaign_id: &cancelled_campaign.id,
+            run_status: "FAILED",
+            attempt_id: "attempt-terminal-failed",
+            attempt_status: "LEASED",
+            spec_sha256,
+            candidate_and_gate: None,
+        },
+    )
+    .await;
+
+    sqlx::raw_sql::raw_sql(include_str!(
+        "../../../migrations/0020_run_status_projection.sql"
+    ))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    for (run_id, expected) in [
+        ("run-gate-accepted", "ACCEPTED"),
+        ("run-gate-repair", "REPAIR_REQUIRED"),
+        ("run-gate-blocked", "REJECTED"),
+        ("run-gate-human", "REJECTED"),
+        ("run-gate-not-tested", "REJECTED"),
+        ("run-terminal-cancelled", "CANCELLED"),
+        ("run-untouched", "QUEUED"),
+        ("run-running", "RUNNING"),
+        ("run-failed", "FAILED"),
+        ("run-cancelled", "CANCELLED"),
+        ("run-terminal-failed", "FAILED"),
+    ] {
+        assert_eq!(run_status(&db, run_id).await, expected, "{run_id}");
+    }
+    assert_eq!(
+        db.campaign(&gate_campaign.id).await.unwrap().status,
+        "AUTHORIZED"
     );
     db.close().await;
     let _ = std::fs::remove_file(path);
@@ -369,7 +607,7 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
     let path = temp_path("factory-lease");
     let db = Database::open(&path).await.unwrap();
     let attempt_id = authorized_attempt(&db).await;
-    assert_eq!(db.runs().await.unwrap().len(), 1);
+    let run_id = db.runs().await.unwrap()[0].id.clone();
     assert_eq!(db.attempts().await.unwrap()[0].id, attempt_id);
     let first = db
         .claim_attempt("worker-a", 100, 50)
@@ -377,6 +615,7 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
         .unwrap()
         .unwrap();
     assert_eq!(first.generation, 1);
+    assert_eq!(run_status(&db, &run_id).await, "RUNNING");
     assert!(
         db.heartbeat(&attempt_id, "worker-a", 1, 120, 50)
             .await
@@ -425,6 +664,7 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
     ));
     db.report_terminal(&report, 180).await.unwrap();
     db.report_terminal(&report, 181).await.unwrap();
+    assert_eq!(run_status(&db, &run_id).await, "FAILED");
     db.close().await;
     let reopened = Database::open(&path).await.unwrap();
     reopened.report_terminal(&report, 182).await.unwrap();
@@ -437,7 +677,43 @@ async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
         "FAILED"
     );
     drop(connection);
+    assert_eq!(run_status(&reopened, &run_id).await, "FAILED");
     reopened.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn worker_cancelled_report_projects_to_run() {
+    let (path, db) = temp_db("factory-worker-cancelled").await;
+    let attempt_id = authorized_attempt(&db).await;
+    let run_id = db.runs().await.unwrap()[0].id.clone();
+    let lease = db
+        .claim_attempt("worker-a", 100, 50)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run_status(&db, &run_id).await, "RUNNING");
+    db.report_terminal(
+        &WorkerReport {
+            attempt_id: attempt_id.clone(),
+            worker_id: "worker-a".into(),
+            generation: lease.generation,
+            receipt_id: "cancelled-receipt".into(),
+            result_sha256: "c".repeat(64),
+            terminal_status: "CANCELLED".into(),
+        },
+        110,
+    )
+    .await
+    .unwrap();
+    assert_eq!(run_status(&db, &run_id).await, "CANCELLED");
+    let events = db.events().await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.subject_id == run_id
+            && event.kind == "run.status_changed"
+            && event.detail.contains("status=CANCELLED")
+    }));
+    db.close().await;
     let _ = std::fs::remove_file(path);
 }
 
@@ -1022,6 +1298,196 @@ async fn changes_requested_and_uncertain_never_accept() {
 }
 
 #[tokio::test]
+async fn accepted_gate_projects_run_status_and_survives_restart() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    assert_eq!(run_status(&fixture.db, &run_id).await, "RUNNING");
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-accepted", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_status(&fixture.db, &run_id).await, "RUNNING");
+    let result = fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &quality_receipt(&fixture, "reviewer-run-accepted", "reviewer-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::Accepted);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "ACCEPTED");
+    let events = fixture.db.events().await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.subject_id == run_id
+            && event.kind == "run.status_changed"
+            && event.detail.contains("status=ACCEPTED")
+    }));
+    let database_path = fixture.root.join("factory.sqlite");
+    fixture.db.close().await;
+    let reopened = Database::open(&database_path).await.unwrap();
+    assert_eq!(run_status(&reopened, &run_id).await, "ACCEPTED");
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn repair_required_gate_projects_run_status() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-repair", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut reviewer = quality_receipt(&fixture, "reviewer-run-repair", "reviewer-1");
+    reviewer.result = ReceiptResult::ChangesRequested;
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::RepairRequired);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "REPAIR_REQUIRED");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn blocked_gate_projects_run_status_to_rejected() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    let mut verifier = quality_receipt(&fixture, "verifier-run-blocked", "verifier-1");
+    verifier.evidence = EvidenceKind::Mocked;
+    fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    let result = fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &quality_receipt(&fixture, "reviewer-run-blocked", "reviewer-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::Blocked);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "REJECTED");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn human_required_gate_projects_run_status_to_rejected() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-human", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    sqlx::query::query(
+        "UPDATE campaigns SET status='BLOCKED_AUTHORIZATION'
+         WHERE id=(SELECT r.campaign_id FROM candidates cd
+                   JOIN attempts a ON a.id=cd.attempt_id
+                   JOIN runs r ON r.id=a.run_id
+                   WHERE cd.id=?1)",
+    )
+    .bind(&fixture.candidate_id)
+    .execute(&fixture.db.pool)
+    .await
+    .unwrap();
+    let result = fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &quality_receipt(&fixture, "reviewer-run-human", "reviewer-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::HumanRequired);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "REJECTED");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn not_tested_gate_projects_run_status_to_rejected() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-not-tested", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut reviewer = quality_receipt(&fixture, "reviewer-run-not-tested", "reviewer-1");
+    reviewer.result = ReceiptResult::NotTested;
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::NotTested);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "REJECTED");
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn gate_does_not_overwrite_a_terminal_run() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-terminal", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    sqlx::query::query("UPDATE runs SET status='CANCELLED' WHERE id=?1")
+        .bind(&run_id)
+        .execute(&fixture.db.pool)
+        .await
+        .unwrap();
+    let result = fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &quality_receipt(&fixture, "reviewer-run-terminal", "reviewer-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::Accepted);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "CANCELLED");
+    let events = fixture.db.events().await.unwrap();
+    assert!(!events.iter().any(|event| {
+        event.subject_id == run_id
+            && event.kind == "run.status_changed"
+            && event.detail.contains("status=ACCEPTED")
+    }));
+    fixture.db.close().await;
+}
+
+#[tokio::test]
 async fn model_review_findings_and_provenance_survive_restart() {
     let fixture = candidate_fixture().await;
     fixture
@@ -1479,7 +1945,11 @@ async fn candidate_outside_scope_and_symlink_are_rejected() {
     assert!(matches!(result, Err(Error::Forbidden(_))));
     workspace.cleanup().unwrap();
 
-    let second = db.create_attempt(&run.id, "attempt-key-2").await.unwrap();
+    let second_run = db.create_run(&campaign.id, "run-key-2").await.unwrap();
+    let second = db
+        .create_attempt(&second_run.id, "attempt-key-2")
+        .await
+        .unwrap();
     let lease = db
         .claim_attempt("worker-scope", now + 1, 60_000)
         .await
