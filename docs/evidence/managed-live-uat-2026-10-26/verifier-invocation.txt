@@ -1,0 +1,23 @@
+Verifier invocation — managed live accepted candidate
+=====================================================
+
+Candidate: 177060b3-5271-4b0f-a20f-2c5649426484
+Commit:    067c8569e651e0deb9b3edf4bfd7430b99a243b1
+
+Environment used by the one-shot verifier process:
+  FACTORY_CORE_URL=http://127.0.0.1:8893
+  FACTORY_VERIFIER_TOKEN=<role token from private 0600 env file; not retained>
+  FACTORY_CANDIDATE_ID=177060b3-5271-4b0f-a20f-2c5649426484
+  FACTORY_VERIFIER_PRINCIPAL=managed-live-verifier-2
+  FACTORY_VERIFIER_WORKSPACE=<disposable path>
+  FACTORY_VERIFIER_IMAGE=docker.io/library/rust:1.90.0-bookworm
+  FACTORY_VERIFIER_TEST_BACKEND unset (rootless-Podman backend)
+  FACTORY_VERIFIER_TEST_VOLUME_ROOT unset
+
+Command:
+  target/debug/factory-verifier
+
+Result: PASS / EXECUTED for the exact candidate and tree.
+The receipt schema does not persist backend, image, network mode or per-check
+output. The rootless-Podman mechanism is author-attested by this invocation and
+by the separately executed fixture verification.

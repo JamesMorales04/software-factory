@@ -22,7 +22,18 @@
   "provider": "opencode-go",
   "model": "deepseek-v4.1-flash",
   "mode": "TRUSTED_LOCAL_PROVIDER",
-  "workspace": "factory-managed-live2-core Supervisor named volumes",
+  "workspace": {
+    "provider_session_directory": "/tmp/factory-managed-live-1793031189/ps/p-2434c79043be409cbdaf382f4c965f73",
+    "verifier": "rootless-Podman named-volume workspace (author-attested; receipt does not persist backend)"
+  },
   "evidence": "docs/evidence/managed-live-uat-2026-10-26.md",
-  "notes": "Managed external-project journey through factory start; not ISOLATED, production or Product Owner UAT certification. The architecture checker validates manifest shape only; identity binding is manually verified in the report and committed Core export."
+  "notes": "Managed external-project journey through factory start; not ISOLATED, production or Product Owner UAT certification. The architecture checker validates manifest shape only; the report and committed Core export are the binding record for manual identity review.",
+  "unresolved_cleanup": {
+    "failed_session_record_id": "aaad7896-598f-441b-baa4-153f665416bb",
+    "failed_session_cleanup_receipt": "sandbox_process_identity_absent",
+    "reserved_turn_reservation_id": "2342f2e3-f74b-4a6d-8b3f-3455064dd8f9",
+    "reserved_turn_state": "RESERVED",
+    "reserved_turn_usage_known": false
+  },
+  "invalidated_by": "none; follow-up 6ae3241 conditionally changes the first-write instruction and rejects run_command-only tool loops but leaves the accepted write_file prompt text and runtime path unchanged"
 }

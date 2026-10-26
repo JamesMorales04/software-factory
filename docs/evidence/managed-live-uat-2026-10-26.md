@@ -146,7 +146,8 @@ rootless-Podman named-volume sandbox with the Rust image and `--network=none`.
 It submitted `PASS`/`EXECUTED`, bound to commit `067c8569` and tree
 `1ff574f7`. The receipt does not persist the backend, image, network or
 per-check output; the rootless-Podman mechanism is author-attested by the
-invocation and the separately verified fixture. The exact-candidate executed
+[verifier invocation](managed-live-uat-2026-10-26/verifier-invocation.txt) and
+the separately verified fixture. The exact-candidate executed
 receipt is the authoritative verifier evidence. The verifier log is
 [verifier.log](managed-live-uat-2026-10-26/verifier.log).
 
@@ -192,7 +193,8 @@ projection/UX observations, not acceptance failures.
 ## 8. Reliability and accounting evidence
 
 Deterministic checks passed at `ea2d927` and follow-up `6ae3241` (full
-workspace tests, strict Clippy and format). The specific matrix is:
+workspace tests, strict Clippy and format; the final workspace test log is
+[workspace-tests.log](managed-live-uat-2026-10-26/workspace-tests.log)). The specific matrix is:
 
 | Requirement | Evidence | Result |
 |---|---|---|

@@ -132,7 +132,7 @@ only after independent verification and review.
 
 - Real model-generated code: **PASS**.
 - Frozen file scope: **PASS** (`factory-cli/src/text.rs` only).
-- Executed independent verification: **PASS**.
+- Executed independent verification: **PASS** (role-independent verifier; backend author-attested as disclosed above).
 - Semantic review: **PASS**.
 - Deterministic gate: **ACCEPTED**.
 - Running installation unchanged: **PASS** (separate managed stack).

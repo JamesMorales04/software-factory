@@ -556,20 +556,8 @@ async fn execute_provider_assignment(
     assignment: &Assignment,
     supervisor: &Supervisor,
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
-    let mut seen_tools = std::collections::BTreeSet::new();
-    if assignment.allowed_tools.iter().any(|tool| {
-        !matches!(tool.as_str(), "write_file" | "run_command") || !seen_tools.insert(tool)
-    }) {
-        return Err("provider assignment has an unsupported tool permission".into());
-    }
-    if assignment.provider == "codex"
-        && !assignment
-            .allowed_tools
-            .iter()
-            .any(|tool| tool == "write_file")
-    {
-        return Err("Codex provider assignment requires write_file permission".into());
-    }
+    validate_provider_tools(&assignment.allowed_tools)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     if assignment.deadline_secs == 0
         || !(1..=4).contains(&assignment.max_turns)
         || assignment.max_sessions == 0
@@ -1206,6 +1194,19 @@ async fn start_provider_runtime(
         }
         _ => Err("provider sandbox is not configured; refusing an unconfined provider".into()),
     }
+}
+
+fn validate_provider_tools(allowed_tools: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    if allowed_tools.iter().any(|tool| {
+        !matches!(tool.as_str(), "write_file" | "run_command") || !seen.insert(tool.as_str())
+    }) {
+        return Err("provider assignment has an unsupported tool permission".into());
+    }
+    if !allowed_tools.is_empty() && !seen.contains("write_file") {
+        return Err("provider assignment with tools requires write_file permission".into());
+    }
+    Ok(())
 }
 
 fn opencode_first_action_instruction(allowed_tools: &[String]) -> &'static str {
@@ -3907,7 +3908,9 @@ fn validated_loopback_url(
 
 #[cfg(test)]
 mod tests {
-    use super::{opencode_first_action_instruction, validated_loopback_url};
+    use super::{
+        opencode_first_action_instruction, validate_provider_tools, validated_loopback_url,
+    };
 
     #[test]
     fn first_action_instruction_requires_a_write_only_when_authorized() {
@@ -3918,6 +3921,15 @@ mod tests {
         );
         let command_only = vec!["run_command".to_string()];
         assert!(!opencode_first_action_instruction(&command_only).contains("write_file"));
+    }
+
+    #[test]
+    fn provider_tool_sets_are_bounded_and_require_write_for_tool_loops() {
+        assert!(validate_provider_tools(&[]).is_ok());
+        assert!(validate_provider_tools(&["write_file".into(), "run_command".into()]).is_ok());
+        assert!(validate_provider_tools(&["run_command".into()]).is_err());
+        assert!(validate_provider_tools(&["write_file".into(), "write_file".into()]).is_err());
+        assert!(validate_provider_tools(&["read_file".into()]).is_err());
     }
 
     #[test]

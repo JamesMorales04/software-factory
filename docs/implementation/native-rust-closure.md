@@ -97,7 +97,8 @@ disposable external Rust repository then completed the full journey with real
 - real OpenCode Implementer session writing only `src/` and `tests/`;
 - candidate `177060b3-5271-4b0f-a20f-2c5649426484`, commit
   `067c8569e651e0deb9b3edf4bfd7430b99a243b1`;
-- independent executed verifier in a rootless-Podman named volume;
+- role-independent executed verifier in a rootless-Podman named volume
+  (backend author-attested; the receipt does not persist it);
 - semantic MODEL Reviewer with measured provenance;
 - deterministic gate `ACCEPTED`;
 - Office presentation, restart persistence and clean stop.
@@ -115,8 +116,9 @@ unknown turn are recorded truthfully rather than hidden. Evidence:
 
 Codex managed preflight with the real native App Server binary passed without
 inference. Native ChatGPT-authenticated codex live inference is blocked by the
-credential boundary; the supported Codex route is an operator API key at
-`https://api.openai.com/v1`.
+credential boundary; the only supported Codex authentication mode is an
+operator API key at `https://api.openai.com/v1`, and live Codex inference is
+not tested.
 
 ## Controlled self-development (2026-10-26)
 
