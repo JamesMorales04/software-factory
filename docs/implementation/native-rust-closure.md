@@ -275,8 +275,8 @@ Historical evidence is never rewritten to look like Rust certification.
 
 ## Codex App Server adapter addendum (2026-10-26, author-run)
 
-A focused branch adds a native Codex `0.156.1` App Server coding path for the
-frozen route `codex/gpt-6-luna`. It drives the real executable over stdio in
+The merged native Codex `0.156.1` App Server coding path supports the frozen
+route `codex/gpt-6-luna`. It drives the real executable over stdio in
 the existing bwrap boundary, declares only `write_file`/`run_command` dynamic
 tools, replaces the upstream tool list with that exact allowlist, rejects
 non-allowlisted server requests and item types, binds every actual
@@ -297,6 +297,24 @@ Author-run deterministic evidence:
 - OpenCode fixture-provider regression passed.
 - Full workspace tests and strict Clippy passed at the author checkpoint.
 
-This is not a live GPT-6 Luna coding PASS, does not prove independent security
-review, and does not certify isolation, cleanup, or cost accuracy. Codex
-built-in goal/code-mode/collaboration compatibility is version-sensitive.
+## Codex live UAT addendum (2026-10-26)
+
+A separately authorized, bounded live Codex UAT used genuine `gpt-6-luna`
+inference through the real App Server. The model used only `write_file` and
+the frozen `cargo test` `run_command`, and produced candidate
+`635336d3d525a20ab4079ae04586c4e2f7f1ab74` (`pub fn discount` returning
+`cents - cents / 10`). Core recorded one session, three bound `/v1/responses`
+requests, 6,342 input + 186 output tokens, a 7,086-micro configured-rate cost,
+and `sandbox_process_identity_absent` cleanup. The independent verifier
+executed `cargo test` successfully, the deterministic Reviewer PASSed, and the
+Quality Gate returned `ACCEPTED`.
+
+The live run used a test-only local proxy mapping Factory `/v1/responses` egress
+to the authenticated ChatGPT Codex backend; that proxy is not part of the
+merged runtime. The Reviewer was deterministic, not a semantic model. No
+cancellation/revocation, native ChatGPT-backend configuration, exact external
+invoice cost, human security certification, ISOLATED execution or deployment
+was tested. Evidence:
+[Codex GPT-6 Luna live UAT](../evidence/codex-gpt6-luna-live-uat-2026-10-26.md).
+Codex built-in goal/code-mode/collaboration compatibility remains
+version-sensitive and fail-closed.

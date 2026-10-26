@@ -173,8 +173,13 @@ drives the real binary through Core, Worker, Supervisor and the egress broker
 to a Git candidate with two bound upstream requests; it also verifies that the
 upstream tool list is exactly `write_file`/`run_command` and does not contain
 built-in exec, request-input or collaboration tools. Neither test makes a paid
-model call. Genuine GPT-6 Luna inference remains subject to a separate bounded
-live authorization; it is not claimed by these tests.
+model call. A separately authorized bounded GPT-6 Luna live UAT passed on
+2026-10-26 with candidate `635336d3d525a20ab4079ae04586c4e2f7f1ab74`, an
+independent deterministic verifier and an `ACCEPTED` gate. It used a test-only
+local proxy to the authenticated ChatGPT Codex backend; native ChatGPT-backend
+configuration, live semantic model review, native cost verification and
+ISOLATED execution remain open. See
+[the live evidence](../docs/evidence/codex-gpt6-luna-live-uat-2026-10-26.md).
 
 ## Factory-managed browser checks
 
