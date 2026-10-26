@@ -29,12 +29,20 @@ Configuration:
   FACTORY_VOLUME         Data volume name (default factory-core-data)
   FACTORY_ENV_FILE       Private token env file (default
                          $XDG_CONFIG_HOME/factory/core.env)
+  FACTORY_CORE_MODEL_ENV_FILE
+                         Optional 0600 Core-only model gateway env file; passed
+                         to the Core container as an additional --env-file
+  FACTORY_PROVIDER_ENV_FILE
+                         Optional 0600 Worker-only provider env file; parsed and
+                         passed only to the host Worker (default unset)
 
 Security:
   Start publishes only 127.0.0.1, drops all capabilities, uses a read-only root
   filesystem, and never mounts the Podman socket. Container checks do not
   certify isolation. Tokens are generated into the private env file and are
-  never printed.
+  never printed. Optional live route files must be absolute 0600 regular files;
+  route status is redacted and no provider credential is passed to Core or the
+  Supervisor.
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

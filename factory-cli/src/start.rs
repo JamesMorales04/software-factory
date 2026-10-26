@@ -5,11 +5,11 @@ use std::{
 
 use crate::{
     config,
-    container::{self, RunSpec, StartAction, VolumeAction},
+    container::{self, CORE_MODEL_ENV_LABEL, RunSpec, StartAction, VolumeAction},
     core_client::get_health,
     core_url::CoreUrl,
     failure::Failure,
-    podman, runtime,
+    managed_env, podman, runtime,
     tokens::{self, TokenFileState},
 };
 
@@ -47,6 +47,20 @@ fn execute() -> Result<(), Failure> {
     podman::validate_volume_name(&volume).map_err(Failure::usage)?;
     let token_file = config::token_file().map_err(Failure::usage)?;
     let project_roots = config::project_roots().map_err(Failure::usage)?;
+    let core_model = managed_env::load_core_model().map_err(Failure::usage)?;
+    let provider = managed_env::load_provider().map_err(Failure::usage)?;
+    if provider.is_some() {
+        if !config::host_execution().map_err(Failure::usage)? {
+            return Err(Failure::usage(
+                "FACTORY_PROVIDER_ENV_FILE requires FACTORY_HOST_EXECUTION=1 so the host Worker can receive it",
+            ));
+        }
+        if project_roots.is_empty() {
+            return Err(Failure::usage(
+                "FACTORY_PROVIDER_ENV_FILE requires at least one FACTORY_PROJECT_ROOTS entry so factory start launches the host Worker",
+            ));
+        }
+    }
     let env_file = token_file
         .to_str()
         .ok_or_else(|| {
@@ -61,6 +75,18 @@ fn execute() -> Result<(), Failure> {
     println!("Image: {image}");
     println!("Container: {name}");
     println!("Data volume: {volume}");
+    if let Some(core_model) = &core_model {
+        println!("Core model env file: {}", core_model.path().display());
+        println!("Core model route: {}", core_model.summary());
+    } else {
+        println!("Core model route: not configured");
+    }
+    if let Some(provider) = &provider {
+        println!("Worker provider env file: {}", provider.path().display());
+        println!("Worker provider profile: {}", provider.summary());
+    } else {
+        println!("Worker provider profile: not configured");
+    }
 
     podman::version().map_err(Failure::operation)?;
     match podman::rootless() {
@@ -86,12 +112,32 @@ fn execute() -> Result<(), Failure> {
     println!("Token file: {}", token_file.display());
 
     let state = podman::container_state(&name).map_err(Failure::operation)?;
-    let action = if state.as_deref() == Some("running") && token_state == TokenFileState::Created {
-        println!("Token env file was created; recreating the container to apply new tokens");
-        StartAction::Replace
+    let expected_fingerprint = core_model
+        .as_ref()
+        .map(managed_env::CoreModelEnv::fingerprint)
+        .unwrap_or("unset");
+    let current_fingerprint = if state.is_some() {
+        podman::container_label(&name, CORE_MODEL_ENV_LABEL).map_err(Failure::operation)?
     } else {
-        container::start_action(state.as_deref())
+        None
     };
+    let action = container::start_decision(
+        state.as_deref(),
+        token_state == TokenFileState::Created,
+        current_fingerprint.as_deref(),
+        expected_fingerprint,
+    );
+    if action == StartAction::Replace && state.as_deref() == Some("running") {
+        if token_state == TokenFileState::Created {
+            println!("Token env file was created; recreating the container to apply new tokens");
+        }
+        if current_fingerprint.as_deref() != Some(expected_fingerprint) {
+            println!(
+                "Core model env fingerprint {expected_fingerprint} differs from the running container ({}); recreating",
+                current_fingerprint.as_deref().unwrap_or("unset")
+            );
+        }
+    }
     match action {
         StartAction::ReuseRunning => {
             println!("Container {name}: already running");
@@ -103,25 +149,47 @@ fn execute() -> Result<(), Failure> {
             );
             ensure_volume(&volume)?;
             replace_container(&name, state.as_deref())?;
-            run_container(&name, &image, &volume, &env_file, port, &project_roots)?;
+            run_container(
+                &name,
+                &image,
+                &volume,
+                &env_file,
+                core_model.as_ref(),
+                port,
+                &project_roots,
+            )?;
         }
         StartAction::Create => {
             ensure_volume(&volume)?;
-            run_container(&name, &image, &volume, &env_file, port, &project_roots)?;
+            run_container(
+                &name,
+                &image,
+                &volume,
+                &env_file,
+                core_model.as_ref(),
+                port,
+                &project_roots,
+            )?;
         }
     }
 
     println!("Office URL: http://127.0.0.1:{port}");
     wait_for_health(&url, &name)?;
-    let host = runtime::start(&token_file, &raw_url, &project_roots)?;
+    let host = runtime::start(&token_file, &raw_url, &project_roots, provider.as_ref())?;
     if host.enabled {
         println!("Host execution: enabled");
         println!("Sandbox Supervisor: {}", host.supervisor_url);
         println!("Host runtime state: {}", host.runtime_dir.display());
+        if let Some(provider) = &provider {
+            println!("Worker provider config: active ({})", provider.summary());
+        } else {
+            println!("Worker provider config: not configured");
+        }
     } else {
         println!(
             "Host execution: disabled (set FACTORY_PROJECT_ROOTS to an explicit project root)"
         );
+        println!("Worker provider config: inactive");
     }
     Ok(())
 }
@@ -166,14 +234,30 @@ fn run_container(
     image: &str,
     volume: &str,
     env_file: &str,
+    core_model: Option<&managed_env::CoreModelEnv>,
     host_port: u16,
     project_roots: &[std::path::PathBuf],
 ) -> Result<(), Failure> {
+    let core_model_env_file = core_model
+        .map(|config| {
+            config.path().to_str().ok_or_else(|| {
+                Failure::usage(format!(
+                    "Core model env file path {} is not valid UTF-8",
+                    config.path().display()
+                ))
+            })
+        })
+        .transpose()?;
+    let core_model_fingerprint = core_model
+        .map(managed_env::CoreModelEnv::fingerprint)
+        .unwrap_or("unset");
     let args = container::run_args(&RunSpec {
         name,
         image,
         volume,
         env_file,
+        core_model_env_file,
+        core_model_fingerprint,
         host_port,
         project_roots,
     });

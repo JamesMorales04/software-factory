@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use crate::{
-    config, core_client::get_health, core_url::CoreUrl, podman, report::Check, text::one_line,
+    config, core_client::get_health, core_url::CoreUrl, managed_env, podman, report::Check,
+    text::one_line,
 };
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -30,6 +31,40 @@ pub(crate) fn run() -> u8 {
             None
         }
     };
+
+    match managed_env::load_core_model() {
+        Ok(Some(configured)) => checks.push(Check::pass(
+            "Core model env",
+            format!("{}; {}", configured.path().display(), configured.summary()),
+        )),
+        Ok(None) => checks.push(Check::pass("Core model env", "not configured")),
+        Err(error) => checks.push(Check::fail("Core model env", error)),
+    }
+
+    match managed_env::load_provider() {
+        Ok(Some(configured)) => {
+            let host_ready = config::host_execution().unwrap_or(false)
+                && config::project_roots()
+                    .map(|roots| !roots.is_empty())
+                    .unwrap_or(false);
+            if host_ready {
+                checks.push(Check::pass(
+                    "Worker provider env",
+                    format!("{}; {}", configured.path().display(), configured.summary()),
+                ));
+            } else {
+                checks.push(Check::fail(
+                    "Worker provider env",
+                    format!(
+                        "{} is configured but FACTORY_HOST_EXECUTION=1 and an explicit FACTORY_PROJECT_ROOTS entry are required",
+                        configured.path().display()
+                    ),
+                ));
+            }
+        }
+        Ok(None) => checks.push(Check::pass("Worker provider env", "not configured")),
+        Err(error) => checks.push(Check::fail("Worker provider env", error)),
+    }
 
     let podman_available = match podman::version() {
         Ok(version) => {

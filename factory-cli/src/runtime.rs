@@ -11,7 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{config, core_client::get_health, core_url::CoreUrl, failure::Failure, tokens};
+use crate::{
+    config, core_client::get_health, core_url::CoreUrl, failure::Failure, managed_env, tokens,
+};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,6 +33,7 @@ pub(crate) fn start(
     token_file: &Path,
     core_url: &str,
     roots: &[PathBuf],
+    provider: Option<&managed_env::ProviderEnv>,
 ) -> Result<HostRuntime, Failure> {
     let runtime_dir = runtime_dir(token_file);
     let supervisor_url = config::supervisor_url().map_err(Failure::usage)?;
@@ -157,6 +160,7 @@ pub(crate) fn start(
         .stdout(Stdio::null())
         .stderr(Stdio::from(worker_log));
     copy_container_environment(&mut worker);
+    apply_provider_environment(&mut worker, provider);
     worker.process_group(0);
     let worker_child = worker.spawn().map_err(|error| {
         Failure::operation(format!("cannot start {}: {error}", worker_bin.display()))
@@ -289,6 +293,12 @@ fn open_log(path: &Path) -> Result<File, String> {
         .mode(0o600)
         .open(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))
+}
+
+fn apply_provider_environment(command: &mut Command, provider: Option<&managed_env::ProviderEnv>) {
+    if let Some(provider) = provider {
+        command.envs(provider.environment());
+    }
 }
 
 fn copy_container_environment(command: &mut Command) {
@@ -466,5 +476,34 @@ mod tests {
         let link = temp.0.join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(prepare_runtime_dir(&link).is_err());
+    }
+
+    #[test]
+    fn applies_provider_values_only_to_the_requested_command() {
+        use std::ffi::OsStr;
+
+        let provider = managed_env::provider_for_test(&[
+            ("FACTORY_PROVIDER_KIND", "opencode"),
+            (
+                "FACTORY_PROVIDER_UPSTREAM_TOKEN",
+                "super-secret-upstream-token",
+            ),
+        ]);
+        let mut worker = Command::new("factory-worker");
+        worker.env_clear();
+        apply_provider_environment(&mut worker, Some(&provider));
+        let worker_environment = worker.get_envs().collect::<Vec<_>>();
+        assert!(worker_environment.iter().any(|(key, value)| {
+            *key == OsStr::new("FACTORY_PROVIDER_KIND") && *value == Some(OsStr::new("opencode"))
+        }));
+        assert!(worker_environment.iter().any(|(key, value)| {
+            *key == OsStr::new("FACTORY_PROVIDER_UPSTREAM_TOKEN")
+                && *value == Some(OsStr::new("super-secret-upstream-token"))
+        }));
+
+        let mut supervisor = Command::new("factory-supervisor");
+        supervisor.env_clear();
+        apply_provider_environment(&mut supervisor, None);
+        assert_eq!(supervisor.get_envs().count(), 0);
     }
 }

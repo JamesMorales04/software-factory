@@ -6,6 +6,7 @@ mod core_url;
 mod doctor;
 mod failure;
 mod logs;
+mod managed_env;
 mod podman;
 mod report;
 mod runtime;

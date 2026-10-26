@@ -162,21 +162,31 @@ is suitable for a disposable preview.
 ## 5. Semantic Reviewer and model-call budgets
 
 The deterministic reviewer is the default and needs no model. To exercise the
-model path against a deterministic fake OpenAI-compatible upstream, start Core
-with:
+model path against a deterministic fake OpenAI-compatible upstream, create a
+private Core-only model env file and start Core with it:
 
 ```sh
-export FACTORY_MODEL_URL=http://127.0.0.1:9000/v1
-export FACTORY_MODEL_TOKEN=deterministic-test-token-1234
-export FACTORY_MODEL_PROVIDER=opencode-go
-export FACTORY_MODEL_NAME=deepseek-v4.1-flash
-export FACTORY_ALLOW_TEST_UPSTREAM=1
+install -m 600 /dev/null /tmp/factory-preview-model.env
+cat > /tmp/factory-preview-model.env <<'EOF'
+FACTORY_MODEL_URL=http://127.0.0.1:9000/v1
+FACTORY_MODEL_TOKEN=deterministic-test-token-1234
+FACTORY_MODEL_PROVIDER=opencode-go
+FACTORY_MODEL_NAME=deepseek-v4.1-flash
+FACTORY_ALLOW_TEST_UPSTREAM=1
+EOF
+export FACTORY_CORE_MODEL_ENV_FILE=/tmp/factory-preview-model.env
+target/debug/factory doctor
+target/debug/factory start
 ```
 
-Then run the reviewer with `FACTORY_REVIEW_MECHANISM=MODEL`. A model approval is
-corroborating only: the deterministic pre-review must also approve before the
-reviewer can submit `PASS`. Malformed output produces a durable `FAIL` and the
-gate becomes `REPAIR_REQUIRED`, never `ACCEPTED`.
+`factory start` passes only the allowlisted Core model keys to the Core
+container as an additional `--env-file`. If a running container was created
+with a different model env fingerprint, it is recreated instead of silently
+reused. Do not commit the file or place provider credentials in the shell
+environment. Then run the reviewer with `FACTORY_REVIEW_MECHANISM=MODEL`. A
+model approval is corroborating only: the deterministic pre-review must also
+approve before the reviewer can submit `PASS`. Malformed output produces a
+durable `FAIL` and the gate becomes `REPAIR_REQUIRED`, never `ACCEPTED`.
 
 The Lead uses the same Core-owned gateway. `FACTORY_LEAD_FIXTURE_ASSESSOR=1`
 exercises the typed planning path without a model. Real provider credentials

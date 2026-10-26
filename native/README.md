@@ -89,6 +89,17 @@ enforces the Core turn reservation. `FACTORY_PROVIDER_TCP_PORT` defaults to
 18081 (18080 is reserved for egress); `FACTORY_PROVIDER_MODEL_CONTEXT` and
 `FACTORY_PROVIDER_MODEL_OUTPUT` set the generated model limits.
 
+`factory start` can manage this route from a strict Worker-only `0600`
+`FACTORY_PROVIDER_ENV_FILE`; it validates the allowlisted provider variables and
+forwards the parsed values only to the host Worker, never to the Core container
+or Supervisor. A separate strict Core-only `0600`
+`FACTORY_CORE_MODEL_ENV_FILE` supplies the model gateway and policy variables
+to the Core container as an additional `--env-file`. The CLI recreates a
+running Core container when that file's fingerprint label changes. Neither file
+authorizes a Campaign or changes a budget, and the Codex coding adapter remains
+`BLOCKED`. See [factory-cli/README.md](../factory-cli/README.md) for exact
+allowlists and redacted status output.
+
 The Worker rejects an empty `final` response, corrects invalid model actions,
 and preserves already-applied writes for independent verification if a live
 turn ends with an error or the four-turn budget is exhausted. Applied writes
