@@ -375,3 +375,35 @@ OAuth refresh/account headers. The only supported Codex live authentication mode
 is an operator API key at `https://api.openai.com/v1`; live Codex inference is
 not tested. Evidence:
 [Codex managed configuration](../evidence/codex-managed-config-2026-10-26.md).
+
+## Container-native Compose iteration (2026-10-26)
+
+A Product Owner campaign directive authorized a container-native installation
+target. The implementation branch adds:
+
+- a mandatory rootless Compose stack for Core/Office, containerized Supervisor
+  and Worker, verifier/reviewer, a dedicated nested Podman engine and narrow
+  runtime broker;
+- first-run Office enrollment, encrypted Core-owned provider settings,
+  revocable credentials and a semantic-review policy toggle;
+- managed Git import, Office project/capability configuration, typed checks and
+  scoped delegation creation;
+- automatic independent verifier and reviewer dispatch and deterministic gate
+  projection;
+- per-service configuration volumes, a bundle-based provider image transfer and
+  startup convergence without host toolchains.
+
+Author-run evidence: a deterministic clean Compose deployment imported a Git
+project, produced a candidate through the fixture provider in a real nested
+container, executed independent verifier/reviewer evidence, reached
+`ACCEPTED`, and preserved Project/Campaign/gate state across restart. The
+same stack passed real-Chromium first-run onboarding and provider
+save/test/revoke; two Workers produced two concurrent accepted candidates.
+See [container-native status](container-native-status.md),
+[phase-zero evidence](../evidence/container-native-phase0-2026-10-26.md) and
+[Compose deployment](../operations/compose-deployment.md).
+
+This iteration does **not** claim a paid provider UAT, live OpenCode-in-container
+inference, Codex API-key live inference, containerized Codex stdio, native
+ChatGPT OAuth, SEC-01 isolation, Windows, independent security review or merge
+authorization. The historical host-managed acceptance remains provenance.

@@ -19,7 +19,9 @@ use std::{
 };
 
 use factory_native::db::CandidateInspection;
-use factory_native::execution::{BoundedOutput, RootlessPodmanVolumes, VolumeBackend};
+use factory_native::execution::{
+    BoundedOutput, BrokerVolumes, RootlessPodmanVolumes, VolumeBackend,
+};
 use factory_native::lead::SpecCheck;
 use factory_native::workspace::{self, WorkspaceAllocator, WorkspaceError};
 use factory_native::workspace_archive;
@@ -128,23 +130,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .block_on(run())
 }
 
+struct VerifierConfig {
+    core: reqwest::Url,
+    token: String,
+    principal: String,
+    workspace_root: String,
+    client: reqwest::Client,
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let core = env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
-    let core = validated_core_url(&core)?;
-    let token =
-        env::var("FACTORY_VERIFIER_TOKEN").map_err(|_| "FACTORY_VERIFIER_TOKEN required")?;
+    let config = VerifierConfig {
+        core: validated_core_url(&core)?,
+        token: factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?,
+        principal: env::var("FACTORY_VERIFIER_PRINCIPAL")
+            .unwrap_or_else(|_| "verifier-process".into()),
+        workspace_root: env::var("FACTORY_VERIFIER_WORKSPACE")
+            .map_err(|_| "FACTORY_VERIFIER_WORKSPACE required")?,
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?,
+    };
+    if env::var("FACTORY_VERIFIER_WATCH").as_deref() == Ok("1") {
+        return watch(&config).await;
+    }
     let candidate_id =
         env::var("FACTORY_CANDIDATE_ID").map_err(|_| "FACTORY_CANDIDATE_ID required")?;
-    let principal =
-        env::var("FACTORY_VERIFIER_PRINCIPAL").unwrap_or_else(|_| "verifier-process".into());
-    let workspace_root = env::var("FACTORY_VERIFIER_WORKSPACE")
-        .map_err(|_| "FACTORY_VERIFIER_WORKSPACE required")?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let inspection: CandidateInspection = client
-        .get(core.join(&format!("quality/candidates/{candidate_id}/inspection"))?)
-        .bearer_auth(&token)
+    run_candidate(&config, &candidate_id).await
+}
+
+async fn watch(config: &VerifierConfig) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("verifier watch mode: polling Core for candidate-bound verification work");
+    loop {
+        let response = config
+            .client
+            .get(config.core.join("quality/pending")?)
+            .bearer_auth(&config.token)
+            .query(&[("role", "verifier")])
+            .send()
+            .await;
+        let candidates = match response {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body) => body
+                        .get("candidates")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                    Err(error) => {
+                        eprintln!("verifier watch: unreadable pending response: {error}");
+                        Vec::new()
+                    }
+                }
+            }
+            Ok(response) => {
+                eprintln!(
+                    "verifier watch: Core pending query returned {}",
+                    response.status()
+                );
+                Vec::new()
+            }
+            Err(error) => {
+                eprintln!("verifier watch: Core is unavailable: {error}");
+                Vec::new()
+            }
+        };
+        if candidates.is_empty() {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        for candidate_id in candidates {
+            match run_candidate(config, &candidate_id).await {
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("verifier watch: candidate {candidate_id} failed: {error}");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        }
+    }
+}
+
+async fn run_candidate(
+    config: &VerifierConfig,
+    candidate_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let inspection: CandidateInspection = config
+        .client
+        .get(
+            config
+                .core
+                .join(&format!("quality/candidates/{candidate_id}/inspection"))?,
+        )
+        .bearer_auth(&config.token)
         .send()
         .await?
         .error_for_status()?
@@ -153,23 +237,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if inspection.action_spec.checks.is_empty() {
         return Err("candidate ActionSpec has no executable checks; refusing PASS".into());
     }
-    let (outcome, failure) = match verify_candidate(&inspection, Path::new(&workspace_root)).await {
-        Ok(()) => ("PASS", None),
-        Err(VerificationError::Check(message)) => ("FAIL", Some(message)),
-        Err(VerificationError::Infrastructure(message)) => {
-            return Err(format!(
-                "verifier infrastructure failure; no receipt submitted: {message}"
-            )
-            .into());
-        }
-    };
-    let receipt = client
-        .post(core.join("quality/receipts")?)
-        .bearer_auth(&token)
+    let (outcome, failure) =
+        match verify_candidate(&inspection, Path::new(&config.workspace_root)).await {
+            Ok(()) => ("PASS", None),
+            Err(VerificationError::Check(message)) => ("FAIL", Some(message)),
+            Err(VerificationError::Infrastructure(message)) => {
+                return Err(format!(
+                    "verifier infrastructure failure; no receipt submitted: {message}"
+                )
+                .into());
+            }
+        };
+    let receipt = config
+        .client
+        .post(config.core.join("quality/receipts")?)
+        .bearer_auth(&config.token)
         .json(&json!({
             "candidate_id": candidate_id,
             "receipt_id": Uuid::new_v4().to_string(),
-            "principal_id": principal,
+            "principal_id": config.principal,
             "actionSpecSha256": inspection.action_spec_sha256,
             "commitSha": inspection.candidate.commit_sha,
             "treeSha": inspection.candidate.tree_sha,
@@ -264,6 +350,17 @@ async fn sandboxed_checks(
         }
         #[cfg(not(debug_assertions))]
         unreachable!("release builds reject the local backend")
+    } else if let (Ok(url), Ok(token)) = (
+        env::var("FACTORY_RUNTIME_BROKER_URL"),
+        factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN"),
+    ) {
+        let backend = BrokerVolumes::new(&url, token).map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier broker configuration: {error}"))
+        })?;
+        backend.preflight().await.map_err(|error| {
+            VerificationError::Infrastructure(format!("verifier broker unavailable: {error}"))
+        })?;
+        VerifierBackend::Broker(backend)
     } else {
         let backend = RootlessPodmanVolumes::new([image.clone()]).map_err(|error| {
             VerificationError::Infrastructure(format!("verifier sandbox configuration: {error}"))
@@ -392,6 +489,7 @@ async fn run_sandboxed_checks<B: VolumeBackend>(
 
 enum VerifierBackend {
     Podman(RootlessPodmanVolumes),
+    Broker(BrokerVolumes),
     #[cfg(debug_assertions)]
     Local(LocalVolumeBackend),
 }
@@ -404,6 +502,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<(), factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
+            Self::Broker(backend) => backend.create_volume(name, workspace_id).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.create_volume(name, workspace_id).await,
         }
@@ -414,6 +513,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<(), factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_volume(name).await,
+            Self::Broker(backend) => backend.remove_volume(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.remove_volume(name).await,
         }
@@ -425,6 +525,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<(), factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.import_volume(name, bytes).await,
+            Self::Broker(backend) => backend.import_volume(name, bytes).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.import_volume(name, bytes).await,
         }
@@ -435,6 +536,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<Vec<u8>, factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.export_volume(name).await,
+            Self::Broker(backend) => backend.export_volume(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.export_volume(name).await,
         }
@@ -449,6 +551,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<BoundedOutput, factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.run(volume, container, image, argv, timeout).await,
+            Self::Broker(backend) => backend.run(volume, container, image, argv, timeout).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
         }
@@ -459,6 +562,7 @@ impl VolumeBackend for VerifierBackend {
     ) -> Result<(), factory_native::execution::ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_container(name).await,
+            Self::Broker(backend) => backend.remove_container(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.remove_container(name).await,
         }
@@ -1018,18 +1122,13 @@ fn harden_process_git_environment() {
 }
 
 fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Error>> {
-    let url = reqwest::Url::parse(raw)?;
-    if url.scheme() != "http"
-        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        || url.port().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("FACTORY_CORE_URL must be a loopback HTTP origin with explicit port".into());
-    }
+    let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
+    let url = factory_native::service_network::validate_http_origin(
+        raw,
+        "FACTORY_CORE_URL",
+        container_mode,
+        &["core"],
+    )?;
     Ok(url)
 }
 

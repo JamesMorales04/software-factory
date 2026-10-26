@@ -20,7 +20,10 @@ use std::{
     time::Duration,
 };
 
-use crate::provider_egress::{EgressBroker, EgressConfig};
+use crate::{
+    provider_egress::{EgressBroker, EgressConfig},
+    runtime_broker::RuntimeBrokerClient,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -113,6 +116,208 @@ impl Default for ProviderSandboxConfig {
             provider_bridge: None,
             provider_tcp: None,
             transport: SandboxTransport::HttpSocket,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ContainerSandboxConfig {
+    pub session_dir: PathBuf,
+    pub broker_base: String,
+    pub broker_token: String,
+    pub max_lifetime: Duration,
+    pub ready_timeout: Duration,
+    pub bridge_timeout: Duration,
+    pub max_connections: usize,
+    pub env: Vec<(String, String)>,
+    pub egress: Option<EgressConfig>,
+}
+
+/// Provider session executed as a network-disabled child container in the
+/// dedicated runtime engine. The Worker and container share only the private
+/// session directory through a named volume; the long-lived upstream
+/// credential stays in the Worker's loopback egress broker.
+pub struct ContainerProviderSandbox {
+    broker: RuntimeBrokerClient,
+    container: String,
+    socket: PathBuf,
+    session_dir: PathBuf,
+    base_url: String,
+    password: String,
+    bridge: Option<JoinHandle<()>>,
+    egress: Option<EgressBroker>,
+}
+
+impl ContainerProviderSandbox {
+    pub async fn start(config: ContainerSandboxConfig) -> Result<Self, SandboxError> {
+        if !config.session_dir.is_absolute() {
+            return Err(SandboxError::Invalid(
+                "provider session directory must be absolute".into(),
+            ));
+        }
+        if config.max_lifetime < Duration::from_secs(1)
+            || config.max_lifetime > Duration::from_secs(3600)
+        {
+            return Err(SandboxError::Invalid(
+                "provider lifetime is outside the allowed bound".into(),
+            ));
+        }
+        let broker = RuntimeBrokerClient::new(&config.broker_base, config.broker_token)
+            .map_err(|error| SandboxError::Invalid(error.to_string()))?;
+        std::fs::create_dir_all(&config.session_dir)?;
+        set_private_directory(&config.session_dir)?;
+        let session_subdir = config
+            .session_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| SandboxError::Invalid("provider session directory name".into()))?
+            .to_owned();
+        if session_subdir.len() != 36
+            || !session_subdir
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+        {
+            return Err(SandboxError::Invalid(
+                "provider session directory must be a UUID".into(),
+            ));
+        }
+        let container = format!("factory-provider-{session_subdir}");
+        let socket = config.session_dir.join("provider.sock");
+        let _ = std::fs::remove_file(&socket);
+        let password = format!(
+            "{}.{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let egress = if let Some(egress) = &config.egress {
+            Some(
+                EgressBroker::start(egress.clone(), &config.session_dir.join("egress.sock"))
+                    .await
+                    .map_err(|error| SandboxError::Invalid(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let mut environment = config.env.clone();
+        environment.push(("OPENCODE_SERVER_PASSWORD".into(), password.clone()));
+        environment.push((
+            "FACTORY_PROVIDER_SOCKET".into(),
+            "/session/provider.sock".into(),
+        ));
+        environment.push(("FACTORY_PROVIDER_TCP".into(), "127.0.0.1:18081".into()));
+        environment.push(("FACTORY_EGRESS_LISTEN_PORT".into(), "18080".into()));
+        environment.push((
+            "FACTORY_EGRESS_SOCKET".into(),
+            "/session/egress.sock".into(),
+        ));
+        if let Err(error) = broker
+            .start_provider(&crate::runtime_broker::StartProvider {
+                container: &container,
+                session_subdir: &session_subdir,
+                timeout_secs: config.max_lifetime.as_secs(),
+                env: &environment,
+            })
+            .await
+        {
+            if let Some(egress) = egress {
+                egress.stop();
+            }
+            return Err(SandboxError::NotReady(format!(
+                "provider container did not start: {error}"
+            )));
+        }
+        let deadline = time::Instant::now() + config.ready_timeout;
+        loop {
+            if UnixStream::connect(&socket).await.is_ok() {
+                break;
+            }
+            if time::Instant::now() >= deadline {
+                let _ = broker.remove_container(&container).await;
+                if let Some(egress) = egress {
+                    egress.stop();
+                }
+                return Err(SandboxError::NotReady(
+                    "provider container socket did not appear".into(),
+                ));
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let expected = basic_authorization(&password);
+        let socket_for_bridge = socket.clone();
+        let max_connections = config.max_connections.max(1);
+        let bridge_timeout = config.bridge_timeout;
+        let bridge = tokio::spawn(async move {
+            let permits = Arc::new(tokio::sync::Semaphore::new(max_connections));
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let Ok(permit) = permits.clone().try_acquire_owned() else {
+                    continue;
+                };
+                let expected = expected.clone();
+                let socket = socket_for_bridge.clone();
+                tokio::spawn(async move {
+                    let _ = bridge_connection(stream, &socket, &expected, bridge_timeout).await;
+                    drop(permit);
+                });
+            }
+        });
+        Ok(Self {
+            broker,
+            container,
+            socket,
+            session_dir: config.session_dir,
+            base_url: format!("http://{address}"),
+            password,
+            bridge: Some(bridge),
+            egress,
+        })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    pub async fn stop(mut self) -> Result<(), SandboxError> {
+        if let Some(bridge) = self.bridge.take() {
+            bridge.abort();
+        }
+        if let Some(egress) = self.egress.take() {
+            egress.stop();
+        }
+        let cleanup = self.broker.remove_container(&self.container).await;
+        let absent = match self.broker.container_status(&self.container).await {
+            Ok(status) => status.status == "absent" || status.status == "exited",
+            Err(_) => true,
+        };
+        let socket_removed = std::fs::remove_file(&self.socket).is_err() || !self.socket.exists();
+        let _ = self.session_dir;
+        match cleanup {
+            Ok(()) if absent && socket_removed => Ok(()),
+            Ok(()) => Err(SandboxError::NotReady(
+                "provider container cleanup was not confirmed".into(),
+            )),
+            Err(error) => Err(SandboxError::NotReady(format!(
+                "provider container cleanup failed: {error}"
+            ))),
+        }
+    }
+}
+
+impl Drop for ContainerProviderSandbox {
+    fn drop(&mut self) {
+        if let Some(bridge) = self.bridge.take() {
+            bridge.abort();
+        }
+        if let Some(egress) = self.egress.take() {
+            egress.stop();
         }
     }
 }

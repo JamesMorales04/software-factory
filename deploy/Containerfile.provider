@@ -1,0 +1,52 @@
+# Provider runtime image: pinned OpenCode/Codex executables and Factory
+# bridges. It contains no credentials; the long-lived upstream credential is
+# injected only by the trusted Worker's loopback egress broker.
+
+ARG RUST_VERSION=1.90.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY native/fixtures native/fixtures
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+COPY migrations migrations
+RUN cargo build --locked --release -p factory-native \
+      --bin factory-egress-bridge \
+      --bin factory-provider-bridge \
+      --bin factory-fixture-provider
+
+FROM node:22.23.2-bookworm-slim
+
+ARG OPENCODE_VERSION=1.18.32
+ARG CODEX_VERSION=0.156.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git bash iproute2 tar \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global --no-audit --no-fund \
+        "opencode-ai@${OPENCODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+    && command -v opencode \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --create-home --home-dir /home/provider \
+        --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /session
+
+COPY --from=builder /build/target/release/factory-egress-bridge /usr/local/bin/factory-egress-bridge
+COPY --from=builder /build/target/release/factory-provider-bridge /usr/local/bin/factory-provider-bridge
+COPY --from=builder /build/target/release/factory-fixture-provider /usr/local/bin/factory-fixture-provider
+COPY deploy/provider-entrypoint.sh /usr/local/bin/factory-provider-entrypoint
+RUN chmod 755 /usr/local/bin/factory-provider-entrypoint /usr/local/bin/factory-*
+
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /session
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/factory-provider-entrypoint"]
+STOPSIGNAL SIGTERM

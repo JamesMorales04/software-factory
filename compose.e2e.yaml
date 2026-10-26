@@ -1,0 +1,15 @@
+# Deterministic Compose acceptance override. This is a test harness, not part
+# of the installed product: a local dumb-HTTP Git fixture and an explicit
+# insecure-Git opt-in for the disposable test repository.
+services:
+  core:
+    environment:
+      FACTORY_ALLOW_INSECURE_GIT: "1"
+  git-fixture:
+    image: docker.io/library/python:3.12-alpine
+    command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]
+    volumes:
+      - ${FACTORY_E2E_GIT_DIR:?FACTORY_E2E_GIT_DIR is required}:/srv:ro
+    networks:
+      - factory-egress
+    restart: "no"

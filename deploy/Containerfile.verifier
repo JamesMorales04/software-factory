@@ -1,0 +1,35 @@
+# Containerized independent verifier and reviewer roles. They share an image
+# and executable set but run with distinct credentials and workspaces.
+
+ARG RUST_VERSION=1.90.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY native/fixtures native/fixtures
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+COPY migrations migrations
+RUN cargo build --locked --release -p factory-native \
+      --bin factory-verifier \
+      --bin factory-reviewer
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /state /verifier /reviewer
+
+COPY --from=builder /build/target/release/factory-verifier /usr/local/bin/factory-verifier
+COPY --from=builder /build/target/release/factory-reviewer /usr/local/bin/factory-reviewer
+
+USER 10001:10001
+STOPSIGNAL SIGTERM

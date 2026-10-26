@@ -230,6 +230,35 @@ milestones:
   - Multiple projects receive scheduled improvements across restarts with observable outcomes
   owner_decisions:
   - Approve portfolio priorities and resource allocation boundaries
+- id: F1-S8
+  title: Container-native installation and Office configuration
+  decision_status: approved
+  dependencies:
+  - F1-S7
+  deliverables:
+  - One-command rootless Compose stack
+  - dedicated nested execution engine and narrow broker
+  - Office-first provider project and delegation configuration
+  - automatic independent verifier and reviewer
+  capability_ids:
+  - CAP-045
+  exclusions:
+  - SEC-01 isolation certification
+  - production or Windows support claim
+  - paid provider UAT without fresh authorization
+  risks:
+  - namespaced runtime capabilities and engine compromise
+  - provider image distribution and size
+  - container startup ordering and volume ownership
+  deterministic_acceptance:
+  - A clean Linux host starts the stack with one Compose command and no host Rust Node OpenCode or Codex installation
+  - first-run Office enrollment provider settings project import checks delegation campaign automatic verifier reviewer and gate are exercised without paid inference
+  - restart preserves durable state and the dedicated engine cleans managed child containers
+  real_acceptance:
+  - An independently authorized paid provider journey completes through the container-native stack with exact candidate-bound evidence
+  - parallel independent authorized WorkUnits and controlled self-development are demonstrated without host tooling
+  owner_decisions:
+  - Fresh paid UAT envelope and independent security review remain required
 - id: LATER
   title: Evaluated extensions
   decision_status: proposed
@@ -1938,3 +1967,48 @@ capabilities:
   limitations:
   - Approved product objective; future implementation design and protected permissions require separate decisions.
   blockers: []
+- id: CAP-045
+  name: Container-native Compose installation
+  category: Runtime
+  purpose: An ordinary operator installs configures and operates Factory through rootless Compose and Office
+  product_objective: Self-contained container-native engineering platform
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-003
+  - CAP-011
+  - CAP-021
+  target_milestone: F1-S8
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0024-container-native-compose-runtime.md
+    contract:
+    - docs/operations/compose-deployment.md
+    source:
+    - compose.yaml
+    - deploy/Containerfile
+    - native/src/bin/runtime_broker.rs
+    test:
+    - scripts/compose-e2e.sh
+    - scripts/compose-office-smoke.mjs
+    - scripts/compose-onboarding-smoke.mjs
+  acceptance:
+    deterministic: The permanent stack starts with one Compose command and all persistent and quality services run in Podman-managed containers without host toolchains.
+    real: An owner-authorized paid provider journey completes through Office configuration with independent candidate-bound verification and restart persistence.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Author-run deterministic Compose and browser evidence exists; independent security review and paid UAT remain open.
+  blockers:
+  - Fresh Product Owner paid envelope and SEC-01 isolation evaluation are not present.

@@ -1,0 +1,52 @@
+# Dedicated nested Podman engine plus the narrow Factory runtime broker.
+#
+# The outer container is rootless on the host. Inside it, the dedicated engine
+# runs a private Podman instance with its own VFS storage. The engine socket is
+# never created or exposed; the broker shells out to the private local CLI and
+# exposes only typed operations. This is a candidate TRUSTED_LOCAL boundary,
+# not certified isolation.
+
+ARG RUST_VERSION=1.90.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY native/fixtures native/fixtures
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+COPY migrations migrations
+RUN cargo build --locked --release -p factory-native --bin factory-runtime-broker
+
+FROM quay.io/podman/stable:v5.8.9
+
+USER root
+COPY --from=builder /build/target/release/factory-runtime-broker /usr/local/bin/factory-runtime-broker
+COPY deploy/runtime-entrypoint.sh /usr/local/bin/factory-runtime-entrypoint
+
+# The upstream image disables cgroups and host networking for interactive
+# development. Factory requires private cgroup and network namespaces with
+# enforced child limits, so replace those defaults explicitly.
+RUN sed -i \
+      -e 's/^cgroups="disabled"/cgroups="enabled"/' \
+      -e 's/^cgroupns="host"/cgroupns="private"/' \
+      -e 's/^netns="host"/# netns host default removed by Software Factory/' \
+      /etc/containers/containers.conf \
+    && printf '%s\n' \
+      '[storage]' \
+      'driver = "vfs"' \
+      'runroot = "/run/containers/storage"' \
+      'graphroot = "/var/lib/containers/storage"' \
+      > /etc/containers/storage.conf \
+    && mkdir -p /var/lib/containers/storage /run/containers/storage /provider-sessions \
+    && chmod 755 /usr/local/bin/factory-runtime-entrypoint /usr/local/bin/factory-runtime-broker
+
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ENTRYPOINT ["/usr/local/bin/factory-runtime-entrypoint"]
+STOPSIGNAL SIGTERM

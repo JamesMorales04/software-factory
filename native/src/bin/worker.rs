@@ -18,11 +18,14 @@ use factory_native::protocol::{
     RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
     UserInput,
 };
-use factory_native::provider_egress::{SharedTurnPolicy, TurnPolicy};
+use factory_native::provider_egress::{EgressConfig, SharedTurnPolicy, TurnPolicy};
 use factory_native::provider_patch::{
     ProviderAction, ProviderUsage, extract_action, extract_action_text, extract_plan, extract_usage,
 };
-use factory_native::provider_sandbox::{ProviderSandbox, ProviderSandboxConfig, SandboxTransport};
+use factory_native::provider_sandbox::{
+    ContainerProviderSandbox, ContainerSandboxConfig, ProviderSandbox, ProviderSandboxConfig,
+    SandboxTransport,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -74,6 +77,16 @@ struct Assignment {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderProfile {
+    provider: String,
+    kind: String,
+    model: String,
+    base_url: String,
+    credential: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Lease {
     attempt_id: String,
     generation: i64,
@@ -89,11 +102,9 @@ struct Supervisor {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bootstrap_token = env::var("FACTORY_WORKER_BOOTSTRAP_TOKEN")
-        .map_err(|_| "FACTORY_WORKER_BOOTSTRAP_TOKEN required")?;
+    let bootstrap_token = factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
     let worker_id = env::var("FACTORY_WORKER_ID").map_err(|_| "FACTORY_WORKER_ID required")?;
-    let registration_key = env::var("FACTORY_WORKER_REGISTRATION_KEY")
-        .map_err(|_| "FACTORY_WORKER_REGISTRATION_KEY required")?;
+    let registration_key = factory_native::secrets::required("FACTORY_WORKER_REGISTRATION_KEY")?;
     if bootstrap_token.is_empty() || worker_id.trim().is_empty() || registration_key.is_empty() {
         return Err(
             "Worker bootstrap token, identity and registration key must not be empty".into(),
@@ -102,6 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let core = validated_loopback_url(
         &env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into()),
         "FACTORY_CORE_URL",
+        &["core"],
     )?;
     let supervisor = Supervisor {
         client: reqwest::Client::builder()
@@ -110,9 +122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         base: validated_loopback_url(
             &env::var("FACTORY_SUPERVISOR_URL").map_err(|_| "FACTORY_SUPERVISOR_URL required")?,
             "FACTORY_SUPERVISOR_URL",
+            &["supervisor"],
         )?,
-        token: env::var("FACTORY_SUPERVISOR_TOKEN")
-            .map_err(|_| "FACTORY_SUPERVISOR_TOKEN required")?,
+        token: factory_native::secrets::required("FACTORY_SUPERVISOR_TOKEN")?,
         image: env::var("FACTORY_WORKER_FIXTURE_IMAGE").unwrap_or_else(|_| "alpine:3.20".into()),
         timeout_secs: env::var("FACTORY_WORKER_FIXTURE_TIMEOUT_SECS")
             .unwrap_or_else(|_| "120".into())
@@ -338,6 +350,7 @@ async fn recover_provider_sessions(
         let directory = session["provider_directory"].as_str().unwrap_or("");
         let receipt = match mode.as_str() {
             "bwrap" => confined_recovery_receipt(directory, provider_session_id),
+            "container" => container_recovery_receipt(directory).await,
             "unconfined" => unconfined_recovery_receipt(directory, provider_session_id).await,
             _ => Err("provider sandbox is not configured for recovery".into()),
         };
@@ -390,6 +403,39 @@ fn confined_recovery_receipt(
     )
 }
 
+async fn container_recovery_receipt(directory: &str) -> Result<&'static str, String> {
+    let name = std::path::Path::new(directory)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("provider session directory is missing")?;
+    if name.len() != 36
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return Err("provider session directory is not a UUID".into());
+    }
+    let container = format!("factory-provider-{name}");
+    let url = env::var("FACTORY_RUNTIME_BROKER_URL")
+        .map_err(|_| "FACTORY_RUNTIME_BROKER_URL required for container recovery")?;
+    let token = factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?;
+    let broker = factory_native::runtime_broker::RuntimeBrokerClient::new(&url, token)
+        .map_err(|error| error.to_string())?;
+    broker
+        .remove_container(&container)
+        .await
+        .map_err(|error| format!("provider container removal failed: {error}"))?;
+    match broker.container_status(&container).await {
+        Ok(status) if status.status == "running" => {
+            return Err("provider container survived reconciliation".into());
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+    let _ = std::fs::remove_dir_all(directory);
+    Ok("container_removed_verified_absent")
+}
+
 async fn unconfined_recovery_receipt(
     directory: &str,
     provider_session_id: &str,
@@ -401,6 +447,7 @@ async fn unconfined_recovery_receipt(
         &env::var("FACTORY_PROVIDER_BASE_URL")
             .map_err(|_| "FACTORY_PROVIDER_BASE_URL required for recovery")?,
         "FACTORY_PROVIDER_BASE_URL",
+        &[],
     )
     .map_err(|error| error.to_string())?;
     let password = env::var("FACTORY_PROVIDER_PASSWORD")
@@ -510,11 +557,25 @@ fn is_sensitive_source_path(path: &str) -> bool {
         || base.ends_with(".key")
 }
 
+enum SandboxHandle {
+    Bwrap(ProviderSandbox),
+    Container(ContainerProviderSandbox),
+}
+
+impl SandboxHandle {
+    async fn stop(self) -> Result<(), String> {
+        match self {
+            Self::Bwrap(sandbox) => sandbox.stop().await.map_err(|error| error.to_string()),
+            Self::Container(sandbox) => sandbox.stop().await.map_err(|error| error.to_string()),
+        }
+    }
+}
+
 enum ProviderRuntime {
     Http {
         base_url: String,
         password: String,
-        sandbox: Option<ProviderSandbox>,
+        sandbox: Option<SandboxHandle>,
         turn_policy: Option<SharedTurnPolicy>,
     },
     Codex {
@@ -568,6 +629,37 @@ async fn execute_provider_assignment(
     {
         return Err("provider assignment has an unsupported deadline or budget".into());
     }
+    let configured_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
+    let sandbox_mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
+    let provider_profile = if sandbox_mode == "container"
+        && matches!(assignment.provider.as_str(), "opencode" | "opencode-go")
+    {
+        let profile = client
+            .get(core.join("worker/provider_profile")?)
+            .bearer_auth(session_token)
+            .query(&[
+                ("provider", assignment.provider.as_str()),
+                ("model", assignment.model.as_str()),
+                ("worker_id", worker_id),
+            ])
+            .send()
+            .await?;
+        if profile.status().is_success() {
+            Some(profile.json::<ProviderProfile>().await?)
+        } else if configured_kind == "fixture" {
+            None
+        } else {
+            let status = profile.status();
+            let body = profile.text().await.unwrap_or_default();
+            return Err(format!(
+                "Factory provider settings refused the route: HTTP {status} {}",
+                body.chars().take(512).collect::<String>()
+            )
+            .into());
+        }
+    } else {
+        None
+    };
     let provider_root = env::var_os("FACTORY_PROVIDER_SESSION_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -579,7 +671,7 @@ async fn execute_provider_assignment(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&provider_root, std::fs::Permissions::from_mode(0o700))?;
     }
-    let provider_dir = provider_root.join(format!("p-{}", Uuid::new_v4().simple()));
+    let provider_dir = provider_root.join(Uuid::new_v4().to_string());
     std::fs::create_dir(&provider_dir)?;
     #[cfg(unix)]
     {
@@ -627,7 +719,13 @@ async fn execute_provider_assignment(
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>> =
         std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default()));
-    let provider_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
+    if let Some(profile) = &provider_profile {
+        factory_native::telemetry::register_secret(&profile.credential);
+    }
+    let provider_kind = provider_profile
+        .as_ref()
+        .map(|profile| profile.kind.clone())
+        .unwrap_or(configured_kind);
     let codex = provider_kind == "codex";
     let turn_binder = if provider_kind == "opencode" || codex {
         Some(factory_native::provider_egress::TurnBinder::new(
@@ -641,30 +739,37 @@ async fn execute_provider_assignment(
     } else {
         None
     };
-    let runtime =
-        match start_provider_runtime(&provider_dir, assignment, turn_binder, &turn_policy).await {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                let terminal = ProviderTerminal {
-                    session_record_id: session_record_id.clone(),
-                    worker_id: worker_id.into(),
-                    generation: assignment.lease.generation,
-                    state: "FAILED".into(),
-                    provider_session_id: String::new(),
-                    turn_id: String::new(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
-                    cost_micros: 0,
-                    usage_known: false,
-                    cleanup_receipt: "no_external_session".into(),
-                    error: error.to_string(),
-                };
-                let _ = post_provider_terminal(client, core, session_token, &terminal).await;
-                let _ = std::fs::remove_dir_all(&provider_dir);
-                return Err(error);
-            }
-        };
+    let runtime = match start_provider_runtime(
+        &provider_dir,
+        assignment,
+        turn_binder,
+        &turn_policy,
+        provider_profile,
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let terminal = ProviderTerminal {
+                session_record_id: session_record_id.clone(),
+                worker_id: worker_id.into(),
+                generation: assignment.lease.generation,
+                state: "FAILED".into(),
+                provider_session_id: String::new(),
+                turn_id: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+                cleanup_receipt: "no_external_session".into(),
+                error: error.to_string(),
+            };
+            let _ = post_provider_terminal(client, core, session_token, &terminal).await;
+            let _ = std::fs::remove_dir_all(&provider_dir);
+            return Err(error);
+        }
+    };
     let mut sandbox_clean = true;
     let confined = matches!(
         &runtime,
@@ -742,8 +847,15 @@ async fn execute_provider_assignment(
         .ok()
         .and_then(|session| session.clone())
         .unwrap_or_default();
+    let container_provider = env::var("FACTORY_PROVIDER_SANDBOX").as_deref() == Ok("container");
     let cleanup_receipt = if provider_session_id.is_empty() {
         "no_external_session".to_owned()
+    } else if container_provider {
+        if sandbox_clean {
+            "container_removed_verified_absent".to_owned()
+        } else {
+            "container_cleanup_unconfirmed".to_owned()
+        }
     } else if confined {
         factory_native::provider_sandbox::confined_recovery_receipt(
             &directory,
@@ -844,6 +956,7 @@ async fn start_provider_runtime(
     assignment: &Assignment,
     turn_binder: Option<factory_native::provider_egress::TurnBinder>,
     turn_policy: &SharedTurnPolicy,
+    provider_profile: Option<ProviderProfile>,
 ) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
     let deadline_secs = assignment.deadline_secs;
     let provider = assignment.provider.as_str();
@@ -967,9 +1080,8 @@ async fn start_provider_runtime(
             let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
             let (egress, egress_bridge) = match env::var("FACTORY_PROVIDER_UPSTREAM_URL") {
                 Ok(upstream) => {
-                    let credential = env::var("FACTORY_PROVIDER_UPSTREAM_TOKEN").map_err(
-                        |_| "FACTORY_PROVIDER_UPSTREAM_TOKEN required for provider egress",
-                    )?;
+                    let credential =
+                        factory_native::secrets::required("FACTORY_PROVIDER_UPSTREAM_TOKEN")?;
                     if credential.len() < 16 {
                         return Err(
                             "FACTORY_PROVIDER_UPSTREAM_TOKEN must be at least 16 bytes".into()
@@ -1159,7 +1271,145 @@ async fn start_provider_runtime(
             Ok(ProviderRuntime::Http {
                 base_url: sandbox.base_url().to_owned(),
                 password: sandbox.password().to_owned(),
-                sandbox: Some(sandbox),
+                sandbox: Some(SandboxHandle::Bwrap(sandbox)),
+                turn_policy: Some(turn_policy.clone()),
+            })
+        }
+        "container" => {
+            let kind = provider_profile
+                .as_ref()
+                .map(|profile| profile.kind.clone())
+                .unwrap_or_else(|| {
+                    env::var("FACTORY_PROVIDER_KIND").unwrap_or_else(|_| "opencode".into())
+                });
+            if !matches!(kind.as_str(), "fixture" | "opencode") {
+                return Err(
+                    "container provider runtime supports the OpenCode and fixture adapters".into(),
+                );
+            }
+            if kind == "opencode" && !matches!(provider, "opencode" | "opencode-go") {
+                return Err("OpenCode container cannot serve a non-OpenCode provider".into());
+            }
+            if kind == "fixture" && !matches!(provider, "fixture" | "opencode" | "opencode-go") {
+                return Err("fixture container cannot serve this provider assignment".into());
+            }
+            let (egress, env) = if kind == "opencode" {
+                let (upstream, credential) = match provider_profile {
+                    Some(profile)
+                        if profile.provider == provider
+                            && profile.model == model
+                            && profile.kind == "opencode" =>
+                    {
+                        (profile.base_url, profile.credential)
+                    }
+                    Some(_) => {
+                        return Err(
+                            "Factory provider settings do not match the authorized route".into(),
+                        );
+                    }
+                    None => {
+                        return Err(
+                            "Factory provider settings are required for the OpenCode container route"
+                                .into(),
+                        );
+                    }
+                };
+                if credential.len() < 16 {
+                    return Err("provider credential is too short".into());
+                }
+                factory_native::telemetry::register_secret(&credential);
+                let token = env::var("FACTORY_PROVIDER_EGRESS_TOKEN").unwrap_or_else(|_| {
+                    format!("{}.{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+                });
+                let allow_test_upstream =
+                    env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+                let mut egress =
+                    EgressConfig::new(&upstream, credential, token.clone(), allow_test_upstream)?
+                        .with_model(model.to_owned())
+                        .with_max_requests(max_turns as usize + 4)
+                        .with_turn_policy(turn_policy.clone());
+                if let Some(binder) = turn_binder {
+                    egress = egress.with_turn_binder(binder);
+                }
+                let context_limit = env::var("FACTORY_PROVIDER_MODEL_CONTEXT")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(128_000);
+                let output_limit = env::var("FACTORY_PROVIDER_MODEL_OUTPUT")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(8_192);
+                let opencode_config = opencode_sandbox_config(
+                    provider,
+                    model,
+                    egress.token(),
+                    context_limit,
+                    output_limit,
+                );
+                let env = vec![
+                    ("OPENAI_API_KEY".into(), egress.token().to_owned()),
+                    (
+                        "OPENCODE_CONFIG_CONTENT".into(),
+                        serde_json::to_string(&opencode_config)?,
+                    ),
+                    ("FACTORY_PROVIDER_KIND".into(), "opencode".into()),
+                    ("FACTORY_PROVIDER_MODEL".into(), model.to_owned()),
+                    ("HOME".into(), "/tmp".into()),
+                    ("TMPDIR".into(), "/tmp".into()),
+                    ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
+                ];
+                (Some(egress), env)
+            } else {
+                let mut env = vec![
+                    ("FACTORY_PROVIDER_KIND".into(), "fixture".into()),
+                    ("FACTORY_PROVIDER_MODEL".into(), model.to_owned()),
+                    ("FACTORY_FIXTURE_PROVIDER_DIR".into(), "/session".into()),
+                    ("HOME".into(), "/tmp".into()),
+                    ("TMPDIR".into(), "/tmp".into()),
+                    ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
+                ];
+                for key in [
+                    "FACTORY_FIXTURE_FILE",
+                    "FACTORY_FIXTURE_CONTENT",
+                    "FACTORY_FIXTURE_PROVIDER_MODEL",
+                    "FACTORY_FIXTURE_PROVIDER_USE_EGRESS",
+                ] {
+                    if let Ok(value) = env::var(key) {
+                        env.push((key.to_owned(), value));
+                    }
+                }
+                (None, env)
+            };
+            let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
+            let sandbox = ContainerProviderSandbox::start(ContainerSandboxConfig {
+                session_dir: session_dir.to_path_buf(),
+                broker_base: env::var("FACTORY_RUNTIME_BROKER_URL")
+                    .map_err(|_| "FACTORY_RUNTIME_BROKER_URL required for container provider")?,
+                broker_token: factory_native::secrets::required("FACTORY_RUNTIME_BROKER_TOKEN")?,
+                max_lifetime: lifetime,
+                ready_timeout: Duration::from_secs(30),
+                bridge_timeout: lifetime,
+                max_connections: 16,
+                env,
+                egress,
+            })
+            .await?;
+            if let Err(error) = wait_for_opencode_health(
+                sandbox.base_url(),
+                sandbox.password(),
+                Duration::from_secs(30),
+            )
+            .await
+            {
+                let _ = sandbox.stop().await;
+                return Err(error);
+            }
+            Ok(ProviderRuntime::Http {
+                base_url: sandbox.base_url().to_owned(),
+                password: sandbox.password().to_owned(),
+                sandbox: Some(SandboxHandle::Container(sandbox)),
                 turn_policy: Some(turn_policy.clone()),
             })
         }
@@ -1178,6 +1428,7 @@ async fn start_provider_runtime(
                 &env::var("FACTORY_PROVIDER_BASE_URL")
                     .map_err(|_| "FACTORY_PROVIDER_BASE_URL required for unconfined provider")?,
                 "FACTORY_PROVIDER_BASE_URL",
+                &[],
             )?;
             let password = env::var("FACTORY_PROVIDER_PASSWORD")
                 .map_err(|_| "FACTORY_PROVIDER_PASSWORD required for unconfined provider")?;
@@ -3890,19 +4141,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn validated_loopback_url(
     raw: &str,
     variable: &str,
+    allowed_service_hosts: &[&str],
 ) -> Result<reqwest::Url, Box<dyn std::error::Error>> {
-    let url = reqwest::Url::parse(raw)?;
-    if url.scheme() != "http"
-        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        || url.port().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(format!("{variable} must be a loopback HTTP origin with explicit port").into());
-    }
+    let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
+    let url = factory_native::service_network::validate_http_origin(
+        raw,
+        variable,
+        container_mode,
+        allowed_service_hosts,
+    )?;
     Ok(url)
 }
 
@@ -3934,8 +4181,10 @@ mod tests {
 
     #[test]
     fn rejects_userinfo_host_bypass() {
-        assert!(validated_loopback_url("http://127.0.0.1:x@attacker.example", "TEST").is_err());
-        assert!(validated_loopback_url("http://localhost:8765", "TEST").is_ok());
-        assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST").is_err());
+        assert!(
+            validated_loopback_url("http://127.0.0.1:x@attacker.example", "TEST", &[]).is_err()
+        );
+        assert!(validated_loopback_url("http://localhost:8765", "TEST", &[]).is_ok());
+        assert!(validated_loopback_url("http://127.0.0.1:8765/path", "TEST", &[]).is_err());
     }
 }

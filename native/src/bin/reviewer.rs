@@ -49,35 +49,159 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .block_on(run())
 }
 
+struct ReviewerConfig {
+    core: reqwest::Url,
+    token: String,
+    principal: String,
+    mechanism: Option<SemanticReviewMechanism>,
+    client: reqwest::Client,
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let core = env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
-    let core = validated_core_url(&core)?;
-    let token =
-        env::var("FACTORY_REVIEWER_TOKEN").map_err(|_| "FACTORY_REVIEWER_TOKEN required")?;
+    let token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
     if token.len() < 32 {
         return Err("FACTORY_REVIEWER_TOKEN must be at least 32 bytes".into());
     }
-    let candidate_id =
-        env::var("FACTORY_CANDIDATE_ID").map_err(|_| "FACTORY_CANDIDATE_ID required")?;
     let principal =
         env::var("FACTORY_REVIEWER_PRINCIPAL").unwrap_or_else(|_| "reviewer-process".into());
     if principal.trim().is_empty() || principal.len() > 128 {
         return Err("FACTORY_REVIEWER_PRINCIPAL is invalid".into());
     }
-    let mechanism = mechanism_from_env(env::var("FACTORY_REVIEW_MECHANISM").ok().as_deref())
-        .map_err(|error| format!("invalid FACTORY_REVIEW_MECHANISM: {error}"))?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()?;
-    let inspection: CandidateInspection = client
-        .get(core.join(&format!("quality/candidates/{candidate_id}/inspection"))?)
-        .bearer_auth(&token)
+    let config = ReviewerConfig {
+        core: validated_core_url(&core)?,
+        token,
+        principal,
+        mechanism: match env::var("FACTORY_REVIEW_MECHANISM").ok().as_deref() {
+            None | Some("AUTO") => None,
+            Some(value) => Some(
+                mechanism_from_env(Some(value))
+                    .map_err(|error| format!("invalid FACTORY_REVIEW_MECHANISM: {error}"))?,
+            ),
+        },
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(90))
+            .build()?,
+    };
+    if env::var("FACTORY_REVIEWER_WATCH").as_deref() == Ok("1") {
+        return watch(&config).await;
+    }
+    let candidate_id =
+        env::var("FACTORY_CANDIDATE_ID").map_err(|_| "FACTORY_CANDIDATE_ID required")?;
+    run_candidate(&config, &candidate_id).await
+}
+
+async fn review_mechanism(
+    config: &ReviewerConfig,
+) -> Result<(SemanticReviewMechanism, u32), Box<dyn std::error::Error>> {
+    let response = config
+        .client
+        .get(config.core.join("review/config")?)
+        .bearer_auth(&config.token)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Core refused semantic review configuration: HTTP {}",
+            response.status()
+        )
+        .into());
+    }
+    let body: serde_json::Value = response.json().await?;
+    let mechanism = match body.get("mechanism").and_then(serde_json::Value::as_str) {
+        Some("MODEL") => SemanticReviewMechanism::Model,
+        Some("DETERMINISTIC") => SemanticReviewMechanism::Deterministic,
+        _ => return Err("Core returned an unsupported review mechanism".into()),
+    };
+    let max_output_tokens = body
+        .get("maxOutputTokens")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| (128..=32_768).contains(value))
+        .unwrap_or(8192);
+    Ok((mechanism, max_output_tokens))
+}
+
+async fn watch(config: &ReviewerConfig) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("reviewer watch mode: polling Core for candidate-bound review work");
+    loop {
+        let response = config
+            .client
+            .get(config.core.join("quality/pending")?)
+            .bearer_auth(&config.token)
+            .query(&[("role", "reviewer")])
+            .send()
+            .await;
+        let candidates = match response {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body) => body
+                        .get("candidates")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                    Err(error) => {
+                        eprintln!("reviewer watch: unreadable pending response: {error}");
+                        Vec::new()
+                    }
+                }
+            }
+            Ok(response) => {
+                eprintln!(
+                    "reviewer watch: Core pending query returned {}",
+                    response.status()
+                );
+                Vec::new()
+            }
+            Err(error) => {
+                eprintln!("reviewer watch: Core is unavailable: {error}");
+                Vec::new()
+            }
+        };
+        if candidates.is_empty() {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        for candidate_id in candidates {
+            match run_candidate(config, &candidate_id).await {
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("reviewer watch: candidate {candidate_id} failed: {error}");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        }
+    }
+}
+
+async fn run_candidate(
+    config: &ReviewerConfig,
+    candidate_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let inspection: CandidateInspection = config
+        .client
+        .get(
+            config
+                .core
+                .join(&format!("quality/candidates/{candidate_id}/inspection"))?,
+        )
+        .bearer_auth(&config.token)
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
     let action_spec_sha256 = inspection.action_spec_sha256.clone();
+    let (mechanism, max_output_tokens) = match config.mechanism {
+        Some(mechanism) => (mechanism, 8192),
+        None => review_mechanism(config).await?,
+    };
     let outcome = match mechanism {
         SemanticReviewMechanism::Deterministic => deterministic_outcome(inspection).await?,
         SemanticReviewMechanism::Model => {
@@ -102,25 +226,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 model_outcome(
-                    &client,
-                    &core,
-                    &token,
-                    &principal,
-                    &candidate_id,
+                    config,
+                    candidate_id,
                     inspection,
                     deterministic,
+                    max_output_tokens,
                 )
                 .await?
             }
         }
     };
-    let receipt = client
-        .post(core.join("quality/receipts")?)
-        .bearer_auth(&token)
+    let receipt = config
+        .client
+        .post(config.core.join("quality/receipts")?)
+        .bearer_auth(&config.token)
         .json(&json!({
             "candidate_id": candidate_id,
             "receipt_id": Uuid::new_v4().to_string(),
-            "principal_id": principal,
+            "principal_id": config.principal,
             "actionSpecSha256": action_spec_sha256,
             "commitSha": outcome.commit_sha,
             "treeSha": outcome.tree_sha,
@@ -253,14 +376,18 @@ fn combine_review_verdicts(deterministic: ReviewVerdict, semantic: ReceiptResult
 }
 
 async fn model_outcome(
-    client: &reqwest::Client,
-    core: &reqwest::Url,
-    token: &str,
-    principal: &str,
+    config: &ReviewerConfig,
     candidate_id: &str,
     inspection: CandidateInspection,
     deterministic: ReviewEvidence,
+    max_output_tokens: u32,
 ) -> Result<CompletedOutcome, Box<dyn std::error::Error>> {
+    let (client, core, token, principal) = (
+        &config.client,
+        &config.core,
+        config.token.as_str(),
+        config.principal.as_str(),
+    );
     let project_id = inspection.action_spec.project_id.clone();
     let commit_sha = deterministic.commit_sha.clone();
     let tree_sha = deterministic.tree_sha.clone();
@@ -308,7 +435,7 @@ async fn model_outcome(
             "purpose": "semantic_review",
             "systemPrompt": system_prompt,
             "userPrompt": user_prompt,
-            "maxOutputTokens": 8192
+            "maxOutputTokens": max_output_tokens
         }))
         .send()
         .await;
@@ -510,18 +637,13 @@ fn bounded(value: &str, limit: usize) -> String {
 }
 
 fn validated_core_url(raw: &str) -> Result<reqwest::Url, Box<dyn std::error::Error>> {
-    let url = reqwest::Url::parse(raw)?;
-    if url.scheme() != "http"
-        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        || url.port().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("FACTORY_CORE_URL must be a loopback HTTP origin with explicit port".into());
-    }
+    let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
+    let url = factory_native::service_network::validate_http_origin(
+        raw,
+        "FACTORY_CORE_URL",
+        container_mode,
+        &["core"],
+    )?;
     Ok(url)
 }
 

@@ -176,6 +176,34 @@ impl Database {
         Ok(QualityIngestResult { receipt, gate })
     }
 
+    /// Candidates awaiting one independent quality role. The reviewer queue is
+    /// gated on an executed verifier PASS for the same immutable candidate.
+    pub async fn pending_quality_candidates(&self, role: &str) -> Result<Vec<String>, Error> {
+        if !matches!(role, "verifier" | "reviewer") {
+            return Err(Error::Invalid("pending quality role"));
+        }
+        let reviewer_gate = if role == "reviewer" {
+            "AND EXISTS (SELECT 1 FROM quality_receipts vr
+                         WHERE vr.candidate_id=c.id AND vr.role='verifier' AND vr.result='PASS')"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT c.id FROM candidates c
+             WHERE NOT EXISTS (SELECT 1 FROM quality_receipts r
+                               WHERE r.candidate_id=c.id AND r.role=?1)
+               AND NOT EXISTS (SELECT 1 FROM gate_decisions g WHERE g.candidate_id=c.id)
+               {reviewer_gate}
+             ORDER BY c.created_at ASC
+             LIMIT 8"
+        );
+        let rows: Vec<(String,)> = sqlx::query_as::query_as(&query)
+            .bind(role)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
         let candidate = self.candidate(id).await?;
         let row = sqlx::query::query(

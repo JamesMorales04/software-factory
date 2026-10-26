@@ -1,0 +1,50 @@
+# Container-native iteration status (2026-10-26)
+
+**Status authority:** this document supplements the
+[native Rust closure ledger](native-rust-closure.md) for the container-native
+iteration. It does not rewrite historical acceptance or certify a paid UAT.
+
+## Implemented and author-run
+
+| Area | State | Evidence |
+|---|---|---|
+| Phase-zero nested engine | PASS (measured) | [phase-zero record](../evidence/container-native-phase0-2026-10-26.md) |
+| Compose one-command stack | PASS (fresh volumes) | deterministic Compose E2E script |
+| First-run Office enrollment | PASS | Chromium onboarding self-test |
+| Provider settings, encryption, masking, audit, revocation | PASS (dummy credential; no inference) | Chromium provider self-test + Core audit |
+| Project Git import and Office configuration | PASS | deterministic Compose E2E + browser |
+| Action checks and delegation UI | PASS | deterministic Compose E2E + browser |
+| Provider session in nested container (fixture) | PASS | E2E candidate/gate |
+| Automatic verifier + deterministic reviewer + gate | PASS | candidate-bound receipts and `ACCEPTED` |
+| Restart persistence | PASS | E2E down/up + Project/Campaign/gate |
+| Parallel real attempts | PASS (two Workers, two nested containers) | candidate/attempt and gate records |
+| Real Chromium Office | PASS (self-test) | zero console errors/404 |
+| Existing Rust tests, fmt, Clippy | PASS (author-run) | local exact commands |
+
+## Not tested / blocked
+
+- Paid DeepSeek/OpenCode live UAT after the new stack: **BLOCKED** pending a
+  fresh Product Owner authorization envelope.
+- OpenCode live inference inside the provider container: **NOT_TESTED**; the
+  deterministic fixture provider exercised the container, bridges and
+  supervisor path.
+- Codex API-key live inference: **NOT_TESTED**. Native ChatGPT OAuth:
+  **BLOCKED**. Containerized Codex stdio transport: **NOT_IMPLEMENTED**.
+- Semantic Reviewer live model call: **NOT_TESTED** (policy and Core budgets
+  were exercised with a dummy provider only).
+- Multi-unit WorkGraph parallel execution with a real provider and integrated
+  fan-in candidate: **NOT_TESTED**. Parallel evidence uses two independently
+  authorized Campaign attempts and two Workers.
+- SEC-01 ISOLATED / credential confinement: **BLOCKED**. Rootless containers
+  and the dedicated engine are `TRUSTED_LOCAL`.
+- Windows/Podman Machine, SELinux/AppArmor hosts, multi-arch builds, crash
+  injection during an active provider session, browser multi-unit evidence,
+  independent security review and human acceptance: **NOT_TESTED / OPEN**.
+- `factory start` host lifecycle: retained for development but not the
+  container-native install path; not re-certified by this iteration.
+
+## Merge gates
+
+Exact-head CI, an independent security/architecture review, a fresh paid UAT
+under written authorization, and Product Owner approval remain required. The
+author-run deterministic PASS above is not a merge authorization.

@@ -160,3 +160,4 @@ Product Owner decision.
 - [Migration closure](../implementation/native-rust-closure.md) is the current
   migration status, gap and evidence ledger.
 - Historical Git commits and evidence remain provenance and are not rewritten.
+| CAP-045 | Container-native Compose installation | ADOPT | F1-S8 | REQUIRED_FOR_MIGRATION | Rootless Compose stack, nested engine/broker, Office onboarding/settings, automatic verifier/reviewer; author-run deterministic evidence | Compose/container runtime and Office configuration |
