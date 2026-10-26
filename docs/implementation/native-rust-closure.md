@@ -162,6 +162,42 @@ certification.
 Not claimed: live paid model quality, human security certification, SEC-01
 ISOLATED certification, Windows, deployment, or exact external spend.
 
+## Lead live-start authorization (2026-10-26, uncommitted branch candidate)
+
+This branch adds an explicit, operator-supplied authorization path for starting
+a frozen Lead plan whose assessment mechanism is `MODEL`. It is author-run
+deterministic verification only; no paid model inference, live provider turn or
+independent acceptance is claimed.
+
+- `POST /lead/requests/{id}/start` keeps the bodyless deterministic `FIXTURE`
+  start. A `MODEL` plan requires the same strict shape as
+  `POST /campaigns/{id}/authorize` and must use `TRUSTED_LOCAL_PROVIDER`.
+- Core validates the exact frozen proposal route, active delegation, R0 policy,
+  ActionSpec/frozen-plan paths and budgets. A missing, invalid, wider or
+  mismatched payload is rejected with a stable 4xx; the whole start
+  transaction rolls back, so no Campaign, authorization, Run or Attempt row is
+  committed.
+- The Campaign, authorization, first Run and Attempt are inserted in one
+  transaction using the shared Campaign-authorization validation and insertion
+  code. Lead start does not reserve a second request or session envelope: the
+  Lead request and freeze already own those, and start reserves only the
+  authorized attempts.
+- `GET /lead/requests/{id}` now includes Lead model-call provenance
+  (provider/model/reservation/state/measured usage, without prompts or
+  responses). The Office Lead view shows the mechanism, Start controls and the
+  explicit MODEL authorization form; Campaign detail shows execution mode,
+  route, Lead FAILED/BLOCKED state, Reviewer model provenance including
+  `model_request_sha256`, and links from Candidate/Run Campaign cells.
+- Deterministic verification: Lead DB tests (including MODEL-without-payload,
+  no-row rejection, exact authorization, FIXTURE and no-double-reservation),
+  the mock-model Lead-start process E2E with an explicit provider payload,
+  parallel/fan-in WorkGraph fixture E2E and the real-Chromium Office journey.
+  Office typecheck and Biome checks pass.
+- Not claimed: live provider execution from this start route, real paid model
+  quality, Codex coding, ISOLATED execution, human security review or final
+  merge. The Office journey uses the deterministic fixture assessor and does
+  not submit real provider credentials.
+
 ## Legacy retirement
 
 The complete former tracked implementation was removed at `0b94e09ecd9b0e5067295d9a21c43799028c6015` together

@@ -222,6 +222,7 @@ export interface QualityReceipt {
   model_provider: string;
   model_name: string;
   model_reservation_id: string;
+  model_request_sha256: string;
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
@@ -230,7 +231,7 @@ export interface QualityReceipt {
   received_at: string;
 }
 
-export type ModelCallRole = "Lead" | "SemanticReviewer" | "Evaluation";
+export type ModelCallRole = "lead" | "semantic_reviewer" | "evaluation";
 
 export interface ModelCallRecord {
   reservation_id: string;
@@ -347,6 +348,7 @@ export interface LeadRequestRecord {
   request_hash: string;
   project_config_hash: string;
   state: string;
+  assessment_mechanism: string | null;
   failure_reason: string | null;
   campaign_id: string | null;
   created_at: string;
@@ -386,6 +388,7 @@ export interface LeadRequestProjection {
   assessment: LeadAssessmentRecord | null;
   proposal: LeadProposalRecord | null;
   plan: FrozenLeadPlanRecord | null;
+  model_calls: ModelCallRecord[];
 }
 
 export interface EffortEstimateView {
@@ -459,6 +462,33 @@ export interface NewLeadRequest {
 export interface NewCampaignRequest {
   action_id: string;
   idempotency_key: string;
+}
+
+export interface NewCampaignAuthorization {
+  authorization_id: string;
+  risk_class: string;
+  execution_mode: string;
+  actor: string;
+  rationale: string;
+  authorized_paths: string[];
+  max_attempts: number;
+  provider: string;
+  model: string;
+  provider_mode: string;
+  delegation_id: string;
+  max_sessions: number;
+  max_turns: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+  max_cost_micros: number;
+  deadline_secs: number;
+  allowed_tools: string[];
+}
+
+export interface StartLeadCampaignResult {
+  campaign: Campaign;
+  run: Run;
+  attempt: Attempt;
 }
 
 const BASE = "/core-api";
@@ -559,6 +589,16 @@ export const coreApi = {
     request<Record<string, unknown>>(
       `/lead/requests/${encodeURIComponent(id)}/freeze`,
       { method: "POST" },
+    ),
+  startLeadRequest: (id: string, authorization?: NewCampaignAuthorization) =>
+    request<StartLeadCampaignResult>(
+      `/lead/requests/${encodeURIComponent(id)}/start`,
+      {
+        method: "POST",
+        ...(authorization === undefined
+          ? {}
+          : { body: JSON.stringify(authorization) }),
+      },
     ),
   registerProject: (input: NewProjectRequest) =>
     request<Project>("/projects", {

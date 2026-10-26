@@ -13,8 +13,16 @@ missing evidence, deterministic Gate outcome and reasons, provider-session
 usage/cleanup and a compact authorization budget projection. Operators can
 request Campaign cancellation with an explicit confirmation; cancelled and
 unconfirmed provider termination are shown from the API rather than inferred.
-Lead detail decodes the recorded assessment, proposal and frozen plan and links
-a started Lead request to its Campaign.
+Lead detail decodes the recorded assessment, proposal and frozen plan, shows
+Lead model-call provider/model/reservation/usage provenance, and links a started
+Lead request to its Campaign. A READY FIXTURE plan has a Start control. A READY
+MODEL plan requires the operator to submit the explicit
+`TRUSTED_LOCAL_PROVIDER` authorization form; the Office never invents or
+silently downgrades that authorization. Campaign detail labels the execution
+mode and route, records Lead FAILED/BLOCKED state, and renders Reviewer
+provider/model/reservation/request-digest/usage provenance even when a receipt
+has no findings. Candidate Campaign cells and Run Campaign cells link to the
+Campaign detail route, which reloads from Core directly.
 
 ## Toolchain
 

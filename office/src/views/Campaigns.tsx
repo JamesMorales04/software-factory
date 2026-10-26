@@ -364,7 +364,9 @@ export function Campaigns() {
                   </td>
                   <td>
                     {campaignId ? (
-                      <code>{shortId(campaignId)}</code>
+                      <Link to={`/campaigns/${campaignId}`}>
+                        <code>{shortId(campaignId)}</code>
+                      </Link>
                     ) : (
                       <span className="muted">—</span>
                     )}

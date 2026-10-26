@@ -1136,7 +1136,7 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     use axum::{Router, routing::post};
     use factory_native::lead::{
@@ -1157,9 +1157,17 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
             "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30,"cost_micros":25}
         }))
     }
+    async fn provider_chat() -> axum::Json<Value> {
+        axum::Json(json!({
+            "id":"chatcmpl-mock","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}
+        }))
+    }
     let model_content = Arc::new(Mutex::new(String::new()));
     let model_app = Router::new()
         .route("/chat/completions", post(chat))
+        .route("/v1/chat/completions", post(provider_chat))
         .with_state(MockModel {
             content: model_content.clone(),
         });
@@ -1261,8 +1269,8 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
                 {
                     "id": "functional",
                     "kind": "functional",
-                    "description": "fixture content exists",
-                    "command": ["grep", "-q", "fixture candidate", "src/fixture.txt"],
+                    "description": "provider content exists",
+                    "command": ["grep", "-q", "provider candidate", "src/provider.txt"],
                     "expectExit": 0,
                     "timeoutSecs": 30
                 },
@@ -1270,7 +1278,7 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
                     "id": "negative",
                     "kind": "negative",
                     "description": "absent content is rejected",
-                    "command": ["grep", "-q", "absent", "src/fixture.txt"],
+                    "command": ["grep", "-q", "absent", "src/provider.txt"],
                     "expectExit": 1,
                     "timeoutSecs": 30
                 }
@@ -1394,7 +1402,28 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     assert_eq!(calls[0].input_tokens, 10);
     assert_eq!(calls[0].output_tokens, 20);
     assert!(calls[0].cost_micros > 0);
+    let reservation_id = calls[0].reservation_id.clone();
     ledger.close().await;
+    let lead_projection: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/lead/requests/{request_id}"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(lead_projection["request"]["assessment_mechanism"], "MODEL");
+    let projected_calls = lead_projection["model_calls"].as_array().unwrap();
+    assert_eq!(projected_calls.len(), 1);
+    assert_eq!(projected_calls[0]["reservation_id"], reservation_id);
+    assert_eq!(projected_calls[0]["role"], "lead");
+    assert_eq!(projected_calls[0]["provider"], "opencode");
+    assert_eq!(projected_calls[0]["model"], "deepseek-v4.1-flash");
+    assert_eq!(projected_calls[0]["state"], "SETTLED");
+    assert_eq!(projected_calls[0]["input_tokens"], 10);
+    assert_eq!(projected_calls[0]["output_tokens"], 20);
     let frozen = operator(
         &client,
         reqwest::Method::POST,
@@ -1403,17 +1432,81 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     )
     .await;
     assert_eq!(frozen.status(), StatusCode::OK);
-    let started_response = operator(
+    let missing_authorization = operator(
         &client,
         reqwest::Method::POST,
         format!("{base_url}/lead/requests/{request_id}/start"),
         None,
     )
     .await;
+    assert!(
+        missing_authorization.status().is_client_error(),
+        "a MODEL Lead start without authorization must be a 4xx, got {}",
+        missing_authorization.status()
+    );
+    let campaigns_after_missing: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(
+        campaigns_after_missing
+            .as_array()
+            .is_some_and(|items| items.is_empty()),
+        "a rejected MODEL Lead start must not create a Campaign"
+    );
+    let started_response = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/lead/requests/{request_id}/start"),
+        Some(json!({
+            "authorization_id": "lead-live-start-authorization",
+            "risk_class": "R0",
+            "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+            "actor": "lead-e2e-operator",
+            "rationale": "explicit provider authorization for the model Lead plan",
+            "authorized_paths": ["src"],
+            "max_attempts": 1,
+            "provider": "opencode",
+            "model": "deepseek-v4.1-flash",
+            "provider_mode": "build",
+            "delegation_id": "lead-grant",
+            "max_sessions": 1,
+            "max_turns": 4,
+            "max_input_tokens": 40000,
+            "max_output_tokens": 12000,
+            "max_cost_micros": 500000,
+            "deadline_secs": 300,
+            "allowed_tools": ["write_file", "run_command"]
+        })),
+    )
+    .await;
     assert_eq!(started_response.status(), StatusCode::CREATED);
     let started: Value = started_response.json().await.unwrap();
     let attempt_id = started["attempt"]["id"].as_str().unwrap().to_owned();
     assert_eq!(started["campaign"]["status"], "AUTHORIZED");
+    let campaign_id = started["campaign"]["id"].as_str().unwrap().to_owned();
+    let authorization: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/campaigns/{campaign_id}/authorization"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(authorization["execution_mode"], "TRUSTED_LOCAL_PROVIDER");
+    assert_eq!(authorization["provider"], "opencode");
+    assert_eq!(authorization["model"], "deepseek-v4.1-flash");
+    assert_eq!(authorization["delegation_id"], "lead-grant");
+    assert_eq!(authorization["max_attempts"], 1);
+    assert_eq!(authorization["max_sessions"], 1);
 
     let supervisor_port = free_port();
     let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
@@ -1430,6 +1523,14 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     });
     wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
 
+    let provider_session_root = std::env::temp_dir().join(format!(
+        "fp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let worker_log = File::create(root.join("worker.log")).unwrap();
     let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
         .env("FACTORY_CORE_URL", &base_url)
@@ -1440,8 +1541,24 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
         .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
         .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
         .env("FACTORY_WORKER_ONCE", "1")
-        .env("FACTORY_FIXTURE_FILE", "src/fixture.txt")
-        .env("FACTORY_FIXTURE_CONTENT", "fixture candidate\n")
+        .env("FACTORY_PROVIDER_SANDBOX", "bwrap")
+        .env(
+            "FACTORY_PROVIDER_BINARY",
+            env!("CARGO_BIN_EXE_factory-fixture-provider"),
+        )
+        .env("FACTORY_PROVIDER_SESSION_ROOT", &provider_session_root)
+        .env("FACTORY_PROVIDER_KEEP_SESSION", "1")
+        .env("FACTORY_PROVIDER_UPSTREAM_URL", &model_url)
+        .env(
+            "FACTORY_PROVIDER_UPSTREAM_TOKEN",
+            "real-upstream-credential-0123456789",
+        )
+        .env(
+            "FACTORY_PROVIDER_EGRESS_BRIDGE",
+            env!("CARGO_BIN_EXE_factory-egress-bridge"),
+        )
+        .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
+        .env("FACTORY_FIXTURE_PROVIDER_USE_EGRESS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(worker_log.try_clone().unwrap()))
         .stderr(Stdio::from(worker_log))
@@ -1520,6 +1637,7 @@ async fn model_lead_start_dispatches_through_supervisor_to_accepted_gate() {
     supervisor.stop();
     model_server.abort();
     core.stop();
+    let _ = std::fs::remove_dir_all(provider_session_root);
     let _ = std::fs::remove_dir_all(root);
 }
 

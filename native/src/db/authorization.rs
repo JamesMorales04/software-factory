@@ -72,48 +72,24 @@ pub struct CampaignAuthorizationRecord {
     pub created_at: String,
 }
 
+/// Which delegation units an authorization consumes. A regular Campaign
+/// authorization reserves its own request, sessions and attempts. A Lead start
+/// already reserved one request and the frozen plan's sessions at request and
+/// freeze time, so it may only add the newly authorized attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AuthorizationReservationPolicy {
+    Campaign,
+    LeadStart,
+}
+
 impl Database {
     pub async fn authorize_campaign(
         &self,
         campaign_id: &str,
         input: &NewCampaignAuthorization,
     ) -> Result<(CampaignAuthorizationRecord, bool), Error> {
-        if input.authorization_id.trim().is_empty()
-            || input.authorization_id.len() > 128
-            || input.actor.trim().is_empty()
-            || input.actor.len() > 128
-            || input.rationale.trim().is_empty()
-            || input.rationale.len() > 2_000
-            || !(1..=5).contains(&input.max_attempts)
-        {
-            return Err(Error::Invalid("campaign authorization input"));
-        }
-        if input.risk_class != "R0" {
-            return Err(Error::Forbidden(
-                "only R0 execution is enabled; R1-R3 require protected approval".into(),
-            ));
-        }
-        let fixture = input.execution_mode == "FIXTURE";
-        let provider = input.execution_mode == "TRUSTED_LOCAL_PROVIDER";
-        if !fixture && !provider {
-            return Err(Error::Forbidden(
-                "only FIXTURE and TRUSTED_LOCAL_PROVIDER execution are enabled; ISOLATED is blocked"
-                    .into(),
-            ));
-        }
-        validate_repository_paths("authorizedPaths", &input.authorized_paths)?;
-        let paths_json = serde_json::to_string(&input.authorized_paths)
-            .map_err(|_| Error::Invalid("authorized paths encoding"))?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let campaign: Option<(String, String, String)> = sqlx::query_as::query_as(
-            "SELECT c.status,c.action_id,a.project_id
-             FROM campaigns c JOIN actions a ON a.id=c.action_id WHERE c.id=?1",
-        )
-        .bind(campaign_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let (status, action_id, project_id) = campaign.ok_or(Error::NotFound)?;
         if let Some(existing) = load_authorization(&mut transaction, campaign_id).await? {
             if existing.authorization_id == input.authorization_id
                 && existing.risk_class == input.risk_class
@@ -141,193 +117,11 @@ impl Database {
                 "campaign already has a different authorization",
             ));
         }
-        if status != "BLOCKED_AUTHORIZATION" {
-            return Err(Error::Conflict("campaign is not awaiting authorization"));
-        }
-        let spec: Option<(String, String)> = sqlx::query_as::query_as(
-            "SELECT action_id,spec_json FROM action_specs WHERE action_id=?1",
-        )
-        .bind(&action_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let (_, spec_json) = spec.ok_or(Error::Conflict("campaign action has no frozen spec"))?;
-        let action_spec: ActionSpec = serde_json::from_str(&spec_json)
-            .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
-        if action_spec.allowed_paths.is_empty() {
-            return Err(Error::Forbidden(
-                "campaign action has no frozen allowed-path scope".into(),
-            ));
-        }
-        if let Some(path) = action_spec
-            .allowed_paths
-            .iter()
-            .find(|path| !path_covered(path, &input.authorized_paths))
-        {
-            return Err(Error::Forbidden(format!(
-                "action path {path:?} is outside the campaign authorized paths"
-            )));
-        }
-        if provider {
-            let allowed = ["write_file", "run_command"];
-            let mut seen = std::collections::BTreeSet::new();
-            if input
-                .allowed_tools
-                .iter()
-                .any(|tool| !allowed.contains(&tool.as_str()) || !seen.insert(tool))
-            {
-                return Err(Error::Forbidden(
-                    "provider tools must be a unique subset of write_file and run_command".into(),
-                ));
-            }
-            if input.provider.is_empty()
-                || input.model.is_empty()
-                || input.provider_mode.is_empty()
-                || input.delegation_id.is_empty()
-                || input.provider != action_spec.provider
-                || input.model != action_spec.model
-                || input.max_sessions == 0
-                || input.max_sessions > 2
-                || !(1..=4).contains(&input.max_turns)
-                || input.max_input_tokens == 0
-                || input.max_output_tokens == 0
-                || input.max_cost_micros == 0
-                || !(30..=600).contains(&input.deadline_secs)
-            {
-                return Err(Error::Invalid("provider authorization bounds"));
-            }
-            let grant =
-                super::delegations::load_delegation(&mut transaction, &input.delegation_id).await?;
-            grant.validate(Utc::now())?;
-            if grant.project_id != project_id {
-                return Err(Error::Forbidden(
-                    "delegation project does not match the Action project".into(),
-                ));
-            }
-            if grant.route.provider != input.provider
-                || grant.route.model != input.model
-                || grant.route.mode != input.provider_mode
-            {
-                return Err(Error::Forbidden(
-                    "provider route does not match the standing delegation".into(),
-                ));
-            }
-            if !grant.risk_classes.contains(&crate::lead::RiskClass::R0) {
-                return Err(Error::Forbidden(
-                    "standing delegation does not authorize R0".into(),
-                ));
-            }
-            if action_spec
-                .allowed_paths
-                .iter()
-                .any(|path| !path_covered(path, &grant.allowed_paths))
-            {
-                return Err(Error::Forbidden(
-                    "ActionSpec paths exceed the standing delegation".into(),
-                ));
-            }
-            if input.max_sessions > grant.max_sessions
-                || input.max_attempts > grant.max_attempts
-                || input.deadline_secs > u64::from(grant.max_timeout_secs)
-            {
-                return Err(Error::Forbidden(
-                    "provider budget exceeds the standing delegation".into(),
-                ));
-            }
-            super::delegations::reserve_usage_in_tx(
-                &mut transaction,
-                &grant,
-                1,
-                input.max_sessions,
-                input.max_attempts,
-            )
-            .await?;
-        }
-        if fixture && !input.allowed_tools.is_empty() {
-            return Err(Error::Forbidden(
-                "fixture authorization cannot grant provider tools".into(),
-            ));
-        }
-        let now = Utc::now().to_rfc3339();
-        let record = CampaignAuthorizationRecord {
-            campaign_id: campaign_id.into(),
-            authorization_id: input.authorization_id.clone(),
-            risk_class: input.risk_class.clone(),
-            execution_mode: input.execution_mode.clone(),
-            actor: input.actor.clone(),
-            rationale: input.rationale.clone(),
-            authorized_paths: input.authorized_paths.clone(),
-            max_attempts: input.max_attempts,
-            provider: input.provider.clone(),
-            model: input.model.clone(),
-            provider_mode: input.provider_mode.clone(),
-            delegation_id: input.delegation_id.clone(),
-            max_sessions: input.max_sessions,
-            max_turns: input.max_turns,
-            max_input_tokens: input.max_input_tokens,
-            max_output_tokens: input.max_output_tokens,
-            max_cost_micros: input.max_cost_micros,
-            deadline_secs: input.deadline_secs,
-            allowed_tools: input.allowed_tools.clone(),
-            created_at: now,
-        };
-        sqlx::query::query(
-            "INSERT INTO campaign_authorizations
-             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
-              authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
-              max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
-              deadline_secs,allowed_tools_json,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-        )
-        .bind(&record.campaign_id)
-        .bind(&record.authorization_id)
-        .bind(&record.risk_class)
-        .bind(&record.execution_mode)
-        .bind(&record.actor)
-        .bind(&record.rationale)
-        .bind(paths_json)
-        .bind(record.max_attempts)
-        .bind(&record.provider)
-        .bind(&record.model)
-        .bind(&record.provider_mode)
-        .bind(&record.delegation_id)
-        .bind(record.max_sessions)
-        .bind(record.max_turns)
-        .bind(
-            i64::try_from(record.max_input_tokens)
-                .map_err(|_| Error::Invalid("provider input budget"))?,
-        )
-        .bind(
-            i64::try_from(record.max_output_tokens)
-                .map_err(|_| Error::Invalid("provider output budget"))?,
-        )
-        .bind(
-            i64::try_from(record.max_cost_micros)
-                .map_err(|_| Error::Invalid("provider cost budget"))?,
-        )
-        .bind(i64::try_from(record.deadline_secs).map_err(|_| Error::Invalid("provider deadline"))?)
-        .bind(
-            serde_json::to_string(&record.allowed_tools)
-                .map_err(|_| Error::Invalid("allowed tools encoding"))?,
-        )
-        .bind(&record.created_at)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
-            .bind(campaign_id)
-            .execute(&mut *transaction)
-            .await?;
-        sqlx::query::query("UPDATE actions SET risk='R0' WHERE id=?1")
-            .bind(&action_id)
-            .execute(&mut *transaction)
-            .await?;
-        record_event(
+        let record = authorize_campaign_in_tx(
             &mut transaction,
             campaign_id,
-            "campaign.authorized",
-            &format!(
-                "authorization={} risk=R0 mode={} attempts={}",
-                record.authorization_id, record.execution_mode, record.max_attempts
-            ),
+            input,
+            AuthorizationReservationPolicy::Campaign,
         )
         .await?;
         transaction.commit().await?;
@@ -343,6 +137,255 @@ impl Database {
             .await?
             .ok_or(Error::NotFound)
     }
+}
+
+/// Validate and insert a Campaign authorization inside the caller's
+/// transaction. This is shared by the operator authorization route and Lead
+/// start so both enforce exactly the same route, path, delegation, budget and
+/// tool policy. Any failure rolls the surrounding transaction back, so a
+/// rejected Lead start leaves no Campaign, Run or Attempt rows.
+pub(super) async fn authorize_campaign_in_tx(
+    transaction: &mut SqliteConnection,
+    campaign_id: &str,
+    input: &NewCampaignAuthorization,
+    reservation_policy: AuthorizationReservationPolicy,
+) -> Result<CampaignAuthorizationRecord, Error> {
+    if input.authorization_id.trim().is_empty()
+        || input.authorization_id.len() > 128
+        || input.actor.trim().is_empty()
+        || input.actor.len() > 128
+        || input.rationale.trim().is_empty()
+        || input.rationale.len() > 2_000
+        || !(1..=5).contains(&input.max_attempts)
+    {
+        return Err(Error::Invalid("campaign authorization input"));
+    }
+    if input.risk_class != "R0" {
+        return Err(Error::Forbidden(
+            "only R0 execution is enabled; R1-R3 require protected approval".into(),
+        ));
+    }
+    let fixture = input.execution_mode == "FIXTURE";
+    let provider = input.execution_mode == "TRUSTED_LOCAL_PROVIDER";
+    if !fixture && !provider {
+        return Err(Error::Forbidden(
+            "only FIXTURE and TRUSTED_LOCAL_PROVIDER execution are enabled; ISOLATED is blocked"
+                .into(),
+        ));
+    }
+    validate_repository_paths("authorizedPaths", &input.authorized_paths)?;
+    let paths_json = serde_json::to_string(&input.authorized_paths)
+        .map_err(|_| Error::Invalid("authorized paths encoding"))?;
+    let campaign: Option<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT c.status,c.action_id,a.project_id
+         FROM campaigns c JOIN actions a ON a.id=c.action_id WHERE c.id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (status, action_id, project_id) = campaign.ok_or(Error::NotFound)?;
+    if status != "BLOCKED_AUTHORIZATION" {
+        return Err(Error::Conflict("campaign is not awaiting authorization"));
+    }
+    let duplicate: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT campaign_id FROM campaign_authorizations WHERE authorization_id=?1",
+    )
+    .bind(&input.authorization_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if duplicate.is_some() {
+        return Err(Error::Conflict("authorization id is already in use"));
+    }
+    let spec: Option<(String, String)> =
+        sqlx::query_as::query_as("SELECT action_id,spec_json FROM action_specs WHERE action_id=?1")
+            .bind(&action_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let (_, spec_json) = spec.ok_or(Error::Conflict("campaign action has no frozen spec"))?;
+    let action_spec: ActionSpec = serde_json::from_str(&spec_json)
+        .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
+    if action_spec.allowed_paths.is_empty() {
+        return Err(Error::Forbidden(
+            "campaign action has no frozen allowed-path scope".into(),
+        ));
+    }
+    if let Some(path) = action_spec
+        .allowed_paths
+        .iter()
+        .find(|path| !path_covered(path, &input.authorized_paths))
+    {
+        return Err(Error::Forbidden(format!(
+            "action path {path:?} is outside the campaign authorized paths"
+        )));
+    }
+    if provider {
+        let allowed = ["write_file", "run_command"];
+        let mut seen = std::collections::BTreeSet::new();
+        if input
+            .allowed_tools
+            .iter()
+            .any(|tool| !allowed.contains(&tool.as_str()) || !seen.insert(tool))
+        {
+            return Err(Error::Forbidden(
+                "provider tools must be a unique subset of write_file and run_command".into(),
+            ));
+        }
+        if input.provider.is_empty()
+            || input.model.is_empty()
+            || input.provider_mode.is_empty()
+            || input.delegation_id.is_empty()
+            || input.provider != action_spec.provider
+            || input.model != action_spec.model
+            || input.max_sessions == 0
+            || input.max_sessions > 2
+            || !(1..=4).contains(&input.max_turns)
+            || input.max_input_tokens == 0
+            || input.max_output_tokens == 0
+            || input.max_cost_micros == 0
+            || !(30..=600).contains(&input.deadline_secs)
+        {
+            return Err(Error::Invalid("provider authorization bounds"));
+        }
+        let grant =
+            super::delegations::load_delegation(&mut *transaction, &input.delegation_id).await?;
+        grant.validate(Utc::now())?;
+        if grant.project_id != project_id {
+            return Err(Error::Forbidden(
+                "delegation project does not match the Action project".into(),
+            ));
+        }
+        if grant.route.provider != input.provider
+            || grant.route.model != input.model
+            || grant.route.mode != input.provider_mode
+        {
+            return Err(Error::Forbidden(
+                "provider route does not match the standing delegation".into(),
+            ));
+        }
+        if !grant.risk_classes.contains(&crate::lead::RiskClass::R0) {
+            return Err(Error::Forbidden(
+                "standing delegation does not authorize R0".into(),
+            ));
+        }
+        if action_spec
+            .allowed_paths
+            .iter()
+            .any(|path| !path_covered(path, &grant.allowed_paths))
+        {
+            return Err(Error::Forbidden(
+                "ActionSpec paths exceed the standing delegation".into(),
+            ));
+        }
+        if input.max_sessions > grant.max_sessions
+            || input.max_attempts > grant.max_attempts
+            || input.deadline_secs > u64::from(grant.max_timeout_secs)
+        {
+            return Err(Error::Forbidden(
+                "provider budget exceeds the standing delegation".into(),
+            ));
+        }
+        let (requests, sessions, attempts) = match reservation_policy {
+            AuthorizationReservationPolicy::Campaign => (1, input.max_sessions, input.max_attempts),
+            AuthorizationReservationPolicy::LeadStart => (0, 0, input.max_attempts),
+        };
+        super::delegations::reserve_usage_in_tx(
+            &mut *transaction,
+            &grant,
+            requests,
+            sessions,
+            attempts,
+        )
+        .await?;
+    }
+    if fixture && !input.allowed_tools.is_empty() {
+        return Err(Error::Forbidden(
+            "fixture authorization cannot grant provider tools".into(),
+        ));
+    }
+    let now = Utc::now().to_rfc3339();
+    let record = CampaignAuthorizationRecord {
+        campaign_id: campaign_id.into(),
+        authorization_id: input.authorization_id.clone(),
+        risk_class: input.risk_class.clone(),
+        execution_mode: input.execution_mode.clone(),
+        actor: input.actor.clone(),
+        rationale: input.rationale.clone(),
+        authorized_paths: input.authorized_paths.clone(),
+        max_attempts: input.max_attempts,
+        provider: input.provider.clone(),
+        model: input.model.clone(),
+        provider_mode: input.provider_mode.clone(),
+        delegation_id: input.delegation_id.clone(),
+        max_sessions: input.max_sessions,
+        max_turns: input.max_turns,
+        max_input_tokens: input.max_input_tokens,
+        max_output_tokens: input.max_output_tokens,
+        max_cost_micros: input.max_cost_micros,
+        deadline_secs: input.deadline_secs,
+        allowed_tools: input.allowed_tools.clone(),
+        created_at: now,
+    };
+    sqlx::query::query(
+        "INSERT INTO campaign_authorizations
+         (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+          authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
+          max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
+          deadline_secs,allowed_tools_json,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+    )
+    .bind(&record.campaign_id)
+    .bind(&record.authorization_id)
+    .bind(&record.risk_class)
+    .bind(&record.execution_mode)
+    .bind(&record.actor)
+    .bind(&record.rationale)
+    .bind(paths_json)
+    .bind(record.max_attempts)
+    .bind(&record.provider)
+    .bind(&record.model)
+    .bind(&record.provider_mode)
+    .bind(&record.delegation_id)
+    .bind(record.max_sessions)
+    .bind(record.max_turns)
+    .bind(
+        i64::try_from(record.max_input_tokens)
+            .map_err(|_| Error::Invalid("provider input budget"))?,
+    )
+    .bind(
+        i64::try_from(record.max_output_tokens)
+            .map_err(|_| Error::Invalid("provider output budget"))?,
+    )
+    .bind(
+        i64::try_from(record.max_cost_micros)
+            .map_err(|_| Error::Invalid("provider cost budget"))?,
+    )
+    .bind(i64::try_from(record.deadline_secs).map_err(|_| Error::Invalid("provider deadline"))?)
+    .bind(
+        serde_json::to_string(&record.allowed_tools)
+            .map_err(|_| Error::Invalid("allowed tools encoding"))?,
+    )
+    .bind(&record.created_at)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+        .bind(campaign_id)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query::query("UPDATE actions SET risk='R0' WHERE id=?1")
+        .bind(&action_id)
+        .execute(&mut *transaction)
+        .await?;
+    record_event(
+        &mut *transaction,
+        campaign_id,
+        "campaign.authorized",
+        &format!(
+            "authorization={} risk=R0 mode={} attempts={}",
+            record.authorization_id, record.execution_mode, record.max_attempts
+        ),
+    )
+    .await?;
+    Ok(record)
 }
 
 pub(super) async fn load_authorization(

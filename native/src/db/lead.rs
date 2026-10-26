@@ -29,6 +29,7 @@ pub struct LeadRequestRecord {
     pub request_hash: String,
     pub project_config_hash: String,
     pub state: LeadRequestState,
+    pub assessment_mechanism: Option<String>,
     pub failure_reason: Option<String>,
     pub campaign_id: Option<String>,
     pub created_at: String,
@@ -179,6 +180,7 @@ impl Database {
             request_hash: request_hash.clone(),
             project_config_hash: project_config_hash.into(),
             state: LeadRequestState::Submitted,
+            assessment_mechanism: None,
             failure_reason: None,
             campaign_id: None,
             created_at: now.clone(),
@@ -573,19 +575,26 @@ impl Database {
         Ok(record)
     }
 
-    /// Start a frozen single-unit Lead plan under an explicit autonomous grant.
-    /// This creates the Campaign authorization, Run and Attempt atomically. It
-    /// does not enable provider or ISOLATED execution.
+    /// Start a frozen Lead plan under an explicit autonomous grant.
+    ///
+    /// A deterministic `FIXTURE` assessment keeps the default FIXTURE
+    /// authorization. A `MODEL` assessment must supply an explicit
+    /// `TRUSTED_LOCAL_PROVIDER` authorization that matches the frozen proposal,
+    /// ActionSpec, standing delegation and budgets. The Campaign, its
+    /// authorization, Run and Attempt are created atomically; a rejected
+    /// authorization leaves no rows. Provider execution, ISOLATED execution and
+    /// model authority remain outside this storage method.
     pub async fn start_lead_campaign(
         &self,
         request_id: &str,
         idempotency_key: &str,
+        authorization: Option<&NewCampaignAuthorization>,
     ) -> Result<(Campaign, Run, Attempt), Error> {
         if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
             return Err(Error::Invalid("lead start idempotency key"));
         }
         let digest = sha256_hex(
-            serde_json::to_string(&(request_id, "start-lead-campaign-v1"))
+            serde_json::to_string(&(request_id, "start-lead-campaign-v2", authorization))
                 .expect("lead start digest serializes")
                 .as_bytes(),
         );
@@ -662,10 +671,8 @@ impl Database {
         }
         let config = load_project_config(&mut transaction, &request.project_id).await?;
         proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
-        let mut paths = std::collections::BTreeSet::new();
         let mut specs = Vec::with_capacity(proposal.work_units.len());
         for unit in &proposal.work_units {
-            paths.extend(unit.allowed_paths.iter().cloned());
             specs.push(unit_action_spec(
                 &proposal,
                 &config,
@@ -705,11 +712,88 @@ impl Database {
                 ));
             }
         }
+        let mechanism: String =
+            sqlx::query_as::query_as("SELECT mechanism FROM lead_assessments WHERE request_id=?1")
+                .bind(request_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .map(|(mechanism,): (String,)| mechanism)
+                .ok_or(Error::Conflict("lead request has no assessment"))?;
+        let authorization_input = match mechanism.as_str() {
+            "MODEL" => {
+                let input = authorization.ok_or(Error::Invalid(
+                    "MODEL Lead start requires an explicit TRUSTED_LOCAL_PROVIDER authorization payload",
+                ))?;
+                if input.execution_mode != "TRUSTED_LOCAL_PROVIDER" {
+                    return Err(Error::Invalid(
+                        "MODEL Lead start requires TRUSTED_LOCAL_PROVIDER authorization",
+                    ));
+                }
+                if input.delegation_id != request.delegation_id {
+                    return Err(Error::Forbidden(
+                        "authorization delegation differs from the frozen Lead request".into(),
+                    ));
+                }
+                if input.provider != proposal.route.provider
+                    || input.model != proposal.route.model
+                    || input.provider_mode != proposal.route.mode
+                {
+                    return Err(Error::Forbidden(
+                        "authorization route differs from the frozen proposal route".into(),
+                    ));
+                }
+                if input.max_attempts > proposal.budget.max_attempts {
+                    return Err(Error::Forbidden(
+                        "authorization attempt budget exceeds the frozen plan".into(),
+                    ));
+                }
+                if input.max_sessions > proposal.max_sessions.saturating_sub(1) {
+                    return Err(Error::Forbidden(
+                        "authorization session budget exceeds the frozen plan".into(),
+                    ));
+                }
+                if input
+                    .authorized_paths
+                    .iter()
+                    .any(|path| !crate::workspace::path_covered(path, &action_spec.allowed_paths))
+                {
+                    return Err(Error::Forbidden(
+                        "authorization paths exceed the frozen ActionSpec".into(),
+                    ));
+                }
+                input.clone()
+            }
+            "FIXTURE" => {
+                if authorization.is_some() {
+                    return Err(Error::Invalid(
+                        "FIXTURE Lead start does not accept a provider authorization payload",
+                    ));
+                }
+                NewCampaignAuthorization {
+                    authorization_id: format!("lead-{}", request.id),
+                    risk_class: "R0".into(),
+                    execution_mode: "FIXTURE".into(),
+                    actor: "lead-autonomous-start".into(),
+                    rationale: format!(
+                        "autonomous R0 FIXTURE start for plan {} by delegation {}",
+                        plan.plan_hash, grant.id
+                    ),
+                    authorized_paths: action_spec.allowed_paths.clone(),
+                    max_attempts: proposal.budget.max_attempts,
+                    provider: proposal.route.provider.clone(),
+                    model: proposal.route.model.clone(),
+                    provider_mode: proposal.route.mode.clone(),
+                    delegation_id: grant.id.clone(),
+                    ..Default::default()
+                }
+            }
+            _ => return Err(Error::Invalid("stored lead assessment mechanism")),
+        };
         let now = Utc::now().to_rfc3339();
-        let campaign = Campaign {
+        let mut campaign = Campaign {
             id: Uuid::new_v4().to_string(),
             action_id: request.action_id.clone(),
-            status: "AUTHORIZED".into(),
+            status: "BLOCKED_AUTHORIZATION".into(),
             created_at: now.clone(),
         };
         sqlx::query::query("INSERT INTO campaigns VALUES (?1,?2,?3,?4)")
@@ -719,20 +803,14 @@ impl Database {
             .bind(&campaign.created_at)
             .execute(&mut *transaction)
             .await?;
-        sqlx::query::query(
-            "INSERT INTO campaign_authorizations
-             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,authorized_paths_json,max_attempts,created_at)
-             VALUES (?1,?2,'R0','FIXTURE',?3,?4,?5,?6,?7)",
+        super::authorization::authorize_campaign_in_tx(
+            &mut transaction,
+            &campaign.id,
+            &authorization_input,
+            super::authorization::AuthorizationReservationPolicy::LeadStart,
         )
-        .bind(&campaign.id)
-        .bind(format!("lead-{}", request.id))
-        .bind(format!("delegation:{}", grant.id))
-        .bind(format!("autonomous R0 start for plan {}", plan.plan_hash))
-        .bind(serde_json::to_string(&paths.into_iter().collect::<Vec<_>>()).map_err(|_| Error::Invalid("allowed paths encoding"))?)
-        .bind(i64::from(proposal.budget.max_attempts))
-        .bind(&now)
-        .execute(&mut *transaction)
         .await?;
+        campaign.status = "AUTHORIZED".into();
         let mut first_run = None;
         let mut first_attempt = None;
         for (index, (unit, spec)) in proposal.work_units.iter().zip(specs.iter()).enumerate() {
@@ -834,10 +912,26 @@ impl Database {
             &mut transaction,
             &campaign.id,
             "campaign.started",
-            "autonomous R0 fixture start",
+            &format!(
+                "{} start for plan {} authorization={}",
+                authorization_input.execution_mode,
+                plan.plan_hash,
+                authorization_input.authorization_id
+            ),
         )
         .await?;
-        record_event(&mut transaction, &request.id, "lead.started", &campaign.id).await?;
+        record_event(
+            &mut transaction,
+            &request.id,
+            "lead.started",
+            &format!(
+                "{} campaign={} authorization={}",
+                authorization_input.execution_mode,
+                campaign.id,
+                authorization_input.authorization_id
+            ),
+        )
+        .await?;
         transaction.commit().await?;
         Ok((campaign, run, attempt))
     }
@@ -1143,9 +1237,12 @@ async fn load_lead_request(
     id: &str,
 ) -> Result<LeadRequestRecord, Error> {
     let row = sqlx::query::query(
-        "SELECT id,project_id,action_id,delegation_id,objective,request_hash,
-                project_config_hash,state,failure_reason,campaign_id,created_at,updated_at
-         FROM lead_requests WHERE id=?1",
+        "SELECT lr.id,lr.project_id,lr.action_id,lr.delegation_id,lr.objective,lr.request_hash,
+                lr.project_config_hash,lr.state,la.mechanism AS assessment_mechanism,
+                lr.failure_reason,lr.campaign_id,lr.created_at,lr.updated_at
+         FROM lead_requests lr
+         LEFT JOIN lead_assessments la ON la.request_id=lr.id
+         WHERE lr.id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
@@ -1161,6 +1258,7 @@ async fn load_lead_request(
         request_hash: row.try_get("request_hash")?,
         project_config_hash: row.try_get("project_config_hash")?,
         state: parse_state(&state).ok_or(Error::Invalid("stored lead request state"))?,
+        assessment_mechanism: row.try_get("assessment_mechanism")?,
         failure_reason: row.try_get("failure_reason")?,
         campaign_id: row.try_get("campaign_id")?,
         created_at: row.try_get("created_at")?,
@@ -2120,6 +2218,139 @@ mod tests {
         .id
     }
 
+    struct ReadyLead {
+        request: LeadRequestRecord,
+        proposal: LeadPlanProposal,
+    }
+
+    async fn ready_lead(db: &Database, mechanism: &str) -> ReadyLead {
+        let (acceptance, negative) = checks();
+        let checks: Vec<SpecCheck> = acceptance.into_iter().chain(negative).collect();
+        let allowed = vec!["src".to_string()];
+        let unique = Uuid::new_v4().to_string();
+        let action = db
+            .create_action_with_spec(
+                "project",
+                "Implement the feature.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                &format!("{mechanism}-action-{unique}"),
+                ActionSpecInput {
+                    allowed_paths: &allowed,
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        db.classify_action(
+            &action.id,
+            "R0",
+            "test-owner",
+            "deterministic R0 classification",
+            &format!("{mechanism}-classification-{unique}"),
+        )
+        .await
+        .unwrap();
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action.id,
+                "grant",
+                "Implement the feature.",
+                &config.config_hash,
+                &format!("{mechanism}-request-{unique}"),
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let grant = db.standing_delegation("grant").await.unwrap();
+        let binding = ActionBinding {
+            id: action.id.clone(),
+            project_id: "project".into(),
+            status: crate::lead::ActionStatus::Pending,
+        };
+        let (assessment, proposal) = crate::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            &grant,
+            Utc::now(),
+        )
+        .unwrap();
+        let input = AssessmentInput {
+            project_id: "project".into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from([
+                "repository-files".to_string()
+            ]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            mechanism,
+            &assessment,
+            &input,
+            &format!("{mechanism}-assessment-{unique}"),
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(
+            &request.id,
+            &proposal,
+            &format!("{mechanism}-proposal-{unique}"),
+        )
+        .await
+        .unwrap();
+        db.freeze_lead_plan(&request.id, &format!("{mechanism}-freeze-{unique}"))
+            .await
+            .unwrap();
+        db.mark_lead_ready(&request.id).await.unwrap();
+        ReadyLead { request, proposal }
+    }
+
+    fn model_authorization(proposal: &LeadPlanProposal) -> NewCampaignAuthorization {
+        NewCampaignAuthorization {
+            authorization_id: "explicit-model-lead-start".into(),
+            risk_class: "R0".into(),
+            execution_mode: "TRUSTED_LOCAL_PROVIDER".into(),
+            actor: "test-operator".into(),
+            rationale: "explicit provider authorization for a MODEL Lead plan".into(),
+            authorized_paths: vec!["src".into()],
+            max_attempts: 1,
+            provider: proposal.route.provider.clone(),
+            model: proposal.route.model.clone(),
+            provider_mode: proposal.route.mode.clone(),
+            delegation_id: "grant".into(),
+            max_sessions: 1,
+            max_turns: 4,
+            max_input_tokens: 1_000,
+            max_output_tokens: 1_000,
+            max_cost_micros: 10_000,
+            deadline_secs: 300,
+            allowed_tools: vec!["write_file".into()],
+        }
+    }
+
+    async fn count_rows(db: &Database, sql: &str) -> i64 {
+        let (value,): (i64,) = sqlx::query_as::query_as(sql)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        value
+    }
+
+    async fn lead_start_row_counts(db: &Database) -> (i64, i64, i64, i64) {
+        let campaigns = count_rows(db, "SELECT COUNT(*) FROM campaigns").await;
+        let runs = count_rows(db, "SELECT COUNT(*) FROM runs").await;
+        let attempts = count_rows(db, "SELECT COUNT(*) FROM attempts").await;
+        let authorizations = count_rows(db, "SELECT COUNT(*) FROM campaign_authorizations").await;
+        (campaigns, runs, attempts, authorizations)
+    }
+
     #[tokio::test]
     async fn full_request_assessment_proposal_and_freeze_flow_is_durable() {
         let (path, db, _) = fixture().await;
@@ -2318,13 +2549,25 @@ mod tests {
             db.mark_lead_ready(&request.id).await.unwrap().state,
             LeadRequestState::Ready
         );
+        let usage_before = db.delegation_usage("grant").await.unwrap();
         let (campaign, run, attempt) = db
-            .start_lead_campaign(&request.id, "fixture-start-key")
+            .start_lead_campaign(&request.id, "fixture-start-key", None)
             .await
             .unwrap();
         assert_eq!(campaign.status, "AUTHORIZED");
         assert_eq!(run.status, "QUEUED");
         assert_eq!(attempt.status, "QUEUED");
+        assert_eq!(db.delegation_usage("grant").await.unwrap(), usage_before);
+        let authorization = db.campaign_authorization(&campaign.id).await.unwrap();
+        assert_eq!(authorization.execution_mode, "FIXTURE");
+        assert_eq!(authorization.actor, "lead-autonomous-start");
+        assert!(authorization.rationale.contains("delegation grant"));
+        assert_eq!(authorization.authorized_paths, vec!["src".to_string()]);
+        assert_eq!(authorization.delegation_id, "grant");
+        assert_eq!(authorization.provider, "opencode");
+        assert_eq!(authorization.model, "deepseek-v4.1-flash");
+        assert_eq!(authorization.provider_mode, "build");
+        assert_eq!(authorization.allowed_tools, Vec::<String>::new());
         let running = db.lead_request(&request.id).await.unwrap();
         assert_eq!(running.state, LeadRequestState::Running);
         assert_eq!(running.campaign_id.as_deref(), Some(campaign.id.as_str()));
@@ -2438,7 +2681,7 @@ mod tests {
             .unwrap();
         db.mark_lead_ready(&request.id).await.unwrap();
         let (_campaign, _run, attempt) = db
-            .start_lead_campaign(&request.id, "chain-start-key")
+            .start_lead_campaign(&request.id, "chain-start-key", None)
             .await
             .unwrap();
         let count: (i64,) =
@@ -2591,7 +2834,7 @@ mod tests {
             .await
             .unwrap();
         db.mark_lead_ready(&request.id).await.unwrap();
-        db.start_lead_campaign(&request.id, "fanin-start")
+        db.start_lead_campaign(&request.id, "fanin-start", None)
             .await
             .unwrap();
         let tasks: Vec<(String, String, Option<String>)> = sqlx::query_as::query_as(
@@ -2988,6 +3231,221 @@ mod tests {
             .await,
             Err(Error::Forbidden(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn lead_model_calls_are_scoped_to_the_request_and_role() {
+        let (path, db, _) = fixture().await;
+        let ready = ready_lead(&db, "MODEL").await;
+        let now = Utc::now().to_rfc3339();
+        for (reservation, role, provider) in [
+            ("lead-call", "LEAD", "opencode"),
+            ("reviewer-call", "SEMANTIC_REVIEWER", "opencode-go"),
+        ] {
+            sqlx::query::query(
+                "INSERT INTO model_call_reservations
+                 (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
+                  purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
+                  max_cost_micros,input_tokens,output_tokens,total_tokens,cost_micros,usage_known,
+                  response_text,state,error,expires_at_ms,created_at,updated_at)
+                 VALUES (?1,?2,'owner','project',?3,'grant',?4,'deepseek-v4.1-flash',
+                         'lead_assessment',?5,10,20,30,100,10,20,30,25,1,
+                         NULL,'SETTLED',NULL,0,?6,?6)",
+            )
+            .bind(reservation)
+            .bind(role)
+            .bind(&ready.request.id)
+            .bind(provider)
+            .bind("a".repeat(64))
+            .bind(&now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+        let calls = db.lead_model_calls(&ready.request.id).await.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].reservation_id, "lead-call");
+        assert_eq!(calls[0].role, ModelCallRole::Lead);
+        assert_eq!(calls[0].provider, "opencode");
+        assert_eq!(calls[0].model, "deepseek-v4.1-flash");
+        assert_eq!(calls[0].input_tokens, 10);
+        assert_eq!(calls[0].output_tokens, 20);
+        assert_eq!(calls[0].total_tokens, 30);
+        assert_eq!(calls[0].cost_micros, 25);
+        assert_eq!(calls[0].state, "SETTLED");
+        assert!(calls[0].usage_known);
+        assert_eq!(calls[0].objective_id, ready.request.id);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn model_lead_start_requires_explicit_authorization_and_leaves_no_rows() {
+        let (path, db, _) = fixture().await;
+        let ready = ready_lead(&db, "MODEL").await;
+        let error = db
+            .start_lead_campaign(&ready.request.id, "model-start-missing", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)));
+        assert_eq!(lead_start_row_counts(&db).await, (0, 0, 0, 0));
+        assert_eq!(
+            db.lead_request(&ready.request.id).await.unwrap().state,
+            LeadRequestState::Ready
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn model_lead_start_records_exact_authorization_without_double_reservation() {
+        let (path, db, _) = fixture().await;
+        let ready = ready_lead(&db, "MODEL").await;
+        assert_eq!(ready.proposal.budget.max_attempts, 2);
+        assert_eq!(ready.proposal.max_sessions, 3);
+        let usage_before = db.delegation_usage("grant").await.unwrap();
+        assert_eq!(usage_before.requests, 1);
+        assert_eq!(usage_before.sessions, 3);
+        assert_eq!(usage_before.attempts, 0);
+        let authorization = model_authorization(&ready.proposal);
+        let (campaign, run, attempt) = db
+            .start_lead_campaign(&ready.request.id, "model-start-valid", Some(&authorization))
+            .await
+            .unwrap();
+        assert_eq!(campaign.status, "AUTHORIZED");
+        assert_eq!(run.campaign_id, campaign.id);
+        assert_eq!(attempt.run_id, run.id);
+        let stored = db.campaign_authorization(&campaign.id).await.unwrap();
+        assert_eq!(stored.authorization_id, authorization.authorization_id);
+        assert_eq!(stored.risk_class, "R0");
+        assert_eq!(stored.execution_mode, "TRUSTED_LOCAL_PROVIDER");
+        assert_eq!(stored.actor, authorization.actor);
+        assert_eq!(stored.rationale, authorization.rationale);
+        assert_eq!(stored.authorized_paths, authorization.authorized_paths);
+        assert_eq!(stored.max_attempts, authorization.max_attempts);
+        assert_eq!(stored.provider, authorization.provider);
+        assert_eq!(stored.model, authorization.model);
+        assert_eq!(stored.provider_mode, authorization.provider_mode);
+        assert_eq!(stored.delegation_id, authorization.delegation_id);
+        assert_eq!(stored.max_sessions, authorization.max_sessions);
+        assert_eq!(stored.max_turns, authorization.max_turns);
+        assert_eq!(stored.max_input_tokens, authorization.max_input_tokens);
+        assert_eq!(stored.max_output_tokens, authorization.max_output_tokens);
+        assert_eq!(stored.max_cost_micros, authorization.max_cost_micros);
+        assert_eq!(stored.deadline_secs, authorization.deadline_secs);
+        assert_eq!(stored.allowed_tools, authorization.allowed_tools);
+        assert_eq!(lead_start_row_counts(&db).await, (1, 1, 1, 1));
+        let usage_after = db.delegation_usage("grant").await.unwrap();
+        assert_eq!(usage_after.requests, usage_before.requests);
+        assert_eq!(usage_after.sessions, usage_before.sessions);
+        assert_eq!(
+            usage_after.attempts,
+            usage_before.attempts + authorization.max_attempts
+        );
+        assert_eq!(
+            db.lead_request(&ready.request.id).await.unwrap().state,
+            LeadRequestState::Running
+        );
+
+        let (replayed_campaign, replayed_run, replayed_attempt) = db
+            .start_lead_campaign(&ready.request.id, "model-start-valid", Some(&authorization))
+            .await
+            .unwrap();
+        assert_eq!(replayed_campaign.id, campaign.id);
+        assert_eq!(replayed_run.id, run.id);
+        assert_eq!(replayed_attempt.id, attempt.id);
+        assert_eq!(db.delegation_usage("grant").await.unwrap(), usage_after);
+
+        let mut different = authorization.clone();
+        different.max_attempts = 2;
+        assert!(matches!(
+            db.start_lead_campaign(&ready.request.id, "model-start-valid", Some(&different))
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(db.delegation_usage("grant").await.unwrap(), usage_after);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn model_lead_start_rejects_a_reused_authorization_id_without_partial_rows() {
+        let (path, db, _) = fixture().await;
+        let first = ready_lead(&db, "MODEL").await;
+        let second = ready_lead(&db, "MODEL").await;
+        let authorization = model_authorization(&first.proposal);
+        db.start_lead_campaign(&first.request.id, "duplicate-first", Some(&authorization))
+            .await
+            .unwrap();
+        let error = db
+            .start_lead_campaign(&second.request.id, "duplicate-second", Some(&authorization))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(lead_start_row_counts(&db).await, (1, 1, 1, 1));
+        assert_eq!(
+            db.lead_request(&second.request.id).await.unwrap().state,
+            LeadRequestState::Ready
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn model_lead_start_rejects_invalid_route_budget_delegation_and_paths() {
+        let (path, db, _) = fixture().await;
+        let ready = ready_lead(&db, "MODEL").await;
+        let usage_before = db.delegation_usage("grant").await.unwrap();
+        let base = model_authorization(&ready.proposal);
+        let mut fixtures = Vec::new();
+        let mut wrong_route = base.clone();
+        wrong_route.provider = "codex".into();
+        fixtures.push(("route", wrong_route));
+        let mut wrong_delegation = base.clone();
+        wrong_delegation.delegation_id = "another-grant".into();
+        fixtures.push(("delegation", wrong_delegation));
+        let mut attempts = base.clone();
+        attempts.max_attempts = base.max_attempts + 2;
+        fixtures.push(("attempts", attempts));
+        let mut sessions = base.clone();
+        sessions.max_sessions = ready.proposal.max_sessions;
+        fixtures.push(("sessions", sessions));
+        let mut paths = base.clone();
+        paths.authorized_paths = vec!["src".into(), "tests".into()];
+        fixtures.push(("paths", paths));
+        let mut fixture_mode = base.clone();
+        fixture_mode.execution_mode = "FIXTURE".into();
+        fixtures.push(("fixture-mode", fixture_mode));
+        for (label, authorization) in fixtures {
+            let error = db
+                .start_lead_campaign(
+                    &ready.request.id,
+                    &format!("model-start-invalid-{label}"),
+                    Some(&authorization),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                !matches!(error, Error::Sqlx(_) | Error::Migrate(_) | Error::File(_)),
+                "invalid {label} start returned a server error: {error}"
+            );
+            assert_eq!(
+                lead_start_row_counts(&db).await,
+                (0, 0, 0, 0),
+                "invalid {label} start left rows"
+            );
+            assert_eq!(
+                db.delegation_usage("grant").await.unwrap(),
+                usage_before,
+                "invalid {label} start changed delegation usage"
+            );
+            assert_eq!(
+                db.lead_request(&ready.request.id).await.unwrap().state,
+                LeadRequestState::Ready
+            );
+        }
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
