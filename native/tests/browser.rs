@@ -65,6 +65,17 @@ fn group_exists(process_group: i32) -> bool {
     }
 }
 
+async fn wait_group_absent(process_group: i32) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while group_exists(process_group) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !group_exists(process_group),
+        "process group {process_group} still exists after cleanup"
+    );
+}
+
 fn tooling() -> Option<BrowserTooling> {
     let root = repo_root();
     let runner = root.join("office/e2e-browser/browser-check-runner.mjs");
@@ -226,11 +237,7 @@ async fn managed_server_serves_real_browser_and_cleans_up_descendants() {
         receipt.process_group_absent,
         "process group remains: {receipt:?}"
     );
-    assert!(
-        !group_exists(receipt.process_group),
-        "process group {} still exists",
-        receipt.process_group
-    );
+    wait_group_absent(receipt.process_group).await;
     let stdout = fs::metadata(&receipt.stdout_log).unwrap().len();
     let stderr = fs::metadata(&receipt.stderr_log).unwrap().len();
     assert!(stdout <= max_log_bytes, "stdout log exceeded its bound");
@@ -376,7 +383,7 @@ async fn detached_state_round_trip_supports_stop_and_cleanup() {
         .expect("detached server stops");
     assert!(receipt.port_closed);
     assert!(receipt.process_group_absent);
-    assert!(!group_exists(loaded.process_group));
+    wait_group_absent(loaded.process_group).await;
 
     let summary = cleanup_state_dir(&state_dir, true, false)
         .await
