@@ -523,6 +523,7 @@ struct ProviderContext<'a> {
     password: &'a str,
     directory: &'a str,
     api_directory: &'a str,
+    provider_session: &'a std::sync::Arc<std::sync::Mutex<Option<String>>>,
     turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
@@ -607,12 +608,28 @@ async fn execute_provider_assignment(
         .to_owned();
 
     let turn_policy: SharedTurnPolicy = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let provider_session: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let provider_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
+    let turn_binder = if provider_kind == "opencode" {
+        Some(factory_native::provider_egress::TurnBinder::new(
+            client.clone(),
+            core.clone(),
+            session_token.to_owned(),
+            session_record_id.clone(),
+            worker_id.to_owned(),
+            assignment.lease.generation,
+        )?)
+    } else {
+        None
+    };
     let (base_url, password, sandbox, egress_turn_policy) = match start_provider_runtime(
         &provider_dir,
         assignment.deadline_secs,
         &assignment.provider,
         &assignment.model,
         assignment.max_turns,
+        turn_binder,
         &turn_policy,
     )
     .await
@@ -655,6 +672,7 @@ async fn execute_provider_assignment(
             } else {
                 &directory
             },
+            provider_session: &provider_session,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
@@ -675,15 +693,35 @@ async fn execute_provider_assignment(
             } else {
                 &directory
             },
+            provider_session: &provider_session,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
         })
         .await
     };
+    let confined = sandbox.is_some();
     if let Some(sandbox) = sandbox {
         let _ = sandbox.stop().await;
     }
+    let provider_session_id = provider_session
+        .lock()
+        .ok()
+        .and_then(|session| session.clone())
+        .unwrap_or_default();
+    let cleanup_receipt = if provider_session_id.is_empty() {
+        "no_external_session".to_owned()
+    } else if confined {
+        factory_native::provider_sandbox::confined_recovery_receipt(
+            &directory,
+            &provider_session_id,
+            provider_root.as_path(),
+        )
+        .unwrap_or("sandbox_stopped_cleanup_unconfirmed")
+        .to_owned()
+    } else {
+        "unconfined_cleanup_unconfirmed".to_owned()
+    };
     if !(cfg!(debug_assertions)
         && env::var("FACTORY_PROVIDER_KEEP_SESSION").ok().as_deref() == Some("1"))
     {
@@ -704,7 +742,7 @@ async fn execute_provider_assignment(
                     total_tokens: run.usage.total_tokens,
                     cost_micros: run.usage.cost_micros,
                     usage_known: run.usage.known,
-                    cleanup_receipt: String::new(),
+                    cleanup_receipt: cleanup_receipt.clone(),
                     error: "provider usage was not measurable".into(),
                 };
                 let _ = post_provider_terminal(client, core, session_token, &terminal).await;
@@ -736,14 +774,14 @@ async fn execute_provider_assignment(
                 worker_id: worker_id.into(),
                 generation: assignment.lease.generation,
                 state: "FAILED".into(),
-                provider_session_id: String::new(),
+                provider_session_id: provider_session_id.clone(),
                 turn_id: String::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
                 cost_micros: 0,
                 usage_known: false,
-                cleanup_receipt: String::new(),
+                cleanup_receipt: cleanup_receipt.clone(),
                 error: error.to_string(),
             };
             let _ = post_provider_terminal(client, core, session_token, &terminal).await;
@@ -758,6 +796,7 @@ async fn start_provider_runtime(
     provider: &str,
     model: &str,
     max_turns: u32,
+    turn_binder: Option<factory_native::provider_egress::TurnBinder>,
     turn_policy: &SharedTurnPolicy,
 ) -> Result<
     (
@@ -829,7 +868,7 @@ async fn start_provider_runtime(
                     } else {
                         max_turns as usize + 1
                     };
-                    let config = factory_native::provider_egress::EgressConfig::new(
+                    let mut config = factory_native::provider_egress::EgressConfig::new(
                         &upstream,
                         credential,
                         token,
@@ -838,6 +877,9 @@ async fn start_provider_runtime(
                     .with_model(model.to_owned())
                     .with_max_requests(max_requests)
                     .with_turn_policy(turn_policy.clone());
+                    if opencode && let Some(binder) = turn_binder {
+                        config = config.with_turn_binder(binder);
+                    }
                     (Some(config), Some(std::path::PathBuf::from(bridge)))
                 }
                 Err(_) if opencode => {
@@ -1122,6 +1164,9 @@ async fn run_provider_tool_loop(
         .and_then(serde_json::Value::as_str)
         .ok_or("OpenCode session/create returned no id")?
         .to_owned();
+    if let Ok(mut provider_session) = context.provider_session.lock() {
+        *provider_session = Some(session_id.clone());
+    }
     let _: serde_json::Value = context
         .client
         .post(context.core.join("worker/provider_active")?)
@@ -2119,6 +2164,9 @@ async fn run_provider_patch(
         .and_then(serde_json::Value::as_str)
         .ok_or("OpenCode session/create returned no id")?
         .to_owned();
+    if let Ok(mut provider_session) = context.provider_session.lock() {
+        *provider_session = Some(provider_session_id.clone());
+    }
     let active: serde_json::Value = context
         .client
         .post(context.core.join("worker/provider_active")?)

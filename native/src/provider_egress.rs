@@ -13,6 +13,7 @@ use std::{
 };
 
 use reqwest::redirect::Policy;
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixListener, UnixStream},
@@ -52,6 +53,100 @@ pub struct TurnPolicy {
 
 pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
 
+/// Bound Core authorization for the exact provider-generated request body.
+/// The broker calls Core before forwarding; Core records the actual body digest
+/// against the live reservation, session, lease and budget.
+#[derive(Clone)]
+pub struct TurnBinder {
+    client: reqwest::Client,
+    core: reqwest::Url,
+    session_token: String,
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+}
+
+impl std::fmt::Debug for TurnBinder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TurnBinder")
+            .field("core", &self.core)
+            .field("session_record_id", &self.session_record_id)
+            .field("worker_id", &self.worker_id)
+            .field("generation", &self.generation)
+            .field("session_token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl TurnBinder {
+    pub fn new(
+        client: reqwest::Client,
+        core: reqwest::Url,
+        session_token: String,
+        session_record_id: String,
+        worker_id: String,
+        generation: i64,
+    ) -> Result<Self, EgressError> {
+        if !matches!(core.host_str(), Some("127.0.0.1" | "localhost"))
+            || core.scheme() != "http"
+            || core.port().is_none()
+            || session_token.len() < 16
+            || session_record_id.trim().is_empty()
+            || worker_id.trim().is_empty()
+            || generation <= 0
+        {
+            return Err(EgressError::Invalid("provider turn binder".into()));
+        }
+        Ok(Self {
+            client,
+            core,
+            session_token,
+            session_record_id,
+            worker_id,
+            generation,
+        })
+    }
+
+    async fn bind(
+        &self,
+        reservation_id: &str,
+        request_sha256: &str,
+        model: &str,
+        path: &str,
+        body_bytes: usize,
+    ) -> Result<(), EgressError> {
+        let response = self
+            .client
+            .post(
+                self.core
+                    .join("worker/provider_turn_bind")
+                    .map_err(|_| EgressError::Invalid("provider turn binder URL".into()))?,
+            )
+            .bearer_auth(&self.session_token)
+            .json(&serde_json::json!({
+                "session_record_id": self.session_record_id,
+                "worker_id": self.worker_id,
+                "generation": self.generation,
+                "reservation_id": reservation_id,
+                "request_sha256": request_sha256,
+                "model": model,
+                "path": path,
+                "body_bytes": body_bytes
+            }))
+            .send()
+            .await
+            .map_err(|error| EgressError::Upstream(format!("provider turn binder: {error}")))?;
+        if !response.status().is_success() {
+            return Err(EgressError::Invalid(format!(
+                "Core refused provider turn binding with HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct EgressConfig {
     host: String,
@@ -65,6 +160,7 @@ pub struct EgressConfig {
     max_requests: usize,
     allowed_model: Option<String>,
     turn_policy: Option<SharedTurnPolicy>,
+    turn_binder: Option<TurnBinder>,
 }
 
 impl std::fmt::Debug for EgressConfig {
@@ -133,6 +229,7 @@ impl EgressConfig {
             max_requests: 8,
             allowed_model: None,
             turn_policy: None,
+            turn_binder: None,
         })
     }
 
@@ -156,6 +253,11 @@ impl EgressConfig {
 
     pub fn with_turn_policy(mut self, policy: SharedTurnPolicy) -> Self {
         self.turn_policy = Some(policy);
+        self
+    }
+
+    pub fn with_turn_binder(mut self, binder: TurnBinder) -> Self {
+        self.turn_binder = Some(binder);
         self
     }
 
@@ -267,6 +369,7 @@ async fn handle(
         return Ok(());
     }
     let mut body = body;
+    let mut bound_turn: Option<(String, String)> = None;
     if let Some(policy) = &config.turn_policy {
         if path == "/v1/models" && method == "GET" {
             // Catalog reads do not consume model spend.
@@ -315,6 +418,10 @@ async fn handle(
                                         match serde_json::to_vec(&value) {
                                             Ok(encoded) => {
                                                 turn.requests = turn.requests.saturating_add(1);
+                                                bound_turn = Some((
+                                                    turn.reservation_id.clone(),
+                                                    turn.model.clone(),
+                                                ));
                                                 Ok(encoded)
                                             }
                                             Err(_) => Err((500, "request encoding failed")),
@@ -330,6 +437,21 @@ async fn handle(
                 Ok(encoded) => body = encoded,
                 Err((status, message)) => {
                     write_status(&mut stream, status, message).await?;
+                    return Ok(());
+                }
+            }
+            if let Some(binder) = &config.turn_binder {
+                let Some((reservation_id, model)) = bound_turn else {
+                    write_status(&mut stream, 403, "provider turn was not authorized").await?;
+                    return Ok(());
+                };
+                let digest = sha256_hex(&body);
+                if let Err(error) = binder
+                    .bind(&reservation_id, &digest, &model, path, body.len())
+                    .await
+                {
+                    tracing::warn!(%error, "provider turn binding refused");
+                    write_status(&mut stream, 403, "provider request binding refused").await?;
                     return Ok(());
                 }
             }
@@ -419,6 +541,13 @@ async fn handle(
     }
     stream.write_all(b"0\r\n\r\n").await?;
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn upstream_origin(config: &EgressConfig) -> String {

@@ -59,6 +59,26 @@ struct ProviderTurnRelease {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ProviderTurnBind {
+    session_record_id: String,
+    worker_id: String,
+    generation: i64,
+    reservation_id: String,
+    request_sha256: String,
+    model: String,
+    path: String,
+    body_bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveProviderTurn {
+    actor: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderTurnSettle {
     usage: factory_native::db::ProviderTurnUsage,
 }
@@ -458,6 +478,14 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/worker/provider_turn_release",
             post(worker_provider_turn_release),
+        )
+        .route(
+            "/worker/provider_turn_bind",
+            post(worker_provider_turn_bind),
+        )
+        .route(
+            "/provider/turn_reservations/{id}/resolve",
+            post(resolve_provider_turn),
         )
         .route("/provider/sessions", get(provider_sessions))
         .route(
@@ -1155,6 +1183,52 @@ async fn worker_provider_turn_release(
     match app
         .db
         .release_provider_turn(&input.reservation_id, "worker released turn")
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_turn_bind(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ProviderTurnBind>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .bind_provider_turn(&factory_native::db::ProviderTurnBindingInput {
+            reservation_id: input.reservation_id,
+            session_record_id: input.session_record_id,
+            worker_id: input.worker_id,
+            generation: input.generation,
+            request_sha256: input.request_sha256,
+            model: input.model,
+            path: input.path,
+            body_bytes: input.body_bytes,
+        })
+        .await
+    {
+        Ok(binding) => (StatusCode::OK, Json(binding)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn resolve_provider_turn(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ResolveProviderTurn>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .resolve_provider_turn_reservation(&id, &input.actor, &input.reason)
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
