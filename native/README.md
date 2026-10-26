@@ -105,7 +105,6 @@ The report's repair candidate is not merged yet; the merged baseline remains
 the migration-closure status authority.
 
 ## Factory-managed browser checks
-## Factory-managed browser checks
 
 `factory-browser` provides a bounded external test-server lifecycle and a real
 Chromium check through the pinned Playwright tooling. It is a Worker-side
