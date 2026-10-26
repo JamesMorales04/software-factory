@@ -35,9 +35,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cargo/bin:/home/factory/.cargo/bin:${PATH}
 
 # Rust 1.90.0 is pinned by rust-toolchain.toml. The base image provides the
-# pinned toolchain; only the formatter and linter components used by the
-# repository gates are added.
-RUN rustup component add clippy rustfmt
+# pinned toolchain; add the formatter, linter, language server and standard
+# library source components used by repository gates and editor tooling.
+RUN rustup component add clippy rustfmt rust-analyzer rust-src
 
 # Build prerequisites for the Rust workspace and its SQLite/SQLx tooling.
 # Go is deliberately absent: ADR-0018 selects Rust for Core, Worker, provider

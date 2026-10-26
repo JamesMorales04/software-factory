@@ -37,7 +37,7 @@ The `Containerfile` is a multi-stage build:
 | Component | Pin | Source |
 |---|---|---|
 | Rust | 1.90.0 | `rust-toolchain.toml`; official `rust:1.90.0-bookworm` base |
-| Rust components | `clippy`, `rustfmt` | Added by the Containerfile |
+| Rust components | `clippy`, `rustfmt`, `rust-analyzer`, `rust-src` | Declared by `rust-toolchain.toml` and added by the Containerfile |
 | Node.js and npm | 22.23.2 | `.nvmrc`; copied from the pinned official Node image |
 | SQLx CLI | 0.8.6 | Containerfile build step with SQLite and rustls features; see the command table |
 | Git and build tools | Debian Bookworm packages | `git`, `build-essential`, `pkg-config`, `libssl-dev`, `libsqlite3-dev`, `ca-certificates`, `curl`, `sqlite3` |
@@ -97,6 +97,7 @@ Every command named in this guide is listed in the table below with an explicit 
 | Command | Status | Notes |
 |---|---|---|
 | `cargo install sqlx-cli --version 0.8.6 --locked --no-default-features --features rustls,sqlite` | `IMPLEMENTED` as a Containerfile build step | Image build `NOT_TESTED` |
+| `rustup component add clippy rustfmt rust-analyzer rust-src` | `IMPLEMENTED` | Declared by `rust-toolchain.toml`; the Containerfile installs the same set |
 | `cargo fmt --all -- --check` | `IMPLEMENTED` | Repository gate; not run in this change |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | `IMPLEMENTED` | Repository gate; not run in this change |
 | `cargo test --workspace --locked` | `IMPLEMENTED` | Repository gate; not run in this change |
@@ -108,6 +109,21 @@ Every command named in this guide is listed in the table below with an explicit 
 | `podman build` / `podman run` for this configuration | `LOCALLY_VERIFIED` with host-network caveat; not Factory automation | Author run on Podman 6.1.4 rootless: default build network failed (`pasta failed ... /dev/net/tun`), `--network=host` succeeded; container also run with `--network=host` |
 
 No `go` command is part of this container or the supported workflow.
+
+## Editor and language server
+
+The development container includes the `rust-lang.rust-analyzer` extension and
+the pinned `rust-analyzer` toolchain component. Open the repository root; the
+extension reads `rust-toolchain.toml` and uses the 1.90.0 sysroot and component
+set. `rust-src` enables standard-library source navigation without a custom
+sysroot path.
+
+To select the pinned component server explicitly in VS Code/Code OSS, set
+`rust-analyzer.server.path` in **your user or workspace settings** to the
+output of `rustup which rust-analyzer`. Do not commit an absolute path or a
+global editor setting. If the extension uses its bundled server instead, keep
+the extension and the pinned toolchain updated together; both read the same
+workspace and `Cargo.lock`. See [editor setup](editor-setup.md).
 
 ## Intended workflow
 
