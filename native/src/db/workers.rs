@@ -350,7 +350,7 @@ impl Database {
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
-             AND r.status IN ('QUEUED','RUNNING')
+             AND r.status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')
              AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
              ORDER BY a.created_at,a.id LIMIT 1",
@@ -395,7 +395,9 @@ impl Database {
             .execute(&mut *transaction)
             .await?;
         let run_changed =
-            sqlx::query::query("UPDATE runs SET status='RUNNING' WHERE id=?1 AND status='QUEUED'")
+            sqlx::query::query(
+                "UPDATE runs SET status='RUNNING' WHERE id=?1 AND status IN ('QUEUED','REPAIR_REQUIRED')",
+            )
                 .bind(&run_id)
                 .execute(&mut *transaction)
                 .await?
@@ -626,7 +628,7 @@ impl Database {
             .execute(&mut *transaction)
             .await?;
         let run_changed = sqlx::query::query(
-            "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING')",
+            "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')",
         )
         .bind(&report.terminal_status)
         .bind(&run_id)
