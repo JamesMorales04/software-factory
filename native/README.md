@@ -124,7 +124,7 @@ Required Worker settings in addition to the egress settings above:
 ```sh
 export FACTORY_PROVIDER_SANDBOX=bwrap
 export FACTORY_PROVIDER_KIND=codex
-export FACTORY_PROVIDER_BINARY=/absolute/path/to/codex
+export FACTORY_PROVIDER_BINARY=/absolute/path/to/native/codex   # not the npm shim
 export FACTORY_PROVIDER_EGRESS_BRIDGE=/absolute/path/to/factory-egress-bridge
 export FACTORY_PROVIDER_UPSTREAM_URL=https://api.openai.com/v1
 export FACTORY_PROVIDER_UPSTREAM_TOKEN=...                  # never commit
@@ -133,6 +133,8 @@ export FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION=...
 export FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION=...
 ```
 
+The binary must be the native vendor executable, not the npm/mise launcher
+shim; the sandbox bind-mounts one executable and the shim's module lookup fails.
 The Worker uses a private `CODEX_HOME` under the disposable session directory,
 a generated Git session root, the loopback egress bridge, and no operator HOME
 or `~/.codex`. It declares the dynamic tools at thread start, divides the turn

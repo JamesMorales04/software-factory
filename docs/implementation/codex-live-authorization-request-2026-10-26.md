@@ -9,7 +9,7 @@ does not authorize these turns.
 | Field | Value |
 |---|---|
 | Provider route | `codex/gpt-6-luna` |
-| Provider executable | Codex CLI/App Server `0.156.1`, absolute path pinned by the operator |
+| Provider executable | Codex CLI/App Server `0.156.1`, native vendor binary at an absolute path (not the npm shim) |
 | Execution mode | `TRUSTED_LOCAL_PROVIDER` (not ISOLATED; not certified isolation) |
 | Project | disposable Git repository, created for this run only |
 | Objective | small Rust pricing/discount fix with deterministic tests |
