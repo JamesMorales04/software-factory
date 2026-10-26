@@ -416,6 +416,14 @@ async fn handle(
                                                     serde_json::Value::from(max_output),
                                                 );
                                             }
+                                            if path == "/v1/chat/completions" {
+                                                object
+                                                    .insert("n".into(), serde_json::Value::from(1));
+                                                object.insert(
+                                                    "best_of".into(),
+                                                    serde_json::Value::from(1),
+                                                );
+                                            }
                                         }
                                         match serde_json::to_vec(&value) {
                                             Ok(encoded) => {

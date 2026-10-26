@@ -524,6 +524,7 @@ struct ProviderContext<'a> {
     directory: &'a str,
     api_directory: &'a str,
     provider_session: &'a std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    usage_tracker: &'a std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
     turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
@@ -610,6 +611,8 @@ async fn execute_provider_assignment(
     let turn_policy: SharedTurnPolicy = std::sync::Arc::new(std::sync::Mutex::new(None));
     let provider_session: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
+    let usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>> =
+        std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default()));
     let provider_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
     let turn_binder = if provider_kind == "opencode" {
         Some(factory_native::provider_egress::TurnBinder::new(
@@ -673,6 +676,7 @@ async fn execute_provider_assignment(
                 &directory
             },
             provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
@@ -694,6 +698,7 @@ async fn execute_provider_assignment(
                 &directory
             },
             provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
@@ -769,6 +774,7 @@ async fn execute_provider_assignment(
             Ok(run.candidate)
         }
         Err(error) => {
+            let tracked_usage = usage_tracker.lock().map(|usage| *usage).unwrap_or_default();
             let terminal = ProviderTerminal {
                 session_record_id: session_record_id.clone(),
                 worker_id: worker_id.into(),
@@ -776,11 +782,11 @@ async fn execute_provider_assignment(
                 state: "FAILED".into(),
                 provider_session_id: provider_session_id.clone(),
                 turn_id: String::new(),
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                cost_micros: 0,
-                usage_known: false,
+                input_tokens: tracked_usage.input_tokens,
+                output_tokens: tracked_usage.output_tokens,
+                total_tokens: tracked_usage.total_tokens,
+                cost_micros: tracked_usage.cost_micros,
+                usage_known: tracked_usage.known,
                 cleanup_receipt: cleanup_receipt.clone(),
                 error: error.to_string(),
             };
@@ -1422,6 +1428,9 @@ async fn run_provider_tool_loop(
         usage.total_tokens = usage.total_tokens.saturating_add(turn_usage.total_tokens);
         usage.cost_micros = usage.cost_micros.saturating_add(turn_usage.cost_micros);
         usage.known = usage.known || turn_usage.known;
+        if let Ok(mut tracker) = context.usage_tracker.lock() {
+            *tracker = usage;
+        }
         let action = match extract_action(&message) {
             Ok(action) => action,
             Err(error) => {
@@ -2374,6 +2383,9 @@ async fn run_provider_patch(
         }
     }
     let usage = extract_usage(&response);
+    if let Ok(mut tracker) = context.usage_tracker.lock() {
+        *tracker = usage;
+    }
     if let Some(turn) = &turn {
         settle_provider_turn(context, &turn.reservation_id, &usage).await?;
     }

@@ -497,7 +497,6 @@ impl Database {
              SET input_tokens=input_tokens+?1,output_tokens=output_tokens+?2,
                  total_tokens=total_tokens+?3,cost_micros=cost_micros+?4,
                  usage_known=0,
-                 state=CASE WHEN state IN ('INTENT','ACTIVE','CANCEL_REQUESTED') THEN 'FAILED' ELSE state END,
                  error=?5,updated_at=?6
              WHERE session_record_id=?7",
         )
@@ -580,6 +579,11 @@ impl Database {
         if state != "RESERVED" {
             return Err(Error::Conflict("provider turn is not reserved"));
         }
+        if !usage.usage_known {
+            return Err(Error::Forbidden(
+                "provider turn usage is unknown; operator resolution is required".into(),
+            ));
+        }
         let max_input: i64 = row.try_get("max_input_tokens")?;
         let max_output: i64 = row.try_get("max_output_tokens")?;
         let max_total: i64 = row.try_get("max_total_tokens")?;
@@ -592,14 +596,9 @@ impl Database {
             .map_err(|_| Error::Invalid("provider turn total usage"))?;
         let cost = i64::try_from(usage.cost_micros)
             .map_err(|_| Error::Invalid("provider turn cost usage"))?;
-        let exceeds = input > max_input
-            || output > max_output
-            || total > max_total
-            || cost > max_cost
-            || !usage.usage_known;
-        let error = if !usage.usage_known {
-            "provider turn usage is unknown"
-        } else if exceeds {
+        let exceeds =
+            input > max_input || output > max_output || total > max_total || cost > max_cost;
+        let error = if exceeds {
             "provider turn exceeded its authorized budget"
         } else {
             ""
@@ -646,17 +645,6 @@ impl Database {
             ),
         )
         .await?;
-        if exceeds {
-            sqlx::query::query(
-                "UPDATE provider_sessions SET state='FAILED',error=?1,updated_at=?2
-                 WHERE session_record_id=?3 AND state IN ('INTENT','ACTIVE','CANCEL_REQUESTED')",
-            )
-            .bind(error)
-            .bind(&now)
-            .bind(&session_record_id)
-            .execute(&mut *transaction)
-            .await?;
-        }
         transaction.commit().await?;
         if exceeds {
             return Err(Error::Forbidden(error.into()));
@@ -967,11 +955,29 @@ impl Database {
             .bind(&record_id)
             .fetch_one(&mut *transaction)
             .await?;
-        let next_input = used_input.saturating_add(input.input_tokens.min(i64::MAX as u64) as i64);
-        let next_output =
-            used_output.saturating_add(input.output_tokens.min(i64::MAX as u64) as i64);
-        let next_total = used_total.saturating_add(input.total_tokens.min(i64::MAX as u64) as i64);
-        let next_cost = used_cost.saturating_add(input.cost_micros.min(i64::MAX as u64) as i64);
+        let existing: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT input_tokens,output_tokens,total_tokens,cost_micros
+             FROM provider_sessions WHERE session_record_id=?1",
+        )
+        .bind(&record_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let session_input = existing
+            .0
+            .max(input.input_tokens.min(i64::MAX as u64) as i64);
+        let session_output = existing
+            .1
+            .max(input.output_tokens.min(i64::MAX as u64) as i64);
+        let session_total = existing
+            .2
+            .max(input.total_tokens.min(i64::MAX as u64) as i64);
+        let session_cost = existing
+            .3
+            .max(input.cost_micros.min(i64::MAX as u64) as i64);
+        let next_input = used_input.saturating_add(session_input);
+        let next_output = used_output.saturating_add(session_output);
+        let next_total = used_total.saturating_add(session_total);
+        let next_cost = used_cost.saturating_add(session_cost);
         let over_budget = next_input > max_input
             || next_output > max_output
             || next_total > max_total
@@ -1001,10 +1007,10 @@ impl Database {
         .bind(stored_state)
         .bind(nullable(&input.provider_session_id))
         .bind(nullable(&input.turn_id))
-        .bind(i64::try_from(input.input_tokens).map_err(|_| Error::Invalid("provider input usage"))?)
-        .bind(i64::try_from(input.output_tokens).map_err(|_| Error::Invalid("provider output usage"))?)
-        .bind(i64::try_from(input.total_tokens).map_err(|_| Error::Invalid("provider total usage"))?)
-        .bind(i64::try_from(input.cost_micros).map_err(|_| Error::Invalid("provider cost usage"))?)
+        .bind(session_input)
+        .bind(session_output)
+        .bind(session_total)
+        .bind(session_cost)
         .bind(i64::from(input.usage_known))
         .bind(nullable(&input.cleanup_receipt))
         .bind(nullable(error))
@@ -1453,6 +1459,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_turn_usage_leaves_the_bound_reservation_reserved() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64))
+            .await
+            .unwrap();
+        db.bind_provider_turn(&ProviderTurnBindingInput {
+            reservation_id: turn.reservation_id.clone(),
+            session_record_id: session.clone(),
+            worker_id: "worker".into(),
+            generation: 1,
+            request_sha256: "b".repeat(64),
+            model: "deepseek-v4.1-flash".into(),
+            path: "/v1/chat/completions".into(),
+            body_bytes: 123,
+        })
+        .await
+        .unwrap();
+        let result = db
+            .settle_provider_turn(&ProviderTurnUsage {
+                reservation_id: turn.reservation_id.clone(),
+                worker_id: "worker".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+            })
+            .await;
+        assert!(matches!(result, Err(Error::Forbidden(_))), "{result:?}");
+        let (state,): (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "RESERVED");
+        db.resolve_provider_turn_reservation(&turn.reservation_id, "operator", "unknown usage")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_preserves_prior_settled_session_usage() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64))
+            .await
+            .unwrap();
+        db.settle_provider_turn(&ProviderTurnUsage {
+            reservation_id: turn.reservation_id,
+            worker_id: "worker".into(),
+            input_tokens: 4,
+            output_tokens: 20,
+            total_tokens: 24,
+            cost_micros: 100,
+            usage_known: true,
+        })
+        .await
+        .unwrap();
+        db.record_provider_terminal(&ProviderTerminal {
+            session_record_id: session.clone(),
+            worker_id: "worker".into(),
+            generation: 1,
+            state: "FAILED".into(),
+            provider_session_id: "ses_prior".into(),
+            turn_id: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            cost_micros: 0,
+            usage_known: false,
+            cleanup_receipt: "sandbox_process_terminated_verified".into(),
+            error: "failed after one settled turn".into(),
+        })
+        .await
+        .unwrap();
+        let (input, output, total, cost): (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT input_tokens,output_tokens,total_tokens,cost_micros
+             FROM provider_sessions WHERE session_record_id=?1",
+        )
+        .bind(&session)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!((input, output, total, cost), (4, 20, 24, 100));
+    }
+
+    #[tokio::test]
     async fn provider_turn_authorization_reserves_settles_and_fences_budget() {
         let (path, db, session) = active_turn_fixture(10).await;
         let digest = "a".repeat(64);
@@ -1543,7 +1639,14 @@ mod tests {
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!(state, "FAILED");
+        assert_eq!(state, "ACTIVE");
+        let (reservation_state,): (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE session_record_id='session-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(reservation_state, "RESERVED");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
