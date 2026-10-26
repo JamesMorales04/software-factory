@@ -2093,11 +2093,18 @@ mod tests {
         .await
         .unwrap();
 
+        assert_eq!(db.provider_session(&session).await.unwrap().state, "ACTIVE");
         let revoked = db
             .revoke_standing_delegation("grant", Utc::now())
             .await
             .unwrap();
         assert!(revoked.revoked_at.is_some());
+        let (lead_state,): (String,) =
+            sqlx::query_as::query_as("SELECT state FROM lead_requests WHERE id='request'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(lead_state, "BLOCKED");
 
         let (state, error): (String, Option<String>) = sqlx::query_as::query_as(
             "SELECT state,error FROM provider_sessions WHERE session_record_id=?1",

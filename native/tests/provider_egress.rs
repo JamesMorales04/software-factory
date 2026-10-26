@@ -563,10 +563,14 @@ async fn broker_does_not_retry_an_upstream_that_drops_the_connection() {
         .json(&serde_json::json!({"model":"mock-model","input":"hello"}))
         .send()
         .await;
-    if let Ok(response) = response {
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    match response {
+        Ok(response) => assert_eq!(response.status(), StatusCode::BAD_GATEWAY),
+        Err(error) => assert!(
+            error.is_connect() || error.is_request() || error.is_body(),
+            "unexpected client error: {error}"
+        ),
     }
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
         connections.load(Ordering::SeqCst),
         1,

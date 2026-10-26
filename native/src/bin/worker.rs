@@ -1208,6 +1208,14 @@ async fn start_provider_runtime(
     }
 }
 
+fn opencode_first_action_instruction(allowed_tools: &[String]) -> &'static str {
+    if allowed_tools.iter().any(|tool| tool == "write_file") {
+        "Your FIRST response MUST be exactly one write_file tool_request JSON object that writes a complete corrected file; do not return a final response and do not describe intended work before at least one file has been written."
+    } else {
+        "Use only the authorized tools and stay within the frozen scope."
+    }
+}
+
 fn opencode_disabled_tools() -> serde_json::Value {
     json!({
         "bash": false,
@@ -1423,7 +1431,8 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. Your FIRST response MUST be exactly one write_file tool_request JSON object that writes a complete corrected file; do not return a final response and do not describe intended work before at least one file has been written. You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
             context.assignment.action_spec.objective,
@@ -3898,7 +3907,18 @@ fn validated_loopback_url(
 
 #[cfg(test)]
 mod tests {
-    use super::validated_loopback_url;
+    use super::{opencode_first_action_instruction, validated_loopback_url};
+
+    #[test]
+    fn first_action_instruction_requires_a_write_only_when_authorized() {
+        let write = vec!["write_file".to_string(), "run_command".to_string()];
+        assert!(
+            opencode_first_action_instruction(&write)
+                .contains("FIRST response MUST be exactly one write_file")
+        );
+        let command_only = vec!["run_command".to_string()];
+        assert!(!opencode_first_action_instruction(&command_only).contains("write_file"));
+    }
 
     #[test]
     fn rejects_userinfo_host_bypass() {
