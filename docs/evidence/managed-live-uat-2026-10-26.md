@@ -228,9 +228,10 @@ bounded header subset, while the ChatGPT backend requires the Codex OAuth
 access token and account header to be owned and refreshed by Codex outside the
 model request. Exporting those tokens from `~/.codex/auth.json` would be
 unsupported credential extraction, and allowing Codex to hold them inside the
-sandbox would violate the credential boundary. The supported route remains an
-operator-supplied API key with `https://api.openai.com/v1` as the pinned
-upstream. The earlier test-only ChatGPT proxy is **not** part of the product.
+sandbox would violate the credential boundary. The only supported
+authentication mode remains an operator-supplied API key with
+`https://api.openai.com/v1` as the pinned upstream; live Codex inference is
+NOT_TESTED. The earlier test-only ChatGPT proxy is **not** part of the product.
 
 ## 10. Failures found and disposition
 
