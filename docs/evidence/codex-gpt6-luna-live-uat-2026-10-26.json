@@ -1,0 +1,120 @@
+{
+  "campaign": "F1-S4-Codex-GPT6-Luna-Live-UAT",
+  "date": "2026-10-26",
+  "provider": "codex",
+  "model": "gpt-6-luna",
+  "codex_version": "0.156.1",
+  "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+  "isolation": "NOT_ISOLATED",
+  "transport": "Codex App Server 0.156.1 -> Factory egress broker -> test-only local ChatGPT Responses proxy",
+  "candidate": {
+    "candidate_record_id": "1d79d4e8-46da-4120-a13d-db6c152ae90b",
+    "commit_sha": "635336d3d525a20ab4079ae04586c4e2f7f1ab74",
+    "source": "src/lib.rs",
+    "source_after": "pub fn discount(cents: u64) -> u64 {\n    cents - cents / 10\n}\n"
+  },
+  "core_usage": {
+    "session_state": "COMPLETED",
+    "input_tokens": 6342,
+    "output_tokens": 186,
+    "total_tokens": 6528,
+    "configured_rate_cost_micros": 7086,
+    "usage_known": true,
+    "cleanup_receipt": "sandbox_process_identity_absent"
+  },
+  "turn_reservation": {
+    "state": "SETTLED",
+    "requests_bound": 3,
+    "max_requests": 8,
+    "usage_known": true
+  },
+  "egress_requests": [
+    {
+      "sequence": 0,
+      "model": "gpt-6-luna",
+      "path": "/v1/responses",
+      "body_bytes": 11264
+    },
+    {
+      "sequence": 1,
+      "model": "gpt-6-luna",
+      "path": "/v1/responses",
+      "body_bytes": 11700
+    },
+    {
+      "sequence": 2,
+      "model": "gpt-6-luna",
+      "path": "/v1/responses",
+      "body_bytes": 12667
+    }
+  ],
+  "tool_events": [
+    {
+      "call_id": "call_78bbc29243284cb5ab493ab43ef38fe0",
+      "tool": "write_file",
+      "decision": "REQUEST",
+      "detail": "dynamic tool requested"
+    },
+    {
+      "call_id": "call_78bbc29243284cb5ab493ab43ef38fe0",
+      "tool": "write_file",
+      "decision": "ALLOW",
+      "detail": "path authorized"
+    },
+    {
+      "call_id": "call_78bbc29243284cb5ab493ab43ef38fe0",
+      "tool": "write_file",
+      "decision": "RESULT",
+      "detail": "write applied"
+    },
+    {
+      "call_id": "call_e952530a066c40a0b4515250eb694a7a",
+      "tool": "run_command",
+      "decision": "REQUEST",
+      "detail": "dynamic tool requested"
+    },
+    {
+      "call_id": "call_e952530a066c40a0b4515250eb694a7a",
+      "tool": "run_command",
+      "decision": "ALLOW",
+      "detail": "frozen check authorized"
+    },
+    {
+      "call_id": "call_e952530a066c40a0b4515250eb694a7a",
+      "tool": "run_command",
+      "decision": "RESULT",
+      "detail": "exit=Some(0)"
+    },
+    {
+      "call_id": "final-explanation",
+      "tool": "final",
+      "decision": "RESULT",
+      "detail": "Updated discount to return 90% of the input, rounding the discount down; tests pass."
+    }
+  ],
+  "verifier": {
+    "mechanism": "DETERMINISTIC_EXECUTED",
+    "result": "PASS",
+    "log": "verifier PASS for 635336d3d525a20ab4079ae04586c4e2f7f1ab74"
+  },
+  "reviewer": {
+    "mechanism": "DETERMINISTIC",
+    "result": "PASS",
+    "log": "{\"candidateId\":\"1d79d4e8-46da-4120-a13d-db6c152ae90b\",\"commitSha\":\"635336d3d525a20ab4079ae04586c4e2f7f1ab74\",\"costMicros\":0,\"findings\":[],\"inputTokens\":0,\"mechanism\":\"DETERMINISTIC\",\"modelName\":\"\",\"modelProvider\":\"\",\"modelRequestSha256\":\"\",\"modelReservationId\":\"\",\"outputTokens\":0,\"totalTokens\":0,\"treeSha\":\"994c5eee49f5128a3fb99d7654df691cf7adfc87\",\"usageKnown\":false,\"verdict\":\"PASS\"}"
+  },
+  "quality_gate": "ACCEPTED",
+  "billing": {
+    "configured_rates_micros_per_million": {
+      "input": 1000000,
+      "output": 4000000
+    },
+    "computed_cost_micros": 7086,
+    "note": "Configured-rate estimate, not an external invoice. No retries were made after the accepted candidate."
+  },
+  "limitations": [
+    "Live inference used a test-only local proxy mapping Factory /v1/responses to the authenticated ChatGPT Codex backend; this proxy is not part of the merged Factory runtime.",
+    "The independent verifier ran deterministic cargo tests; the semantic MODEL reviewer was not exercised in this live UAT.",
+    "Only one session and three provider egress requests were made; no live cancellation, revocation or ISOLATED execution was tested.",
+    "No human security certification, deployment, Windows support or ISOLATED/SEC-01 certification is claimed."
+  ]
+}
