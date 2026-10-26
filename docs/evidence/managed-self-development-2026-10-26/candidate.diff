@@ -1,0 +1,32 @@
+diff --git a/factory-cli/src/text.rs b/factory-cli/src/text.rs
+index c4c41a4..bce511b 100644
+--- a/factory-cli/src/text.rs
++++ b/factory-cli/src/text.rs
+@@ -8,3 +8,27 @@ pub(crate) fn one_line(value: &str, max_chars: usize) -> String {
+         kept
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::one_line;
++
++    #[test]
++    fn flattens_newlines() {
++        assert_eq!(one_line("a\nb", 10), "a b");
++        assert_eq!(one_line("a\rb", 10), "a b");
++        assert_eq!(one_line("a\r\nb", 10), "a  b");
++    }
++
++    #[test]
++    fn preserves_exact_length_without_ellipsis() {
++        assert_eq!(one_line("abcde", 5), "abcde");
++        assert_eq!(one_line("", 0), "");
++    }
++
++    #[test]
++    fn truncates_with_ellipsis() {
++        assert_eq!(one_line("abcdef", 3), "abc...");
++        assert_eq!(one_line("abcdef", 0), "...");
++    }
++}

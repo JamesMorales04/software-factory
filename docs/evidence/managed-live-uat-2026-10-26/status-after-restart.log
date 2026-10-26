@@ -1,0 +1,20 @@
+Factory status
+Container: factory-managed-live2-core
+Data volume: factory-managed-live2-data
+Image: localhost/software-factory-core:dev
+Core URL: http://127.0.0.1:8893
+Token file: /tmp/factory-managed-live-1793031189/core.env
+Core model env file: /tmp/factory-managed-live-1793031189/model.env
+Core model route: provider=opencode-go, model=deepseek-v4.1-flash, endpoint=https://opencode.ai, token=set, autonomous_start=true
+Worker provider env file: /tmp/factory-managed-live-1793031189/provider.env
+Worker provider profile: kind=opencode, sandbox=bwrap, upstream=https://opencode.ai, binary=configured, session_root=configured
+PASS    Podman executable: podman version 6.1.4
+Project roots: 1
+PASS    Sandbox Supervisor: running
+PASS    Host Worker: running
+PASS    Worker provider config: active (kind=opencode, sandbox=bwrap, upstream=https://opencode.ai, binary=configured, session_root=configured)
+PASS    Podman rootless: true
+PASS    Container state: running
+PASS    Core model config: container fingerprint=4c8908ae7e0bdbff5abd46e841d556b56a68bb5d70e3508dc3ecc97a1fa52c2a
+PASS    OCI runtime image: localhost/software-factory-core:dev is present
+PASS    Core health: HTTP 200 {"healthy":true,"version":"0.1.0"}

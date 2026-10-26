@@ -3,7 +3,7 @@
 
 > **Authority:** [ADR-0018](decisions/ADR-0018-native-rust-replacement.md) governs the native Rust architecture. Rust engineering rules are normative in [rust-standards.md](../engineering/rust-standards.md). Historical ADRs remain provenance; they are not current runtime authority.
 
-> **Status:** The current Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume fixture execution, sandboxed verification, the deterministic gate, Core-owned model-call budgets, model-backed Lead, semantic Reviewer with deterministic pre-review, CAP-014 raw-output execution, bounded OTLP log export and a managed real-Chromium browser check are implemented. S4-D crash/browser-multi-unit/live-provider gaps, human review and independent isolation remain open. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
+> **Status:** The current Rust implementation, migration gaps and evidence are in [native-rust-closure.md](../implementation/native-rust-closure.md) and [ADR-0018](decisions/ADR-0018-native-rust-replacement.md). Deployed Rust Core/Office, managed Supervisor/Worker, named-volume execution, sandboxed verification, the deterministic gate, Core-owned model-call budgets, model-backed Lead, semantic Reviewer with deterministic pre-review, CAP-014 raw-output execution, bounded OTLP log export, a managed real-Chromium browser check, OpenCode and Codex App Server coding adapters, run lifecycle projection and the pinned Rust editor setup are implemented. A managed external-project OpenCode/DeepSeek journey reached an independently verified and semantically reviewed `ACCEPTED` candidate, and a bounded self-development run reached `ACCEPTED` in a disposable clone. Codex native ChatGPT-authenticated live inference, paid in-flight cancellation/revocation, browser multi-unit execution, human review and independent isolation remain open. No component is certified beyond recorded candidate-bound evidence. **Permanent repository:** `JamesMorales04/software-factory`.
 
 ## 1. Product mission and priorities
 
@@ -30,7 +30,7 @@ Normative documents describe policy; **enforced Core policy** controls actions. 
 | Identity | Permanent public repo `JamesMorales04/software-factory` | Agreed |
 | Product | Central, independent, local-first and multi-project | Agreed |
 | Deployment | Local Worker first, expandable to owned/cloud-managed remote Workers | Agreed |
-| Coding runtime | Direct Codex/OpenCode adapters behind a Rust provider port; Factory owns API/UI/policy. Provider coding remains fail-closed. | Agreed (ADR-0018) |
+| Coding runtime | Direct Codex/OpenCode adapters behind a Rust provider port; Factory owns API/UI/policy. OpenCode live acceptance passed; Codex is deterministic-tested with native ChatGPT auth blocked. | Agreed (ADR-0018) |
 | UI | Real minimum Factory Office web interface required in F1 | Agreed |
 | Execution | Per-Run sandbox default; authorized, auditable host exceptions only | Agreed |
 | Autonomy | Standing autonomous monitoring and maintenance within bounds | Agreed |

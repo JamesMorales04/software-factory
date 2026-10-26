@@ -1,0 +1,9 @@
+Factory doctor
+PASS    Core URL: http://127.0.0.1:8893
+PASS    Core model env: /tmp/factory-managed-live-1793031189/model.env; provider=opencode-go, model=deepseek-v4.1-flash, endpoint=https://opencode.ai, token=set, autonomous_start=true
+PASS    Worker provider env: /tmp/factory-managed-live-1793031189/provider.env; kind=opencode, sandbox=bwrap, upstream=https://opencode.ai, binary=configured, session_root=configured
+PASS    Podman executable: podman version 6.1.4
+PASS    Podman rootless: true
+PASS    OCI runtime image: localhost/software-factory-core:dev is present
+PASS    Core health: HTTP 200 {"healthy":true,"version":"0.1.0"}
+doctor: PASS (required start prerequisites are satisfied)

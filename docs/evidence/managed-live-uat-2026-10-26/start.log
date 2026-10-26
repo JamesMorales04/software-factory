@@ -1,0 +1,17 @@
+Factory start
+Image: localhost/software-factory-core:dev
+Container: factory-managed-live2-core
+Data volume: factory-managed-live2-data
+Core model env file: /tmp/factory-managed-live-1793031189/model.env
+Core model route: provider=opencode-go, model=deepseek-v4.1-flash, endpoint=https://opencode.ai, token=set, autonomous_start=true
+Worker provider env file: /tmp/factory-managed-live-1793031189/provider.env
+Worker provider profile: kind=opencode, sandbox=bwrap, upstream=https://opencode.ai, binary=configured, session_root=configured
+Token file: /tmp/factory-managed-live-1793031189/core.env
+Data volume factory-managed-live2-data: created
+Container factory-managed-live2-core: started (bb801f8eb365)
+Office URL: http://127.0.0.1:8893
+Core health: HTTP 200
+Host execution: enabled
+Sandbox Supervisor: http://127.0.0.1:8894
+Host runtime state: /tmp/factory-managed-live-1793031189/runtime
+Worker provider config: active (kind=opencode, sandbox=bwrap, upstream=https://opencode.ai, binary=configured, session_root=configured)

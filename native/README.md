@@ -1,6 +1,6 @@
 # Native Factory
 
-For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds, an explicit Lead-start authorization path and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end. An explicitly authorized TRUSTED_LOCAL_PROVIDER OpenCode tool loop is implemented on this branch and has a bounded real DeepSeek acceptance record in [F1-S4-LIVE-UAT](../docs/evidence/f1-s4-live-uat-2026-10-25.md); it is not merged or certified on `main`. Codex coding, ISOLATED mode and certification remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
+For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE and TRUSTED_LOCAL_PROVIDER Campaigns, managed Worker/Supervisor execution through `factory start`, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, model-backed Lead/delegation/CAP-014 paths, explicit Lead-start authorization and a Rust-backed Office. OpenCode coding has a bounded managed live acceptance record in [managed-live-uat-2026-10-26.md](../docs/evidence/managed-live-uat-2026-10-26.md); a controlled self-development candidate reached `ACCEPTED` in [managed-self-development-2026-10-26.md](../docs/evidence/managed-self-development-2026-10-26.md). Codex App Server coding is implemented and deterministic-tested; native ChatGPT-authenticated live inference remains blocked; an operator API-key route is configured and preflighted, but live Codex inference is not tested. ISOLATED mode and certification remain fail-closed. Bounded parallel/fan-in WorkGraph execution, cancellation, revocation fencing and recovery are deterministically verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
 
 Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
 
@@ -110,9 +110,10 @@ extends the lease by 60 seconds every 15 seconds, and a failed provider
 check-command leaves the worktree available for a later write or finalize.
 
 This path is TRUSTED_LOCAL, not SEC-01 isolation. Do not claim credential
-confinement or ISOLATED certification. A live acceptance journey and its
-measured usage are recorded in
-[the F1-S4-LIVE-UAT report](../docs/evidence/f1-s4-live-uat-2026-10-25.md).
+confinement or ISOLATED certification. The current managed live acceptance
+journey and its measured usage are recorded in
+[the managed live UAT report](../docs/evidence/managed-live-uat-2026-10-26.md);
+the earlier F1-S4-LIVE-UAT report remains historical evidence.
 
 ## Codex App Server provider (TRUSTED_LOCAL_PROVIDER)
 
@@ -167,6 +168,18 @@ CODEX_BIN=/absolute/path/to/codex \
   cargo test -p factory-native --test e2e_fixture_dispatch codex_ --locked
 ```
 
+`factory doctor` and `factory start` accept the same strict Codex Worker
+profile with the native vendor binary, egress bridge, pinned upstream and both
+`FACTORY_PROVIDER_CODEX_*_COST_MICROS_PER_MILLION` rates. A placeholder-token
+managed preflight passed without inference; see the
+[Codex managed configuration evidence](../docs/evidence/codex-managed-config-2026-10-26/doctor.log).
+The only supported live authentication mode is an operator API key at `https://api.openai.com/v1`; no live Codex inference has been run.
+Native ChatGPT OAuth authentication is **BLOCKED** by the current egress
+boundary: Codex owns and refreshes the ChatGPT access token and account header,
+while the broker injects one pinned bearer credential and cannot safely import
+or pass through those credentials. The earlier test-only ChatGPT proxy is not
+part of the product.
+
 `codex_dynamic_tools` drives the real App Server against a loopback Responses
 mock. `codex_real_executable_reaches_a_candidate_and_binds_upstream_requests`
 drives the real binary through Core, Worker, Supervisor and the egress broker
@@ -177,9 +190,11 @@ model call. A separately authorized bounded GPT-6 Luna live UAT passed on
 2026-10-26 with candidate `635336d3d525a20ab4079ae04586c4e2f7f1ab74`, an
 independent deterministic verifier and an `ACCEPTED` gate. It used a test-only
 local proxy to the authenticated ChatGPT Codex backend; native ChatGPT-backend
-configuration, live semantic model review, native cost verification and
+configuration, Codex-native semantic model review, native cost verification and
 ISOLATED execution remain open. See
 [the live evidence](../docs/evidence/codex-gpt6-luna-live-uat-2026-10-26.md).
+The managed API-key route is configured and preflighted, but live Codex inference
+is not tested; the ChatGPT proxy is not packaged as production authentication.
 
 ## Factory-managed browser checks
 

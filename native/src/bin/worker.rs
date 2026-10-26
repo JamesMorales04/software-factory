@@ -556,20 +556,8 @@ async fn execute_provider_assignment(
     assignment: &Assignment,
     supervisor: &Supervisor,
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
-    let mut seen_tools = std::collections::BTreeSet::new();
-    if assignment.allowed_tools.iter().any(|tool| {
-        !matches!(tool.as_str(), "write_file" | "run_command") || !seen_tools.insert(tool)
-    }) {
-        return Err("provider assignment has an unsupported tool permission".into());
-    }
-    if assignment.provider == "codex"
-        && !assignment
-            .allowed_tools
-            .iter()
-            .any(|tool| tool == "write_file")
-    {
-        return Err("Codex provider assignment requires write_file permission".into());
-    }
+    validate_provider_tools(&assignment.allowed_tools)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     if assignment.deadline_secs == 0
         || !(1..=4).contains(&assignment.max_turns)
         || assignment.max_sessions == 0
@@ -1208,6 +1196,27 @@ async fn start_provider_runtime(
     }
 }
 
+fn validate_provider_tools(allowed_tools: &[String]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    if allowed_tools.iter().any(|tool| {
+        !matches!(tool.as_str(), "write_file" | "run_command") || !seen.insert(tool.as_str())
+    }) {
+        return Err("provider assignment has an unsupported tool permission".into());
+    }
+    if !allowed_tools.is_empty() && !seen.contains("write_file") {
+        return Err("provider assignment with tools requires write_file permission".into());
+    }
+    Ok(())
+}
+
+fn opencode_first_action_instruction(allowed_tools: &[String]) -> &'static str {
+    if allowed_tools.iter().any(|tool| tool == "write_file") {
+        "Your FIRST response MUST be exactly one write_file tool_request JSON object that writes a complete corrected file; do not return a final response and do not describe intended work before at least one file has been written."
+    } else {
+        "Use only the authorized tools and stay within the frozen scope."
+    }
+}
+
 fn opencode_disabled_tools() -> serde_json::Value {
     json!({
         "bash": false,
@@ -1423,7 +1432,8 @@ async fn run_provider_tool_loop(
         "agent": "plan",
         "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. {} You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
+            opencode_first_action_instruction(context.assignment.allowed_tools.as_slice()),
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
             context.assignment.action_spec.objective,
@@ -3898,7 +3908,29 @@ fn validated_loopback_url(
 
 #[cfg(test)]
 mod tests {
-    use super::validated_loopback_url;
+    use super::{
+        opencode_first_action_instruction, validate_provider_tools, validated_loopback_url,
+    };
+
+    #[test]
+    fn first_action_instruction_requires_a_write_only_when_authorized() {
+        let write = vec!["write_file".to_string(), "run_command".to_string()];
+        assert!(
+            opencode_first_action_instruction(&write)
+                .contains("FIRST response MUST be exactly one write_file")
+        );
+        let command_only = vec!["run_command".to_string()];
+        assert!(!opencode_first_action_instruction(&command_only).contains("write_file"));
+    }
+
+    #[test]
+    fn provider_tool_sets_are_bounded_and_require_write_for_tool_loops() {
+        assert!(validate_provider_tools(&[]).is_ok());
+        assert!(validate_provider_tools(&["write_file".into(), "run_command".into()]).is_ok());
+        assert!(validate_provider_tools(&["run_command".into()]).is_err());
+        assert!(validate_provider_tools(&["write_file".into(), "write_file".into()]).is_err());
+        assert!(validate_provider_tools(&["read_file".into()]).is_err());
+    }
 
     #[test]
     fn rejects_userinfo_host_bypass() {

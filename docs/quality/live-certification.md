@@ -8,10 +8,14 @@ workflows, quality integration or external-project execution.
 
 The legacy validator and schema were retired with the former implementation and
 are archived under [docs/evidence/history/quality](../evidence/history/quality).
-A Rust-era certification validator is not implemented. Until it is, live
-certification labels are policy vocabulary only and must not be claimed from
-unvalidated manifests. A manifest never proves an external event by itself, and
-no validator may upgrade evidence levels.
+The Rust architecture checker now validates capability references and the
+provider certification manifest shape; it does not independently prove runtime
+events. A manifest never proves an external event by itself, and no validator
+may upgrade evidence levels. The current managed OpenCode journey is recorded
+in
+[managed-live-uat-2026-10-26.md](../evidence/managed-live-uat-2026-10-26.md)
+and its manifest is
+[managed-live-uat-certification-manifest.json](../evidence/managed-live-uat-certification-manifest.json).
 
 The historical manifest versions remain archived for provenance. A future Rust
 validator must read capabilities from the source record for the frozen
@@ -54,13 +58,14 @@ not a hidden retry: each Run, failure class, recovery authorization and new
 candidate is recorded. Additional paid sessions beyond the approved budget
 require explicit Product Owner approval.
 
-The repository manifest validator confirms the Factory implementation commit
-is available locally and checks identities against source records. When the
-external candidate repository is available, pass `--candidate-repo PATH` to
-check its exact candidate commit and tree. A generic CI checkout may not have
-that object. Provider/session observations still need independent runtime
-corroboration; a clean-checkout verifier and a repository JSON record are not
-provider receipts.
+The Rust architecture checker validates the manifest file reference,
+`REAL_PROVIDER_E2E_VERIFIED`/`verified` level, and the shape of the two
+40-hex SHA fields. It does **not** currently read source records, resolve the
+candidate repository, or verify the Project/Action/Campaign/Run/session
+identities; those bindings are written in the manifest for manual review and
+must be checked against the committed Core export. Provider/session
+observations still need independent runtime corroboration; a clean-checkout
+verifier and a repository JSON record are not provider receipts.
 
 ### PRODUCT_OWNER_UAT_VERIFIED
 

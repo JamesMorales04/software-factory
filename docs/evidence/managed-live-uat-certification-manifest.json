@@ -1,0 +1,40 @@
+{
+  "level": "REAL_PROVIDER_E2E_VERIFIED",
+  "status": "verified",
+  "implementation_sha": "ea2d92724d57d4f96838d84216f39db04b7c5511",
+  "candidate_sha": "067c8569e651e0deb9b3edf4bfd7430b99a243b1",
+  "candidate_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+  "candidate_tree_sha": "1ff574f70fcb2968ba7345399dad1cba11ef890d",
+  "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+  "action_id": "4983fb52-92b3-4617-9b51-8465173de461",
+  "action_spec_sha256": "23e2b856ee5e5e1b4bbc07a451b77ad7ce5739b0d311a60bab469dac3c177151",
+  "lead_request_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+  "campaign_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+  "run_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+  "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+  "provider_session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+  "provider_session_id": "ses_e86c567c0ffeeu7YjNPnHfJI11",
+  "verifier_receipt_id": "ec36f22a-c64a-4408-8458-7caf1453ee15",
+  "reviewer_receipt_id": "c4074d5d-fdaa-4e6f-8cb5-a92b9062d500",
+  "quality_gate": "ACCEPTED",
+  "quality_gate_decided_at": "2026-10-26T17:22:02.444284771+00:00",
+  "cleanup_receipt": "session_delete_verified_absent",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "mode": "TRUSTED_LOCAL_PROVIDER",
+  "workspace": {
+    "provider_session_directory": "/tmp/factory-managed-live-1793031189/ps/p-2434c79043be409cbdaf382f4c965f73",
+    "verifier": "rootless-Podman named-volume workspace (author-attested; receipt does not persist backend)"
+  },
+  "evidence": "docs/evidence/managed-live-uat-2026-10-26.md",
+  "notes": "Managed external-project journey through factory start; not ISOLATED, production or Product Owner UAT certification. The architecture checker validates manifest shape only; the report and committed Core export are the binding record for manual identity review.",
+  "unresolved_cleanup": {
+    "failed_session_record_id": "aaad7896-598f-441b-baa4-153f665416bb",
+    "failed_session_cleanup_receipt": "sandbox_process_identity_absent",
+    "reserved_turn_reservation_id": "2342f2e3-f74b-4a6d-8b3f-3455064dd8f9",
+    "reserved_turn_state": "RESERVED",
+    "reserved_turn_usage_known": false
+  },
+  "invalidated_by": "none; follow-up 6ae3241 conditionally changes the first-write instruction and 73ac258 rejects run_command-only tool loops before paid execution; the accepted write_file prompt/runtime path is unchanged",
+  "final_code_tree": "73ac25847f8bc1d069d3e9b23c4cf0acc8b1c040"
+}

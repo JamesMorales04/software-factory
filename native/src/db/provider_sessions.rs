@@ -2038,6 +2038,111 @@ mod tests {
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
+
+    #[tokio::test]
+    async fn delegation_revocation_fences_the_active_provider_session_and_lease() {
+        use crate::lead::{
+            Capability, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegation,
+        };
+
+        let (path, db, session) = active_turn_fixture(100).await;
+        let mut grant = StandingDelegation {
+            id: "grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: "project".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Maintenance],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            risk_classes: vec![RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_attempts: 1,
+            max_timeout_secs: 600,
+            max_repair_cycles: 0,
+            max_wall_clock_secs: 1_800,
+            max_parallel: 1,
+            max_sessions: 1,
+            max_requests: 8,
+            max_cumulative_sessions: 1,
+            max_cumulative_attempts: 1,
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        db.create_standing_delegation(&grant, "revocation-grant")
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,
+              project_config_hash,state,campaign_id,created_at,updated_at)
+             VALUES ('request','project','action','grant','objective',?1,?1,'RUNNING','campaign',?2,?2)",
+        )
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(db.provider_session(&session).await.unwrap().state, "ACTIVE");
+        let revoked = db
+            .revoke_standing_delegation("grant", Utc::now())
+            .await
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        let (lead_state,): (String,) =
+            sqlx::query_as::query_as("SELECT state FROM lead_requests WHERE id='request'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(lead_state, "BLOCKED");
+
+        let (state, error): (String, Option<String>) = sqlx::query_as::query_as(
+            "SELECT state,error FROM provider_sessions WHERE session_record_id=?1",
+        )
+        .bind(&session)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "CANCEL_REQUESTED");
+        assert!(error.unwrap_or_default().contains("delegation revoked"));
+
+        let (leases,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM worker_leases WHERE attempt_id='attempt'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(leases, 0);
+        let (campaign,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM campaigns WHERE id='campaign'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(campaign, "CANCELLED");
+        let (attempt,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM attempts WHERE id='attempt'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(attempt, "CANCELLED");
+        assert!(
+            db.authorize_provider_turn(&session, "worker", 1, 100, &"a".repeat(64), 1)
+                .await
+                .is_err()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

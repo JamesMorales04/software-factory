@@ -1,6 +1,6 @@
 # Native Rust migration closure ledger
 
-**Status:** current migration status authority. Updated 2026-10-25.
+**Status:** current migration status authority. Updated 2026-10-26.
 This ledger separates implemented behavior from verified evidence. It does not
 replace candidate-bound test output, independent review or protected approval.
 
@@ -8,13 +8,12 @@ replace candidate-bound test output, independent review or protected approval.
 
 | Item | Value |
 |---|---|
-| Authoritative main baseline | `102d7ba29295554bd61ae71956347a025d219d7b` |
-| PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` |
-| PR #17 branch | `native-rust-replacement-20261023` |
+| Authoritative main baseline | `9f888ac74512b392c8bf86f856c5a152db5b3566` |
+| PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` (closed as superseded) |
 | Product | Software Factory, independent Rust implementation |
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
-| Integration candidate | `067d26b9d229113b17c934dde0f5290af7008403` (local author-run gates); exact-head PR checks are authoritative |
-| Merge state | PR #17 Draft; protected merge requires exact-head CI and owner authorization |
+| Combined implementation candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
+| Merge state | PRs #17–#26 merged. The managed-live acceptance documentation/test branch is pending exact-head CI and Product Owner review; its candidates are not merged. |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
 not merged, is not built or tested by this repository, and is not authoritative.
@@ -37,36 +36,36 @@ portfolio; this ledger is the current status authority.
 
 | ID | Capability | Status | Rust state | Blocker / next evidence |
 |---|---|---|---|---|
-| A1 | Semantic intake and typed assessment | `IMPLEMENTED_UNVERIFIED` | Strict typed assessment/storage; model assessor now uses the Core-owned model-call gateway with strict schema, budget reservation and a model-Lead objective-to-ACCEPTED E2E | Live paid semantic quality is not tested; no human acceptance |
+| A1 | Semantic intake and typed assessment | `IMPLEMENTED_VERIFIED` | Strict typed assessment/storage; Core-owned model gateway with strict schema and budget; a real model Lead produced the frozen plan for the managed `ACCEPTED` journey | CAP-014 live semantic quality and human acceptance remain open |
 | A2 | Proposal validation and frozen plan | `PARTIAL` | Validation, config binding, freeze revalidation, per-unit specs, parallel/fan-in plans, Campaign/Run/Attempt creation and Office plan projection | Crash-injection and full restart scheduler coverage remain |
-| A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation, provider authorization, and shared per-scope/global model-call budgets | Ratified autonomous issuer/risk policy remains an owner decision |
-| A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically; model Lead E2E starts a Campaign | Live provider mode, browser multi-unit evidence and owner ratification remain |
-| A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work and marks pending WorkGraph tasks/integrations failed; provider sessions are marked `CANCEL_REQUESTED`; unresolved sessions block replacement dispatch | Running model-call revocation and full provider-session cleanup remain untested |
+| A3 | Standing delegation | `PARTIAL` | Sealed grants, atomic reservation, exact route allowlist, revocation fencing of leases/sessions, provider authorization and shared model-call budgets; deterministic revocation test added | Ratified autonomous issuer/risk policy and paid live revocation remain open |
+| A4 | Authorized autonomous Campaign start | `PARTIAL` | Default-off R0 policy; single- and multi-unit plans create Campaign/Run/Attempts atomically; explicit MODEL Lead start was exercised with a real provider and reached `ACCEPTED` | Browser multi-unit evidence and owner ratification remain |
+| A5 | Immediate revocation containment | `PARTIAL` | Revocation blocks Lead/Campaign/Run/Attempt work, marks pending tasks/integrations failed, fences leases, marks provider sessions `CANCEL_REQUESTED` and blocks replacement dispatch; new deterministic test covers an active provider session and lease | Paid in-flight model-call revocation and external-session termination remain untested |
 | A6 | Bounded WorkGraph | `IMPLEMENTED_UNVERIFIED` | Validation, parallel roots, fan-in and final integration nodes, per-unit specs; parallel/fan-in E2E reach ACCEPTED; failed dependency, restart, integration failure and cancellation process tests pass | Browser graph projection and live-provider multi-unit execution remain |
 | A7 | Dependency-aware execution/recovery | `PARTIAL` | Parallel roots, fan-in promotion, integrated candidate recording; failed dependency and integration reach terminal FAILED; frozen fan-in resumes after restart; cancellation fences runs/attempts/tasks/integrations/leases | In-flight integration cancellation is DB-tested but not process-tested |
 | A8 | Deterministic Git integration | `IMPLEMENTED_UNVERIFIED` | Supervisor integration, integrated lineage, verifier support, parallel final/fan-in E2E to ACCEPTED; integration failure retains exact root lineage | Adversarial Git conflict path remains unreachable in the fixture |
 | A9 | Atomic Lead/Campaign start | `PARTIAL` | Multi-unit Campaign/Run/Attempt creation in one transaction; parallel/fan-in E2E reach ACCEPTED | Crash injection and restart scheduler coverage remain |
 | A10 | CAP-014 semantic evaluation | `IMPLEMENTED_UNVERIFIED` | Frozen corpus, baseline, blinded scoring, thresholds; `execute` collects raw outputs through Core with budgeted reservations and durable FAILED evidence on exhaustion | Independent blinded score and authorized live model-quality run remain absent; no CAP-014 certification |
-| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead assessment/proposal/plan, WorkGraph, candidates, receipts, gate, model-call budgets, telemetry status, cancellation and runtime projections are browser-tested | Browser multi-unit graph and full recovery/cleanup interaction remain |
-| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed read-only provider smoke; durable provider intent/terminal/usage ledger and exact candidate path | Governed S4-D live harness and separately authorized live certification remain |
+| A11 | Office Lead/WorkGraph workflows | `PARTIAL` | Lead assessment/proposal/plan, WorkGraph, candidates, receipts, gate, model-call budgets, telemetry, cancellation and runtime projections are browser-tested; the managed live Office showed the accepted candidate and gate | Browser multi-unit graph, recovery/cleanup interaction and unexplained 404 console entries remain |
+| A12 | Bounded live certification tooling | `PARTIAL` | Default-closed read-only provider smoke; durable provider intent/terminal/usage ledger and exact candidate path; used for the authorized managed OpenCode external-project and self-development journeys | Governed general S4-D certification harness and Codex native ChatGPT route remain open |
 
 ## Merge-readiness gates
 
 | Gate | Status | Evidence / blocker |
 |---|---|---|
-| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. Provider coding and isolation remain fail-closed. |
-| M2 PR #16 parity | `PARTIAL` | A1–A12 concepts substantially implemented; crash/live/browser multi-unit gaps remain |
-| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene passes at `067d26b9d229113b17c934dde0f5290af7008403`; all 44 CAP IDs preserved |
-| M4 Runtime | `IMPLEMENTED_UNVERIFIED` | Full local lifecycle at `067d26b`: container image build, `factory start`/`doctor`/`stop`, host Supervisor/Worker, Office HTTP, Project/Action/Campaign/Attempt, candidate, verifier, reviewer, ACCEPTED, restart persistence and clean stop |
-| M5 Functional execution | `IMPLEMENTED_UNVERIFIED` | R0/FIXTURE, model Lead and deterministic source-aware provider paths reach ACCEPTED; semantic Reviewer and CAP-014 use the Core gateway; live provider coding remains fail-closed |
-| M6 Security | `BLOCKED` | The long-lived provider credential remains in the trusted Worker; bubblewrap and egress hardening are implemented. Monitor-based storage limits, running model-call revocation and human certification remain open. ISOLATED remains blocked. |
-| M7 Quality | `PARTIAL` | Sandboxed verifier, deterministic reviewer, model semantic reviewer with mandatory deterministic pre-review, and deterministic gate pass; no live model-quality or human acceptance |
-| M8 Office | `IMPLEMENTED_UNVERIFIED` | Rust Office browser journey passes with WorkGraph, plan, findings, model-call budgets, telemetry, cancellation and runtime projections |
-| M9 Testing | `PARTIAL` | 317 Rust tests discovered; workspace tests, browser real-Chromium E2E, CAP-014, observability, WorkGraph, recovery/cancellation, provider and Office journeys pass locally; exact-head PR checks are authoritative |
-| M10 Governance | `PARTIAL` | Rust architecture checker, roadmap regeneration and strict hygiene pass; browser real-Chromium lane added to the office job; conditional Podman/provider-compat lanes remain manual |
-| M11 Independent review | `PARTIAL` | Independent same-model security/architecture/release reviews were performed and findings repaired; human security certification remains absent |
-| M12 Delivery authorization | `PENDING` | Product Owner merge decision and exact-head CI remain |
-| M13 Product independence | `PARTIAL` | All 44 CAP IDs and opportunities preserved; registry/roadmap updated; live model-quality and human certification remain |
+| M1 Architecture | `PARTIAL` | One Rust Core/Worker/Supervisor/Office path; no legacy tracked implementation. OpenCode and Codex adapters are implemented; OpenCode has managed live acceptance. Native ChatGPT Codex auth and ISOLATED execution remain blocked. |
+| M2 PR #16 parity | `PARTIAL` | A1–A12 concepts substantially implemented; crash/browser multi-unit and paid failure-injection gaps remain |
+| M3 Repository hygiene | `PASS` | Zero tracked Go files; strict hygiene and architecture consistency pass on the current branch; all 44 CAP IDs preserved |
+| M4 Runtime | `PASS (author-run)` | Managed container build, `factory start`/`doctor`/`status`/`stop`, host Supervisor/Worker, Office HTTP, real OpenCode Lead/Implementer, rootless-Podman verifier, semantic Reviewer, `ACCEPTED`, restart persistence and clean stop. Evidence: [managed live UAT](../evidence/managed-live-uat-2026-10-26.md). |
+| M5 Functional execution | `PASS (author-run)` | R0/FIXTURE, model-backed Lead, source-aware OpenCode tool loop and Codex App Server deterministic adapter; managed external-project candidate reached `ACCEPTED`. Live Codex native ChatGPT auth remains blocked. |
+| M6 Security | `BLOCKED` | Provider credentials remain in trusted Core/Worker; bubblewrap and egress hardening are implemented. Native ChatGPT credential extraction/pass-through, running model-call revocation and human certification remain open. ISOLATED remains blocked. |
+| M7 Quality | `PASS (author-run)` | Rootless-Podman verifier, mandatory deterministic Reviewer pre-check, live semantic Reviewer with measured provenance and deterministic `ACCEPTED` gate. No human certification. |
+| M8 Office | `PASS (author-run)` | Rust Office served from the managed Core and browser-observed with candidates, receipts, gate and runtime accounting. Two unexplained 404 console entries and non-terminal Campaign/Lead projection labels remain. |
+| M9 Testing | `PARTIAL` | Full workspace tests, strict Clippy/format, real-Chromium Office journey, CAP-014, observability, WorkGraph, cancellation/revocation/recovery/lease and provider tests pass locally; exact-head PR checks remain authoritative. |
+| M10 Governance | `PARTIAL` | Rust architecture checker, roadmap/registry checks and strict hygiene pass; conditional Podman/provider-compat lanes remain manual. |
+| M11 Independent review | `PARTIAL` | Earlier independent same-model security/architecture/release reviews were performed; independent review of the managed acceptance branch and human security certification remain pending. |
+| M12 Delivery authorization | `PENDING` | Product Owner merge decision and exact-head CI remain. |
+| M13 Product independence | `PARTIAL` | All 44 CAP IDs and opportunities preserved; registry/roadmap updated; live semantic quality for CAP-014 and human certification remain. |
 
 ## Verified execution path
 
@@ -84,6 +83,52 @@ At the author checkpoint:
 Candidate-bound evidence lives under [docs/evidence](../evidence). None of it is
 provider coding, OS isolation certification, independent human acceptance or
 deployment authorization.
+
+## Managed live acceptance (2026-10-26)
+
+At implementation commit `ea2d92724d57d4f96838d84216f39db04b7c5511`, the normal
+`factory start` path launched the Core container, host Supervisor and host
+Worker with private Core-model and Worker-provider env files on loopback. A
+disposable external Rust repository then completed the full journey with real
+`opencode-go/deepseek-v4.1-flash` inference:
+
+- model-backed Lead assessment and frozen one-unit WorkGraph;
+- authorized R0 `TRUSTED_LOCAL_PROVIDER` Campaign;
+- real OpenCode Implementer session writing only `src/` and `tests/`;
+- candidate `177060b3-5271-4b0f-a20f-2c5649426484`, commit
+  `067c8569e651e0deb9b3edf4bfd7430b99a243b1`;
+- role-independent executed verifier in a rootless-Podman named volume
+  (backend author-attested; the receipt does not persist it);
+- semantic MODEL Reviewer with measured provenance;
+- deterministic gate `ACCEPTED`;
+- Office presentation, restart persistence and clean stop.
+
+The committed Core export records 86,412 tokens and 14,774 micros at
+configured rates; adding a reconstructed 5,457-token stale-image entry Lead
+call from the first disposable install gives 91,869 / 16,516. The combined
+figure is a lower-bound accounting total, not a complete exported ledger.
+Follow-up commit `6ae3241` makes the first-write instruction conditional for
+run_command-only authorizations and strengthens deterministic tests; it does
+not change the write_file prompt text used by this journey. A failed provider session, a stale-image
+entry Lead call, an immutable verifier-harness FAIL candidate and one reserved
+unknown turn are recorded truthfully rather than hidden. Evidence:
+[managed live UAT](../evidence/managed-live-uat-2026-10-26.md).
+
+Codex managed preflight with the real native App Server binary passed without
+inference. Native ChatGPT-authenticated codex live inference is blocked by the
+credential boundary; the only supported Codex authentication mode is an
+operator API key at `https://api.openai.com/v1`, and live Codex inference is
+not tested.
+
+## Controlled self-development (2026-10-26)
+
+In a separate managed stack and a disposable clone at `ea2d927`, one bounded
+Implementer session generated focused `one_line` unit tests in
+`factory-cli/src/text.rs` only. Candidate
+`b00d3aaeb5f1e4e7a51f132860357a6d5a68f358` passed an independent
+rootless-Podman verifier (3 tests), semantic review and the `ACCEPTED` gate.
+The candidate was not merged and the disposable stack was removed. Evidence:
+[managed self-development](../evidence/managed-self-development-2026-10-26.md).
 
 ## Trusted-local provider fixture path
 
@@ -193,10 +238,12 @@ independent acceptance is claimed.
   the mock-model Lead-start process E2E with an explicit provider payload,
   parallel/fan-in WorkGraph fixture E2E and the real-Chromium Office journey.
   Office typecheck and Biome checks pass.
-- Not claimed: live provider execution from this start route, real paid model
-  quality, Codex coding, ISOLATED execution, human security review or final
-  merge. The Office journey uses the deterministic fixture assessor and does
-  not submit real provider credentials.
+- At that checkpoint, live provider execution from this start route, real paid
+  model quality, Codex coding, ISOLATED execution, human security review and
+  final merge were not claimed. The Office journey used the deterministic
+  fixture assessor. A later managed live run exercised the MODEL start route
+  with a real OpenCode provider and reached `ACCEPTED`; see the managed live
+  acceptance section above.
 
 ## Legacy retirement
 
@@ -243,18 +290,15 @@ Reviewer output cap. It also fixes the unsafe process-name cleanup in the
 disposable UAT script. The full workspace format, strict Clippy and test suite
 pass on the repair candidate.
 
-This addendum does **not** upgrade the merged tree. The repair PR is not merged;
-`factory start` still cannot configure the live provider/model route without
-manual host processes. Failed provider sessions can leave unmeasured usage or
-missing cleanup receipts. Autonomous live-provider Campaign start remains
-FIXTURE-only. Codex GPT-6 Luna coding was previously BLOCKED because no Codex
-coding adapter/tool loop existed; a follow-up branch now implements a Codex
-App Server adapter with client-mediated dynamic tools, bounded multi-request
-egress binding and deterministic real-executable tests, but it is not yet
-independently reviewed, merged, or live-paid tested. Paid cancellation and
-revocation were not exercised.
-ISOLATED, Windows, deployment, human security review and final merge remain
-uncertified. See the [F1-S4-LIVE-UAT report](../evidence/f1-s4-live-uat-2026-10-25.md).
+This historical addendum described a branch state before PR #19 and the
+managed-live-start work merged. Those limitations were subsequently removed:
+`factory start` now configures strict Core-model and Worker-provider files, the
+OpenCode live route completed a new managed acceptance, and the Codex App
+Server adapter merged with deterministic real-executable coverage. Paid
+cancellation/revocation injection and native ChatGPT Codex inference were not
+exercised. ISOLATED, Windows, deployment, human security review and final merge
+remain uncertified. See the [F1-S4-LIVE-UAT report](../evidence/f1-s4-live-uat-2026-10-25.md)
+and the newer [managed live UAT](../evidence/managed-live-uat-2026-10-26.md).
 
 ## Product Owner decisions required
 
@@ -318,3 +362,16 @@ was tested. Evidence:
 [Codex GPT-6 Luna live UAT](../evidence/codex-gpt6-luna-live-uat-2026-10-26.md).
 Codex built-in goal/code-mode/collaboration compatibility remains
 version-sensitive and fail-closed.
+
+### Codex managed configuration addendum (2026-10-26)
+
+`factory start` and `factory doctor` accept a strict Codex Worker profile with
+the native App Server binary, egress bridge, pinned OpenAI API upstream and
+both explicit cost rates. A placeholder-token preflight passed without
+inference; no Campaign or provider session was created. Native ChatGPT OAuth
+authentication is **BLOCKED** by the credential boundary: the broker injects a
+single pinned bearer credential and cannot import or pass through Codex-owned
+OAuth refresh/account headers. The only supported Codex live authentication mode
+is an operator API key at `https://api.openai.com/v1`; live Codex inference is
+not tested. Evidence:
+[Codex managed configuration](../evidence/codex-managed-config-2026-10-26.md).

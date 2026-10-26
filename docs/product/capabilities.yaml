@@ -395,7 +395,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: blocked
@@ -426,16 +426,19 @@ capabilities:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/native-rust-provider-fixture-2026-10-24.json
-    live_agent: []
+    live_agent:
+    - docs/evidence/managed-live-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - A deterministic source-aware provider plan path supports bounded file writes and frozen-check command execution
-    through the Supervisor. Multi-turn provider tool events, live Codex/OpenCode coding and ISOLATED dispatch remain
-    fail-closed.
+  - OpenCode and Codex App Server adapters support bounded multi-turn tool events and frozen-check execution through
+    the Supervisor. OpenCode has managed live acceptance; Codex has deterministic real-executable coverage and a
+    test-only GPT-6 Luna proxy record. Native ChatGPT-authenticated Codex live inference and ISOLATED dispatch
+    remain blocked.
   blockers:
   - SEC-01 isolation remains paused; TRUSTED_LOCAL has broad host access.
+  - Native ChatGPT OAuth token refresh and account-header injection are outside the current egress boundary.
 - id: CAP-005
   name: Candidate revision lineage
   category: Quality
@@ -488,7 +491,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -515,11 +518,13 @@ capabilities:
     - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
-    live_agent: []
+    live_agent:
+    - docs/evidence/managed-live-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
-  limitations: []
+  limitations:
+  - Verifier and reviewer remain distinct independent roles; human security review is not performed.
   blockers: []
 - id: CAP-007
   name: Deterministic Quality Gate
@@ -530,7 +535,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -558,7 +563,8 @@ capabilities:
     - docs/evidence/native-rust-final-closure-2026-10-25.json
     - docs/evidence/native-rust-closure-2026-10-24.json
     - docs/evidence/f1-s4c-deterministic-2026-10-21.json
-    live_agent: []
+    live_agent:
+    - docs/evidence/managed-live-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
@@ -705,7 +711,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -729,12 +735,15 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
-    live_agent: []
+    live_agent:
+    - docs/evidence/managed-live-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - "Office recovery and cleanup projections remain incomplete."
+  - Office recovery and cleanup projections remain incomplete.
+  - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
+  - The managed live Office check recorded two unexplained 404 console entries.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry

@@ -101,6 +101,8 @@ container, the Podman command line or the Supervisor. Its allowlist is:
 - `FACTORY_PROVIDER_BRIDGE`, `FACTORY_PROVIDER_EGRESS_BRIDGE`,
   `FACTORY_PROVIDER_EGRESS_TOKEN`, `FACTORY_PROVIDER_UPSTREAM_URL`,
   `FACTORY_PROVIDER_UPSTREAM_TOKEN`
+- `FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION`,
+  `FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION`
 - `FACTORY_PROVIDER_BASE_URL`, `FACTORY_PROVIDER_PASSWORD`,
   `FACTORY_ALLOW_UNCONFINED_PROVIDER` and `FACTORY_ALLOW_TEST_UPSTREAM`
 
@@ -108,9 +110,13 @@ Provider configuration requires `FACTORY_HOST_EXECUTION=1` and at least one
 `FACTORY_PROJECT_ROOTS` entry, because the configured values are delivered to
 the host Worker. A configured route profile does not authorize a Campaign or
 raise a budget; Core authorization remains mandatory. Both the OpenCode and
-Codex route profiles use this Worker-only allowlist; the current Worker live
-coding adapter is OpenCode, and Codex coding remains fail-closed until its
-adapter exists.
+Codex route profiles use this Worker-only allowlist. The Codex profile requires
+both explicit input/output cost rates. OpenCode has a managed live acceptance
+record; the Codex adapter is implemented and deterministic-tested. The
+only supported Codex live authentication mode is an operator API key at
+`https://api.openai.com/v1`; live Codex inference has not been run.
+Native ChatGPT OAuth is not supported by the current egress boundary; see
+[native/README.md](../native/README.md#codex-app-server-provider-trusted_local_provider).
 
 `factory doctor` and `factory start` validate both files before any Podman
 container change. A running Core container carries a
@@ -136,8 +142,12 @@ Do not commit either file or place credentials in this repository.
 ## Status
 
 Build the image with the command in [`deploy/README.md`](../deploy/README.md).
-On the CachyOS host with kernel `7.3.0-3-cachyos`, `tun` loaded, rootless
-Podman 6.1.4 and pasta available, `factory start` completed: container created,
-published only on `127.0.0.1`, Core health 200, authenticated API accessible,
-the Rust Office served from the image, and a durable Worker registration
-survived stop/start. Windows and isolation certification are not claimed.
+On the tested Linux host with rootless Podman 6.1.4 and pasta available,
+`factory start` completed with the real OpenCode provider profile: Core health
+200, authenticated API and Rust Office accessible only on `127.0.0.1`, host
+Supervisor/Worker running, real model Lead and Implementer inference, a
+rootless-Podman verifier, semantic Reviewer and `ACCEPTED` gate, plus restart
+persistence and clean stop. A separate test-only managed self-development
+candidate also reached `ACCEPTED`. Windows, production deployment and
+isolation certification are not claimed. Evidence:
+[managed live UAT](../docs/evidence/managed-live-uat-2026-10-26.md).
