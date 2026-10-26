@@ -4645,10 +4645,19 @@ async fn codex_real_executable_reaches_a_candidate_and_binds_upstream_requests()
     {
         let seen = mock_state.seen.lock().unwrap();
         assert_eq!(seen[0]["model"], "gpt-6-luna");
+        let tools = seen[0]["tools"]
+            .as_array()
+            .expect("Factory must inject the upstream tool allowlist");
+        let names = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["write_file", "run_command"]);
         assert!(
-            seen.iter()
-                .any(|body| body.to_string().contains("write_file")),
-            "dynamic tool must be declared to Codex"
+            seen[0]["input"].as_array().is_none_or(|items| items
+                .iter()
+                .all(|item| item.get("type").and_then(Value::as_str) != Some("additional_tools"))),
+            "Codex additional_tools must not reach upstream"
         );
     }
     pool.close().await;
