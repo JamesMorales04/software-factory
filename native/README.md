@@ -1,6 +1,6 @@
 # Native Factory
 
-For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end; live provider coding, provider tool mediation and ISOLATED mode remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
+For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end. An explicitly authorized TRUSTED_LOCAL_PROVIDER OpenCode tool loop is implemented on this branch and has a bounded real DeepSeek acceptance record in [F1-S4-LIVE-UAT](../docs/evidence/f1-s4-live-uat-2026-10-25.md); it is not merged or certified on `main`. Codex coding, ISOLATED mode and certification remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
 
 Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
 
@@ -62,6 +62,49 @@ usage evidence. It does not score the outputs; independent blinded scoring and
 `compare` remain separate. A failed or budget-exhausted run writes `FAILED`
 evidence and exits non-zero.
 
+## Live OpenCode provider (TRUSTED_LOCAL_PROVIDER)
+
+The Worker supports a sandboxed OpenCode provider server for an explicitly
+authorized R0 `TRUSTED_LOCAL_PROVIDER` Campaign. The supported provider route is
+`opencode-go/deepseek-v4.1-flash`; the `opencode` and Codex provider routes are
+not live coding routes. Required Worker settings:
+
+```sh
+export FACTORY_PROVIDER_SANDBOX=bwrap
+export FACTORY_PROVIDER_KIND=opencode
+export FACTORY_PROVIDER_BINARY=/absolute/path/to/opencode   # 1.18.32 validated
+export FACTORY_PROVIDER_BRIDGE=/absolute/path/to/factory-provider-bridge
+export FACTORY_PROVIDER_EGRESS_BRIDGE=/absolute/path/to/factory-egress-bridge
+export FACTORY_PROVIDER_UPSTREAM_URL=https://opencode.ai/inference/go/openai/v1
+export FACTORY_PROVIDER_UPSTREAM_TOKEN=...                  # never commit
+export FACTORY_PROVIDER_SESSION_ROOT=/short/tmp/provider-sessions
+export FACTORY_PROVIDER_MEMORY_LIMIT_BYTES=17179869184     # Bun/OpenCode needs >4 GiB
+```
+
+The Worker generates the OpenCode provider configuration inside the sandbox,
+connects the provider bridge over the private Unix socket, and exposes only the
+egress bridge and per-run token to the sandbox. The egress broker pins the
+upstream, injects the long-lived credential and `x-opencode-session`, and
+enforces the Core turn reservation. `FACTORY_PROVIDER_TCP_PORT` defaults to
+18081 (18080 is reserved for egress); `FACTORY_PROVIDER_MODEL_CONTEXT` and
+`FACTORY_PROVIDER_MODEL_OUTPUT` set the generated model limits.
+
+The Worker rejects an empty `final` response, corrects invalid model actions,
+and preserves already-applied writes for independent verification if a live
+turn ends with an error or the four-turn budget is exhausted. Applied writes
+still require the independent verifier, semantic Reviewer and deterministic
+Quality Gate; the model's final message is not authority. The Worker heartbeat
+extends the lease by 60 seconds every 15 seconds, and a failed provider
+check-command leaves the worktree available for a later write or finalize.
+
+This path is TRUSTED_LOCAL, not SEC-01 isolation. Do not claim credential
+confinement or ISOLATED certification. A live acceptance journey and its
+measured usage are recorded in
+[the F1-S4-LIVE-UAT report](../docs/evidence/f1-s4-live-uat-2026-10-25.md).
+The report's repair candidate is not merged yet; the merged baseline remains
+the migration-closure status authority.
+
+## Factory-managed browser checks
 ## Factory-managed browser checks
 
 `factory-browser` provides a bounded external test-server lifecycle and a real

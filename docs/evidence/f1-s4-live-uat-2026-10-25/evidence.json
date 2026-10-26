@@ -1,0 +1,4007 @@
+{
+  "schema": "factory.f1-s4-live-uat.v1",
+  "campaign": {
+    "attempts": [
+      {
+        "created_at": "2026-10-26T02:31:41.695764307+00:00",
+        "id": "1c348089-30c7-4420-8333-48dd221fb213",
+        "run_id": "8dce3b3e-0f58-4a89-ba63-ac9f796fde80",
+        "status": "CANDIDATE_READY"
+      }
+    ],
+    "authorization": {
+      "actor": "product-owner",
+      "allowed_tools": [
+        "write_file",
+        "run_command"
+      ],
+      "authorization_id": "live-uat-provider-auth-14",
+      "authorized_paths": [
+        "src",
+        "tests"
+      ],
+      "campaign_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "created_at": "2026-10-26T02:31:41.692885820+00:00",
+      "deadline_secs": 600,
+      "delegation_id": "live-uat-grant-4",
+      "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+      "max_attempts": 1,
+      "max_cost_micros": 500000,
+      "max_input_tokens": 40000,
+      "max_output_tokens": 12000,
+      "max_sessions": 1,
+      "max_turns": 4,
+      "model": "deepseek-v4.1-flash",
+      "provider": "opencode-go",
+      "provider_mode": "build",
+      "rationale": "PO-authorized live candidate after check-command workspace resilience repair",
+      "risk_class": "R0"
+    },
+    "campaign": {
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "created_at": "2026-10-26T02:31:41.689569791+00:00",
+      "id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "status": "AUTHORIZED"
+    },
+    "candidates": [
+      {
+        "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+        "attempt_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+        "commit_sha": "0653f9071139c71e8ddc81242a85891d75c2e62e",
+        "created_at": "2026-10-26T02:10:33.944637786+00:00",
+        "id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+        "implementer_id": "live-uat-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9"
+      },
+      {
+        "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+        "attempt_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+        "commit_sha": "43f5ec95d3cdfae8d10baddae334a1a4c9e62466",
+        "created_at": "2026-10-26T02:18:50.687165225+00:00",
+        "id": "c05d732f-ac2a-4d93-b990-c1ce53f771e0",
+        "implementer_id": "live-uat-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9"
+      },
+      {
+        "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+        "attempt_id": "05e25218-546e-4f95-be86-dc327925cd16",
+        "commit_sha": "72da44ff3db7204b7ecccbbd55fa07a08dc1dec3",
+        "created_at": "2026-10-26T02:27:02.732097747+00:00",
+        "id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+        "implementer_id": "live-uat-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "19cd392e1cd4139592ab21bf9c357e045e069364"
+      },
+      {
+        "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+        "attempt_id": "1c348089-30c7-4420-8333-48dd221fb213",
+        "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+        "created_at": "2026-10-26T02:32:23.590112941+00:00",
+        "id": "8569839d-6c06-4999-af42-9a8525035c2d",
+        "implementer_id": "live-uat-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373"
+      }
+    ],
+    "events": [
+      {
+        "detail": "blocked pending explicit authorization",
+        "kind": "campaign.created",
+        "recorded_at": "2026-10-26T02:31:41.689781635+00:00",
+        "sequence": 284,
+        "subject_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23"
+      },
+      {
+        "detail": "authorization=live-uat-provider-auth-14 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+        "kind": "campaign.authorized",
+        "recorded_at": "2026-10-26T02:31:41.693246547+00:00",
+        "sequence": 285,
+        "subject_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23"
+      }
+    ],
+    "runs": [
+      {
+        "campaign_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+        "created_at": "2026-10-26T02:31:41.694622565+00:00",
+        "id": "8dce3b3e-0f58-4a89-ba63-ac9f796fde80",
+        "status": "QUEUED"
+      }
+    ],
+    "tasks": []
+  },
+  "factory_baseline_main": "e972de8f930111ca8b2642a9b648fcc23fc0d033",
+  "live_runtime": "host Core/Worker/Supervisor binaries from f1-s4-live-uat-fixes branch; Office from merged image assets",
+  "model_route": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "provider_version": "1.18.32"
+  },
+  "project": [
+    {
+      "id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+      "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+      "created_at": "2026-10-26T01:22:32.824819209+00:00",
+      "identity": "de758b9ba145810f1dd4dac94913435f52193535cb08aee9a21fdc8574b077b8"
+    }
+  ],
+  "actions": [
+    {
+      "id": "4315f56e-65bf-41e8-a75e-6e8f75706e61",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "risk": "R0",
+      "status": "AUTHORIZED",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "created_at": "2026-10-26T01:22:32.831728594+00:00",
+      "spec": {
+        "schema_version": 1,
+        "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+        "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+        "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+        "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+        "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": [
+          "src",
+          "tests"
+        ],
+        "checks": [
+          {
+            "id": "build",
+            "kind": "build",
+            "description": "cargo build succeeds",
+            "command": [
+              "cargo",
+              "build",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "cargo test succeeds",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "discount functional regression tests",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet",
+              "--test",
+              "discounts"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "CLI rejects percent above 100",
+            "command": [
+              "cargo",
+              "run",
+              "--quiet",
+              "--bin",
+              "discount-cli",
+              "--",
+              "--subtotal",
+              "1000",
+              "--percent",
+              "150"
+            ],
+            "expectExit": 2,
+            "timeoutSecs": 300
+          }
+        ]
+      },
+      "spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982"
+    },
+    {
+      "id": "a3710004-4c58-498b-a88a-16435a3017f8",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "risk": "R0",
+      "status": "AUTHORIZED",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "created_at": "2026-10-26T01:24:40.557728511+00:00",
+      "spec": {
+        "schema_version": 1,
+        "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+        "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+        "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+        "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+        "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": [
+          "src",
+          "tests"
+        ],
+        "checks": [
+          {
+            "id": "build",
+            "kind": "build",
+            "description": "cargo build succeeds",
+            "command": [
+              "cargo",
+              "build",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "cargo test succeeds",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "discount functional regression tests",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet",
+              "--test",
+              "discounts"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "CLI rejects percent above 100",
+            "command": [
+              "cargo",
+              "run",
+              "--quiet",
+              "--bin",
+              "discount-cli",
+              "--",
+              "--subtotal",
+              "1000",
+              "--percent",
+              "150"
+            ],
+            "expectExit": 2,
+            "timeoutSecs": 300
+          }
+        ]
+      },
+      "spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982"
+    },
+    {
+      "id": "256f7736-072b-4526-a521-8dc23787ac9a",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "risk": "R0",
+      "status": "AUTHORIZED",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "created_at": "2026-10-26T01:25:36.941901833+00:00",
+      "spec": {
+        "schema_version": 1,
+        "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+        "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+        "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+        "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+        "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": [
+          "src",
+          "tests"
+        ],
+        "checks": [
+          {
+            "id": "build",
+            "kind": "build",
+            "description": "cargo build succeeds",
+            "command": [
+              "cargo",
+              "build",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "cargo test succeeds",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "discount functional regression tests",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet",
+              "--test",
+              "discounts"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "CLI rejects percent above 100",
+            "command": [
+              "cargo",
+              "run",
+              "--quiet",
+              "--bin",
+              "discount-cli",
+              "--",
+              "--subtotal",
+              "1000",
+              "--percent",
+              "150"
+            ],
+            "expectExit": 2,
+            "timeoutSecs": 300
+          }
+        ]
+      },
+      "spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982"
+    },
+    {
+      "id": "5ab86af3-e10a-4108-807f-fabc1339f4cc",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "risk": "R0",
+      "status": "AUTHORIZED",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "created_at": "2026-10-26T01:26:16.630790831+00:00",
+      "spec": {
+        "schema_version": 1,
+        "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+        "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+        "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+        "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+        "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": [
+          "src",
+          "tests"
+        ],
+        "checks": [
+          {
+            "id": "build",
+            "kind": "build",
+            "description": "cargo build succeeds",
+            "command": [
+              "cargo",
+              "build",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "cargo test succeeds",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "discount functional regression tests",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet",
+              "--test",
+              "discounts"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "CLI rejects percent above 100",
+            "command": [
+              "cargo",
+              "run",
+              "--quiet",
+              "--bin",
+              "discount-cli",
+              "--",
+              "--subtotal",
+              "1000",
+              "--percent",
+              "150"
+            ],
+            "expectExit": 2,
+            "timeoutSecs": 300
+          }
+        ]
+      },
+      "spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982"
+    },
+    {
+      "id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "risk": "R0",
+      "status": "AUTHORIZED",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "created_at": "2026-10-26T01:27:12.246342316+00:00",
+      "spec": {
+        "schema_version": 1,
+        "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+        "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+        "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+        "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+        "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "allowed_paths": [
+          "src",
+          "tests"
+        ],
+        "checks": [
+          {
+            "id": "build",
+            "kind": "build",
+            "description": "cargo build succeeds",
+            "command": [
+              "cargo",
+              "build",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "test",
+            "kind": "test",
+            "description": "cargo test succeeds",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "functional",
+            "kind": "functional",
+            "description": "discount functional regression tests",
+            "command": [
+              "cargo",
+              "test",
+              "--quiet",
+              "--test",
+              "discounts"
+            ],
+            "expectExit": 0,
+            "timeoutSecs": 300
+          },
+          {
+            "id": "negative",
+            "kind": "negative",
+            "description": "CLI rejects percent above 100",
+            "command": [
+              "cargo",
+              "run",
+              "--quiet",
+              "--bin",
+              "discount-cli",
+              "--",
+              "--subtotal",
+              "1000",
+              "--percent",
+              "150"
+            ],
+            "expectExit": 2,
+            "timeoutSecs": 300
+          }
+        ]
+      },
+      "spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982"
+    }
+  ],
+  "delegations": [
+    {
+      "id": "live-uat-grant",
+      "principalId": "product-owner",
+      "auditId": "f1-s4-live-uat",
+      "projectId": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "revision": 1,
+      "contentHash": "f9cb2ad15753df44e806075bba66e06e898506e246ed4b37e63566272d774ef1",
+      "objectiveClasses": [
+        "feature"
+      ],
+      "allowedPaths": [
+        "src",
+        "tests"
+      ],
+      "capabilities": [
+        "repository-edit",
+        "generic-toolchain"
+      ],
+      "riskClasses": [
+        "R0"
+      ],
+      "autonomousStart": false,
+      "autonomousRiskClasses": [],
+      "route": {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "mode": "build"
+      },
+      "maxAttempts": 1,
+      "maxTimeoutSecs": 600,
+      "maxRepairCycles": 0,
+      "maxWallClockSecs": 1800,
+      "maxParallel": 1,
+      "maxSessions": 2,
+      "maxRequests": 8,
+      "maxCumulativeSessions": 4,
+      "maxCumulativeAttempts": 4,
+      "expiresAt": "2026-10-26T03:22:32.835578Z"
+    },
+    {
+      "id": "live-uat-grant-2",
+      "principalId": "product-owner",
+      "auditId": "f1-s4-live-uat",
+      "projectId": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "revision": 1,
+      "contentHash": "f46643173b558924af0f634fa60cef56ee690073aac617e516e23bbb1d0c62a6",
+      "objectiveClasses": [
+        "feature",
+        "maintenance",
+        "refactor"
+      ],
+      "allowedPaths": [
+        "src",
+        "tests"
+      ],
+      "capabilities": [
+        "repository-edit",
+        "generic-toolchain"
+      ],
+      "riskClasses": [
+        "R0"
+      ],
+      "autonomousStart": false,
+      "autonomousRiskClasses": [],
+      "route": {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "mode": "build"
+      },
+      "maxAttempts": 1,
+      "maxTimeoutSecs": 600,
+      "maxRepairCycles": 0,
+      "maxWallClockSecs": 1800,
+      "maxParallel": 1,
+      "maxSessions": 2,
+      "maxRequests": 8,
+      "maxCumulativeSessions": 4,
+      "maxCumulativeAttempts": 4,
+      "expiresAt": "2026-10-26T03:27:12.232626Z"
+    },
+    {
+      "id": "live-uat-grant-3",
+      "principalId": "product-owner",
+      "auditId": "f1-s4-live-uat",
+      "projectId": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "revision": 1,
+      "contentHash": "0c4d65b9b5bdfa78ad2e60bcd529a059e90be4c20323464eecf4068ea084ad06",
+      "objectiveClasses": [
+        "feature",
+        "maintenance",
+        "refactor"
+      ],
+      "allowedPaths": [
+        "src",
+        "tests"
+      ],
+      "capabilities": [
+        "repository-edit",
+        "generic-toolchain"
+      ],
+      "riskClasses": [
+        "R0"
+      ],
+      "autonomousStart": false,
+      "autonomousRiskClasses": [],
+      "route": {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "mode": "build"
+      },
+      "maxAttempts": 1,
+      "maxTimeoutSecs": 600,
+      "maxRepairCycles": 0,
+      "maxWallClockSecs": 1800,
+      "maxParallel": 1,
+      "maxSessions": 2,
+      "maxRequests": 12,
+      "maxCumulativeSessions": 8,
+      "maxCumulativeAttempts": 8,
+      "expiresAt": "2026-10-26T03:37:41.315058Z"
+    },
+    {
+      "id": "live-uat-mock-grant",
+      "principalId": "product-owner",
+      "auditId": "f1-s4-live-uat-diagnostic",
+      "projectId": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "revision": 1,
+      "contentHash": "45356edad10eb83f6fe76f701b2555134694ae2444f0b03c4ac6e2fe58b38286",
+      "objectiveClasses": [
+        "feature",
+        "maintenance",
+        "refactor"
+      ],
+      "allowedPaths": [
+        "src",
+        "tests"
+      ],
+      "capabilities": [
+        "repository-edit",
+        "generic-toolchain"
+      ],
+      "riskClasses": [
+        "R0"
+      ],
+      "autonomousStart": false,
+      "autonomousRiskClasses": [],
+      "route": {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "mode": "build"
+      },
+      "maxAttempts": 1,
+      "maxTimeoutSecs": 600,
+      "maxRepairCycles": 0,
+      "maxWallClockSecs": 1800,
+      "maxParallel": 1,
+      "maxSessions": 2,
+      "maxRequests": 8,
+      "maxCumulativeSessions": 8,
+      "maxCumulativeAttempts": 8,
+      "expiresAt": "2026-10-26T04:10:30.795908Z"
+    },
+    {
+      "id": "live-uat-grant-4",
+      "principalId": "product-owner",
+      "auditId": "f1-s4-live-uat-retries",
+      "projectId": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "revision": 1,
+      "contentHash": "b1d08123ab7e0fdfaf8262214d9d4130d333da54c9d0bdc51e37037aa11f708d",
+      "objectiveClasses": [
+        "feature",
+        "maintenance",
+        "refactor"
+      ],
+      "allowedPaths": [
+        "src",
+        "tests"
+      ],
+      "capabilities": [
+        "repository-edit",
+        "generic-toolchain"
+      ],
+      "riskClasses": [
+        "R0"
+      ],
+      "autonomousStart": false,
+      "autonomousRiskClasses": [],
+      "route": {
+        "provider": "opencode-go",
+        "model": "deepseek-v4.1-flash",
+        "mode": "build"
+      },
+      "maxAttempts": 1,
+      "maxTimeoutSecs": 600,
+      "maxRepairCycles": 0,
+      "maxWallClockSecs": 1800,
+      "maxParallel": 1,
+      "maxSessions": 2,
+      "maxRequests": 16,
+      "maxCumulativeSessions": 12,
+      "maxCumulativeAttempts": 12,
+      "expiresAt": "2026-10-26T04:22:30.701303Z"
+    }
+  ],
+  "lead_requests": [
+    {
+      "id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "action_id": "4315f56e-65bf-41e8-a75e-6e8f75706e61",
+      "delegation_id": "live-uat-grant",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "request_hash": "c2130a850d4988c34330da128b0e593e17b6917a84d495ade2f738e608ab5e6b",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "state": "BLOCKED",
+      "failure_reason": "invalid assessment: model output is not valid JSON: EOF while parsing a string at line 1 column 212",
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:22:53.801689967+00:00",
+      "updated_at": "2026-10-26T01:23:33.108564754+00:00"
+    },
+    {
+      "id": "ac390fa9-bbb9-4998-88bb-000283840f46",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "action_id": "a3710004-4c58-498b-a88a-16435a3017f8",
+      "delegation_id": "live-uat-grant",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "request_hash": "43eae31038717e0cdfd32b1f548698cb4570dc2c53b76a880463d21fcf7ac656",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "state": "BLOCKED",
+      "failure_reason": "invalid assessment: model gateway configuration is invalid: model call request",
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:24:40.565730504+00:00",
+      "updated_at": "2026-10-26T01:24:40.745416552+00:00"
+    },
+    {
+      "id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "action_id": "256f7736-072b-4526-a521-8dc23787ac9a",
+      "delegation_id": "live-uat-grant",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "request_hash": "82e08da5d19828cad6d304b3749639927b525ffa93f6f265b3173292011b8ca1",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "state": "BLOCKED",
+      "failure_reason": "invalid assessment: model output failed domain validation: invalid assessment: a change or explicit estimate request requires an effort estimate",
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:25:36.948877003+00:00",
+      "updated_at": "2026-10-26T01:25:44.051054564+00:00"
+    },
+    {
+      "id": "cad93441-4e04-4603-befb-589124f74b06",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "action_id": "5ab86af3-e10a-4108-807f-fabc1339f4cc",
+      "delegation_id": "live-uat-grant",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "request_hash": "a3e290eaab988d9d0a3a461c0620f55e498ff9394d7d4c4324a6699207206ba7",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "state": "BLOCKED",
+      "failure_reason": "invalid proposal: objective class is outside the delegation",
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:26:16.638674449+00:00",
+      "updated_at": "2026-10-26T01:26:36.006626411+00:00"
+    },
+    {
+      "id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "delegation_id": "live-uat-grant-2",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "request_hash": "4e661715a08472322f24ef0dd94fc775f60908e1fa73eb0632beaf89079384bb",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "state": "READY",
+      "failure_reason": null,
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:27:12.252729337+00:00",
+      "updated_at": "2026-10-26T01:28:11.770894504+00:00"
+    }
+  ],
+  "lead_request": {
+    "assessment": {
+      "assessment_json": "{\"schemaRevision\":1,\"projectId\":\"1863d2e5-32ad-425c-8191-9487ba02acf0\",\"actionId\":\"ebbf6b7c-1492-4912-9b87-1fbcd25aa811\",\"requestId\":\"7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c\",\"evidenceRefs\":[\"repository-files\"],\"intent\":\"change\",\"complexity\":\"small\",\"effortEstimate\":{\"status\":\"estimated\",\"unit\":\"person-hours\",\"minPersonHours\":1,\"maxPersonHours\":3,\"assumptions\":[\"Bounded repair in the authorized source and test paths.\",\"Existing public API signatures must remain unchanged.\"],\"unknownReason\":\"\"},\"knowledgeGaps\":[],\"changeImpact\":[\"src: correct single-application discount logic and prevent negative totals\",\"tests: add regression coverage for normal, zero-discount and boundary cases\"],\"validationNeeds\":[\"Run frozen cargo build, cargo test, functional discount tests, and negative CLI check.\",\"Verify public API signatures remain unchanged.\"],\"assumptions\":[\"The discount calculation is implemented within src and can be corrected without changing public API.\",\"Tests for normal, zero-discount and boundary cases can be added under tests or existing test modules.\"],\"uncertainty\":[\"Exact source file containing the discount calculation is not identified in the provided evidence summary.\"],\"suggestedNextAction\":\"Freeze the plan and dispatch unit-1 to implement the discount fix and regression tests.\",\"proposal\":{\"projectId\":\"1863d2e5-32ad-425c-8191-9487ba02acf0\",\"actionId\":\"ebbf6b7c-1492-4912-9b87-1fbcd25aa811\",\"baseRevision\":\"a7eb670cc47ad3074be58cfb53ec69d6777b7a59\",\"projectConfigHash\":\"f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96\",\"objective\":\"Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.\",\"class\":\"maintenance\",\"assumptions\":[\"The discount calculation is implemented within src and can be corrected without changing public API.\",\"Tests for normal, zero-discount and boundary cases can be added under tests or existing test modules.\"],\"risks\":[\"Existing behavior around zero-discount and boundary subtotal values may require explicit regression tests to prevent accidental over-clamping.\"],\"acceptanceCriteria\":[{\"id\":\"build\",\"kind\":\"build\",\"description\":\"cargo build succeeds\",\"command\":[\"cargo\",\"build\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"test\",\"kind\":\"test\",\"description\":\"cargo test succeeds\",\"command\":[\"cargo\",\"test\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"functional\",\"kind\":\"functional\",\"description\":\"discount functional regression tests\",\"command\":[\"cargo\",\"test\",\"--quiet\",\"--test\",\"discounts\"],\"expectExit\":0,\"timeoutSecs\":300}],\"negativeCases\":[{\"id\":\"negative\",\"kind\":\"negative\",\"description\":\"CLI rejects percent above 100\",\"command\":[\"cargo\",\"run\",\"--quiet\",\"--bin\",\"discount-cli\",\"--\",\"--subtotal\",\"1000\",\"--percent\",\"150\"],\"expectExit\":2,\"timeoutSecs\":300}],\"qualityProfile\":\"generic\",\"riskClass\":\"R0\",\"budget\":{\"maxAttempts\":1,\"timeoutSecs\":300},\"route\":{\"provider\":\"opencode-go\",\"model\":\"deepseek-v4.1-flash\",\"mode\":\"build\"},\"maxRepairCycles\":0,\"maxWallClockSecs\":1800,\"maxParallel\":1,\"maxSessions\":2,\"workUnits\":[{\"id\":\"unit-1\",\"kind\":\"implementation\",\"description\":\"Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.\",\"dependsOn\":[],\"allowedPaths\":[\"src\",\"tests\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"acceptanceCriteria\":[{\"id\":\"build\",\"kind\":\"build\",\"description\":\"cargo build succeeds\",\"command\":[\"cargo\",\"build\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"test\",\"kind\":\"test\",\"description\":\"cargo test succeeds\",\"command\":[\"cargo\",\"test\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"functional\",\"kind\":\"functional\",\"description\":\"discount functional regression tests\",\"command\":[\"cargo\",\"test\",\"--quiet\",\"--test\",\"discounts\"],\"expectExit\":0,\"timeoutSecs\":300}],\"negativeCases\":[{\"id\":\"negative\",\"kind\":\"negative\",\"description\":\"CLI rejects percent above 100\",\"command\":[\"cargo\",\"run\",\"--quiet\",\"--bin\",\"discount-cli\",\"--\",\"--subtotal\",\"1000\",\"--percent\",\"150\"],\"expectExit\":2,\"timeoutSecs\":300}]}]}}",
+      "created_at": "2026-10-26T01:27:40.460976692+00:00",
+      "id": "5fc9a4d1-873d-43df-8857-c9910b3c297e",
+      "mechanism": "MODEL",
+      "request_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "schema_sha256": "bad4846d330bccf07ad2933da2f7e67844cb8f4cd4a424391e4849ce18c7e7bd"
+    },
+    "plan": {
+      "config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "created_at": "2026-10-26T01:28:11.769833266+00:00",
+      "delegation_hash": "f46643173b558924af0f634fa60cef56ee690073aac617e516e23bbb1d0c62a6",
+      "id": "7d790d4f-7f20-49be-a81e-ad5594217401",
+      "plan_hash": "251efe251ecbfd84da0e25efa60f652c19e22d970795c3bef473991801856c6f",
+      "proposal_id": "e2288340-ecc7-4541-a841-40c8e6317679",
+      "request_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c"
+    },
+    "proposal": {
+      "assessment_id": "5fc9a4d1-873d-43df-8857-c9910b3c297e",
+      "created_at": "2026-10-26T01:27:40.464696949+00:00",
+      "id": "e2288340-ecc7-4541-a841-40c8e6317679",
+      "proposal_hash": "af63f2008d9d4448e2e8fc01c0d518a35071d8d4a6f7027139a9a2f11579c307",
+      "proposal_json": "{\"projectId\":\"1863d2e5-32ad-425c-8191-9487ba02acf0\",\"actionId\":\"ebbf6b7c-1492-4912-9b87-1fbcd25aa811\",\"baseRevision\":\"a7eb670cc47ad3074be58cfb53ec69d6777b7a59\",\"projectConfigHash\":\"f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96\",\"objective\":\"Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.\",\"class\":\"maintenance\",\"assumptions\":[\"The discount calculation is implemented within src and can be corrected without changing public API.\",\"Tests for normal, zero-discount and boundary cases can be added under tests or existing test modules.\"],\"risks\":[\"Existing behavior around zero-discount and boundary subtotal values may require explicit regression tests to prevent accidental over-clamping.\"],\"acceptanceCriteria\":[{\"id\":\"build\",\"kind\":\"build\",\"description\":\"cargo build succeeds\",\"command\":[\"cargo\",\"build\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"test\",\"kind\":\"test\",\"description\":\"cargo test succeeds\",\"command\":[\"cargo\",\"test\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"functional\",\"kind\":\"functional\",\"description\":\"discount functional regression tests\",\"command\":[\"cargo\",\"test\",\"--quiet\",\"--test\",\"discounts\"],\"expectExit\":0,\"timeoutSecs\":300}],\"negativeCases\":[{\"id\":\"negative\",\"kind\":\"negative\",\"description\":\"CLI rejects percent above 100\",\"command\":[\"cargo\",\"run\",\"--quiet\",\"--bin\",\"discount-cli\",\"--\",\"--subtotal\",\"1000\",\"--percent\",\"150\"],\"expectExit\":2,\"timeoutSecs\":300}],\"qualityProfile\":\"generic\",\"riskClass\":\"R0\",\"budget\":{\"maxAttempts\":1,\"timeoutSecs\":300},\"route\":{\"provider\":\"opencode-go\",\"model\":\"deepseek-v4.1-flash\",\"mode\":\"build\"},\"maxRepairCycles\":0,\"maxWallClockSecs\":1800,\"maxParallel\":1,\"maxSessions\":2,\"workUnits\":[{\"id\":\"unit-1\",\"kind\":\"implementation\",\"description\":\"Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.\",\"dependsOn\":[],\"allowedPaths\":[\"src\",\"tests\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"acceptanceCriteria\":[{\"id\":\"build\",\"kind\":\"build\",\"description\":\"cargo build succeeds\",\"command\":[\"cargo\",\"build\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"test\",\"kind\":\"test\",\"description\":\"cargo test succeeds\",\"command\":[\"cargo\",\"test\",\"--quiet\"],\"expectExit\":0,\"timeoutSecs\":300},{\"id\":\"functional\",\"kind\":\"functional\",\"description\":\"discount functional regression tests\",\"command\":[\"cargo\",\"test\",\"--quiet\",\"--test\",\"discounts\"],\"expectExit\":0,\"timeoutSecs\":300}],\"negativeCases\":[{\"id\":\"negative\",\"kind\":\"negative\",\"description\":\"CLI rejects percent above 100\",\"command\":[\"cargo\",\"run\",\"--quiet\",\"--bin\",\"discount-cli\",\"--\",\"--subtotal\",\"1000\",\"--percent\",\"150\"],\"expectExit\":2,\"timeoutSecs\":300}]}]}",
+      "request_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c"
+    },
+    "request": {
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "campaign_id": null,
+      "created_at": "2026-10-26T01:27:12.252729337+00:00",
+      "delegation_id": "live-uat-grant-2",
+      "failure_reason": null,
+      "id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "project_config_hash": "f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "request_hash": "4e661715a08472322f24ef0dd94fc775f60908e1fa73eb0632beaf89079384bb",
+      "state": "READY",
+      "updated_at": "2026-10-26T01:28:11.770894504+00:00"
+    }
+  },
+  "campaigns": [
+    {
+      "id": "215b7677-fbb4-4234-8b15-f9d7774d0a11",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T01:28:19.572545899+00:00"
+    },
+    {
+      "id": "961b54fd-6fde-4d36-8712-10886ef9b44d",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T01:28:45.437699399+00:00"
+    },
+    {
+      "id": "afca55e2-216f-4252-bf70-b211ccc98c24",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T01:30:01.609996599+00:00"
+    },
+    {
+      "id": "88d36ba2-2659-4fc2-8e2b-0d65ff8164c6",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T01:48:10.333528591+00:00"
+    },
+    {
+      "id": "ac89b2bd-eb98-4b85-a1ab-2524e308f001",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:08:25.550337515+00:00"
+    },
+    {
+      "id": "04ae35f5-2bdd-4c6b-a3a6-4626ae6fd8d8",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:10:30.806799896+00:00"
+    },
+    {
+      "id": "29dd3583-43a8-451c-b85a-33a0469de310",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:16:50.331300473+00:00"
+    },
+    {
+      "id": "a9452cf5-d322-4e1a-969e-d5e441e1f8f0",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:18:37.436267408+00:00"
+    },
+    {
+      "id": "6be0549e-5521-4919-8f1e-bd9302c6f61a",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:20:45.019249657+00:00"
+    },
+    {
+      "id": "4da9526a-5860-44ce-91f4-d34c61a05dc5",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:22:30.712593026+00:00"
+    },
+    {
+      "id": "29dde7e0-d8df-4994-84a8-1b7b40836e13",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:24:11.504777875+00:00"
+    },
+    {
+      "id": "bcc4204a-13f8-4328-95c8-1b9448fb9405",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:26:39.923979385+00:00"
+    },
+    {
+      "id": "0b682cdd-39d4-4ee6-9b17-1fecea28a450",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:29:40.292336424+00:00"
+    },
+    {
+      "id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "status": "AUTHORIZED",
+      "created_at": "2026-10-26T02:31:41.689569791+00:00"
+    }
+  ],
+  "runs": [
+    {
+      "id": "81701e71-d2a7-428b-b4f6-c9d142e68bce",
+      "campaign_id": "215b7677-fbb4-4234-8b15-f9d7774d0a11",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T01:28:19.577207938+00:00"
+    },
+    {
+      "id": "14033f20-afa5-41bc-b066-d5d86b1e71fb",
+      "campaign_id": "961b54fd-6fde-4d36-8712-10886ef9b44d",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T01:28:45.441641609+00:00"
+    },
+    {
+      "id": "6d79c07c-a6d9-4338-a6ad-696065aabd4d",
+      "campaign_id": "afca55e2-216f-4252-bf70-b211ccc98c24",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T01:46:40.460459541+00:00"
+    },
+    {
+      "id": "9ea857ca-acdd-4582-8b98-e4c0aa1e590d",
+      "campaign_id": "88d36ba2-2659-4fc2-8e2b-0d65ff8164c6",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T01:48:10.338177788+00:00"
+    },
+    {
+      "id": "f14ed060-49b7-4690-8000-5bdbc661124c",
+      "campaign_id": "ac89b2bd-eb98-4b85-a1ab-2524e308f001",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:08:25.556151141+00:00"
+    },
+    {
+      "id": "75e0a5f4-cb3f-49b4-8fc8-6534735deb82",
+      "campaign_id": "04ae35f5-2bdd-4c6b-a3a6-4626ae6fd8d8",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:10:30.811078643+00:00"
+    },
+    {
+      "id": "9676002c-2a00-4d94-bf15-60571d053cb8",
+      "campaign_id": "29dd3583-43a8-451c-b85a-33a0469de310",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:16:50.335329837+00:00"
+    },
+    {
+      "id": "2d1ec5ab-38a7-40c1-b9f1-128ea39b6322",
+      "campaign_id": "a9452cf5-d322-4e1a-969e-d5e441e1f8f0",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:18:37.442512028+00:00"
+    },
+    {
+      "id": "88d8fa66-550f-4114-bf55-42c9e9dea0a0",
+      "campaign_id": "6be0549e-5521-4919-8f1e-bd9302c6f61a",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:20:45.024257019+00:00"
+    },
+    {
+      "id": "3c69074a-1acf-448f-91df-215f105b3895",
+      "campaign_id": "4da9526a-5860-44ce-91f4-d34c61a05dc5",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:22:30.717597021+00:00"
+    },
+    {
+      "id": "80b997dd-590a-4499-9236-d0f7a5c9ec13",
+      "campaign_id": "29dde7e0-d8df-4994-84a8-1b7b40836e13",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:24:11.509182537+00:00"
+    },
+    {
+      "id": "554e1180-ae4b-48e1-8aac-5f40e51a30ca",
+      "campaign_id": "bcc4204a-13f8-4328-95c8-1b9448fb9405",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:26:39.928423683+00:00"
+    },
+    {
+      "id": "e6ec78db-e966-4603-91c3-073e1881b73a",
+      "campaign_id": "0b682cdd-39d4-4ee6-9b17-1fecea28a450",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:29:40.296746465+00:00"
+    },
+    {
+      "id": "8dce3b3e-0f58-4a89-ba63-ac9f796fde80",
+      "campaign_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "status": "QUEUED",
+      "created_at": "2026-10-26T02:31:41.694622565+00:00"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "run_id": "81701e71-d2a7-428b-b4f6-c9d142e68bce",
+      "status": "FAILED",
+      "created_at": "2026-10-26T01:28:19.578968548+00:00"
+    },
+    {
+      "id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "run_id": "14033f20-afa5-41bc-b066-d5d86b1e71fb",
+      "status": "FAILED",
+      "created_at": "2026-10-26T01:28:45.442988291+00:00"
+    },
+    {
+      "id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "run_id": "6d79c07c-a6d9-4338-a6ad-696065aabd4d",
+      "status": "FAILED",
+      "created_at": "2026-10-26T01:46:40.462408595+00:00"
+    },
+    {
+      "id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "run_id": "9ea857ca-acdd-4582-8b98-e4c0aa1e590d",
+      "status": "FAILED",
+      "created_at": "2026-10-26T01:48:10.339737432+00:00"
+    },
+    {
+      "id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "run_id": "f14ed060-49b7-4690-8000-5bdbc661124c",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:08:25.557861012+00:00"
+    },
+    {
+      "id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "run_id": "75e0a5f4-cb3f-49b4-8fc8-6534735deb82",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T02:10:30.812470360+00:00"
+    },
+    {
+      "id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "run_id": "9676002c-2a00-4d94-bf15-60571d053cb8",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:16:50.336413241+00:00"
+    },
+    {
+      "id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "run_id": "2d1ec5ab-38a7-40c1-b9f1-128ea39b6322",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T02:18:37.444464586+00:00"
+    },
+    {
+      "id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "run_id": "88d8fa66-550f-4114-bf55-42c9e9dea0a0",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:20:45.025705016+00:00"
+    },
+    {
+      "id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "run_id": "3c69074a-1acf-448f-91df-215f105b3895",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:22:30.719227664+00:00"
+    },
+    {
+      "id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "run_id": "80b997dd-590a-4499-9236-d0f7a5c9ec13",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:24:11.510791269+00:00"
+    },
+    {
+      "id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "run_id": "554e1180-ae4b-48e1-8aac-5f40e51a30ca",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T02:26:39.930233076+00:00"
+    },
+    {
+      "id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "run_id": "e6ec78db-e966-4603-91c3-073e1881b73a",
+      "status": "FAILED",
+      "created_at": "2026-10-26T02:29:40.298270165+00:00"
+    },
+    {
+      "id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "run_id": "8dce3b3e-0f58-4a89-ba63-ac9f796fde80",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T02:31:41.695764307+00:00"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+      "attempt_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "0653f9071139c71e8ddc81242a85891d75c2e62e",
+      "tree_sha": "58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9",
+      "implementer_id": "live-uat-worker",
+      "created_at": "2026-10-26T02:10:33.944637786+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    {
+      "id": "c05d732f-ac2a-4d93-b990-c1ce53f771e0",
+      "attempt_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "43f5ec95d3cdfae8d10baddae334a1a4c9e62466",
+      "tree_sha": "58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9",
+      "implementer_id": "live-uat-worker",
+      "created_at": "2026-10-26T02:18:50.687165225+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    {
+      "id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "attempt_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "72da44ff3db7204b7ecccbbd55fa07a08dc1dec3",
+      "tree_sha": "19cd392e1cd4139592ab21bf9c357e045e069364",
+      "implementer_id": "live-uat-worker",
+      "created_at": "2026-10-26T02:27:02.732097747+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    {
+      "id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "attempt_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+      "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+      "implementer_id": "live-uat-worker",
+      "created_at": "2026-10-26T02:32:23.590112941+00:00",
+      "integration": false,
+      "lineage": []
+    }
+  ],
+  "candidate": {
+    "id": "8569839d-6c06-4999-af42-9a8525035c2d",
+    "attempt_id": "1c348089-30c7-4420-8333-48dd221fb213",
+    "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+    "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+    "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+    "implementer_id": "live-uat-worker",
+    "created_at": "2026-10-26T02:32:23.590112941+00:00",
+    "integration": false,
+    "lineage": []
+  },
+  "provider_sessions": [
+    {
+      "session_record_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "attempt_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e89f33191ffe7VwFnxCn6qrQBb",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-fd18577dc7e046aea7c6113c941c50af",
+      "turn_id": "msg_1760d33fc002NupvZOkWv9WQMu",
+      "input_tokens": 4610,
+      "output_tokens": 1004,
+      "total_tokens": 27140,
+      "cost_micros": 2670,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T02:31:41.849709712+00:00",
+      "updated_at": "2026-10-26T02:32:23.575913656+00:00"
+    },
+    {
+      "session_record_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "attempt_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-bdb4ac86821c4bd4920e9729c6397dda",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "Supervisor finalize failed: 409 Conflict",
+      "created_at": "2026-10-26T02:29:40.718809096+00:00",
+      "updated_at": "2026-10-26T02:30:09.758778232+00:00"
+    },
+    {
+      "session_record_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "attempt_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e89f7f363ffefzmRXGodyzITq7",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-c29725fd7a6f481899ac17c566d443ee",
+      "turn_id": "msg_176084c5f002vmbQBSqA5uh7SE",
+      "input_tokens": 9719,
+      "output_tokens": 1233,
+      "total_tokens": 23788,
+      "cost_micros": 2717,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T02:26:40.255919296+00:00",
+      "updated_at": "2026-10-26T02:27:02.720412251+00:00"
+    },
+    {
+      "session_record_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "attempt_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-0fa865068e8b4c6192e3dd2adaf04989",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "provider turn did not complete normally",
+      "created_at": "2026-10-26T02:24:11.861294647+00:00",
+      "updated_at": "2026-10-26T02:25:41.965783937+00:00"
+    },
+    {
+      "session_record_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "attempt_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-256f7be4f66c4800a3b430106f58d694",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "provider exceeded the authorized turn budget",
+      "created_at": "2026-10-26T02:22:31.056957790+00:00",
+      "updated_at": "2026-10-26T02:23:20.680880068+00:00"
+    },
+    {
+      "session_record_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "attempt_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-f1ec7307d4a94b1391c7595e2fd95cd6",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "Core refused provider turn authorization: 403 Forbidden {\"error\":\"forbidden: provider turn is not authorized by the current lease\"}",
+      "created_at": "2026-10-26T02:20:45.370241747+00:00",
+      "updated_at": "2026-10-26T02:21:20.694318146+00:00"
+    },
+    {
+      "session_record_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "attempt_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e89ff28baffe3Mj7kLLfYzKK6m",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-a91e73cb7b2e4472bf846a3a35cf202e",
+      "turn_id": "msg_17600dcb8002KX3BG2NwGFzMui",
+      "input_tokens": 300,
+      "output_tokens": 150,
+      "total_tokens": 450,
+      "cost_micros": 135,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T02:18:37.792852403+00:00",
+      "updated_at": "2026-10-26T02:18:50.674116880+00:00"
+    },
+    {
+      "session_record_id": "d8a448ca-0063-40d2-9250-8e49bcad66e1",
+      "attempt_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-988050a7c52d4e338d036b7c20a843c4",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "Supervisor finalize failed: 500 Internal Server Error",
+      "created_at": "2026-10-26T02:16:50.739098146+00:00",
+      "updated_at": "2026-10-26T02:17:18.281410678+00:00"
+    },
+    {
+      "session_record_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "attempt_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e8a06bccbffeFMGQOLwp3Z07HA",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-781f165d6d7f48b7885b3538d822e6a0",
+      "turn_id": "msg_175f94853002ue2PASmXCA23hi",
+      "input_tokens": 300,
+      "output_tokens": 150,
+      "total_tokens": 450,
+      "cost_micros": 135,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T02:10:31.200410499+00:00",
+      "updated_at": "2026-10-26T02:10:33.930010850+00:00"
+    },
+    {
+      "session_record_id": "b319fc0d-73b8-4404-8cfe-5d74a0fcabaa",
+      "attempt_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-c98d6d87d9b4446182795d80873766f7",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "provider action rejected: provider output is not a JSON patch: invalid type: string \"src/pricing.rs\", expected struct PatchFile",
+      "created_at": "2026-10-26T02:08:25.933929146+00:00",
+      "updated_at": "2026-10-26T02:08:36.726010411+00:00"
+    },
+    {
+      "session_record_id": "ac197b1b-de08-4988-ac6e-d7f3a09314db",
+      "attempt_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-3c82a4b18169458ba920a8c10d51f695",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "provider protocol incompatibility: OpenCode prompt terminal event not found within 256 SSE chunks",
+      "created_at": "2026-10-26T01:48:10.642415746+00:00",
+      "updated_at": "2026-10-26T01:48:28.679989291+00:00"
+    },
+    {
+      "session_record_id": "d4094897-8052-420f-b42d-5bf589bcc329",
+      "attempt_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-6face37e6e4d42c8b469a32c8b67314e",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "OpenCode HTTP: HTTP status client error (400 Bad Request) for url (http://127.0.0.1:32905/session/ses_e8a1c684affelYno8LOp2I595Q/message?directory=%2Ftmp%2Ffactory-uat-provider-1792977303%2Fp-6face37e6e4d42c8b469a32c8b67314e)",
+      "created_at": "2026-10-26T01:46:40.865726766+00:00",
+      "updated_at": "2026-10-26T01:46:53.020969908+00:00"
+    },
+    {
+      "session_record_id": "45f4608e-e0ab-4e23-aacb-b96974efc4c3",
+      "attempt_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/tmp/factory-uat-provider-1792977303/p-228b0f6d9fbb411a94a7b8ee51bbb6d6",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "",
+      "error": "provider protocol incompatibility: OpenCode SSE session payload identity mismatch: event ses_e8a2cf6f3ffeBuu0sYouePa5oq, payload msg_175d309f8001PkN18OO7t8X9bk",
+      "created_at": "2026-10-26T01:28:45.914604911+00:00",
+      "updated_at": "2026-10-26T01:28:47.888548195+00:00"
+    },
+    {
+      "session_record_id": "cd2e431f-63da-42f4-9b94-213bcbb19338",
+      "attempt_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "worker_id": "live-uat-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "",
+      "provider_directory": "/home/james/Escritorio/Development/sf-live-uat-run-1792977303/provider-sessions/p-671d02a060c74ed48b0f36a96a00329a",
+      "turn_id": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "cleanup_receipt": "no_external_session",
+      "error": "provider sandbox configuration is invalid: provider egress I/O failed: path must be shorter than SUN_LEN",
+      "created_at": "2026-10-26T01:28:19.661881802+00:00",
+      "updated_at": "2026-10-26T01:28:19.667452550+00:00"
+    }
+  ],
+  "model_calls": [
+    {
+      "reservation_id": "685091f1-bacc-46f9-920d-3cd3e0e6c934",
+      "role": "semantic_reviewer",
+      "principal_id": "live-reviewer-2",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "scope_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "semantic_review",
+      "request_sha256": "326d1bf59ce372e7c61fc482e5f8f3b944aa5c7c65f6921db412de2f78060000",
+      "input_tokens": 2519,
+      "output_tokens": 4233,
+      "total_tokens": 6752,
+      "cost_micros": 2918,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T02:32:45.363459723+00:00",
+      "updated_at": "2026-10-26T02:33:13.917902292+00:00"
+    },
+    {
+      "reservation_id": "a2277968-eead-4116-8f66-30bdee9af364",
+      "role": "semantic_reviewer",
+      "principal_id": "live-reviewer",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "scope_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "semantic_review",
+      "request_sha256": "a2dbaf89b44e29a391e8231e64090f4b5f70db697c1ffabe653508027c738784",
+      "input_tokens": 2424,
+      "output_tokens": 4096,
+      "total_tokens": 6520,
+      "cost_micros": 2822,
+      "usage_known": true,
+      "state": "RELEASED",
+      "error": "resolved by product-owner: semantic review returned empty content at 4096 output tokens; usage preserved and reviewer retried at 8192 on a new candidate",
+      "created_at": "2026-10-26T02:27:33.258097388+00:00",
+      "updated_at": "2026-10-26T02:29:40.133897372+00:00"
+    },
+    {
+      "reservation_id": "2d34a749-4f18-4366-ac76-10d3b175a7c4",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "scope_id": "live-uat-grant-2",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "a5f0c4cf9eb573708f3cf5aebdaa8e146fe9d49d0f2d0d464eb593eae10904fe",
+      "input_tokens": 3380,
+      "output_tokens": 3715,
+      "total_tokens": 7095,
+      "cost_micros": 2736,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T01:27:12.400239253+00:00",
+      "updated_at": "2026-10-26T01:27:40.418725973+00:00"
+    },
+    {
+      "reservation_id": "2f74c41f-fbd6-4833-8cd2-a0ea3ada9fcc",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "scope_id": "live-uat-grant",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "050af087235df7eccd974471bb009de987d289c06e8028f972d816635170a8b2",
+      "input_tokens": 3175,
+      "output_tokens": 2592,
+      "total_tokens": 5767,
+      "cost_micros": 2033,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T01:26:16.815621440+00:00",
+      "updated_at": "2026-10-26T01:26:35.975840342+00:00"
+    },
+    {
+      "reservation_id": "625913fc-7030-4918-b0bc-77a4d842d283",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "scope_id": "live-uat-grant",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "9d37faa33ad1cfc6697eb98fa0ec806d8faf6964685fb56e81251039a7d335d2",
+      "input_tokens": 3168,
+      "output_tokens": 1348,
+      "total_tokens": 4516,
+      "cost_micros": 1285,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T01:25:37.074539820+00:00",
+      "updated_at": "2026-10-26T01:25:44.017626929+00:00"
+    },
+    {
+      "reservation_id": "8828c14f-967c-4d92-a06b-fe7bec1ad731",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "objective_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "scope_id": "live-uat-grant",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "da551119ae1e5c901cc5f29e62cf198e46ed4dadbf465f3236769ca479e9fa5e",
+      "input_tokens": 3158,
+      "output_tokens": 4096,
+      "total_tokens": 7254,
+      "cost_micros": 2932,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T01:23:02.785750098+00:00",
+      "updated_at": "2026-10-26T01:23:33.106756253+00:00"
+    }
+  ],
+  "quality_receipts": [
+    {
+      "receipt_id": "9aaa6f00-40fb-4056-94e8-773a36fb7616",
+      "candidate_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "role": "reviewer",
+      "principal_id": "live-reviewer-2",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+      "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "MODEL",
+      "model_provider": "opencode-go",
+      "model_name": "deepseek-v4.1-flash",
+      "model_reservation_id": "685091f1-bacc-46f9-920d-3cd3e0e6c934",
+      "model_request_sha256": "326d1bf59ce372e7c61fc482e5f8f3b944aa5c7c65f6921db412de2f78060000",
+      "input_tokens": 2519,
+      "output_tokens": 4233,
+      "total_tokens": 6752,
+      "cost_micros": 2918,
+      "usage_known": true,
+      "received_at": "2026-10-26T02:33:13.935470365+00:00"
+    },
+    {
+      "receipt_id": "b00f9d0f-2810-4492-9e73-e2461827cfec",
+      "candidate_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "role": "verifier",
+      "principal_id": "live-verifier-2",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+      "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "DETERMINISTIC",
+      "model_provider": "",
+      "model_name": "",
+      "model_reservation_id": "",
+      "model_request_sha256": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "received_at": "2026-10-26T02:32:39.753343098+00:00"
+    }
+  ],
+  "quality_gate": {
+    "candidate_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+    "outcome": "ACCEPTED",
+    "reasons": [
+      "independent executed evidence accepts exact candidate"
+    ],
+    "decided_at": "2026-10-26T02:33:13.936764708+00:00"
+  },
+  "quality_inspection": {
+    "candidate": {
+      "id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "attempt_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+      "commit_sha": "9a5e892df83091529b87ed3127edddcc4bafe318",
+      "tree_sha": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+      "implementer_id": "live-uat-worker",
+      "created_at": "2026-10-26T02:32:23.590112941+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    "action_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+    "action_spec": {
+      "schema_version": 1,
+      "project_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+      "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+      "objective": "Inspect this Rust project. Fix the incorrect discount calculation so that discounts are applied exactly once, totals cannot become negative, and the existing public API remains unchanged. Add or update tests for normal, zero-discount and boundary cases. Do not modify files outside the authorized source and test paths. Explain the changes.",
+      "objective_sha256": "8466f946977055c836897df93eb8afed59b06b7b31a687f48e1f17c1625de4c2",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "allowed_paths": [
+        "src",
+        "tests"
+      ],
+      "checks": [
+        {
+          "id": "build",
+          "kind": "build",
+          "description": "cargo build succeeds",
+          "command": [
+            "cargo",
+            "build",
+            "--quiet"
+          ],
+          "expectExit": 0,
+          "timeoutSecs": 300
+        },
+        {
+          "id": "test",
+          "kind": "test",
+          "description": "cargo test succeeds",
+          "command": [
+            "cargo",
+            "test",
+            "--quiet"
+          ],
+          "expectExit": 0,
+          "timeoutSecs": 300
+        },
+        {
+          "id": "functional",
+          "kind": "functional",
+          "description": "discount functional regression tests",
+          "command": [
+            "cargo",
+            "test",
+            "--quiet",
+            "--test",
+            "discounts"
+          ],
+          "expectExit": 0,
+          "timeoutSecs": 300
+        },
+        {
+          "id": "negative",
+          "kind": "negative",
+          "description": "CLI rejects percent above 100",
+          "command": [
+            "cargo",
+            "run",
+            "--quiet",
+            "--bin",
+            "discount-cli",
+            "--",
+            "--subtotal",
+            "1000",
+            "--percent",
+            "150"
+          ],
+          "expectExit": 2,
+          "timeoutSecs": 300
+        }
+      ]
+    },
+    "action_spec_sha256": "86e28173996c9e5a1b31ee797ed7859022666accf9627a4be10a2886f2716982",
+    "repository": "/home/james/Escritorio/Development/sf-live-uat-project-1792977303",
+    "base_commit": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+    "integration": false,
+    "lineage": []
+  },
+  "workers": [
+    {
+      "worker_id": "live-uat-worker",
+      "updated_at": "2026-10-26T02:26:37.736637978+00:00"
+    }
+  ],
+  "events": [
+    {
+      "sequence": 1,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.registered",
+      "detail": "session token digest stored",
+      "recorded_at": "2026-10-26T01:21:01.339948830+00:00"
+    },
+    {
+      "sequence": 2,
+      "subject_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "kind": "project.registered",
+      "detail": "registered",
+      "recorded_at": "2026-10-26T01:22:32.825876360+00:00"
+    },
+    {
+      "sequence": 3,
+      "subject_id": "1863d2e5-32ad-425c-8191-9487ba02acf0",
+      "kind": "project.config_updated",
+      "detail": "revision=2 hash=f1580dad0bc76631081cf5c83ec6d3fe96626fc7c23d4ee89692c70ca68a4e96",
+      "recorded_at": "2026-10-26T01:22:32.829629240+00:00"
+    },
+    {
+      "sequence": 4,
+      "subject_id": "4315f56e-65bf-41e8-a75e-6e8f75706e61",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T01:22:32.832033484+00:00"
+    },
+    {
+      "sequence": 5,
+      "subject_id": "4315f56e-65bf-41e8-a75e-6e8f75706e61",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: live UAT R0 source-and-test repair",
+      "recorded_at": "2026-10-26T01:22:32.834285999+00:00"
+    },
+    {
+      "sequence": 6,
+      "subject_id": "live-uat-grant",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T01:22:32.837405815+00:00"
+    },
+    {
+      "sequence": 7,
+      "subject_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T01:22:53.802031998+00:00"
+    },
+    {
+      "sequence": 8,
+      "subject_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T01:23:02.779681793+00:00"
+    },
+    {
+      "sequence": 9,
+      "subject_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=8828c14f-967c-4d92-a06b-fe7bec1ad731 provider=opencode-go model=deepseek-v4.1-flash input=128000 output=4096 cost=300000",
+      "recorded_at": "2026-10-26T01:23:02.787105627+00:00"
+    },
+    {
+      "sequence": 10,
+      "subject_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=8828c14f-967c-4d92-a06b-fe7bec1ad731 state=SETTLED input=3158 output=4096 total=7254 cost=2932",
+      "recorded_at": "2026-10-26T01:23:33.107329373+00:00"
+    },
+    {
+      "sequence": 11,
+      "subject_id": "142f2530-f198-4895-b1d4-b1901bd4cc71",
+      "kind": "lead.request_blocked",
+      "detail": "invalid assessment: model output is not valid JSON: EOF while parsing a string at line 1 column 212",
+      "recorded_at": "2026-10-26T01:23:33.108815200+00:00"
+    },
+    {
+      "sequence": 12,
+      "subject_id": "a3710004-4c58-498b-a88a-16435a3017f8",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T01:24:40.558125806+00:00"
+    },
+    {
+      "sequence": 13,
+      "subject_id": "a3710004-4c58-498b-a88a-16435a3017f8",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: live UAT R0 source-and-test repair retry after output truncation",
+      "recorded_at": "2026-10-26T01:24:40.562594288+00:00"
+    },
+    {
+      "sequence": 14,
+      "subject_id": "ac390fa9-bbb9-4998-88bb-000283840f46",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T01:24:40.566044752+00:00"
+    },
+    {
+      "sequence": 15,
+      "subject_id": "ac390fa9-bbb9-4998-88bb-000283840f46",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T01:24:40.741684162+00:00"
+    },
+    {
+      "sequence": 16,
+      "subject_id": "ac390fa9-bbb9-4998-88bb-000283840f46",
+      "kind": "lead.request_blocked",
+      "detail": "invalid assessment: model gateway configuration is invalid: model call request",
+      "recorded_at": "2026-10-26T01:24:40.745685263+00:00"
+    },
+    {
+      "sequence": 17,
+      "subject_id": "256f7736-072b-4526-a521-8dc23787ac9a",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T01:25:36.942387356+00:00"
+    },
+    {
+      "sequence": 18,
+      "subject_id": "256f7736-072b-4526-a521-8dc23787ac9a",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: live UAT R0 source-and-test repair retry with bounded output",
+      "recorded_at": "2026-10-26T01:25:36.945736749+00:00"
+    },
+    {
+      "sequence": 19,
+      "subject_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T01:25:36.949122810+00:00"
+    },
+    {
+      "sequence": 20,
+      "subject_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T01:25:37.068714387+00:00"
+    },
+    {
+      "sequence": 21,
+      "subject_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=625913fc-7030-4918-b0bc-77a4d842d283 provider=opencode-go model=deepseek-v4.1-flash input=124842 output=4096 cost=597068",
+      "recorded_at": "2026-10-26T01:25:37.076064491+00:00"
+    },
+    {
+      "sequence": 22,
+      "subject_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=625913fc-7030-4918-b0bc-77a4d842d283 state=SETTLED input=3168 output=1348 total=4516 cost=1285",
+      "recorded_at": "2026-10-26T01:25:44.018181163+00:00"
+    },
+    {
+      "sequence": 23,
+      "subject_id": "39f50851-5368-4766-81db-f67391bab4e8",
+      "kind": "lead.request_blocked",
+      "detail": "invalid assessment: model output failed domain validation: invalid assessment: a change or explicit estimate request requires an effort estimate",
+      "recorded_at": "2026-10-26T01:25:44.051293578+00:00"
+    },
+    {
+      "sequence": 24,
+      "subject_id": "5ab86af3-e10a-4108-807f-fabc1339f4cc",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T01:26:16.631217703+00:00"
+    },
+    {
+      "sequence": 25,
+      "subject_id": "5ab86af3-e10a-4108-807f-fabc1339f4cc",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: live UAT R0 source-and-test repair retry with effort contract",
+      "recorded_at": "2026-10-26T01:26:16.635180702+00:00"
+    },
+    {
+      "sequence": 26,
+      "subject_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T01:26:16.639067727+00:00"
+    },
+    {
+      "sequence": 27,
+      "subject_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T01:26:16.809941464+00:00"
+    },
+    {
+      "sequence": 28,
+      "subject_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=2f74c41f-fbd6-4833-8cd2-a0ea3ada9fcc provider=opencode-go model=deepseek-v4.1-flash input=121674 output=2748 cost=595783",
+      "recorded_at": "2026-10-26T01:26:16.816807025+00:00"
+    },
+    {
+      "sequence": 29,
+      "subject_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=2f74c41f-fbd6-4833-8cd2-a0ea3ada9fcc state=SETTLED input=3175 output=2592 total=5767 cost=2033",
+      "recorded_at": "2026-10-26T01:26:35.976135604+00:00"
+    },
+    {
+      "sequence": 30,
+      "subject_id": "cad93441-4e04-4603-befb-589124f74b06",
+      "kind": "lead.request_blocked",
+      "detail": "invalid proposal: objective class is outside the delegation",
+      "recorded_at": "2026-10-26T01:26:36.006881145+00:00"
+    },
+    {
+      "sequence": 31,
+      "subject_id": "live-uat-grant-2",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T01:27:12.242251464+00:00"
+    },
+    {
+      "sequence": 32,
+      "subject_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T01:27:12.246840734+00:00"
+    },
+    {
+      "sequence": 33,
+      "subject_id": "ebbf6b7c-1492-4912-9b87-1fbcd25aa811",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: live UAT R0 source-and-test repair retry with permissive class delegation",
+      "recorded_at": "2026-10-26T01:27:12.249083361+00:00"
+    },
+    {
+      "sequence": 34,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T01:27:12.253124589+00:00"
+    },
+    {
+      "sequence": 35,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T01:27:12.394533628+00:00"
+    },
+    {
+      "sequence": 36,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=2d34a749-4f18-4366-ac76-10d3b175a7c4 provider=opencode-go model=deepseek-v4.1-flash input=128000 output=8192 cost=600000",
+      "recorded_at": "2026-10-26T01:27:12.401231370+00:00"
+    },
+    {
+      "sequence": 37,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=2d34a749-4f18-4366-ac76-10d3b175a7c4 state=SETTLED input=3380 output=3715 total=7095 cost=2736",
+      "recorded_at": "2026-10-26T01:27:40.419301749+00:00"
+    },
+    {
+      "sequence": 38,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.assessment_recorded",
+      "detail": "5fc9a4d1-873d-43df-8857-c9910b3c297e",
+      "recorded_at": "2026-10-26T01:27:40.461550704+00:00"
+    },
+    {
+      "sequence": 39,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.proposal_recorded",
+      "detail": "e2288340-ecc7-4541-a841-40c8e6317679",
+      "recorded_at": "2026-10-26T01:27:40.465013852+00:00"
+    },
+    {
+      "sequence": 40,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T01:28:09.591445577+00:00"
+    },
+    {
+      "sequence": 41,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.plan_frozen",
+      "detail": "251efe251ecbfd84da0e25efa60f652c19e22d970795c3bef473991801856c6f",
+      "recorded_at": "2026-10-26T01:28:11.770243426+00:00"
+    },
+    {
+      "sequence": 42,
+      "subject_id": "7e0f20cc-f6ae-4d2a-ae49-c03a1de9d62c",
+      "kind": "lead.state_changed",
+      "detail": "Frozen->Ready",
+      "recorded_at": "2026-10-26T01:28:11.771024372+00:00"
+    },
+    {
+      "sequence": 43,
+      "subject_id": "215b7677-fbb4-4234-8b15-f9d7774d0a11",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T01:28:19.572747833+00:00"
+    },
+    {
+      "sequence": 44,
+      "subject_id": "215b7677-fbb4-4234-8b15-f9d7774d0a11",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-1 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T01:28:19.575776074+00:00"
+    },
+    {
+      "sequence": 45,
+      "subject_id": "81701e71-d2a7-428b-b4f6-c9d142e68bce",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T01:28:19.577411836+00:00"
+    },
+    {
+      "sequence": 46,
+      "subject_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T01:28:19.579501421+00:00"
+    },
+    {
+      "sequence": 47,
+      "subject_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T01:28:19.658226388+00:00"
+    },
+    {
+      "sequence": 48,
+      "subject_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T01:28:19.662078135+00:00"
+    },
+    {
+      "sequence": 49,
+      "subject_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T01:28:19.667618135+00:00"
+    },
+    {
+      "sequence": 50,
+      "subject_id": "13f9effb-cafa-426d-ad0e-de98972b6949",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T01:28:19.669818280+00:00"
+    },
+    {
+      "sequence": 51,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T01:28:36.352368955+00:00"
+    },
+    {
+      "sequence": 52,
+      "subject_id": "961b54fd-6fde-4d36-8712-10886ef9b44d",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T01:28:45.437847761+00:00"
+    },
+    {
+      "sequence": 53,
+      "subject_id": "961b54fd-6fde-4d36-8712-10886ef9b44d",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-2 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T01:28:45.440492012+00:00"
+    },
+    {
+      "sequence": 54,
+      "subject_id": "14033f20-afa5-41bc-b066-d5d86b1e71fb",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T01:28:45.441753652+00:00"
+    },
+    {
+      "sequence": 55,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T01:28:45.443193261+00:00"
+    },
+    {
+      "sequence": 56,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T01:28:45.911685747+00:00"
+    },
+    {
+      "sequence": 57,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T01:28:45.914744106+00:00"
+    },
+    {
+      "sequence": 58,
+      "subject_id": "45f4608e-e0ab-4e23-aacb-b96974efc4c3",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T01:28:47.124913382+00:00"
+    },
+    {
+      "sequence": 59,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=be1e2a97-f976-4d64-acc6-3f24d1454000 output=4096 cost=800000",
+      "recorded_at": "2026-10-26T01:28:47.321420335+00:00"
+    },
+    {
+      "sequence": 60,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T01:28:47.888667482+00:00"
+    },
+    {
+      "sequence": 61,
+      "subject_id": "b07fec72-6bbc-49d3-9a3b-ed385d0a1544",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T01:28:47.890655694+00:00"
+    },
+    {
+      "sequence": 62,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T01:29:52.558956958+00:00"
+    },
+    {
+      "sequence": 63,
+      "subject_id": "afca55e2-216f-4252-bf70-b211ccc98c24",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T01:30:01.610194957+00:00"
+    },
+    {
+      "sequence": 64,
+      "subject_id": "live-uat-grant-3",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T01:37:41.323900322+00:00"
+    },
+    {
+      "sequence": 65,
+      "subject_id": "afca55e2-216f-4252-bf70-b211ccc98c24",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-3b risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T01:46:40.458472825+00:00"
+    },
+    {
+      "sequence": 66,
+      "subject_id": "6d79c07c-a6d9-4338-a6ad-696065aabd4d",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T01:46:40.460699417+00:00"
+    },
+    {
+      "sequence": 67,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T01:46:40.462772256+00:00"
+    },
+    {
+      "sequence": 68,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T01:46:40.862982080+00:00"
+    },
+    {
+      "sequence": 69,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T01:46:40.865877162+00:00"
+    },
+    {
+      "sequence": 70,
+      "subject_id": "d4094897-8052-420f-b42d-5bf589bcc329",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T01:46:52.220682307+00:00"
+    },
+    {
+      "sequence": 71,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=4ac3953c-b43a-4cd3-8596-908f10f5a094 output=4096 cost=800000",
+      "recorded_at": "2026-10-26T01:46:52.414257776+00:00"
+    },
+    {
+      "sequence": 72,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T01:46:53.021112099+00:00"
+    },
+    {
+      "sequence": 73,
+      "subject_id": "798328ac-cea5-4589-a9ac-ecf646229832",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T01:46:53.023144221+00:00"
+    },
+    {
+      "sequence": 74,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T01:48:00.072167964+00:00"
+    },
+    {
+      "sequence": 75,
+      "subject_id": "88d36ba2-2659-4fc2-8e2b-0d65ff8164c6",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T01:48:10.333782574+00:00"
+    },
+    {
+      "sequence": 76,
+      "subject_id": "88d36ba2-2659-4fc2-8e2b-0d65ff8164c6",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-4 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T01:48:10.336549884+00:00"
+    },
+    {
+      "sequence": 77,
+      "subject_id": "9ea857ca-acdd-4582-8b98-e4c0aa1e590d",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T01:48:10.338377257+00:00"
+    },
+    {
+      "sequence": 78,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T01:48:10.340022534+00:00"
+    },
+    {
+      "sequence": 79,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T01:48:10.638437184+00:00"
+    },
+    {
+      "sequence": 80,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T01:48:10.642536275+00:00"
+    },
+    {
+      "sequence": 81,
+      "subject_id": "ac197b1b-de08-4988-ac6e-d7f3a09314db",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T01:48:21.873165007+00:00"
+    },
+    {
+      "sequence": 82,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=b66c5d37-955b-45be-b1f1-fedf6d0b5918 output=4096 cost=800000",
+      "recorded_at": "2026-10-26T01:48:22.163205268+00:00"
+    },
+    {
+      "sequence": 83,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T01:48:28.680188359+00:00"
+    },
+    {
+      "sequence": 84,
+      "subject_id": "8e8b0f23-3f90-4579-b228-c7329d348487",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T01:48:28.682340009+00:00"
+    },
+    {
+      "sequence": 85,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:08:23.410803910+00:00"
+    },
+    {
+      "sequence": 86,
+      "subject_id": "ac89b2bd-eb98-4b85-a1ab-2524e308f001",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:08:25.550654518+00:00"
+    },
+    {
+      "sequence": 87,
+      "subject_id": "ac89b2bd-eb98-4b85-a1ab-2524e308f001",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-5 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:08:25.554560706+00:00"
+    },
+    {
+      "sequence": 88,
+      "subject_id": "f14ed060-49b7-4690-8000-5bdbc661124c",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:08:25.556365228+00:00"
+    },
+    {
+      "sequence": 89,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:08:25.558512221+00:00"
+    },
+    {
+      "sequence": 90,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:08:25.928700884+00:00"
+    },
+    {
+      "sequence": 91,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:08:25.934266889+00:00"
+    },
+    {
+      "sequence": 92,
+      "subject_id": "b319fc0d-73b8-4404-8cfe-5d74a0fcabaa",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:08:27.119989263+00:00"
+    },
+    {
+      "sequence": 93,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=77999a18-b9c3-4ea2-a119-688dfaf8160f output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:08:27.325828165+00:00"
+    },
+    {
+      "sequence": 94,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=77999a18-b9c3-4ea2-a119-688dfaf8160f input=2726 output=269 total=5484 cost=994",
+      "recorded_at": "2026-10-26T02:08:36.722135823+00:00"
+    },
+    {
+      "sequence": 95,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:08:36.726298710+00:00"
+    },
+    {
+      "sequence": 96,
+      "subject_id": "e3787859-3c3f-4ae4-a79e-074b9c1f6b2e",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:08:36.729092332+00:00"
+    },
+    {
+      "sequence": 97,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:10:28.679123963+00:00"
+    },
+    {
+      "sequence": 98,
+      "subject_id": "live-uat-mock-grant",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T02:10:30.804997488+00:00"
+    },
+    {
+      "sequence": 99,
+      "subject_id": "04ae35f5-2bdd-4c6b-a3a6-4626ae6fd8d8",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:10:30.806967134+00:00"
+    },
+    {
+      "sequence": 100,
+      "subject_id": "04ae35f5-2bdd-4c6b-a3a6-4626ae6fd8d8",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-mock-auth risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:10:30.809609098+00:00"
+    },
+    {
+      "sequence": 101,
+      "subject_id": "75e0a5f4-cb3f-49b4-8fc8-6534735deb82",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:10:30.811234459+00:00"
+    },
+    {
+      "sequence": 102,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:10:30.812819353+00:00"
+    },
+    {
+      "sequence": 103,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:10:31.197159106+00:00"
+    },
+    {
+      "sequence": 104,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:10:31.200560324+00:00"
+    },
+    {
+      "sequence": 105,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:10:32.380041897+00:00"
+    },
+    {
+      "sequence": 106,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=0cd8d75d-ec14-41f0-9940-8a7b3c89c7dc output=4096 cost=100000",
+      "recorded_at": "2026-10-26T02:10:32.574465575+00:00"
+    },
+    {
+      "sequence": 107,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=0cd8d75d-ec14-41f0-9940-8a7b3c89c7dc input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:10:33.576550941+00:00"
+    },
+    {
+      "sequence": 108,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.tool_event",
+      "detail": "call=invalid-action tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:10:33.578841387+00:00"
+    },
+    {
+      "sequence": 109,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=9e73e12c-7f9d-4b5a-8bf8-2a57dce93954 output=4096 cost=99955",
+      "recorded_at": "2026-10-26T02:10:33.581128647+00:00"
+    },
+    {
+      "sequence": 110,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=9e73e12c-7f9d-4b5a-8bf8-2a57dce93954 input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:10:33.651826584+00:00"
+    },
+    {
+      "sequence": 111,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:10:33.653623130+00:00"
+    },
+    {
+      "sequence": 112,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:10:33.656819489+00:00"
+    },
+    {
+      "sequence": 113,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:10:33.671521498+00:00"
+    },
+    {
+      "sequence": 114,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=93db834e-b49a-4b10-9209-9011940023c7 output=4096 cost=99910",
+      "recorded_at": "2026-10-26T02:10:33.674126582+00:00"
+    },
+    {
+      "sequence": 115,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=93db834e-b49a-4b10-9209-9011940023c7 input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:10:33.739021363+00:00"
+    },
+    {
+      "sequence": 116,
+      "subject_id": "53c53472-f32f-404c-946d-1d752c65d140",
+      "kind": "provider.tool_event",
+      "detail": "call=final-explanation tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:10:33.740951504+00:00"
+    },
+    {
+      "sequence": 117,
+      "subject_id": "21d5a131-f4da-4462-99cc-555da32bdd8e",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T02:10:33.930115199+00:00"
+    },
+    {
+      "sequence": 118,
+      "subject_id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+      "kind": "candidate.recorded",
+      "detail": "attempt=21d5a131-f4da-4462-99cc-555da32bdd8e commit=0653f9071139c71e8ddc81242a85891d75c2e62e tree=58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9",
+      "recorded_at": "2026-10-26T02:10:33.945004093+00:00"
+    },
+    {
+      "sequence": 119,
+      "subject_id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=168b2b53-0e2e-425e-8e71-c5365c18295a principal=mock-verifier result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T02:16:28.154751025+00:00"
+    },
+    {
+      "sequence": 120,
+      "subject_id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=reviewer receipt=9592b4a7-ef60-48de-8d91-7d66f4c4c54e principal=mock-reviewer result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T02:16:32.552799625+00:00"
+    },
+    {
+      "sequence": 121,
+      "subject_id": "1fd66b8d-6bbd-439b-af08-8aa8b89ae66c",
+      "kind": "quality.gate_decided",
+      "detail": "outcome=Accepted",
+      "recorded_at": "2026-10-26T02:16:32.553425127+00:00"
+    },
+    {
+      "sequence": 122,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:16:48.220879048+00:00"
+    },
+    {
+      "sequence": 123,
+      "subject_id": "29dd3583-43a8-451c-b85a-33a0469de310",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:16:50.331469945+00:00"
+    },
+    {
+      "sequence": 124,
+      "subject_id": "29dd3583-43a8-451c-b85a-33a0469de310",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-7 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:16:50.334175729+00:00"
+    },
+    {
+      "sequence": 125,
+      "subject_id": "9676002c-2a00-4d94-bf15-60571d053cb8",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:16:50.335456909+00:00"
+    },
+    {
+      "sequence": 126,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:16:50.336565531+00:00"
+    },
+    {
+      "sequence": 127,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:16:50.735226813+00:00"
+    },
+    {
+      "sequence": 128,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:16:50.739280523+00:00"
+    },
+    {
+      "sequence": 129,
+      "subject_id": "d8a448ca-0063-40d2-9250-8e49bcad66e1",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:16:51.927065680+00:00"
+    },
+    {
+      "sequence": 130,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=c0e2eb59-4de1-41f3-ae00-a79ad7d87657 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:16:52.122714858+00:00"
+    },
+    {
+      "sequence": 131,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=c0e2eb59-4de1-41f3-ae00-a79ad7d87657 input=2898 output=259 total=7166 cost=2002",
+      "recorded_at": "2026-10-26T02:17:18.236417940+00:00"
+    },
+    {
+      "sequence": 132,
+      "subject_id": "d8a448ca-0063-40d2-9250-8e49bcad66e1",
+      "kind": "provider.tool_event",
+      "detail": "call=final-explanation tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:17:18.238643608+00:00"
+    },
+    {
+      "sequence": 133,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:17:18.281670684+00:00"
+    },
+    {
+      "sequence": 134,
+      "subject_id": "6d581363-5788-4546-93d7-56e1c4a09e05",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:17:18.284549726+00:00"
+    },
+    {
+      "sequence": 135,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:18:35.268449770+00:00"
+    },
+    {
+      "sequence": 136,
+      "subject_id": "a9452cf5-d322-4e1a-969e-d5e441e1f8f0",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:18:37.436529968+00:00"
+    },
+    {
+      "sequence": 137,
+      "subject_id": "a9452cf5-d322-4e1a-969e-d5e441e1f8f0",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-mock-auth-2 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:18:37.440974501+00:00"
+    },
+    {
+      "sequence": 138,
+      "subject_id": "2d1ec5ab-38a7-40c1-b9f1-128ea39b6322",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:18:37.442693824+00:00"
+    },
+    {
+      "sequence": 139,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:18:37.444907059+00:00"
+    },
+    {
+      "sequence": 140,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:18:37.787862512+00:00"
+    },
+    {
+      "sequence": 141,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:18:37.793183534+00:00"
+    },
+    {
+      "sequence": 142,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:18:49.037474475+00:00"
+    },
+    {
+      "sequence": 143,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=186c5c7d-3bfb-410e-960f-d50da9f00722 output=4096 cost=100000",
+      "recorded_at": "2026-10-26T02:18:49.326077148+00:00"
+    },
+    {
+      "sequence": 144,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=186c5c7d-3bfb-410e-960f-d50da9f00722 input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:18:50.314641488+00:00"
+    },
+    {
+      "sequence": 145,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:18:50.316138559+00:00"
+    },
+    {
+      "sequence": 146,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=4a88bbb0-eebb-4c2c-83cb-3100e2c56c67 output=4096 cost=99955",
+      "recorded_at": "2026-10-26T02:18:50.318047614+00:00"
+    },
+    {
+      "sequence": 147,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=4a88bbb0-eebb-4c2c-83cb-3100e2c56c67 input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:18:50.390727705+00:00"
+    },
+    {
+      "sequence": 148,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:18:50.392692376+00:00"
+    },
+    {
+      "sequence": 149,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:18:50.395667401+00:00"
+    },
+    {
+      "sequence": 150,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.tool_event",
+      "detail": "call=call-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:18:50.411824305+00:00"
+    },
+    {
+      "sequence": 151,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=281bbaa4-905c-4fbb-956f-3cdf9f26775b output=4096 cost=99910",
+      "recorded_at": "2026-10-26T02:18:50.414367828+00:00"
+    },
+    {
+      "sequence": 152,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=281bbaa4-905c-4fbb-956f-3cdf9f26775b input=100 output=50 total=150 cost=45",
+      "recorded_at": "2026-10-26T02:18:50.485273892+00:00"
+    },
+    {
+      "sequence": 153,
+      "subject_id": "13bb178b-388b-4ab6-8717-5a6d41f29d44",
+      "kind": "provider.tool_event",
+      "detail": "call=final-explanation tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:18:50.486853870+00:00"
+    },
+    {
+      "sequence": 154,
+      "subject_id": "35b6256a-83fd-4a55-88e1-b3aec41b649a",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T02:18:50.674232270+00:00"
+    },
+    {
+      "sequence": 155,
+      "subject_id": "c05d732f-ac2a-4d93-b990-c1ce53f771e0",
+      "kind": "candidate.recorded",
+      "detail": "attempt=35b6256a-83fd-4a55-88e1-b3aec41b649a commit=43f5ec95d3cdfae8d10baddae334a1a4c9e62466 tree=58534d2d2e942d1b12de798aa6e31bfb3dbb2bb9",
+      "recorded_at": "2026-10-26T02:18:50.687527706+00:00"
+    },
+    {
+      "sequence": 156,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:20:42.851604340+00:00"
+    },
+    {
+      "sequence": 157,
+      "subject_id": "6be0549e-5521-4919-8f1e-bd9302c6f61a",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:20:45.019442925+00:00"
+    },
+    {
+      "sequence": 158,
+      "subject_id": "6be0549e-5521-4919-8f1e-bd9302c6f61a",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-9 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:20:45.022498171+00:00"
+    },
+    {
+      "sequence": 159,
+      "subject_id": "88d8fa66-550f-4114-bf55-42c9e9dea0a0",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:20:45.024388770+00:00"
+    },
+    {
+      "sequence": 160,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:20:45.025960643+00:00"
+    },
+    {
+      "sequence": 161,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:20:45.367807222+00:00"
+    },
+    {
+      "sequence": 162,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:20:45.370374019+00:00"
+    },
+    {
+      "sequence": 163,
+      "subject_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:20:56.570927644+00:00"
+    },
+    {
+      "sequence": 164,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=1f211cea-266e-49cb-9fcd-f431d797f614 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:20:56.748736366+00:00"
+    },
+    {
+      "sequence": 165,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=1f211cea-266e-49cb-9fcd-f431d797f614 input=2770 output=234 total=6553 cost=1615",
+      "recorded_at": "2026-10-26T02:21:14.621794609+00:00"
+    },
+    {
+      "sequence": 166,
+      "subject_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:21:14.624096641+00:00"
+    },
+    {
+      "sequence": 167,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=1e28bfaa-bf38-413f-b51e-ae9eb24fca36 output=4096 cost=498385",
+      "recorded_at": "2026-10-26T02:21:14.625921825+00:00"
+    },
+    {
+      "sequence": 168,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=1e28bfaa-bf38-413f-b51e-ae9eb24fca36 input=4582 output=184 total=7064 cost=1030",
+      "recorded_at": "2026-10-26T02:21:20.681550992+00:00"
+    },
+    {
+      "sequence": 169,
+      "subject_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:21:20.683721835+00:00"
+    },
+    {
+      "sequence": 170,
+      "subject_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:21:20.686976991+00:00"
+    },
+    {
+      "sequence": 171,
+      "subject_id": "6440ca22-ff0e-4123-b397-ea525692e0d6",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=ERROR",
+      "recorded_at": "2026-10-26T02:21:20.689540060+00:00"
+    },
+    {
+      "sequence": 172,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:21:20.694564645+00:00"
+    },
+    {
+      "sequence": 173,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "worker.claimed",
+      "detail": "generation=2",
+      "recorded_at": "2026-10-26T02:21:20.702795404+00:00"
+    },
+    {
+      "sequence": 174,
+      "subject_id": "ebd8c6b5-f84a-4b02-afbf-d33351ec0f20",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:21:20.707253891+00:00"
+    },
+    {
+      "sequence": 175,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:22:28.532685333+00:00"
+    },
+    {
+      "sequence": 176,
+      "subject_id": "live-uat-grant-4",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T02:22:30.710520150+00:00"
+    },
+    {
+      "sequence": 177,
+      "subject_id": "4da9526a-5860-44ce-91f4-d34c61a05dc5",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:22:30.712868380+00:00"
+    },
+    {
+      "sequence": 178,
+      "subject_id": "4da9526a-5860-44ce-91f4-d34c61a05dc5",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-10 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:22:30.716052391+00:00"
+    },
+    {
+      "sequence": 179,
+      "subject_id": "3c69074a-1acf-448f-91df-215f105b3895",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:22:30.717805618+00:00"
+    },
+    {
+      "sequence": 180,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:22:30.719604221+00:00"
+    },
+    {
+      "sequence": 181,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:22:31.052257804+00:00"
+    },
+    {
+      "sequence": 182,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:22:31.057259053+00:00"
+    },
+    {
+      "sequence": 183,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:22:32.240128767+00:00"
+    },
+    {
+      "sequence": 184,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=806e2088-2cbe-43e7-bd2e-32830d6a302a output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:22:32.430064355+00:00"
+    },
+    {
+      "sequence": 185,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=806e2088-2cbe-43e7-bd2e-32830d6a302a input=2784 output=159 total=5479 cost=965",
+      "recorded_at": "2026-10-26T02:22:41.109979489+00:00"
+    },
+    {
+      "sequence": 186,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:22:41.112327629+00:00"
+    },
+    {
+      "sequence": 187,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=c572606a-76ba-4953-9ff2-954c8b803bb6 output=4096 cost=499035",
+      "recorded_at": "2026-10-26T02:22:41.114471569+00:00"
+    },
+    {
+      "sequence": 188,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=c572606a-76ba-4953-9ff2-954c8b803bb6 input=3509 output=176 total=6152 cost=966",
+      "recorded_at": "2026-10-26T02:22:46.512419571+00:00"
+    },
+    {
+      "sequence": 189,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:22:46.514509209+00:00"
+    },
+    {
+      "sequence": 190,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:22:46.517396715+00:00"
+    },
+    {
+      "sequence": 191,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:22:46.536664709+00:00"
+    },
+    {
+      "sequence": 192,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=59feae4f-c131-4fc4-b904-94e26abec24f output=4096 cost=498069",
+      "recorded_at": "2026-10-26T02:22:46.539693514+00:00"
+    },
+    {
+      "sequence": 193,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=59feae4f-c131-4fc4-b904-94e26abec24f input=936 output=186 total=8828 cost=1743",
+      "recorded_at": "2026-10-26T02:23:09.147457072+00:00"
+    },
+    {
+      "sequence": 194,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-2 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:23:09.149515690+00:00"
+    },
+    {
+      "sequence": 195,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-2 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:23:09.153016062+00:00"
+    },
+    {
+      "sequence": 196,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-2 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:23:09.167417934+00:00"
+    },
+    {
+      "sequence": 197,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=196b3201-1973-4d16-af85-61b0bf9fb8eb output=4096 cost=496326",
+      "recorded_at": "2026-10-26T02:23:09.169658909+00:00"
+    },
+    {
+      "sequence": 198,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=196b3201-1973-4d16-af85-61b0bf9fb8eb input=2844 output=771 total=10898 cost=1667",
+      "recorded_at": "2026-10-26T02:23:20.537724168+00:00"
+    },
+    {
+      "sequence": 199,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:23:20.539696492+00:00"
+    },
+    {
+      "sequence": 200,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:23:20.542993026+00:00"
+    },
+    {
+      "sequence": 201,
+      "subject_id": "ad96be16-04a1-4bcf-8ba3-cbfc93675ac4",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:23:20.556239759+00:00"
+    },
+    {
+      "sequence": 202,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:23:20.681126237+00:00"
+    },
+    {
+      "sequence": 203,
+      "subject_id": "e6d56065-fdb4-4263-9d12-4c77a3580607",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:23:20.683727678+00:00"
+    },
+    {
+      "sequence": 204,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:24:09.342457029+00:00"
+    },
+    {
+      "sequence": 205,
+      "subject_id": "29dde7e0-d8df-4994-84a8-1b7b40836e13",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:24:11.504953108+00:00"
+    },
+    {
+      "sequence": 206,
+      "subject_id": "29dde7e0-d8df-4994-84a8-1b7b40836e13",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-11 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:24:11.507686139+00:00"
+    },
+    {
+      "sequence": 207,
+      "subject_id": "80b997dd-590a-4499-9236-d0f7a5c9ec13",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:24:11.509406534+00:00"
+    },
+    {
+      "sequence": 208,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:24:11.511077193+00:00"
+    },
+    {
+      "sequence": 209,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:24:11.859188088+00:00"
+    },
+    {
+      "sequence": 210,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:24:11.861404907+00:00"
+    },
+    {
+      "sequence": 211,
+      "subject_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:24:13.046645536+00:00"
+    },
+    {
+      "sequence": 212,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=aa023951-5662-48a8-9685-1ee70842f7fc output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:24:13.236559689+00:00"
+    },
+    {
+      "sequence": 213,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=aa023951-5662-48a8-9685-1ee70842f7fc input=2784 output=351 total=6087 cost=1330",
+      "recorded_at": "2026-10-26T02:24:28.651962018+00:00"
+    },
+    {
+      "sequence": 214,
+      "subject_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:24:28.653849069+00:00"
+    },
+    {
+      "sequence": 215,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=fa7208dc-a1f0-4c3b-975a-bb5ac03a16cb output=4096 cost=498670",
+      "recorded_at": "2026-10-26T02:24:28.655997217+00:00"
+    },
+    {
+      "sequence": 216,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=fa7208dc-a1f0-4c3b-975a-bb5ac03a16cb input=4116 output=176 total=6378 cost=828",
+      "recorded_at": "2026-10-26T02:24:31.828042376+00:00"
+    },
+    {
+      "sequence": 217,
+      "subject_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:24:31.830154426+00:00"
+    },
+    {
+      "sequence": 218,
+      "subject_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:24:31.833218588+00:00"
+    },
+    {
+      "sequence": 219,
+      "subject_id": "2359a05f-d6cf-4cd6-85db-df0e5f63db2b",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:24:31.852340490+00:00"
+    },
+    {
+      "sequence": 220,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=e3ff4505-450d-4101-ab94-23331c84ee92 output=4096 cost=497842",
+      "recorded_at": "2026-10-26T02:24:31.854763751+00:00"
+    },
+    {
+      "sequence": 221,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:25:41.965895870+00:00"
+    },
+    {
+      "sequence": 222,
+      "subject_id": "d11b447c-9ca4-4375-a012-23c3c3fc06f0",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:25:41.968356613+00:00"
+    },
+    {
+      "sequence": 223,
+      "subject_id": "live-uat-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T02:26:37.736726336+00:00"
+    },
+    {
+      "sequence": 224,
+      "subject_id": "bcc4204a-13f8-4328-95c8-1b9448fb9405",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:26:39.924153086+00:00"
+    },
+    {
+      "sequence": 225,
+      "subject_id": "bcc4204a-13f8-4328-95c8-1b9448fb9405",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-12 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:26:39.926987039+00:00"
+    },
+    {
+      "sequence": 226,
+      "subject_id": "554e1180-ae4b-48e1-8aac-5f40e51a30ca",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:26:39.928577485+00:00"
+    },
+    {
+      "sequence": 227,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:26:39.930508129+00:00"
+    },
+    {
+      "sequence": 228,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:26:40.253459125+00:00"
+    },
+    {
+      "sequence": 229,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:26:40.256063140+00:00"
+    },
+    {
+      "sequence": 230,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:26:41.444643242+00:00"
+    },
+    {
+      "sequence": 231,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=abc6fff7-b897-448c-8aec-399709ccbec0 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:26:41.646351109+00:00"
+    },
+    {
+      "sequence": 232,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=abc6fff7-b897-448c-8aec-399709ccbec0 input=2528 output=298 total=5470 cost=922",
+      "recorded_at": "2026-10-26T02:26:51.679455647+00:00"
+    },
+    {
+      "sequence": 233,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:26:51.681247396+00:00"
+    },
+    {
+      "sequence": 234,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=ae551e67-6673-4663-9a43-e9f976509e50 output=4096 cost=499078",
+      "recorded_at": "2026-10-26T02:26:51.682817334+00:00"
+    },
+    {
+      "sequence": 235,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=ae551e67-6673-4663-9a43-e9f976509e50 input=3629 output=185 total=5681 cost=706",
+      "recorded_at": "2026-10-26T02:26:54.880769833+00:00"
+    },
+    {
+      "sequence": 236,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=invalid-action tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:26:54.882821177+00:00"
+    },
+    {
+      "sequence": 237,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=e0769d56-c796-45d9-bb79-138ae71c7439 output=4096 cost=498372",
+      "recorded_at": "2026-10-26T02:26:54.884684613+00:00"
+    },
+    {
+      "sequence": 238,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=e0769d56-c796-45d9-bb79-138ae71c7439 input=1668 output=173 total=5958 cost=379",
+      "recorded_at": "2026-10-26T02:26:57.724548115+00:00"
+    },
+    {
+      "sequence": 239,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:26:57.726490341+00:00"
+    },
+    {
+      "sequence": 240,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:26:57.729064019+00:00"
+    },
+    {
+      "sequence": 241,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:26:57.747073409+00:00"
+    },
+    {
+      "sequence": 242,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=194af72e-ea22-4e5d-9520-7968d9a99180 output=4096 cost=497993",
+      "recorded_at": "2026-10-26T02:26:57.749457265+00:00"
+    },
+    {
+      "sequence": 243,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=194af72e-ea22-4e5d-9520-7968d9a99180 input=1894 output=577 total=6679 cost=710",
+      "recorded_at": "2026-10-26T02:27:02.498371228+00:00"
+    },
+    {
+      "sequence": 244,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:27:02.500741278+00:00"
+    },
+    {
+      "sequence": 245,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:27:02.504413296+00:00"
+    },
+    {
+      "sequence": 246,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:27:02.516771732+00:00"
+    },
+    {
+      "sequence": 247,
+      "subject_id": "1171276d-c59f-414f-bd2a-4176181353c8",
+      "kind": "provider.tool_event",
+      "detail": "call=turn-budget-exhausted tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:27:02.518570475+00:00"
+    },
+    {
+      "sequence": 248,
+      "subject_id": "05e25218-546e-4f95-be86-dc327925cd16",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T02:27:02.720532069+00:00"
+    },
+    {
+      "sequence": 249,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "candidate.recorded",
+      "detail": "attempt=05e25218-546e-4f95-be86-dc327925cd16 commit=72da44ff3db7204b7ecccbbd55fa07a08dc1dec3 tree=19cd392e1cd4139592ab21bf9c357e045e069364",
+      "recorded_at": "2026-10-26T02:27:02.732481027+00:00"
+    },
+    {
+      "sequence": 250,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=3c99f21d-99c6-4f1e-a21b-b7120380b82a principal=live-verifier result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T02:27:25.883014901+00:00"
+    },
+    {
+      "sequence": 251,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "model.call_authorized",
+      "detail": "role=SEMANTIC_REVIEWER reservation=a2277968-eead-4116-8f66-30bdee9af364 provider=opencode-go model=deepseek-v4.1-flash input=400000 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:27:33.260578129+00:00"
+    },
+    {
+      "sequence": 252,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "model.call_settled",
+      "detail": "role=SEMANTIC_REVIEWER reservation=a2277968-eead-4116-8f66-30bdee9af364 state=UNKNOWN input=2424 output=4096 total=6520 cost=2822",
+      "recorded_at": "2026-10-26T02:27:59.251022642+00:00"
+    },
+    {
+      "sequence": 253,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=reviewer receipt=59a4aa2d-ad40-4e5f-9b53-d4a84799fc03 principal=live-reviewer result=NotTested evidence=Unknown",
+      "recorded_at": "2026-10-26T02:27:59.253646074+00:00"
+    },
+    {
+      "sequence": 254,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "quality.gate_decided",
+      "detail": "outcome=NotTested",
+      "recorded_at": "2026-10-26T02:27:59.254978269+00:00"
+    },
+    {
+      "sequence": 255,
+      "subject_id": "39b7be46-18bb-4344-978f-d40fdba1f5ea",
+      "kind": "model.call_resolved",
+      "detail": "reservation=a2277968-eead-4116-8f66-30bdee9af364 actor=product-owner reason=semantic review returned empty content at 4096 output tokens; usage preserved and reviewer retried at 8192 on a new candidate",
+      "recorded_at": "2026-10-26T02:29:40.134147367+00:00"
+    },
+    {
+      "sequence": 256,
+      "subject_id": "0b682cdd-39d4-4ee6-9b17-1fecea28a450",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:29:40.292514493+00:00"
+    },
+    {
+      "sequence": 257,
+      "subject_id": "0b682cdd-39d4-4ee6-9b17-1fecea28a450",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-13 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:29:40.295313078+00:00"
+    },
+    {
+      "sequence": 258,
+      "subject_id": "e6ec78db-e966-4603-91c3-073e1881b73a",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:29:40.296904476+00:00"
+    },
+    {
+      "sequence": 259,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:29:40.298541721+00:00"
+    },
+    {
+      "sequence": 260,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:29:40.714602052+00:00"
+    },
+    {
+      "sequence": 261,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:29:40.718972217+00:00"
+    },
+    {
+      "sequence": 262,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:29:41.908386260+00:00"
+    },
+    {
+      "sequence": 263,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=27413db3-9265-4e21-8223-f3c2d9769557 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:29:42.093342086+00:00"
+    },
+    {
+      "sequence": 264,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=27413db3-9265-4e21-8223-f3c2d9769557 input=96 output=275 total=5959 cost=858",
+      "recorded_at": "2026-10-26T02:29:54.960839428+00:00"
+    },
+    {
+      "sequence": 265,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:29:54.962825808+00:00"
+    },
+    {
+      "sequence": 266,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=c3c9d6a4-8512-499d-a23a-2e267ede0bcc output=4096 cost=499142",
+      "recorded_at": "2026-10-26T02:29:54.965322118+00:00"
+    },
+    {
+      "sequence": 267,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=c3c9d6a4-8512-499d-a23a-2e267ede0bcc input=1814 output=185 total=6631 cost=717",
+      "recorded_at": "2026-10-26T02:30:00.806074620+00:00"
+    },
+    {
+      "sequence": 268,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:30:00.808101396+00:00"
+    },
+    {
+      "sequence": 269,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:30:00.810995132+00:00"
+    },
+    {
+      "sequence": 270,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:30:00.829677930+00:00"
+    },
+    {
+      "sequence": 271,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=3ffe4643-cdcb-4c60-81b8-3243f56b9f6e output=4096 cost=498425",
+      "recorded_at": "2026-10-26T02:30:00.831596219+00:00"
+    },
+    {
+      "sequence": 272,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=3ffe4643-cdcb-4c60-81b8-3243f56b9f6e input=2567 output=599 total=7325 cost=795",
+      "recorded_at": "2026-10-26T02:30:06.195131295+00:00"
+    },
+    {
+      "sequence": 273,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-discount-tests tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:30:06.196910470+00:00"
+    },
+    {
+      "sequence": 274,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-discount-tests tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:30:06.199543200+00:00"
+    },
+    {
+      "sequence": 275,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-discount-tests tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:30:06.212522986+00:00"
+    },
+    {
+      "sequence": 276,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=9b4c2082-778d-4c6a-9194-56ffd73c58df output=4096 cost=497630",
+      "recorded_at": "2026-10-26T02:30:06.214420987+00:00"
+    },
+    {
+      "sequence": 277,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=9b4c2082-778d-4c6a-9194-56ffd73c58df input=1214 output=38 total=7457 cost=260",
+      "recorded_at": "2026-10-26T02:30:08.801858725+00:00"
+    },
+    {
+      "sequence": 278,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build tool=run_command decision=REQUEST",
+      "recorded_at": "2026-10-26T02:30:08.803371554+00:00"
+    },
+    {
+      "sequence": 279,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build tool=run_command decision=ALLOW",
+      "recorded_at": "2026-10-26T02:30:08.805691938+00:00"
+    },
+    {
+      "sequence": 280,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build tool=run_command decision=ERROR",
+      "recorded_at": "2026-10-26T02:30:09.735419217+00:00"
+    },
+    {
+      "sequence": 281,
+      "subject_id": "0a8ecd9f-6bde-484f-a660-473414c982f0",
+      "kind": "provider.tool_event",
+      "detail": "call=turn-budget-exhausted tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:30:09.736494513+00:00"
+    },
+    {
+      "sequence": 282,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=false",
+      "recorded_at": "2026-10-26T02:30:09.758912618+00:00"
+    },
+    {
+      "sequence": 283,
+      "subject_id": "378a992c-3d2a-4022-9fdc-3592049866a8",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T02:30:09.760347137+00:00"
+    },
+    {
+      "sequence": 284,
+      "subject_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T02:31:41.689781635+00:00"
+    },
+    {
+      "sequence": 285,
+      "subject_id": "26ca04b9-4ee8-4e56-8dbb-871e6d482a23",
+      "kind": "campaign.authorized",
+      "detail": "authorization=live-uat-provider-auth-14 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T02:31:41.693246547+00:00"
+    },
+    {
+      "sequence": 286,
+      "subject_id": "8dce3b3e-0f58-4a89-ba63-ac9f796fde80",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T02:31:41.694743966+00:00"
+    },
+    {
+      "sequence": 287,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T02:31:41.695937076+00:00"
+    },
+    {
+      "sequence": 288,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T02:31:41.846997802+00:00"
+    },
+    {
+      "sequence": 289,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T02:31:41.849834960+00:00"
+    },
+    {
+      "sequence": 290,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T02:31:53.206484213+00:00"
+    },
+    {
+      "sequence": 291,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=6c3b2ee9-4f1e-4e2a-b4a6-46946a679079 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T02:31:53.338532716+00:00"
+    },
+    {
+      "sequence": 292,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=6c3b2ee9-4f1e-4e2a-b4a6-46946a679079 input=96 output=156 total=5540 cost=606",
+      "recorded_at": "2026-10-26T02:32:02.801335915+00:00"
+    },
+    {
+      "sequence": 293,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T02:32:02.803448023+00:00"
+    },
+    {
+      "sequence": 294,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=0553b185-794b-479a-b526-18dcfdd17e43 output=4096 cost=499394",
+      "recorded_at": "2026-10-26T02:32:02.805507481+00:00"
+    },
+    {
+      "sequence": 295,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=0553b185-794b-479a-b526-18dcfdd17e43 input=1395 output=187 total=6149 cost=616",
+      "recorded_at": "2026-10-26T02:32:08.549187401+00:00"
+    },
+    {
+      "sequence": 296,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:32:08.550983839+00:00"
+    },
+    {
+      "sequence": 297,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:32:08.553279677+00:00"
+    },
+    {
+      "sequence": 298,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:32:08.571464214+00:00"
+    },
+    {
+      "sequence": 299,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=720ae400-7bf9-4668-907b-8f0f43a1cfcc output=4096 cost=498778",
+      "recorded_at": "2026-10-26T02:32:08.574388097+00:00"
+    },
+    {
+      "sequence": 300,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=720ae400-7bf9-4668-907b-8f0f43a1cfcc input=807 output=621 total=7655 cost=1020",
+      "recorded_at": "2026-10-26T02:32:19.142238818+00:00"
+    },
+    {
+      "sequence": 301,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T02:32:19.144164471+00:00"
+    },
+    {
+      "sequence": 302,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T02:32:19.146516256+00:00"
+    },
+    {
+      "sequence": 303,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T02:32:19.178825787+00:00"
+    },
+    {
+      "sequence": 304,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=91a8ad49-4752-4c0d-96c4-ddfc20e16183 output=4096 cost=497758",
+      "recorded_at": "2026-10-26T02:32:19.180329938+00:00"
+    },
+    {
+      "sequence": 305,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=91a8ad49-4752-4c0d-96c4-ddfc20e16183 input=2312 output=40 total=7796 cost=428",
+      "recorded_at": "2026-10-26T02:32:22.151442741+00:00"
+    },
+    {
+      "sequence": 306,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=run-test-1 tool=run_command decision=REQUEST",
+      "recorded_at": "2026-10-26T02:32:22.153556503+00:00"
+    },
+    {
+      "sequence": 307,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=run-test-1 tool=run_command decision=ALLOW",
+      "recorded_at": "2026-10-26T02:32:22.156696186+00:00"
+    },
+    {
+      "sequence": 308,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=run-test-1 tool=run_command decision=ERROR",
+      "recorded_at": "2026-10-26T02:32:23.371935557+00:00"
+    },
+    {
+      "sequence": 309,
+      "subject_id": "147712e2-8a10-4e72-8a81-0242d25e5d09",
+      "kind": "provider.tool_event",
+      "detail": "call=turn-budget-exhausted tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T02:32:23.373480356+00:00"
+    },
+    {
+      "sequence": 310,
+      "subject_id": "1c348089-30c7-4420-8333-48dd221fb213",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T02:32:23.576035418+00:00"
+    },
+    {
+      "sequence": 311,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "candidate.recorded",
+      "detail": "attempt=1c348089-30c7-4420-8333-48dd221fb213 commit=9a5e892df83091529b87ed3127edddcc4bafe318 tree=a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+      "recorded_at": "2026-10-26T02:32:23.590719595+00:00"
+    },
+    {
+      "sequence": 312,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=b00f9d0f-2810-4492-9e73-e2461827cfec principal=live-verifier-2 result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T02:32:39.753473416+00:00"
+    },
+    {
+      "sequence": 313,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "model.call_authorized",
+      "detail": "role=SEMANTIC_REVIEWER reservation=685091f1-bacc-46f9-920d-3cd3e0e6c934 provider=opencode-go model=deepseek-v4.1-flash input=400000 output=8192 cost=500000",
+      "recorded_at": "2026-10-26T02:32:45.364043864+00:00"
+    },
+    {
+      "sequence": 314,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "model.call_settled",
+      "detail": "role=SEMANTIC_REVIEWER reservation=685091f1-bacc-46f9-920d-3cd3e0e6c934 state=SETTLED input=2519 output=4233 total=6752 cost=2918",
+      "recorded_at": "2026-10-26T02:33:13.918199587+00:00"
+    },
+    {
+      "sequence": 315,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=reviewer receipt=9aaa6f00-40fb-4056-94e8-773a36fb7616 principal=live-reviewer-2 result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T02:33:13.936283242+00:00"
+    },
+    {
+      "sequence": 316,
+      "subject_id": "8569839d-6c06-4999-af42-9a8525035c2d",
+      "kind": "quality.gate_decided",
+      "detail": "outcome=Accepted",
+      "recorded_at": "2026-10-26T02:33:13.936883604+00:00"
+    }
+  ],
+  "candidate_diff": "diff --git a/src/pricing.rs b/src/pricing.rs\nindex 2cc1be8..941e68d 100644\n--- a/src/pricing.rs\n+++ b/src/pricing.rs\n@@ -5,8 +5,7 @@\n /// never exceed `subtotal_cents`.\n pub fn apply_discount(subtotal_cents: u64, percent: u8) -> u64 {\n     let percent = u64::from(percent.min(100));\n-    let discount_cents = subtotal_cents.saturating_mul(percent) / 100;\n-    subtotal_cents\n-        .saturating_sub(discount_cents)\n-        .saturating_sub(discount_cents)\n+    let discount_cents =\n+        (u128::from(subtotal_cents) * u128::from(percent) / 100) as u64;\n+    subtotal_cents.saturating_sub(discount_cents)\n }\ndiff --git a/tests/discounts.rs b/tests/discounts.rs\nindex ba500d8..94a14da 100644\n--- a/tests/discounts.rs\n+++ b/tests/discounts.rs\n@@ -26,6 +26,28 @@ fn one_cent_boundary_never_returns_a_negative_or_inflated_total() {\n     assert_eq!(apply_discount(1, 50), 1);\n }\n \n+#[test]\n+fn discount_is_never_subtracted_twice() {\n+    assert_eq!(apply_discount(1_000, 10), 900);\n+}\n+\n+#[test]\n+fn fractional_discounts_round_down_without_exceeding_the_subtotal() {\n+    assert_eq!(apply_discount(1_001, 15), 851);\n+    assert_eq!(apply_discount(99, 99), 1);\n+}\n+\n+#[test]\n+fn maximum_subtotal_boundary_does_not_overflow() {\n+    assert_eq!(apply_discount(u64::MAX, 100), 0);\n+    assert_eq!(apply_discount(u64::MAX, 50), 9_223_372_036_854_775_808);\n+}\n+\n+#[test]\n+fn empty_cart_has_no_total() {\n+    assert_eq!(Cart::default().total_cents(50), 0);\n+}\n+\n #[test]\n fn cart_total_applies_discount_once() {\n     let cart = Cart {\n",
+  "candidate_identity": {
+    "commit": "9a5e892df83091529b87ed3127edddcc4bafe318",
+    "parent": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59",
+    "tree": "a0fcc4fbd997db1ca20c2084dc8e864d22ad8373",
+    "base": "a7eb670cc47ad3074be58cfb53ec69d6777b7a59"
+  }
+}
