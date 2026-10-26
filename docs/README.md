@@ -13,7 +13,7 @@ All normative software architecture and engineering guidance is maintained **in 
 5. [Quality baseline](quality/baseline.md) — candidate integrity, independent verification, and gate states; its old implementation references are historical.
 4. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
 
-The [migration closure ledger](implementation/native-rust-closure.md) is the current status authority. The [capability registry](product/capabilities.yaml), [capability decisions](product/capability-decisions.md) and [roadmap](roadmap/ROADMAP.md) are active product authorities. Historical evidence and accepted ADRs remain provenance; they do not certify the Rust branch.
+The [migration closure ledger](implementation/native-rust-closure.md) is the current status authority. The tested local workflow is documented in the [developer-preview testing guide](implementation/developer-preview-testing.md). The [capability registry](product/capabilities.yaml), [capability decisions](product/capability-decisions.md) and [roadmap](roadmap/ROADMAP.md) are active product authorities. Historical evidence and accepted ADRs remain provenance; they do not certify the Rust branch.
 
 ## Authority hierarchy
 
