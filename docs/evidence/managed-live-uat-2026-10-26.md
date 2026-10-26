@@ -192,8 +192,9 @@ projection/UX observations, not acceptance failures.
 
 ## 8. Reliability and accounting evidence
 
-Deterministic checks passed at `ea2d927` and follow-up `6ae3241` (full
-workspace tests, strict Clippy and format; the final workspace test log is
+Deterministic checks passed at `ea2d927`, follow-up `6ae3241` and the final
+branch head `a072d59` (full workspace tests, strict Clippy and format; the
+final workspace test log is
 [workspace-tests.log](managed-live-uat-2026-10-26/workspace-tests.log)). The specific matrix is:
 
 | Requirement | Evidence | Result |
