@@ -17,7 +17,7 @@ use crate::workspace::verify_candidate_commit;
 pub use provider_sessions::{
     NewProviderIntent, ProviderSessionRecord, ProviderTerminal, ProviderToolEventInput,
     ProviderToolEventRecord, ProviderTurnAuthorization, ProviderTurnBinding,
-    ProviderTurnBindingInput, ProviderTurnUsage,
+    ProviderTurnBindingInput, ProviderTurnReservationRecord, ProviderTurnUsage,
 };
 
 #[derive(Debug, thiserror::Error)]

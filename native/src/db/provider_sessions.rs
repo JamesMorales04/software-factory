@@ -99,6 +99,31 @@ pub struct ProviderTurnBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTurnReservationRecord {
+    pub reservation_id: String,
+    pub session_record_id: String,
+    pub attempt_id: String,
+    pub generation: i64,
+    pub provider: String,
+    pub model: String,
+    pub state: String,
+    pub actual_request_sha256: String,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_total_tokens: u64,
+    pub max_cost_micros: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cost_micros: u64,
+    pub usage_known: bool,
+    pub error: String,
+    pub expires_at_ms: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSessionRecord {
     pub session_record_id: String,
     pub attempt_id: String,
@@ -423,32 +448,75 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let row: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT attempt_id FROM provider_turn_reservations
+        use sqlx::row::Row;
+        let row = sqlx::query::query(
+            "SELECT session_record_id,attempt_id,max_input_tokens,max_output_tokens,
+                    max_total_tokens,max_cost_micros,actual_request_sha256
+             FROM provider_turn_reservations
              WHERE reservation_id=?1 AND state='RESERVED'",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((attempt_id,)) = row else {
+        let Some(row) = row else {
             return Err(Error::Conflict("provider turn is not reserved"));
         };
+        let session_record_id: String = row.try_get("session_record_id")?;
+        let attempt_id: String = row.try_get("attempt_id")?;
+        let max_input: i64 = row.try_get("max_input_tokens")?;
+        let max_output: i64 = row.try_get("max_output_tokens")?;
+        let max_total: i64 = row.try_get("max_total_tokens")?;
+        let max_cost: i64 = row.try_get("max_cost_micros")?;
+        let actual_request_sha256: String = row.try_get("actual_request_sha256")?;
+        if actual_request_sha256.is_empty() {
+            return Err(Error::Conflict(
+                "provider turn has no bound request; use the worker release path",
+            ));
+        }
         let now = Utc::now().to_rfc3339();
+        let error = format!(
+            "resolved by {actor}: {reason}; worst-case bound reservation charged because usage is unknown"
+        );
         sqlx::query::query(
             "UPDATE provider_turn_reservations
-             SET state='RELEASED',error=?1,updated_at=?2
-             WHERE reservation_id=?3 AND state='RESERVED'",
+             SET state='SETTLED',input_tokens=?1,output_tokens=?2,total_tokens=?3,
+                 cost_micros=?4,usage_known=0,error=?5,updated_at=?6
+             WHERE reservation_id=?7 AND state='RESERVED'",
         )
-        .bind(format!("resolved by {actor}: {reason}"))
+        .bind(max_input)
+        .bind(max_output)
+        .bind(max_total)
+        .bind(max_cost)
+        .bind(&error)
         .bind(&now)
         .bind(reservation_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query::query(
+            "UPDATE provider_sessions
+             SET input_tokens=input_tokens+?1,output_tokens=output_tokens+?2,
+                 total_tokens=total_tokens+?3,cost_micros=cost_micros+?4,
+                 usage_known=0,
+                 state=CASE WHEN state IN ('INTENT','ACTIVE','CANCEL_REQUESTED') THEN 'FAILED' ELSE state END,
+                 error=?5,updated_at=?6
+             WHERE session_record_id=?7",
+        )
+        .bind(max_input)
+        .bind(max_output)
+        .bind(max_total)
+        .bind(max_cost)
+        .bind(&error)
+        .bind(&now)
+        .bind(&session_record_id)
         .execute(&mut *transaction)
         .await?;
         record_event(
             &mut transaction,
             &attempt_id,
             "provider.turn_resolved",
-            &format!("reservation={reservation_id} actor={actor} reason={reason}"),
+            &format!(
+                "reservation={reservation_id} actor={actor} reason={reason} settlement=worst_case_bound"
+            ),
         )
         .await?;
         transaction.commit().await?;
@@ -636,6 +704,60 @@ impl Database {
         Ok(())
     }
 
+    pub async fn provider_turn_reservations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ProviderTurnReservationRecord>, Error> {
+        let limit = limit.clamp(1, 200) as i64;
+        use sqlx::row::Row;
+        let rows = sqlx::query::query(
+            "SELECT reservation_id,session_record_id,attempt_id,generation,provider,model,
+                    state,actual_request_sha256,max_input_tokens,max_output_tokens,
+                    max_total_tokens,max_cost_micros,input_tokens,output_tokens,total_tokens,
+                    cost_micros,usage_known,COALESCE(error,'') AS error,expires_at_ms,
+                    created_at,updated_at
+             FROM provider_turn_reservations ORDER BY created_at DESC,reservation_id LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ProviderTurnReservationRecord {
+                    reservation_id: row.try_get("reservation_id")?,
+                    session_record_id: row.try_get("session_record_id")?,
+                    attempt_id: row.try_get("attempt_id")?,
+                    generation: row.try_get("generation")?,
+                    provider: row.try_get("provider")?,
+                    model: row.try_get("model")?,
+                    state: row.try_get("state")?,
+                    actual_request_sha256: row.try_get("actual_request_sha256")?,
+                    max_input_tokens: u64::try_from(row.try_get::<i64, _>("max_input_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn input budget"))?,
+                    max_output_tokens: u64::try_from(row.try_get::<i64, _>("max_output_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn output budget"))?,
+                    max_total_tokens: u64::try_from(row.try_get::<i64, _>("max_total_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn total budget"))?,
+                    max_cost_micros: u64::try_from(row.try_get::<i64, _>("max_cost_micros")?)
+                        .map_err(|_| Error::Invalid("stored turn cost budget"))?,
+                    input_tokens: u64::try_from(row.try_get::<i64, _>("input_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn input"))?,
+                    output_tokens: u64::try_from(row.try_get::<i64, _>("output_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn output"))?,
+                    total_tokens: u64::try_from(row.try_get::<i64, _>("total_tokens")?)
+                        .map_err(|_| Error::Invalid("stored turn total"))?,
+                    cost_micros: u64::try_from(row.try_get::<i64, _>("cost_micros")?)
+                        .map_err(|_| Error::Invalid("stored turn cost"))?,
+                    usage_known: row.try_get::<i64, _>("usage_known")? != 0,
+                    error: row.try_get("error")?,
+                    expires_at_ms: row.try_get("expires_at_ms")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            })
+            .collect()
+    }
+
     pub async fn record_provider_intent(
         &self,
         input: &NewProviderIntent,
@@ -794,6 +916,11 @@ impl Database {
         {
             return Err(Error::Forbidden(
                 "completed provider session requires confirmed cleanup and known usage".into(),
+            ));
+        }
+        if input.state == "FAILED" && input.cleanup_receipt.trim().is_empty() {
+            return Err(Error::Forbidden(
+                "failed provider session requires a cleanup receipt or no_external_session".into(),
             ));
         }
         let _write = self.write_lock.lock().await;
@@ -1252,11 +1379,77 @@ mod tests {
         db.resolve_provider_turn_reservation(&turn.reservation_id, "operator", "reviewed")
             .await
             .unwrap();
+        let (state, input, output, cost): (String, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT state,input_tokens,output_tokens,cost_micros
+             FROM provider_turn_reservations WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "SETTLED");
+        assert!(input > 0 && output > 0 && cost > 0);
         assert!(matches!(
             db.release_provider_turn(&turn.reservation_id, "worker released")
                 .await,
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn provider_turn_binding_rejects_wrong_identity_scope_and_expiry() {
+        let (_path, db, session) = active_turn_fixture(1000).await;
+        let digest = "a".repeat(64);
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &digest)
+            .await
+            .unwrap();
+        for (model, path, worker) in [
+            ("other-model", "/v1/chat/completions", "worker"),
+            ("deepseek-v4.1-flash", "/v1/embeddings", "worker"),
+            (
+                "deepseek-v4.1-flash",
+                "/v1/chat/completions",
+                "other-worker",
+            ),
+        ] {
+            let result = db
+                .bind_provider_turn(&ProviderTurnBindingInput {
+                    reservation_id: turn.reservation_id.clone(),
+                    session_record_id: session.clone(),
+                    worker_id: worker.into(),
+                    generation: 1,
+                    request_sha256: "b".repeat(64),
+                    model: model.into(),
+                    path: path.into(),
+                    body_bytes: 123,
+                })
+                .await;
+            assert!(
+                matches!(result, Err(Error::Forbidden(_) | Error::Invalid(_))),
+                "{result:?}"
+            );
+        }
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id=?1",
+        )
+        .bind(&turn.reservation_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let expired = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: turn.reservation_id.clone(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 123,
+            })
+            .await;
+        assert!(matches!(expired, Err(Error::Forbidden(_))), "{expired:?}");
     }
 
     #[tokio::test]
@@ -1351,6 +1544,32 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state, "FAILED");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_requires_a_cleanup_receipt() {
+        let (path, db) = fixture(100).await;
+        insert_session(&db, "session-failed-cleanup", "attempt").await;
+        let result = db
+            .record_provider_terminal(&ProviderTerminal {
+                session_record_id: "session-failed-cleanup".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                state: "FAILED".into(),
+                provider_session_id: String::new(),
+                turn_id: String::new(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                usage_known: false,
+                cleanup_receipt: String::new(),
+                error: "failed".into(),
+            })
+            .await;
+        assert!(matches!(result, Err(Error::Forbidden(_))), "{result:?}");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

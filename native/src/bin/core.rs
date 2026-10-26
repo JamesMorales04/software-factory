@@ -487,6 +487,10 @@ fn api_router(app: Arc<App>) -> Router {
             "/provider/turn_reservations/{id}/resolve",
             post(resolve_provider_turn),
         )
+        .route(
+            "/provider/turn_reservations",
+            get(provider_turn_reservations),
+        )
         .route("/provider/sessions", get(provider_sessions))
         .route(
             "/worker/provider_unresolved",
@@ -1215,6 +1219,13 @@ async fn worker_provider_turn_bind(
         Ok(binding) => (StatusCode::OK, Json(binding)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn provider_turn_reservations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.provider_turn_reservations(200).await)
 }
 
 async fn resolve_provider_turn(

@@ -369,7 +369,7 @@ async fn handle(
         return Ok(());
     }
     let mut body = body;
-    let mut bound_turn: Option<(String, String)> = None;
+    let mut bound_turn: Option<(String, String, u64)> = None;
     if let Some(policy) = &config.turn_policy {
         if path == "/v1/models" && method == "GET" {
             // Catalog reads do not consume model spend.
@@ -404,16 +404,18 @@ async fn handle(
                                     } else {
                                         let max_output =
                                             turn.max_output_tokens.min(u64::from(u32::MAX));
-                                        let field = if path == "/v1/responses" {
-                                            "max_output_tokens"
+                                        let fields: &[&str] = if path == "/v1/responses" {
+                                            &["max_output_tokens"]
                                         } else {
-                                            "max_tokens"
+                                            &["max_tokens", "max_completion_tokens"]
                                         };
                                         if let Some(object) = value.as_object_mut() {
-                                            object.insert(
-                                                field.into(),
-                                                serde_json::Value::from(max_output),
-                                            );
+                                            for field in fields {
+                                                object.insert(
+                                                    (*field).into(),
+                                                    serde_json::Value::from(max_output),
+                                                );
+                                            }
                                         }
                                         match serde_json::to_vec(&value) {
                                             Ok(encoded) => {
@@ -421,6 +423,7 @@ async fn handle(
                                                 bound_turn = Some((
                                                     turn.reservation_id.clone(),
                                                     turn.model.clone(),
+                                                    turn.max_input_tokens,
                                                 ));
                                                 Ok(encoded)
                                             }
@@ -441,10 +444,17 @@ async fn handle(
                 }
             }
             if let Some(binder) = &config.turn_binder {
-                let Some((reservation_id, model)) = bound_turn else {
+                let Some((reservation_id, model, max_input_tokens)) = bound_turn else {
                     write_status(&mut stream, 403, "provider turn was not authorized").await?;
                     return Ok(());
                 };
+                let max_body_bytes = max_input_tokens
+                    .saturating_mul(4)
+                    .min(MAX_REQUEST_BODY as u64);
+                if body.len() as u64 > max_body_bytes {
+                    write_status(&mut stream, 413, "request exceeds input budget").await?;
+                    return Ok(());
+                }
                 let digest = sha256_hex(&body);
                 if let Err(error) = binder
                     .bind(&reservation_id, &digest, &model, path, body.len())
@@ -488,10 +498,7 @@ async fn handle(
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        if name.eq_ignore_ascii_case("content-type")
-            || name.eq_ignore_ascii_case("accept")
-            || name.eq_ignore_ascii_case("x-opencode-session")
-        {
+        if name.eq_ignore_ascii_case("content-type") || name.eq_ignore_ascii_case("accept") {
             request = request.header(name.trim(), value.trim());
         }
     }
