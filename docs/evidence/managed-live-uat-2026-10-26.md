@@ -18,7 +18,7 @@ security review or an exact-invoice cost measurement.
 |---|---|
 | Authoritative main at entry | `9f888ac74512b392c8bf86f856c5a152db5b3566` |
 | Implementation commit exercised | `ea2d92724d57d4f96838d84216f39db04b7c5511` |
-| Follow-up hardening | `6ae3241bc7f9bb849d36ddbbff71eb90ef95d0c8` makes the first-write instruction conditional for `run_command`-only authorizations and strengthens the revocation/lost-connection tests; the write_file prompt text used by this run is unchanged. |
+| Follow-up hardening | `6ae3241bc7f9bb849d36ddbbff71eb90ef95d0c8` makes the first-write instruction conditional and strengthens tests; `73ac25847f8bc1d069d3e9b23c4cf0acc8b1c040` rejects `run_command`-only tool loops before a paid session and repairs evidence. The write_file prompt/runtime path used by this run is unchanged. |
 | Core image | `localhost/software-factory-core:dev`, image ID `7c7a886521920cbd89d15bd8d9bfc56a93bfd9f23b8dc78bd18267f7ca0b74bd` |
 | Host Worker binary SHA-256 | `521235554819d241e4f7251f96a167044c05328913deb7fd9956bc6134ad0240` |
 | Toolchain / runtime | Rust 1.90.0, rootless Podman 6.1.4 |

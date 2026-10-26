@@ -35,5 +35,5 @@
     "reserved_turn_state": "RESERVED",
     "reserved_turn_usage_known": false
   },
-  "invalidated_by": "none; follow-up 6ae3241 conditionally changes the first-write instruction and rejects run_command-only tool loops but leaves the accepted write_file prompt text and runtime path unchanged"
+  "invalidated_by": "none; follow-up 6ae3241 conditionally changes the first-write instruction and 73ac258 rejects run_command-only tool loops before paid execution; the accepted write_file prompt/runtime path is unchanged"
 }
