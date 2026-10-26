@@ -43,6 +43,8 @@ const PROVIDER_KEYS: &[&str] = &[
     "FACTORY_PROVIDER_BASE_URL",
     "FACTORY_PROVIDER_BINARY",
     "FACTORY_PROVIDER_BRIDGE",
+    "FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION",
+    "FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION",
     "FACTORY_PROVIDER_EGRESS_BRIDGE",
     "FACTORY_PROVIDER_EGRESS_TOKEN",
     "FACTORY_PROVIDER_KEEP_SESSION",
@@ -435,11 +437,10 @@ fn validate_provider(file: &EnvFile) -> Result<(), String> {
         let egress_bridge = file.required("FACTORY_PROVIDER_EGRESS_BRIDGE")?;
         validate_absolute_file("FACTORY_PROVIDER_EGRESS_BRIDGE", egress_bridge)?;
     } else {
-        if kind == "opencode" && sandbox == "bwrap" {
-            return Err(
-                "FACTORY_PROVIDER_UPSTREAM_URL is required for the opencode provider route"
-                    .to_owned(),
-            );
+        if matches!(kind, "opencode" | "codex") && sandbox == "bwrap" {
+            return Err(format!(
+                "FACTORY_PROVIDER_UPSTREAM_URL is required for the {kind} provider route"
+            ));
         }
         if file.value("FACTORY_PROVIDER_UPSTREAM_TOKEN").is_some() {
             return Err(
@@ -464,12 +465,22 @@ fn validate_provider(file: &EnvFile) -> Result<(), String> {
         "FACTORY_PROVIDER_MODEL_CONTEXT",
         "FACTORY_PROVIDER_MODEL_OUTPUT",
         "FACTORY_PROVIDER_SESSION_MAX_BYTES",
+        "FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION",
+        "FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION",
     ] {
         if let Some(value) = file.value(key) {
             let parsed = parse_u64(key, value)?;
             if parsed == 0 {
                 return Err(format!("{key} must be greater than zero"));
             }
+        }
+    }
+    if kind == "codex" && sandbox == "bwrap" {
+        for key in [
+            "FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION",
+            "FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION",
+        ] {
+            file.required(key)?;
         }
     }
     if let Some(value) = file.value("FACTORY_PROVIDER_TCP_PORT") {
