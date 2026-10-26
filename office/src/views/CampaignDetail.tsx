@@ -74,6 +74,13 @@ function summarizeReceipts(
   return `${recorded}/${candidateIds.length} recorded${detail ? ` · ${detail}` : ""}`;
 }
 
+function executionModeLabel(mode: string): string {
+  if (mode === "FIXTURE") return "FIXTURE (deterministic, no provider)";
+  if (mode === "TRUSTED_LOCAL_PROVIDER")
+    return "TRUSTED_LOCAL_PROVIDER (not isolated)";
+  return mode;
+}
+
 function summarizeGates(
   candidateIds: string[],
   gates: Record<string, Gate | null>,
@@ -223,6 +230,7 @@ export function CampaignDetail() {
   );
   const leadBlocked =
     lead?.request.state === "BLOCKED" && lead.request.failure_reason !== null;
+  const leadFailed = lead?.request.state === "FAILED";
   const unresolvedSessions = sessions.filter((session) =>
     ["INTENT", "ACTIVE", "CANCEL_REQUESTED", "ORPHANED"].includes(
       session.state,
@@ -392,6 +400,23 @@ export function CampaignDetail() {
             ))}
           </tbody>
         </table>
+        {lead && lead.model_calls.length > 0 && (
+          <div data-testid="lead-model-call-provenance">
+            <h4>Lead model calls</h4>
+            <p className="muted">
+              {lead.model_calls
+                .map(
+                  (call) =>
+                    `${call.provider}/${call.model} · reservation ${shortId(call.reservation_id)} · ${call.state} · ${
+                      call.usage_known
+                        ? `${call.input_tokens.toLocaleString()} in / ${call.output_tokens.toLocaleString()} out / ${call.total_tokens.toLocaleString()} total / ${formatCostMicros(call.cost_micros)}`
+                        : "usage UNMEASURED"
+                    }`,
+                )
+                .join(" · ")}
+            </p>
+          </div>
+        )}
       </section>
 
       <section>
@@ -399,17 +424,26 @@ export function CampaignDetail() {
         {authorization ? (
           <>
             <p>
-              {authorization.authorization_id} · {authorization.risk_class} /{" "}
-              {authorization.execution_mode} · actor {authorization.actor}
+              {authorization.authorization_id} · {authorization.risk_class} ·{" "}
+              {executionModeLabel(authorization.execution_mode)} · actor{" "}
+              {authorization.actor}
             </p>
             <p className="muted">{authorization.rationale}</p>
             <dl className="detail">
               <BudgetRow
+                label="Execution"
+                value={executionModeLabel(authorization.execution_mode)}
+              />
+              <BudgetRow
                 label="Route"
                 value={
-                  authorization.provider || authorization.model
-                    ? `${authorization.provider}/${authorization.model} (${authorization.provider_mode || "mode not set"})`
-                    : "not set"
+                  authorization.execution_mode === "FIXTURE"
+                    ? authorization.provider || authorization.model
+                      ? `${authorization.provider}/${authorization.model} (${authorization.provider_mode || "mode not set"}; frozen plan route, not executed)`
+                      : "fixture execution (no provider route)"
+                    : authorization.provider || authorization.model
+                      ? `${authorization.provider}/${authorization.model} (${authorization.provider_mode || "mode not set"})`
+                      : "provider execution without a recorded route"
                 }
               />
               <BudgetRow
@@ -728,6 +762,34 @@ export function CampaignDetail() {
                     })}
                   </tbody>
                 </table>
+                {candidateReceipts
+                  .filter((receipt) => receipt.mechanism === "MODEL")
+                  .map((receipt) => (
+                    <p
+                      className="muted"
+                      key={receipt.receipt_id}
+                      data-testid="receipt-model-provenance"
+                    >
+                      {receipt.role} model:{" "}
+                      {receipt.model_provider || "provider not recorded"}/
+                      {receipt.model_name || "model not recorded"} · reservation{" "}
+                      <code>
+                        {receipt.model_reservation_id
+                          ? shortId(receipt.model_reservation_id)
+                          : "not recorded"}
+                      </code>{" "}
+                      · request{" "}
+                      <code>
+                        {receipt.model_request_sha256
+                          ? shortId(receipt.model_request_sha256, 12)
+                          : "not recorded"}
+                      </code>{" "}
+                      ·{" "}
+                      {receipt.usage_known
+                        ? `${receipt.input_tokens.toLocaleString()} in / ${receipt.output_tokens.toLocaleString()} out / ${receipt.total_tokens.toLocaleString()} total / ${formatCostMicros(receipt.cost_micros)}`
+                        : "usage UNMEASURED"}
+                    </p>
+                  ))}
                 {candidateReceipts.some(
                   (receipt) => receipt.findings.length > 0,
                 ) && (
@@ -739,15 +801,6 @@ export function CampaignDetail() {
                         <div key={receipt.receipt_id}>
                           <p className="muted">
                             {receipt.role} / {receipt.mechanism}
-                            {receipt.model_provider
-                              ? ` / ${receipt.model_provider} ${receipt.model_name}`
-                              : ""}
-                            {receipt.model_reservation_id
-                              ? ` / reservation ${shortId(receipt.model_reservation_id)}`
-                              : ""}
-                            {receipt.mechanism === "MODEL"
-                              ? ` / ${receipt.usage_known ? `${receipt.total_tokens} tokens, ${formatCostMicros(receipt.cost_micros)}` : "usage UNKNOWN"}`
-                              : ""}
                           </p>
                           <ul className="findings">
                             {receipt.findings.map((finding) => (
@@ -901,6 +954,12 @@ export function CampaignDetail() {
           <p className="warning">
             Lead request <code>{shortId(lead.request.id)}</code> is BLOCKED:{" "}
             {lead.request.failure_reason}
+          </p>
+        )}
+        {leadFailed && lead && (
+          <p className="error">
+            Lead request <code>{shortId(lead.request.id)}</code> is FAILED:{" "}
+            {lead.request.failure_reason ?? "no failure reason recorded"}
           </p>
         )}
         <p>

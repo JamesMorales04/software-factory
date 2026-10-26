@@ -227,6 +227,31 @@ struct AuthorizeCampaign {
     allowed_tools: Vec<String>,
 }
 
+impl AuthorizeCampaign {
+    fn into_new(self) -> NewCampaignAuthorization {
+        NewCampaignAuthorization {
+            authorization_id: self.authorization_id,
+            risk_class: self.risk_class,
+            execution_mode: self.execution_mode,
+            actor: self.actor,
+            rationale: self.rationale,
+            authorized_paths: self.authorized_paths,
+            max_attempts: self.max_attempts,
+            provider: self.provider,
+            model: self.model,
+            provider_mode: self.provider_mode,
+            delegation_id: self.delegation_id,
+            max_sessions: self.max_sessions,
+            max_turns: self.max_turns,
+            max_input_tokens: self.max_input_tokens,
+            max_output_tokens: self.max_output_tokens,
+            max_cost_micros: self.max_cost_micros,
+            deadline_secs: self.deadline_secs,
+            allowed_tools: self.allowed_tools,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewLeadRequest {
@@ -1904,6 +1929,7 @@ async fn start_lead_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
+    body: Bytes,
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1915,9 +1941,23 @@ async fn start_lead_request(
         )
             .into_response();
     }
+    let authorization = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<AuthorizeCampaign>(&body) {
+            Ok(input) => Some(input.into_new()),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid campaign authorization payload"})),
+                )
+                    .into_response();
+            }
+        }
+    };
     match app
         .db
-        .start_lead_campaign(&id, &format!("start:{id}"))
+        .start_lead_campaign(&id, &format!("start:{id}"), authorization.as_ref())
         .await
     {
         Ok((campaign, run, attempt)) => (
@@ -1944,11 +1984,16 @@ async fn get_lead_request(
     let assessment = app.db.lead_assessment(&id).await.ok();
     let proposal = app.db.lead_proposal(&id).await.ok();
     let plan = app.db.frozen_lead_plan(&id).await.ok();
+    let model_calls = match app.db.lead_model_calls(&id).await {
+        Ok(calls) => calls,
+        Err(error) => return api_error(error),
+    };
     Json(json!({
         "request": request,
         "assessment": assessment,
         "proposal": proposal,
-        "plan": plan
+        "plan": plan,
+        "model_calls": model_calls
     }))
     .into_response()
 }
@@ -1962,26 +2007,7 @@ async fn authorize_campaign(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let authorization = NewCampaignAuthorization {
-        authorization_id: input.authorization_id,
-        risk_class: input.risk_class,
-        execution_mode: input.execution_mode,
-        actor: input.actor,
-        rationale: input.rationale,
-        authorized_paths: input.authorized_paths,
-        max_attempts: input.max_attempts,
-        provider: input.provider,
-        model: input.model,
-        provider_mode: input.provider_mode,
-        delegation_id: input.delegation_id,
-        max_sessions: input.max_sessions,
-        max_turns: input.max_turns,
-        max_input_tokens: input.max_input_tokens,
-        max_output_tokens: input.max_output_tokens,
-        max_cost_micros: input.max_cost_micros,
-        deadline_secs: input.deadline_secs,
-        allowed_tools: input.allowed_tools,
-    };
+    let authorization = input.into_new();
     match app.db.authorize_campaign(&id, &authorization).await {
         Ok((record, created)) => (
             if created {

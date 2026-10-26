@@ -179,9 +179,42 @@ reviewer can submit `PASS`. Malformed output produces a durable `FAIL` and the
 gate becomes `REPAIR_REQUIRED`, never `ACCEPTED`.
 
 The Lead uses the same Core-owned gateway. `FACTORY_LEAD_FIXTURE_ASSESSOR=1`
-exercises the typed planning path without a model. Real provider credentials
-must never be committed; use a separately authorized environment. No paid calls
-are part of this guide.
+exercises the typed planning path without a model. A deterministic FIXTURE plan
+starts with a bodyless `POST /lead/requests/{id}/start`. A MODEL plan requires
+the same strict authorization fields as `POST /campaigns/{id}/authorize`, for
+example:
+
+```sh
+curl -sS -X POST "http://127.0.0.1:8765/lead/requests/$REQUEST/start" \
+  -H "authorization: Bearer $FACTORY_OPERATOR_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "authorization_id":"preview-lead-provider",
+    "risk_class":"R0",
+    "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+    "actor":"preview-operator",
+    "rationale":"explicit preview authorization",
+    "authorized_paths":["src"],
+    "max_attempts":1,
+    "provider":"opencode-go",
+    "model":"deepseek-v4.1-flash",
+    "provider_mode":"build",
+    "delegation_id":"preview-grant",
+    "max_sessions":1,
+    "max_turns":4,
+    "max_input_tokens":40000,
+    "max_output_tokens":12000,
+    "max_cost_micros":500000,
+    "deadline_secs":300,
+    "allowed_tools":["write_file","run_command"]
+  }'
+```
+
+Core rejects a missing, wider or mismatched authorization before creating any
+Campaign, Run or Attempt row. Real provider credentials must never be
+committed; use a separately authorized environment. No paid calls are part of
+this guide, and this deterministic preview does not certify live model quality
+or ISOLATED execution.
 
 ## 6. CAP-014 raw-output collection
 

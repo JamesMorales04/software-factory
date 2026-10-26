@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { type Attempt, CoreApiError, coreApi, type Run } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 
@@ -109,7 +110,9 @@ export function Runs() {
                     <code>{shortId(run.id)}</code>
                   </td>
                   <td>
-                    <code>{shortId(run.campaign_id)}</code>
+                    <Link to={`/campaigns/${run.campaign_id}`}>
+                      <code>{shortId(run.campaign_id)}</code>
+                    </Link>
                   </td>
                   <td>
                     <span className="pill">{run.status}</span>
