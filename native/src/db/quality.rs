@@ -903,6 +903,37 @@ async fn decide_gate(
         &format!("outcome={:?}", gate.outcome),
     )
     .await?;
+    let run: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT r.id FROM candidates cd
+         JOIN attempts a ON a.id=cd.attempt_id
+         JOIN runs r ON r.id=a.run_id
+         WHERE cd.id=?1",
+    )
+    .bind(candidate_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (run_id,) = run.ok_or(Error::NotFound)?;
+    let run_status = run_status_for_gate(gate.outcome);
+    let run_changed = sqlx::query::query(
+        "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING')",
+    )
+    .bind(run_status)
+    .bind(&run_id)
+    .execute(&mut *connection)
+    .await?
+    .rows_affected();
+    if run_changed == 1 {
+        record_event(
+            connection,
+            &run_id,
+            "run.status_changed",
+            &format!(
+                "status={run_status} outcome={}",
+                gate_outcome_str(gate.outcome)
+            ),
+        )
+        .await?;
+    }
     Ok(Some(gate))
 }
 
@@ -1198,6 +1229,14 @@ fn parse_evidence_kind(value: &str) -> Option<EvidenceKind> {
         "MOCKED" => Some(EvidenceKind::Mocked),
         "UNKNOWN" => Some(EvidenceKind::Unknown),
         _ => None,
+    }
+}
+
+fn run_status_for_gate(value: GateOutcome) -> &'static str {
+    match value {
+        GateOutcome::Accepted => "ACCEPTED",
+        GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+        GateOutcome::Blocked | GateOutcome::HumanRequired | GateOutcome::NotTested => "REJECTED",
     }
 }
 

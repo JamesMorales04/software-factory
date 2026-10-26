@@ -343,13 +343,14 @@ impl Database {
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let candidate: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT a.id FROM attempts a
+        let candidate: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT a.id,a.run_id FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
+             AND r.status IN ('QUEUED','RUNNING')
              AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
              ORDER BY a.created_at,a.id LIMIT 1",
@@ -357,7 +358,7 @@ impl Database {
         .bind(now_ms)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((attempt_id,)) = candidate else {
+        let Some((attempt_id, run_id)) = candidate else {
             transaction.commit().await?;
             return Ok(None);
         };
@@ -393,6 +394,21 @@ impl Database {
             .bind(&attempt_id)
             .execute(&mut *transaction)
             .await?;
+        let run_changed =
+            sqlx::query::query("UPDATE runs SET status='RUNNING' WHERE id=?1 AND status='QUEUED'")
+                .bind(&run_id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+        if run_changed == 1 {
+            record_event(
+                &mut transaction,
+                &run_id,
+                "run.status_changed",
+                &format!("status=RUNNING attempt={attempt_id}"),
+            )
+            .await?;
+        }
         record_event(
             &mut transaction,
             &attempt_id,
@@ -580,13 +596,15 @@ impl Database {
             }
             return Err(Error::Invalid("receipt id reused with different report"));
         }
-        let lease: Option<(String, i64, i64)> = sqlx::query_as::query_as(
-            "SELECT worker_id,generation,expires_at_ms FROM worker_leases WHERE attempt_id=?1",
+        let lease: Option<(String, i64, i64, String)> = sqlx::query_as::query_as(
+            "SELECT l.worker_id,l.generation,l.expires_at_ms,a.run_id
+             FROM worker_leases l JOIN attempts a ON a.id=l.attempt_id
+             WHERE l.attempt_id=?1",
         )
         .bind(&report.attempt_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let (owner, generation, expires_at_ms) = lease.ok_or(Error::NotFound)?;
+        let (owner, generation, expires_at_ms, run_id) = lease.ok_or(Error::NotFound)?;
         if owner != report.worker_id || generation != report.generation || expires_at_ms <= now_ms {
             return Err(Error::Invalid("stale or expired worker lease"));
         }
@@ -607,6 +625,26 @@ impl Database {
             .bind(Utc::now().to_rfc3339())
             .execute(&mut *transaction)
             .await?;
+        let run_changed = sqlx::query::query(
+            "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING')",
+        )
+        .bind(&report.terminal_status)
+        .bind(&run_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if run_changed == 1 {
+            record_event(
+                &mut transaction,
+                &run_id,
+                "run.status_changed",
+                &format!(
+                    "status={} attempt={}",
+                    report.terminal_status, report.attempt_id
+                ),
+            )
+            .await?;
+        }
         super::lead::fail_lead_work(
             &mut transaction,
             &report.attempt_id,

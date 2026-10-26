@@ -561,6 +561,24 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
         git(&repository, &["show", &format!("{commit}:src/fixture.txt")]),
         "fixture candidate"
     );
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == run_id)
+            .unwrap()["status"],
+        "RUNNING"
+    );
 
     let verifier_log = File::create(root.join("verifier.log")).unwrap();
     let verifier_status = Command::new(env!("CARGO_BIN_EXE_factory-verifier"))
@@ -609,6 +627,24 @@ async fn fixture_campaign_dispatches_candidate_and_gate_without_provider() {
     .await
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["id"] == run_id)
+            .unwrap()["status"],
+        "ACCEPTED"
+    );
 
     supervisor.stop();
     core.stop();
@@ -3215,6 +3251,17 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
         .as_str()
         .unwrap()
         .to_owned();
+    let runs: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(runs.as_array().unwrap()[0]["status"], "RUNNING");
 
     let unauthorized = client
         .post(format!("{base_url}/campaigns/{campaign_id}/cancel"))
@@ -3319,6 +3366,7 @@ async fn campaign_cancellation_fences_a_leased_attempt_through_restart() {
     .await
     .unwrap();
     assert_eq!(restored["campaign"]["status"], "CANCELLED");
+    assert_eq!(restored["runs"][0]["status"], "CANCELLED");
     assert_eq!(restored["attempts"][0]["status"], "CANCELLED");
     core.stop();
     let _ = std::fs::remove_dir_all(root);
