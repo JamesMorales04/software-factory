@@ -24,6 +24,7 @@ It does not describe a rootful deployment, a multi-host cluster, a production ha
 | Persistent application runtime containers | `IMPLEMENTED` | `deploy/Containerfile.core` builds the Core/Office image |
 | Containerized Core API exposure | `IMPLEMENTED` | Loopback-published container with explicit `FACTORY_CONTAINER_MODE=1` |
 | Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Lifecycle subset only; installer/restart/update remain unimplemented |
+| Managed live route configuration | `IMPLEMENTED` | Optional strict `0600` Core model and Worker provider env files are preflighted, passed only to the intended process, and fingerprinted for Core recreation; Codex coding remains `BLOCKED` |
 | Ephemeral sandbox isolation and credential confinement | `BLOCKED` | SEC-01 is paused; rootless Podman is not certified |
 | Linux container E2E | `AUTHOR_VERIFIED` | Core/Office image, factory start/stop/status and fixture Campaign run on the tested CachyOS host |
 | Independent verification | None | No independent verifier ran this topology |
@@ -186,7 +187,7 @@ It is responsible for:
 - reconciling and removing orphaned containers after a crash;
 - refusing to fall back to host execution when Podman or policy is unavailable.
 
-`factory start` manages the Supervisor/Worker process lifecycle with private pid/token/log files. `factory start` is not a systemd/Quadlet installer, and provider credential provisioning is not implemented. Rootless Podman remains a candidate runtime and is not certified isolation. Credentialed untrusted execution is `BLOCKED`.
+`factory start` manages the Supervisor/Worker process lifecycle with private pid/token/log files. `factory start` is not a systemd/Quadlet installer. Provider credential provisioning is limited to the explicit private `FACTORY_PROVIDER_ENV_FILE` and `FACTORY_CORE_MODEL_ENV_FILE` files validated by the CLI; general secret-store integration is not implemented. Rootless Podman remains a candidate runtime and is not certified isolation. Credentialed untrusted execution is `BLOCKED`.
 
 ## Upgrade and rollback
 

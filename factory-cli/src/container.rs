@@ -2,12 +2,16 @@ use std::path::PathBuf;
 
 use crate::config::{CONTAINER_BIND, CONTAINER_DATABASE, CORE_CONTAINER_PORT};
 
+pub(crate) const CORE_MODEL_ENV_LABEL: &str = "factory.core-model-env-fingerprint";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RunSpec<'a> {
     pub(crate) name: &'a str,
     pub(crate) image: &'a str,
     pub(crate) volume: &'a str,
     pub(crate) env_file: &'a str,
+    pub(crate) core_model_env_file: Option<&'a str>,
+    pub(crate) core_model_fingerprint: &'a str,
     pub(crate) host_port: u16,
     pub(crate) project_roots: &'a [PathBuf],
 }
@@ -33,6 +37,14 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         "--network=podman".to_owned(),
         "--env-file".to_owned(),
         spec.env_file.to_owned(),
+    ];
+    if let Some(core_model_env_file) = spec.core_model_env_file {
+        args.push("--env-file".to_owned());
+        args.push(core_model_env_file.to_owned());
+    }
+    args.extend([
+        "--label".to_owned(),
+        format!("{CORE_MODEL_ENV_LABEL}={}", spec.core_model_fingerprint),
         "--env".to_owned(),
         format!("FACTORY_BIND={CONTAINER_BIND}"),
         "--env".to_owned(),
@@ -40,7 +52,7 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         "--env".to_owned(),
         format!("FACTORY_DATABASE={CONTAINER_DATABASE}"),
         spec.image.to_owned(),
-    ];
+    ]);
     if !spec.project_roots.is_empty() {
         args.insert(4, "--userns=keep-id:uid=10001,gid=10001".to_owned());
         let insert_at = args
@@ -73,6 +85,22 @@ pub(crate) fn start_action(state: Option<&str>) -> StartAction {
     }
 }
 
+pub(crate) fn start_decision(
+    state: Option<&str>,
+    token_file_created: bool,
+    current_fingerprint: Option<&str>,
+    expected_fingerprint: &str,
+) -> StartAction {
+    match state {
+        Some("running")
+            if token_file_created || current_fingerprint != Some(expected_fingerprint) =>
+        {
+            StartAction::Replace
+        }
+        _ => start_action(state),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VolumeAction {
     Create,
@@ -91,7 +119,10 @@ pub(crate) fn volume_action(exists: bool) -> VolumeAction {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{RunSpec, StartAction, VolumeAction, run_args, start_action, volume_action};
+    use super::{
+        CORE_MODEL_ENV_LABEL, RunSpec, StartAction, VolumeAction, run_args, start_action,
+        start_decision, volume_action,
+    };
 
     fn spec() -> RunSpec<'static> {
         RunSpec {
@@ -99,6 +130,8 @@ mod tests {
             image: "localhost/software-factory-core:dev",
             volume: "factory-core-data",
             env_file: "/home/operator/.config/factory/core.env",
+            core_model_env_file: None,
+            core_model_fingerprint: "unset",
             host_port: 8765,
             project_roots: &[],
         }
@@ -128,6 +161,8 @@ mod tests {
                 "--network=podman",
                 "--env-file",
                 "/home/operator/.config/factory/core.env",
+                "--label",
+                "factory.core-model-env-fingerprint=unset",
                 "--env",
                 "FACTORY_BIND=0.0.0.0:8765",
                 "--env",
@@ -149,6 +184,59 @@ mod tests {
             !args
                 .iter()
                 .any(|argument| argument.contains("FACTORY_OPERATOR_TOKEN"))
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|argument| argument.contains("FACTORY_PROVIDER"))
+        );
+    }
+
+    #[test]
+    fn forwards_only_the_core_model_env_file_and_a_config_fingerprint() {
+        let mut custom = spec();
+        custom.core_model_env_file = Some("/home/operator/.config/factory/model.env");
+        custom.core_model_fingerprint = "abc123";
+        let args = run_args(&custom);
+        assert_eq!(
+            args.iter()
+                .filter(|argument| argument.as_str() == "--env-file")
+                .count(),
+            2
+        );
+        let env_files: Vec<&str> = args
+            .windows(2)
+            .filter(|window| window[0] == "--env-file")
+            .map(|window| window[1].as_str())
+            .collect();
+        assert_eq!(
+            env_files,
+            vec![
+                "/home/operator/.config/factory/core.env",
+                "/home/operator/.config/factory/model.env",
+            ]
+        );
+        assert!(args.contains(&format!("{CORE_MODEL_ENV_LABEL}=abc123")));
+        assert!(
+            !args
+                .iter()
+                .any(|argument| argument == "FACTORY_CORE_MODEL_ENV_FILE")
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|argument| argument.contains("FACTORY_PROVIDER_ENV_FILE"))
+        );
+    }
+
+    #[test]
+    fn does_not_add_a_second_env_file_when_the_model_route_is_unset() {
+        let args = run_args(&spec());
+        assert_eq!(
+            args.iter()
+                .filter(|argument| argument.as_str() == "--env-file")
+                .count(),
+            1
         );
     }
 
@@ -186,6 +274,34 @@ mod tests {
         assert_eq!(start_action(Some("running")), StartAction::ReuseRunning);
         assert_eq!(start_action(Some("exited")), StartAction::Replace);
         assert_eq!(start_action(Some("created")), StartAction::Replace);
+    }
+
+    #[test]
+    fn replaces_a_running_container_when_its_config_fingerprint_differs() {
+        assert_eq!(
+            start_decision(Some("running"), false, Some("abc"), "abc"),
+            StartAction::ReuseRunning
+        );
+        assert_eq!(
+            start_decision(Some("running"), false, Some("old"), "new"),
+            StartAction::Replace
+        );
+        assert_eq!(
+            start_decision(Some("running"), false, None, "unset"),
+            StartAction::Replace
+        );
+        assert_eq!(
+            start_decision(Some("running"), true, Some("abc"), "abc"),
+            StartAction::Replace
+        );
+        assert_eq!(
+            start_decision(Some("exited"), false, Some("old"), "new"),
+            StartAction::Replace
+        );
+        assert_eq!(
+            start_decision(None, false, None, "new"),
+            StartAction::Create
+        );
     }
 
     #[test]

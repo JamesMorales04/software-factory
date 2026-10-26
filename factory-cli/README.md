@@ -38,6 +38,8 @@ built Rust Office and the printed URL is the loopback Office/Core origin.
 | `FACTORY_CONTAINER_NAME` | `factory-core` |
 | `FACTORY_VOLUME` | `factory-core-data` |
 | `FACTORY_ENV_FILE` | `$XDG_CONFIG_HOME/factory/core.env` or `$HOME/.config/factory/core.env` |
+| `FACTORY_CORE_MODEL_ENV_FILE` | unset; optional Core-only model route env file |
+| `FACTORY_PROVIDER_ENV_FILE` | unset; optional Worker-only provider route env file |
 | `FACTORY_PROJECT_ROOTS` | unset; explicit comma-separated absolute Git roots |
 | `FACTORY_SUPERVISOR_URL` | `http://127.0.0.1:8766` |
 | `FACTORY_BIN_DIR` | directory of the running `factory` binary |
@@ -45,6 +47,91 @@ built Rust Office and the printed URL is the loopback Office/Core origin.
 
 `FACTORY_CORE_URL` must be an HTTP origin on IPv4 loopback with an explicit
 port. `start` publishes only `127.0.0.1:<port>`.
+
+## Managed live route configuration
+
+The six-key token env file is unchanged and remains the only source of Factory
+role tokens. Live model and provider routes are opt-in through two separate
+files; leaving either variable unset means no such route is configured.
+
+Both files must be absolute, regular, non-symlink files with mode `0600`,
+readable by the account running the CLI. They contain only `KEY=VALUE` lines and
+blank/comment lines.
+Unknown or duplicate keys, empty values, control characters and inline comments
+after a value are rejected. Secret values belong only in these private files;
+the CLI does not read model or provider credentials from the host environment
+or command-line arguments. URLs containing user information, a query or a
+fragment are rejected as inline-secret forms.
+
+`FACTORY_CORE_MODEL_ENV_FILE` is passed to the Core container as an additional
+`--env-file` and is never passed to the Worker or Supervisor. Its allowlist is:
+
+- `FACTORY_MODEL_URL`, `FACTORY_MODEL_TOKEN`, `FACTORY_MODEL_PROVIDER`,
+  `FACTORY_MODEL_NAME`, `FACTORY_MODEL_TIMEOUT_SECS`,
+  `FACTORY_MODEL_INPUT_MICROS_PER_MILLION`,
+  `FACTORY_MODEL_OUTPUT_MICROS_PER_MILLION`
+- `FACTORY_MODEL_GLOBAL_MAX_INPUT_TOKENS`,
+  `FACTORY_MODEL_GLOBAL_MAX_OUTPUT_TOKENS`,
+  `FACTORY_MODEL_GLOBAL_MAX_COST_MICROS`
+- `FACTORY_LEAD_MODEL_MAX_INPUT_TOKENS`,
+  `FACTORY_LEAD_MODEL_MAX_OUTPUT_TOKENS`,
+  `FACTORY_LEAD_MODEL_MAX_COST_MICROS`
+- `FACTORY_REVIEW_MODEL_MAX_INPUT_TOKENS`,
+  `FACTORY_REVIEW_MODEL_MAX_OUTPUT_TOKENS`,
+  `FACTORY_REVIEW_MODEL_MAX_COST_MICROS`
+- `FACTORY_EVALUATION_MODEL_MAX_INPUT_TOKENS`,
+  `FACTORY_EVALUATION_MODEL_MAX_OUTPUT_TOKENS`,
+  `FACTORY_EVALUATION_MODEL_MAX_COST_MICROS`
+- `FACTORY_ENABLE_AUTONOMOUS_START` and `FACTORY_ALLOW_TEST_UPSTREAM`
+
+`FACTORY_MODEL_URL` and a token of at least 16 bytes are required. Plain HTTP is
+accepted only for a loopback test upstream with
+`FACTORY_ALLOW_TEST_UPSTREAM=1`.
+
+`FACTORY_PROVIDER_ENV_FILE` is parsed by the CLI and only the parsed values are
+added to the host Worker process environment. It is never passed to the Core
+container, the Podman command line or the Supervisor. Its allowlist is:
+
+- `FACTORY_PROVIDER_SANDBOX`, `FACTORY_PROVIDER_KIND`,
+  `FACTORY_PROVIDER_BINARY`, `FACTORY_PROVIDER_ARGS`,
+  `FACTORY_PROVIDER_SESSION_ROOT`, `FACTORY_PROVIDER_SESSION_MAX_BYTES`,
+  `FACTORY_PROVIDER_MEMORY_LIMIT_BYTES`, `FACTORY_PROVIDER_MODEL_CONTEXT`,
+  `FACTORY_PROVIDER_MODEL_OUTPUT`, `FACTORY_PROVIDER_TCP_PORT`,
+  `FACTORY_PROVIDER_KEEP_SESSION`
+- `FACTORY_PROVIDER_BRIDGE`, `FACTORY_PROVIDER_EGRESS_BRIDGE`,
+  `FACTORY_PROVIDER_EGRESS_TOKEN`, `FACTORY_PROVIDER_UPSTREAM_URL`,
+  `FACTORY_PROVIDER_UPSTREAM_TOKEN`
+- `FACTORY_PROVIDER_BASE_URL`, `FACTORY_PROVIDER_PASSWORD`,
+  `FACTORY_ALLOW_UNCONFINED_PROVIDER` and `FACTORY_ALLOW_TEST_UPSTREAM`
+
+Provider configuration requires `FACTORY_HOST_EXECUTION=1` and at least one
+`FACTORY_PROJECT_ROOTS` entry, because the configured values are delivered to
+the host Worker. A configured route profile does not authorize a Campaign or
+raise a budget; Core authorization remains mandatory. Both the OpenCode and
+Codex route profiles use this Worker-only allowlist; the current Worker live
+coding adapter is OpenCode, and Codex coding remains fail-closed until its
+adapter exists.
+
+`factory doctor` and `factory start` validate both files before any Podman
+container change. A running Core container carries a
+`factory.core-model-env-fingerprint` label. If the configured Core model env
+content changes, or the label is absent or different, `start` stops and
+recreates the container deterministically instead of reusing stale
+configuration. `start` and `status` print only redacted route/profile
+summaries; fingerprints and token-presence markers are not credentials.
+
+```sh
+install -m 600 /dev/null "$HOME/.config/factory/model.env"
+install -m 600 /dev/null "$HOME/.config/factory/provider.env"
+export FACTORY_CORE_MODEL_ENV_FILE="$HOME/.config/factory/model.env"
+export FACTORY_PROVIDER_ENV_FILE="$HOME/.config/factory/provider.env"
+export FACTORY_PROJECT_ROOTS=/absolute/path/to/project
+factory doctor
+factory start
+factory status
+```
+
+Do not commit either file or place credentials in this repository.
 
 ## Status
 

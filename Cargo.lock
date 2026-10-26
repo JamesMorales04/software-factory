@@ -428,6 +428,11 @@ dependencies = [
 [[package]]
 name = "factory-cli"
 version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "factory-native"

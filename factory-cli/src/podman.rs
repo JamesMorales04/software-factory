@@ -90,6 +90,34 @@ pub(crate) fn container_state(name: &str) -> Result<Option<String>, String> {
     Ok(Some(state))
 }
 
+pub(crate) fn container_label(name: &str, key: &str) -> Result<Option<String>, String> {
+    if key.is_empty()
+        || key.chars().any(|character| {
+            !character.is_ascii_alphanumeric() && !matches!(character, '.' | '_' | '-')
+        })
+    {
+        return Err("container label key is invalid".to_owned());
+    }
+    let format = format!("{{{{ index .Config.Labels \"{key}\" }}}}");
+    let output = Command::new("podman")
+        .args(["inspect", "--format", &format, name])
+        .output()
+        .map_err(|error| format!("podman inspect could not run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "podman inspect exited with {}: {}",
+            output.status,
+            diagnostic(&output)
+        ));
+    }
+    let value = first_nonempty(&output.stdout, &output.stderr);
+    if value.is_empty() || value == "<no value>" || value == "<nil>" {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
 pub(crate) fn volume_exists(name: &str) -> Result<bool, String> {
     exists(
         &["volume".to_owned(), "exists".to_owned(), name.to_owned()],
