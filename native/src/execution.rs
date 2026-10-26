@@ -811,7 +811,11 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let (result, exported) = match (result, exported) {
             (Ok(result), Ok(exported)) => (result, exported),
             (Err(error), _) | (_, Err(error)) => {
-                record.status = WorkspaceStatus::Failed;
+                // A provider check is not the candidate-producing execution
+                // path. Keep the host worktree (and therefore the applied
+                // writes) available after an infrastructure/command error so
+                // the model can continue or finalize under independent review.
+                record.status = WorkspaceStatus::Allocated;
                 record.error = Some(error.to_string());
                 let _ = self.write_record(&record);
                 return Err(error);
@@ -820,16 +824,33 @@ impl<B: VolumeBackend> WorkspaceManager<B> {
         let staging = self
             .workspace_root
             .join(format!("stage-{}", Uuid::new_v4()));
-        tokio::task::spawn_blocking({
+        let extracted = tokio::task::spawn_blocking({
             let bytes = exported;
             let staging = staging.clone();
             move || workspace_archive::extract(&bytes, &staging)
         })
         .await
-        .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))??;
-        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
-        workspace.replace_contents(&staging)?;
-        workspace.verify_identity((record.worktree_device, record.worktree_inode))?;
+        .map_err(|error| ExecutionError::Invalid(format!("extract task: {error}")))?;
+        if let Err(error) = extracted {
+            record.status = WorkspaceStatus::Allocated;
+            record.error = Some(error.to_string());
+            let _ = self.write_record(&record);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Archive(error));
+        }
+        if let Err(error) = workspace
+            .verify_identity((record.worktree_device, record.worktree_inode))
+            .and_then(|()| workspace.replace_contents(&staging))
+            .and_then(|()| {
+                workspace.verify_identity((record.worktree_device, record.worktree_inode))
+            })
+        {
+            record.status = WorkspaceStatus::Allocated;
+            record.error = Some(error.to_string());
+            let _ = self.write_record(&record);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(ExecutionError::Workspace(error));
+        }
         record.status = WorkspaceStatus::Allocated;
         record.error = if result.exit_code == Some(0) {
             None

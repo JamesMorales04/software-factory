@@ -245,3 +245,18 @@ podman volume ls --format '{{.Name}}'
 For the full acceptance matrix and residual gaps see the
 [native Rust closure ledger](native-rust-closure.md) and
 [final closure evidence](../evidence/native-rust-final-closure-2026-10-25.json).
+
+## 10. Live provider UAT (separately authorized, paid)
+
+This guide's deterministic path does not use a paid model and is not evidence
+that live coding works. A separately authorized live UAT used the real
+OpenCode `1.18.32` provider server, `opencode-go/deepseek-v4.1-flash`, the
+sandboxed Worker tool loop, an independent verifier and a real semantic
+Reviewer. The journey reached a candidate `ACCEPTED` gate and the measured
+evidence is in [F1-S4-LIVE-UAT](../evidence/f1-s4-live-uat-2026-10-25.md).
+The live run also exposed integration defects (provider egress/session
+headers, sandbox paths, SSE streaming, lease heartbeat and finalize resilience)
+that are repaired only in the accompanying repair PR; the merged baseline does
+not contain them. Do not treat this guide or the deterministic fixture as a
+substitute for the live report.
+

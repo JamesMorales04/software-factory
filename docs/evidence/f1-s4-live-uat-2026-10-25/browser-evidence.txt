@@ -1,0 +1,10 @@
+Factory Office browser evidence
+Playwright-core package version: 1.64.1
+Browser: Chromium from the pinned Playwright cache
+Executable: /home/james/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome
+Screenshots: office-dashboard.png, office-campaigns.png, office-runtime2.png,
+office-lead2.png, office-projects2.png
+Observations: office-observations-2.json
+The browser was run headlessly against http://127.0.0.1:8897/ with the operator
+token injected into the tab's sessionStorage. The token is not present in the
+screenshots or observations.

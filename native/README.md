@@ -1,6 +1,6 @@
 # Native Factory
 
-For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end; live provider coding, provider tool mediation and ISOLATED mode remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
+For a tested local developer-preview workflow, see [developer-preview-testing.md](../docs/implementation/developer-preview-testing.md). This is the native Rust implementation under migration closure. It supports Project/Action intake, project configuration revisions, authorized R0/FIXTURE Campaigns, managed Worker/Supervisor execution, named-volume rootless-Podman sandboxes, candidate lineage, sandboxed verification, deterministic Quality Gate, Lead/delegation/CAP-014 scaffolds and a Rust-backed Office. A deterministic tool-free provider patch path is implemented end-to-end. An explicitly authorized TRUSTED_LOCAL_PROVIDER OpenCode tool loop is implemented on this branch and has a bounded real DeepSeek acceptance record in [F1-S4-LIVE-UAT](../docs/evidence/f1-s4-live-uat-2026-10-25.md); it is not merged or certified on `main`. Codex coding, ISOLATED mode and certification remain fail-closed. Bounded parallel/fan-in WorkGraph execution and cancellation are fixture-verified. [Migration closure](../docs/implementation/native-rust-closure.md) is the status authority.
 
 Pinned toolchain: Rust 1.90.0, Cargo.lock in repository. Persistence uses SQLx 0.8.6 (`sqlx-core` + `sqlx-sqlite` directly) with versioned migrations in `../migrations`. Run from repository root:
 
@@ -14,7 +14,7 @@ cargo sqlx migrate run --source migrations   # disposable DATABASE_URL; CI check
 
 Core requires distinct `FACTORY_OPERATOR_TOKEN`, `FACTORY_WORKER_BOOTSTRAP_TOKEN`, `FACTORY_VERIFIER_TOKEN` and `FACTORY_REVIEWER_TOKEN`; role tokens are at least 32 bytes. Core and the Supervisor additionally share `FACTORY_ATTEMPT_GRANT_KEY`; the Supervisor requires `FACTORY_SUPERVISOR_CAPABILITY_KEY`. These two keys are never given to the Worker. Core optionally accepts `FACTORY_DATABASE` and a loopback bind, and permits `0.0.0.0` only with explicit `FACTORY_CONTAINER_MODE=1`. Optional OTLP/HTTP log export is enabled only when `FACTORY_OTLP_ENDPOINT` names an absolute http(s) collector URL (a bare origin gains `/v1/logs`); export is bounded, sanitized and never gates Core writes. The Worker requires the bootstrap token, stable identity, registration key and `FACTORY_SUPERVISOR_URL`/`FACTORY_SUPERVISOR_TOKEN`; it does not access project paths or run project code. `TRUSTED_LOCAL_PROVIDER` assignments require `FACTORY_PROVIDER_SANDBOX=bwrap` and `FACTORY_PROVIDER_BINARY` (an absolute provider executable that listens on `FACTORY_PROVIDER_SOCKET`). The long-lived provider credential stays in the trusted Worker and is never sent to the Supervisor or sandbox. Optional model egress uses `FACTORY_PROVIDER_UPSTREAM_URL` (fixed upstream origin), `FACTORY_PROVIDER_UPSTREAM_TOKEN` (injected only by the host broker), `FACTORY_PROVIDER_EGRESS_BRIDGE` (absolute bridge binary) and an optional per-run `FACTORY_PROVIDER_EGRESS_TOKEN`; the sandbox receives only the bridge address and per-run token. `FACTORY_ALLOW_TEST_UPSTREAM=1` permits a loopback fake upstream only for tests. `FACTORY_PROVIDER_SANDBOX=unconfined` is a clearly labeled non-isolated fallback and requires explicit `FACTORY_ALLOW_UNCONFINED_PROVIDER=1` plus loopback `FACTORY_PROVIDER_BASE_URL`/`FACTORY_PROVIDER_PASSWORD`; it never activates implicitly. The Supervisor requires a private workspace/state root, explicit project roots, an exact image allowlist and a loopback bind. Keep all values out of Git and logs.
 
-Core APIs: `GET /health`; operator-authenticated `GET/POST /projects`, `GET/POST /actions`, `GET/POST /campaigns`, `POST /campaigns/{id}/cancel`, `GET /runs`, `GET /attempts`, `GET /events` (optional bounded `?after=<sequence>&limit=<n>`), `GET /observability`, `GET/POST /model/calls`, `POST /model/calls/{id}/resolve`, and quality reads under `GET /quality/candidates/{id}` (plus `/receipts`, `/gate` and `/inspection`); bootstrap-authenticated `POST /worker/register`; session-authenticated `POST /worker/claim`, `/worker/heartbeat`, `/worker/report`, and `/worker/candidate`; verifier/reviewer-authenticated `POST /quality/receipts`; and session-authenticated `POST /worker/provider_intent` and `/worker/provider_terminal` for durable provider-session accounting. Create requests need an `idempotency_key`. Actions remain `HUMAN_REQUIRED` with `UNASSESSED` risk. Their versioned ActionSpecs are frozen execution inputs, not execution authorization. The Worker claim route returns a leased assignment only for an explicitly authorized R0 Campaign; provider mode requires `TRUSTED_LOCAL_PROVIDER` and ISOLATED remains disabled. The Worker sends the assignment to the Supervisor, which snapshots the worktree into a Podman named volume, executes, validates the exported tree and commits the candidate. No host workspace path is passed to Podman. Candidate scope is checked against the frozen ActionSpec and the Campaign authorization. Candidate and quality receipt rows are immutable; the deterministic gate is written once when independent verifier and reviewer receipts exist. The `factory-verifier` executes frozen checks in an independent named-volume sandbox; `factory-reviewer` independently re-verifies candidate identity, scope and bounded diff facts and submits the reviewer receipt. Provider mode supports a bounded tool-free patch and an authorized multi-turn tool loop. The provider may request only `write_file` or a frozen-check `run_command`; the Worker records each request/decision/result in Core, validates paths and commands, and the Supervisor applies writes or runs the exact check in the Attempt sandbox. The deterministic provider process runs under bubblewrap with no host HOME, repository, runtime socket or external network; the long-lived credential is not in that process.
+Core APIs: `GET /health`; operator-authenticated `GET/POST /projects`, `GET/POST /actions`, `GET/POST /campaigns`, `POST /campaigns/{id}/cancel`, `GET /runs`, `GET /attempts`, `GET /events` (optional bounded `?after=<sequence>&limit=<n>`), `GET /observability`, `GET/POST /model/calls`, `POST /model/calls/{id}/resolve`, and quality reads under `GET /quality/candidates/{id}` (plus `/receipts`, `/gate` and `/inspection`); bootstrap-authenticated `POST /worker/register`; session-authenticated `POST /worker/claim`, `/worker/heartbeat`, `/worker/report`, and `/worker/candidate`; verifier/reviewer-authenticated `POST /quality/receipts`; and session-authenticated `POST /worker/provider_intent` and `/worker/provider_terminal` for durable provider-session accounting; session-authenticated `POST /worker/provider_turn_authorize`, `/worker/provider_turn_bind`, `/worker/provider_turn_settle` and `/worker/provider_turn_release` for exact per-turn request binding and accounting; operator-authenticated `GET /provider/turn_reservations` and `POST /provider/turn_reservations/{id}/resolve` for bound-but-ambiguous turns. Create requests need an `idempotency_key`. Actions remain `HUMAN_REQUIRED` with `UNASSESSED` risk. Their versioned ActionSpecs are frozen execution inputs, not execution authorization. The Worker claim route returns a leased assignment only for an explicitly authorized R0 Campaign; provider mode requires `TRUSTED_LOCAL_PROVIDER` and ISOLATED remains disabled. The Worker sends the assignment to the Supervisor, which snapshots the worktree into a Podman named volume, executes, validates the exported tree and commits the candidate. No host workspace path is passed to Podman. Candidate scope is checked against the frozen ActionSpec and the Campaign authorization. Candidate and quality receipt rows are immutable; the deterministic gate is written once when independent verifier and reviewer receipts exist. The `factory-verifier` executes frozen checks in an independent named-volume sandbox; `factory-reviewer` independently re-verifies candidate identity, scope and bounded diff facts and submits the reviewer receipt. Provider mode supports a bounded tool-free patch and an authorized multi-turn tool loop. The provider may request only `write_file` or a frozen-check `run_command`; the Worker records each request/decision/result in Core, validates paths and commands, and the Supervisor applies writes or runs the exact check in the Attempt sandbox. The deterministic provider process runs under bubblewrap with no host HOME, repository, runtime socket or external network; the long-lived credential is not in that process.
 
 Container runtime: the Core accepts `FACTORY_CONTAINER_MODE=1` with an explicit `0.0.0.0` bind for container publication; the host CLI publishes only `127.0.0.1`. When `FACTORY_OFFICE_DIR` is set, Core also serves the built React Office and exposes the same API under `/core-api` for the browser client. The `factory-supervisor` binary owns durable per-Attempt worktrees, named-volume execution and restart reconciliation. It is not isolation-certified. The verifier executes frozen checks in an independent named-volume sandbox.
 
@@ -61,6 +61,48 @@ The command writes frozen-corpus, per-fixture raw-output, model provenance and
 usage evidence. It does not score the outputs; independent blinded scoring and
 `compare` remain separate. A failed or budget-exhausted run writes `FAILED`
 evidence and exits non-zero.
+
+## Live OpenCode provider (TRUSTED_LOCAL_PROVIDER)
+
+The Worker supports a sandboxed OpenCode provider server for an explicitly
+authorized R0 `TRUSTED_LOCAL_PROVIDER` Campaign. The supported provider route is
+`opencode-go/deepseek-v4.1-flash`; the `opencode` and Codex provider routes are
+not live coding routes. Required Worker settings:
+
+```sh
+export FACTORY_PROVIDER_SANDBOX=bwrap
+export FACTORY_PROVIDER_KIND=opencode
+export FACTORY_PROVIDER_BINARY=/absolute/path/to/opencode   # 1.18.32 validated
+export FACTORY_PROVIDER_BRIDGE=/absolute/path/to/factory-provider-bridge
+export FACTORY_PROVIDER_EGRESS_BRIDGE=/absolute/path/to/factory-egress-bridge
+export FACTORY_PROVIDER_UPSTREAM_URL=https://opencode.ai/inference/go/openai/v1
+export FACTORY_PROVIDER_UPSTREAM_TOKEN=...                  # never commit
+export FACTORY_PROVIDER_SESSION_ROOT=/short/tmp/provider-sessions
+export FACTORY_PROVIDER_MEMORY_LIMIT_BYTES=17179869184     # Bun/OpenCode needs >4 GiB
+```
+
+The Worker generates the OpenCode provider configuration inside the sandbox,
+connects the provider bridge over the private Unix socket, and exposes only the
+egress bridge and per-run token to the sandbox. The egress broker pins the
+upstream, injects the long-lived credential and `x-opencode-session`, and
+enforces the Core turn reservation. `FACTORY_PROVIDER_TCP_PORT` defaults to
+18081 (18080 is reserved for egress); `FACTORY_PROVIDER_MODEL_CONTEXT` and
+`FACTORY_PROVIDER_MODEL_OUTPUT` set the generated model limits.
+
+The Worker rejects an empty `final` response, corrects invalid model actions,
+and preserves already-applied writes for independent verification if a live
+turn ends with an error or the four-turn budget is exhausted. Applied writes
+still require the independent verifier, semantic Reviewer and deterministic
+Quality Gate; the model's final message is not authority. The Worker heartbeat
+extends the lease by 60 seconds every 15 seconds, and a failed provider
+check-command leaves the worktree available for a later write or finalize.
+
+This path is TRUSTED_LOCAL, not SEC-01 isolation. Do not claim credential
+confinement or ISOLATED certification. A live acceptance journey and its
+measured usage are recorded in
+[the F1-S4-LIVE-UAT report](../docs/evidence/f1-s4-live-uat-2026-10-25.md).
+The report's repair candidate is not merged yet; the merged baseline remains
+the migration-closure status authority.
 
 ## Factory-managed browser checks
 

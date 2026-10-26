@@ -186,6 +186,36 @@ git ls-files '*.go'
 All three must be empty. The strict repository hygiene binary is the required
 CI gate.
 
+## Live UAT addendum (2026-10-25)
+
+A separate F1-S4-LIVE-UAT campaign exercised the merged baseline plus a repair
+candidate on Linux TRUSTED_LOCAL with real `opencode-go/deepseek-v4.1-flash`
+inference through OpenCode `1.18.32`. A genuine model-generated Lead assessment,
+a frozen one-unit WorkGraph, a real provider Implementer session, a Git
+candidate, an independent sandboxed verifier PASS, a real MODEL semantic
+Reviewer PASS and an `ACCEPTED` Quality Gate were recorded for candidate
+`8569839d-6c06-4999-af42-9a8525035c2d` (commit
+`9a5e892df83091529b87ed3127edddcc4bafe318`). The model changed only
+`src/pricing.rs` and `tests/discounts.rs`; the public API was unchanged. The
+Implementer did not emit a final prose explanation; the Worker preserved its
+applied writes for independent verification.
+
+The repair candidate fixes live OpenCode/egress wiring and session headers,
+sandbox path selection, SSE streaming limits, lease heartbeat, empty-final and
+post-write error finalization, check-command/finalize resilience, and the
+Reviewer output cap. It also fixes the unsafe process-name cleanup in the
+disposable UAT script. The full workspace format, strict Clippy and test suite
+pass on the repair candidate.
+
+This addendum does **not** upgrade the merged tree. The repair PR is not merged;
+`factory start` still cannot configure the live provider/model route without
+manual host processes. Failed provider sessions can leave unmeasured usage or
+missing cleanup receipts. Autonomous live-provider Campaign start remains
+FIXTURE-only. Codex GPT-6 Luna coding is BLOCKED because no Codex coding
+adapter/tool loop exists. Paid cancellation/revocation was not exercised.
+ISOLATED, Windows, deployment, human security review and final merge remain
+uncertified. See the [F1-S4-LIVE-UAT report](../evidence/f1-s4-live-uat-2026-10-25.md).
+
 ## Product Owner decisions required
 
 1. Ratify or amend standing-delegation issuer/risk/autonomy policy (A3/A4).

@@ -1,0 +1,57 @@
+== Factory start ==
+Factory start
+Image: localhost/software-factory-core:dev
+Container: factory-preview-1792975337
+Data volume: factory-preview-data-1792975337
+Token file: /tmp/factory-developer-preview-cglyks/core.env
+Data volume factory-preview-data-1792975337: created
+Container factory-preview-1792975337: started (58ead1353233)
+Office URL: http://127.0.0.1:8877
+Core health: HTTP 200
+Host execution: enabled
+Sandbox Supervisor: http://127.0.0.1:8878
+Host runtime state: /tmp/factory-developer-preview-cglyks/runtime
+== Factory doctor ==
+Factory doctor
+PASS    Core URL: http://127.0.0.1:8877
+PASS    Podman executable: podman version 6.1.4
+PASS    Podman rootless: true
+PASS    OCI runtime image: localhost/software-factory-core:dev is present
+PASS    Core health: HTTP 200 {"healthy":true,"version":"0.1.0"}
+doctor: PASS (required start prerequisites are satisfied)
+created c3d45824-83dc-4b4c-86e7-8a2b51af280c 1da3183b-5597-4f01-b408-3c3011e8beb7 d5fddb80-897e-45ee-b9e7-98957d3e6947 99909ee1-31b6-4abd-adee-ab3a2d1bd5b0 8913a8bd-c2f1-47f5-a0e4-8af89bca2481
+== Waiting for candidate ==
+candidate: 6d1bf5dd-d01c-4dfe-9a7a-a83dab4e480a
+== Independent verifier ==
+verifier PASS for 6874292b7baab63f86293ece81e9bfb89508c645
+== Independent reviewer ==
+{"candidateId":"6d1bf5dd-d01c-4dfe-9a7a-a83dab4e480a","commitSha":"6874292b7baab63f86293ece81e9bfb89508c645","costMicros":0,"findings":[],"inputTokens":0,"mechanism":"DETERMINISTIC","modelName":"","modelProvider":"","modelRequestSha256":"","modelReservationId":"","outputTokens":0,"totalTokens":0,"treeSha":"6ed005771910d9991034edb42974b20743a8f89b","usageKnown":false,"verdict":"PASS"}
+gate: ACCEPTED
+== Restart persistence ==
+Factory stop
+Container: factory-preview-1792975337
+Data volume: factory-preview-data-1792975337
+Container factory-preview-1792975337: stopped
+Container factory-preview-1792975337: removed
+Data volume factory-preview-data-1792975337: kept
+Factory start
+Image: localhost/software-factory-core:dev
+Container: factory-preview-1792975337
+Data volume: factory-preview-data-1792975337
+Token file: /tmp/factory-developer-preview-cglyks/core.env
+Data volume factory-preview-data-1792975337: reused
+Container factory-preview-1792975337: started (b249af436e42)
+Office URL: http://127.0.0.1:8877
+Core health: HTTP 200
+Host execution: enabled
+Sandbox Supervisor: http://127.0.0.1:8878
+Host runtime state: /tmp/factory-developer-preview-cglyks/runtime
+persistence: PASS {'projects': 1, 'gate': 'ACCEPTED'}
+evidence: /home/james/Escritorio/Development/sf-uat-evidence/phase-a-fixture.json
+Factory stop
+Container: factory-preview-1792975337
+Data volume: factory-preview-data-1792975337
+Container factory-preview-1792975337: stopped
+Container factory-preview-1792975337: removed
+Data volume factory-preview-data-1792975337: kept
+DEVELOPER_PREVIEW_UAT=PASS

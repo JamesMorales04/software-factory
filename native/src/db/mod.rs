@@ -16,7 +16,8 @@ use crate::workspace::verify_candidate_commit;
 
 pub use provider_sessions::{
     NewProviderIntent, ProviderSessionRecord, ProviderTerminal, ProviderToolEventInput,
-    ProviderToolEventRecord, ProviderTurnAuthorization, ProviderTurnUsage,
+    ProviderToolEventRecord, ProviderTurnAuthorization, ProviderTurnBinding,
+    ProviderTurnBindingInput, ProviderTurnReservationRecord, ProviderTurnUsage,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -223,6 +224,8 @@ pub const EVENT_KINDS: &[&str] = &[
     "provider.session_cleaned",
     "provider.session_intended",
     "provider.turn_authorized",
+    "provider.turn_request_bound",
+    "provider.turn_resolved",
     "provider.turn_settled",
     "provider.session_terminal",
     "project.config_updated",

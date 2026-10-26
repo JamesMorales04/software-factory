@@ -168,6 +168,7 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         requests: 0,
         max_requests: 2,
+        strict_request_digest: true,
     })));
     let socket = std::env::temp_dir().join(format!("tp-{}", uuid::Uuid::new_v4().simple()));
     let config = EgressConfig::new(
@@ -373,4 +374,147 @@ fn rejects_private_and_metadata_upstreams_without_test_opt_in() {
             "upstream {upstream} must be rejected"
         );
     }
+}
+
+#[tokio::test]
+async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
+    use axum::{Router, extract::State, http::HeaderMap, routing::post};
+    use factory_native::provider_egress::TurnBinder;
+    use sha2::{Digest, Sha256};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct Upstream {
+        bodies: Arc<Mutex<Vec<String>>>,
+    }
+    async fn upstream(
+        State(state): State<Upstream>,
+        _headers: HeaderMap,
+        body: String,
+    ) -> axum::Json<serde_json::Value> {
+        state.bodies.lock().unwrap().push(body);
+        axum::Json(serde_json::json!({"id":"resp","output":[]}))
+    }
+
+    #[derive(Clone)]
+    struct Core {
+        bound: Arc<Mutex<Vec<serde_json::Value>>>,
+        deny: Arc<AtomicBool>,
+    }
+    async fn bind(State(state): State<Core>, body: String) -> axum::response::Response {
+        if state.deny.load(Ordering::SeqCst) {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        }
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        state.bound.lock().unwrap().push(value);
+        axum::http::StatusCode::OK.into_response()
+    }
+
+    let upstream_bodies = Arc::new(Mutex::new(Vec::new()));
+    let upstream_app = Router::new()
+        .route("/v1/responses", post(upstream))
+        .with_state(Upstream {
+            bodies: upstream_bodies.clone(),
+        });
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_server = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app).await.unwrap();
+    });
+
+    let bound = Arc::new(Mutex::new(Vec::new()));
+    let deny = Arc::new(AtomicBool::new(false));
+    let core_app = Router::new()
+        .route("/worker/provider_turn_bind", post(bind))
+        .with_state(Core {
+            bound: bound.clone(),
+            deny: deny.clone(),
+        });
+    let core_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let core_address = core_listener.local_addr().unwrap();
+    let core_server = tokio::spawn(async move {
+        axum::serve(core_listener, core_app).await.unwrap();
+    });
+
+    let token = "egress-token-0123456789abcdef0123456789abcdef";
+    let policy: SharedTurnPolicy = Arc::new(Mutex::new(Some(TurnPolicy {
+        reservation_id: "reservation-bind".into(),
+        max_input_tokens: 100,
+        max_output_tokens: 5,
+        max_total_tokens: 105,
+        max_cost_micros: 1000,
+        model: "mock-model".into(),
+        request_sha256: "a".repeat(64),
+        expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        requests: 0,
+        max_requests: 2,
+        strict_request_digest: false,
+    })));
+    let binder = TurnBinder::new(
+        reqwest::Client::new(),
+        reqwest::Url::parse(&format!("http://{core_address}")).unwrap(),
+        "worker-session-token-0123456789abcdef".into(),
+        "session-record".into(),
+        "worker".into(),
+        1,
+    )
+    .unwrap();
+    let socket = std::env::temp_dir().join(format!("bind-{}", uuid::Uuid::new_v4().simple()));
+    let config = EgressConfig::new(
+        &format!("http://{upstream_address}"),
+        "real-upstream-credential-0123456789".into(),
+        token.into(),
+        true,
+    )
+    .unwrap()
+    .with_turn_policy(policy)
+    .with_turn_binder(binder);
+    let broker = EgressBroker::start(config, &socket).await.unwrap();
+    let (address, bridge) = start_loopback_bridge(&socket).await.unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let base = format!("http://{address}");
+    let request = serde_json::json!({"model":"mock-model","input":"hello"});
+    let response = client
+        .post(format!("{base}/v1/responses"))
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let upstream_body = upstream_bodies.lock().unwrap().first().cloned().unwrap();
+    let expected = Sha256::digest(upstream_body.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    {
+        let bound = bound.lock().unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0]["request_sha256"], expected);
+        assert_eq!(bound[0]["reservation_id"], "reservation-bind");
+        assert_eq!(bound[0]["path"], "/v1/responses");
+    }
+
+    deny.store(true, Ordering::SeqCst);
+    let denied = client
+        .post(format!("{base}/v1/responses"))
+        .bearer_auth(token)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_eq!(upstream_bodies.lock().unwrap().len(), 1);
+
+    bridge.abort();
+    broker.stop();
+    upstream_server.abort();
+    core_server.abort();
+    let _ = std::fs::remove_file(socket);
 }

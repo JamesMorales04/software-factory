@@ -1,0 +1,31 @@
+{
+  "schema": "factory.developer-preview-uat.v1",
+  "result": "PASS",
+  "scope": "Linux TRUSTED_LOCAL deterministic fixture; no paid model calls or isolation certification",
+  "ids": {
+    "project": "c3d45824-83dc-4b4c-86e7-8a2b51af280c",
+    "action": "1da3183b-5597-4f01-b408-3c3011e8beb7",
+    "campaign": "d5fddb80-897e-45ee-b9e7-98957d3e6947",
+    "run": "99909ee1-31b6-4abd-adee-ab3a2d1bd5b0",
+    "attempt": "8913a8bd-c2f1-47f5-a0e4-8af89bca2481"
+  },
+  "gate": {
+    "candidate_id": "6d1bf5dd-d01c-4dfe-9a7a-a83dab4e480a",
+    "outcome": "ACCEPTED",
+    "reasons": [
+      "independent executed evidence accepts exact candidate"
+    ],
+    "decided_at": "2026-10-26T00:42:23.146927569+00:00"
+  },
+  "artifacts": {
+    "directory": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337",
+    "start": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/start.log",
+    "doctor": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/doctor.log",
+    "verifier": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/verifier.log",
+    "reviewer": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/reviewer.log",
+    "restart": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/restart.log",
+    "gate": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/gate.json",
+    "model_calls": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/model-calls.json",
+    "observability": "/home/james/Escritorio/Development/sf-uat-evidence/developer-preview-artifacts-1792975337/observability.json"
+  }
+}

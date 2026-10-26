@@ -308,7 +308,7 @@ async fn model_outcome(
             "purpose": "semantic_review",
             "systemPrompt": system_prompt,
             "userPrompt": user_prompt,
-            "maxOutputTokens": 4096
+            "maxOutputTokens": 8192
         }))
         .send()
         .await;

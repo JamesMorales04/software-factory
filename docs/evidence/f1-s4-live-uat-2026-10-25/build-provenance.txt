@@ -1,0 +1,39 @@
+F1-S4-LIVE-UAT repair source provenance
+date: 2026-10-26T03:03:17Z
+live code working tree was committed unchanged as: c1f8cca42774dc2214ea4707a229596a7c9ad4f4
+code diff c1f8cca..HEAD for native/src, native/tests and scripts (must be empty):
+documentation-only diff after the code commit:
+ docs/README.md                                     |    2 +-
+ docs/evidence/f1-s4-live-uat-2026-10-25.md         |  363 ++
+ .../f1-s4-live-uat-2026-10-25/candidate-build.log  |    1 +
+ .../candidate-functional.log                       |    6 +
+ .../candidate-negative.log                         |    2 +
+ .../f1-s4-live-uat-2026-10-25/candidate-test.log   |   21 +
+ .../evidence/f1-s4-live-uat-2026-10-25/cleanup.txt |   21 +
+ .../f1-s4-live-uat-2026-10-25/evidence.json        | 4007 ++++++++++++++++++++
+ .../f1-s4-live-uat-2026-10-25/office-campaigns.png |  Bin 0 -> 718244 bytes
+ .../f1-s4-live-uat-2026-10-25/office-dashboard.png |  Bin 0 -> 330505 bytes
+ .../f1-s4-live-uat-2026-10-25/office-lead2.png     |  Bin 0 -> 250781 bytes
+ .../office-observations-2.json                     |    7 +
+ .../f1-s4-live-uat-2026-10-25/office-projects2.png |  Bin 0 -> 60184 bytes
+ .../f1-s4-live-uat-2026-10-25/office-runtime2.png  |  Bin 0 -> 490118 bytes
+ .../f1-s4-live-uat-2026-10-25/reviewer.log         |    1 +
+ .../f1-s4-live-uat-2026-10-25/verifier.log         |    1 +
+ .../f1-s4-live-uat-2026-10-25/workspace-tests.log  |  489 +++
+ docs/implementation/developer-preview-testing.md   |   15 +
+ docs/implementation/native-rust-closure.md         |   30 +
+ native/README.md                                   |   45 +-
+ 20 files changed, 5009 insertions(+), 2 deletions(-)
+tree at live code commit: d42dd5a1c699a5affc81193ace526a06f583ece4
+binary sha256/mtime:
+1a9a70b1644c1f2443b0861dedb2c1c1da41d7df19ac7cfb499a5273c4d219a6  target/debug/factory-core
+1615dbad121b646a008530a024cd4a722ae8f80eb53c5b87808b23c19b1c5931  target/debug/factory-worker
+5a466614e2f17ee7be5422f770f0725ad4c497e41ce757ccc430578a0e9b72dc  target/debug/factory-supervisor
+f7f8d510e409c6aefcac7ea1b0a157be3d3f553565ad2ded131302d4a8b80bd9  target/debug/factory-verifier
+883dd8e871bfd36a22921c138e6764dac0c6a321d5adb377b53ac4e743fbd4e6  target/debug/factory-reviewer
+2026-10-25 21:31:30.826484771 -0500 target/debug/factory-core
+2026-10-25 21:31:30.475475261 -0500 target/debug/factory-worker
+2026-10-25 21:31:31.226495609 -0500 target/debug/factory-supervisor
+2026-10-25 21:31:30.439474286 -0500 target/debug/factory-verifier
+2026-10-25 21:31:30.418473717 -0500 target/debug/factory-reviewer
+limitation: the original live build was not accompanied by a retained build log; source equivalence is established by the unchanged committed code tree and binary hashes, not by a signed build attestation.

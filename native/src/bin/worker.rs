@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let heartbeat_attempt = assignment.lease.attempt_id.clone();
         let heartbeat_generation = assignment.lease.generation;
         let heartbeat = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(20));
+            let mut ticker = tokio::time::interval(Duration::from_secs(15));
             ticker.tick().await;
             loop {
                 ticker.tick().await;
@@ -522,6 +522,9 @@ struct ProviderContext<'a> {
     base_url: &'a str,
     password: &'a str,
     directory: &'a str,
+    api_directory: &'a str,
+    provider_session: &'a std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    usage_tracker: &'a std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
     turn_policy: Option<&'a SharedTurnPolicy>,
     assignment: &'a Assignment,
     supervisor: &'a Supervisor,
@@ -606,11 +609,30 @@ async fn execute_provider_assignment(
         .to_owned();
 
     let turn_policy: SharedTurnPolicy = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let provider_session: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>> =
+        std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default()));
+    let provider_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
+    let turn_binder = if provider_kind == "opencode" {
+        Some(factory_native::provider_egress::TurnBinder::new(
+            client.clone(),
+            core.clone(),
+            session_token.to_owned(),
+            session_record_id.clone(),
+            worker_id.to_owned(),
+            assignment.lease.generation,
+        )?)
+    } else {
+        None
+    };
     let (base_url, password, sandbox, egress_turn_policy) = match start_provider_runtime(
         &provider_dir,
         assignment.deadline_secs,
+        &assignment.provider,
         &assignment.model,
         assignment.max_turns,
+        turn_binder,
         &turn_policy,
     )
     .await
@@ -648,6 +670,13 @@ async fn execute_provider_assignment(
             base_url: base_url.as_str(),
             password: &password,
             directory: &directory,
+            api_directory: if sandbox.is_some() {
+                "/session"
+            } else {
+                &directory
+            },
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
@@ -663,15 +692,41 @@ async fn execute_provider_assignment(
             base_url: base_url.as_str(),
             password: &password,
             directory: &directory,
+            api_directory: if sandbox.is_some() {
+                "/session"
+            } else {
+                &directory
+            },
+            provider_session: &provider_session,
+            usage_tracker: &usage_tracker,
             turn_policy: egress_turn_policy.as_ref(),
             assignment,
             supervisor,
         })
         .await
     };
+    let confined = sandbox.is_some();
     if let Some(sandbox) = sandbox {
         let _ = sandbox.stop().await;
     }
+    let provider_session_id = provider_session
+        .lock()
+        .ok()
+        .and_then(|session| session.clone())
+        .unwrap_or_default();
+    let cleanup_receipt = if provider_session_id.is_empty() {
+        "no_external_session".to_owned()
+    } else if confined {
+        factory_native::provider_sandbox::confined_recovery_receipt(
+            &directory,
+            &provider_session_id,
+            provider_root.as_path(),
+        )
+        .unwrap_or("sandbox_stopped_cleanup_unconfirmed")
+        .to_owned()
+    } else {
+        "unconfined_cleanup_unconfirmed".to_owned()
+    };
     if !(cfg!(debug_assertions)
         && env::var("FACTORY_PROVIDER_KEEP_SESSION").ok().as_deref() == Some("1"))
     {
@@ -692,7 +747,7 @@ async fn execute_provider_assignment(
                     total_tokens: run.usage.total_tokens,
                     cost_micros: run.usage.cost_micros,
                     usage_known: run.usage.known,
-                    cleanup_receipt: String::new(),
+                    cleanup_receipt: cleanup_receipt.clone(),
                     error: "provider usage was not measurable".into(),
                 };
                 let _ = post_provider_terminal(client, core, session_token, &terminal).await;
@@ -719,19 +774,20 @@ async fn execute_provider_assignment(
             Ok(run.candidate)
         }
         Err(error) => {
+            let tracked_usage = usage_tracker.lock().map(|usage| *usage).unwrap_or_default();
             let terminal = ProviderTerminal {
                 session_record_id: session_record_id.clone(),
                 worker_id: worker_id.into(),
                 generation: assignment.lease.generation,
                 state: "FAILED".into(),
-                provider_session_id: String::new(),
+                provider_session_id: provider_session_id.clone(),
                 turn_id: String::new(),
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                cost_micros: 0,
-                usage_known: false,
-                cleanup_receipt: String::new(),
+                input_tokens: tracked_usage.input_tokens,
+                output_tokens: tracked_usage.output_tokens,
+                total_tokens: tracked_usage.total_tokens,
+                cost_micros: tracked_usage.cost_micros,
+                usage_known: tracked_usage.known,
+                cleanup_receipt: cleanup_receipt.clone(),
                 error: error.to_string(),
             };
             let _ = post_provider_terminal(client, core, session_token, &terminal).await;
@@ -743,8 +799,10 @@ async fn execute_provider_assignment(
 async fn start_provider_runtime(
     session_dir: &std::path::Path,
     deadline_secs: u64,
+    provider: &str,
     model: &str,
     max_turns: u32,
+    turn_binder: Option<factory_native::provider_egress::TurnBinder>,
     turn_policy: &SharedTurnPolicy,
 ) -> Result<
     (
@@ -760,9 +818,31 @@ async fn start_provider_runtime(
         "bwrap" => {
             let binary = env::var("FACTORY_PROVIDER_BINARY")
                 .map_err(|_| "FACTORY_PROVIDER_BINARY required for sandboxed provider")?;
+            let kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_else(|_| "fixture".into());
+            if !matches!(kind.as_str(), "fixture" | "opencode") {
+                return Err(format!("unsupported FACTORY_PROVIDER_KIND {kind:?}").into());
+            }
+            let opencode = kind == "opencode";
+            let tcp_port = env::var("FACTORY_PROVIDER_TCP_PORT")
+                .unwrap_or_else(|_| "18081".into())
+                .parse::<u16>()
+                .map_err(|_| "FACTORY_PROVIDER_TCP_PORT must be a port number")?;
+            if tcp_port == 0 || tcp_port == 18080 {
+                return Err(
+                    "FACTORY_PROVIDER_TCP_PORT must be a non-zero port other than 18080".into(),
+                );
+            }
             let args: Vec<String> = match env::var("FACTORY_PROVIDER_ARGS") {
                 Ok(value) => serde_json::from_str(&value)
                     .map_err(|_| "FACTORY_PROVIDER_ARGS must be a JSON string array")?,
+                Err(_) if opencode => vec![
+                    "serve".into(),
+                    "--hostname".into(),
+                    "127.0.0.1".into(),
+                    "--port".into(),
+                    tcp_port.to_string(),
+                    "--pure".into(),
+                ],
                 Err(_) => Vec::new(),
             };
             let max_session_bytes = env::var("FACTORY_PROVIDER_SESSION_MAX_BYTES")
@@ -789,20 +869,78 @@ async fn start_provider_runtime(
                     )?;
                     let allow_test_upstream =
                         env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
-                    let config = factory_native::provider_egress::EgressConfig::new(
+                    let max_requests = if opencode {
+                        max_turns as usize + 4
+                    } else {
+                        max_turns as usize + 1
+                    };
+                    let mut config = factory_native::provider_egress::EgressConfig::new(
                         &upstream,
                         credential,
                         token,
                         allow_test_upstream,
                     )?
                     .with_model(model.to_owned())
-                    .with_max_requests(max_turns as usize + 1)
+                    .with_max_requests(max_requests)
                     .with_turn_policy(turn_policy.clone());
+                    if opencode && let Some(binder) = turn_binder {
+                        config = config.with_turn_binder(binder);
+                    }
                     (Some(config), Some(std::path::PathBuf::from(bridge)))
+                }
+                Err(_) if opencode => {
+                    return Err(
+                        "opencode provider requires FACTORY_PROVIDER_UPSTREAM_URL and egress"
+                            .into(),
+                    );
                 }
                 Err(_) => (None, None),
             };
             let mut sandbox_env = Vec::new();
+            let mut provider_bridge = None;
+            let mut provider_tcp = None;
+            if opencode {
+                let egress_config = egress
+                    .as_ref()
+                    .ok_or("opencode provider requires provider egress")?;
+                let bridge = match env::var("FACTORY_PROVIDER_BRIDGE") {
+                    Ok(value) => std::path::PathBuf::from(value),
+                    Err(_) => std::env::current_exe()?
+                        .parent()
+                        .map(|parent| parent.join("factory-provider-bridge"))
+                        .ok_or("cannot locate factory-provider-bridge")?,
+                };
+                if !bridge.is_absolute() || !bridge.is_file() {
+                    return Err(format!(
+                        "factory-provider-bridge is not an absolute file: {}",
+                        bridge.display()
+                    )
+                    .into());
+                }
+                let context_limit = env::var("FACTORY_PROVIDER_MODEL_CONTEXT")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(128_000);
+                let output_limit = env::var("FACTORY_PROVIDER_MODEL_OUTPUT")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(8_192);
+                let config = opencode_sandbox_config(
+                    provider,
+                    model,
+                    egress_config.token(),
+                    context_limit,
+                    output_limit,
+                );
+                sandbox_env.push((
+                    "OPENCODE_CONFIG_CONTENT".into(),
+                    serde_json::to_string(&config)?,
+                ));
+                provider_bridge = Some(bridge);
+                provider_tcp = Some(format!("127.0.0.1:{tcp_port}"));
+            }
             if env::var("FACTORY_FIXTURE_PROVIDER_USE_EGRESS")
                 .ok()
                 .as_deref()
@@ -815,20 +953,34 @@ async fn start_provider_runtime(
                 binary: std::path::PathBuf::from(binary),
                 session_dir: session_dir.to_path_buf(),
                 args,
-                ready_timeout: Duration::from_secs(15),
+                ready_timeout: Duration::from_secs(30),
                 max_session_bytes,
                 max_lifetime: lifetime,
                 bridge_timeout: lifetime,
                 address_space_bytes: env::var("FACTORY_PROVIDER_MEMORY_LIMIT_BYTES")
                     .ok()
                     .and_then(|value| value.parse().ok())
-                    .unwrap_or(4 * 1024 * 1024 * 1024),
+                    .unwrap_or(if opencode {
+                        16 * 1024 * 1024 * 1024
+                    } else {
+                        4 * 1024 * 1024 * 1024
+                    }),
                 egress,
                 egress_bridge,
+                provider_bridge,
+                provider_tcp,
                 env: sandbox_env,
                 ..Default::default()
             })
             .await?;
+            if opencode {
+                wait_for_opencode_health(
+                    sandbox.base_url(),
+                    sandbox.password(),
+                    Duration::from_secs(30),
+                )
+                .await?;
+            }
             Ok((
                 sandbox.base_url().to_owned(),
                 sandbox.password().to_owned(),
@@ -864,6 +1016,128 @@ async fn start_provider_runtime(
     }
 }
 
+fn opencode_disabled_tools() -> serde_json::Value {
+    json!({
+        "bash": false,
+        "edit": false,
+        "write": false,
+        "patch": false,
+        "multiedit": false,
+        "read": false,
+        "grep": false,
+        "glob": false,
+        "list": false,
+        "lsp": false,
+        "question": false,
+        "skill": false,
+        "task": false,
+        "todowrite": false,
+        "todoread": false,
+        "webfetch": false
+    })
+}
+
+fn opencode_sandbox_config(
+    provider: &str,
+    model: &str,
+    egress_token: &str,
+    context_limit: u64,
+    output_limit: u64,
+) -> serde_json::Value {
+    json!({
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            provider: {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": format!("Factory {provider}"),
+                "options": {
+                    "baseURL": "http://127.0.0.1:18080/v1",
+                    "apiKey": egress_token
+                },
+                "models": {
+                    model: {
+                        "name": model,
+                        "limit": {"context": context_limit, "output": output_limit}
+                    }
+                }
+            }
+        },
+        "model": format!("{provider}/{model}"),
+        "autoupdate": false,
+        "share": "disabled",
+        "instructions": [],
+        "agent": {"plan": {"tools": opencode_disabled_tools()}}
+    })
+}
+
+async fn wait_for_opencode_health(
+    base_url: &str,
+    password: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let http = factory_native::runtime::opencode_http_client(Duration::from_secs(10))?;
+        let response = http
+            .get(format!("{base_url}/global/health"))
+            .basic_auth("opencode", Some(password))
+            .send()
+            .await;
+        if let Ok(response) = response
+            && response.status().is_success()
+        {
+            let value: serde_json::Value = response.json().await?;
+            if value.get("healthy").and_then(serde_json::Value::as_bool) == Some(true) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("OpenCode provider did not become healthy inside the sandbox".into());
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+async fn finalize_written_provider_work(
+    context: &ProviderContext<'_>,
+    http: &reqwest::Client,
+    handle: &WorkspaceHandle,
+    session_id: &str,
+    last_message_id: &str,
+    usage: ProviderUsage,
+    error: &str,
+) -> Result<Option<ProviderRun>, Box<dyn std::error::Error>> {
+    if provider_state(context).await? == "CANCEL_REQUESTED" {
+        return Ok(None);
+    }
+    post_tool_event(
+        context,
+        "provider-turn-error",
+        "final",
+        "RESULT",
+        &format!(
+            "provider turn ended with an error after at least one applied write; preserving the applied writes for independent verification: {error}"
+        ),
+    )
+    .await?;
+    factory_native::runtime::delete_opencode_session(
+        http,
+        context.base_url,
+        context.password,
+        context.api_directory,
+        session_id,
+    )
+    .await?;
+    let candidate = supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+    Ok(Some(ProviderRun {
+        candidate,
+        provider_session_id: session_id.to_owned(),
+        turn_id: last_message_id.to_owned(),
+        usage,
+    }))
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
@@ -875,7 +1149,7 @@ async fn run_provider_tool_loop(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
     )
     .await?;
     let mut event_stream = event_response.bytes_stream();
@@ -884,7 +1158,7 @@ async fn run_provider_tool_loop(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
         &format!(
             "Factory provider attempt {}",
             context.assignment.lease.attempt_id
@@ -896,6 +1170,9 @@ async fn run_provider_tool_loop(
         .and_then(serde_json::Value::as_str)
         .ok_or("OpenCode session/create returned no id")?
         .to_owned();
+    if let Ok(mut provider_session) = context.provider_session.lock() {
+        *provider_session = Some(session_id.clone());
+    }
     let _: serde_json::Value = context
         .client
         .post(context.core.join("worker/provider_active")?)
@@ -951,16 +1228,28 @@ async fn run_provider_tool_loop(
     )?;
     let mut prompt = json!({
         "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+        "agent": "plan",
+        "tools": opencode_disabled_tools(),
         "parts": [{"type": "text", "text": format!(
-            "You are a bounded engineering agent. You may request only these tools: {}. Return ONE JSON object per turn: either {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...\"}} or {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}} or {{\"type\":\"final\",\"files\":[]}}. Allowed paths: {}. Objective: {}. Source context: {}",
+            "You are a bounded engineering agent. You MUST change the authorized source: an empty final response is invalid. You may request only these tools: {}. Return ONE JSON object per turn. To change a file use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"write_file\",\"path\":\"relative/path\",\"content\":\"...full file...\"}}. To run a frozen check use {{\"type\":\"tool_request\",\"call_id\":\"unique\",\"tool\":\"run_command\",\"argv\":[\"program\",\"arg\"],\"timeout_secs\":30}}. To finish use {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. The `files` array in a final response MUST be empty; never put paths or strings in it. Allowed paths: {}. Objective: {}. Frozen checks you may run with run_command (argv must match exactly): {}. Source context: {}",
             context.assignment.allowed_tools.join(", "),
             context.assignment.action_spec.allowed_paths.join(", "),
             context.assignment.action_spec.objective,
+            serde_json::to_string(
+                &context
+                    .assignment
+                    .action_spec
+                    .checks
+                    .iter()
+                    .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
+                    .collect::<Vec<_>>()
+            )?,
             serde_json::to_string(&source_context)?
         )}]
     });
     let mut usage = ProviderUsage::default();
     let mut written = false;
+    let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
     for _ in 0..context.assignment.max_turns {
         let turn = if context.turn_policy.is_some() {
@@ -972,7 +1261,7 @@ async fn run_provider_tool_loop(
             &http,
             context.base_url,
             context.password,
-            &directory,
+            context.api_directory,
             &session_id,
             &prompt,
         )
@@ -980,6 +1269,20 @@ async fn run_provider_tool_loop(
         {
             if let Some(turn) = &turn {
                 release_provider_turn(context, &turn.reservation_id).await;
+            }
+            if written
+                && let Some(run) = finalize_written_provider_work(
+                    context,
+                    &http,
+                    &handle,
+                    &session_id,
+                    &last_message_id,
+                    usage,
+                    &error.to_string(),
+                )
+                .await?
+            {
+                return Ok(run);
             }
             return Err(error.into());
         }
@@ -999,11 +1302,39 @@ async fn run_provider_tool_loop(
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
                 }
+                if written
+                    && let Some(run) = finalize_written_provider_work(
+                        context,
+                        &http,
+                        &handle,
+                        &session_id,
+                        &last_message_id,
+                        usage,
+                        &error.to_string(),
+                    )
+                    .await?
+                {
+                    return Ok(run);
+                }
                 return Err(error.into());
             }
             Err(_) => {
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
+                }
+                if written
+                    && let Some(run) = finalize_written_provider_work(
+                        context,
+                        &http,
+                        &handle,
+                        &session_id,
+                        &last_message_id,
+                        usage,
+                        "provider deadline exceeded",
+                    )
+                    .await?
+                {
+                    return Ok(run);
                 }
                 return Err("provider deadline exceeded".into());
             }
@@ -1016,7 +1347,7 @@ async fn run_provider_tool_loop(
                 &http,
                 context.base_url,
                 context.password,
-                &directory,
+                context.api_directory,
                 &session_id,
             )
             .await
@@ -1026,6 +1357,20 @@ async fn run_provider_tool_loop(
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
+                    if written
+                        && let Some(run) = finalize_written_provider_work(
+                            context,
+                            &http,
+                            &handle,
+                            &session_id,
+                            &last_message_id,
+                            usage,
+                            &error.to_string(),
+                        )
+                        .await?
+                    {
+                        return Ok(run);
+                    }
                     return Err(error.into());
                 }
             },
@@ -1033,7 +1378,31 @@ async fn run_provider_tool_loop(
                 if let Some(turn) = &turn {
                     release_provider_turn(context, &turn.reservation_id).await;
                 }
-                return Err("provider turn did not complete normally".into());
+                let detail = match &terminal {
+                    factory_native::runtime::OpenCodePromptTerminal::Failed { error, .. } => {
+                        error.to_string()
+                    }
+                    factory_native::runtime::OpenCodePromptTerminal::Idle {
+                        cancel_requested: true,
+                        ..
+                    } => "provider cancellation was requested".into(),
+                    _ => "provider turn did not complete normally".into(),
+                };
+                if written
+                    && let Some(run) = finalize_written_provider_work(
+                        context,
+                        &http,
+                        &handle,
+                        &session_id,
+                        &last_message_id,
+                        usage,
+                        &detail,
+                    )
+                    .await?
+                {
+                    return Ok(run);
+                }
+                return Err(detail.into());
             }
         };
         let outcome =
@@ -1049,6 +1418,7 @@ async fn run_provider_tool_loop(
                 return Err("provider turn failed".into());
             }
         };
+        last_message_id = message_id.clone();
         let turn_usage = extract_usage(&message);
         if let Some(turn) = &turn {
             settle_provider_turn(context, &turn.reservation_id, &turn_usage).await?;
@@ -1058,10 +1428,51 @@ async fn run_provider_tool_loop(
         usage.total_tokens = usage.total_tokens.saturating_add(turn_usage.total_tokens);
         usage.cost_micros = usage.cost_micros.saturating_add(turn_usage.cost_micros);
         usage.known = usage.known || turn_usage.known;
-        let action = extract_action(&message)
-            .map_err(|error| format!("provider action rejected: {error}"))?;
+        if let Ok(mut tracker) = context.usage_tracker.lock() {
+            *tracker = usage;
+        }
+        let action = match extract_action(&message) {
+            Ok(action) => action,
+            Err(error) => {
+                post_tool_event(
+                    context,
+                    "invalid-action",
+                    "final",
+                    "ERROR",
+                    &format!("invalid provider action: {error}"),
+                )
+                .await?;
+                prompt = json!({
+                    "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                    "parts": [{"type": "text", "text": format!(
+                        "Your previous response was rejected: {error}. Return exactly one JSON object. Use a write_file tool_request for every file change. Finish with {{\"type\":\"final\",\"files\":[],\"explanation\":\"...\"}} and keep `files` empty."
+                    )}]
+                });
+                continue;
+            }
+        };
         match action {
-            ProviderAction::Final { files } => {
+            ProviderAction::Final { files, explanation } => {
+                if !written && files.is_empty() {
+                    post_tool_event(
+                        context,
+                        "empty-final",
+                        "final",
+                        "ERROR",
+                        "no file has been written; an empty final response cannot create a candidate",
+                    )
+                    .await?;
+                    prompt = json!({
+                        "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+                        "parts": [{"type": "text", "text": "You have not written any file, so no candidate can be created. Use a write_file tool_request now with the complete corrected file content. Do not return a final response until at least one file has been written."}]
+                    });
+                    continue;
+                }
+                if !explanation.trim().is_empty() {
+                    let bounded: String = explanation.chars().take(4_000).collect();
+                    post_tool_event(context, "final-explanation", "final", "RESULT", &bounded)
+                        .await?;
+                }
                 if !files.is_empty() {
                     if !context
                         .assignment
@@ -1090,7 +1501,7 @@ async fn run_provider_tool_loop(
                     &http,
                     context.base_url,
                     context.password,
-                    &directory,
+                    context.api_directory,
                     &session_id,
                 )
                 .await?;
@@ -1122,7 +1533,7 @@ async fn run_provider_tool_loop(
                         &http,
                         context.base_url,
                         context.password,
-                        &directory,
+                        context.api_directory,
                         &session_id,
                     )
                     .await;
@@ -1130,7 +1541,7 @@ async fn run_provider_tool_loop(
                         &http,
                         context.base_url,
                         context.password,
-                        &directory,
+                        context.api_directory,
                         &session_id,
                     )
                     .await;
@@ -1161,12 +1572,26 @@ async fn run_provider_tool_loop(
                                     "write applied",
                                 )
                                 .await?;
-                                prompt = tool_result(&call_id, "ok", "write applied", Some(0));
+                                prompt = tool_result(
+                                    context.assignment.provider.as_str(),
+                                    context.assignment.model.as_str(),
+                                    &call_id,
+                                    "ok",
+                                    "write applied",
+                                    Some(0),
+                                );
                             }
                             Err(error) => {
                                 post_tool_event(context, &call_id, &tool, "ERROR", "write failed")
                                     .await?;
-                                prompt = tool_result(&call_id, "failed", &error.to_string(), None);
+                                prompt = tool_result(
+                                    context.assignment.provider.as_str(),
+                                    context.assignment.model.as_str(),
+                                    &call_id,
+                                    "failed",
+                                    &error.to_string(),
+                                    None,
+                                );
                             }
                         }
                     }
@@ -1202,8 +1627,14 @@ async fn run_provider_tool_loop(
                                     &format!("exit={:?}", result.exit_code),
                                 )
                                 .await?;
-                                prompt =
-                                    tool_result(&call_id, status, &result.stderr, result.exit_code);
+                                prompt = tool_result(
+                                    context.assignment.provider.as_str(),
+                                    context.assignment.model.as_str(),
+                                    &call_id,
+                                    status,
+                                    &result.stderr,
+                                    result.exit_code,
+                                );
                             }
                             Err(error) => {
                                 post_tool_event(
@@ -1214,28 +1645,69 @@ async fn run_provider_tool_loop(
                                     "command failed",
                                 )
                                 .await?;
-                                prompt = tool_result(&call_id, "failed", &error.to_string(), None);
+                                prompt = tool_result(
+                                    context.assignment.provider.as_str(),
+                                    context.assignment.model.as_str(),
+                                    &call_id,
+                                    "failed",
+                                    &error.to_string(),
+                                    None,
+                                );
                             }
                         }
                     }
                     Err(reason) => {
                         post_tool_event(context, &call_id, &tool, "DENY", &reason).await?;
-                        prompt = tool_result(&call_id, "denied", &reason, None);
+                        prompt = tool_result(
+                            context.assignment.provider.as_str(),
+                            context.assignment.model.as_str(),
+                            &call_id,
+                            "denied",
+                            &reason,
+                            None,
+                        );
                     }
                 }
             }
         }
     }
+    if written {
+        post_tool_event(
+            context,
+            "turn-budget-exhausted",
+            "final",
+            "RESULT",
+            "provider wrote one or more files but did not emit a final response; finalizing the applied writes for independent verification",
+        )
+        .await?;
+        factory_native::runtime::delete_opencode_session(
+            &http,
+            context.base_url,
+            context.password,
+            context.api_directory,
+            &session_id,
+        )
+        .await?;
+        let candidate =
+            supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+        cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+        return Ok(ProviderRun {
+            candidate,
+            provider_session_id: session_id,
+            turn_id: last_message_id,
+            usage,
+        });
+    }
     let _ = factory_native::runtime::delete_opencode_session(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
         &session_id,
     )
     .await;
     let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
-    Err("provider exceeded the authorized turn budget".into())
+    Err("provider exceeded the authorized turn budget without writing a file".into())
 }
 
 enum ToolDecision {
@@ -1288,13 +1760,15 @@ fn decide_tool(
 }
 
 fn tool_result(
+    provider: &str,
+    model: &str,
     call_id: &str,
     status: &str,
     output: &str,
     exit_code: Option<i32>,
 ) -> serde_json::Value {
     json!({
-        "model": null,
+        "model": {"providerID": provider, "modelID": model},
         "parts": [{"type": "text", "text": serde_json::to_string(&json!({
             "type": "tool_result",
             "call_id": call_id,
@@ -1390,7 +1864,7 @@ async fn authorize_provider_turn(
             "session_record_id": context.session_record_id,
             "worker_id": context.worker_id,
             "generation": context.assignment.lease.generation,
-            "requested_output_tokens": 1024,
+            "requested_output_tokens": 4096,
             "request_sha256": digest
         }))
         .send()
@@ -1415,6 +1889,9 @@ async fn authorize_provider_turn(
         expires_at_ms: authorization.expires_at_ms,
         requests: 0,
         max_requests: 1,
+        strict_request_digest: env::var("FACTORY_PROVIDER_KIND")
+            .map(|kind| kind != "opencode")
+            .unwrap_or(true),
     });
     Ok(authorization)
 }
@@ -1657,6 +2134,8 @@ async fn run_provider_patch(
     };
     let prompt = json!({
         "model": {"providerID": context.assignment.provider, "modelID": context.assignment.model},
+        "agent": "plan",
+        "tools": opencode_disabled_tools(),
         "parts": [{
             "type": "text",
             "text": format!(
@@ -1673,7 +2152,7 @@ async fn run_provider_patch(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
     )
     .await?;
     let mut event_stream = event_response.bytes_stream();
@@ -1682,7 +2161,7 @@ async fn run_provider_patch(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
         &format!(
             "Factory provider attempt {}",
             context.assignment.lease.attempt_id
@@ -1694,6 +2173,9 @@ async fn run_provider_patch(
         .and_then(serde_json::Value::as_str)
         .ok_or("OpenCode session/create returned no id")?
         .to_owned();
+    if let Ok(mut provider_session) = context.provider_session.lock() {
+        *provider_session = Some(provider_session_id.clone());
+    }
     let active: serde_json::Value = context
         .client
         .post(context.core.join("worker/provider_active")?)
@@ -1715,7 +2197,7 @@ async fn run_provider_patch(
             &http,
             context.base_url,
             context.password,
-            &directory,
+            context.api_directory,
             &provider_session_id,
         )
         .await;
@@ -1736,7 +2218,7 @@ async fn run_provider_patch(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
         &provider_session_id,
         &prompt,
     )
@@ -1781,7 +2263,7 @@ async fn run_provider_patch(
                 &http,
                 context.base_url,
                 context.password,
-                &directory,
+                context.api_directory,
                 &provider_session_id,
             )
             .await?
@@ -1806,7 +2288,7 @@ async fn run_provider_patch(
                 &http,
                 context.base_url,
                 context.password,
-                &directory,
+                context.api_directory,
                 &session_id,
             )
             .await;
@@ -1820,7 +2302,7 @@ async fn run_provider_patch(
                 &http,
                 context.base_url,
                 context.password,
-                &directory,
+                context.api_directory,
                 &session_id,
             )
             .await;
@@ -1846,7 +2328,7 @@ async fn run_provider_patch(
             &http,
             context.base_url,
             context.password,
-            &directory,
+            context.api_directory,
             &session_id,
         )
         .await;
@@ -1854,7 +2336,7 @@ async fn run_provider_patch(
             &http,
             context.base_url,
             context.password,
-            &directory,
+            context.api_directory,
             &session_id,
         )
         .await;
@@ -1864,7 +2346,7 @@ async fn run_provider_patch(
         &http,
         context.base_url,
         context.password,
-        &directory,
+        context.api_directory,
         &session_id,
     )
     .await?;
@@ -1901,6 +2383,9 @@ async fn run_provider_patch(
         }
     }
     let usage = extract_usage(&response);
+    if let Ok(mut tracker) = context.usage_tracker.lock() {
+        *tracker = usage;
+    }
     if let Some(turn) = &turn {
         settle_provider_turn(context, &turn.reservation_id, &usage).await?;
     }

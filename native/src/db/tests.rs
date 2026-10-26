@@ -342,6 +342,29 @@ async fn authorized_attempt(db: &Database) -> String {
 }
 
 #[tokio::test]
+async fn heartbeat_does_not_shorten_a_longer_claim_lease() {
+    let path = temp_path("factory-lease-no-shorten");
+    let db = Database::open(&path).await.unwrap();
+    let attempt_id = authorized_attempt(&db).await;
+    let first = db
+        .claim_attempt("worker-a", 100, 50)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.expires_at_ms, 150);
+    let extended = db
+        .heartbeat(&attempt_id, "worker-a", 1, 120, 10)
+        .await
+        .unwrap();
+    assert_eq!(extended.expires_at_ms, 150);
+    let extended = db
+        .heartbeat(&attempt_id, "worker-a", 1, 130, 60)
+        .await
+        .unwrap();
+    assert_eq!(extended.expires_at_ms, 190);
+}
+
+#[tokio::test]
 async fn p7_p8_claim_is_fenced_expires_and_survives_restart() {
     let path = temp_path("factory-lease");
     let db = Database::open(&path).await.unwrap();
