@@ -216,7 +216,7 @@ impl Database {
         let lease = sqlx::query::query(
             "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status AS campaign_status,
                     r.campaign_id,ca.max_input_tokens,ca.max_output_tokens,
-                    ca.max_cost_micros
+                    ca.max_cost_micros,ca.deadline_secs
              FROM attempts a JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN campaign_authorizations ca ON ca.campaign_id=c.id
@@ -251,6 +251,7 @@ impl Database {
         let max_input: i64 = lease.try_get("max_input_tokens")?;
         let max_output: i64 = lease.try_get("max_output_tokens")?;
         let max_cost: i64 = lease.try_get("max_cost_micros")?;
+        let deadline_secs: i64 = lease.try_get("deadline_secs")?;
         let used: (i64, i64, i64, i64) = sqlx::query_as::query_as(
             "SELECT COALESCE(SUM(ps.input_tokens),0),COALESCE(SUM(ps.output_tokens),0),
                     COALESCE(SUM(ps.total_tokens),0),COALESCE(SUM(ps.cost_micros),0)
@@ -292,7 +293,9 @@ impl Database {
             return Err(Error::Forbidden("provider turn budget is exhausted".into()));
         }
         let reservation_id = Uuid::new_v4().to_string();
-        let expires_at_ms = now_ms.saturating_add(120_000);
+        let expires_at_ms = now_ms
+            .saturating_add(deadline_secs.saturating_mul(1000))
+            .saturating_add(30_000);
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
             "INSERT INTO provider_turn_reservations

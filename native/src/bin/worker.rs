@@ -678,6 +678,7 @@ async fn execute_provider_assignment(
             return Err(error);
         }
     };
+    let mut sandbox_clean = true;
     let confined = matches!(
         &runtime,
         ProviderRuntime::Http {
@@ -719,7 +720,7 @@ async fn execute_provider_assignment(
                 run_provider_tool_loop(&context).await
             };
             if let Some(sandbox) = sandbox {
-                let _ = sandbox.stop().await;
+                sandbox_clean = sandbox.stop().await.is_ok();
             }
             result
         }
@@ -745,7 +746,7 @@ async fn execute_provider_assignment(
                 supervisor,
             };
             let result = run_codex_tool_loop(&context, &mut rpc).await;
-            let _ = sandbox.stop().await;
+            sandbox_clean = sandbox.stop().await.is_ok();
             result
         }
     };
@@ -779,7 +780,7 @@ async fn execute_provider_assignment(
         && directory_removed;
     match result {
         Ok(run) => {
-            if !run.usage.known || !cleanup_confirmed {
+            if !run.usage.known || !cleanup_confirmed || !sandbox_clean {
                 let terminal = ProviderTerminal {
                     session_record_id: session_record_id.clone(),
                     worker_id: worker_id.into(),
@@ -793,14 +794,14 @@ async fn execute_provider_assignment(
                     cost_micros: run.usage.cost_micros,
                     usage_known: run.usage.known,
                     cleanup_receipt: cleanup_receipt.clone(),
-                    error: if !cleanup_confirmed {
+                    error: if !cleanup_confirmed || !sandbox_clean {
                         "provider cleanup was not confirmed".into()
                     } else {
                         "provider usage was not measurable".into()
                     },
                 };
                 let _ = post_provider_terminal(client, core, session_token, &terminal).await;
-                return Err(if !cleanup_confirmed {
+                return Err(if !cleanup_confirmed || !sandbox_clean {
                     "provider cleanup was not confirmed; refusing an unaccounted candidate".into()
                 } else {
                     "provider usage was not measurable; refusing an unaccounted candidate".into()
@@ -2244,6 +2245,7 @@ async fn run_codex_tool_loop(
     if let Some(model) = thread.model.as_deref()
         && model != context.assignment.model
     {
+        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
         return Err(format!(
             "Codex thread model mismatch: requested {:?}, received {model:?}",
             context.assignment.model
@@ -2253,27 +2255,38 @@ async fn run_codex_tool_loop(
     if let Some(provider) = thread.model_provider.as_deref()
         && provider != "factory"
     {
+        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
         return Err(format!("Codex thread provider mismatch: {provider:?}").into());
     }
     if let Ok(mut session) = context.provider_session.lock() {
         *session = Some(thread_id.clone());
     }
-    let active: Value = context
-        .client
-        .post(context.core.join("worker/provider_active")?)
-        .bearer_auth(context.session_token)
-        .json(&json!({
-            "session_record_id": context.session_record_id,
-            "worker_id": context.worker_id,
-            "generation": context.assignment.lease.generation,
-            "provider_session_id": thread_id,
-            "provider_directory": context.directory
-        }))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let active_result: Result<Value, Box<dyn std::error::Error>> = async {
+        Ok(context
+            .client
+            .post(context.core.join("worker/provider_active")?)
+            .bearer_auth(context.session_token)
+            .json(&json!({
+                "session_record_id": context.session_record_id,
+                "worker_id": context.worker_id,
+                "generation": context.assignment.lease.generation,
+                "provider_session_id": thread_id,
+                "provider_directory": context.directory
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+    .await;
+    let active = match active_result {
+        Ok(active) => active,
+        Err(error) => {
+            let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+            return Err(error);
+        }
+    };
     if active.get("state").and_then(Value::as_str) != Some("ACTIVE") {
         let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
         return Err("Core did not bind the Codex provider session as ACTIVE".into());
@@ -2295,10 +2308,13 @@ async fn run_codex_tool_loop(
         written: false,
     };
     let mut last_turn_id = String::new();
+    let mut active_reservation: Option<String> = None;
     let result: Result<ProviderRun, Box<dyn std::error::Error>> = async {
         for _ in 0..context.assignment.max_turns {
             let turn = if context.turn_policy.is_some() {
-                Some(authorize_provider_turn(context, &json!({"text": prompt})).await?)
+                let turn = authorize_provider_turn(context, &json!({"text": prompt})).await?;
+                active_reservation = Some(turn.reservation_id.clone());
+                Some(turn)
             } else {
                 None
             };
@@ -2348,6 +2364,7 @@ async fn run_codex_tool_loop(
             let mut final_text: Option<String> = None;
             let mut usage_after: Option<factory_native::protocol::TokenUsageBreakdown> = None;
             tool_state.tool_calls = 0;
+            let mut last_state_check = tokio::time::Instant::now();
             loop {
                 let poll_at = (tokio::time::Instant::now() + Duration::from_secs(1))
                     .min(session_deadline);
@@ -2377,6 +2394,23 @@ async fn run_codex_tool_loop(
                         continue;
                     }
                 };
+                if tokio::time::Instant::now() >= session_deadline {
+                    let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
+                    if let Some(turn) = &turn {
+                        release_provider_turn(context, &turn.reservation_id).await;
+                    }
+                    return Err("Codex provider deadline exceeded".into());
+                }
+                if last_state_check.elapsed() >= Duration::from_secs(1) {
+                    last_state_check = tokio::time::Instant::now();
+                    if provider_state(context).await? == "CANCEL_REQUESTED" {
+                        let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
+                        if let Some(turn) = &turn {
+                            release_provider_turn(context, &turn.reservation_id).await;
+                        }
+                        return Err("provider cancellation was requested".into());
+                    }
+                }
                 match event {
                     RpcEvent::ServerRequest(request) => {
                         let factory_native::protocol::RpcServerRequest { id, method, params } =
@@ -2527,6 +2561,7 @@ async fn run_codex_tool_loop(
             };
             if let Some(turn) = &turn {
                 settle_provider_turn(context, &turn.reservation_id, &turn_usage).await?;
+                active_reservation = None;
             }
             usage.input_tokens = usage.input_tokens.saturating_add(turn_usage.input_tokens);
             usage.output_tokens = usage.output_tokens.saturating_add(turn_usage.output_tokens);
@@ -2665,6 +2700,9 @@ async fn run_codex_tool_loop(
     }
     .await;
     if result.is_err() {
+        if let Some(reservation_id) = active_reservation.as_deref() {
+            release_provider_turn(context, reservation_id).await;
+        }
         let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
     }
     result
@@ -2714,8 +2752,11 @@ fn decide_tool(
                 .iter()
                 .find(|check| check.command == argv)
                 .ok_or_else(|| "command does not match a frozen acceptance check".to_string())?;
-            if timeout_secs == 0 || timeout_secs > u64::from(check.timeout_secs.min(300)) {
-                return Err("command timeout exceeds the frozen check bound".into());
+            if timeout_secs == 0
+                || timeout_secs > u64::from(check.timeout_secs.min(300))
+                || timeout_secs > context.assignment.deadline_secs
+            {
+                return Err("command timeout exceeds the frozen check or assignment bound".into());
             }
             Ok(ToolDecision::Run)
         }

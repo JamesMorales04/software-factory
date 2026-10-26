@@ -389,6 +389,7 @@ async fn handle(
                     let turn = guard.as_mut().expect("checked");
                     if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
                         || turn.requests >= turn.max_requests
+                        || turn.requests as u64 >= turn.max_output_tokens
                         || turn.binding
                     {
                         Err((429, "provider turn budget is exhausted"))
