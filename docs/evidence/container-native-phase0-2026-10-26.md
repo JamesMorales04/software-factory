@@ -56,15 +56,20 @@ The harness:
 8. runs `compose down` and `up` without deleting volumes and verifies Project,
    Campaign and gate persistence.
 
-Final author-run result (bind this to the exact branch commit before merge):
+Final author-run result on implementation commit
+`4d36c1a090d34f0c156e889c84447105b19c1ba6`:
 
 ```text
 status: PASS
-candidate: see final run log
+candidate: a72d93fc-2f0d-4429-a215-902f768ddb29
+attempt: 8686fdca-0741-474e-a6be-f06fad9ec5e1
 gate: ACCEPTED
 restart_persistence: true
 paid_inference: false
 ```
+
+Machine-readable evidence:
+[container-native-compose-2026-10-26.json](container-native-compose-2026-10-26.json).
 
 The provider used the deterministic fixture adapter inside the real provider
 container and shared session volume; no paid inference was made.
@@ -88,12 +93,14 @@ Screenshots and browser profiles are not committed.
 ## Parallel evidence
 
 Two Workers with distinct identities and registration keys produced two
-concurrent fixture attempts. Both candidates reached independent verifier and
-reviewer PASS and deterministic `ACCEPTED` gates; Worker candidate acceptance
-timestamps were within the same second, and the dedicated engine ran separate
-child containers. This demonstrates container/workspace independence for two
-authorized attempts, not multi-unit fan-in integration and not paid parallel
-provider execution.
+concurrent fixture attempts on the implementation commit. Provider containers
+`factory-provider-c494da53…` and `factory-provider-504ef6dd…` started 753 ms
+apart in the dedicated engine; candidate acceptance timestamps were within the
+same second. Attempts `53624e29…` / `7165081a…` produced candidates `60274af0…`
+/ `cc063b56…`, and both reached independent verifier/reviewer PASS and
+deterministic `ACCEPTED` gates. This demonstrates container/workspace
+independence for two authorized attempts, not multi-unit fan-in integration
+and not paid parallel provider execution.
 
 ## Defects found and repaired in this iteration
 

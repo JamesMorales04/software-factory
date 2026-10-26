@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "record": "container-native-compose-author-run",
+  "implementation_sha": "4d36c1a090d34f0c156e889c84447105b19c1ba6",
+  "date": "2026-10-26",
+  "environment": {
+    "host_os": "CachyOS",
+    "kernel": "7.3.0-3-cachyos",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "inner_engine": "quay.io/podman/stable:v5.8.9",
+    "storage_driver": "vfs",
+    "selinux": "disabled",
+    "apparmor": "disabled"
+  },
+  "result": "PASS (author-run deterministic developer-preview; not independent acceptance, paid UAT, deployment or isolation certification)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "phase-zero nested engine child containers and cgroup limits",
+      "pass": true,
+      "detail": "two child containers, distinct volumes, network=none, memory/pids limits read back"
+    },
+    {
+      "name": "one-command clean Compose startup",
+      "pass": true,
+      "detail": "podman compose up -d --build with fresh volumes; no host Rust/Node/OpenCode/Codex"
+    },
+    {
+      "name": "first-run Office enrollment",
+      "pass": true,
+      "detail": "Chromium setup wizard; one-time code invalidated"
+    },
+    {
+      "name": "Git project import and Office configuration",
+      "pass": true,
+      "detail": "HTTPS Git import, allowed paths, capabilities and quality profile"
+    },
+    {
+      "name": "Action checks and delegation UI",
+      "pass": true,
+      "detail": "functional and negative checks; scoped delegation created and usage displayed"
+    },
+    {
+      "name": "provider settings encryption, masking, test and revocation",
+      "pass": true,
+      "detail": "dummy credential only; AES-GCM at rest; no inference; revoked"
+    },
+    {
+      "name": "deterministic Compose candidate through nested provider container",
+      "pass": true,
+      "candidate_id": "a72d93fc-2f0d-4429-a215-902f768ddb29",
+      "attempt_id": "8686fdca-0741-474e-a6be-f06fad9ec5e1",
+      "gate": "ACCEPTED"
+    },
+    {
+      "name": "independent verifier and reviewer receipts",
+      "pass": true,
+      "detail": "verifier PASS EXECUTED; reviewer PASS DETERMINISTIC; deterministic gate ACCEPTED"
+    },
+    {
+      "name": "restart persistence",
+      "pass": true,
+      "detail": "Project, Campaign, candidate and ACCEPTED gate preserved across down/up without volume deletion"
+    },
+    {
+      "name": "parallel independent attempts with real nested containers",
+      "pass": true,
+      "candidates": [
+        "60274af0-f916-4219-a81a-c67689d5ec56",
+        "cc063b56-2325-45aa-8b95-53ab8d2cdc9e"
+      ],
+      "attempts": [
+        "53624e29-1116-48ea-b1d0-f4e873699762",
+        "7165081a-521b-46b9-ae57-74b323d6e3da"
+      ],
+      "detail": "two Workers, distinct provider containers started 753ms apart; both gates ACCEPTED"
+    },
+    {
+      "name": "real Chromium Office onboarding and configuration",
+      "pass": true,
+      "detail": "zero console errors and zero 404 responses on tested runs"
+    },
+    {
+      "name": "static Compose security policy",
+      "pass": true,
+      "detail": "no privileged, no host network, no host runtime socket, loopback-only publication, bounded runtime capabilities"
+    }
+  ],
+  "limitations": [
+    "Paid DeepSeek/OpenCode UAT of the container-native stack is BLOCKED pending a fresh Product Owner authorization envelope.",
+    "Live OpenCode inference inside the provider container is NOT_TESTED; the deterministic fixture provider exercised the container path.",
+    "Codex API-key live inference is NOT_TESTED; native ChatGPT OAuth is BLOCKED; containerized Codex stdio is NOT_IMPLEMENTED.",
+    "Semantic Reviewer live model calls are NOT_TESTED.",
+    "Multi-unit WorkGraph parallel integration with a real provider is NOT_TESTED; parallel evidence uses two independent Campaign attempts.",
+    "SEC-01 ISOLATED certification, credential confinement, SELinux/AppArmor hosts, Windows/Podman Machine, independent security review and human acceptance remain open."
+  ]
+}

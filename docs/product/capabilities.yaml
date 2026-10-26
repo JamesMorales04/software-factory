@@ -1975,7 +1975,7 @@ capabilities:
   decision_status: approved
   implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -2003,7 +2003,8 @@ capabilities:
     deterministic: The permanent stack starts with one Compose command and all persistent and quality services run in Podman-managed containers without host toolchains.
     real: An owner-authorized paid provider journey completes through Office configuration with independent candidate-bound verification and restart persistence.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/container-native-compose-2026-10-26.json
     live_agent: []
     uat: []
     deployment: []
