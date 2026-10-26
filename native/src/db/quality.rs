@@ -915,7 +915,7 @@ async fn decide_gate(
     let (run_id,) = run.ok_or(Error::NotFound)?;
     let run_status = run_status_for_gate(gate.outcome);
     let run_changed = sqlx::query::query(
-        "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING')",
+        "UPDATE runs SET status=?1 WHERE id=?2 AND status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')",
     )
     .bind(run_status)
     .bind(&run_id)
