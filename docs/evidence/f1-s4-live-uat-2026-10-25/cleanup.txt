@@ -1,0 +1,21 @@
+F1-S4-LIVE-UAT cleanup verification
+2026-10-26T02:49:14Z
+
+Stopped UAT host Core/Worker/Supervisor via their private PID files.
+Removed container: factory-live-uat-core-1792977303
+Removed data volume: factory-live-uat-data-1792977303
+Removed UAT workspace volumes recorded under:
+  /home/james/Escritorio/Development/sf-live-uat-run-1792977303/state/supervisor/workspace-*.json
+Removed provider session root: /tmp/factory-uat-provider-1792977303
+
+Verification:
+- pgrep for factory-core|factory-supervisor|factory-worker: no matches
+- pgrep for bwrap or /provider/provider serve: no matches
+- podman ps -a: no factory-live-uat container
+- podman volume ls: no factory-live-uat-data or factory-ws-* volumes
+- /tmp/factory-uat-provider-*: none
+
+Retained outside the Factory tree for traceability:
+- disposable project: /home/james/Escritorio/Development/sf-live-uat-project-1792977303
+- UAT root and sanitized evidence source: /home/james/Escritorio/Development/sf-live-uat-run-1792977303
+Unrelated user containers/volumes were not touched.
