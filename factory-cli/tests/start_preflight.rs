@@ -330,3 +330,86 @@ fn start_replaces_a_running_core_container_with_a_changed_model_fingerprint() {
         "{calls}"
     );
 }
+
+#[test]
+fn doctor_accepts_a_codex_provider_file_with_explicit_rates() {
+    let temp = TempDir::new();
+    let binary = temp.path().join("codex");
+    let egress = temp.path().join("egress-bridge");
+    for path in [&binary, &egress] {
+        write_executable(path, "#!/bin/sh\n");
+    }
+    write_private(
+        &temp.path().join("model.env"),
+        "FACTORY_MODEL_URL=https://provider.example/v1\n\
+         FACTORY_MODEL_TOKEN=super-secret-model-token\n",
+    );
+    write_private(
+        &temp.path().join("provider.env"),
+        &format!(
+            "FACTORY_PROVIDER_SANDBOX=bwrap\n\
+             FACTORY_PROVIDER_KIND=codex\n\
+             FACTORY_PROVIDER_BINARY={}\n\
+             FACTORY_PROVIDER_EGRESS_BRIDGE={}\n\
+             FACTORY_PROVIDER_UPSTREAM_URL=https://api.openai.com/v1\n\
+             FACTORY_PROVIDER_UPSTREAM_TOKEN=super-secret-upstream-token\n\
+             FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION=100000\n\
+             FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION=200000\n",
+            binary.display(),
+            egress.display()
+        ),
+    );
+    let (bin, marker) = fake_podman(&temp);
+    let roots = temp.path().join("roots");
+    fs::create_dir(&roots).expect("project roots");
+    let output = factory_command(&temp, &bin, &marker)
+        .env("FACTORY_HOST_EXECUTION", "1")
+        .env("FACTORY_PROJECT_ROOTS", &roots)
+        .env("FACTORY_BIN_DIR", temp.path())
+        .arg("doctor")
+        .output()
+        .expect("run factory doctor");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS    Worker provider env"), "{stdout}");
+    assert!(!stdout.contains("super-secret-upstream-token"), "{stdout}");
+}
+
+#[test]
+fn doctor_rejects_a_codex_provider_file_without_cost_rates() {
+    let temp = TempDir::new();
+    let binary = temp.path().join("codex");
+    let egress = temp.path().join("egress-bridge");
+    for path in [&binary, &egress] {
+        write_executable(path, "#!/bin/sh\n");
+    }
+    write_private(
+        &temp.path().join("model.env"),
+        "FACTORY_MODEL_URL=https://provider.example/v1\n\
+         FACTORY_MODEL_TOKEN=super-secret-model-token\n",
+    );
+    write_private(
+        &temp.path().join("provider.env"),
+        &format!(
+            "FACTORY_PROVIDER_SANDBOX=bwrap\n\
+             FACTORY_PROVIDER_KIND=codex\n\
+             FACTORY_PROVIDER_BINARY={}\n\
+             FACTORY_PROVIDER_EGRESS_BRIDGE={}\n\
+             FACTORY_PROVIDER_UPSTREAM_URL=https://api.openai.com/v1\n\
+             FACTORY_PROVIDER_UPSTREAM_TOKEN=super-secret-upstream-token\n",
+            binary.display(),
+            egress.display()
+        ),
+    );
+    let (bin, marker) = fake_podman(&temp);
+    let output = factory_command(&temp, &bin, &marker)
+        .arg("doctor")
+        .output()
+        .expect("run factory doctor");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("FAIL    Worker provider env"), "{stdout}");
+    assert!(
+        stdout.contains("FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("super-secret-upstream-token"), "{stdout}");
+}

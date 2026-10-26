@@ -1,7 +1,10 @@
 //! Constrained provider egress broker tests using a local fake upstream.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -518,5 +521,59 @@ async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
     broker.stop();
     upstream_server.abort();
     core_server.abort();
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
+async fn broker_does_not_retry_an_upstream_that_drops_the_connection() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let upstream = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::clone(&connections);
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            accepted.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    let socket = std::env::temp_dir().join(format!("eg-drop-{}", uuid::Uuid::new_v4().simple()));
+    let token = "egress-token-0123456789abcdef0123456789abcdef";
+    let config = EgressConfig::new(
+        &format!("http://{upstream}"),
+        "real-upstream-credential-0123456789".into(),
+        token.into(),
+        true,
+    )
+    .unwrap()
+    .with_model("mock-model".to_string());
+    let broker = EgressBroker::start(config, &socket).await.unwrap();
+    let (address, bridge) = start_loopback_bridge(&socket).await.unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let response = client
+        .post(format!("http://{address}/v1/responses"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({"model":"mock-model","input":"hello"}))
+        .send()
+        .await;
+    if let Ok(response) = response {
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "a dropped upstream must not be retried automatically"
+    );
+    bridge.abort();
+    broker.stop();
+    server.abort();
     let _ = std::fs::remove_file(socket);
 }
