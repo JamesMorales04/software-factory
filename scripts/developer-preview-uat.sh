@@ -29,17 +29,24 @@ ARTIFACTS="$EVIDENCE_DIR/developer-preview-artifacts-${STAMP}"
 
 cleanup() {
   set +e
-  pkill -x factory-supervis 2>/dev/null
-  pkill -x factory-worker 2>/dev/null
+  # Stop only processes recorded in this run's private runtime directory. The
+  # factory CLI verifies each PID file against the expected executable before
+  # signalling it, so unrelated Supervisor/Worker processes are never touched.
   if [ -f "$FACTORY_ENV_FILE" ]; then
     # shellcheck disable=SC1090
     set -a; . "$FACTORY_ENV_FILE"; set +a
     "$BIN_DIR/factory" stop >/dev/null 2>&1
   fi
-  podman rm --force "$FACTORY_CONTAINER_NAME" >/dev/null 2>&1
+  case "$FACTORY_CONTAINER_NAME" in
+    factory-preview-"$STAMP") podman rm --force "$FACTORY_CONTAINER_NAME" >/dev/null 2>&1 ;;
+  esac
   if [ "${FACTORY_UAT_KEEP:-0}" != "1" ]; then
-    podman volume rm "$FACTORY_VOLUME" >/dev/null 2>&1
-    rm -rf "$ROOT"
+    case "$FACTORY_VOLUME" in
+      factory-preview-data-"$STAMP") podman volume rm "$FACTORY_VOLUME" >/dev/null 2>&1 ;;
+    esac
+    case "$ROOT" in
+      /tmp/factory-developer-preview-*) rm -rf "$ROOT" ;;
+    esac
   else
     echo "kept UAT root: $ROOT"
   fi
@@ -56,9 +63,6 @@ for binary in factory factory-core factory-supervisor factory-worker factory-ver
 done
 podman image exists "$IMAGE" || { echo "missing image $IMAGE; build deploy/Containerfile.core" >&2; exit 1; }
 if ! podman image exists "$FIXTURE_IMAGE"; then podman pull "$FIXTURE_IMAGE" >/dev/null; fi
-pkill -x factory-supervis 2>/dev/null || true
-pkill -x factory-worker 2>/dev/null || true
-sleep 1
 
 mkdir -p "$ROOT/projects/demo"
 git -C "$ROOT/projects/demo" init -q

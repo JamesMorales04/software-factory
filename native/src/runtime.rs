@@ -831,8 +831,12 @@ pub async fn execute_opencode_prompt_with_response(
 }
 
 pub fn opencode_http_client(timeout: Duration) -> Result<reqwest::Client, Error> {
+    // The confined provider bridge serves one HTTP request per bridged
+    // connection. Disable idle connection reuse so a follow-up request opens a
+    // fresh bridge connection instead of racing a half-closed upstream.
     Ok(reqwest::Client::builder()
         .timeout(timeout)
+        .pool_max_idle_per_host(0)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()?)
@@ -939,8 +943,8 @@ where
             "OpenCode prompt requires an exact nonempty session identity".into(),
         ));
     }
-    time::timeout(Duration::from_secs(30), async {
-        for _ in 0..256 {
+    time::timeout(Duration::from_secs(300), async {
+        for _ in 0..100_000 {
             let chunk = stream
                 .next()
                 .await
@@ -1345,6 +1349,32 @@ mod codex_reconciliation_tests {
         let mut stream =
             futures_util::stream::iter([Ok::<_, std::io::Error>(frames.as_bytes().to_vec())]);
         let mut parser = SseParser::new(4096);
+        let terminal =
+            wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", false)
+                .await
+                .unwrap();
+        assert_eq!(
+            terminal,
+            OpenCodePromptTerminal::Idle {
+                session_id: "ses_expected".into(),
+                cancel_requested: false,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_prompt_survives_high_volume_streaming_events() {
+        let mut frames = String::new();
+        for index in 0..500 {
+            frames.push_str(&format!(
+                "data: {{\"type\":\"message.part.updated\",\"properties\":{{\"sessionID\":\"ses_expected\",\"part\":{{\"id\":\"prt_{index}\"}}}}}}\n\n"
+            ));
+        }
+        frames.push_str(
+            "data: {\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_expected\"}}\n\n",
+        );
+        let mut stream = futures_util::stream::iter([Ok::<_, std::io::Error>(frames.into_bytes())]);
+        let mut parser = SseParser::new(1_048_576);
         let terminal =
             wait_for_opencode_prompt_terminal(&mut stream, &mut parser, "ses_expected", false)
                 .await

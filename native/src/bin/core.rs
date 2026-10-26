@@ -1001,7 +1001,7 @@ async fn worker_heartbeat(
             &input.worker_id,
             input.generation,
             chrono::Utc::now().timestamp_millis(),
-            15_000,
+            60_000,
         )
         .await
     {

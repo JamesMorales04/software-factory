@@ -168,6 +168,7 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
         requests: 0,
         max_requests: 2,
+        strict_request_digest: true,
     })));
     let socket = std::env::temp_dir().join(format!("tp-{}", uuid::Uuid::new_v4().simple()));
     let config = EgressConfig::new(

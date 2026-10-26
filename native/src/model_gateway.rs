@@ -166,6 +166,10 @@ impl ModelGateway {
                 self.config.base_url.trim_end_matches('/')
             ))
             .bearer_auth(&self.config.credential)
+            .header(
+                "x-opencode-session",
+                format!("factory-model-{}", grant.reservation_id),
+            )
             .json(&body)
             .send()
             .await;
@@ -296,6 +300,18 @@ impl ModelGateway {
     }
 }
 
+fn valid_base_path(path: &str) -> bool {
+    matches!(path, "" | "/")
+        || (path.starts_with('/')
+            && path.len() <= 200
+            && !path.ends_with('/')
+            && !path.contains("//")
+            && !path.contains("..")
+            && path
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')))
+}
+
 fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError> {
     let url = reqwest::Url::parse(&config.base_url)
         .map_err(|_| ModelGatewayError::Invalid("model upstream URL".into()))?;
@@ -303,10 +319,10 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !matches!(url.path(), "" | "/" | "/v1")
+        || !valid_base_path(url.path())
     {
         return Err(ModelGatewayError::Invalid(
-            "model upstream must be an origin with an optional /v1 path".into(),
+            "model upstream must be an origin with a bounded fixed base path".into(),
         ));
     }
     let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));

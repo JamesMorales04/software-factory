@@ -95,13 +95,19 @@ impl OpenCodeEvent {
             Some(Value::Null) | None => None,
             Some(_) => return Err(SseError::InvalidEventProperties),
         };
-        if let (Some(session_id), Some(payload_id)) = (
-            session_id.as_deref(),
-            properties
-                .and_then(|properties| properties.get("info"))
-                .and_then(|info| info.get("id"))
-                .and_then(Value::as_str),
-        ) && session_id != payload_id
+        // Only session-level events carry a session object whose `info.id`
+        // must equal `sessionID`. Message events carry a message `info.id`
+        // (`msg_*`) inside the same envelope and are not a session identity
+        // contradiction.
+        if kind.starts_with("session.")
+            && let (Some(session_id), Some(payload_id)) = (
+                session_id.as_deref(),
+                properties
+                    .and_then(|properties| properties.get("info"))
+                    .and_then(|info| info.get("id"))
+                    .and_then(Value::as_str),
+            )
+            && session_id != payload_id
         {
             return Err(SseError::SessionPayloadMismatch {
                 session_id: session_id.to_owned(),
@@ -332,6 +338,17 @@ mod tests {
             ),
             Err(SseError::SessionPayloadMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn message_event_identity_is_not_treated_as_a_session_identity() {
+        let event = OpenCodeEvent::parse(
+            r#"{"type":"message.updated","properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.kind, "message.updated");
+        assert_eq!(event.session_id.as_deref(), Some("ses_1"));
+        event.require_session("ses_1").unwrap();
     }
 
     #[test]

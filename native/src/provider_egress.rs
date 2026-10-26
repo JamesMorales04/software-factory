@@ -47,6 +47,7 @@ pub struct TurnPolicy {
     pub expires_at_ms: i64,
     pub requests: usize,
     pub max_requests: usize,
+    pub strict_request_digest: bool,
 }
 
 pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
@@ -55,9 +56,11 @@ pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
 pub struct EgressConfig {
     host: String,
     scheme: String,
+    base_path: String,
     address: SocketAddr,
     credential: String,
     token: String,
+    session_id: String,
     timeout: Duration,
     max_requests: usize,
     allowed_model: Option<String>,
@@ -89,12 +92,12 @@ impl EgressConfig {
             || url.password().is_some()
             || url.query().is_some()
             || url.fragment().is_some()
-            || !matches!(url.path(), "" | "/" | "/v1")
         {
             return Err(EgressError::Invalid(
-                "upstream must be an origin with an optional /v1 path".into(),
+                "upstream must be an origin with an optional fixed base path".into(),
             ));
         }
+        let base_path = validate_base_path(url.path())?;
         let host = url
             .host_str()
             .ok_or_else(|| EgressError::Invalid("upstream host is missing".into()))?
@@ -121,9 +124,11 @@ impl EgressConfig {
         Ok(Self {
             host,
             scheme: url.scheme().to_owned(),
+            base_path,
             address,
             credential,
             token,
+            session_id: uuid::Uuid::new_v4().simple().to_string(),
             timeout: Duration::from_secs(120),
             max_requests: 8,
             allowed_model: None,
@@ -291,7 +296,7 @@ async fn handle(
                                         .map_err(|_| {
                                             EgressError::Invalid("request digest".into())
                                         })?;
-                                    if digest != turn.request_sha256 {
+                                    if turn.strict_request_digest && digest != turn.request_sha256 {
                                         Err((403, "provider turn request does not match"))
                                     } else {
                                         let max_output =
@@ -353,11 +358,18 @@ async fn handle(
         &url,
     );
     request = request.header("authorization", format!("Bearer {}", config.credential));
+    request = request.header(
+        "x-opencode-session",
+        format!("factory-egress-{}", config.session_id),
+    );
     for line in headers.lines().skip(1) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        if name.eq_ignore_ascii_case("content-type") || name.eq_ignore_ascii_case("accept") {
+        if name.eq_ignore_ascii_case("content-type")
+            || name.eq_ignore_ascii_case("accept")
+            || name.eq_ignore_ascii_case("x-opencode-session")
+        {
             request = request.header(name.trim(), value.trim());
         }
     }
@@ -411,11 +423,36 @@ async fn handle(
 
 fn upstream_origin(config: &EgressConfig) -> String {
     format!(
-        "{}://{}:{}",
+        "{}://{}:{}{}",
         config.scheme,
         config.host,
-        config.address.port()
+        config.address.port(),
+        config.base_path
     )
+}
+
+fn validate_base_path(path: &str) -> Result<String, EgressError> {
+    if matches!(path, "" | "/") {
+        return Ok(String::new());
+    }
+    if !path.starts_with('/')
+        || path.len() > 200
+        || path.ends_with('/')
+        || path.contains("//")
+        || path.contains("..")
+        || path
+            .chars()
+            .any(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')))
+    {
+        return Err(EgressError::Invalid(
+            "upstream base path is not a bounded fixed path".into(),
+        ));
+    }
+    Ok(path
+        .strip_suffix("/v1")
+        .unwrap_or(path)
+        .trim_end_matches('/')
+        .to_owned())
 }
 
 async fn read_request(stream: &mut UnixStream) -> Result<Vec<u8>, EgressError> {
@@ -599,6 +636,20 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn normalizes_a_bounded_upstream_base_path() {
+        assert_eq!(validate_base_path("").unwrap(), "");
+        assert_eq!(validate_base_path("/").unwrap(), "");
+        assert_eq!(validate_base_path("/v1").unwrap(), "");
+        assert_eq!(
+            validate_base_path("/inference/go/openai/v1").unwrap(),
+            "/inference/go/openai"
+        );
+        for invalid in ["//v1", "/v1/../admin", "/v1?x=1", "/v1#fragment", "/v1/"] {
+            assert!(validate_base_path(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

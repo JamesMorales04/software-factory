@@ -529,7 +529,8 @@ impl Database {
         }
         let expires_at_ms = now_ms
             .checked_add(lease_ms)
-            .ok_or_else(|| Error::Invalid("worker lease expiry overflow"))?;
+            .ok_or_else(|| Error::Invalid("worker lease expiry overflow"))?
+            .max(expires_at);
         sqlx::query::query(
             "UPDATE worker_leases SET expires_at_ms=?1
              WHERE attempt_id=?2 AND worker_id=?3 AND generation=?4",

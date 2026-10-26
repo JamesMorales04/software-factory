@@ -68,6 +68,8 @@ pub enum ProviderAction {
     Final {
         #[serde(default)]
         files: Vec<PatchFile>,
+        #[serde(default)]
+        explanation: String,
     },
 }
 
@@ -331,7 +333,7 @@ mod tests {
             message("{\"type\":\"final\",\"files\":[{\"path\":\"src/a\",\"content\":\"a\"}]}");
         assert!(matches!(
             extract_action(&final_action).unwrap(),
-            ProviderAction::Final { files } if files.len() == 1
+            ProviderAction::Final { files, .. } if files.len() == 1
         ));
     }
 

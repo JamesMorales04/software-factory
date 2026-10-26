@@ -830,6 +830,19 @@ impl AttemptWorkspace {
     /// then return the exact candidate revision.
     pub fn commit_all(&self, message: &str) -> Result<CandidateRevision, WorkspaceError> {
         self.verify_usable()?;
+        let changes = git(
+            &self.path,
+            [
+                OsStr::new("status"),
+                OsStr::new("--porcelain=v1"),
+                OsStr::new("--untracked-files=all"),
+            ],
+        )?;
+        if changes.stdout.is_empty() {
+            return Err(WorkspaceError::Invalid(
+                "candidate worktree has no changes to commit".into(),
+            ));
+        }
         git(&self.path, [OsStr::new("add"), OsStr::new("-A")])?;
         let arguments = vec![
             "-c".to_owned(),
