@@ -554,7 +554,7 @@ try {
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.reload();
-  await page.getByText("ACCEPTED").waitFor({ timeout: 15000 });
+  await page.getByText("ACCEPTED", { exact: true }).waitFor({ timeout: 15000 });
   assert.deepEqual(
     pageErrors,
     [],
