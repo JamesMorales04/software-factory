@@ -11,7 +11,10 @@ The one-command disposable UAT is
 ## 1. Supported environment
 
 - Linux with rootless Podman 6.x.
-- Rust 1.90.0 (pinned by `rust-toolchain.toml`).
+- Rust 1.90.0 (pinned by `rust-toolchain.toml`) with `clippy`, `rustfmt`,
+  `rust-analyzer` and `rust-src` components.
+- VS Code or Code OSS with the `rust-lang.rust-analyzer` extension for editing;
+  see [editor setup](../engineering/editor-setup.md).
 - Node 22.23.2 and npm for the Office/browser tooling.
 - For real-Chromium checks: `playwright-core` 1.64.1 and a Chromium cache
   installed by the pinned Playwright CLI.
