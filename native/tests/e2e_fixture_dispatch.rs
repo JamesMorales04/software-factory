@@ -14,6 +14,10 @@ use std::{
 
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const OPERATOR_TOKEN: &str = "operator-token-e2e-dispatch";
 const BOOTSTRAP_TOKEN: &str = "bootstrap-token-123456789012345678901234";
@@ -3845,6 +3849,814 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     core.stop();
     let _ = std::fs::remove_dir_all(&provider_session_root);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[derive(Clone)]
+struct CodexMockState {
+    calls: Arc<AtomicUsize>,
+    seen: Arc<Mutex<Vec<Value>>>,
+}
+
+fn codex_mock_base(status: &str, output: Value) -> Value {
+    json!({
+        "id":"resp_mock","object":"response","created_at":1,"status":status,"model":"gpt-6-luna",
+        "output":output,"output_text":"",
+        "usage": if status == "completed" {
+            json!({"input_tokens":10,"output_tokens":5,"total_tokens":15})
+        } else {
+            Value::Null
+        }
+    })
+}
+
+fn codex_mock_function_events() -> Vec<(&'static str, Value)> {
+    let item = json!({
+        "type":"function_call","id":"fc_mock","call_id":"call_dynamic","name":"write_file",
+        "arguments":"{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}",
+        "status":"in_progress"
+    });
+    let done = json!({
+        "type":"function_call","id":"fc_mock","call_id":"call_dynamic","name":"write_file",
+        "arguments":"{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}",
+        "status":"completed"
+    });
+    let completed = codex_mock_base("completed", json!([done.clone()]));
+    vec![
+        (
+            "response.created",
+            json!({"type":"response.created","sequence_number":0,"response":codex_mock_base("in_progress", json!([]))}),
+        ),
+        (
+            "response.output_item.added",
+            json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":item}),
+        ),
+        (
+            "response.function_call_arguments.delta",
+            json!({"type":"response.function_call_arguments.delta","sequence_number":2,"item_id":"fc_mock","output_index":0,"delta":"{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}"}),
+        ),
+        (
+            "response.function_call_arguments.done",
+            json!({"type":"response.function_call_arguments.done","sequence_number":3,"item_id":"fc_mock","output_index":0,"arguments":"{\"path\":\"src/provider.txt\",\"content\":\"provider candidate\\n\"}"}),
+        ),
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":done}),
+        ),
+        (
+            "response.completed",
+            json!({"type":"response.completed","sequence_number":5,"response":completed}),
+        ),
+    ]
+}
+
+fn codex_mock_final_events() -> Vec<(&'static str, Value)> {
+    let text =
+        "{\"type\":\"final\",\"files\":[],\"explanation\":\"real Codex wrote the candidate\"}";
+    let item = json!({
+        "type":"message","id":"msg_final","status":"completed","role":"assistant",
+        "content":[{"type":"output_text","text":text,"annotations":[]}]
+    });
+    let completed = codex_mock_base("completed", json!([item.clone()]));
+    vec![
+        (
+            "response.created",
+            json!({"type":"response.created","sequence_number":0,"response":codex_mock_base("in_progress", json!([]))}),
+        ),
+        (
+            "response.output_item.added",
+            json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_final","status":"in_progress","role":"assistant","content":[]}}),
+        ),
+        (
+            "response.output_text.delta",
+            json!({"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_final","output_index":0,"content_index":0,"delta":text}),
+        ),
+        (
+            "response.output_text.done",
+            json!({"type":"response.output_text.done","sequence_number":3,"item_id":"msg_final","output_index":0,"content_index":0,"text":text}),
+        ),
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":item}),
+        ),
+        (
+            "response.completed",
+            json!({"type":"response.completed","sequence_number":5,"response":completed}),
+        ),
+    ]
+}
+
+async fn codex_mock_responses(
+    axum::extract::State(state): axum::extract::State<CodexMockState>,
+    body: String,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    state.seen.lock().unwrap().push(value);
+    let call = state.calls.fetch_add(1, Ordering::SeqCst);
+    let events = if call == 0 {
+        codex_mock_function_events()
+    } else {
+        codex_mock_final_events()
+    };
+    let mut payload = String::new();
+    for (event, data) in events {
+        payload.push_str("event: ");
+        payload.push_str(event);
+        payload.push_str("\ndata: ");
+        payload.push_str(&data.to_string());
+        payload.push_str("\n\n");
+    }
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+        payload,
+    )
+        .into_response()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_fixture_runs_a_mediated_tool_turn_and_records_core_accounting() {
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-codex-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Codex E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "codex@example.invalid"],
+    );
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(repository.join("src/seed.txt"), "seed context\n").unwrap();
+    git(&repository, &["add", "src/seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start(&root.join("factory.sqlite"), port, &root.join("core.log"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "codex-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "Create the Codex provider candidate file.",
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "idempotency_key": "codex-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    let grant = json!({
+        "id":"codex-grant",
+        "principalId":"owner",
+        "auditId":"audit",
+        "projectId":project_id,
+        "revision":1,
+        "objectiveClasses":["feature"],
+        "allowedPaths":["src"],
+        "capabilities":["repository-edit","generic-toolchain"],
+        "riskClasses":["R0"],
+        "autonomousStart":false,
+        "autonomousRiskClasses":[],
+        "route":{"provider":"codex","model":"gpt-6-luna","mode":"build"},
+        "maxAttempts":2,
+        "maxTimeoutSecs":300,
+        "maxRepairCycles":0,
+        "maxWallClockSecs":1800,
+        "maxParallel":1,
+        "maxSessions":2,
+        "maxRequests":1,
+        "maxCumulativeSessions":8,
+        "maxCumulativeAttempts":16,
+        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
+    });
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/delegations"),
+            Some(json!({"delegation":grant,"idempotency_key":"codex-grant-key"})),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id":action_id,"idempotency_key":"codex-campaign"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(json!({
+                "authorization_id":"codex-auth",
+                "risk_class":"R0",
+                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+                "actor":"e2e-operator",
+                "rationale":"deterministic Codex fixture acceptance",
+                "authorized_paths":["src"],
+                "max_attempts":1,
+                "provider":"codex",
+                "model":"gpt-6-luna",
+                "provider_mode":"build",
+                "delegation_id":"codex-grant",
+                "max_sessions":1,
+                "max_turns":4,
+                "max_input_tokens":1000,
+                "max_output_tokens":1000,
+                "max_cost_micros":10000,
+                "deadline_secs":30,
+                "allowed_tools":["write_file","run_command"]
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: FIXTURE_IMAGE,
+        local_backend: true,
+        core_url: &base_url,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+
+    let provider_session_root = std::env::temp_dir().join(format!(
+        "fc-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let worker_log = File::create(root.join("codex-worker.log")).unwrap();
+    let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FACTORY_WORKER_ID", "codex-worker")
+        .env("FACTORY_WORKER_REGISTRATION_KEY", "codex-registration")
+        .env("FACTORY_SUPERVISOR_URL", &supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
+        .env("FACTORY_PROVIDER_SANDBOX", "bwrap")
+        .env("FACTORY_PROVIDER_KIND", "codex")
+        .env(
+            "FACTORY_PROVIDER_BINARY",
+            env!("CARGO_BIN_EXE_factory-fixture-codex"),
+        )
+        .env("FACTORY_PROVIDER_SESSION_ROOT", &provider_session_root)
+        .env("FACTORY_PROVIDER_UPSTREAM_URL", "http://127.0.0.1:9/v1")
+        .env(
+            "FACTORY_PROVIDER_UPSTREAM_TOKEN",
+            "real-upstream-credential-0123456789",
+        )
+        .env(
+            "FACTORY_PROVIDER_EGRESS_BRIDGE",
+            env!("CARGO_BIN_EXE_factory-egress-bridge"),
+        )
+        .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
+        .env(
+            "FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION",
+            "1000000",
+        )
+        .env(
+            "FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION",
+            "2000000",
+        )
+        .env("FACTORY_WORKER_ONCE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(worker_log.try_clone().unwrap()))
+        .stderr(Stdio::from(worker_log))
+        .status()
+        .expect("codex worker");
+    assert!(
+        worker_status.success(),
+        "Codex Worker failed: {}",
+        std::fs::read_to_string(root.join("codex-worker.log")).unwrap_or_default()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let candidate: Value = loop {
+        let value: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/candidates"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        if let Some(candidate) = value.as_array().and_then(|items| items.first()) {
+            break candidate.clone();
+        }
+        assert!(Instant::now() < deadline, "Codex candidate missing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let candidate_id = candidate["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        git(
+            &repository,
+            &[
+                "show",
+                &format!(
+                    "{}:src/provider.txt",
+                    candidate["commit_sha"].as_str().unwrap()
+                )
+            ]
+        ),
+        "provider candidate"
+    );
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(root.join("factory.sqlite"))
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let session: (String, i64, i64, i64, Option<String>) = sqlx::query_as::query_as(
+        "SELECT state,total_tokens,cost_micros,usage_known,cleanup_receipt
+         FROM provider_sessions WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1)",
+    )
+    .bind(&candidate_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(session.0, "COMPLETED");
+    assert_eq!(session.1, 100);
+    assert_eq!(session.2, 140);
+    assert_eq!(session.3, 1);
+    assert_ne!(session.4.as_deref(), Some("session_delete_verified_absent"));
+    assert!(
+        session
+            .4
+            .as_deref()
+            .is_some_and(|receipt| receipt == "sandbox_process_identity_absent"
+                || receipt == "sandbox_process_terminated_verified")
+    );
+    let events: Vec<(String, String)> = sqlx::query_as::query_as(
+        "SELECT call_id,decision FROM provider_tool_events
+         WHERE session_record_id=(SELECT session_record_id FROM provider_sessions
+           WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1))
+         ORDER BY sequence",
+    )
+    .bind(&candidate_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call-100" && decision == "REQUEST")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call-100" && decision == "ALLOW")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call-100" && decision == "RESULT")
+    );
+    pool.close().await;
+    supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(&provider_session_root);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn codex_real_executable_reaches_a_candidate_and_binds_upstream_requests() {
+    let Some(codex) = std::env::var_os("CODEX_BIN")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    else {
+        eprintln!("NOT_TESTED: CODEX_BIN is unavailable");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!(
+        "factory-e2e-codex-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Codex E2E"]);
+    git(
+        &repository,
+        &["config", "user.email", "codex@example.invalid"],
+    );
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    std::fs::write(repository.join("src/seed.txt"), "seed context\n").unwrap();
+    git(&repository, &["add", "src/seed.txt"]);
+    git(&repository, &["commit", "-qm", "seed"]);
+
+    let port = free_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let mut core = CoreProcess::start(&root.join("factory.sqlite"), port, &root.join("core.log"));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    wait_healthy(&client, &base_url, &mut core).await;
+
+    let project: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/projects"),
+        Some(json!({"repository": repository, "idempotency_key": "codex-project"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let action: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/actions"),
+        Some(json!({
+            "project_id": project_id,
+            "objective": "Create the Codex provider candidate file.",
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "idempotency_key": "codex-action",
+            "allowed_paths": ["src"],
+            "checks": [
+                {"id":"content","kind":"functional","description":"provider content","command":["grep","-q","provider candidate","src/provider.txt"],"expectExit":0,"timeoutSecs":30}
+            ]
+        })),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let action_id = action["id"].as_str().unwrap().to_owned();
+    let grant = json!({
+        "id":"codex-grant",
+        "principalId":"owner",
+        "auditId":"audit",
+        "projectId":project_id,
+        "revision":1,
+        "objectiveClasses":["feature"],
+        "allowedPaths":["src"],
+        "capabilities":["repository-edit","generic-toolchain"],
+        "riskClasses":["R0"],
+        "autonomousStart":false,
+        "autonomousRiskClasses":[],
+        "route":{"provider":"codex","model":"gpt-6-luna","mode":"build"},
+        "maxAttempts":2,
+        "maxTimeoutSecs":300,
+        "maxRepairCycles":0,
+        "maxWallClockSecs":1800,
+        "maxParallel":1,
+        "maxSessions":2,
+        "maxRequests":1,
+        "maxCumulativeSessions":8,
+        "maxCumulativeAttempts":16,
+        "expiresAt": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339()
+    });
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/delegations"),
+            Some(json!({"delegation":grant,"idempotency_key":"codex-grant-key"})),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let campaign: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns"),
+        Some(json!({"action_id":action_id,"idempotency_key":"codex-campaign"})),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let campaign_id = campaign["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        operator(
+            &client,
+            reqwest::Method::POST,
+            format!("{base_url}/campaigns/{campaign_id}/authorize"),
+            Some(json!({
+                "authorization_id":"codex-auth",
+                "risk_class":"R0",
+                "execution_mode":"TRUSTED_LOCAL_PROVIDER",
+                "actor":"e2e-operator",
+                "rationale":"deterministic Codex fixture acceptance",
+                "authorized_paths":["src"],
+                "max_attempts":1,
+                "provider":"codex",
+                "model":"gpt-6-luna",
+                "provider_mode":"build",
+                "delegation_id":"codex-grant",
+                "max_sessions":1,
+                "max_turns":4,
+                "max_input_tokens":200000,
+                "max_output_tokens":1000,
+                "max_cost_micros":10000,
+                "deadline_secs":30,
+                "allowed_tools":["write_file","run_command"]
+            })),
+        )
+        .await
+        .status(),
+        StatusCode::CREATED
+    );
+    let run: Value = operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/campaigns/{campaign_id}/runs"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    operator(
+        &client,
+        reqwest::Method::POST,
+        format!("{base_url}/runs/{}/attempts", run["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+
+    let mock_state = CodexMockState {
+        calls: Arc::new(AtomicUsize::new(0)),
+        seen: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mock_app = axum::Router::new()
+        .route("/v1/responses", axum::routing::post(codex_mock_responses))
+        .with_state(mock_state.clone());
+    let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_url = format!("http://{}", mock_listener.local_addr().unwrap());
+    let mock_server = tokio::spawn(async move {
+        axum::serve(mock_listener, mock_app).await.unwrap();
+    });
+    let supervisor_port = free_port();
+    let supervisor_url = format!("http://127.0.0.1:{supervisor_port}");
+    let mut supervisor = SupervisorProcess::start(SupervisorSpec {
+        port: supervisor_port,
+        repository: &repository,
+        log: &root.join("supervisor.log"),
+        workspace_root: &root.join("supervisor-work"),
+        state_root: &root.join("supervisor-state"),
+        volume_root: &root.join("supervisor-volumes"),
+        image: FIXTURE_IMAGE,
+        local_backend: true,
+        core_url: &base_url,
+    });
+    wait_supervisor(&client, &supervisor_url, &mut supervisor).await;
+
+    let provider_session_root = std::env::temp_dir().join(format!(
+        "fc-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let worker_log = File::create(root.join("codex-worker.log")).unwrap();
+    let worker_status = Command::new(env!("CARGO_BIN_EXE_factory-worker"))
+        .env("FACTORY_CORE_URL", &base_url)
+        .env("FACTORY_WORKER_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FACTORY_WORKER_ID", "codex-worker")
+        .env("FACTORY_WORKER_REGISTRATION_KEY", "codex-registration")
+        .env("FACTORY_SUPERVISOR_URL", &supervisor_url)
+        .env("FACTORY_SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
+        .env("FACTORY_WORKER_FIXTURE_IMAGE", FIXTURE_IMAGE)
+        .env("FACTORY_PROVIDER_SANDBOX", "bwrap")
+        .env("FACTORY_PROVIDER_KIND", "codex")
+        .env("FACTORY_PROVIDER_BINARY", &codex)
+        .env("FACTORY_PROVIDER_SESSION_ROOT", &provider_session_root)
+        .env("FACTORY_PROVIDER_UPSTREAM_URL", &mock_url)
+        .env("FACTORY_CODEX_REQUIRE_MODEL_LIST", "0")
+        .env(
+            "FACTORY_PROVIDER_UPSTREAM_TOKEN",
+            "real-upstream-credential-0123456789",
+        )
+        .env(
+            "FACTORY_PROVIDER_EGRESS_BRIDGE",
+            env!("CARGO_BIN_EXE_factory-egress-bridge"),
+        )
+        .env("FACTORY_ALLOW_TEST_UPSTREAM", "1")
+        .env(
+            "FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION",
+            "1000000",
+        )
+        .env(
+            "FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION",
+            "2000000",
+        )
+        .env("FACTORY_WORKER_ONCE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(worker_log.try_clone().unwrap()))
+        .stderr(Stdio::from(worker_log))
+        .status()
+        .expect("codex worker");
+    assert!(
+        worker_status.success(),
+        "Codex Worker failed: {}",
+        std::fs::read_to_string(root.join("codex-worker.log")).unwrap_or_default()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let candidate: Value = loop {
+        let value: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/candidates"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        if let Some(candidate) = value.as_array().and_then(|items| items.first()) {
+            break candidate.clone();
+        }
+        assert!(Instant::now() < deadline, "Codex candidate missing");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let candidate_id = candidate["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        git(
+            &repository,
+            &[
+                "show",
+                &format!(
+                    "{}:src/provider.txt",
+                    candidate["commit_sha"].as_str().unwrap()
+                )
+            ]
+        ),
+        "provider candidate"
+    );
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx_sqlite::SqliteConnectOptions::new()
+                .filename(root.join("factory.sqlite"))
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .unwrap();
+    let session: (String, i64, i64, i64, Option<String>) = sqlx::query_as::query_as(
+        "SELECT state,total_tokens,cost_micros,usage_known,cleanup_receipt
+         FROM provider_sessions WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1)",
+    )
+    .bind(&candidate_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(session.0, "COMPLETED");
+    assert!(
+        session.1 >= 15,
+        "Codex token usage was not recorded: {session:?}"
+    );
+    assert!(
+        session.2 > 0,
+        "Codex cost was not calculated from configured rates"
+    );
+    assert_eq!(session.3, 1);
+    assert_ne!(session.4.as_deref(), Some("session_delete_verified_absent"));
+    assert!(
+        session
+            .4
+            .as_deref()
+            .is_some_and(|receipt| receipt == "sandbox_process_identity_absent"
+                || receipt == "sandbox_process_terminated_verified")
+    );
+    let events: Vec<(String, String)> = sqlx::query_as::query_as(
+        "SELECT call_id,decision FROM provider_tool_events
+         WHERE session_record_id=(SELECT session_record_id FROM provider_sessions
+           WHERE attempt_id=(SELECT attempt_id FROM candidates WHERE id=?1))
+         ORDER BY sequence",
+    )
+    .bind(&candidate_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call_dynamic" && decision == "REQUEST")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call_dynamic" && decision == "ALLOW")
+    );
+    assert!(
+        events
+            .iter()
+            .any(|(call, decision)| call == "call_dynamic" && decision == "RESULT")
+    );
+    let egress_requests: (i64,) = sqlx::query_as::query_as(
+        "SELECT COUNT(*) FROM provider_turn_egress_requests WHERE reservation_id IN (
+           SELECT reservation_id FROM provider_turn_reservations WHERE attempt_id=(
+             SELECT attempt_id FROM candidates WHERE id=?1))",
+    )
+    .bind(&candidate_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(egress_requests.0, 2);
+    assert_eq!(mock_state.calls.load(Ordering::SeqCst), 2);
+    {
+        let seen = mock_state.seen.lock().unwrap();
+        assert_eq!(seen[0]["model"], "gpt-6-luna");
+        assert!(
+            seen.iter()
+                .any(|body| body.to_string().contains("write_file")),
+            "dynamic tool must be declared to Codex"
+        );
+    }
+    pool.close().await;
+    mock_server.abort();
+    supervisor.stop();
+    core.stop();
+    let _ = std::fs::remove_dir_all(&provider_session_root);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

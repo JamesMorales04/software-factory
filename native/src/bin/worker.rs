@@ -13,14 +13,18 @@ use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
 };
+use factory_native::protocol::{
+    DynamicToolCallParams, DynamicToolCallResult, DynamicToolContentItem, DynamicToolSpec, JsonRpc,
+    RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
+    UserInput,
+};
 use factory_native::provider_egress::{SharedTurnPolicy, TurnPolicy};
 use factory_native::provider_patch::{
-    ProviderAction, ProviderUsage, command_matches_frozen_check, extract_action, extract_plan,
-    extract_usage,
+    ProviderAction, ProviderUsage, extract_action, extract_action_text, extract_plan, extract_usage,
 };
-use factory_native::provider_sandbox::{ProviderSandbox, ProviderSandboxConfig};
+use factory_native::provider_sandbox::{ProviderSandbox, ProviderSandboxConfig, SandboxTransport};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -506,6 +510,20 @@ fn is_sensitive_source_path(path: &str) -> bool {
         || base.ends_with(".key")
 }
 
+enum ProviderRuntime {
+    Http {
+        base_url: String,
+        password: String,
+        sandbox: Option<ProviderSandbox>,
+        turn_policy: Option<SharedTurnPolicy>,
+    },
+    Codex {
+        sandbox: ProviderSandbox,
+        rpc: JsonRpc<tokio::process::ChildStdout, tokio::process::ChildStdin>,
+        turn_policy: Option<SharedTurnPolicy>,
+    },
+}
+
 struct ProviderRun {
     candidate: factory_native::workspace::CandidateRevision,
     provider_session_id: String,
@@ -614,7 +632,8 @@ async fn execute_provider_assignment(
     let usage_tracker: std::sync::Arc<std::sync::Mutex<ProviderUsage>> =
         std::sync::Arc::new(std::sync::Mutex::new(ProviderUsage::default()));
     let provider_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
-    let turn_binder = if provider_kind == "opencode" {
+    let codex = provider_kind == "codex";
+    let turn_binder = if provider_kind == "opencode" || codex {
         Some(factory_native::provider_egress::TurnBinder::new(
             client.clone(),
             core.clone(),
@@ -626,7 +645,7 @@ async fn execute_provider_assignment(
     } else {
         None
     };
-    let (base_url, password, sandbox, egress_turn_policy) = match start_provider_runtime(
+    let runtime = match start_provider_runtime(
         &provider_dir,
         assignment.deadline_secs,
         &assignment.provider,
@@ -659,56 +678,77 @@ async fn execute_provider_assignment(
             return Err(error);
         }
     };
-
-    let result = if assignment.allowed_tools.is_empty() {
-        run_provider_patch(&ProviderContext {
-            client,
-            core,
-            session_token,
-            worker_id,
-            session_record_id: &session_record_id,
-            base_url: base_url.as_str(),
-            password: &password,
-            directory: &directory,
-            api_directory: if sandbox.is_some() {
+    let confined = matches!(
+        &runtime,
+        ProviderRuntime::Http {
+            sandbox: Some(_),
+            ..
+        } | ProviderRuntime::Codex { .. }
+    );
+    let result = match runtime {
+        ProviderRuntime::Http {
+            base_url,
+            password,
+            sandbox,
+            turn_policy: egress_turn_policy,
+        } => {
+            let api_directory = if sandbox.is_some() {
                 "/session"
             } else {
-                &directory
-            },
-            provider_session: &provider_session,
-            usage_tracker: &usage_tracker,
-            turn_policy: egress_turn_policy.as_ref(),
-            assignment,
-            supervisor,
-        })
-        .await
-    } else {
-        run_provider_tool_loop(&ProviderContext {
-            client,
-            core,
-            session_token,
-            worker_id,
-            session_record_id: &session_record_id,
-            base_url: base_url.as_str(),
-            password: &password,
-            directory: &directory,
-            api_directory: if sandbox.is_some() {
-                "/session"
+                directory.as_str()
+            };
+            let context = ProviderContext {
+                client,
+                core,
+                session_token,
+                worker_id,
+                session_record_id: &session_record_id,
+                base_url: base_url.as_str(),
+                password: &password,
+                directory: &directory,
+                api_directory,
+                provider_session: &provider_session,
+                usage_tracker: &usage_tracker,
+                turn_policy: egress_turn_policy.as_ref(),
+                assignment,
+                supervisor,
+            };
+            let result = if assignment.allowed_tools.is_empty() {
+                run_provider_patch(&context).await
             } else {
-                &directory
-            },
-            provider_session: &provider_session,
-            usage_tracker: &usage_tracker,
-            turn_policy: egress_turn_policy.as_ref(),
-            assignment,
-            supervisor,
-        })
-        .await
+                run_provider_tool_loop(&context).await
+            };
+            if let Some(sandbox) = sandbox {
+                let _ = sandbox.stop().await;
+            }
+            result
+        }
+        ProviderRuntime::Codex {
+            sandbox,
+            mut rpc,
+            turn_policy: egress_turn_policy,
+        } => {
+            let context = ProviderContext {
+                client,
+                core,
+                session_token,
+                worker_id,
+                session_record_id: &session_record_id,
+                base_url: "",
+                password: "",
+                directory: &directory,
+                api_directory: "/session",
+                provider_session: &provider_session,
+                usage_tracker: &usage_tracker,
+                turn_policy: egress_turn_policy.as_ref(),
+                assignment,
+                supervisor,
+            };
+            let result = run_codex_tool_loop(&context, &mut rpc).await;
+            let _ = sandbox.stop().await;
+            result
+        }
     };
-    let confined = sandbox.is_some();
-    if let Some(sandbox) = sandbox {
-        let _ = sandbox.stop().await;
-    }
     let provider_session_id = provider_session
         .lock()
         .ok()
@@ -727,14 +767,19 @@ async fn execute_provider_assignment(
     } else {
         "unconfined_cleanup_unconfirmed".to_owned()
     };
-    if !(cfg!(debug_assertions)
-        && env::var("FACTORY_PROVIDER_KEEP_SESSION").ok().as_deref() == Some("1"))
-    {
-        let _ = std::fs::remove_dir_all(&provider_dir);
-    }
+    let keep_session = cfg!(debug_assertions)
+        && env::var("FACTORY_PROVIDER_KEEP_SESSION").ok().as_deref() == Some("1");
+    let directory_removed = if keep_session {
+        true
+    } else {
+        std::fs::remove_dir_all(&provider_dir).is_ok()
+    };
+    let cleanup_confirmed = !cleanup_receipt.is_empty()
+        && !cleanup_receipt.contains("unconfirmed")
+        && directory_removed;
     match result {
         Ok(run) => {
-            if !run.usage.known {
+            if !run.usage.known || !cleanup_confirmed {
                 let terminal = ProviderTerminal {
                     session_record_id: session_record_id.clone(),
                     worker_id: worker_id.into(),
@@ -748,12 +793,18 @@ async fn execute_provider_assignment(
                     cost_micros: run.usage.cost_micros,
                     usage_known: run.usage.known,
                     cleanup_receipt: cleanup_receipt.clone(),
-                    error: "provider usage was not measurable".into(),
+                    error: if !cleanup_confirmed {
+                        "provider cleanup was not confirmed".into()
+                    } else {
+                        "provider usage was not measurable".into()
+                    },
                 };
                 let _ = post_provider_terminal(client, core, session_token, &terminal).await;
-                return Err(
-                    "provider usage was not measurable; refusing an unaccounted candidate".into(),
-                );
+                return Err(if !cleanup_confirmed {
+                    "provider cleanup was not confirmed; refusing an unaccounted candidate".into()
+                } else {
+                    "provider usage was not measurable; refusing an unaccounted candidate".into()
+                });
             }
             let terminal = ProviderTerminal {
                 session_record_id: session_record_id.clone(),
@@ -767,7 +818,11 @@ async fn execute_provider_assignment(
                 total_tokens: run.usage.total_tokens,
                 cost_micros: run.usage.cost_micros,
                 usage_known: run.usage.known,
-                cleanup_receipt: "session_delete_verified_absent".into(),
+                cleanup_receipt: if codex {
+                    cleanup_receipt.clone()
+                } else {
+                    "session_delete_verified_absent".into()
+                },
                 error: String::new(),
             };
             post_provider_terminal(client, core, session_token, &terminal).await?;
@@ -804,25 +859,29 @@ async fn start_provider_runtime(
     max_turns: u32,
     turn_binder: Option<factory_native::provider_egress::TurnBinder>,
     turn_policy: &SharedTurnPolicy,
-) -> Result<
-    (
-        String,
-        String,
-        Option<ProviderSandbox>,
-        Option<SharedTurnPolicy>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
         "bwrap" => {
             let binary = env::var("FACTORY_PROVIDER_BINARY")
                 .map_err(|_| "FACTORY_PROVIDER_BINARY required for sandboxed provider")?;
             let kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_else(|_| "fixture".into());
-            if !matches!(kind.as_str(), "fixture" | "opencode") {
+            if !matches!(kind.as_str(), "fixture" | "opencode" | "codex") {
                 return Err(format!("unsupported FACTORY_PROVIDER_KIND {kind:?}").into());
             }
             let opencode = kind == "opencode";
+            let codex = kind == "codex";
+            if codex && provider != "codex" {
+                return Err("Codex transport cannot serve a non-Codex provider assignment".into());
+            }
+            if opencode && !matches!(provider, "opencode" | "opencode-go") {
+                return Err(
+                    "OpenCode transport cannot serve a non-OpenCode provider assignment".into(),
+                );
+            }
+            if kind == "fixture" && !matches!(provider, "fixture" | "opencode" | "opencode-go") {
+                return Err("fixture transport cannot serve this provider assignment".into());
+            }
             let tcp_port = env::var("FACTORY_PROVIDER_TCP_PORT")
                 .unwrap_or_else(|_| "18081".into())
                 .parse::<u16>()
@@ -832,18 +891,84 @@ async fn start_provider_runtime(
                     "FACTORY_PROVIDER_TCP_PORT must be a non-zero port other than 18080".into(),
                 );
             }
-            let args: Vec<String> = match env::var("FACTORY_PROVIDER_ARGS") {
-                Ok(value) => serde_json::from_str(&value)
-                    .map_err(|_| "FACTORY_PROVIDER_ARGS must be a JSON string array")?,
-                Err(_) if opencode => vec![
-                    "serve".into(),
-                    "--hostname".into(),
-                    "127.0.0.1".into(),
-                    "--port".into(),
-                    tcp_port.to_string(),
-                    "--pure".into(),
-                ],
-                Err(_) => Vec::new(),
+            let args: Vec<String> = if codex {
+                vec![
+                    "app-server".into(),
+                    "--listen".into(),
+                    "stdio://".into(),
+                    "-c".into(),
+                    "model_provider=factory".into(),
+                    "-c".into(),
+                    "model_providers.factory={name=\"Factory\",base_url=\"http://127.0.0.1:18080/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}".into(),
+                    "-c".into(),
+                    "approval_policy=never".into(),
+                    "-c".into(),
+                    "sandbox_mode=read-only".into(),
+                    "-c".into(),
+                    format!("model={model}"),
+                    "-c".into(),
+                    "features.shell_tool=false".into(),
+                    "-c".into(),
+                    "features.unified_exec=false".into(),
+                    "-c".into(),
+                    "features.unified_exec_tty=false".into(),
+                    "-c".into(),
+                    "features.view_image=false".into(),
+                    "-c".into(),
+                    "features.browser_use=false".into(),
+                    "-c".into(),
+                    "features.in_app_browser=false".into(),
+                    "-c".into(),
+                    "features.multi_agent=false".into(),
+                    "-c".into(),
+                    "features.multi_agent_v2=false".into(),
+                    "-c".into(),
+                    "features.code_mode=false".into(),
+                    "-c".into(),
+                    "features.code_mode_host=false".into(),
+                    "-c".into(),
+                    "features.code_mode_only=false".into(),
+                    "-c".into(),
+                    "features.code_mode_interrupt=false".into(),
+                    "-c".into(),
+                    "features.code_mode_prewarm=false".into(),
+                    "-c".into(),
+                    "features.code_mode_buffered_exec=false".into(),
+                    "-c".into(),
+                    "features.sleep_tool=false".into(),
+                    "-c".into(),
+                    "features.request_permissions_tool=false".into(),
+                    "-c".into(),
+                    "features.tool_suggest=false".into(),
+                    "-c".into(),
+                    "features.goals=false".into(),
+                    "-c".into(),
+                    "features.default_mode_request_user_input=false".into(),
+                    "-c".into(),
+                    "features.standalone_web_search=false".into(),
+                    "-c".into(),
+                    "features.web_search_request=false".into(),
+                    "-c".into(),
+                    "features.apps=false".into(),
+                    "-c".into(),
+                    "features.plugins=false".into(),
+                    "-c".into(),
+                    "web_search=\"disabled\"".into(),
+                ]
+            } else {
+                match env::var("FACTORY_PROVIDER_ARGS") {
+                    Ok(value) => serde_json::from_str(&value)
+                        .map_err(|_| "FACTORY_PROVIDER_ARGS must be a JSON string array")?,
+                    Err(_) if opencode => vec![
+                        "serve".into(),
+                        "--hostname".into(),
+                        "127.0.0.1".into(),
+                        "--port".into(),
+                        tcp_port.to_string(),
+                        "--pure".into(),
+                    ],
+                    Err(_) => Vec::new(),
+                }
             };
             let max_session_bytes = env::var("FACTORY_PROVIDER_SESSION_MAX_BYTES")
                 .ok()
@@ -871,6 +996,8 @@ async fn start_provider_runtime(
                         env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
                     let max_requests = if opencode {
                         max_turns as usize + 4
+                    } else if codex {
+                        (max_turns as usize).saturating_mul(8).saturating_add(1)
                     } else {
                         max_turns as usize + 1
                     };
@@ -883,16 +1010,18 @@ async fn start_provider_runtime(
                     .with_model(model.to_owned())
                     .with_max_requests(max_requests)
                     .with_turn_policy(turn_policy.clone());
-                    if opencode && let Some(binder) = turn_binder {
+                    if (opencode || codex)
+                        && let Some(binder) = turn_binder
+                    {
                         config = config.with_turn_binder(binder);
                     }
                     (Some(config), Some(std::path::PathBuf::from(bridge)))
                 }
-                Err(_) if opencode => {
-                    return Err(
-                        "opencode provider requires FACTORY_PROVIDER_UPSTREAM_URL and egress"
-                            .into(),
-                    );
+                Err(_) if opencode || codex => {
+                    return Err(format!(
+                        "{kind} provider requires FACTORY_PROVIDER_UPSTREAM_URL and egress"
+                    )
+                    .into());
                 }
                 Err(_) => (None, None),
             };
@@ -941,6 +1070,49 @@ async fn start_provider_runtime(
                 provider_bridge = Some(bridge);
                 provider_tcp = Some(format!("127.0.0.1:{tcp_port}"));
             }
+            let mut transport = SandboxTransport::HttpSocket;
+            if codex {
+                transport = SandboxTransport::Stdio;
+                let codex_home = session_dir.join(".codex");
+                std::fs::create_dir_all(&codex_home)?;
+                let git_init = std::process::Command::new("git")
+                    .args(["init", "--quiet"])
+                    .arg(session_dir)
+                    .status()?;
+                if !git_init.success() {
+                    return Err("failed to initialize the Codex session repository".into());
+                }
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(session_dir)
+                    .args(["config", "user.name", "Software Factory"])
+                    .status()?;
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(session_dir)
+                    .args(["config", "user.email", "factory@localhost.invalid"])
+                    .status()?;
+                let empty_commit = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(session_dir)
+                    .args([
+                        "commit",
+                        "--allow-empty",
+                        "--quiet",
+                        "-m",
+                        "factory provider session",
+                    ])
+                    .status()?;
+                if !empty_commit.success() {
+                    return Err("failed to initialize the Codex session commit".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&codex_home, std::fs::Permissions::from_mode(0o700))?;
+                }
+                sandbox_env.push(("CODEX_HOME".into(), "/session/.codex".into()));
+            }
             if env::var("FACTORY_FIXTURE_PROVIDER_USE_EGRESS")
                 .ok()
                 .as_deref()
@@ -949,7 +1121,7 @@ async fn start_provider_runtime(
                 sandbox_env.push(("FACTORY_FIXTURE_PROVIDER_USE_EGRESS".into(), "1".into()));
                 sandbox_env.push(("FACTORY_FIXTURE_PROVIDER_MODEL".into(), model.to_owned()));
             }
-            let sandbox = ProviderSandbox::start(ProviderSandboxConfig {
+            let mut sandbox = ProviderSandbox::start(ProviderSandboxConfig {
                 binary: std::path::PathBuf::from(binary),
                 session_dir: session_dir.to_path_buf(),
                 args,
@@ -970,6 +1142,7 @@ async fn start_provider_runtime(
                 provider_bridge,
                 provider_tcp,
                 env: sandbox_env,
+                transport,
                 ..Default::default()
             })
             .await?;
@@ -981,12 +1154,21 @@ async fn start_provider_runtime(
                 )
                 .await?;
             }
-            Ok((
-                sandbox.base_url().to_owned(),
-                sandbox.password().to_owned(),
-                Some(sandbox),
-                Some(turn_policy.clone()),
-            ))
+            if codex {
+                let (stdin, stdout) = sandbox.take_stdio()?;
+                let rpc = JsonRpc::new(stdout, stdin);
+                return Ok(ProviderRuntime::Codex {
+                    sandbox,
+                    rpc,
+                    turn_policy: Some(turn_policy.clone()),
+                });
+            }
+            Ok(ProviderRuntime::Http {
+                base_url: sandbox.base_url().to_owned(),
+                password: sandbox.password().to_owned(),
+                sandbox: Some(sandbox),
+                turn_policy: Some(turn_policy.clone()),
+            })
         }
         "unconfined" => {
             if env::var("FACTORY_ALLOW_UNCONFINED_PROVIDER")
@@ -1010,7 +1192,12 @@ async fn start_provider_runtime(
                 return Err("FACTORY_PROVIDER_PASSWORD must be at least 16 bytes".into());
             }
             factory_native::telemetry::register_secret(&password);
-            Ok((base_url.to_string(), password, None, None))
+            Ok(ProviderRuntime::Http {
+                base_url: base_url.to_string(),
+                password,
+                sandbox: None,
+                turn_policy: None,
+            })
         }
         _ => Err("provider sandbox is not configured; refusing an unconfined provider".into()),
     }
@@ -1710,6 +1897,779 @@ async fn run_provider_tool_loop(
     Err("provider exceeded the authorized turn budget without writing a file".into())
 }
 
+fn codex_dynamic_tools(context: &ProviderContext<'_>) -> Vec<DynamicToolSpec> {
+    let mut tools = Vec::new();
+    if context
+        .assignment
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == "write_file")
+    {
+        tools.push(DynamicToolSpec::Function {
+            name: "write_file".into(),
+            description:
+                "Write the complete content of one authorized repository file. The Worker applies it through the Supervisor."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                }
+            }),
+        });
+    }
+    if context
+        .assignment
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == "run_command")
+    {
+        tools.push(DynamicToolSpec::Function {
+            name: "run_command".into(),
+            description:
+                "Run one exact frozen acceptance check command. The Worker runs it through the Supervisor."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["argv"],
+                "properties": {
+                    "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 300}
+                }
+            }),
+        });
+    }
+    tools
+}
+
+fn codex_prompt(context: &ProviderContext<'_>) -> Result<String, Box<dyn std::error::Error>> {
+    let source_context = load_source_context(
+        &context.assignment.repository,
+        &context.assignment.action_spec.base_commit,
+        &context.assignment.action_spec.allowed_paths,
+    )?;
+    let tools = if context.assignment.allowed_tools.is_empty() {
+        "no dynamic tools; return a JSON patch".to_string()
+    } else {
+        context.assignment.allowed_tools.join(", ")
+    };
+    Ok(format!(
+        "You are a bounded engineering agent. Use only the client-provided dynamic tools: {}. Never use shell, patch, MCP, browser, or any native file tool. To change a file call write_file with the complete file content. To run an allowed acceptance check call run_command with argv that exactly matches one frozen check. When finished, return exactly one JSON object with type final, an empty files array, and a concise explanation: {{\"type\":\"final\",\"files\":[],\"explanation\":\"what changed and why\"}}. Do not add prose outside that JSON. Allowed paths: {}. Objective: {}. Frozen checks: {}. Source context: {}",
+        tools,
+        context.assignment.action_spec.allowed_paths.join(", "),
+        context.assignment.action_spec.objective,
+        serde_json::to_string(
+            &context
+                .assignment
+                .action_spec
+                .checks
+                .iter()
+                .map(|check| json!({"id": check.id, "command": check.command, "expectExit": check.expect_exit}))
+                .collect::<Vec<_>>()
+        )?,
+        serde_json::to_string(&source_context)?
+    ))
+}
+
+fn codex_usage(total: &factory_native::protocol::TokenUsageBreakdown) -> ProviderUsage {
+    let input = total.input_tokens;
+    let output = total.output_tokens;
+    let total_tokens = total.total_tokens.max(input.saturating_add(output));
+    let input_rate = env::var("FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    let output_rate = env::var("FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    let (cost_micros, known) = match (input_rate, output_rate) {
+        (Some(input_rate), Some(output_rate)) => (
+            input
+                .saturating_mul(input_rate)
+                .saturating_div(1_000_000)
+                .saturating_add(output.saturating_mul(output_rate).saturating_div(1_000_000)),
+            true,
+        ),
+        _ => (0, false),
+    };
+    ProviderUsage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens,
+        cost_micros,
+        known,
+    }
+}
+
+fn bounded_tool_text(value: &str) -> String {
+    value.chars().take(8_000).collect()
+}
+
+struct CodexToolState {
+    call_ids: std::collections::BTreeSet<String>,
+    tool_calls: u32,
+    written: bool,
+}
+
+async fn execute_codex_tool(
+    context: &ProviderContext<'_>,
+    handle: &WorkspaceHandle,
+    call_id: &str,
+    tool: &str,
+    arguments: &Value,
+    tool_state: &mut CodexToolState,
+) -> Result<(bool, String), Box<dyn std::error::Error>> {
+    if call_id.trim().is_empty() || !tool_state.call_ids.insert(call_id.to_owned()) {
+        return Ok((false, "duplicate or empty dynamic tool call id".into()));
+    }
+    tool_state.tool_calls = tool_state.tool_calls.saturating_add(1);
+    if tool_state.tool_calls > 8 {
+        return Ok((false, "dynamic tool call budget exhausted".into()));
+    }
+    let arguments = match arguments {
+        Value::Object(_) => arguments.clone(),
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(value @ Value::Object(_)) => value,
+            _ => return Ok((false, "dynamic tool arguments must be a JSON object".into())),
+        },
+        _ => return Ok((false, "dynamic tool arguments must be a JSON object".into())),
+    };
+    if arguments.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "path" | "content" | "argv" | "timeout_secs"))
+    }) {
+        return Ok((
+            false,
+            "dynamic tool arguments contain unknown fields".into(),
+        ));
+    }
+    let path = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let content = arguments
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let argv = arguments
+        .get("argv")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if arguments.get("argv").is_some()
+        && argv.len() != arguments["argv"].as_array().map_or(0, Vec::len)
+    {
+        return Ok((false, "dynamic tool argv must contain only strings".into()));
+    }
+    let timeout_secs = arguments
+        .get("timeout_secs")
+        .and_then(Value::as_u64)
+        .unwrap_or(60);
+    post_tool_event(context, call_id, tool, "REQUEST", "dynamic tool requested").await?;
+    let state = provider_state(context).await?;
+    if state == "CANCEL_REQUESTED" {
+        post_tool_event(
+            context,
+            call_id,
+            tool,
+            "DENY",
+            "provider cancellation was requested",
+        )
+        .await?;
+        return Ok((false, "provider cancellation was requested".into()));
+    }
+    let decision = decide_tool(context, tool, &path, &content, &argv, timeout_secs);
+    match decision {
+        Ok(ToolDecision::Write) => {
+            post_tool_event(context, call_id, tool, "ALLOW", "path authorized").await?;
+            let file = factory_native::execution::AppliedFile { path, content };
+            match supervisor_write(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                vec![file],
+                !tool_state.written,
+            )
+            .await
+            {
+                Ok(()) => {
+                    tool_state.written = true;
+                    post_tool_event(context, call_id, tool, "RESULT", "write applied").await?;
+                    Ok((true, "write applied".into()))
+                }
+                Err(error) => {
+                    post_tool_event(context, call_id, tool, "ERROR", "write failed").await?;
+                    Ok((false, bounded_tool_text(&format!("write failed: {error}"))))
+                }
+            }
+        }
+        Ok(ToolDecision::Run) => {
+            post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
+            match supervisor_run(
+                context,
+                &handle.workspace_id,
+                &handle.capability,
+                &argv,
+                timeout_secs,
+            )
+            .await
+            {
+                Ok(result) => {
+                    post_tool_event(
+                        context,
+                        call_id,
+                        tool,
+                        "RESULT",
+                        &format!("exit={:?}", result.exit_code),
+                    )
+                    .await?;
+                    Ok((
+                        true,
+                        bounded_tool_text(&format!(
+                            "exit={:?}\nstdout:\n{}\nstderr:\n{}",
+                            result.exit_code, result.stdout, result.stderr
+                        )),
+                    ))
+                }
+                Err(error) => {
+                    post_tool_event(context, call_id, tool, "ERROR", "command failed").await?;
+                    Ok((
+                        false,
+                        bounded_tool_text(&format!("command failed: {error}")),
+                    ))
+                }
+            }
+        }
+        Err(reason) => {
+            post_tool_event(context, call_id, tool, "DENY", &reason).await?;
+            Ok((false, bounded_tool_text(&reason)))
+        }
+    }
+}
+
+async fn run_codex_tool_loop(
+    context: &ProviderContext<'_>,
+    rpc: &mut JsonRpc<tokio::process::ChildStdout, tokio::process::ChildStdin>,
+) -> Result<ProviderRun, Box<dyn std::error::Error>> {
+    rpc.initialize("software_factory", "Software Factory", "0.1.0", true)
+        .await?;
+    if env::var("FACTORY_CODEX_REQUIRE_MODEL_LIST").ok().as_deref() != Some("0") {
+        let models = rpc.request("model/list", json!({})).await?;
+        let available = models
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("id").and_then(Value::as_str)
+                        == Some(context.assignment.model.as_str())
+                })
+            });
+        if !available {
+            return Err(format!(
+                "Codex model {:?} is not available in model/list",
+                context.assignment.model
+            )
+            .into());
+        }
+    }
+    let allocation = WorkspaceAllocation {
+        attempt_id: context.assignment.lease.attempt_id.clone(),
+        repository: context.assignment.repository.clone(),
+        base_commit: context.assignment.action_spec.base_commit.clone(),
+        generation: context.assignment.lease.generation,
+        action_spec_sha256: context.assignment.action_spec_sha256.clone(),
+        attempt_grant: context.assignment.attempt_grant.clone(),
+    };
+    let response = context
+        .supervisor
+        .client
+        .post(context.supervisor.base.join("v1/workspaces")?)
+        .bearer_auth(&context.supervisor.token)
+        .json(&allocation)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Supervisor refused provider workspace allocation: {}",
+            response.status()
+        )
+        .into());
+    }
+    let handle: WorkspaceHandle = response.json().await?;
+    let prompt_text = match codex_prompt(context) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+            return Err(error);
+        }
+    };
+    let thread = match rpc
+        .start_thread(ThreadStartParams {
+            cwd: "/session".into(),
+            approval_policy: factory_native::protocol::DenyApprovalPolicy::Never,
+            sandbox: factory_native::protocol::ReadOnlySandbox::ReadOnly,
+            model: Some(context.assignment.model.clone()),
+            model_provider: Some("factory".into()),
+            ephemeral: Some(true),
+            dynamic_tools: Some(codex_dynamic_tools(context)),
+            base_instructions: Some(
+                "Use only the dynamic tools declared by the client. Do not use shell, patch, MCP, browser, or native file tools. Return the required final JSON object."
+                    .into(),
+            ),
+            developer_instructions: None,
+        })
+        .await
+    {
+        Ok(thread) => thread,
+        Err(error) => {
+            let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+            return Err(error.into());
+        }
+    };
+    let thread_id = thread.thread.id.clone();
+    if let Some(model) = thread.model.as_deref()
+        && model != context.assignment.model
+    {
+        return Err(format!(
+            "Codex thread model mismatch: requested {:?}, received {model:?}",
+            context.assignment.model
+        )
+        .into());
+    }
+    if let Some(provider) = thread.model_provider.as_deref()
+        && provider != "factory"
+    {
+        return Err(format!("Codex thread provider mismatch: {provider:?}").into());
+    }
+    if let Ok(mut session) = context.provider_session.lock() {
+        *session = Some(thread_id.clone());
+    }
+    let active: Value = context
+        .client
+        .post(context.core.join("worker/provider_active")?)
+        .bearer_auth(context.session_token)
+        .json(&json!({
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation,
+            "provider_session_id": thread_id,
+            "provider_directory": context.directory
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    if active.get("state").and_then(Value::as_str) != Some("ACTIVE") {
+        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+        return Err("Core did not bind the Codex provider session as ACTIVE".into());
+    }
+    let mut prompt = prompt_text;
+    let session_deadline =
+        tokio::time::Instant::now() + Duration::from_secs(context.assignment.deadline_secs);
+    let mut usage = ProviderUsage::default();
+    let mut usage_before = factory_native::protocol::TokenUsageBreakdown {
+        cached_input_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        total_tokens: 0,
+    };
+    let mut tool_state = CodexToolState {
+        call_ids: std::collections::BTreeSet::new(),
+        tool_calls: 0,
+        written: false,
+    };
+    let mut last_turn_id = String::new();
+    let result: Result<ProviderRun, Box<dyn std::error::Error>> = async {
+        for _ in 0..context.assignment.max_turns {
+            let turn = if context.turn_policy.is_some() {
+                Some(authorize_provider_turn(context, &json!({"text": prompt})).await?)
+            } else {
+                None
+            };
+            if provider_state(context).await? == "CANCEL_REQUESTED" {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err("provider cancellation was requested".into());
+            }
+            let remaining = session_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                if let Some(turn) = &turn {
+                    release_provider_turn(context, &turn.reservation_id).await;
+                }
+                return Err("Codex provider deadline exceeded".into());
+            }
+            let started = match tokio::time::timeout(
+                remaining,
+                rpc.start_turn(TurnStartParams {
+                    thread_id: thread_id.clone(),
+                    input: vec![UserInput::Text { text: prompt.clone() }],
+                    approval_policy: factory_native::protocol::DenyApprovalPolicy::Never,
+                    sandbox_policy: TurnSandboxPolicy::ReadOnly { network_access: false },
+                    model: Some(context.assignment.model.clone()),
+                    effort: Some("medium".into()),
+                    output_schema: None,
+                }),
+            )
+            .await
+            {
+                Ok(Ok(started)) => started,
+                Ok(Err(error)) => {
+                    if let Some(turn) = &turn {
+                        release_provider_turn(context, &turn.reservation_id).await;
+                    }
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    if let Some(turn) = &turn {
+                        release_provider_turn(context, &turn.reservation_id).await;
+                    }
+                    return Err("Codex turn start deadline exceeded".into());
+                }
+            };
+            let turn_id = started.turn.id.clone();
+            last_turn_id = turn_id.clone();
+            let mut final_text: Option<String> = None;
+            let mut usage_after: Option<factory_native::protocol::TokenUsageBreakdown> = None;
+            tool_state.tool_calls = 0;
+            loop {
+                let poll_at = (tokio::time::Instant::now() + Duration::from_secs(1))
+                    .min(session_deadline);
+                let event = match tokio::time::timeout_at(poll_at, rpc.next_event()).await {
+                    Ok(Ok(event)) => event,
+                    Ok(Err(error)) => {
+                        if let Some(turn) = &turn {
+                            release_provider_turn(context, &turn.reservation_id).await;
+                        }
+                        return Err(error.into());
+                    }
+                    Err(_) if tokio::time::Instant::now() >= session_deadline => {
+                        let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
+                        if let Some(turn) = &turn {
+                            release_provider_turn(context, &turn.reservation_id).await;
+                        }
+                        return Err("Codex provider deadline exceeded".into());
+                    }
+                    Err(_) => {
+                        if provider_state(context).await? == "CANCEL_REQUESTED" {
+                            let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
+                            if let Some(turn) = &turn {
+                                release_provider_turn(context, &turn.reservation_id).await;
+                            }
+                            return Err("provider cancellation was requested".into());
+                        }
+                        continue;
+                    }
+                };
+                match event {
+                    RpcEvent::ServerRequest(request) => {
+                        let factory_native::protocol::RpcServerRequest { id, method, params } =
+                            request;
+                        if method == "item/tool/call" {
+                            let call: DynamicToolCallParams = serde_json::from_value(params)?;
+                            if call.thread_id != thread_id
+                                || call.turn_id != turn_id
+                                || call.namespace.is_some()
+                            {
+                                rpc.respond_error(id, -32602, "dynamic tool identity mismatch")
+                                    .await?;
+                                return Err("Codex dynamic tool identity mismatch".into());
+                            }
+                            let (success, text) = execute_codex_tool(
+                                context,
+                                &handle,
+                                &call.call_id,
+                                &call.tool,
+                                &call.arguments,
+                                &mut tool_state,
+                            )
+                            .await?;
+                            rpc.respond(
+                                id,
+                                serde_json::to_value(DynamicToolCallResult {
+                                    content_items: vec![DynamicToolContentItem::InputText {
+                                        text,
+                                    }],
+                                    success,
+                                })?,
+                            )
+                            .await?;
+                        } else {
+                            rpc.respond_error(id, -32601, "unsupported server request")
+                                .await?;
+                            return Err(format!(
+                                "Codex requested unsupported server method {method:?}"
+                            )
+                            .into());
+                        }
+                    }
+                    RpcEvent::Notification(notification) => match notification.method.as_str() {
+                        "item/started" | "item/completed" => {
+                            if notification
+                                .params
+                                .get("threadId")
+                                .and_then(Value::as_str)
+                                != Some(thread_id.as_str())
+                                || notification
+                                    .params
+                                    .get("turnId")
+                                    .and_then(Value::as_str)
+                                    != Some(turn_id.as_str())
+                            {
+                                continue;
+                            }
+                            let item_type = notification
+                                .params
+                                .pointer("/item/type")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            if !matches!(
+                                item_type,
+                                "agentMessage" | "reasoning" | "plan" | "dynamicToolCall" | "userMessage"
+                            ) {
+                                return Err(format!(
+                                    "Codex emitted non-mediated item type {item_type:?}; failing closed"
+                                )
+                                .into());
+                            }
+                            if notification.method == "item/completed"
+                                && notification
+                                    .params
+                                    .pointer("/item/type")
+                                    .and_then(Value::as_str)
+                                    == Some("agentMessage")
+                                && let Some(text) = notification
+                                    .params
+                                    .pointer("/item/text")
+                                    .and_then(Value::as_str)
+                            {
+                                final_text = Some(text.to_owned());
+                            }
+                        }
+                        "thread/tokenUsage/updated" => {
+                            let usage: ThreadTokenUsageUpdatedParams =
+                                serde_json::from_value(notification.params)?;
+                            if usage.thread_id != thread_id || usage.turn_id != turn_id {
+                                continue;
+                            }
+                            usage_after = Some(usage.token_usage.total);
+                        }
+                        "turn/completed" => {
+                            let thread = notification
+                                .params
+                                .get("threadId")
+                                .and_then(Value::as_str);
+                            let turn_identity = notification
+                                .params
+                                .pointer("/turn/id")
+                                .and_then(Value::as_str);
+                            let status = notification
+                                .params
+                                .pointer("/turn/status")
+                                .and_then(Value::as_str);
+                            if thread != Some(thread_id.as_str())
+                                || turn_identity != Some(turn_id.as_str())
+                            {
+                                return Err("Codex turn completion identity mismatch".into());
+                            }
+                            if status != Some("completed") {
+                                if let Some(turn) = &turn {
+                                    release_provider_turn(context, &turn.reservation_id).await;
+                                }
+                                let detail = notification
+                                    .params
+                                    .pointer("/turn/error")
+                                    .map(Value::to_string)
+                                    .map(|detail| detail.chars().take(512).collect::<String>())
+                                    .unwrap_or_default();
+                                return Err(format!(
+                                    "Codex turn terminal status is {status:?}: {detail}"
+                                )
+                                .into());
+                            }
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+            }
+            let turn_usage = match usage_after {
+                Some(after) => {
+                    let input = after.input_tokens.saturating_sub(usage_before.input_tokens);
+                    let output = after.output_tokens.saturating_sub(usage_before.output_tokens);
+                    let total = after.total_tokens.saturating_sub(usage_before.total_tokens);
+                    usage_before = after;
+                    codex_usage(&factory_native::protocol::TokenUsageBreakdown {
+                        cached_input_tokens: 0,
+                        input_tokens: input,
+                        output_tokens: output,
+                        reasoning_output_tokens: 0,
+                        total_tokens: total,
+                    })
+                }
+                None => ProviderUsage::default(),
+            };
+            if let Some(turn) = &turn {
+                settle_provider_turn(context, &turn.reservation_id, &turn_usage).await?;
+            }
+            usage.input_tokens = usage.input_tokens.saturating_add(turn_usage.input_tokens);
+            usage.output_tokens = usage.output_tokens.saturating_add(turn_usage.output_tokens);
+            usage.total_tokens = usage.total_tokens.saturating_add(turn_usage.total_tokens);
+            usage.cost_micros = usage.cost_micros.saturating_add(turn_usage.cost_micros);
+            usage.known = usage.known || turn_usage.known;
+            if let Ok(mut tracker) = context.usage_tracker.lock() {
+                *tracker = usage;
+            }
+            let Some(text) = final_text else {
+                prompt = "Return exactly the required final JSON object now. If you have not written a file, use write_file first.".into();
+                continue;
+            };
+            let action = match extract_action_text(&text) {
+                Ok(action) => action,
+                Err(error) => {
+                    post_tool_event(
+                        context,
+                        "invalid-codex-action",
+                        "final",
+                        "ERROR",
+                        &format!("invalid Codex action: {error}"),
+                    )
+                    .await?;
+                    prompt = format!(
+                        "Your previous final response was rejected: {error}. Return exactly one JSON object with type final."
+                    );
+                    continue;
+                }
+            };
+            match action {
+                ProviderAction::Final { files, explanation } => {
+                    if !tool_state.written && files.is_empty() {
+                        prompt = "No file has been written. Use write_file now, then return the final JSON object.".into();
+                        continue;
+                    }
+                    if !explanation.trim().is_empty() {
+                        let bounded: String = explanation.chars().take(4_000).collect();
+                        post_tool_event(context, "final-explanation", "final", "RESULT", &bounded)
+                            .await?;
+                    }
+                    if !files.is_empty() {
+                        if !context
+                            .assignment
+                            .allowed_tools
+                            .iter()
+                            .any(|tool| tool == "write_file")
+                        {
+                            return Err(
+                                "Codex returned files without write_file permission".into()
+                            );
+                        }
+                        let applied = files
+                            .into_iter()
+                            .map(|file| factory_native::execution::AppliedFile {
+                                path: file.path,
+                                content: file.content,
+                            })
+                            .collect::<Vec<_>>();
+                        supervisor_write(
+                            context,
+                            &handle.workspace_id,
+                            &handle.capability,
+                            applied,
+                            !tool_state.written,
+                        )
+                        .await?;
+                    }
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        rpc.archive_thread(&thread_id),
+                    )
+                    .await;
+                    let candidate =
+                        supervisor_finalize(context, &handle.workspace_id, &handle.capability)
+                            .await?;
+                    cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+                    return Ok(ProviderRun {
+                        candidate,
+                        provider_session_id: thread_id,
+                        turn_id: last_turn_id.clone(),
+                        usage,
+                    });
+                }
+                ProviderAction::ToolRequest {
+                    call_id,
+                    tool,
+                    path,
+                    content,
+                    argv,
+                    timeout_secs,
+                } => {
+                    let arguments = json!({
+                        "path": path,
+                        "content": content,
+                        "argv": argv,
+                        "timeout_secs": timeout_secs
+                    });
+                    let (success, result) = execute_codex_tool(
+                        context,
+                        &handle,
+                        &call_id,
+                        &tool,
+                        &arguments,
+                        &mut tool_state,
+                    )
+                    .await?;
+                    prompt = format!(
+                        "Tool result (success={success}): {result}. Continue with another dynamic tool or return the final JSON object."
+                    );
+                }
+            }
+        }
+        if tool_state.written {
+            post_tool_event(
+                context,
+                "codex-turn-budget-exhausted",
+                "final",
+                "RESULT",
+                "Codex wrote files but did not emit a final response; preserving applied writes",
+            )
+            .await?;
+            let _ = rpc.archive_thread(&thread_id).await;
+            let candidate =
+                supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
+            cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
+            return Ok(ProviderRun {
+                candidate,
+                provider_session_id: thread_id,
+                turn_id: last_turn_id,
+                usage,
+            });
+        }
+        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+        Err("Codex exceeded the authorized turn budget without writing a file".into())
+    }
+    .await;
+    if result.is_err() {
+        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
+    }
+    result
+}
+
 enum ToolDecision {
     Write,
     Run,
@@ -1747,11 +2707,15 @@ fn decide_tool(
             Ok(ToolDecision::Write)
         }
         "run_command" => {
-            if !command_matches_frozen_check(argv, &context.assignment.action_spec.checks) {
-                return Err("command does not match a frozen acceptance check".into());
-            }
-            if timeout_secs == 0 || timeout_secs > 300 {
-                return Err("command timeout is outside the allowed bound".into());
+            let check = context
+                .assignment
+                .action_spec
+                .checks
+                .iter()
+                .find(|check| check.command == argv)
+                .ok_or_else(|| "command does not match a frozen acceptance check".to_string())?;
+            if timeout_secs == 0 || timeout_secs > u64::from(check.timeout_secs.min(300)) {
+                return Err("command timeout exceeds the frozen check bound".into());
             }
             Ok(ToolDecision::Run)
         }
@@ -1856,6 +2820,11 @@ async fn authorize_provider_turn(
     };
     let canonical = json!({"model": context.assignment.model, "input": prompt});
     let digest = request_digest(&canonical)?;
+    let max_requests = if context.assignment.provider == "codex" {
+        8
+    } else {
+        1
+    };
     let response = context
         .client
         .post(context.core.join("worker/provider_turn_authorize")?)
@@ -1865,7 +2834,8 @@ async fn authorize_provider_turn(
             "worker_id": context.worker_id,
             "generation": context.assignment.lease.generation,
             "requested_output_tokens": 4096,
-            "request_sha256": digest
+            "request_sha256": digest,
+            "max_requests": max_requests
         }))
         .send()
         .await?;
@@ -1888,10 +2858,11 @@ async fn authorize_provider_turn(
         request_sha256: authorization.request_sha256.clone(),
         expires_at_ms: authorization.expires_at_ms,
         requests: 0,
-        max_requests: 1,
+        max_requests: authorization.max_requests as usize,
         strict_request_digest: env::var("FACTORY_PROVIDER_KIND")
-            .map(|kind| kind != "opencode")
+            .map(|kind| !matches!(kind.as_str(), "opencode" | "codex"))
             .unwrap_or(true),
+        binding: false,
     });
     Ok(authorization)
 }

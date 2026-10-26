@@ -211,8 +211,12 @@ This addendum does **not** upgrade the merged tree. The repair PR is not merged;
 `factory start` still cannot configure the live provider/model route without
 manual host processes. Failed provider sessions can leave unmeasured usage or
 missing cleanup receipts. Autonomous live-provider Campaign start remains
-FIXTURE-only. Codex GPT-6 Luna coding is BLOCKED because no Codex coding
-adapter/tool loop exists. Paid cancellation/revocation was not exercised.
+FIXTURE-only. Codex GPT-6 Luna coding was previously BLOCKED because no Codex
+coding adapter/tool loop existed; a follow-up branch now implements a Codex
+App Server adapter with client-mediated dynamic tools, bounded multi-request
+egress binding and deterministic real-executable tests, but it is not yet
+independently reviewed, merged, or live-paid tested. Paid cancellation and
+revocation were not exercised.
 ISOLATED, Windows, deployment, human security review and final merge remain
 uncertified. See the [F1-S4-LIVE-UAT report](../evidence/f1-s4-live-uat-2026-10-25.md).
 
@@ -231,3 +235,31 @@ uncertified. See the [F1-S4-LIVE-UAT report](../evidence/f1-s4-live-uat-2026-10-
 Every status change must cite an exact candidate SHA and executable evidence.
 Documentation, compilation, a probe or a fixture is not `VERIFIED` behavior.
 Historical evidence is never rewritten to look like Rust certification.
+
+
+## Codex App Server adapter addendum (2026-10-26, author-run)
+
+A focused branch adds a native Codex `0.156.1` App Server coding path for the
+frozen route `codex/gpt-6-luna`. It drives the real executable over stdio in
+the existing bwrap boundary, declares only `write_file`/`run_command` dynamic
+tools, rejects non-allowlisted server requests and item types, binds every
+actual `/v1/responses` body to a Core turn reservation, and records a sandbox
+process-absence receipt. Up to eight upstream requests are allowed per turn;
+the input/output ceiling is divided across that sequence. Native Codex
+built-in surfaces observed in the model request are rejected fail-closed.
+
+Author-run deterministic evidence:
+
+- `cargo test -p factory-native --test codex_dynamic_tools --locked` with the
+  installed 0.156.1 binary passed against a loopback Responses mock.
+- `CODEX_BIN=... cargo test -p factory-native --test e2e_fixture_dispatch codex_ --locked`
+  passed both the fixture-stdio adapter E2E and the real-executable E2E; the
+  latter reached a Git candidate with two Core-bound upstream requests and
+  `ACCEPTED` is not claimed because verifier/reviewer were not run by that
+  focused test.
+- OpenCode fixture-provider regression passed.
+- Full workspace tests and strict Clippy passed at the author checkpoint.
+
+This is not a live GPT-6 Luna coding PASS, does not prove independent security
+review, and does not certify isolation, cleanup, or cost accuracy. Codex
+built-in goal/code-mode/collaboration compatibility is version-sensitive.

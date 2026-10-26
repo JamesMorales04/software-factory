@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UnixStream},
-    process::{Child, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time,
 };
@@ -35,6 +35,12 @@ const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const BRIDGE_TIMEOUT: Duration = Duration::from_secs(10);
 const MONITOR_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxTransport {
+    HttpSocket,
+    Stdio,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SandboxProcessState {
@@ -83,6 +89,7 @@ pub struct ProviderSandboxConfig {
     pub egress_bridge: Option<PathBuf>,
     pub provider_bridge: Option<PathBuf>,
     pub provider_tcp: Option<String>,
+    pub transport: SandboxTransport,
 }
 
 impl Default for ProviderSandboxConfig {
@@ -105,6 +112,7 @@ impl Default for ProviderSandboxConfig {
             egress_bridge: None,
             provider_bridge: None,
             provider_tcp: None,
+            transport: SandboxTransport::HttpSocket,
         }
     }
 }
@@ -114,8 +122,11 @@ pub struct ProviderSandbox {
     session_dir: PathBuf,
     base_url: String,
     password: String,
-    bridge: JoinHandle<()>,
+    bridge: Option<JoinHandle<()>>,
     monitor: JoinHandle<()>,
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stdio: bool,
     stop_monitor: Arc<AtomicBool>,
     limit_exceeded: Arc<AtomicBool>,
     stderr: Option<JoinHandle<Vec<u8>>>,
@@ -138,6 +149,7 @@ impl ProviderSandbox {
         set_private_directory(&config.session_dir)?;
         let socket = config.session_dir.join("provider.sock");
         let _ = std::fs::remove_file(&socket);
+        let stdio = config.transport == SandboxTransport::Stdio;
         let password = format!(
             "{}.{}",
             uuid::Uuid::new_v4().simple(),
@@ -258,13 +270,28 @@ impl ProviderSandbox {
                 .arg("FACTORY_EGRESS_SOCKET")
                 .arg("/session/egress.sock")
                 .arg("--setenv")
-                .arg("OPENAI_BASE_URL")
-                .arg("http://127.0.0.1:18080/v1")
-                .arg("--setenv")
                 .arg("OPENAI_API_KEY")
                 .arg(egress.token());
+            if !stdio {
+                command
+                    .arg("--setenv")
+                    .arg("OPENAI_BASE_URL")
+                    .arg("http://127.0.0.1:18080/v1");
+            }
         }
-        if config.egress.is_some() || config.provider_bridge.is_some() {
+        if stdio {
+            let mut script = String::new();
+            if config.egress.is_some() {
+                script.push_str("/provider/egress-bridge & sleep 1; ");
+            }
+            script.push_str("exec /provider/provider \"$@\" 2>/session/provider.stderr");
+            command
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(script)
+                .arg("factory-provider")
+                .args(&config.args);
+        } else if config.egress.is_some() || config.provider_bridge.is_some() {
             let mut script = String::new();
             if config.egress.is_some() {
                 script.push_str("/provider/egress-bridge & ");
@@ -283,12 +310,14 @@ impl ProviderSandbox {
             command.arg("/provider/provider").args(&config.args);
         }
         command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdin(if stdio { Stdio::piped() } else { Stdio::null() })
+            .stdout(if stdio { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or_default();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
         write_sandbox_identity(&config.session_dir, pid, &socket)?;
         let stderr = child.stderr.take().map(|stderr| {
             tokio::spawn(async move {
@@ -310,7 +339,8 @@ impl ProviderSandbox {
             })
         });
         let deadline = time::Instant::now() + config.ready_timeout;
-        loop {
+        if stdio {
+            time::sleep(Duration::from_millis(150)).await;
             if let Some(status) = child.try_wait()? {
                 if let Some(stderr) = stderr {
                     stderr.abort();
@@ -319,44 +349,63 @@ impl ProviderSandbox {
                     "provider process exited before readiness: {status}"
                 )));
             }
-            if UnixStream::connect(&socket).await.is_ok() {
-                break;
-            }
-            if time::Instant::now() >= deadline {
-                let _ = child.kill().await;
-                if let Some(stderr) = stderr {
-                    stderr.abort();
-                }
-                return Err(SandboxError::NotReady(
-                    "provider socket did not appear".into(),
-                ));
-            }
-            time::sleep(Duration::from_millis(50)).await;
-        }
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let expected = basic_authorization(&password);
-        let socket_for_bridge = socket.clone();
-        let max_connections = config.max_connections.max(1);
-        let bridge_timeout = config.bridge_timeout;
-        let bridge = tokio::spawn(async move {
-            let permits = Arc::new(tokio::sync::Semaphore::new(max_connections));
+        } else {
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let Ok(permit) = permits.clone().try_acquire_owned() else {
-                    let _ = stream;
-                    continue;
-                };
-                let expected = expected.clone();
-                let socket = socket_for_bridge.clone();
-                tokio::spawn(async move {
-                    let _ = bridge_connection(stream, &socket, &expected, bridge_timeout).await;
-                    drop(permit);
-                });
+                if let Some(status) = child.try_wait()? {
+                    if let Some(stderr) = stderr {
+                        stderr.abort();
+                    }
+                    return Err(SandboxError::NotReady(format!(
+                        "provider process exited before readiness: {status}"
+                    )));
+                }
+                if UnixStream::connect(&socket).await.is_ok() {
+                    break;
+                }
+                if time::Instant::now() >= deadline {
+                    let _ = child.kill().await;
+                    if let Some(stderr) = stderr {
+                        stderr.abort();
+                    }
+                    return Err(SandboxError::NotReady(
+                        "provider socket did not appear".into(),
+                    ));
+                }
+                time::sleep(Duration::from_millis(50)).await;
             }
-        });
+        }
+        let (bridge, base_url) = if stdio {
+            (None, String::new())
+        } else {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let expected = basic_authorization(&password);
+            let socket_for_bridge = socket.clone();
+            let max_connections = config.max_connections.max(1);
+            let bridge_timeout = config.bridge_timeout;
+            (
+                Some(tokio::spawn(async move {
+                    let permits = Arc::new(tokio::sync::Semaphore::new(max_connections));
+                    loop {
+                        let Ok((stream, _)) = listener.accept().await else {
+                            return;
+                        };
+                        let Ok(permit) = permits.clone().try_acquire_owned() else {
+                            let _ = stream;
+                            continue;
+                        };
+                        let expected = expected.clone();
+                        let socket = socket_for_bridge.clone();
+                        tokio::spawn(async move {
+                            let _ =
+                                bridge_connection(stream, &socket, &expected, bridge_timeout).await;
+                            drop(permit);
+                        });
+                    }
+                })),
+                format!("http://{address}"),
+            )
+        };
         let stop_monitor = Arc::new(AtomicBool::new(false));
         let limit_exceeded = Arc::new(AtomicBool::new(false));
         let monitor = tokio::spawn({
@@ -388,10 +437,13 @@ impl ProviderSandbox {
         Ok(Self {
             child,
             session_dir: config.session_dir,
-            base_url: format!("http://{address}"),
+            base_url,
             password,
             bridge,
             monitor,
+            stdin,
+            stdout,
+            stdio,
             stop_monitor,
             limit_exceeded,
             stderr,
@@ -411,6 +463,23 @@ impl ProviderSandbox {
         &self.session_dir
     }
 
+    pub fn take_stdio(&mut self) -> Result<(ChildStdin, ChildStdout), SandboxError> {
+        if !self.stdio {
+            return Err(SandboxError::Invalid(
+                "provider sandbox is not using stdio transport".into(),
+            ));
+        }
+        let stdin = self
+            .stdin
+            .take()
+            .ok_or_else(|| SandboxError::Invalid("provider stdin is unavailable".into()))?;
+        let stdout = self
+            .stdout
+            .take()
+            .ok_or_else(|| SandboxError::Invalid("provider stdout is unavailable".into()))?;
+        Ok((stdin, stdout))
+    }
+
     pub fn limit_exceeded(&self) -> bool {
         self.limit_exceeded.load(Ordering::SeqCst)
     }
@@ -418,7 +487,9 @@ impl ProviderSandbox {
     pub async fn stop(mut self) -> Result<(), SandboxError> {
         self.stop_monitor.store(true, Ordering::SeqCst);
         self.monitor.abort();
-        self.bridge.abort();
+        if let Some(bridge) = self.bridge.take() {
+            bridge.abort();
+        }
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
         if let Some(stderr) = self.stderr.take() {
@@ -589,7 +660,9 @@ impl Drop for ProviderSandbox {
     fn drop(&mut self) {
         self.stop_monitor.store(true, Ordering::SeqCst);
         self.monitor.abort();
-        self.bridge.abort();
+        if let Some(bridge) = self.bridge.take() {
+            bridge.abort();
+        }
         if let Some(egress) = self.egress.take() {
             egress.stop();
         }

@@ -49,6 +49,7 @@ pub struct TurnPolicy {
     pub requests: usize,
     pub max_requests: usize,
     pub strict_request_digest: bool,
+    pub binding: bool,
 }
 
 pub type SharedTurnPolicy = Arc<Mutex<Option<TurnPolicy>>>;
@@ -115,6 +116,7 @@ impl TurnBinder {
         model: &str,
         path: &str,
         body_bytes: usize,
+        sequence: u32,
     ) -> Result<(), EgressError> {
         let response = self
             .client
@@ -132,15 +134,18 @@ impl TurnBinder {
                 "request_sha256": request_sha256,
                 "model": model,
                 "path": path,
-                "body_bytes": body_bytes
+                "body_bytes": body_bytes,
+                "sequence": sequence
             }))
             .send()
             .await
             .map_err(|error| EgressError::Upstream(format!("provider turn binder: {error}")))?;
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let body: String = body.chars().take(512).collect();
             return Err(EgressError::Invalid(format!(
-                "Core refused provider turn binding with HTTP {}",
-                response.status()
+                "Core refused provider turn binding with HTTP {status}: {body}"
             )));
         }
         Ok(())
@@ -369,7 +374,7 @@ async fn handle(
         return Ok(());
     }
     let mut body = body;
-    let mut bound_turn: Option<(String, String, u64)> = None;
+    let mut bound_turn: Option<(String, String, u64, u32)> = None;
     if let Some(policy) = &config.turn_policy {
         if path == "/v1/models" && method == "GET" {
             // Catalog reads do not consume model spend.
@@ -384,6 +389,7 @@ async fn handle(
                     let turn = guard.as_mut().expect("checked");
                     if chrono::Utc::now().timestamp_millis() >= turn.expires_at_ms
                         || turn.requests >= turn.max_requests
+                        || turn.binding
                     {
                         Err((429, "provider turn budget is exhausted"))
                     } else {
@@ -402,8 +408,11 @@ async fn handle(
                                     if turn.strict_request_digest && digest != turn.request_sha256 {
                                         Err((403, "provider turn request does not match"))
                                     } else {
-                                        let max_output =
-                                            turn.max_output_tokens.min(u64::from(u32::MAX));
+                                        let max_output = turn
+                                            .max_output_tokens
+                                            .saturating_div(turn.max_requests.max(1) as u64)
+                                            .max(1)
+                                            .min(u64::from(u32::MAX));
                                         let fields: &[&str] = if path == "/v1/responses" {
                                             &["max_output_tokens"]
                                         } else {
@@ -427,11 +436,18 @@ async fn handle(
                                         }
                                         match serde_json::to_vec(&value) {
                                             Ok(encoded) => {
-                                                turn.requests = turn.requests.saturating_add(1);
+                                                let sequence = u32::try_from(turn.requests)
+                                                    .unwrap_or(u32::MAX);
+                                                if config.turn_binder.is_some() {
+                                                    turn.binding = true;
+                                                } else {
+                                                    turn.requests = turn.requests.saturating_add(1);
+                                                }
                                                 bound_turn = Some((
                                                     turn.reservation_id.clone(),
                                                     turn.model.clone(),
                                                     turn.max_input_tokens,
+                                                    sequence,
                                                 ));
                                                 Ok(encoded)
                                             }
@@ -452,25 +468,53 @@ async fn handle(
                 }
             }
             if let Some(binder) = &config.turn_binder {
-                let Some((reservation_id, model, max_input_tokens)) = bound_turn else {
+                let Some((reservation_id, model, max_input_tokens, sequence)) = bound_turn else {
                     write_status(&mut stream, 403, "provider turn was not authorized").await?;
                     return Ok(());
                 };
                 let max_body_bytes = max_input_tokens
                     .saturating_mul(4)
+                    .saturating_div(
+                        config
+                            .turn_policy
+                            .as_ref()
+                            .and_then(|policy| policy.lock().ok())
+                            .and_then(|policy| policy.as_ref().map(|turn| turn.max_requests))
+                            .unwrap_or(1)
+                            .max(1) as u64,
+                    )
                     .min(MAX_REQUEST_BODY as u64);
                 if body.len() as u64 > max_body_bytes {
+                    if let Some(policy) = &config.turn_policy
+                        && let Ok(mut guard) = policy.lock()
+                        && let Some(turn) = guard.as_mut()
+                    {
+                        turn.binding = false;
+                    }
                     write_status(&mut stream, 413, "request exceeds input budget").await?;
                     return Ok(());
                 }
                 let digest = sha256_hex(&body);
                 if let Err(error) = binder
-                    .bind(&reservation_id, &digest, &model, path, body.len())
+                    .bind(&reservation_id, &digest, &model, path, body.len(), sequence)
                     .await
                 {
+                    if let Some(policy) = &config.turn_policy
+                        && let Ok(mut guard) = policy.lock()
+                        && let Some(turn) = guard.as_mut()
+                    {
+                        turn.binding = false;
+                    }
                     tracing::warn!(%error, "provider turn binding refused");
                     write_status(&mut stream, 403, "provider request binding refused").await?;
                     return Ok(());
+                }
+                if let Some(policy) = &config.turn_policy
+                    && let Ok(mut guard) = policy.lock()
+                    && let Some(turn) = guard.as_mut()
+                {
+                    turn.requests = turn.requests.saturating_add(1);
+                    turn.binding = false;
                 }
             }
         }

@@ -11,9 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use factory_native::protocol::{
-    DenyApprovalPolicy, JsonRpc, ReadOnlySandbox, ThreadStartParams, TurnStartResponse,
-};
+use factory_native::protocol::{JsonRpc, ThreadStartParams, TurnStartResponse};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -159,8 +157,7 @@ async fn codex(
         }
         let thread = rpc.start_thread(ThreadStartParams {
             cwd: workspace.to_string_lossy().to_string(),
-            approval_policy: DenyApprovalPolicy::Never,
-            sandbox: ReadOnlySandbox::ReadOnly,
+            ..Default::default()
         }).await.map_err(|error| error.to_string())?;
         let thread_id = thread.thread.id;
         let turn = rpc.request("turn/start", json!({

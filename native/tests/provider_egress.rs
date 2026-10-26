@@ -169,6 +169,7 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
         requests: 0,
         max_requests: 2,
         strict_request_digest: true,
+        binding: false,
     })));
     let socket = std::env::temp_dir().join(format!("tp-{}", uuid::Uuid::new_v4().simple()));
     let config = EgressConfig::new(
@@ -235,7 +236,7 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
     );
     for (_, body) in seen {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value["max_output_tokens"], 5);
+        assert_eq!(value["max_output_tokens"], 2);
     }
     bridge.abort();
     broker.stop();
@@ -452,6 +453,7 @@ async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
         requests: 0,
         max_requests: 2,
         strict_request_digest: false,
+        binding: false,
     })));
     let binder = TurnBinder::new(
         reqwest::Client::new(),
