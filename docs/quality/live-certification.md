@@ -8,10 +8,14 @@ workflows, quality integration or external-project execution.
 
 The legacy validator and schema were retired with the former implementation and
 are archived under [docs/evidence/history/quality](../evidence/history/quality).
-A Rust-era certification validator is not implemented. Until it is, live
-certification labels are policy vocabulary only and must not be claimed from
-unvalidated manifests. A manifest never proves an external event by itself, and
-no validator may upgrade evidence levels.
+The Rust architecture checker now validates capability references and the
+provider certification manifest shape; it does not independently prove runtime
+events. A manifest never proves an external event by itself, and no validator
+may upgrade evidence levels. The current managed OpenCode journey is recorded
+in
+[managed-live-uat-2026-10-26.md](../evidence/managed-live-uat-2026-10-26.md)
+and its manifest is
+[managed-live-uat-certification-manifest.json](../evidence/managed-live-uat-certification-manifest.json).
 
 The historical manifest versions remain archived for provenance. A future Rust
 validator must read capabilities from the source record for the frozen

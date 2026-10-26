@@ -295,14 +295,21 @@ For the full acceptance matrix and residual gaps see the
 ## 10. Live provider UAT (separately authorized, paid)
 
 This guide's deterministic path does not use a paid model and is not evidence
-that live coding works. A separately authorized live UAT used the real
-OpenCode `1.18.32` provider server, `opencode-go/deepseek-v4.1-flash`, the
-sandboxed Worker tool loop, an independent verifier and a real semantic
-Reviewer. The journey reached a candidate `ACCEPTED` gate and the measured
-evidence is in [F1-S4-LIVE-UAT](../evidence/f1-s4-live-uat-2026-10-25.md).
-The live run also exposed integration defects (provider egress/session
-headers, sandbox paths, SSE streaming, lease heartbeat and finalize resilience)
-that are repaired only in the accompanying repair PR; the merged baseline does
-not contain them. Do not treat this guide or the deterministic fixture as a
-substitute for the live report.
+that live coding works. The current managed live acceptance used the normal
+`factory start` path with strict Core-model and Worker-provider env files,
+OpenCode `1.18.32`, `opencode-go/deepseek-v4.1-flash`, a model-backed Lead, a
+real Implementer session, a rootless-Podman verifier, a semantic MODEL
+Reviewer and an `ACCEPTED` gate. Evidence and measured usage are in
+[managed-live-uat-2026-10-26.md](../evidence/managed-live-uat-2026-10-26.md).
+A controlled self-development candidate also reached `ACCEPTED` in a
+disposable clone: [managed-self-development-2026-10-26.md](../evidence/managed-self-development-2026-10-26.md).
+The earlier [F1-S4-LIVE-UAT](../evidence/f1-s4-live-uat-2026-10-25.md) record
+and its repair history remain provenance.
+
+For a manual verified run, unset `FACTORY_VERIFIER_TEST_BACKEND` and
+`FACTORY_VERIFIER_TEST_VOLUME_ROOT`; otherwise the verifier uses the local test
+backend rather than the rootless-Podman sandbox. Codex native ChatGPT live
+inference is blocked; an operator API-key route is the supported Codex path.
+Do not treat this guide or the deterministic fixture as a substitute for the
+live report.
 

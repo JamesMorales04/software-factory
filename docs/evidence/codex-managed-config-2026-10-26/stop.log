@@ -1,0 +1,6 @@
+Factory stop
+Container: factory-codex-config-core
+Data volume: factory-codex-config-data
+Container factory-codex-config-core: stopped
+Container factory-codex-config-core: removed
+Data volume factory-codex-config-data: kept

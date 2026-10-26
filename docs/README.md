@@ -6,14 +6,14 @@ All normative software architecture and engineering guidance is maintained **in 
 
 ## Reading order
 
-1. [Native Rust decision](architecture/decisions/ADR-0018-native-rust-replacement.md), [native bootstrap](../native/README.md), and [handoff](implementation/native-rust-handoff.md) — active target and implemented scope on this branch.
+1. [Native Rust decision](architecture/decisions/ADR-0018-native-rust-replacement.md), [native bootstrap](../native/README.md), and the [migration closure ledger](implementation/native-rust-closure.md) — active target and current implemented scope. The older [handoff](implementation/native-rust-handoff.md) is a historical checkpoint.
 2. [Rust engineering standards](engineering/rust-standards.md), [code quality](engineering/code-quality.md) and [linting](engineering/linting.md) — normative Rust design, correctness and objective static checks. The reusable agent workflow is [.agents/skills/rust-engineering](../../.agents/skills/rust-engineering/SKILL.md).
 3. [Service placement policy](architecture/service-placement-policy.md) and [assessment template](templates/service-placement-assessment.md) — where components may execute and which trust boundaries are required. The reusable agent workflow is [.agents/skills/service-placement](../../.agents/skills/service-placement/SKILL.md).
 4. [Container-first development](engineering/container-first-development.md), [editor setup](engineering/editor-setup.md), [ADR-0019](architecture/decisions/ADR-0019-container-first-cross-platform.md) and [automation standards](engineering/automation-standards.md) — supported environments, language-server setup and canonical engineering automation.
 5. [Quality baseline](quality/baseline.md) — candidate integrity, independent verification, and gate states; its old implementation references are historical.
-4. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
+6. [Decision records](architecture/decisions/README.md) — decisions and explicit supersession.
 
-The [migration closure ledger](implementation/native-rust-closure.md) is the current status authority. The tested local workflow is documented in the [developer-preview testing guide](implementation/developer-preview-testing.md). The bounded real-model acceptance record is the [F1-S4-LIVE-UAT report](evidence/f1-s4-live-uat-2026-10-25.md). The [capability registry](product/capabilities.yaml), [capability decisions](product/capability-decisions.md) and [roadmap](roadmap/ROADMAP.md) are active product authorities. Historical evidence and accepted ADRs remain provenance; they do not certify the Rust branch.
+The [migration closure ledger](implementation/native-rust-closure.md) is the current status authority. The tested local workflow is documented in the [developer-preview testing guide](implementation/developer-preview-testing.md). The current managed live acceptance records are the [OpenCode external-project UAT](evidence/managed-live-uat-2026-10-26.md) and the [controlled self-development test](evidence/managed-self-development-2026-10-26.md); the earlier [F1-S4-LIVE-UAT report](evidence/f1-s4-live-uat-2026-10-25.md) remains provenance. The [capability registry](product/capabilities.yaml), [capability decisions](product/capability-decisions.md) and [roadmap](roadmap/ROADMAP.md) are active product authorities. Historical evidence and accepted ADRs remain provenance; they do not certify the Rust branch.
 
 ## Authority hierarchy
 

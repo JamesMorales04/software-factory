@@ -1,0 +1,26 @@
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling generic-array v0.14.7
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.2.17
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling sha2 v0.10.9
+   Compiling hex v0.4.3
+   Compiling factory-cli v0.1.0 (/workspace/factory-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.60s
+     Running unittests src/main.rs (target/debug/deps/factory-9fba68526f51db43)
+
+running 3 tests
+test text::tests::flattens_newlines ... ok
+test text::tests::preserves_exact_length_without_ellipsis ... ok
+test text::tests::truncates_with_ellipsis ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
+

@@ -1,0 +1,1900 @@
+{
+  "campaign": {
+    "attempts": [
+      {
+        "created_at": "2026-10-26T17:20:34.297705934+00:00",
+        "id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+        "run_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+        "status": "CANDIDATE_READY"
+      }
+    ],
+    "authorization": {
+      "actor": "product-owner",
+      "allowed_tools": [
+        "write_file",
+        "run_command"
+      ],
+      "authorization_id": "managed-live-provider-auth-4",
+      "authorized_paths": [
+        "src",
+        "tests"
+      ],
+      "campaign_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+      "created_at": "2026-10-26T17:20:34.298028688+00:00",
+      "deadline_secs": 600,
+      "delegation_id": "managed-live-grant-3",
+      "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+      "max_attempts": 1,
+      "max_cost_micros": 500000,
+      "max_input_tokens": 60000,
+      "max_output_tokens": 12000,
+      "max_sessions": 1,
+      "max_turns": 4,
+      "model": "deepseek-v4.1-flash",
+      "provider": "opencode-go",
+      "provider_mode": "build",
+      "rationale": "Product Owner authorized one replacement managed-live OpenCode session after an immutable verifier receipt error",
+      "risk_class": "R0"
+    },
+    "campaign": {
+      "action_id": "4983fb52-92b3-4617-9b51-8465173de461",
+      "created_at": "2026-10-26T17:20:34.297705934+00:00",
+      "id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+      "status": "AUTHORIZED"
+    },
+    "candidates": [
+      {
+        "action_spec_sha256": "23e2b856ee5e5e1b4bbc07a451b77ad7ce5739b0d311a60bab469dac3c177151",
+        "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+        "commit_sha": "067c8569e651e0deb9b3edf4bfd7430b99a243b1",
+        "created_at": "2026-10-26T17:21:22.760925934+00:00",
+        "id": "177060b3-5271-4b0f-a20f-2c5649426484",
+        "implementer_id": "factory-host-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "1ff574f70fcb2968ba7345399dad1cba11ef890d"
+      }
+    ],
+    "events": [
+      {
+        "detail": "proposed grant; autonomous execution remains closed",
+        "kind": "delegation.recorded",
+        "recorded_at": "2026-10-26T17:20:15.186199570+00:00",
+        "sequence": 99,
+        "subject_id": "managed-live-grant-3"
+      },
+      {
+        "detail": "assessment session reserved; no model call or Campaign start",
+        "kind": "lead.request_created",
+        "recorded_at": "2026-10-26T17:20:15.190184378+00:00",
+        "sequence": 102,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "Submitted->Assessing",
+        "kind": "lead.state_changed",
+        "recorded_at": "2026-10-26T17:20:15.191588729+00:00",
+        "sequence": 103,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "role=LEAD reservation=f6b52869-cfa9-4a82-ae1c-639f9911b048 provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=300000",
+        "kind": "model.call_authorized",
+        "recorded_at": "2026-10-26T17:20:15.192710813+00:00",
+        "sequence": 104,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "role=LEAD reservation=f6b52869-cfa9-4a82-ae1c-639f9911b048 state=SETTLED input=3393 output=1558 total=4951 cost=1444",
+        "kind": "model.call_settled",
+        "recorded_at": "2026-10-26T17:20:24.395372631+00:00",
+        "sequence": 105,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "4d47a496-0aaa-44dc-a8cc-c17b5d350791",
+        "kind": "lead.assessment_recorded",
+        "recorded_at": "2026-10-26T17:20:24.398207572+00:00",
+        "sequence": 106,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "4af951ab-57e1-4746-831f-d93b8a9584a4",
+        "kind": "lead.proposal_recorded",
+        "recorded_at": "2026-10-26T17:20:24.399015959+00:00",
+        "sequence": 107,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "f6ca7b3ab0d62ec398efd66d57231dc156ce7efd2862c7bd16a51a98ace1c13d",
+        "kind": "lead.plan_frozen",
+        "recorded_at": "2026-10-26T17:20:24.401433788+00:00",
+        "sequence": 108,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "Frozen->Ready",
+        "kind": "lead.state_changed",
+        "recorded_at": "2026-10-26T17:20:24.401855800+00:00",
+        "sequence": 109,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "authorization=managed-live-provider-auth-4 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+        "kind": "campaign.authorized",
+        "recorded_at": "2026-10-26T17:20:34.298194904+00:00",
+        "sequence": 110,
+        "subject_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d"
+      },
+      {
+        "detail": "TRUSTED_LOCAL_PROVIDER start for plan f6ca7b3ab0d62ec398efd66d57231dc156ce7efd2862c7bd16a51a98ace1c13d authorization=managed-live-provider-auth-4",
+        "kind": "campaign.started",
+        "recorded_at": "2026-10-26T17:20:34.298569656+00:00",
+        "sequence": 111,
+        "subject_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d"
+      },
+      {
+        "detail": "TRUSTED_LOCAL_PROVIDER campaign=07ba7902-c75b-46d5-a508-dd8bedfbbe6d authorization=managed-live-provider-auth-4",
+        "kind": "lead.started",
+        "recorded_at": "2026-10-26T17:20:34.298590857+00:00",
+        "sequence": 112,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "status=RUNNING attempt=469d781e-9fd4-4306-88b2-8603b059ae24",
+        "kind": "run.status_changed",
+        "recorded_at": "2026-10-26T17:20:34.305145392+00:00",
+        "sequence": 113,
+        "subject_id": "62216512-61ce-4774-b94d-4db22a3ea1c1"
+      },
+      {
+        "detail": "generation=1",
+        "kind": "worker.claimed",
+        "recorded_at": "2026-10-26T17:20:34.305171041+00:00",
+        "sequence": 114,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "provider session intent recorded before external effect",
+        "kind": "provider.session_intended",
+        "recorded_at": "2026-10-26T17:20:34.307282206+00:00",
+        "sequence": 115,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d output=4096 cost=500000",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-26T17:20:45.800531958+00:00",
+        "sequence": 117,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=18994 digest=518ef37f37ed20529f443c8b6a3fba1745ab1831fa17d8a85fd5d3787081f3b8",
+        "kind": "provider.turn_request_bound",
+        "recorded_at": "2026-10-26T17:20:46.724680811+00:00",
+        "sequence": 118,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d input=2825 output=166 total=6460 cost=1535",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-26T17:21:03.496681437+00:00",
+        "sequence": 119,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 output=4096 cost=498465",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-26T17:21:03.498379486+00:00",
+        "sequence": 121,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=26450 digest=8c7efe91f07145b3449b77ed772d5898e197d8e7240605ece43a92cff3b3f260",
+        "kind": "provider.turn_request_bound",
+        "recorded_at": "2026-10-26T17:21:03.557356709+00:00",
+        "sequence": 122,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 input=4510 output=182 total=6866 cost=944",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-26T17:21:07.228639596+00:00",
+        "sequence": 123,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 output=4096 cost=497521",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-26T17:21:07.247789876+00:00",
+        "sequence": 127,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=28458 digest=569cb056286aa998909aecaff7d9e76bad8b063bdb2c1870936c428761efa010",
+        "kind": "provider.turn_request_bound",
+        "recorded_at": "2026-10-26T17:21:07.306846179+00:00",
+        "sequence": 128,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 input=627 output=637 total=8398 cost=1012",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-26T17:21:18.084984569+00:00",
+        "sequence": 129,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 output=4096 cost=496509",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-26T17:21:18.097570916+00:00",
+        "sequence": 133,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=34120 digest=b79606ee3eab597ac19703eafb551340a2b0b27539a11e3dbd5c9e6c70a275ac",
+        "kind": "provider.turn_request_bound",
+        "recorded_at": "2026-10-26T17:21:18.151317901+00:00",
+        "sequence": 134,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 input=1646 output=48 total=8706 cost=433",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-26T17:21:21.512421821+00:00",
+        "sequence": 135,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "state=COMPLETED usage_known=true",
+        "kind": "provider.session_terminal",
+        "recorded_at": "2026-10-26T17:21:22.746957629+00:00",
+        "sequence": 140,
+        "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24"
+      },
+      {
+        "detail": "all WorkGraph tasks succeeded",
+        "kind": "lead.plan_completed",
+        "recorded_at": "2026-10-26T17:21:22.761197471+00:00",
+        "sequence": 141,
+        "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b"
+      },
+      {
+        "detail": "attempt=469d781e-9fd4-4306-88b2-8603b059ae24 commit=067c8569e651e0deb9b3edf4bfd7430b99a243b1 tree=1ff574f70fcb2968ba7345399dad1cba11ef890d",
+        "kind": "candidate.recorded",
+        "recorded_at": "2026-10-26T17:21:22.761231726+00:00",
+        "sequence": 142,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "role=verifier receipt=ec36f22a-c64a-4408-8458-7caf1453ee15 principal=managed-live-verifier-2 result=Pass evidence=Executed",
+        "kind": "quality.receipt_recorded",
+        "recorded_at": "2026-10-26T17:21:42.734770396+00:00",
+        "sequence": 143,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "role=SEMANTIC_REVIEWER reservation=a7f6d9c8-d42c-44b3-bbd9-f1ff6907694d provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=500000",
+        "kind": "model.call_authorized",
+        "recorded_at": "2026-10-26T17:21:51.564601844+00:00",
+        "sequence": 144,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "role=SEMANTIC_REVIEWER reservation=a7f6d9c8-d42c-44b3-bbd9-f1ff6907694d state=SETTLED input=2616 output=1565 total=4181 cost=1332",
+        "kind": "model.call_settled",
+        "recorded_at": "2026-10-26T17:22:02.414677313+00:00",
+        "sequence": 145,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "role=reviewer receipt=c4074d5d-fdaa-4e6f-8cb5-a92b9062d500 principal=managed-live-reviewer-2 result=Pass evidence=Executed",
+        "kind": "quality.receipt_recorded",
+        "recorded_at": "2026-10-26T17:22:02.444079350+00:00",
+        "sequence": 146,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "outcome=Accepted",
+        "kind": "quality.gate_decided",
+        "recorded_at": "2026-10-26T17:22:02.444375043+00:00",
+        "sequence": 147,
+        "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484"
+      },
+      {
+        "detail": "status=ACCEPTED outcome=ACCEPTED",
+        "kind": "run.status_changed",
+        "recorded_at": "2026-10-26T17:22:02.444496784+00:00",
+        "sequence": 148,
+        "subject_id": "62216512-61ce-4774-b94d-4db22a3ea1c1"
+      }
+    ],
+    "runs": [
+      {
+        "campaign_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+        "created_at": "2026-10-26T17:20:34.297705934+00:00",
+        "id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+        "status": "ACCEPTED"
+      }
+    ],
+    "tasks": [
+      {
+        "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+        "base_commit": "edff6cea5f348b7228b27b10377369b933ab310b",
+        "campaign_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+        "candidate_commit": "067c8569e651e0deb9b3edf4bfd7430b99a243b1",
+        "candidate_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+        "candidate_tree": "1ff574f70fcb2968ba7345399dad1cba11ef890d",
+        "depends_on": [],
+        "request_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+        "run_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+        "sequence": 0,
+        "status": "SUCCEEDED",
+        "task_id": "99086a74-be96-4e68-bb1b-de4b03c1a0bf",
+        "unit_id": "unit-1",
+        "updated_at": "2026-10-26T17:21:22.761047215+00:00"
+      }
+    ]
+  },
+  "runs": [
+    {
+      "id": "e1aa8652-3c45-4b13-b237-d7a087155f43",
+      "campaign_id": "9a88a0f1-52fc-4b5a-b09b-7e016ca119f9",
+      "status": "FAILED",
+      "created_at": "2026-10-26T16:13:31.546015526+00:00"
+    },
+    {
+      "id": "94ac6915-4917-46b1-b61d-58b705e0bfd9",
+      "campaign_id": "af266213-5dad-4a99-aeb2-2c363478c525",
+      "status": "RUNNING",
+      "created_at": "2026-10-26T16:26:35.384034284+00:00"
+    },
+    {
+      "id": "23fb1b15-17c3-4d74-9b3f-080a2d6770e1",
+      "campaign_id": "bf57f76d-5850-49c8-8417-05934368a8d0",
+      "status": "ACCEPTED",
+      "created_at": "2026-10-26T16:29:19.575660408+00:00"
+    },
+    {
+      "id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+      "campaign_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+      "status": "ACCEPTED",
+      "created_at": "2026-10-26T17:20:34.297705934+00:00"
+    }
+  ],
+  "attempts": [
+    {
+      "id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "run_id": "e1aa8652-3c45-4b13-b237-d7a087155f43",
+      "status": "FAILED",
+      "created_at": "2026-10-26T16:13:31.546015526+00:00"
+    },
+    {
+      "id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "run_id": "94ac6915-4917-46b1-b61d-58b705e0bfd9",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T16:26:35.384034284+00:00"
+    },
+    {
+      "id": "2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc",
+      "run_id": "23fb1b15-17c3-4d74-9b3f-080a2d6770e1",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T16:29:19.576546083+00:00"
+    },
+    {
+      "id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "run_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+      "status": "CANDIDATE_READY",
+      "created_at": "2026-10-26T17:20:34.297705934+00:00"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "fc057c39-c4f9-40b9-967a-43d69c451222",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "action_spec_sha256": "23e2b856ee5e5e1b4bbc07a451b77ad7ce5739b0d311a60bab469dac3c177151",
+      "commit_sha": "1c892a4c4260d4c520b2a7ace61a456487602a5b",
+      "tree_sha": "a83f20b361cb5b4cb97d4f5bc2d5eab8d6a0c954",
+      "implementer_id": "factory-host-worker",
+      "created_at": "2026-10-26T16:27:10.003570557+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    {
+      "id": "88fa36a1-32a4-4772-aaa7-1ab6b5ab3780",
+      "attempt_id": "2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc",
+      "action_spec_sha256": "a1ca332be27894e313ed0eca1f3623feab1f9cd24c1857f84dd356d8f3907cea",
+      "commit_sha": "863004bb3fb6b74c5118d76c06631f9ac557809b",
+      "tree_sha": "f5b87f3b1c11d7a30a46449d6a9bd7b3f5b90e5b",
+      "implementer_id": "factory-host-worker",
+      "created_at": "2026-10-26T16:29:20.291547673+00:00",
+      "integration": false,
+      "lineage": []
+    },
+    {
+      "id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "action_spec_sha256": "23e2b856ee5e5e1b4bbc07a451b77ad7ce5739b0d311a60bab469dac3c177151",
+      "commit_sha": "067c8569e651e0deb9b3edf4bfd7430b99a243b1",
+      "tree_sha": "1ff574f70fcb2968ba7345399dad1cba11ef890d",
+      "implementer_id": "factory-host-worker",
+      "created_at": "2026-10-26T17:21:22.760925934+00:00",
+      "integration": false,
+      "lineage": []
+    }
+  ],
+  "sessions": [
+    {
+      "session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "worker_id": "factory-host-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e86c567c0ffeeu7YjNPnHfJI11",
+      "provider_directory": "/tmp/factory-managed-live-1793031189/ps/p-2434c79043be409cbdaf382f4c965f73",
+      "turn_id": "msg_1793b171d002FSpj5g6O4kCRnA",
+      "input_tokens": 9608,
+      "output_tokens": 1033,
+      "total_tokens": 30430,
+      "cost_micros": 3924,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T17:20:34.307171185+00:00",
+      "updated_at": "2026-10-26T17:21:22.746862218+00:00"
+    },
+    {
+      "session_record_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "worker_id": "factory-host-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "COMPLETED",
+      "provider_session_id": "ses_e86f6d325ffeUj0JffkjNfMyga",
+      "provider_directory": "/tmp/factory-managed-live-1793031189/ps/p-092ec6c1081f4ff5a53cbb4c90f315d8",
+      "turn_id": "msg_179097967002uZ7Vwd85Aj0HlI",
+      "input_tokens": 8135,
+      "output_tokens": 1363,
+      "total_tokens": 26861,
+      "cost_micros": 2980,
+      "usage_known": true,
+      "cleanup_receipt": "session_delete_verified_absent",
+      "error": "",
+      "created_at": "2026-10-26T16:26:35.508643785+00:00",
+      "updated_at": "2026-10-26T16:27:09.994866070+00:00"
+    },
+    {
+      "session_record_id": "aaad7896-598f-441b-baa4-153f665416bb",
+      "attempt_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "worker_id": "factory-host-worker",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "provider_mode": "build",
+      "state": "FAILED",
+      "provider_session_id": "ses_e8702ef82ffefWWd5klC19bS0p",
+      "provider_directory": "/tmp/factory-managed-live-1793031189/ps/p-c4ac41e2a5d244d2be174e50fa8633da",
+      "turn_id": "",
+      "input_tokens": 2784,
+      "output_tokens": 415,
+      "total_tokens": 5721,
+      "cost_micros": 1110,
+      "usage_known": true,
+      "cleanup_receipt": "sandbox_process_identity_absent",
+      "error": "{\"data\":{\"isRetryable\":true,\"message\":\"provider turn budget is exhausted\",\"metadata\":{\"url\":\"http://127.0.0.1:18080/v1/chat/completions\"},\"responseBody\":\"provider turn budget is exhausted\",\"responseHeaders\":{\"connection\":\"close\",\"content-length\":\"33\",\"content-type\":\"text/plain\"},\"statusCode\":429},\"name\":\"APIError\"}",
+      "created_at": "2026-10-26T16:13:31.991683032+00:00",
+      "updated_at": "2026-10-26T16:14:53.409318575+00:00"
+    }
+  ],
+  "model_calls": [
+    {
+      "reservation_id": "a7f6d9c8-d42c-44b3-bbd9-f1ff6907694d",
+      "role": "semantic_reviewer",
+      "principal_id": "managed-live-reviewer-2",
+      "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "objective_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "scope_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "semantic_review",
+      "request_sha256": "0fbb36e0ced8928a379d13d4e693860b7cc6213ca13e81b57dcaf73070928102",
+      "input_tokens": 2616,
+      "output_tokens": 1565,
+      "total_tokens": 4181,
+      "cost_micros": 1332,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T17:21:51.564447791+00:00",
+      "updated_at": "2026-10-26T17:22:02.414570069+00:00"
+    },
+    {
+      "reservation_id": "f6b52869-cfa9-4a82-ae1c-639f9911b048",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "objective_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "scope_id": "managed-live-grant-3",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "13e80b059460badab0c566f7bb861b6ef0aa9dc1791d5774d4d599c9ce5b81fc",
+      "input_tokens": 3393,
+      "output_tokens": 1558,
+      "total_tokens": 4951,
+      "cost_micros": 1444,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T17:20:15.192481597+00:00",
+      "updated_at": "2026-10-26T17:20:24.395246771+00:00"
+    },
+    {
+      "reservation_id": "aadf979e-2398-4aad-9580-0bf64b70542a",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "objective_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "scope_id": "managed-live-grant-2",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "035f266b96a432d9dd7b9b78f3942f8cbce020c7ed1d8506d39abe81c8c72666",
+      "input_tokens": 3381,
+      "output_tokens": 1112,
+      "total_tokens": 4493,
+      "cost_micros": 1176,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T17:19:01.456109390+00:00",
+      "updated_at": "2026-10-26T17:19:35.559406252+00:00"
+    },
+    {
+      "reservation_id": "7fe5e0d0-0c86-4ff5-a9bf-564f544281bb",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "objective_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "scope_id": "managed-live-grant",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "dbb64ef2530018d00cd2094f7cac431d497cf1997cbe2d3206afa3d0321b220a",
+      "input_tokens": 3390,
+      "output_tokens": 1509,
+      "total_tokens": 4899,
+      "cost_micros": 1415,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T16:26:27.645290238+00:00",
+      "updated_at": "2026-10-26T16:26:35.376258864+00:00"
+    },
+    {
+      "reservation_id": "f647c1de-ea04-46aa-adef-0f91fa688ba7",
+      "role": "lead",
+      "principal_id": "product-owner",
+      "project_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "objective_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "scope_id": "managed-live-grant",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "6212921ba0fefba566fcfd022a45897bf168ee2894c7fece21a5d868ee60834b",
+      "input_tokens": 3406,
+      "output_tokens": 1470,
+      "total_tokens": 4876,
+      "cost_micros": 1393,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-26T16:13:22.861807+00:00",
+      "updated_at": "2026-10-26T16:13:31.532824237+00:00"
+    }
+  ],
+  "turns": [
+    {
+      "reservation_id": "b04e5b62-326e-4f5b-be77-9d246296c880",
+      "session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "b79606ee3eab597ac19703eafb551340a2b0b27539a11e3dbd5c9e6c70a275ac",
+      "max_input_tokens": 52038,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 50276,
+      "max_cost_micros": 496509,
+      "input_tokens": 1646,
+      "output_tokens": 48,
+      "total_tokens": 8706,
+      "cost_micros": 433,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793035908097,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T17:21:18.097536390+00:00",
+      "updated_at": "2026-10-26T17:21:21.512312563+00:00"
+    },
+    {
+      "reservation_id": "f5d3aa19-717e-4bdc-9a53-2c23b825cb55",
+      "session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "569cb056286aa998909aecaff7d9e76bad8b063bdb2c1870936c428761efa010",
+      "max_input_tokens": 52665,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 58674,
+      "max_cost_micros": 497521,
+      "input_tokens": 627,
+      "output_tokens": 637,
+      "total_tokens": 8398,
+      "cost_micros": 1012,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793035897247,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T17:21:07.247712168+00:00",
+      "updated_at": "2026-10-26T17:21:18.084813714+00:00"
+    },
+    {
+      "reservation_id": "87740c18-bf34-4538-9fa0-5b385b7e8e44",
+      "session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "8c7efe91f07145b3449b77ed772d5898e197d8e7240605ece43a92cff3b3f260",
+      "max_input_tokens": 57175,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 65540,
+      "max_cost_micros": 498465,
+      "input_tokens": 4510,
+      "output_tokens": 182,
+      "total_tokens": 6866,
+      "cost_micros": 944,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793035893498,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T17:21:03.498344580+00:00",
+      "updated_at": "2026-10-26T17:21:07.228579743+00:00"
+    },
+    {
+      "reservation_id": "ce5fbc6e-6253-43e0-af20-2edb15b1090d",
+      "session_record_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "attempt_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "518ef37f37ed20529f443c8b6a3fba1745ab1831fa17d8a85fd5d3787081f3b8",
+      "max_input_tokens": 60000,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 72000,
+      "max_cost_micros": 500000,
+      "input_tokens": 2825,
+      "output_tokens": 166,
+      "total_tokens": 6460,
+      "cost_micros": 1535,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793035875799,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T17:20:45.800423362+00:00",
+      "updated_at": "2026-10-26T17:21:03.496558674+00:00"
+    },
+    {
+      "reservation_id": "c87ecb3e-d756-4c02-a907-07006b3b5c94",
+      "session_record_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "4059dcafe0122bfc041fd623a1caf088b27c8b2253b9104993a1c571064e0292",
+      "max_input_tokens": 52628,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 52665,
+      "max_cost_micros": 497219,
+      "input_tokens": 763,
+      "output_tokens": 40,
+      "total_tokens": 7526,
+      "cost_micros": 199,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793032656448,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:27:06.448525524+00:00",
+      "updated_at": "2026-10-26T16:27:08.561660523+00:00"
+    },
+    {
+      "reservation_id": "c7fa6871-528f-4794-9b32-0f8e239f9803",
+      "session_record_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "cecc498fc722da35c89ce3f55c2150766c8923debf65ed681cee3ea544f82f0a",
+      "max_input_tokens": 54273,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 60050,
+      "max_cost_micros": 497853,
+      "input_tokens": 1645,
+      "output_tokens": 568,
+      "total_tokens": 7385,
+      "cost_micros": 634,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793032651606,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:27:01.606798699+00:00",
+      "updated_at": "2026-10-26T16:27:06.434730594+00:00"
+    },
+    {
+      "reservation_id": "be8d9512-69e5-43ec-a652-1c80a7333e20",
+      "session_record_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "00f2b5655570195022d21d2fe8b40d3a9fd3c54046e5e41de641438117575cad",
+      "max_input_tokens": 57431,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 66732,
+      "max_cost_micros": 499218,
+      "input_tokens": 3158,
+      "output_tokens": 580,
+      "total_tokens": 6682,
+      "cost_micros": 1365,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793032643053,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:26:53.053624060+00:00",
+      "updated_at": "2026-10-26T16:27:01.604541416+00:00"
+    },
+    {
+      "reservation_id": "a956416c-90e3-422f-8bfb-e9027558d7c0",
+      "session_record_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "attempt_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "518ef37f37ed20529f443c8b6a3fba1745ab1831fa17d8a85fd5d3787081f3b8",
+      "max_input_tokens": 60000,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 72000,
+      "max_cost_micros": 500000,
+      "input_tokens": 2569,
+      "output_tokens": 175,
+      "total_tokens": 5268,
+      "cost_micros": 782,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793032637054,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:26:47.055136233+00:00",
+      "updated_at": "2026-10-26T16:26:53.035089085+00:00"
+    },
+    {
+      "reservation_id": "2342f2e3-f74b-4a6d-8b3f-3455064dd8f9",
+      "session_record_id": "aaad7896-598f-441b-baa4-153f665416bb",
+      "attempt_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "RESERVED",
+      "actual_request_sha256": "3a2a7c50f57aabed7404b46d433f77a918f945e9273dbcd49627def6a33ba1ff",
+      "max_input_tokens": 57216,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 66279,
+      "max_cost_micros": 498890,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "error": "",
+      "expires_at_ms": 1793031853358,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:13:43.359331215+00:00",
+      "updated_at": "2026-10-26T16:13:43.411993738+00:00"
+    },
+    {
+      "reservation_id": "3a056b16-805a-47f2-9227-3cdb40bdcbb9",
+      "session_record_id": "aaad7896-598f-441b-baa4-153f665416bb",
+      "attempt_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "generation": 1,
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "state": "SETTLED",
+      "actual_request_sha256": "5feaeb0c67d5ba6e8da5caa80e38ea5faadb643291c53fed657d0a3938b5616b",
+      "max_input_tokens": 60000,
+      "max_output_tokens": 4096,
+      "max_total_tokens": 72000,
+      "max_cost_micros": 500000,
+      "input_tokens": 2784,
+      "output_tokens": 415,
+      "total_tokens": 5721,
+      "cost_micros": 1110,
+      "usage_known": true,
+      "error": "",
+      "expires_at_ms": 1793031843325,
+      "max_requests": 1,
+      "requests_bound": 1,
+      "created_at": "2026-10-26T16:13:33.325784573+00:00",
+      "updated_at": "2026-10-26T16:13:43.356561457+00:00"
+    }
+  ],
+  "observability": {
+    "enabled": false,
+    "cursor": 0,
+    "exported": 0,
+    "dropped": 0,
+    "failed_attempts": 0,
+    "pending": 0,
+    "last_error": null
+  },
+  "events": [
+    {
+      "sequence": 1,
+      "subject_id": "factory-host-worker",
+      "kind": "worker.registered",
+      "detail": "session token digest stored",
+      "recorded_at": "2026-10-26T16:13:22.447308568+00:00"
+    },
+    {
+      "sequence": 2,
+      "subject_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "kind": "project.registered",
+      "detail": "registered",
+      "recorded_at": "2026-10-26T16:13:22.854988311+00:00"
+    },
+    {
+      "sequence": 3,
+      "subject_id": "8e4bcfb4-8e6e-4152-aa93-bb9c94b4dc07",
+      "kind": "project.config_updated",
+      "detail": "revision=2 hash=a91226823f2645ddd87762bcd9dd740507923d98f7a438294a29e833671be5e0",
+      "recorded_at": "2026-10-26T16:13:22.856356574+00:00"
+    },
+    {
+      "sequence": 4,
+      "subject_id": "e34fc9da-59f9-49a6-ba4f-54834fd7b482",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T16:13:22.857260193+00:00"
+    },
+    {
+      "sequence": 5,
+      "subject_id": "e34fc9da-59f9-49a6-ba4f-54834fd7b482",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: bounded R0 rust discount repair in the authorized source and test paths",
+      "recorded_at": "2026-10-26T16:13:22.858182968+00:00"
+    },
+    {
+      "sequence": 6,
+      "subject_id": "managed-live-grant",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T16:13:22.859170516+00:00"
+    },
+    {
+      "sequence": 7,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T16:13:22.860131263+00:00"
+    },
+    {
+      "sequence": 8,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T16:13:22.861212409+00:00"
+    },
+    {
+      "sequence": 9,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=f647c1de-ea04-46aa-adef-0f91fa688ba7 provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=300000",
+      "recorded_at": "2026-10-26T16:13:22.862067285+00:00"
+    },
+    {
+      "sequence": 10,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=f647c1de-ea04-46aa-adef-0f91fa688ba7 state=SETTLED input=3406 output=1470 total=4876 cost=1393",
+      "recorded_at": "2026-10-26T16:13:31.533004209+00:00"
+    },
+    {
+      "sequence": 11,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.assessment_recorded",
+      "detail": "8eb8eca5-2179-4aa2-9107-668d0370c95f",
+      "recorded_at": "2026-10-26T16:13:31.541609065+00:00"
+    },
+    {
+      "sequence": 12,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.proposal_recorded",
+      "detail": "caab39e5-19b2-43c2-9217-28a8493509ab",
+      "recorded_at": "2026-10-26T16:13:31.542335517+00:00"
+    },
+    {
+      "sequence": 13,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.plan_frozen",
+      "detail": "0f7025ac18f41004c6f0b2e96c9131ca4ac980d2889c9fb80210eb5890349efe",
+      "recorded_at": "2026-10-26T16:13:31.544315623+00:00"
+    },
+    {
+      "sequence": 14,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.state_changed",
+      "detail": "Frozen->Ready",
+      "recorded_at": "2026-10-26T16:13:31.544736313+00:00"
+    },
+    {
+      "sequence": 15,
+      "subject_id": "9a88a0f1-52fc-4b5a-b09b-7e016ca119f9",
+      "kind": "campaign.authorized",
+      "detail": "authorization=managed-live-provider-auth risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T16:13:31.546384598+00:00"
+    },
+    {
+      "sequence": 16,
+      "subject_id": "9a88a0f1-52fc-4b5a-b09b-7e016ca119f9",
+      "kind": "campaign.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER start for plan 0f7025ac18f41004c6f0b2e96c9131ca4ac980d2889c9fb80210eb5890349efe authorization=managed-live-provider-auth",
+      "recorded_at": "2026-10-26T16:13:31.546690079+00:00"
+    },
+    {
+      "sequence": 17,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER campaign=9a88a0f1-52fc-4b5a-b09b-7e016ca119f9 authorization=managed-live-provider-auth",
+      "recorded_at": "2026-10-26T16:13:31.546706540+00:00"
+    },
+    {
+      "sequence": 18,
+      "subject_id": "e1aa8652-3c45-4b13-b237-d7a087155f43",
+      "kind": "run.status_changed",
+      "detail": "status=RUNNING attempt=2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "recorded_at": "2026-10-26T16:13:31.989667559+00:00"
+    },
+    {
+      "sequence": 19,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T16:13:31.989696373+00:00"
+    },
+    {
+      "sequence": 20,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T16:13:31.991824251+00:00"
+    },
+    {
+      "sequence": 21,
+      "subject_id": "aaad7896-598f-441b-baa4-153f665416bb",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T16:13:33.188336601+00:00"
+    },
+    {
+      "sequence": 22,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=3a056b16-805a-47f2-9227-3cdb40bdcbb9 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T16:13:33.325929839+00:00"
+    },
+    {
+      "sequence": 23,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=3a056b16-805a-47f2-9227-3cdb40bdcbb9 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=18771 digest=5feaeb0c67d5ba6e8da5caa80e38ea5faadb643291c53fed657d0a3938b5616b",
+      "recorded_at": "2026-10-26T16:13:34.234694272+00:00"
+    },
+    {
+      "sequence": 24,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=3a056b16-805a-47f2-9227-3cdb40bdcbb9 input=2784 output=415 total=5721 cost=1110",
+      "recorded_at": "2026-10-26T16:13:43.356736039+00:00"
+    },
+    {
+      "sequence": 25,
+      "subject_id": "aaad7896-598f-441b-baa4-153f665416bb",
+      "kind": "provider.tool_event",
+      "detail": "call=empty-final tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T16:13:43.357979284+00:00"
+    },
+    {
+      "sequence": 26,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=2342f2e3-f74b-4a6d-8b3f-3455064dd8f9 output=4096 cost=498890",
+      "recorded_at": "2026-10-26T16:13:43.359416437+00:00"
+    },
+    {
+      "sequence": 27,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=2342f2e3-f74b-4a6d-8b3f-3455064dd8f9 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=23403 digest=3a2a7c50f57aabed7404b46d433f77a918f945e9273dbcd49627def6a33ba1ff",
+      "recorded_at": "2026-10-26T16:13:43.412117984+00:00"
+    },
+    {
+      "sequence": 28,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "provider.session_terminal",
+      "detail": "state=FAILED usage_known=true",
+      "recorded_at": "2026-10-26T16:14:53.409476235+00:00"
+    },
+    {
+      "sequence": 29,
+      "subject_id": "e1aa8652-3c45-4b13-b237-d7a087155f43",
+      "kind": "run.status_changed",
+      "detail": "status=FAILED attempt=2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "recorded_at": "2026-10-26T16:14:53.410902547+00:00"
+    },
+    {
+      "sequence": 30,
+      "subject_id": "5e9f92a9-c1f3-4228-8dab-156ad4abd64e",
+      "kind": "lead.work_failed",
+      "detail": "worker terminal FAILED",
+      "recorded_at": "2026-10-26T16:14:53.411386859+00:00"
+    },
+    {
+      "sequence": 31,
+      "subject_id": "2b03dd88-d33a-4bde-856e-42be49e033d9",
+      "kind": "worker.terminal_reported",
+      "detail": "FAILED",
+      "recorded_at": "2026-10-26T16:14:53.411413389+00:00"
+    },
+    {
+      "sequence": 32,
+      "subject_id": "factory-host-worker",
+      "kind": "worker.session_rotated",
+      "detail": "session token rotated; prior token invalidated",
+      "recorded_at": "2026-10-26T16:26:11.401559813+00:00"
+    },
+    {
+      "sequence": 33,
+      "subject_id": "0d92cd75-2843-4996-9ef5-60d93dc19947",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T16:26:27.640390408+00:00"
+    },
+    {
+      "sequence": 34,
+      "subject_id": "0d92cd75-2843-4996-9ef5-60d93dc19947",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: bounded R0 rust discount repair retry after first provider turn failed",
+      "recorded_at": "2026-10-26T16:26:27.641706240+00:00"
+    },
+    {
+      "sequence": 35,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T16:26:27.643195293+00:00"
+    },
+    {
+      "sequence": 36,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T16:26:27.644410224+00:00"
+    },
+    {
+      "sequence": 37,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=7fe5e0d0-0c86-4ff5-a9bf-564f544281bb provider=opencode-go model=deepseek-v4.1-flash input=76594 output=6722 cost=298607",
+      "recorded_at": "2026-10-26T16:26:27.645658789+00:00"
+    },
+    {
+      "sequence": 38,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=7fe5e0d0-0c86-4ff5-a9bf-564f544281bb state=SETTLED input=3390 output=1509 total=4899 cost=1415",
+      "recorded_at": "2026-10-26T16:26:35.376446852+00:00"
+    },
+    {
+      "sequence": 39,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.assessment_recorded",
+      "detail": "102b9f51-3246-4389-b405-08b169a2775e",
+      "recorded_at": "2026-10-26T16:26:35.379861547+00:00"
+    },
+    {
+      "sequence": 40,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.proposal_recorded",
+      "detail": "c5997cfb-5667-4785-b526-a54a67159ed9",
+      "recorded_at": "2026-10-26T16:26:35.380619539+00:00"
+    },
+    {
+      "sequence": 41,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.plan_frozen",
+      "detail": "e03908b7bebc67e5bda17ab29c1cdc1c36c3671e5eaa9ca73a03fbd41da3d9b6",
+      "recorded_at": "2026-10-26T16:26:35.382381971+00:00"
+    },
+    {
+      "sequence": 42,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.state_changed",
+      "detail": "Frozen->Ready",
+      "recorded_at": "2026-10-26T16:26:35.382673586+00:00"
+    },
+    {
+      "sequence": 43,
+      "subject_id": "af266213-5dad-4a99-aeb2-2c363478c525",
+      "kind": "campaign.authorized",
+      "detail": "authorization=managed-live-provider-auth-2 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T16:26:35.384503326+00:00"
+    },
+    {
+      "sequence": 44,
+      "subject_id": "af266213-5dad-4a99-aeb2-2c363478c525",
+      "kind": "campaign.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER start for plan e03908b7bebc67e5bda17ab29c1cdc1c36c3671e5eaa9ca73a03fbd41da3d9b6 authorization=managed-live-provider-auth-2",
+      "recorded_at": "2026-10-26T16:26:35.384972769+00:00"
+    },
+    {
+      "sequence": 45,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER campaign=af266213-5dad-4a99-aeb2-2c363478c525 authorization=managed-live-provider-auth-2",
+      "recorded_at": "2026-10-26T16:26:35.384993759+00:00"
+    },
+    {
+      "sequence": 46,
+      "subject_id": "94ac6915-4917-46b1-b61d-58b705e0bfd9",
+      "kind": "run.status_changed",
+      "detail": "status=RUNNING attempt=88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "recorded_at": "2026-10-26T16:26:35.507275001+00:00"
+    },
+    {
+      "sequence": 47,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T16:26:35.507295220+00:00"
+    },
+    {
+      "sequence": 48,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T16:26:35.508724719+00:00"
+    },
+    {
+      "sequence": 49,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T16:26:46.881649512+00:00"
+    },
+    {
+      "sequence": 50,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=a956416c-90e3-422f-8bfb-e9027558d7c0 output=4096 cost=500000",
+      "recorded_at": "2026-10-26T16:26:47.055224882+00:00"
+    },
+    {
+      "sequence": 51,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=a956416c-90e3-422f-8bfb-e9027558d7c0 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=18994 digest=518ef37f37ed20529f443c8b6a3fba1745ab1831fa17d8a85fd5d3787081f3b8",
+      "recorded_at": "2026-10-26T16:26:47.993413410+00:00"
+    },
+    {
+      "sequence": 52,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=a956416c-90e3-422f-8bfb-e9027558d7c0 input=2569 output=175 total=5268 cost=782",
+      "recorded_at": "2026-10-26T16:26:53.035253658+00:00"
+    },
+    {
+      "sequence": 53,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T16:26:53.036515969+00:00"
+    },
+    {
+      "sequence": 54,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T16:26:53.038022695+00:00"
+    },
+    {
+      "sequence": 55,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=fix-pricing-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T16:26:53.052210231+00:00"
+    },
+    {
+      "sequence": 56,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=be8d9512-69e5-43ec-a652-1c80a7333e20 output=4096 cost=499218",
+      "recorded_at": "2026-10-26T16:26:53.053773384+00:00"
+    },
+    {
+      "sequence": 57,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=be8d9512-69e5-43ec-a652-1c80a7333e20 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=21536 digest=00f2b5655570195022d21d2fe8b40d3a9fd3c54046e5e41de641438117575cad",
+      "recorded_at": "2026-10-26T16:26:53.112918615+00:00"
+    },
+    {
+      "sequence": 58,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=be8d9512-69e5-43ec-a652-1c80a7333e20 input=3158 output=580 total=6682 cost=1365",
+      "recorded_at": "2026-10-26T16:27:01.604741246+00:00"
+    },
+    {
+      "sequence": 59,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=invalid-action tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T16:27:01.605763470+00:00"
+    },
+    {
+      "sequence": 60,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=c7fa6871-528f-4794-9b32-0f8e239f9803 output=4096 cost=497853",
+      "recorded_at": "2026-10-26T16:27:01.606830389+00:00"
+    },
+    {
+      "sequence": 61,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=c7fa6871-528f-4794-9b32-0f8e239f9803 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=27167 digest=cecc498fc722da35c89ce3f55c2150766c8923debf65ed681cee3ea544f82f0a",
+      "recorded_at": "2026-10-26T16:27:01.656410807+00:00"
+    },
+    {
+      "sequence": 62,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=c7fa6871-528f-4794-9b32-0f8e239f9803 input=1645 output=568 total=7385 cost=634",
+      "recorded_at": "2026-10-26T16:27:06.434804395+00:00"
+    },
+    {
+      "sequence": 63,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-2 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T16:27:06.436138112+00:00"
+    },
+    {
+      "sequence": 64,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-2 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T16:27:06.437754226+00:00"
+    },
+    {
+      "sequence": 65,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=update-tests-2 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T16:27:06.447573012+00:00"
+    },
+    {
+      "sequence": 66,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=c87ecb3e-d756-4c02-a907-07006b3b5c94 output=4096 cost=497219",
+      "recorded_at": "2026-10-26T16:27:06.448559569+00:00"
+    },
+    {
+      "sequence": 67,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=c87ecb3e-d756-4c02-a907-07006b3b5c94 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=29398 digest=4059dcafe0122bfc041fd623a1caf088b27c8b2253b9104993a1c571064e0292",
+      "recorded_at": "2026-10-26T16:27:06.501810308+00:00"
+    },
+    {
+      "sequence": 68,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=c87ecb3e-d756-4c02-a907-07006b3b5c94 input=763 output=40 total=7526 cost=199",
+      "recorded_at": "2026-10-26T16:27:08.561717912+00:00"
+    },
+    {
+      "sequence": 69,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build-1 tool=run_command decision=REQUEST",
+      "recorded_at": "2026-10-26T16:27:08.562620339+00:00"
+    },
+    {
+      "sequence": 70,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build-1 tool=run_command decision=ALLOW",
+      "recorded_at": "2026-10-26T16:27:08.564121464+00:00"
+    },
+    {
+      "sequence": 71,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=run-build-1 tool=run_command decision=ERROR",
+      "recorded_at": "2026-10-26T16:27:09.820900098+00:00"
+    },
+    {
+      "sequence": 72,
+      "subject_id": "dd0fb0a5-7722-4cd2-8d8a-5d708d2be4ee",
+      "kind": "provider.tool_event",
+      "detail": "call=turn-budget-exhausted tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T16:27:09.821696623+00:00"
+    },
+    {
+      "sequence": 73,
+      "subject_id": "88094a6e-8bb4-4fd4-961d-f5b88b582eac",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T16:27:09.994940823+00:00"
+    },
+    {
+      "sequence": 74,
+      "subject_id": "f23de1af-ea36-4148-824e-c027e540b512",
+      "kind": "lead.plan_completed",
+      "detail": "all WorkGraph tasks succeeded",
+      "recorded_at": "2026-10-26T16:27:10.003795956+00:00"
+    },
+    {
+      "sequence": 75,
+      "subject_id": "fc057c39-c4f9-40b9-967a-43d69c451222",
+      "kind": "candidate.recorded",
+      "detail": "attempt=88094a6e-8bb4-4fd4-961d-f5b88b582eac commit=1c892a4c4260d4c520b2a7ace61a456487602a5b tree=a83f20b361cb5b4cb97d4f5bc2d5eab8d6a0c954",
+      "recorded_at": "2026-10-26T16:27:10.003839960+00:00"
+    },
+    {
+      "sequence": 76,
+      "subject_id": "fc057c39-c4f9-40b9-967a-43d69c451222",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=aef4791b-a15e-4850-8034-ae61d96b7851 principal=managed-live-verifier result=Fail evidence=Executed",
+      "recorded_at": "2026-10-26T16:28:02.912054277+00:00"
+    },
+    {
+      "sequence": 77,
+      "subject_id": "537fcb18-1e49-485f-8200-a75a2646e195",
+      "kind": "project.registered",
+      "detail": "registered",
+      "recorded_at": "2026-10-26T16:29:19.569562908+00:00"
+    },
+    {
+      "sequence": 78,
+      "subject_id": "537fcb18-1e49-485f-8200-a75a2646e195",
+      "kind": "project.config_updated",
+      "detail": "revision=2 hash=20e947bcd2d6288761395ef71db822593be56b64a62ba3fab557160831707569",
+      "recorded_at": "2026-10-26T16:29:19.571574515+00:00"
+    },
+    {
+      "sequence": 79,
+      "subject_id": "bd1aef99-d8ae-441a-97e8-e44e70815a8c",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T16:29:19.572539040+00:00"
+    },
+    {
+      "sequence": 80,
+      "subject_id": "bf57f76d-5850-49c8-8417-05934368a8d0",
+      "kind": "campaign.created",
+      "detail": "blocked pending explicit authorization",
+      "recorded_at": "2026-10-26T16:29:19.573509316+00:00"
+    },
+    {
+      "sequence": 81,
+      "subject_id": "bf57f76d-5850-49c8-8417-05934368a8d0",
+      "kind": "campaign.authorized",
+      "detail": "authorization=fixture-verify-auth risk=R0 mode=FIXTURE attempts=1",
+      "recorded_at": "2026-10-26T16:29:19.574642952+00:00"
+    },
+    {
+      "sequence": 82,
+      "subject_id": "23fb1b15-17c3-4d74-9b3f-080a2d6770e1",
+      "kind": "run.created",
+      "detail": "queued",
+      "recorded_at": "2026-10-26T16:29:19.575697689+00:00"
+    },
+    {
+      "sequence": 83,
+      "subject_id": "2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc",
+      "kind": "attempt.created",
+      "detail": "queued; no worker assignment",
+      "recorded_at": "2026-10-26T16:29:19.576688153+00:00"
+    },
+    {
+      "sequence": 84,
+      "subject_id": "23fb1b15-17c3-4d74-9b3f-080a2d6770e1",
+      "kind": "run.status_changed",
+      "detail": "status=RUNNING attempt=2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc",
+      "recorded_at": "2026-10-26T16:29:19.587067369+00:00"
+    },
+    {
+      "sequence": 85,
+      "subject_id": "2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T16:29:19.587090363+00:00"
+    },
+    {
+      "sequence": 86,
+      "subject_id": "88fa36a1-32a4-4772-aaa7-1ab6b5ab3780",
+      "kind": "candidate.recorded",
+      "detail": "attempt=2eb0fe94-4952-417e-bd3b-a1a1bed3e9cc commit=863004bb3fb6b74c5118d76c06631f9ac557809b tree=f5b87f3b1c11d7a30a46449d6a9bd7b3f5b90e5b",
+      "recorded_at": "2026-10-26T16:29:20.291736663+00:00"
+    },
+    {
+      "sequence": 87,
+      "subject_id": "88fa36a1-32a4-4772-aaa7-1ab6b5ab3780",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=e40dbb12-ed66-41ee-848b-41e36b73a62a principal=fixture-verifier-podman result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T16:29:30.470219210+00:00"
+    },
+    {
+      "sequence": 88,
+      "subject_id": "88fa36a1-32a4-4772-aaa7-1ab6b5ab3780",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=reviewer receipt=79ca108d-bde4-4dee-97da-320de16fc6eb principal=fixture-reviewer result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T16:29:30.490026833+00:00"
+    },
+    {
+      "sequence": 89,
+      "subject_id": "88fa36a1-32a4-4772-aaa7-1ab6b5ab3780",
+      "kind": "quality.gate_decided",
+      "detail": "outcome=Accepted",
+      "recorded_at": "2026-10-26T16:29:30.490250198+00:00"
+    },
+    {
+      "sequence": 90,
+      "subject_id": "23fb1b15-17c3-4d74-9b3f-080a2d6770e1",
+      "kind": "run.status_changed",
+      "detail": "status=ACCEPTED outcome=ACCEPTED",
+      "recorded_at": "2026-10-26T16:29:30.490336903+00:00"
+    },
+    {
+      "sequence": 91,
+      "subject_id": "managed-live-grant-2",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T17:19:01.447662877+00:00"
+    },
+    {
+      "sequence": 92,
+      "subject_id": "d8b49830-540d-489d-b626-708c76966116",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T17:19:01.450397578+00:00"
+    },
+    {
+      "sequence": 93,
+      "subject_id": "d8b49830-540d-489d-b626-708c76966116",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: bounded R0 rust discount repair replacement after verifier harness error",
+      "recorded_at": "2026-10-26T17:19:01.451747064+00:00"
+    },
+    {
+      "sequence": 94,
+      "subject_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T17:19:01.453408424+00:00"
+    },
+    {
+      "sequence": 95,
+      "subject_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T17:19:01.454995312+00:00"
+    },
+    {
+      "sequence": 96,
+      "subject_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=aadf979e-2398-4aad-9580-0bf64b70542a provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=300000",
+      "recorded_at": "2026-10-26T17:19:01.456883032+00:00"
+    },
+    {
+      "sequence": 97,
+      "subject_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=aadf979e-2398-4aad-9580-0bf64b70542a state=SETTLED input=3381 output=1112 total=4493 cost=1176",
+      "recorded_at": "2026-10-26T17:19:35.559597476+00:00"
+    },
+    {
+      "sequence": 98,
+      "subject_id": "0758e3fc-8073-4e35-b476-acfc329542e5",
+      "kind": "lead.request_blocked",
+      "detail": "invalid budget: Campaign budgets exceed the delegation or supported bounds",
+      "recorded_at": "2026-10-26T17:19:35.561278683+00:00"
+    },
+    {
+      "sequence": 99,
+      "subject_id": "managed-live-grant-3",
+      "kind": "delegation.recorded",
+      "detail": "proposed grant; autonomous execution remains closed",
+      "recorded_at": "2026-10-26T17:20:15.186199570+00:00"
+    },
+    {
+      "sequence": 100,
+      "subject_id": "4983fb52-92b3-4617-9b51-8465173de461",
+      "kind": "action.created",
+      "detail": "awaiting risk classification and execution authority",
+      "recorded_at": "2026-10-26T17:20:15.187595976+00:00"
+    },
+    {
+      "sequence": 101,
+      "subject_id": "4983fb52-92b3-4617-9b51-8465173de461",
+      "kind": "action.classified",
+      "detail": "R0 by product-owner: bounded R0 rust discount repair replacement after a blocked Lead budget proposal",
+      "recorded_at": "2026-10-26T17:20:15.188787762+00:00"
+    },
+    {
+      "sequence": 102,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.request_created",
+      "detail": "assessment session reserved; no model call or Campaign start",
+      "recorded_at": "2026-10-26T17:20:15.190184378+00:00"
+    },
+    {
+      "sequence": 103,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.state_changed",
+      "detail": "Submitted->Assessing",
+      "recorded_at": "2026-10-26T17:20:15.191588729+00:00"
+    },
+    {
+      "sequence": 104,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "model.call_authorized",
+      "detail": "role=LEAD reservation=f6b52869-cfa9-4a82-ae1c-639f9911b048 provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=300000",
+      "recorded_at": "2026-10-26T17:20:15.192710813+00:00"
+    },
+    {
+      "sequence": 105,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "model.call_settled",
+      "detail": "role=LEAD reservation=f6b52869-cfa9-4a82-ae1c-639f9911b048 state=SETTLED input=3393 output=1558 total=4951 cost=1444",
+      "recorded_at": "2026-10-26T17:20:24.395372631+00:00"
+    },
+    {
+      "sequence": 106,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.assessment_recorded",
+      "detail": "4d47a496-0aaa-44dc-a8cc-c17b5d350791",
+      "recorded_at": "2026-10-26T17:20:24.398207572+00:00"
+    },
+    {
+      "sequence": 107,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.proposal_recorded",
+      "detail": "4af951ab-57e1-4746-831f-d93b8a9584a4",
+      "recorded_at": "2026-10-26T17:20:24.399015959+00:00"
+    },
+    {
+      "sequence": 108,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.plan_frozen",
+      "detail": "f6ca7b3ab0d62ec398efd66d57231dc156ce7efd2862c7bd16a51a98ace1c13d",
+      "recorded_at": "2026-10-26T17:20:24.401433788+00:00"
+    },
+    {
+      "sequence": 109,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.state_changed",
+      "detail": "Frozen->Ready",
+      "recorded_at": "2026-10-26T17:20:24.401855800+00:00"
+    },
+    {
+      "sequence": 110,
+      "subject_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+      "kind": "campaign.authorized",
+      "detail": "authorization=managed-live-provider-auth-4 risk=R0 mode=TRUSTED_LOCAL_PROVIDER attempts=1",
+      "recorded_at": "2026-10-26T17:20:34.298194904+00:00"
+    },
+    {
+      "sequence": 111,
+      "subject_id": "07ba7902-c75b-46d5-a508-dd8bedfbbe6d",
+      "kind": "campaign.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER start for plan f6ca7b3ab0d62ec398efd66d57231dc156ce7efd2862c7bd16a51a98ace1c13d authorization=managed-live-provider-auth-4",
+      "recorded_at": "2026-10-26T17:20:34.298569656+00:00"
+    },
+    {
+      "sequence": 112,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.started",
+      "detail": "TRUSTED_LOCAL_PROVIDER campaign=07ba7902-c75b-46d5-a508-dd8bedfbbe6d authorization=managed-live-provider-auth-4",
+      "recorded_at": "2026-10-26T17:20:34.298590857+00:00"
+    },
+    {
+      "sequence": 113,
+      "subject_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+      "kind": "run.status_changed",
+      "detail": "status=RUNNING attempt=469d781e-9fd4-4306-88b2-8603b059ae24",
+      "recorded_at": "2026-10-26T17:20:34.305145392+00:00"
+    },
+    {
+      "sequence": 114,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "worker.claimed",
+      "detail": "generation=1",
+      "recorded_at": "2026-10-26T17:20:34.305171041+00:00"
+    },
+    {
+      "sequence": 115,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.session_intended",
+      "detail": "provider session intent recorded before external effect",
+      "recorded_at": "2026-10-26T17:20:34.307282206+00:00"
+    },
+    {
+      "sequence": 116,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.session_active",
+      "detail": "provider session identity bound after external creation",
+      "recorded_at": "2026-10-26T17:20:45.639182576+00:00"
+    },
+    {
+      "sequence": 117,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d output=4096 cost=500000",
+      "recorded_at": "2026-10-26T17:20:45.800531958+00:00"
+    },
+    {
+      "sequence": 118,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=18994 digest=518ef37f37ed20529f443c8b6a3fba1745ab1831fa17d8a85fd5d3787081f3b8",
+      "recorded_at": "2026-10-26T17:20:46.724680811+00:00"
+    },
+    {
+      "sequence": 119,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=ce5fbc6e-6253-43e0-af20-2edb15b1090d input=2825 output=166 total=6460 cost=1535",
+      "recorded_at": "2026-10-26T17:21:03.496681437+00:00"
+    },
+    {
+      "sequence": 120,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=invalid-action tool=final decision=ERROR",
+      "recorded_at": "2026-10-26T17:21:03.497604433+00:00"
+    },
+    {
+      "sequence": 121,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 output=4096 cost=498465",
+      "recorded_at": "2026-10-26T17:21:03.498379486+00:00"
+    },
+    {
+      "sequence": 122,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=26450 digest=8c7efe91f07145b3449b77ed772d5898e197d8e7240605ece43a92cff3b3f260",
+      "recorded_at": "2026-10-26T17:21:03.557356709+00:00"
+    },
+    {
+      "sequence": 123,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=87740c18-bf34-4538-9fa0-5b385b7e8e44 input=4510 output=182 total=6866 cost=944",
+      "recorded_at": "2026-10-26T17:21:07.228639596+00:00"
+    },
+    {
+      "sequence": 124,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T17:21:07.229652513+00:00"
+    },
+    {
+      "sequence": 125,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T17:21:07.231164959+00:00"
+    },
+    {
+      "sequence": 126,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-pricing-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T17:21:07.246461129+00:00"
+    },
+    {
+      "sequence": 127,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 output=4096 cost=497521",
+      "recorded_at": "2026-10-26T17:21:07.247789876+00:00"
+    },
+    {
+      "sequence": 128,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=28458 digest=569cb056286aa998909aecaff7d9e76bad8b063bdb2c1870936c428761efa010",
+      "recorded_at": "2026-10-26T17:21:07.306846179+00:00"
+    },
+    {
+      "sequence": 129,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=f5d3aa19-717e-4bdc-9a53-2c23b825cb55 input=627 output=637 total=8398 cost=1012",
+      "recorded_at": "2026-10-26T17:21:18.084984569+00:00"
+    },
+    {
+      "sequence": 130,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=REQUEST",
+      "recorded_at": "2026-10-26T17:21:18.086317384+00:00"
+    },
+    {
+      "sequence": 131,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=ALLOW",
+      "recorded_at": "2026-10-26T17:21:18.087903320+00:00"
+    },
+    {
+      "sequence": 132,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=write-tests-1 tool=write_file decision=RESULT",
+      "recorded_at": "2026-10-26T17:21:18.096448892+00:00"
+    },
+    {
+      "sequence": 133,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_authorized",
+      "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 output=4096 cost=496509",
+      "recorded_at": "2026-10-26T17:21:18.097570916+00:00"
+    },
+    {
+      "sequence": 134,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_request_bound",
+      "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 sequence=0 path=/v1/chat/completions model=deepseek-v4.1-flash bytes=34120 digest=b79606ee3eab597ac19703eafb551340a2b0b27539a11e3dbd5c9e6c70a275ac",
+      "recorded_at": "2026-10-26T17:21:18.151317901+00:00"
+    },
+    {
+      "sequence": 135,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.turn_settled",
+      "detail": "reservation=b04e5b62-326e-4f5b-be77-9d246296c880 input=1646 output=48 total=8706 cost=433",
+      "recorded_at": "2026-10-26T17:21:21.512421821+00:00"
+    },
+    {
+      "sequence": 136,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-functional-1 tool=run_command decision=REQUEST",
+      "recorded_at": "2026-10-26T17:21:21.513353102+00:00"
+    },
+    {
+      "sequence": 137,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-functional-1 tool=run_command decision=ALLOW",
+      "recorded_at": "2026-10-26T17:21:21.514856902+00:00"
+    },
+    {
+      "sequence": 138,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=run-functional-1 tool=run_command decision=ERROR",
+      "recorded_at": "2026-10-26T17:21:22.601514135+00:00"
+    },
+    {
+      "sequence": 139,
+      "subject_id": "1006ffab-5672-452d-bf15-837172500de0",
+      "kind": "provider.tool_event",
+      "detail": "call=turn-budget-exhausted tool=final decision=RESULT",
+      "recorded_at": "2026-10-26T17:21:22.602472488+00:00"
+    },
+    {
+      "sequence": 140,
+      "subject_id": "469d781e-9fd4-4306-88b2-8603b059ae24",
+      "kind": "provider.session_terminal",
+      "detail": "state=COMPLETED usage_known=true",
+      "recorded_at": "2026-10-26T17:21:22.746957629+00:00"
+    },
+    {
+      "sequence": 141,
+      "subject_id": "cd80c1bd-ae8c-4d91-8372-338aefebe83b",
+      "kind": "lead.plan_completed",
+      "detail": "all WorkGraph tasks succeeded",
+      "recorded_at": "2026-10-26T17:21:22.761197471+00:00"
+    },
+    {
+      "sequence": 142,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "candidate.recorded",
+      "detail": "attempt=469d781e-9fd4-4306-88b2-8603b059ae24 commit=067c8569e651e0deb9b3edf4bfd7430b99a243b1 tree=1ff574f70fcb2968ba7345399dad1cba11ef890d",
+      "recorded_at": "2026-10-26T17:21:22.761231726+00:00"
+    },
+    {
+      "sequence": 143,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=verifier receipt=ec36f22a-c64a-4408-8458-7caf1453ee15 principal=managed-live-verifier-2 result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T17:21:42.734770396+00:00"
+    },
+    {
+      "sequence": 144,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "model.call_authorized",
+      "detail": "role=SEMANTIC_REVIEWER reservation=a7f6d9c8-d42c-44b3-bbd9-f1ff6907694d provider=opencode-go model=deepseek-v4.1-flash input=80000 output=8192 cost=500000",
+      "recorded_at": "2026-10-26T17:21:51.564601844+00:00"
+    },
+    {
+      "sequence": 145,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "model.call_settled",
+      "detail": "role=SEMANTIC_REVIEWER reservation=a7f6d9c8-d42c-44b3-bbd9-f1ff6907694d state=SETTLED input=2616 output=1565 total=4181 cost=1332",
+      "recorded_at": "2026-10-26T17:22:02.414677313+00:00"
+    },
+    {
+      "sequence": 146,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "quality.receipt_recorded",
+      "detail": "role=reviewer receipt=c4074d5d-fdaa-4e6f-8cb5-a92b9062d500 principal=managed-live-reviewer-2 result=Pass evidence=Executed",
+      "recorded_at": "2026-10-26T17:22:02.444079350+00:00"
+    },
+    {
+      "sequence": 147,
+      "subject_id": "177060b3-5271-4b0f-a20f-2c5649426484",
+      "kind": "quality.gate_decided",
+      "detail": "outcome=Accepted",
+      "recorded_at": "2026-10-26T17:22:02.444375043+00:00"
+    },
+    {
+      "sequence": 148,
+      "subject_id": "62216512-61ce-4774-b94d-4db22a3ea1c1",
+      "kind": "run.status_changed",
+      "detail": "status=ACCEPTED outcome=ACCEPTED",
+      "recorded_at": "2026-10-26T17:22:02.444496784+00:00"
+    }
+  ]
+}

@@ -1,5 +1,10 @@
 # Native Rust implementation handoff
 
+> **Historical checkpoint (2026-10-24).** This document records an intermediate
+> cutover campaign and is not current status. The authoritative status is the
+> [native Rust closure ledger](native-rust-closure.md); current managed live
+> evidence is [managed-live-uat-2026-10-26.md](../evidence/managed-live-uat-2026-10-26.md).
+
 ## 2026-10-24 cutover campaign checkpoint
 
 PR #17 remains Draft on `native-rust-replacement-20261023`. The starting code

@@ -1,0 +1,57 @@
+diff --git a/src/pricing.rs b/src/pricing.rs
+index 2cc1be8..2ec4020 100644
+--- a/src/pricing.rs
++++ b/src/pricing.rs
+@@ -4,9 +4,8 @@
+ /// total is rounded down to the nearest cent, can never be negative, and can
+ /// never exceed `subtotal_cents`.
+ pub fn apply_discount(subtotal_cents: u64, percent: u8) -> u64 {
+-    let percent = u64::from(percent.min(100));
+-    let discount_cents = subtotal_cents.saturating_mul(percent) / 100;
+-    subtotal_cents
+-        .saturating_sub(discount_cents)
+-        .saturating_sub(discount_cents)
++    let percent = u128::from(percent.min(100));
++    let subtotal = u128::from(subtotal_cents);
++    let discount_cents = subtotal * percent / 100;
++    (subtotal - discount_cents) as u64
+ }
+diff --git a/tests/discounts.rs b/tests/discounts.rs
+index ba500d8..964fc34 100644
+--- a/tests/discounts.rs
++++ b/tests/discounts.rs
+@@ -26,6 +26,15 @@ fn one_cent_boundary_never_returns_a_negative_or_inflated_total() {
+     assert_eq!(apply_discount(1, 50), 1);
+ }
+ 
++#[test]
++fn maximum_subtotal_discount_is_exact_and_never_negative() {
++    let subtotal = u64::MAX;
++
++    assert_eq!(apply_discount(subtotal, 0), subtotal);
++    assert_eq!(apply_discount(subtotal, 50), 9_223_372_036_854_775_808);
++    assert_eq!(apply_discount(subtotal, 100), 0);
++}
++
+ #[test]
+ fn cart_total_applies_discount_once() {
+     let cart = Cart {
+@@ -45,3 +54,18 @@ fn cart_total_applies_discount_once() {
+     assert_eq!(cart.subtotal_cents(), 1_000);
+     assert_eq!(cart.total_cents(10), 900);
+ }
++
++#[test]
++fn cart_total_handles_zero_and_full_discounts() {
++    let cart = Cart {
++        items: vec![CartItem {
++            name: "widget".into(),
++            unit_price_cents: 999,
++            quantity: 2,
++        }],
++    };
++
++    assert_eq!(cart.subtotal_cents(), 1_998);
++    assert_eq!(cart.total_cents(0), 1_998);
++    assert_eq!(cart.total_cents(100), 0);
++}

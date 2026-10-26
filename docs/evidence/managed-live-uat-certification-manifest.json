@@ -1,0 +1,12 @@
+{
+  "level": "REAL_PROVIDER_E2E_VERIFIED",
+  "status": "verified",
+  "implementation_sha": "ea2d92724d57d4f96838d84216f39db04b7c5511",
+  "candidate_sha": "067c8569e651e0deb9b3edf4bfd7430b99a243b1",
+  "evidence": "docs/evidence/managed-live-uat-2026-10-26.md",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "mode": "TRUSTED_LOCAL_PROVIDER",
+  "gate": "ACCEPTED",
+  "notes": "Managed external-project journey through factory start; not ISOLATED, production or Product Owner UAT certification."
+}

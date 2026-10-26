@@ -1,0 +1,19 @@
+Factory status
+Container: factory-codex-config-core
+Data volume: factory-codex-config-data
+Image: localhost/software-factory-core:dev
+Core URL: http://127.0.0.1:8899
+Token file: /tmp/factory-codex-config-1793036814/core.env
+Core model route: not configured
+Worker provider env file: /tmp/factory-codex-config-1793036814/provider.env
+Worker provider profile: kind=codex, sandbox=bwrap, upstream=https://api.openai.com, binary=configured, session_root=configured
+PASS    Podman executable: podman version 6.1.4
+Project roots: 1
+PASS    Sandbox Supervisor: running
+PASS    Host Worker: running
+PASS    Worker provider config: active (kind=codex, sandbox=bwrap, upstream=https://api.openai.com, binary=configured, session_root=configured)
+PASS    Podman rootless: true
+PASS    Container state: running
+PASS    Core model config: container fingerprint=unset
+PASS    OCI runtime image: localhost/software-factory-core:dev is present
+PASS    Core health: HTTP 200 {"healthy":true,"version":"0.1.0"}

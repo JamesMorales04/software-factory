@@ -1,0 +1,32 @@
+Managed live UAT cleanup — 2026-10-26
+====================================
+
+Installation identifiers:
+  container: factory-managed-live2-core
+  data volume: factory-managed-live2-data
+  core URL: http://127.0.0.1:8893
+  supervisor: http://127.0.0.1:8894
+  provider session root: /tmp/factory-managed-live-1793031189/ps
+
+Final `factory stop` output:
+  Factory stop
+  Container: factory-managed-live2-core
+  Data volume: factory-managed-live2-data
+  Container factory-managed-live2-core: stopped
+  Container factory-managed-live2-core: removed
+  Data volume factory-managed-live2-data: kept
+
+Post-stop checks:
+  - no factory-supervisor or factory-worker process remained;
+  - no factory-managed-live container or data volume remained after
+    `podman volume rm factory-managed-live-data factory-managed-live2-data`;
+  - /tmp/factory-managed-live-1793030642, the accepted run root, the retained
+    credential env files and the disposable project were removed;
+  - no provider session directory remained;
+  - unrelated OpenCode/Paseo user processes were not touched.
+
+The failed first provider session ended FAILED with cleanup receipt
+`sandbox_process_identity_absent`; its external session deletion was not
+verified. One bound turn reservation remains RESERVED and is not counted as
+zero cost. The accepted session ended COMPLETED with
+`session_delete_verified_absent`.

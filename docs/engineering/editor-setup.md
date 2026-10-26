@@ -54,3 +54,13 @@ cargo +1.90.0 test --workspace --locked
 If a component is unavailable for the pinned release, do not substitute a newer
 toolchain silently. Report it and update the pin with a tested, justified
 change.
+
+## Tested state (2026-10-26)
+
+The committed development-container image was rebuilt and exercised locally:
+Rust/Cargo 1.90.0, Clippy 0.1.90, rustfmt 1.8.0, rust-analyzer 1.90.0,
+`rust-src`, Node 22.23.2, SQLx 0.8.6, `cargo check --workspace --locked`,
+323 unit tests (`--lib --bins`) and `rust-analyzer analysis-stats .` completed.
+Browser and bubblewrap integration tests are intentionally outside that image.
+See the [developer environment acceptance](../evidence/dev-environment-2026-10-26.md).
+No host-specific editor path is committed.

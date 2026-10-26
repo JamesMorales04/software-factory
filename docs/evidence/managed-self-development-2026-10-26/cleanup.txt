@@ -1,0 +1,16 @@
+Controlled self-development cleanup — 2026-10-26
+================================================
+
+Installation identifiers:
+  container: factory-selfdev-core
+  data volume: factory-selfdev-data
+  core URL: http://127.0.0.1:8897
+  supervisor: http://127.0.0.1:8898
+  disposable clone: /tmp/factory-selfdev-base
+  verifier image: localhost/factory-selfdev-verify:20261026
+
+Final `factory stop` removed the container and kept the volume by design; the
+test volume, disposable clone, provider session root and private env files were
+then removed. No selfdev Supervisor, Worker, container or volume remained.
+The candidate commit b00d3aaeb5f1e4e7a51f132860357a6d5a68f358 was not merged
+into the authoritative repository.

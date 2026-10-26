@@ -1,0 +1,16 @@
+Factory start
+Image: localhost/software-factory-core:dev
+Container: factory-codex-config-core
+Data volume: factory-codex-config-data
+Core model route: not configured
+Worker provider env file: /tmp/factory-codex-config-1793036814/provider.env
+Worker provider profile: kind=codex, sandbox=bwrap, upstream=https://api.openai.com, binary=configured, session_root=configured
+Token file: /tmp/factory-codex-config-1793036814/core.env
+Data volume factory-codex-config-data: created
+Container factory-codex-config-core: started (60b405f40e56)
+Office URL: http://127.0.0.1:8899
+Core health: HTTP 200
+Host execution: enabled
+Sandbox Supervisor: http://127.0.0.1:8900
+Host runtime state: /tmp/factory-codex-config-1793036814/runtime
+Worker provider config: active (kind=codex, sandbox=bwrap, upstream=https://api.openai.com, binary=configured, session_root=configured)

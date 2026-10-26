@@ -1,6 +1,6 @@
 # Linux deployment direction
 
-**Status:** Target design from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The development-container image was built and its Rust gates passed locally; no application runtime image, Quadlet unit, service or end-to-end container journey has been run. This guide is not a tested runbook and does not certify isolation or credential confinement.
+**Status:** Target design from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md), partially implemented. The Core/Office runtime image, rootless `factory start` lifecycle, host Supervisor/Worker, OpenCode provider route and a managed external-project acceptance have run locally. Quadlet/systemd units, Windows, production deployment and ISOLATED credential confinement remain unimplemented or uncertified. This is not a production runbook.
 
 ## Scope
 
@@ -24,9 +24,9 @@ It does not describe a rootful deployment, a multi-host cluster, a production ha
 | Persistent application runtime containers | `IMPLEMENTED` | `deploy/Containerfile.core` builds the Core/Office image |
 | Containerized Core API exposure | `IMPLEMENTED` | Loopback-published container with explicit `FACTORY_CONTAINER_MODE=1` |
 | Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Lifecycle subset only; installer/restart/update remain unimplemented |
-| Managed live route configuration | `IMPLEMENTED` | Optional strict `0600` Core model and Worker provider env files are preflighted, passed only to the intended process, and fingerprinted for Core recreation; Codex coding remains `BLOCKED` |
-| Ephemeral sandbox isolation and credential confinement | `BLOCKED` | SEC-01 is paused; rootless Podman is not certified |
-| Linux container E2E | `AUTHOR_VERIFIED` | Core/Office image, factory start/stop/status and fixture Campaign run on the tested CachyOS host |
+| Managed live route configuration | `IMPLEMENTED` | Optional strict `0600` Core model and Worker provider env files are preflighted, passed only to the intended process, and fingerprinted for Core recreation; OpenCode live acceptance passed and Codex native ChatGPT auth remains `BLOCKED` |
+| Ephemeral execution and credential confinement | `PARTIAL` | Rootless-Podman named-volume verifier and TRUSTED_LOCAL provider boundary are implemented; SEC-01 isolation and credential confinement are not certified |
+| Linux container E2E | `AUTHOR_VERIFIED` | Core/Office image, `factory start`, real OpenCode Lead/Implementer, rootless-Podman verifier, semantic Reviewer, `ACCEPTED`, restart and clean stop on the tested host; see the [managed live UAT](../evidence/managed-live-uat-2026-10-26.md) |
 | Independent verification | None | No independent verifier ran this topology |
 
 ### Command status
@@ -68,12 +68,12 @@ The development container described in [Container-first development](../engineer
 |---|---|---|---|
 | Factory Core | `LEVEL B` host process, or `LEVEL C` trusted container packaging | Owns authority, state, budgets, gate and delivery; sole SQLite writer | `IMPLEMENTED` container image and loopback publication |
 | Sandbox Supervisor | `LEVEL B` host Linux process | Trusted infrastructure; Worker session credential and scoped Podman launcher capability; no provider or GitHub credentials by default | `IMPLEMENTED`; not isolation-certified |
-| Provider server | `LEVEL B` host process or `LEVEL C` trusted container | Own provider credential only; no GitHub, Core or delivery token | `NOT_IMPLEMENTED`; provider coding fail-closed |
+| Provider execution | Worker-owned sandbox plus pinned egress broker | Worker holds the provider credential; sandbox receives a per-run token only | `IMPLEMENTED` for OpenCode and Codex adapters; Codex native ChatGPT auth `BLOCKED`; not isolation-certified |
 | Application runtime service | `LEVEL C` persistent container | Trusted service; minimal image; scoped credentials | `IMPLEMENTED` for Core/Office; not production-certified |
-| Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | `BLOCKED` until independently verified |
+| Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | `IMPLEMENTED` for TRUSTED_LOCAL named-volume execution; independent isolation certification `BLOCKED` |
 | Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Configuration `IMPLEMENTED`; image + in-container Rust gates `LOCALLY_VERIFIED` with host-network caveat; Office build and default networking `NOT_TESTED` |
 
-The [service placement policy](../architecture/service-placement-policy.md) remains authoritative. A container or Pod does not create a trust boundary, and `LEVEL C` is not a security upgrade.
+The [service placement policy](../architecture/service-placement-policy.md) remains authoritative. A container or Pod does not create a trust boundary, and `LEVEL C` is not a security upgrade. The managed acceptance is a TRUSTED_LOCAL result, not SEC-01 certification.
 
 ## Prerequisites
 
@@ -218,12 +218,15 @@ Before claiming this topology works:
 
 This guide does not claim:
 
-- that a Linux deployment exists;
-- that rootless Podman, Quadlet, systemd, SELinux/AppArmor or cgroups are configured correctly;
+- that a production Linux deployment exists;
+- that Quadlet, systemd, SELinux/AppArmor or cgroup delegation are configured;
 - that a container is an isolation boundary or that credentials are confined;
-- that the Core API is safely containerized;
-- that the Supervisor, `factory` CLI, `factory doctor` or migrations are implemented;
-- that any container E2E journey passed;
-- that Windows behavior is known.
+- that the Core/Office container is production-hardened or ISOLATED-certified;
+- that Windows behavior is known;
+- that human security review or final merge has occurred.
 
-Those remain `NOT_IMPLEMENTED`, `NOT_TESTED` or `BLOCKED` as stated above.
+The Supervisor, `factory` CLI, `factory doctor`, migrations, TRUSTED_LOCAL
+container journey and managed OpenCode acceptance are implemented and
+author-verified as recorded above. Quadlet/systemd units, Windows, production
+deployment and SEC-01 isolation remain `NOT_IMPLEMENTED`, `NOT_TESTED` or
+`BLOCKED`.
