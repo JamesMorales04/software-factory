@@ -84,6 +84,57 @@ pub struct ThreadStartParams {
     pub cwd: String,
     pub approval_policy: DenyApprovalPolicy,
     pub sandbox: ReadOnlySandbox,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_instructions: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DynamicToolSpec {
+    Function {
+        name: String,
+        description: String,
+        input_schema: Value,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolCallParams {
+    pub arguments: Value,
+    pub call_id: String,
+    pub thread_id: String,
+    pub tool: String,
+    pub turn_id: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum DynamicToolContentItem {
+    InputText { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicToolCallResult {
+    pub content_items: Vec<DynamicToolContentItem>,
+    pub success: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +153,12 @@ pub enum ReadOnlySandbox {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadStartResponse {
     pub thread: ThreadSummary,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub model_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,7 +173,58 @@ pub struct TurnStartParams {
     pub thread_id: String,
     pub input: Vec<UserInput>,
     pub approval_policy: DenyApprovalPolicy,
-    pub sandbox_policy: ReadOnlySandbox,
+    pub sandbox_policy: TurnSandboxPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum TurnSandboxPolicy {
+    ReadOnly {
+        #[serde(default)]
+        network_access: bool,
+    },
+}
+
+impl Default for ThreadStartParams {
+    fn default() -> Self {
+        Self {
+            cwd: String::new(),
+            approval_policy: DenyApprovalPolicy::Never,
+            sandbox: ReadOnlySandbox::ReadOnly,
+            model: None,
+            model_provider: None,
+            ephemeral: None,
+            dynamic_tools: None,
+            base_instructions: None,
+            developer_instructions: None,
+        }
+    }
+}
+
+impl Default for TurnStartParams {
+    fn default() -> Self {
+        Self {
+            thread_id: String::new(),
+            input: Vec::new(),
+            approval_policy: DenyApprovalPolicy::Never,
+            sandbox_policy: TurnSandboxPolicy::ReadOnly {
+                network_access: false,
+            },
+            model: None,
+            effort: None,
+            output_schema: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -166,6 +274,46 @@ pub enum ServerPermissionDecision {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RpcServerRequest {
+    pub id: Value,
+    pub method: String,
+    pub params: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RpcEvent {
+    Notification(RpcNotification),
+    ServerRequest(RpcServerRequest),
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsageBreakdown {
+    #[serde(default)]
+    pub cached_input_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTokenUsage {
+    pub last: TokenUsageBreakdown,
+    pub total: TokenUsageBreakdown,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTokenUsageUpdatedParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub token_usage: ThreadTokenUsage,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TurnWaitOutcome {
     Completed(TurnCompletedParams),
     TimeoutInterruptRequested { interrupt_response: Value },
@@ -176,6 +324,7 @@ pub struct JsonRpc<R, W> {
     writer: W,
     next_id: u64,
     notifications: VecDeque<RpcNotification>,
+    server_requests: VecDeque<RpcServerRequest>,
     server_permission: ServerPermissionDecision,
 }
 
@@ -190,6 +339,7 @@ where
             writer,
             next_id: 1,
             notifications: VecDeque::new(),
+            server_requests: VecDeque::new(),
             server_permission: ServerPermissionDecision::Deny,
         }
     }
@@ -216,8 +366,12 @@ where
             let value: Value = serde_json::from_str(&line)?;
             if let Some(method) = value.get("method").and_then(Value::as_str) {
                 if let Some(server_id) = value.get("id") {
-                    self.answer_server_request(server_id.clone(), method)
-                        .await?;
+                    self.server_request_or_deny(
+                        server_id.clone(),
+                        method,
+                        value.get("params").cloned().unwrap_or(Value::Null),
+                    )
+                    .await?;
                     continue;
                 }
                 self.enqueue_notification(RpcNotification {
@@ -311,8 +465,12 @@ where
                 .and_then(Value::as_str)
                 .ok_or_else(|| RpcError::Protocol("expected server notification".into()))?;
             if let Some(server_id) = value.get("id") {
-                self.answer_server_request(server_id.clone(), method)
-                    .await?;
+                self.server_request_or_deny(
+                    server_id.clone(),
+                    method,
+                    value.get("params").cloned().unwrap_or(Value::Null),
+                )
+                .await?;
                 continue;
             }
             return Ok(RpcNotification {
@@ -320,6 +478,112 @@ where
                 params: value.get("params").cloned().unwrap_or(Value::Null),
             });
         }
+    }
+
+    pub async fn initialize(
+        &mut self,
+        name: &str,
+        title: &str,
+        version: &str,
+        experimental_api: bool,
+    ) -> Result<Value, RpcError> {
+        let value = self
+            .request(
+                "initialize",
+                json!({
+                    "clientInfo": {"name": name, "title": title, "version": version},
+                    "capabilities": {"experimentalApi": experimental_api}
+                }),
+            )
+            .await?;
+        self.notify("initialized", json!({})).await?;
+        Ok(value)
+    }
+
+    pub async fn next_event(&mut self) -> Result<RpcEvent, RpcError> {
+        if let Some(request) = self.server_requests.pop_front() {
+            return Ok(RpcEvent::ServerRequest(request));
+        }
+        if let Some(notification) = self.notifications.pop_front() {
+            return Ok(RpcEvent::Notification(notification));
+        }
+        loop {
+            let line = self
+                .reader
+                .next_line()
+                .await?
+                .ok_or(RpcError::EndOfStream)?;
+            let value: Value = serde_json::from_str(&line)?;
+            let method = value
+                .get("method")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::Protocol("expected server event".into()))?;
+            let params = value.get("params").cloned().unwrap_or(Value::Null);
+            if let Some(server_id) = value.get("id") {
+                if method == "item/commandExecution/requestApproval"
+                    || method == "item/fileChange/requestApproval"
+                {
+                    self.answer_server_request(server_id.clone(), method)
+                        .await?;
+                    continue;
+                }
+                return Ok(RpcEvent::ServerRequest(RpcServerRequest {
+                    id: server_id.clone(),
+                    method: method.to_owned(),
+                    params,
+                }));
+            }
+            return Ok(RpcEvent::Notification(RpcNotification {
+                method: method.to_owned(),
+                params,
+            }));
+        }
+    }
+
+    pub async fn respond(&mut self, id: Value, result: Value) -> Result<(), RpcError> {
+        self.send(json!({"id": id, "result": result})).await
+    }
+
+    pub async fn respond_error(
+        &mut self,
+        id: Value,
+        code: i64,
+        message: &str,
+    ) -> Result<(), RpcError> {
+        self.send(json!({"id": id, "error": {"code": code, "message": message}}))
+            .await
+    }
+
+    async fn server_request_or_deny(
+        &mut self,
+        id: Value,
+        method: &str,
+        params: Value,
+    ) -> Result<(), RpcError> {
+        if method != "item/tool/call" {
+            return self.answer_server_request(id, method).await;
+        }
+        if self.server_requests.len() >= MAX_PENDING_NOTIFICATIONS {
+            return Err(RpcError::Protocol(
+                "server request queue reached its bound".into(),
+            ));
+        }
+        self.server_requests.push_back(RpcServerRequest {
+            id,
+            method: method.to_owned(),
+            params,
+        });
+        Ok(())
+    }
+
+    pub async fn archive_thread(&mut self, thread_id: &str) -> Result<Value, RpcError> {
+        if thread_id.trim().is_empty() {
+            return Err(RpcError::Protocol(
+                "thread/archive requires a nonempty threadId".into(),
+            ));
+        }
+        self.request("thread/archive", json!({"threadId": thread_id}))
+            .await
     }
 
     pub async fn wait_for_turn_completed(
@@ -556,7 +820,10 @@ mod tests {
             assert_eq!(turn_start["method"], "turn/start");
             assert_eq!(turn_start["params"]["threadId"], "thread-1");
             assert_eq!(turn_start["params"]["approvalPolicy"], "never");
-            assert_eq!(turn_start["params"]["sandboxPolicy"], "read-only");
+            assert_eq!(
+                turn_start["params"]["sandboxPolicy"],
+                json!({"type":"readOnly","networkAccess":false})
+            );
             assert_eq!(turn_start["params"]["input"][0]["type"], "text");
             assert_eq!(turn_start["params"]["input"][0]["text"], "fixture only");
 
@@ -591,8 +858,7 @@ mod tests {
         let thread = rpc
             .start_thread(ThreadStartParams {
                 cwd: "/tmp/project".into(),
-                approval_policy: DenyApprovalPolicy::Never,
-                sandbox: ReadOnlySandbox::ReadOnly,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -603,8 +869,7 @@ mod tests {
                 input: vec![UserInput::Text {
                     text: "fixture only".into(),
                 }],
-                approval_policy: DenyApprovalPolicy::Never,
-                sandbox_policy: ReadOnlySandbox::ReadOnly,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -674,8 +939,7 @@ mod tests {
         let thread = rpc
             .start_thread(ThreadStartParams {
                 cwd: "/tmp/project".into(),
-                approval_policy: DenyApprovalPolicy::Never,
-                sandbox: ReadOnlySandbox::ReadOnly,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -686,8 +950,7 @@ mod tests {
                 input: vec![UserInput::Text {
                     text: "first".into(),
                 }],
-                approval_policy: DenyApprovalPolicy::Never,
-                sandbox_policy: ReadOnlySandbox::ReadOnly,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -706,8 +969,7 @@ mod tests {
                 input: vec![UserInput::Text {
                     text: "tool result".into(),
                 }],
-                approval_policy: DenyApprovalPolicy::Never,
-                sandbox_policy: ReadOnlySandbox::ReadOnly,
+                ..Default::default()
             })
             .await
             .unwrap();

@@ -156,6 +156,10 @@ pub fn command_matches_frozen_check(argv: &[String], checks: &[SpecCheck]) -> bo
 
 pub fn extract_action(message: &Value) -> Result<ProviderAction, PatchError> {
     let text = message_text(message)?;
+    extract_action_text(&text)
+}
+
+pub fn extract_action_text(text: &str) -> Result<ProviderAction, PatchError> {
     let text = strip_fence(text.trim());
     serde_json::from_str(text).map_err(|error| PatchError::InvalidJson(error.to_string()))
 }

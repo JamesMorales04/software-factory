@@ -58,6 +58,10 @@ name = "factory-fixture-provider"
 path = "src/bin/fixture_provider.rs"
 
 [[bin]]
+name = "factory-fixture-codex"
+path = "src/bin/fixture_codex.rs"
+
+[[bin]]
 name = "factory-supervisor"
 path = "src/bin/supervisor.rs"
 

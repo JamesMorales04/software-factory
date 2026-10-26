@@ -64,10 +64,11 @@ evidence and exits non-zero.
 
 ## Live OpenCode provider (TRUSTED_LOCAL_PROVIDER)
 
-The Worker supports a sandboxed OpenCode provider server for an explicitly
-authorized R0 `TRUSTED_LOCAL_PROVIDER` Campaign. The supported provider route is
-`opencode-go/deepseek-v4.1-flash`; the `opencode` and Codex provider routes are
-not live coding routes. Required Worker settings:
+The Worker supports sandboxed OpenCode and Codex App Server provider execution
+for an explicitly authorized R0 `TRUSTED_LOCAL_PROVIDER` Campaign. The
+OpenCode route is `opencode-go/deepseek-v4.1-flash`; the Codex route is
+`codex/gpt-6-luna`. These are TRUSTED_LOCAL routes, not ISOLATED execution.
+Required OpenCode Worker settings:
 
 ```sh
 export FACTORY_PROVIDER_SANDBOX=bwrap
@@ -101,8 +102,68 @@ This path is TRUSTED_LOCAL, not SEC-01 isolation. Do not claim credential
 confinement or ISOLATED certification. A live acceptance journey and its
 measured usage are recorded in
 [the F1-S4-LIVE-UAT report](../docs/evidence/f1-s4-live-uat-2026-10-25.md).
-The report's repair candidate is not merged yet; the merged baseline remains
-the migration-closure status authority.
+
+## Codex App Server provider (TRUSTED_LOCAL_PROVIDER)
+
+The Worker can drive the installed Codex App Server (`0.156.1` validated) over
+stdio inside the same bubblewrap boundary. Codex is selected by the frozen
+Campaign route `codex/gpt-6-luna`; the Worker also requires
+`FACTORY_PROVIDER_KIND=codex`. Codex is never granted native shell or file
+authority: the Worker declares `write_file` and `run_command` as client dynamic
+tools, and the egress broker replaces Codex's upstream tool list with exactly
+that allowlist before forwarding. The Worker additionally denies other tool
+names, rejects unsupported server requests and non-allowlisted item types, and
+fails on native `commandExecution`/`fileChange` items. Codex 0.156.1 still
+contains built-in code-mode, collaboration, goal and request-input surfaces;
+the production invocation disables the known feature flags and the egress
+tool-list replacement removes them from the model request. This is
+version-sensitive; verify with the pinned binary and do not weaken the gate.
+
+Required Worker settings in addition to the egress settings above:
+
+```sh
+export FACTORY_PROVIDER_SANDBOX=bwrap
+export FACTORY_PROVIDER_KIND=codex
+export FACTORY_PROVIDER_BINARY=/absolute/path/to/native/codex   # not the npm shim
+export FACTORY_PROVIDER_EGRESS_BRIDGE=/absolute/path/to/factory-egress-bridge
+export FACTORY_PROVIDER_UPSTREAM_URL=https://api.openai.com/v1
+export FACTORY_PROVIDER_UPSTREAM_TOKEN=...                  # never commit
+export FACTORY_PROVIDER_SESSION_ROOT=/short/tmp/provider-sessions
+export FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION=...
+export FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION=...
+```
+
+The binary must be the native vendor executable, not the npm/mise launcher
+shim; the sandbox bind-mounts one executable and the shim's module lookup fails.
+The Worker uses a private `CODEX_HOME` under the disposable session directory,
+a generated Git session root, the loopback egress bridge, and no operator HOME
+or `~/.codex`. It declares the dynamic tools at thread start, divides the turn
+input/output ceiling across the bounded request sequence, and binds every
+upstream `/v1/responses` body to the Core turn reservation (up to eight
+requests per turn). It settles token usage and refuses success unless the
+sandbox process is confirmed absent and the disposable session directory was
+removed. Cost is computed from the two configured micro-dollar rates; if either
+rate is absent, usage is not claimed as known and the candidate is refused.
+Do not treat Codex archive, process exit alone, or an empty index as cleanup
+proof. Cost is a post-request calculation; the Core gate rejects over-budget
+usage, but the provider may already have executed the forwarded request.
+
+The deterministic tests are:
+
+```sh
+cargo test -p factory-native --test codex_dynamic_tools --locked
+CODEX_BIN=/absolute/path/to/codex \
+  cargo test -p factory-native --test e2e_fixture_dispatch codex_ --locked
+```
+
+`codex_dynamic_tools` drives the real App Server against a loopback Responses
+mock. `codex_real_executable_reaches_a_candidate_and_binds_upstream_requests`
+drives the real binary through Core, Worker, Supervisor and the egress broker
+to a Git candidate with two bound upstream requests; it also verifies that the
+upstream tool list is exactly `write_file`/`run_command` and does not contain
+built-in exec, request-input or collaboration tools. Neither test makes a paid
+model call. Genuine GPT-6 Luna inference remains subject to a separate bounded
+live authorization; it is not claimed by these tests.
 
 ## Factory-managed browser checks
 

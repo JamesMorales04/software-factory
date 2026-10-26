@@ -48,6 +48,12 @@ struct ProviderTurnAuthorize {
     generation: i64,
     requested_output_tokens: u64,
     request_sha256: String,
+    #[serde(default = "default_provider_turn_max_requests")]
+    max_requests: u32,
+}
+
+fn default_provider_turn_max_requests() -> u32 {
+    1
 }
 
 #[derive(Deserialize)]
@@ -68,6 +74,8 @@ struct ProviderTurnBind {
     model: String,
     path: String,
     body_bytes: u64,
+    #[serde(default)]
+    sequence: u32,
 }
 
 #[derive(Deserialize)]
@@ -1222,6 +1230,7 @@ async fn worker_provider_turn_authorize(
             input.generation,
             input.requested_output_tokens,
             &input.request_sha256,
+            input.max_requests,
         )
         .await
     {
@@ -1267,6 +1276,7 @@ async fn worker_provider_turn_bind(
             model: input.model,
             path: input.path,
             body_bytes: input.body_bytes,
+            sequence: input.sequence,
         })
         .await
     {
