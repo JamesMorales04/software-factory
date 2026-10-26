@@ -1,0 +1,23 @@
+Codex managed-provider preflight summary
+========================================
+
+Provider profile:
+  FACTORY_PROVIDER_SANDBOX=bwrap
+  FACTORY_PROVIDER_KIND=codex
+  FACTORY_PROVIDER_BINARY=<native Codex App Server 0.156.1 vendor executable>
+  FACTORY_PROVIDER_EGRESS_BRIDGE=<absolute factory-egress-bridge>
+  FACTORY_PROVIDER_UPSTREAM_URL=https://api.openai.com/v1
+  FACTORY_PROVIDER_UPSTREAM_TOKEN=<placeholder; not a real credential>
+  FACTORY_PROVIDER_SESSION_ROOT=<private short disposable path>
+  FACTORY_PROVIDER_CODEX_INPUT_COST_MICROS_PER_MILLION=100000
+  FACTORY_PROVIDER_CODEX_OUTPUT_COST_MICROS_PER_MILLION=200000
+
+Executable version:
+  codex-cli 0.156.1
+
+`factory start` and `factory doctor` reported:
+  kind=codex, sandbox=bwrap, upstream=https://api.openai.com,
+  binary=configured, session_root=configured
+
+No Campaign or provider session was created. The placeholder token is not a
+credential and no inference was requested.

@@ -23,4 +23,3 @@ test text::tests::preserves_exact_length_without_ellipsis ... ok
 test text::tests::truncates_with_ellipsis ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
-

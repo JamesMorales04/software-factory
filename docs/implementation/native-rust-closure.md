@@ -102,8 +102,13 @@ disposable external Rust repository then completed the full journey with real
 - deterministic gate `ACCEPTED`;
 - Office presentation, restart persistence and clean stop.
 
-Measured usage was 91,869 tokens and 16,516 micros at configured rates across
-the accepted and discarded attempts. A failed provider session, a stale-image
+The committed Core export records 86,412 tokens and 14,774 micros at
+configured rates; adding a reconstructed 5,457-token stale-image entry Lead
+call from the first disposable install gives 91,869 / 16,516. The combined
+figure is a lower-bound accounting total, not a complete exported ledger.
+Follow-up commit `6ae3241` makes the first-write instruction conditional for
+run_command-only authorizations and strengthens deterministic tests; it does
+not change the write_file prompt text used by this journey. A failed provider session, a stale-image
 entry Lead call, an immutable verifier-harness FAIL candidate and one reserved
 unknown turn are recorded truthfully rather than hidden. Evidence:
 [managed live UAT](../evidence/managed-live-uat-2026-10-26.md).
@@ -118,7 +123,7 @@ credential boundary; the supported Codex route is an operator API key at
 In a separate managed stack and a disposable clone at `ea2d927`, one bounded
 Implementer session generated focused `one_line` unit tests in
 `factory-cli/src/text.rs` only. Candidate
-`b00d3aab5f1e4e7a51f132860357a6d5a68f358` passed an independent
+`b00d3aaeb5f1e4e7a51f132860357a6d5a68f358` passed an independent
 rootless-Podman verifier (3 tests), semantic review and the `ACCEPTED` gate.
 The candidate was not merged and the disposable stack was removed. Evidence:
 [managed self-development](../evidence/managed-self-development-2026-10-26.md).
@@ -364,6 +369,7 @@ both explicit cost rates. A placeholder-token preflight passed without
 inference; no Campaign or provider session was created. Native ChatGPT OAuth
 authentication is **BLOCKED** by the credential boundary: the broker injects a
 single pinned bearer credential and cannot import or pass through Codex-owned
-OAuth refresh/account headers. The supported Codex live route is an operator
-API key at `https://api.openai.com/v1`. Evidence:
+OAuth refresh/account headers. The only supported Codex live authentication mode
+is an operator API key at `https://api.openai.com/v1`; live Codex inference is
+not tested. Evidence:
 [Codex managed configuration](../evidence/codex-managed-config-2026-10-26.md).

@@ -45,10 +45,15 @@ cp -a /opt/factory-cargo .cargo-home
 CARGO_HOME=$PWD/.cargo-home cargo test --offline -p factory-cli --bin factory text::
 ```
 
-The verifier sandbox is rootless Podman with `--network=none`, a read-only
-root, one named volume and the exact frozen command. The provider's
-`run_command` used the same command; its own attempts returned errors, but the
-Worker preserved the written source for independent verification.
+The verifier sandbox used the rootless-Podman backend with `--network=none`,
+a read-only root, one named volume and the exact frozen command; the invocation
+is recorded in
+[verifier-invocation.txt](managed-self-development-2026-10-26/verifier-invocation.txt).
+The current verifier receipt does not persist the backend/image/network fields
+or per-check output, so the mechanism is author-attested and the check output
+was independently replayed. The provider's `run_command` used the same command;
+its own attempts returned errors, but the Worker preserved the written source
+for independent verification.
 
 ## 3. Identities and result
 
@@ -66,7 +71,9 @@ Worker preserved the written source for independent verification.
 | Quality Gate | **ACCEPTED** at `2026-10-26T17:45:58.311198393+00:00` |
 
 The model session ended `COMPLETED`, `usage_known=true`, with cleanup
-`session_delete_verified_absent`.
+`session_delete_verified_absent`. Follow-up commit `6ae3241` keeps the same
+write_file prompt text for this authorized path and makes it conditional only
+where write_file is not granted.
 
 ## 4. Actual model-generated change
 

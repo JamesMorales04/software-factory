@@ -1,0 +1,25 @@
+Verifier invocation — controlled self-development candidate
+===========================================================
+
+Candidate: dd456c6c-4cbb-4b2b-b570-bb8b9cfb02eb
+Commit:    b00d3aaeb5f1e4e7a51f132860357a6d5a68f358
+
+Environment used by the one-shot verifier process:
+  FACTORY_CORE_URL=http://127.0.0.1:8897
+  FACTORY_VERIFIER_TOKEN=<role token from private 0600 env file; not retained>
+  FACTORY_CANDIDATE_ID=dd456c6c-4cbb-4b2b-b570-bb8b9cfb02eb
+  FACTORY_VERIFIER_PRINCIPAL=selfdev-verifier
+  FACTORY_VERIFIER_WORKSPACE=<disposable path>
+  FACTORY_VERIFIER_IMAGE=localhost/factory-selfdev-verify:20261026
+  FACTORY_VERIFIER_TEST_BACKEND unset (rootless-Podman backend)
+  FACTORY_VERIFIER_TEST_VOLUME_ROOT unset
+
+Command:
+  target/debug/factory-verifier
+
+The verifier receipt records PASS / EXECUTED for the exact candidate and tree.
+The current receipt schema does not persist the backend name, image, network
+mode or per-check stdout/stderr. The rootless-Podman mechanism is author-attested
+by this invocation and by the separately executed fixture verification; the
+candidate's check output was independently replayed and is committed as
+check-output.log.

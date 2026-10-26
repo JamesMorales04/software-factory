@@ -173,7 +173,7 @@ profile with the native vendor binary, egress bridge, pinned upstream and both
 `FACTORY_PROVIDER_CODEX_*_COST_MICROS_PER_MILLION` rates. A placeholder-token
 managed preflight passed without inference; see the
 [Codex managed configuration evidence](../docs/evidence/codex-managed-config-2026-10-26/doctor.log).
-The supported live route is an operator API key at `https://api.openai.com/v1`.
+The only supported live authentication mode is an operator API key at `https://api.openai.com/v1`; no live Codex inference has been run.
 Native ChatGPT OAuth authentication is **BLOCKED** by the current egress
 boundary: Codex owns and refreshes the ChatGPT access token and account header,
 while the broker injects one pinned bearer credential and cannot safely import
@@ -190,11 +190,11 @@ model call. A separately authorized bounded GPT-6 Luna live UAT passed on
 2026-10-26 with candidate `635336d3d525a20ab4079ae04586c4e2f7f1ab74`, an
 independent deterministic verifier and an `ACCEPTED` gate. It used a test-only
 local proxy to the authenticated ChatGPT Codex backend; native ChatGPT-backend
-configuration, live semantic model review, native cost verification and
+configuration, Codex-native semantic model review, native cost verification and
 ISOLATED execution remain open. See
 [the live evidence](../docs/evidence/codex-gpt6-luna-live-uat-2026-10-26.md).
-The managed API-key route is supported; the ChatGPT proxy is not packaged as
-production authentication.
+The managed API-key route is configured and preflighted, but live Codex inference
+is not tested; the ChatGPT proxy is not packaged as production authentication.
 
 ## Factory-managed browser checks
 

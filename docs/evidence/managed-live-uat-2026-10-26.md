@@ -18,6 +18,7 @@ security review or an exact-invoice cost measurement.
 |---|---|
 | Authoritative main at entry | `9f888ac74512b392c8bf86f856c5a152db5b3566` |
 | Implementation commit exercised | `ea2d92724d57d4f96838d84216f39db04b7c5511` |
+| Follow-up hardening | `6ae3241bc7f9bb849d36ddbbff71eb90ef95d0c8` makes the first-write instruction conditional for `run_command`-only authorizations and strengthens the revocation/lost-connection tests; the write_file prompt text used by this run is unchanged. |
 | Core image | `localhost/software-factory-core:dev`, image ID `7c7a886521920cbd89d15bd8d9bfc56a93bfd9f23b8dc78bd18267f7ca0b74bd` |
 | Host Worker binary SHA-256 | `521235554819d241e4f7251f96a167044c05328913deb7fd9956bc6134ad0240` |
 | Toolchain / runtime | Rust 1.90.0, rootless Podman 6.1.4 |
@@ -47,8 +48,9 @@ approved limits were:
   files, cleanup of the installation and provider sessions.
 
 The accepted replacement session was separately bounded to one provider
-session, four turns, 60,000 input / 12,000 output tokens, USD 0.50 and 30
-minutes. The total measured spend stayed below both envelopes.
+session, four turns, 60,000 input / 12,000 output tokens, USD 0.50 and a
+30-minute envelope; the Core per-Attempt deadline was 600 seconds. The total
+measured spend stayed below both envelopes.
 
 ## 3. Journey identities
 
@@ -113,18 +115,26 @@ Measured Core records, not invoice estimates:
 | Implementer session `1006ffab…` | 9,608 | 1,033 | 30,430 | 3,924 |
 | Earlier accepted-candidate session `dd0fb0a5…` | 8,135 | 1,363 | 26,861 | 2,980 |
 | Failed session `aaad7896…` | 2,784 | 415 | 5,721 | 1,110 |
-| Earlier Lead calls and one blocked-budget Lead call | — | — | 14,268 | 3,984 |
-| Stale-image entry Lead call | — | — | 5,457 | 1,742 |
-| **Measured total** | | | **91,869** | **16,516** |
+| Three earlier settled Lead calls (including the blocked-budget proposal) | — | — | 14,268 | 3,984 |
+| **Committed-export total** | | | **86,412** | **14,774** |
+| Stale-image entry Lead call (reconstructed; not in committed export) | — | — | 5,457 | 1,742 |
+| **Reconstructed total across both installs** | | | **91,869** | **16,516** |
 
 The accepted provider session ended `COMPLETED`, `usage_known=true`, with
 cleanup receipt `session_delete_verified_absent`; the Core model calls settled
 with known usage. The failed session ended `FAILED` with known usage and
 cleanup `sandbox_process_identity_absent`; one bound-but-unsettled turn
-reservation (`2342f2e3…`) remains **RESERVED** rather than being treated as
-zero cost. It is visible through `GET /provider/turn_reservations` and was
-not silently resolved. The total is USD 0.016516 equivalent at the configured
-rates, not an external invoice.
+reservation (`2342f2e3…`) remains **RESERVED** with unknown usage rather than
+being treated as zero cost. It is visible through
+`GET /provider/turn_reservations` and was not silently resolved. The
+committed-export total is **86,412 tokens / 14,774 micros**; the stale-image
+entry Lead call was recorded in the first installation's database before that
+disposable install was removed, so the combined 91,869 / 16,516 figure is
+reconstructed from the report's extracted record and is a lower-bound
+accounting total, not a complete exported ledger. The reserved turn's
+potential cost is unknown; even at its 498,890-micro ceiling the primary
+envelope is not exceeded. Costs are USD equivalents at configured rates, not
+an external invoice.
 
 The old-format provider session totals include OpenCode's cache/reasoning
 accounting; the input/output columns are the reported message fields.
@@ -134,9 +144,11 @@ accounting; the input/output columns are the reported message fields.
 The verifier ran the frozen checks for the exact candidate in a separate
 rootless-Podman named-volume sandbox with the Rust image and `--network=none`.
 It submitted `PASS`/`EXECUTED`, bound to commit `067c8569` and tree
-`1ff574f7`. The check process does not persist per-check stdout/stderr; the
-exact-candidate executed receipt is the authoritative verifier evidence. The
-verifier log is [verifier.log](managed-live-uat-2026-10-26/verifier.log).
+`1ff574f7`. The receipt does not persist the backend, image, network or
+per-check output; the rootless-Podman mechanism is author-attested by the
+invocation and the separately verified fixture. The exact-candidate executed
+receipt is the authoritative verifier evidence. The verifier log is
+[verifier.log](managed-live-uat-2026-10-26/verifier.log).
 
 The semantic Reviewer was a distinct principal (`managed-live-reviewer-2`),
 ran its mandatory deterministic pre-review first, then a real MODEL call. It
@@ -179,8 +191,8 @@ projection/UX observations, not acceptance failures.
 
 ## 8. Reliability and accounting evidence
 
-Deterministic checks passed at `ea2d927` (full workspace, strict Clippy and
-format). The specific matrix is:
+Deterministic checks passed at `ea2d927` and follow-up `6ae3241` (full
+workspace tests, strict Clippy and format). The specific matrix is:
 
 | Requirement | Evidence | Result |
 |---|---|---|

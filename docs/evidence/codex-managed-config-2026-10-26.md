@@ -16,8 +16,10 @@ with a Worker-only `FACTORY_PROVIDER_ENV_FILE` containing:
 
 `factory doctor` and `factory status` both reported the Codex profile active,
 Core health 200, rootless Podman, Supervisor and Worker running. The stack was
-stopped without creating a Campaign or provider session. Logs are in
-[codex-managed-config-2026-10-26/](codex-managed-config-2026-10-26/).
+stopped without creating a Campaign or provider session. The redacted profile
+and executable version are in
+[config-summary.txt](codex-managed-config-2026-10-26/config-summary.txt); logs
+are in the same directory.
 
 ## Native ChatGPT authentication constraint
 
@@ -30,7 +32,8 @@ would be unsupported credential extraction; passing them into the sandbox would
 break the credential boundary. The native ChatGPT route is therefore
 **BLOCKED**.
 
-The supported Codex live route is an operator API key at the pinned
-`https://api.openai.com/v1` upstream, with `FACTORY_PROVIDER_UPSTREAM_TOKEN`.
+The only supported Codex live authentication mode is an operator API key at
+the pinned `https://api.openai.com/v1` upstream, with
+`FACTORY_PROVIDER_UPSTREAM_TOKEN`; live Codex inference is **NOT_TESTED**.
 The earlier GPT-6 Luna test used a test-only local ChatGPT proxy and is not
 product authentication.

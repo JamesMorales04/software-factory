@@ -27,7 +27,7 @@ It does not describe a rootful deployment, a multi-host cluster, a production ha
 | Managed live route configuration | `IMPLEMENTED` | Optional strict `0600` Core model and Worker provider env files are preflighted, passed only to the intended process, and fingerprinted for Core recreation; OpenCode live acceptance passed and Codex native ChatGPT auth remains `BLOCKED` |
 | Ephemeral execution and credential confinement | `PARTIAL` | Rootless-Podman named-volume verifier and TRUSTED_LOCAL provider boundary are implemented; SEC-01 isolation and credential confinement are not certified |
 | Linux container E2E | `AUTHOR_VERIFIED` | Core/Office image, `factory start`, real OpenCode Lead/Implementer, rootless-Podman verifier, semantic Reviewer, `ACCEPTED`, restart and clean stop on the tested host; see the [managed live UAT](../evidence/managed-live-uat-2026-10-26.md) |
-| Independent verification | None | No independent verifier ran this topology |
+| Independent verification | `AUTHOR_VERIFIED` | Distinct verifier and reviewer roles ran against the exact candidate; no independent human verifier or security certification |
 
 ### Command status
 
@@ -70,8 +70,8 @@ The development container described in [Container-first development](../engineer
 | Sandbox Supervisor | `LEVEL B` host Linux process | Trusted infrastructure; Worker session credential and scoped Podman launcher capability; no provider or GitHub credentials by default | `IMPLEMENTED`; not isolation-certified |
 | Provider execution | Worker-owned sandbox plus pinned egress broker | Worker holds the provider credential; sandbox receives a per-run token only | `IMPLEMENTED` for OpenCode and Codex adapters; Codex native ChatGPT auth `BLOCKED`; not isolation-certified |
 | Application runtime service | `LEVEL C` persistent container | Trusted service; minimal image; scoped credentials | `IMPLEMENTED` for Core/Office; not production-certified |
-| Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | `IMPLEMENTED` for TRUSTED_LOCAL named-volume execution; independent isolation certification `BLOCKED` |
-| Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Configuration `IMPLEMENTED`; image + in-container Rust gates `LOCALLY_VERIFIED` with host-network caveat; Office build and default networking `NOT_TESTED` |
+| Per-Attempt execution | `LEVEL D` ephemeral rootless container | Untrusted; no secrets, host paths or runtime socket | Implementer runs under Worker bubblewrap; verifier runs in a rootless-Podman named volume. Generic LEVEL D isolation certification remains `BLOCKED`. |
+| Development container | Trusted developer environment, outside runtime placement | No production credentials by default | Image built and cargo check/unit tests/rust-analyzer indexing passed locally; browser/bwrap integration lanes remain container-external. See [dev environment evidence](../evidence/dev-environment-2026-10-26.md). |
 
 The [service placement policy](../architecture/service-placement-policy.md) remains authoritative. A container or Pod does not create a trust boundary, and `LEVEL C` is not a security upgrade. The managed acceptance is a TRUSTED_LOCAL result, not SEC-01 certification.
 

@@ -113,7 +113,8 @@ raise a budget; Core authorization remains mandatory. Both the OpenCode and
 Codex route profiles use this Worker-only allowlist. The Codex profile requires
 both explicit input/output cost rates. OpenCode has a managed live acceptance
 record; the Codex adapter is implemented and deterministic-tested. The
-supported Codex live route is an operator API key at `https://api.openai.com/v1`.
+only supported Codex live authentication mode is an operator API key at
+`https://api.openai.com/v1`; live Codex inference has not been run.
 Native ChatGPT OAuth is not supported by the current egress boundary; see
 [native/README.md](../native/README.md#codex-app-server-provider-trusted_local_provider).
 

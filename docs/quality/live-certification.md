@@ -58,13 +58,14 @@ not a hidden retry: each Run, failure class, recovery authorization and new
 candidate is recorded. Additional paid sessions beyond the approved budget
 require explicit Product Owner approval.
 
-The repository manifest validator confirms the Factory implementation commit
-is available locally and checks identities against source records. When the
-external candidate repository is available, pass `--candidate-repo PATH` to
-check its exact candidate commit and tree. A generic CI checkout may not have
-that object. Provider/session observations still need independent runtime
-corroboration; a clean-checkout verifier and a repository JSON record are not
-provider receipts.
+The Rust architecture checker validates the manifest file reference,
+`REAL_PROVIDER_E2E_VERIFIED`/`verified` level, and the shape of the two
+40-hex SHA fields. It does **not** currently read source records, resolve the
+candidate repository, or verify the Project/Action/Campaign/Run/session
+identities; those bindings are written in the manifest for manual review and
+must be checked against the committed Core export. Provider/session
+observations still need independent runtime corroboration; a clean-checkout
+verifier and a repository JSON record are not provider receipts.
 
 ### PRODUCT_OWNER_UAT_VERIFIED
 
