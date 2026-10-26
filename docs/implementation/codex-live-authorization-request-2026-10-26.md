@@ -31,9 +31,10 @@ does not authorize these turns.
 
 The operator must provide the two `FACTORY_PROVIDER_CODEX_*_COST_MICROS_PER_MILLION`
 rates and the Codex egress token. Factory must use the installed App Server
-schema, declare only the two dynamic tools, reject all other tool/server/item
-surfaces, bind every actual `/v1/responses` body to Core, and refuse a
-candidate when usage or cleanup is not confirmed.
+schema, declare only the two dynamic tools, replace the upstream tool list with
+that allowlist, reject all other server/item surfaces, bind every actual
+`/v1/responses` body to Core, and refuse a candidate when usage or cleanup is
+not confirmed.
 
 ## Acceptance evidence required
 

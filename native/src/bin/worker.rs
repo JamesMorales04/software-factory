@@ -562,6 +562,14 @@ async fn execute_provider_assignment(
     }) {
         return Err("provider assignment has an unsupported tool permission".into());
     }
+    if assignment.provider == "codex"
+        && !assignment
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == "write_file")
+    {
+        return Err("Codex provider assignment requires write_file permission".into());
+    }
     if assignment.deadline_secs == 0
         || !(1..=4).contains(&assignment.max_turns)
         || assignment.max_sessions == 0
@@ -645,39 +653,30 @@ async fn execute_provider_assignment(
     } else {
         None
     };
-    let runtime = match start_provider_runtime(
-        &provider_dir,
-        assignment.deadline_secs,
-        &assignment.provider,
-        &assignment.model,
-        assignment.max_turns,
-        turn_binder,
-        &turn_policy,
-    )
-    .await
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let terminal = ProviderTerminal {
-                session_record_id: session_record_id.clone(),
-                worker_id: worker_id.into(),
-                generation: assignment.lease.generation,
-                state: "FAILED".into(),
-                provider_session_id: String::new(),
-                turn_id: String::new(),
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                cost_micros: 0,
-                usage_known: false,
-                cleanup_receipt: "no_external_session".into(),
-                error: error.to_string(),
-            };
-            let _ = post_provider_terminal(client, core, session_token, &terminal).await;
-            let _ = std::fs::remove_dir_all(&provider_dir);
-            return Err(error);
-        }
-    };
+    let runtime =
+        match start_provider_runtime(&provider_dir, assignment, turn_binder, &turn_policy).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let terminal = ProviderTerminal {
+                    session_record_id: session_record_id.clone(),
+                    worker_id: worker_id.into(),
+                    generation: assignment.lease.generation,
+                    state: "FAILED".into(),
+                    provider_session_id: String::new(),
+                    turn_id: String::new(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cost_micros: 0,
+                    usage_known: false,
+                    cleanup_receipt: "no_external_session".into(),
+                    error: error.to_string(),
+                };
+                let _ = post_provider_terminal(client, core, session_token, &terminal).await;
+                let _ = std::fs::remove_dir_all(&provider_dir);
+                return Err(error);
+            }
+        };
     let mut sandbox_clean = true;
     let confined = matches!(
         &runtime,
@@ -854,13 +853,15 @@ async fn execute_provider_assignment(
 
 async fn start_provider_runtime(
     session_dir: &std::path::Path,
-    deadline_secs: u64,
-    provider: &str,
-    model: &str,
-    max_turns: u32,
+    assignment: &Assignment,
     turn_binder: Option<factory_native::provider_egress::TurnBinder>,
     turn_policy: &SharedTurnPolicy,
 ) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
+    let deadline_secs = assignment.deadline_secs;
+    let provider = assignment.provider.as_str();
+    let model = assignment.model.as_str();
+    let max_turns = assignment.max_turns;
+    let allowed_tools = assignment.allowed_tools.as_slice();
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
         "bwrap" => {
@@ -1011,6 +1012,9 @@ async fn start_provider_runtime(
                     .with_model(model.to_owned())
                     .with_max_requests(max_requests)
                     .with_turn_policy(turn_policy.clone());
+                    if codex {
+                        config = config.with_upstream_tools(codex_upstream_tools(allowed_tools));
+                    }
                     if (opencode || codex)
                         && let Some(binder) = turn_binder
                     {
@@ -1898,6 +1902,45 @@ async fn run_provider_tool_loop(
     Err("provider exceeded the authorized turn budget without writing a file".into())
 }
 
+fn codex_upstream_tools(allowed_tools: &[String]) -> Vec<Value> {
+    let mut tools = Vec::new();
+    if allowed_tools.iter().any(|tool| tool == "write_file") {
+        tools.push(json!({
+            "type": "function",
+            "name": "write_file",
+            "description": "Write the complete content of one authorized repository file.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                }
+            },
+            "strict": false
+        }));
+    }
+    if allowed_tools.iter().any(|tool| tool == "run_command") {
+        tools.push(json!({
+            "type": "function",
+            "name": "run_command",
+            "description": "Run one exact frozen acceptance check through the Supervisor.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["argv"],
+                "properties": {
+                    "argv": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+                    "timeout_secs": {"type": "integer", "minimum": 1, "maximum": 300}
+                }
+            },
+            "strict": false
+        }));
+    }
+    tools
+}
+
 fn codex_dynamic_tools(context: &ProviderContext<'_>) -> Vec<DynamicToolSpec> {
     let mut tools = Vec::new();
     if context
@@ -2024,6 +2067,7 @@ async fn execute_codex_tool(
     tool: &str,
     arguments: &Value,
     tool_state: &mut CodexToolState,
+    deadline: tokio::time::Instant,
 ) -> Result<(bool, String), Box<dyn std::error::Error>> {
     if call_id.trim().is_empty() || !tool_state.call_ids.insert(call_id.to_owned()) {
         return Ok((false, "duplicate or empty dynamic tool call id".into()));
@@ -2120,16 +2164,19 @@ async fn execute_codex_tool(
         }
         Ok(ToolDecision::Run) => {
             post_tool_event(context, call_id, tool, "ALLOW", "frozen check authorized").await?;
-            match supervisor_run(
-                context,
-                &handle.workspace_id,
-                &handle.capability,
-                &argv,
-                timeout_secs,
+            let run = tokio::time::timeout_at(
+                deadline,
+                supervisor_run(
+                    context,
+                    &handle.workspace_id,
+                    &handle.capability,
+                    &argv,
+                    timeout_secs,
+                ),
             )
-            .await
-            {
-                Ok(result) => {
+            .await;
+            match run {
+                Ok(Ok(result)) => {
                     post_tool_event(
                         context,
                         call_id,
@@ -2146,12 +2193,23 @@ async fn execute_codex_tool(
                         )),
                     ))
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     post_tool_event(context, call_id, tool, "ERROR", "command failed").await?;
                     Ok((
                         false,
                         bounded_tool_text(&format!("command failed: {error}")),
                     ))
+                }
+                Err(_) => {
+                    post_tool_event(
+                        context,
+                        call_id,
+                        tool,
+                        "ERROR",
+                        "provider deadline exceeded",
+                    )
+                    .await?;
+                    Err("provider deadline exceeded".into())
                 }
             }
         }
@@ -2432,6 +2490,7 @@ async fn run_codex_tool_loop(
                                 &call.tool,
                                 &call.arguments,
                                 &mut tool_state,
+                                session_deadline,
                             )
                             .await?;
                             rpc.respond(
@@ -2521,6 +2580,31 @@ async fn run_codex_tool_loop(
                                 || turn_identity != Some(turn_id.as_str())
                             {
                                 return Err("Codex turn completion identity mismatch".into());
+                            }
+                            if let Some(items) = notification
+                                .params
+                                .pointer("/turn/items")
+                                .and_then(Value::as_array)
+                            {
+                                for item in items {
+                                    let item_type = item
+                                        .get("type")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
+                                    if !matches!(
+                                        item_type,
+                                        "agentMessage"
+                                            | "reasoning"
+                                            | "plan"
+                                            | "dynamicToolCall"
+                                            | "userMessage"
+                                    ) {
+                                        return Err(format!(
+                                            "Codex turn contained non-mediated item type {item_type:?}; failing closed"
+                                        )
+                                        .into());
+                                    }
+                                }
                             }
                             if status != Some("completed") {
                                 if let Some(turn) = &turn {
@@ -2667,6 +2751,7 @@ async fn run_codex_tool_loop(
                         &tool,
                         &arguments,
                         &mut tool_state,
+                        session_deadline,
                     )
                     .await?;
                     prompt = format!(

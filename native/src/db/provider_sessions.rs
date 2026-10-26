@@ -187,6 +187,16 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         use sqlx::row::Row;
+        let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations
+             SET state='RELEASED',error='expired before any egress request',updated_at=?1
+             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?2",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
         let session = sqlx::query::query(
             "SELECT attempt_id,worker_id,generation,state,provider,model
              FROM provider_sessions WHERE session_record_id=?1",
@@ -231,7 +241,6 @@ impl Database {
                 "provider turn has no current lease".into(),
             ));
         };
-        let now_ms = Utc::now().timestamp_millis();
         let lease_worker: Option<String> = lease.try_get("worker_id")?;
         let lease_generation: Option<i64> = lease.try_get("generation")?;
         let lease_expiry: Option<i64> = lease.try_get("expires_at_ms")?;
@@ -1877,6 +1886,35 @@ mod tests {
                 .await,
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn expired_unbound_turn_reservation_is_reclaimed() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let first = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id=?1",
+        )
+        .bind(&first.reservation_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let second = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"b".repeat(64), 1)
+            .await
+            .unwrap();
+        assert_ne!(first.reservation_id, second.reservation_id);
+        let (state,): (String,) = sqlx::query_as::query_as(
+            "SELECT state FROM provider_turn_reservations WHERE reservation_id=?1",
+        )
+        .bind(&first.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "RELEASED");
     }
 
     #[tokio::test]

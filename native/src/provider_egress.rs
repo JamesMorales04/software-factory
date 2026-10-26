@@ -164,6 +164,7 @@ pub struct EgressConfig {
     timeout: Duration,
     max_requests: usize,
     allowed_model: Option<String>,
+    upstream_tools: Vec<serde_json::Value>,
     turn_policy: Option<SharedTurnPolicy>,
     turn_binder: Option<TurnBinder>,
 }
@@ -233,6 +234,7 @@ impl EgressConfig {
             timeout: Duration::from_secs(120),
             max_requests: 8,
             allowed_model: None,
+            upstream_tools: Vec::new(),
             turn_policy: None,
             turn_binder: None,
         })
@@ -258,6 +260,11 @@ impl EgressConfig {
 
     pub fn with_turn_policy(mut self, policy: SharedTurnPolicy) -> Self {
         self.turn_policy = Some(policy);
+        self
+    }
+
+    pub fn with_upstream_tools(mut self, tools: Vec<serde_json::Value>) -> Self {
+        self.upstream_tools = tools;
         self
     }
 
@@ -433,6 +440,26 @@ async fn handle(
                                                     "best_of".into(),
                                                     serde_json::Value::from(1),
                                                 );
+                                            }
+                                            if path == "/v1/responses"
+                                                && !config.upstream_tools.is_empty()
+                                            {
+                                                object.insert(
+                                                    "tools".into(),
+                                                    serde_json::Value::Array(
+                                                        config.upstream_tools.clone(),
+                                                    ),
+                                                );
+                                                if let Some(input) = object
+                                                    .get_mut("input")
+                                                    .and_then(serde_json::Value::as_array_mut)
+                                                {
+                                                    input.retain(|item| {
+                                                        item.get("type")
+                                                            .and_then(serde_json::Value::as_str)
+                                                            != Some("additional_tools")
+                                                    });
+                                                }
                                             }
                                         }
                                         match serde_json::to_vec(&value) {

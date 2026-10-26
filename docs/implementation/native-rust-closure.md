@@ -242,11 +242,12 @@ Historical evidence is never rewritten to look like Rust certification.
 A focused branch adds a native Codex `0.156.1` App Server coding path for the
 frozen route `codex/gpt-6-luna`. It drives the real executable over stdio in
 the existing bwrap boundary, declares only `write_file`/`run_command` dynamic
-tools, rejects non-allowlisted server requests and item types, binds every
-actual `/v1/responses` body to a Core turn reservation, and records a sandbox
+tools, replaces the upstream tool list with that exact allowlist, rejects
+non-allowlisted server requests and item types, binds every actual
+`/v1/responses` body to a Core turn reservation, and records a sandbox
 process-absence receipt. Up to eight upstream requests are allowed per turn;
 the input/output ceiling is divided across that sequence. Native Codex
-built-in surfaces observed in the model request are rejected fail-closed.
+built-in surfaces are removed at the egress boundary and rejected fail-closed.
 
 Author-run deterministic evidence:
 

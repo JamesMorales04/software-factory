@@ -110,13 +110,14 @@ stdio inside the same bubblewrap boundary. Codex is selected by the frozen
 Campaign route `codex/gpt-6-luna`; the Worker also requires
 `FACTORY_PROVIDER_KIND=codex`. Codex is never granted native shell or file
 authority: the Worker declares `write_file` and `run_command` as client dynamic
-tools, denies every other tool name, rejects unsupported server requests and
-non-allowlisted item types, and fails on native `commandExecution`/`fileChange`
-items. Codex 0.156.1 can still advertise built-in code-mode, collaboration,
-goal and request-input surfaces in the model request. Those calls are not
-authority and are rejected fail-closed; the production invocation disables the
-known feature flags but this remains a version-sensitive compatibility risk.
-Do not weaken this gate or assume dynamic tools alone remove native tools.
+tools, and the egress broker replaces Codex's upstream tool list with exactly
+that allowlist before forwarding. The Worker additionally denies other tool
+names, rejects unsupported server requests and non-allowlisted item types, and
+fails on native `commandExecution`/`fileChange` items. Codex 0.156.1 still
+contains built-in code-mode, collaboration, goal and request-input surfaces;
+the production invocation disables the known feature flags and the egress
+tool-list replacement removes them from the model request. This is
+version-sensitive; verify with the pinned binary and do not weaken the gate.
 
 Required Worker settings in addition to the egress settings above:
 
@@ -156,7 +157,9 @@ CODEX_BIN=/absolute/path/to/codex \
 `codex_dynamic_tools` drives the real App Server against a loopback Responses
 mock. `codex_real_executable_reaches_a_candidate_and_binds_upstream_requests`
 drives the real binary through Core, Worker, Supervisor and the egress broker
-to a Git candidate with two bound upstream requests. Neither test makes a paid
+to a Git candidate with two bound upstream requests; it also verifies that the
+upstream tool list is exactly `write_file`/`run_command` and does not contain
+built-in exec, request-input or collaboration tools. Neither test makes a paid
 model call. Genuine GPT-6 Luna inference remains subject to a separate bounded
 live authorization; it is not claimed by these tests.
 
