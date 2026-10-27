@@ -57,12 +57,12 @@ The harness:
    Campaign and gate persistence.
 
 Final author-run result after independent-review remediation on implementation
-commit `889f601b46ec03ff28a2c4b9eb26ea17dabe6116`:
+commit `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e`:
 
 ```text
 status: PASS
-candidate: d23d48de-fa8c-4466-bebd-e4c833dd9801
-attempt: 4d50e21f-be8f-41a7-b105-b0dc71eec487
+candidate: efff416b-68c3-4333-908d-822466e8cc04
+attempt: 195b9c39-ed98-47a6-8917-f6baf15880bd
 gate: ACCEPTED
 restart_persistence: true
 paid_inference: false
@@ -92,12 +92,12 @@ Screenshots and browser profiles are not committed.
 
 ## Parallel evidence
 
-After the independent-review fixes, two Workers produced two concurrent
-fixture attempts. Provider containers started 24 ms apart
-(`00:41:52.481`/`.505` UTC), and candidate acceptance timestamps were within
-the same second. Attempts `d2c19210…` / `151ac11b…` produced candidates
-`2db6e3d8…` / `a6908ba7…`, and both reached independent verifier/reviewer PASS
-and deterministic `ACCEPTED` gates. This demonstrates container/workspace
+After the second independent-review remediation, two Workers produced two
+concurrent fixture attempts on commit `30cb0db…`. Provider containers started
+8 ms apart (`01:19:58.748`/`.757` UTC), and candidate acceptance timestamps
+were within the same second. Attempts `ae60133d…` / `c2112679…` produced
+candidates `4d75f82d…` / `6f2d098e…`, and both reached independent
+verifier/reviewer PASS and deterministic `ACCEPTED` gates. This demonstrates container/workspace
 independence for two authorized attempts, not multi-unit fan-in integration
 and not paid parallel provider execution.
 

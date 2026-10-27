@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "container-native-compose-author-run",
-  "implementation_sha": "889f601b46ec03ff28a2c4b9eb26ea17dabe6116",
+  "implementation_sha": "30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e",
   "date": "2026-10-26",
   "environment": {
     "host_os": "CachyOS",
@@ -50,8 +50,8 @@
     {
       "name": "deterministic Compose candidate through nested provider container",
       "pass": true,
-      "candidate_id": "d23d48de-fa8c-4466-bebd-e4c833dd9801",
-      "attempt_id": "4d50e21f-be8f-41a7-b105-b0dc71eec487",
+      "candidate_id": "efff416b-68c3-4333-908d-822466e8cc04",
+      "attempt_id": "195b9c39-ed98-47a6-8917-f6baf15880bd",
       "gate": "ACCEPTED"
     },
     {
@@ -68,14 +68,14 @@
       "name": "parallel independent attempts with real nested containers",
       "pass": true,
       "candidates": [
-        "2db6e3d8-c724-426d-8ef3-763bb5b41041",
-        "a6908ba7-7d39-457e-9727-312270046473"
+        "4d75f82d-3a6f-433b-9902-1e641476890d",
+        "6f2d098e-421e-44af-8290-1eba0909373e"
       ],
       "attempts": [
-        "d2c19210-78f4-446f-9904-b664b77fecb2",
-        "151ac11b-0b00-4fbe-a18a-e70707d6e387"
+        "ae60133d-59fe-494b-8d41-024ab142c30d",
+        "c2112679-9fff-46af-81d3-612482c3bd62"
       ],
-      "detail": "two Workers, distinct provider containers started 24ms apart; both gates ACCEPTED"
+      "detail": "two Workers, distinct provider containers started 8ms apart; both gates ACCEPTED"
     },
     {
       "name": "real Chromium Office onboarding and configuration",
@@ -95,7 +95,8 @@
     "Semantic Reviewer live model calls are NOT_TESTED.",
     "Multi-unit WorkGraph parallel integration with a real provider is NOT_TESTED; parallel evidence uses two independent Campaign attempts.",
     "SEC-01 ISOLATED certification, credential confinement, SELinux/AppArmor hosts, Windows/Podman Machine, independent security review and human acceptance remain open.",
-    "An independent same-model review found HIGH/MEDIUM issues on the first candidate; fixes are recorded in the review object and status document. Residual risks remain explicit."
+    "An independent same-model review found HIGH/MEDIUM issues on the first candidate; fixes are recorded in the review object and status document. Residual risks remain explicit.",
+    "A follow-up independent review found partial fixes; the additional gaps were closed in 30cb0db, but total volume quota, mount TOCTOU, shared provider-session UID, signed receipts and manual-only real E2E remain open."
   ],
   "independent_review": {
     "reviewer": "independent same-model security/architecture review",
@@ -111,7 +112,13 @@
       "turn release bound to session, worker and generation",
       "master-key permissions and non-symlink regular file enforced",
       "static Compose policy expanded with per-service posture, config-volume isolation and negative tests",
-      "E2E harness refuses the production project name"
+      "E2E harness refuses the production project name",
+      "rootless parser now rejects any UID 0 -> host UID 0 line and malformed/unreadable maps",
+      "fixture fallback limited to 404/409; authentication/server errors fail the assignment",
+      "provider recovery tolerates a missing session directory and startup recovery is enabled in Compose",
+      "start-failure cleanup is unconfirmed-or-removed and cleared by recovery",
+      "runtime no-new-privileges and named-volume driver_opts bind risks rejected by policy checker",
+      "model-call semantic toggle route test added; master-key symlink test added"
     ],
     "residual": [
       "shared provider-session volume and same UID permit same-UID cross-session access after provider compromise",
@@ -120,6 +127,7 @@
       "verifier/reviewer receipts are bearer-token self-attestations; verifier project volume is read-write",
       "real Compose E2E remains a manual workflow; PR CI covers static Compose policy, Rust tests and browser regressions",
       "paid UAT, live OpenCode container inference, live Codex, semantic live calls, SEC-01, Windows and human acceptance remain open"
-    ]
+    ],
+    "follow_up_verdict": "FINDINGS (partial fixes); additional rootless/fixture/recovery/policy gaps closed in 30cb0db"
   }
 }
