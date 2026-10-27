@@ -39,9 +39,9 @@
       "authorized campaigns and pending authorizations",
       "running agents, unresolved provider sessions and unresolved model calls",
       "actionable decisions",
-      "blocked work",
+      "blocked work signals",
       "Quality Gate outcomes",
-      "measured and unmeasured spend",
+      "measured spend and the unmeasured reservation bound",
       "recent accepted candidates",
       "runtime health",
       "recent Core events"

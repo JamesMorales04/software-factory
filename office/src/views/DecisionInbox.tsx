@@ -82,7 +82,7 @@ function ResolveModelCall({
         label="Resolution reason"
         value={reason}
         onChange={(event) => setReason(event.target.value)}
-        placeholder="Why is this reservation released?"
+        placeholder="Why are you releasing this reservation?"
         className="decision-resolve-reason"
       />
       <Button

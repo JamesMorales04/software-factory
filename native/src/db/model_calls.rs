@@ -623,6 +623,24 @@ impl Database {
         model_call_records(rows)
     }
 
+    /// Count and reservation ceiling for unresolved model calls whose usage is
+    /// unknown. The ceiling comes from `max_cost_micros`, not the observed
+    /// `cost_micros` column, because an expired reservation may never have
+    /// settled any observed cost.
+    pub async fn unresolved_model_call_budget(&self) -> Result<(u64, u64), Error> {
+        let row: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
+             FROM model_call_reservations
+             WHERE state IN ('AMBIGUOUS','UNKNOWN') AND usage_known=0",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((
+            u64::try_from(row.0).map_err(|_| Error::Invalid("model call count"))?,
+            u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
+        ))
+    }
+
     pub async fn model_calls(&self, limit: usize) -> Result<Vec<ModelCallRecord>, Error> {
         let limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query::query(

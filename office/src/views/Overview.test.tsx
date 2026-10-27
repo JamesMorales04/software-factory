@@ -36,7 +36,7 @@ const decision: DecisionItem = {
   action: {
     kind: "resolve_model_call",
     model_call_id: "reservation-1",
-    label: "Resolve usage",
+    label: "Release reservation",
   },
 };
 
@@ -163,6 +163,7 @@ describe("operational workspace", () => {
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
     expect(screen.getByText("ACCEPTED: 1")).toBeDefined();
     expect(screen.getByText("Measured spend")).toBeDefined();
+    expect(screen.getByText("Unmeasured bound")).toBeDefined();
     expect(screen.getByText("candidat")).toBeDefined();
   });
 

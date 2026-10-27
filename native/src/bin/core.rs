@@ -1926,6 +1926,8 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
     let workers = app.db.workers().await?;
     let model_calls = app.db.model_calls(200).await?;
     let unresolved_model_calls = app.db.unresolved_model_calls().await?;
+    let (unmeasured_model_calls, unresolved_model_bound) =
+        app.db.unresolved_model_call_budget().await?;
     let lead_requests = app.db.lead_requests().await?;
     let events = app.db.events().await?;
     let (_, attempt_campaign) = campaign_map(&runs, &attempts);
@@ -2023,16 +2025,12 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
         .iter()
         .filter(|session| !session.usage_known)
         .count();
-    let unmeasured_model_calls = unresolved_model_calls.len();
     let unmeasured_bound_cost: u64 = sessions
         .iter()
         .filter(|session| !session.usage_known)
         .map(|session| session.cost_micros)
         .sum::<u64>()
-        + unresolved_model_calls
-            .iter()
-            .map(|call| call.cost_micros)
-            .sum::<u64>();
+        + unresolved_model_bound;
     let measured_session_cost: u64 = sessions
         .iter()
         .filter(|session| session.usage_known)
