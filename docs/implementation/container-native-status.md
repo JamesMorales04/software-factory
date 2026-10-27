@@ -24,8 +24,11 @@ iteration. It does not rewrite historical acceptance or certify a paid UAT.
 ## Independent review and remediation (2026-10-26)
 
 An independent same-model security/architecture review of the first candidate
-returned **FINDINGS**. The following were remediated and are covered by tests
-or explicit fail-closed behavior:
+returned **FINDINGS**. The following were remediated. Tests cover the rootless-map parser, TurnBinder
+origin, semantic toggle for model calls and receipts, Compose policy negatives,
+master-key permissions/symlink rejection and turn-release binding. Recovery,
+reaper/start-failure and provider-profile endpoint behavior are covered by code
+inspection and SQL parsing rather than full process tests:
 
 - rootful outer namespace accepted by the runtime: entrypoint/broker now reject
   an initial user namespace;
@@ -39,8 +42,8 @@ or explicit fail-closed behavior:
   directory validation are scoped; container cleanup rejects paths outside the
   configured root;
 - provider containers had no lifetime reaper: the broker removes them at expiry
-  and on start failure; `FAILED` sessions with unconfirmed cleanup are rejected
-  by Core;
+  and attempts removal on start failure; `FAILED` sessions with unconfirmed
+  cleanup are rejected by Core and left for startup recovery;
 - turn release did not bind session/worker/generation: the release query and
   Worker request now do;
 - master-key permissions were not enforced: 0600/0640 and non-symlink regular

@@ -100,6 +100,21 @@ class ComposePolicyTests(unittest.TestCase):
 
         self.assert_rejected(mutate, "unexpected capabilities")
 
+    def test_rejects_runtime_lost_no_new_privileges(self):
+        self.assert_rejected(
+            lambda c: c["services"]["runtime"].__setitem__("security_opt", []),
+            "runtime: no-new-privileges is required",
+        )
+
+    def test_rejects_named_volume_driver_bind(self):
+        self.assert_rejected(
+            lambda c: c["volumes"]["factory-engine"].__setitem__(
+                "driver_opts",
+                {"type": "none", "device": "/var/lib/factory-host-engine", "o": "bind"},
+            ),
+            "driver_opts are forbidden",
+        )
+
     def test_rejects_host_bind(self):
         def mutate(config):
             config["services"]["core"]["volumes"].append(

@@ -225,7 +225,7 @@ fn parse_images(raw: String) -> Result<BTreeSet<String>, String> {
 impl App {
     async fn preflight(&self) -> Result<(), Box<dyn std::error::Error>> {
         let uid_map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
-        if is_initial_uid_map(&uid_map) {
+        if has_host_root_mapping(&uid_map) {
             return Err("runtime broker must run inside a rootless outer user namespace".into());
         }
         let output = self
@@ -543,16 +543,23 @@ fn parse_import_images(raw: String) -> Result<Vec<(String, PathBuf)>, String> {
     Ok(images)
 }
 
-fn is_initial_uid_map(map: &str) -> bool {
+fn has_host_root_mapping(map: &str) -> bool {
     let mut lines = map.lines().filter(|line| !line.trim().is_empty());
-    let Some(line) = lines.next() else {
-        return false;
+    let Some(_first) = lines.next() else {
+        return true;
     };
-    if lines.next().is_some() {
-        return false;
+    let mut any = false;
+    for line in map.lines().filter(|line| !line.trim().is_empty()) {
+        any = true;
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() != 3 {
+            return true;
+        }
+        if fields[0] == "0" && fields[1] == "0" {
+            return true;
+        }
     }
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    fields.len() == 3 && fields[0] == "0" && fields[1] == "0" && fields[2] == "4294967295"
+    !any
 }
 
 fn bundle_digest(path: &std::path::Path) -> Result<String, String> {
@@ -1193,11 +1200,13 @@ mod tests {
 
     #[test]
     fn rootful_outer_user_namespace_is_rejected() {
-        assert!(is_initial_uid_map("         0          0 4294967295\n"));
-        assert!(!is_initial_uid_map(
+        assert!(has_host_root_mapping("         0          0 4294967295\n"));
+        assert!(has_host_root_mapping("         0          0          1\n"));
+        assert!(has_host_root_mapping("garbage\n"));
+        assert!(has_host_root_mapping(""));
+        assert!(!has_host_root_mapping(
             "         0       1000          1\n         1     100000      65536\n"
         ));
-        assert!(!is_initial_uid_map(""));
     }
 
     #[test]

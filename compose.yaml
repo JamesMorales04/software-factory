@@ -251,6 +251,7 @@ services:
       FACTORY_WORKER_ID: compose-worker
       FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
       FACTORY_WORKER_REGISTRATION_KEY_FILE: /config/worker-registration.key
+      FACTORY_WORKER_RECOVER_ON_START: "1"
       FACTORY_SUPERVISOR_URL: http://supervisor:8766
       FACTORY_SUPERVISOR_TOKEN_FILE: /config/supervisor.token
       FACTORY_WORKER_FIXTURE_IMAGE: docker.io/library/rust:1.90.0-bookworm

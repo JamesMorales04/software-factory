@@ -3508,6 +3508,39 @@ mod tests {
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
         let router = build_router(Arc::clone(&app));
+        let disabled_model_call = axum::http::Request::builder()
+            .method("POST")
+            .uri("/model/calls")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer",
+                    "projectId": "project-1",
+                    "objectiveId": "candidate-1",
+                    "scopeId": "candidate-1",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "system",
+                    "userPrompt": "user",
+                    "maxOutputTokens": 128
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(disabled_model_call)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
         let config = axum::http::Request::builder()
             .uri("/review/config")
             .header(
@@ -3535,6 +3568,38 @@ mod tests {
         assert_eq!(
             router.clone().oneshot(enable).await.unwrap().status(),
             StatusCode::OK
+        );
+        let enabled_model_call = axum::http::Request::builder()
+            .method("POST")
+            .uri("/model/calls")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer",
+                    "projectId": "project-1",
+                    "objectiveId": "candidate-1",
+                    "scopeId": "candidate-1",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "system",
+                    "userPrompt": "user",
+                    "maxOutputTokens": 128
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(enabled_model_call)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
         );
 
         let receipt = axum::http::Request::builder()

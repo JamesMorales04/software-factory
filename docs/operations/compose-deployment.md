@@ -117,7 +117,9 @@ Codex status is explicit:
 - **Projects**: register an HTTPS Git URL. Core imports it into managed storage
   and freezes the base commit. Configure allowed paths, capabilities and the
   quality profile; revisions and hashes are visible.
-Provider-route defaults cap Core model calls. The explicit Campaign
+Provider-route token and cost limits cap Core model calls. The `max_turns`
+field is stored as an operator default for future delegation tooling but is not
+enforced by Core or the Worker in this iteration. The explicit Campaign
 authorization remains authoritative for Implementer/provider sessions and
 cannot be widened by provider settings. Per-session disk quota beyond the
 64 MiB per-file limit is not implemented.

@@ -27,9 +27,10 @@ Each provider card exposes:
 
 - installed/configured status and masked credential fingerprint;
 - model, endpoint, enabled/default route;
-- provider-route default turn/token/cost limits and per-million rates; these
-  cap Core model calls but never widen or replace the explicit Campaign
-  authorization that bounds provider sessions;
+- provider-route token/cost limits and per-million rates; these cap Core model
+  calls but never widen or replace the explicit Campaign authorization that
+  bounds provider sessions. The turn limit is stored as an operator default but
+  is not enforced in this iteration;
 - test connection (model list only), configuration revision and audit;
 - credential replacement and revocation.
 

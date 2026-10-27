@@ -174,6 +174,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_symlinked_master_key() {
+        let target = std::env::temp_dir().join(format!(
+            "factory-master-target-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&target, "11".repeat(32)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link =
+            std::env::temp_dir().join(format!("factory-master-link-{}.txt", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(ProviderSecretKey::from_file(&link).is_err());
+        let _ = std::fs::remove_file(link);
+        let _ = std::fs::remove_file(target);
+    }
+
+    #[test]
     fn rejects_tampered_ciphertext() {
         let key = key();
         let mut encrypted = key.encrypt(b"credential-value").unwrap();

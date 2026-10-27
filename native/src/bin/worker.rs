@@ -164,6 +164,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         recover_provider_sessions(&client, &core, &session_token, &worker_id).await?;
         return Ok(());
     }
+    if env::var("FACTORY_WORKER_RECOVER_ON_START").as_deref() == Ok("1")
+        && let Err(error) =
+            recover_provider_sessions(&client, &core, &session_token, &worker_id).await
+    {
+        eprintln!("worker startup provider recovery: {error}");
+    }
 
     loop {
         let response = client
@@ -412,12 +418,7 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
     let root = std::path::Path::new(&root)
         .canonicalize()
         .map_err(|error| format!("provider session root is unavailable: {error}"))?;
-    let path = std::path::Path::new(directory)
-        .canonicalize()
-        .map_err(|error| format!("provider session directory is unavailable: {error}"))?;
-    if path.parent() != Some(root.as_path()) || !path.is_dir() {
-        return Err("provider session directory is outside the configured root".into());
-    }
+    let path = std::path::Path::new(directory);
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -428,6 +429,22 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
             .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
     {
         return Err("provider session directory is not a UUID".into());
+    }
+    let parent_matches = path
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .is_some_and(|parent| parent == root);
+    if !parent_matches {
+        return Err("provider session directory is outside the configured root".into());
+    }
+    let existed = path.is_dir();
+    if existed
+        && path
+            .canonicalize()
+            .map(|canonical| canonical.parent() != Some(root.as_path()))
+            .unwrap_or(true)
+    {
+        return Err("provider session directory escaped the configured root".into());
     }
     let container = format!("factory-provider-{name}");
     let url = env::var("FACTORY_RUNTIME_BROKER_URL")
@@ -446,7 +463,9 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
         Ok(_) => {}
         Err(_) => {}
     }
-    let _ = std::fs::remove_dir_all(&path);
+    if existed {
+        let _ = std::fs::remove_dir_all(path);
+    }
     Ok("container_removed_verified_absent")
 }
 
@@ -663,12 +682,17 @@ async fn execute_provider_assignment(
             ])
             .send()
             .await?;
-        if profile.status().is_success() {
+        let status = profile.status();
+        if status.is_success() {
             Some(profile.json::<ProviderProfile>().await?)
-        } else if configured_kind == "fixture" {
+        } else if configured_kind == "fixture"
+            && matches!(
+                status,
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::CONFLICT
+            )
+        {
             None
         } else {
-            let status = profile.status();
             let body = profile.text().await.unwrap_or_default();
             return Err(format!(
                 "Factory provider settings refused the route: HTTP {status} {}",

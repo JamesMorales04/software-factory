@@ -6,8 +6,12 @@ if [ "$(id -u)" != "0" ]; then
   exit 78
 fi
 
-if [ "$(awk 'NR==1 { print $1, $2, $3 }' /proc/self/uid_map 2>/dev/null)" = "0 0 4294967295" ]; then
-  echo "factory-runtime: the outer container is not running in a user namespace; rootless Podman is required" >&2
+if [ ! -r /proc/self/uid_map ]; then
+  echo "factory-runtime: cannot verify the outer user namespace; refusing to start" >&2
+  exit 78
+fi
+if awk 'NF != 3 { bad=1 } $1 == 0 && $2 == 0 { bad=1 } END { exit bad ? 0 : 1 }'   /proc/self/uid_map; then
+  echo "factory-runtime: the outer container maps root to host root or has an unreadable/malformed user namespace; rootless Podman is required" >&2
   exit 78
 fi
 

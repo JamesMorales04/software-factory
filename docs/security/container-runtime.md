@@ -41,16 +41,17 @@ This is the exact reason it is not described as rootless-in-rootless.
 | Boundary | What crosses | What must not cross |
 |---|---|---|
 | Host → outer runtime container | Namespaced capabilities, private engine volume, provider-session volume, bundle/config volumes | Host Podman socket, host HOME, host network namespace |
-
-The runtime entrypoint and broker reject an **initial outer user namespace**
-(`/proc/self/uid_map` exactly `0 0 4294967295`). Running the Compose file with
-rootful Podman/Docker therefore fails before the engine starts; the
-`SYS_ADMIN`/`NET_ADMIN` grants remain namespaced only on a rootless host.
 | Broker → inner engine | Typed operations only | Arbitrary Podman arguments, host paths, unlisted images |
 | Inner engine → child | Allowlisted image, one workspace volume or provider session subdir, bounded cgroups, no network | Core DB, provider credential, operator/role tokens, host repositories, other workspaces |
 | Worker → provider container | Per-run egress token and non-secret OpenCode config; private session volume | Long-lived provider credential (held by the Worker egress broker) |
-| Core → model provider | Core-held credential, budget reservation, strict schema | Provider credential to browser/Worker/sandbox |
+| Core → model provider | Core-held credential, budget reservation, strict schema | Provider credential to the browser or provider sandbox; the Worker receives only the exact assigned route under a live lease |
 | Compose → Office | Authenticated operator API | Unauthenticated admin endpoint |
+
+The runtime entrypoint and broker reject any outer user namespace that maps
+container UID 0 to host UID 0, as well as unreadable or malformed
+`/proc/self/uid_map`. Standard rootful Podman/Docker and a custom root-mapped
+namespace therefore fail before the engine starts; the `SYS_ADMIN`/`NET_ADMIN`
+grants remain namespaced only on a rootless host.
 
 ## Required capability exceptions
 
@@ -77,7 +78,9 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 
 - Core stores provider credentials as AES-256-GCM ciphertext under a master key
   in the Core-only config volume.
-- The API masks them after submission; there is no read-back.
+- The browser API masks them after submission and never returns them. The
+  trusted Worker receives only the exact assigned route over the internal
+  control network while its attempt/generation lease is live.
 - The Worker fetches the assigned provider profile over the internal control
   network with its worker session token **and a live attempt/generation lease**.
   Core returns only the exact authorized route; the credential is held in
@@ -91,10 +94,11 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 ## Residual risks added by the independent review
 
 - Provider session containers share one outer session volume and the same UID.
-  Distinct subdirectories and scoped recovery are enforced, but a malicious
-  provider process could read or modify a sibling session directory at the same
-  UID. Execution workspaces remain separate named volumes. Per-session UID or
-  broker-owned volume isolation is an open hardening item.
+  The provider child mounts only its own subdirectory, and recovery is scoped
+  and root-validated, but the trusted Worker/engine process at that UID can
+  access sibling session directories. A provider container escape would
+  inherit that access. Execution workspaces remain separate named volumes.
+  Per-session UID or broker-owned volume isolation is an open hardening item.
 - The broker canonicalizes the provider session directory before Podman mounts
   it; a Worker with write access to the parent can theoretically race a path
   swap between check and mount. The Worker is trusted and there is no network
@@ -109,7 +113,9 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 - Core enforces the semantic-review toggle for model calls and MODEL receipts.
   The reviewer binary performs deterministic pre-review before a model call,
   but Core cannot prove that internal ordering against a compromised reviewer
-  token. Independent review and isolation remain the mitigation.
+  token. If semantic review is enabled but no gateway exists, `review/config`
+  returns DETERMINISTIC rather than pretending model review occurred.
+  Independent review and isolation remain the mitigation.
 - The verifier mounts the managed projects volume read-write to create a clean
   worktree; the reviewer mounts it read-only. A verifier role remains a trusted
   process, not an isolation boundary.

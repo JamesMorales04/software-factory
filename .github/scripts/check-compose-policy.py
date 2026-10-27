@@ -164,6 +164,11 @@ def main(path: str) -> int:
         fail("runtime: cap_drop must be exactly ALL")
     if runtime.get("read_only") is not True:
         fail("runtime: read-only root filesystem is required")
+    if not any(
+        str(option).replace(" ", "") == "no-new-privileges:true"
+        for option in runtime.get("security_opt", []) or []
+    ):
+        fail("runtime: no-new-privileges is required")
     if str(runtime.get("user")) not in {"None", "", "0", "0:0"}:
         fail("runtime: the dedicated engine must start as root inside its user namespace")
     runtime_config = {
@@ -173,6 +178,10 @@ def main(path: str) -> int:
     }
     if runtime_config != {"factory-config-runtime"}:
         fail(f"runtime: must mount only its own config volume; got {sorted(runtime_config)}")
+
+    for name, volume in (config.get("volumes") or {}).items():
+        if volume.get("driver_opts"):
+            fail(f"named volume {name}: driver_opts are forbidden (host bind risk)")
 
     for required in (
         "factory-data",

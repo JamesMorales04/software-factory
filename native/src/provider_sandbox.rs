@@ -219,11 +219,12 @@ impl ContainerProviderSandbox {
             })
             .await
         {
+            let _ = broker.remove_container(&container).await;
             if let Some(egress) = egress {
                 egress.stop();
             }
             return Err(SandboxError::NotReady(format!(
-                "provider container did not start: {error}"
+                "provider container did not start or cleanup was unconfirmed: {error}"
             )));
         }
         let deadline = time::Instant::now() + config.ready_timeout;
