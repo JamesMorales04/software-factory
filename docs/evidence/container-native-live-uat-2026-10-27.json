@@ -1,0 +1,101 @@
+{
+  "schema": "factory.container-native.live-uat.v1",
+  "recorded_at": "2026-10-27T05:15:00Z",
+  "result": "PASS",
+  "implementation_sha": "1225baeb123f7a652bb3a927f53562e28c573e26",
+  "deployment": {
+    "compose_project": "software-factory-uat",
+    "office": "http://127.0.0.1:8895",
+    "provider_kind": "opencode",
+    "fixture_used": false,
+    "volumes": "disposable and removed after evidence collection"
+  },
+  "authorization": {
+    "envelope": "docs/implementation/container-native-paid-uat-authorization-request-2026-10-27.md",
+    "approved_by": "product-owner",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "mode": "build",
+    "execution_mode": "TRUSTED_LOCAL_PROVIDER",
+    "max_sessions": 2,
+    "max_turns": 8,
+    "max_input_tokens": 120000,
+    "max_output_tokens": 12000,
+    "max_cost_micros": 2000000,
+    "deadline_seconds": 5400,
+    "fallback": "none"
+  },
+  "project": {
+    "id": "db6cf81b-d365-454f-bf4d-ea00435a4ebe",
+    "base_commit": "03335c6ebf675e4abe50f394b49abcce32e29deb"
+  },
+  "campaign": {
+    "id": "0c524008-6a1d-4dae-b604-2098773b11c6",
+    "status_label": "AUTHORIZED",
+    "note": "The Campaign authorization label remains AUTHORIZED; the Run and Quality Gate are authoritative execution/quality states."
+  },
+  "run": {
+    "id": "40fc5c15-a844-45bd-9568-4a5d8753d857",
+    "status": "ACCEPTED"
+  },
+  "attempt": {
+    "id": "37d3b08c-505b-45d2-8986-1c20c6231dad",
+    "status": "CANDIDATE_READY"
+  },
+  "candidate": {
+    "id": "e8bd7464-f152-4840-bdaf-031d7cd92017",
+    "commit_sha": "52a583a4fd82e21db53e7c99688a409bdbb07eb8",
+    "tree_sha": "b42a3ac7838c92c6577adbca71612d306a190e2d",
+    "diffstat": "src/provider.txt | 1 +",
+    "content_check": "grep -q 'live uat candidate' src/provider.txt passed and the absent-content negative check passed"
+  },
+  "quality": {
+    "gate": "ACCEPTED",
+    "gate_reasons": [
+      "independent executed evidence accepts exact candidate"
+    ],
+    "verifier": {
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "principal": "verifier-process",
+      "mechanism": "DETERMINISTIC"
+    },
+    "reviewer": {
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "principal": "reviewer-process",
+      "mechanism": "DETERMINISTIC"
+    }
+  },
+  "provider_session": {
+    "session_record_id": "eaa7f90a-36cb-436d-b923-e2752304dafd",
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "provider_mode": "build",
+    "state": "COMPLETED",
+    "provider_session_id": "ses_e84442dd3ffeIug0t00CTODIqi",
+    "usage_known": true,
+    "input_tokens": 7817,
+    "output_tokens": 234,
+    "total_tokens_reported": 16693,
+    "cost_micros": 1914,
+    "cleanup_receipt": "session_delete_verified_absent",
+    "error": ""
+  },
+  "budget_observation": {
+    "provider_sessions": 1,
+    "authorized_sessions": 2,
+    "unresolved_sessions": [],
+    "note": "Measured provider-session accounting, not a billing statement."
+  },
+  "not_claimed": [
+    "No SEC-01 ISOLATED or credential-confinement certification.",
+    "No independent security review, deployment, Windows or SELinux/AppArmor claim.",
+    "No containerized Codex live inference, native ChatGPT OAuth or semantic live model review claim.",
+    "The deterministic verifier and reviewer are independent roles but remain bearer-token self-attestations."
+  ],
+  "evidence": {
+    "deterministic": "docs/evidence/container-native-hardening-2026-10-27.json",
+    "screenshot": "local /tmp/factory-live-uat/evidence/campaign-live.png (not committed)"
+  }
+}

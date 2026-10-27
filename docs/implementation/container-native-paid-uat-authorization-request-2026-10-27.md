@@ -9,7 +9,7 @@ authorize merge, deployment, ISOLATED execution or any security certification.
 
 | Field | Proposed value |
 |---|---|
-| Candidate | Exact PR #28 hardening commit (recorded after the final evidence commit) |
+| Candidate | `1225baeb123f7a652bb3a927f53562e28c573e26` |
 | Deployment | Rootless Compose from the candidate, fresh disposable project and volumes |
 | Purpose | Exercise the live OpenCode-in-container route end to end and verify the candidate-bound gate and cleanup |
 | Execution mode | `TRUSTED_LOCAL_PROVIDER` (not isolated, not SEC-01 certified) |
@@ -42,6 +42,19 @@ authorize merge, deployment, ISOLATED execution or any security certification.
 - After the run, revoke the provider credential in Office, remove the
   disposable project and volumes, remove any UAT token files, and record the
   cleanup receipt.
+
+## Outcome (2026-10-27)
+
+| Item | Observation |
+|---|---|
+| Result | **PASS**, gate `ACCEPTED` |
+| Project / Campaign | `db6cf81b-d365-454f-bf4d-ea00435a4ebe` / `0c524008-6a1d-4dae-b604-2098773b11c6` |
+| Run / Attempt | `40fc5c15-a844-45bd-9568-4a5d8753d857` / `37d3b08c-505b-45d2-8986-1c20c6231dad` |
+| Candidate | `e8bd7464-f152-4840-bdaf-031d7cd92017`, commit `52a583a4fd82e21db53e7c99688a409bdbb07eb8` |
+| Provider session | `ses_e84442dd3ffeIug0t00CTODIqi`, `opencode-go/deepseek-v4.1-flash`, mode `build` |
+| Usage | 7,817 input / 234 output / 16,693 total reported tokens; 1,914 micro configured-rate cost |
+| Cleanup | `session_delete_verified_absent`; no unresolved sessions |
+| Evidence | `docs/evidence/container-native-live-uat-2026-10-27.json` and the certification manifest |
 
 ## Evidence to record
 

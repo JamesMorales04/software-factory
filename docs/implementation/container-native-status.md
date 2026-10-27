@@ -65,9 +65,9 @@ Residual findings are not claimed fixed:
   worktree;
 - the real Compose E2E is a manual workflow, not a required PR check; PR CI
   covers static Compose policy, Rust tests and browser regressions;
-- paid UAT and live OpenCode container inference remain **NOT_TESTED** pending
-  the separate authorization request; live Codex, semantic live calls, SEC-01,
-  Windows and human acceptance remain open.
+- live OpenCode container inference **PASSED** the owner-authorized UAT below;
+  live Codex, semantic live calls, SEC-01, Windows and human acceptance remain
+  open.
 
 ## Baseline hardening (2026-10-27)
 
@@ -94,19 +94,44 @@ concrete paths. The branch now includes and locally verifies:
 At hardening candidate `d9de876f5533827a5a44b07f00c676ac24d7516c`, the
 deterministic Compose E2E still reaches an `ACCEPTED` candidate
 (`b9b22a75-082f-4ca8-bc71-b92a7bbdd697`) and preserves state across restart.
-Live OpenCode-in-container inference remains **NOT_TESTED**; it requires the
-separate paid UAT authorization described in
-[the authorization request](container-native-paid-uat-authorization-request-2026-10-27.md).
-Evidence: [container-native hardening](evidence/container-native-hardening-2026-10-27.json).
+The owner-authorized live OpenCode container UAT then passed at PR head
+`1225baeb123f7a652bb3a927f53562e28c573e26`; see below. Evidence:
+[container-native hardening](evidence/container-native-hardening-2026-10-27.json).
+
+## Live OpenCode container UAT (2026-10-27)
+
+The Product Owner approved the exact envelope in
+[the authorization request](container-native-paid-uat-authorization-request-2026-10-27.md)
+and entered the OpenCode Go API key directly in the disposable Office. The key
+was revoked immediately after the run and never printed, committed or placed in
+browser storage.
+
+| Item | Observation |
+|---|---|
+| Candidate | `1225baeb123f7a652bb3a927f53562e28c573e26` |
+| Project / Campaign | `db6cf81b…` / `0c524008…` |
+| Run / Attempt | `40fc5c15…` / `37d3b08c…` |
+| Candidate | `e8bd7464…`, commit `52a583a4fd82e21db53e7c99688a409bdbb07eb8`, tree `b42a3ac7…` |
+| Diff | `src/provider.txt | 1 +`; content `live uat candidate` |
+| Provider session | `ses_e84442dd3ffeIug0t00CTODIqi`, `opencode-go/deepseek-v4.1-flash`, mode `build` |
+| Usage | 7,817 input / 234 output / 16,693 total reported tokens; 1,914 micro configured-rate cost; usage known |
+| Quality | verifier `PASS` EXECUTED, reviewer `PASS` DETERMINISTIC, gate `ACCEPTED` |
+| Cleanup | `session_delete_verified_absent`; no unresolved sessions |
+| Budget | one session of two authorized; one attempt; no fallback or retry |
+
+The Campaign authorization label remains `AUTHORIZED`; the Run (`ACCEPTED`) and
+Quality Gate are the authoritative execution and quality states. This is a
+single real-provider container journey, not independent security certification,
+SEC-01, deployment, Windows or Product Owner personal UAT. Evidence:
+[container-native live UAT](evidence/container-native-live-uat-2026-10-27.json)
+and the
+[certification manifest](evidence/container-native-live-uat-certification-manifest.json).
 
 ## Not tested / blocked
 
-- Paid DeepSeek/OpenCode live UAT after the new stack: **BLOCKED** pending a
-  fresh Product Owner authorization envelope.
-- OpenCode live inference inside the provider container: **NOT_TESTED**; the
-  deterministic fixture provider exercised the container, bridges and
-  supervisor path. The container TurnBinder origin is now covered by a
-  regression test.
+- OpenCode live inference inside the provider container: **PASS (owner-authorized,
+  author-run)** for the one candidate above. The deterministic fixture path
+  remains the PR CI acceptance path.
 - Codex API-key live inference: **NOT_TESTED**. Native ChatGPT OAuth:
   **BLOCKED**. Containerized Codex stdio transport: **NOT_IMPLEMENTED**.
 - Semantic Reviewer live model call: **NOT_TESTED** (policy and Core budgets
@@ -125,9 +150,8 @@ Evidence: [container-native hardening](evidence/container-native-hardening-2026-
 ## Merge gates
 
 Exact-head CI, an independent security/architecture review of the hardening
-candidate, a fresh paid UAT under written authorization, and Product Owner
-approval remain required. The candidate-bound deterministic PASS above is not
-a merge authorization. The independent review that produced the hardening list
-is recorded; a second review found the late-deterministic semantic-review gap,
-which is now fixed at gate acceptance. A focused re-review of the final head is
-pending.
+candidate, the authorized paid UAT and Product Owner approval remain required.
+The candidate-bound deterministic and live UAT passes above are not a merge
+authorization. Two independent reviews found and closed the hardening gaps; the
+focused re-review of the semantic-review gate fix returned **MERGE_READY**.
+Product Owner merge approval remains pending.

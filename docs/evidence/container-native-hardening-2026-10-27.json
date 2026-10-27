@@ -22,7 +22,7 @@
     ],
     "second_review": "BLOCKED: a deterministic reviewer receipt recorded before semantic review was enabled could still satisfy a later gate",
     "second_review_fix": "Gate acceptance now rechecks the active semantic-review policy and default provider; deterministic reviewer evidence yields NOT_TESTED",
-    "focused_re_review": "PENDING"
+    "focused_re_review": "MERGE_READY"
   },
   "commands": {
     "cargo_fmt": "PASS (`cargo fmt --all -- --check`)",
@@ -64,8 +64,10 @@
     "Live OpenCode-in-container inference, live Codex, semantic live calls, SEC-01, Windows and human acceptance remain NOT_TESTED/BLOCKED as documented."
   ],
   "paid_uat": {
-    "run": false,
+    "run": true,
+    "implementation_sha": "1225baeb123f7a652bb3a927f53562e28c573e26",
     "authorization_request": "docs/implementation/container-native-paid-uat-authorization-request-2026-10-27.md",
-    "status": "NOT_AUTHORIZED"
+    "status": "PASS",
+    "evidence": "docs/evidence/container-native-live-uat-2026-10-27.json"
   }
 }

@@ -1976,7 +1976,7 @@ capabilities:
   implementation_status: in_progress
   verification:
     deterministic: verified
-    live_agent: not_tested
+    live_agent: verified
     uat: not_tested
     deployment: not_tested
     isolation: not_tested
@@ -2005,11 +2005,13 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/container-native-compose-2026-10-26.json
-    live_agent: []
+    live_agent:
+    - docs/evidence/container-native-live-uat-certification-manifest.json
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Author-run deterministic Compose and browser evidence exists; independent security review and paid UAT remain open.
+  - An owner-authorized paid OpenCode live container UAT passed at candidate 1225bae; independent security review, Windows, SEC-01 isolation and live Codex remain open.
+  - The Campaign authorization label can remain AUTHORIZED after an ACCEPTED Run; the Run and Quality Gate are authoritative.
   blockers:
-  - Fresh Product Owner paid envelope and SEC-01 isolation evaluation are not present.
+  - SEC-01 isolation evaluation, deployment, Windows and independent security review remain open.
