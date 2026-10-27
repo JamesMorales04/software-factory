@@ -124,7 +124,10 @@ export function Overview() {
         }
         actions={
           <>
-            <Link className={buttonClass("secondary")} to="/inbox">
+            <Link className={buttonClass("secondary")} to="/agents">
+              Open Agent Office
+            </Link>
+            <Link className={buttonClass("quiet")} to="/inbox">
               Open Decision Inbox
             </Link>
             <Link className={buttonClass("quiet")} to="/runtime">
@@ -147,7 +150,7 @@ export function Overview() {
           label="Running agents"
           value={data.counts.active_agents}
           detail={`${data.counts.unresolved_sessions} unresolved session${data.counts.unresolved_sessions === 1 ? "" : "s"}`}
-          to="/runtime"
+          to="/agents"
         />
         <Metric
           label="Pending decisions"

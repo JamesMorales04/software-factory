@@ -1,0 +1,248 @@
+.workgraph {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.workgraph-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.workgraph-heading h3,
+.workgraph-table-heading h3 {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.workgraph-heading p,
+.workgraph-table-heading span {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+}
+
+.workgraph-scroll {
+  overflow-x: auto;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(var(--surface-sunken) 1px, transparent 1px),
+    linear-gradient(90deg, var(--surface-sunken) 1px, transparent 1px),
+    var(--surface);
+  background-size: 24px 24px;
+}
+
+.workgraph-canvas {
+  position: relative;
+  min-width: 100%;
+}
+
+.workgraph-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.workgraph-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.6;
+}
+
+.workgraph-edge-attention {
+  stroke: var(--attention);
+  stroke-dasharray: 5 4;
+}
+
+.workgraph-arrow {
+  fill: var(--border-strong);
+}
+
+.workgraph-node {
+  appearance: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  position: absolute;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto;
+  gap: var(--space-1);
+  align-content: start;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.workgraph-node:hover {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.workgraph-node:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  z-index: 2;
+}
+
+.workgraph-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.workgraph-state-ready {
+  border-left-color: var(--info);
+}
+
+.workgraph-state-waiting {
+  border-left-color: var(--border-strong);
+}
+
+.workgraph-state-blocked {
+  border-left-color: var(--attention);
+}
+
+.workgraph-state-running {
+  border-left-color: var(--accent);
+}
+
+.workgraph-state-succeeded {
+  border-left-color: var(--success);
+}
+
+.workgraph-state-failed,
+.workgraph-state-cancelled {
+  border-left-color: var(--danger);
+}
+
+.workgraph-state-unknown,
+.workgraph-state-inconsistent {
+  border-left-color: var(--attention);
+  border-left-style: dashed;
+}
+
+.workgraph-node-top {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.workgraph-node-seq {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.workgraph-node-unit {
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workgraph-node-state {
+  justify-self: start;
+}
+
+.workgraph-node-meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workgraph-scroll-note {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.workgraph-table-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.workgraph-table-wrap {
+  overflow-x: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.workgraph-table-wrap table {
+  min-width: 1080px;
+}
+
+.workgraph-table-wrap tr.is-selected {
+  background: var(--accent-soft);
+}
+
+.workgraph-inspector {
+  display: grid;
+  gap: var(--space-3);
+  border-top: 3px solid var(--accent);
+}
+
+.workgraph-inspector h3 {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.workgraph-inspector-badges {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.workgraph-inspector-section {
+  display: grid;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.workgraph-inspector-section h4 {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.workgraph-inspector-section p {
+  margin: 0;
+}
+
+.workgraph-inspector .callout ul {
+  margin: var(--space-2) 0;
+}
+
+@media (max-width: 640px) {
+  .workgraph-heading {
+    display: grid;
+  }
+
+  .workgraph-table-heading {
+    display: grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workgraph-node {
+    transition: none;
+  }
+}

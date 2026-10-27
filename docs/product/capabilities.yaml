@@ -788,13 +788,21 @@ capabilities:
     - docs/architecture/decisions/ADR-0012-project-registry-and-capabilities.md
     contract:
     - docs/contracts/factory-events-s1.md
+    - docs/contracts/agent-office-s4.md
     source:
     - office/src/App.tsx
+    - office/src/views/AgentOffice.tsx
+    - office/src/components/office/AgentOfficeFloor.tsx
+    - office/src/components/office/ParticipantInspector.tsx
+    - native/src/db/participants.rs
     test:
     - office/src/views/Campaigns.tsx
+    - office/src/views/AgentOffice.test.tsx
+    - native/src/db/participants.rs
+    - native/src/bin/core.rs
   acceptance:
-    deterministic: Applicable factory office contract, negative and regression checks pass on an exact candidate.
-    real: Exercise factory office in a genuine authorized project journey and independently verify the outcome.
+    deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
+    real: An authenticated Chromium journey opens Agent Office, inspects recorded participants and follows links to Campaign, WorkGraph, execution and quality evidence without invented activity.
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
@@ -806,7 +814,8 @@ capabilities:
   limitations:
   - Office recovery and cleanup projections remain incomplete.
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
-  - The managed live Office check recorded two unexplained 404 console entries.
+  - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
+  - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry
@@ -2272,12 +2281,16 @@ capabilities:
     - office/src/components/office/CandidateEvidence.tsx
     - office/src/components/office/ParticipantSessionList.tsx
     - office/src/components/office/CandidateDiff.tsx
+    - office/src/components/office/WorkGraph.tsx
+    - office/src/components/office/workGraphLayout.ts
     test:
     - office/src/views/CampaignDetail.test.tsx
+    - office/src/components/office/WorkGraph.test.tsx
+    - office/src/components/office/workGraphLayout.test.ts
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; Core candidate diff metadata requires operator authentication and returns only bounded paths/stat.
-    real: An authenticated Chromium journey opens a Campaign from the list, inspects Overview, WorkGraph, Budget, Candidates, Evidence, Gate and Events, persists the selected tab across reload and observes the accepted Gate only after independent evidence.
+    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff metadata requires operator authentication and returns only bounded paths/stat.
+    real: An authenticated Chromium journey opens a Campaign from the list, selects a WorkUnit in the visual graph and exact inspector, persists the WorkUnit selection across reload, inspects Budget, Candidates, Evidence, Gate and Events, and observes the accepted Gate only after independent evidence.
   evidence:
     deterministic:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
@@ -2286,9 +2299,10 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - The WorkGraph is a table projection; the interactive graph and Agent Office remain later slices.
+  - The WorkGraph visualizes recorded dependencies; position is derived dependency depth, not scheduling progress.
   - Candidate diff projection exposes changed paths and diff stat only; file bodies are not returned to the browser.
   - Campaign authorization and Gate repair remain on their existing module controls.
+  - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.
 

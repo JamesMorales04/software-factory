@@ -645,6 +645,57 @@ try {
     .first()
     .waitFor({ timeout: 15000 });
 
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+    .waitFor();
+  await page
+    .getByRole("button", {
+      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
+    })
+    .waitFor();
+  await page
+    .getByRole("button", {
+      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
+    })
+    .click();
+  const participantInspector = page.getByTestId("participant-inspector");
+  await participantInspector
+    .getByText("A Lead request is a Core-recorded planning")
+    .waitFor();
+  await participantInspector.getByText("LEAD_REQUEST").waitFor();
+  await page.getByRole("tab", { name: /Table/ }).click();
+  await page.getByTestId("agent-table").waitFor();
+  await page.getByRole("tab", { name: /Timeline/ }).click();
+  await page.getByTestId("agent-timeline").waitFor();
+  await page.getByTestId("participant-inspector").waitFor();
+  await page.getByRole("tab", { name: /Visual Office/ }).click();
+  await page.getByTestId("agent-floor").waitFor();
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Role", { exact: true })
+    .selectOption("LEAD");
+  await page.waitForURL(/role=LEAD/);
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Role", { exact: true })
+    .selectOption("");
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Agent Office must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
+
   await api(`/actions/${_leadAction.id}/classify`, {
     method: "POST",
     body: JSON.stringify({
@@ -655,7 +706,174 @@ try {
     }),
   });
 
+  const providerCampaign = await api("/campaigns", {
+    method: "POST",
+    body: JSON.stringify({
+      action_id: _leadAction.id,
+      idempotency_key: "office-provider-session-campaign",
+    }),
+  });
+  await api(`/campaigns/${providerCampaign.id}/authorize`, {
+    method: "POST",
+    body: JSON.stringify({
+      authorization_id: "office-provider-session-auth",
+      risk_class: "R0",
+      execution_mode: "TRUSTED_LOCAL_PROVIDER",
+      actor: "office-e2e",
+      rationale: "deterministic worker-protocol fixture for Agent Office",
+      authorized_paths: ["src"],
+      max_attempts: 1,
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      provider_mode: "build",
+      delegation_id: _leadDelegation.id,
+      max_sessions: 2,
+      max_turns: 4,
+      max_input_tokens: 100000,
+      max_output_tokens: 100000,
+      max_cost_micros: 100000,
+      deadline_secs: 300,
+      allowed_tools: ["write_file"],
+    }),
+  });
+  const providerRun = await api(`/campaigns/${providerCampaign.id}/runs`, {
+    method: "POST",
+  });
+  await api(`/runs/${providerRun.id}/attempts`, { method: "POST" });
+  const registered = await api(
+    "/worker/register",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        worker_id: "agent-office-fixture",
+        registration_key: "agent-office-fixture",
+      }),
+    },
+    bootstrap,
+  );
+  const workerToken = registered.session_token;
+  const claim = await api(
+    "/worker/claim",
+    {
+      method: "POST",
+      body: JSON.stringify({ worker_id: "agent-office-fixture" }),
+    },
+    workerToken,
+  );
+  assert.ok(
+    claim.assignment,
+    "the provider fixture Worker must claim an Attempt",
+  );
+  const providerIntent = await api(
+    "/worker/provider_intent",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        attempt_id: claim.assignment.lease.attempt_id,
+        worker_id: "agent-office-fixture",
+        generation: claim.assignment.lease.generation,
+        provider: "opencode",
+        model: "deepseek-v4.1-flash",
+        provider_mode: "build",
+      }),
+    },
+    workerToken,
+  );
+  await api(
+    "/worker/provider_active",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        session_record_id: providerIntent.session_record_id,
+        worker_id: "agent-office-fixture",
+        generation: claim.assignment.lease.generation,
+        provider_session_id: "ses-office-fixture",
+      }),
+    },
+    workerToken,
+  );
+  for (const [callId, tool, decision, detail] of [
+    ["office-call-1", "write_file", "REQUEST", "tool requested"],
+    ["office-call-1", "write_file", "ALLOW", "path authorized"],
+    ["office-call-1", "write_file", "RESULT", "write applied"],
+    [
+      "office-call-2",
+      "final",
+      "RESULT",
+      "free-form explanation that must never render: api_key=canary-secret",
+    ],
+  ]) {
+    await api(
+      "/worker/provider_tool_event",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          session_record_id: providerIntent.session_record_id,
+          worker_id: "agent-office-fixture",
+          generation: claim.assignment.lease.generation,
+          call_id: callId,
+          tool,
+          decision,
+          detail,
+        }),
+      },
+      workerToken,
+    );
+  }
+
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+    .waitFor();
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Campaign", { exact: true })
+    .selectOption(providerCampaign.id);
+  const activeImplementer = page.getByRole("button", {
+    name: /Inspect Implementer implementer:/,
+  });
+  await activeImplementer.waitFor();
+  await activeImplementer.click();
+  const activeInspector = page.getByTestId("participant-inspector");
+  await activeInspector.getByText("ACTIVE", { exact: true }).first().waitFor();
+  await activeInspector.getByText("CURRENT", { exact: true }).waitFor();
+  await activeInspector.getByText("ses-office-fixture").waitFor();
+  const toolTable = page.getByTestId("tool-event-table");
+  await toolTable.getByText("write_file").first().waitFor();
+  await toolTable.getByText("tool requested").waitFor();
+  await toolTable.getByText("write applied").waitFor();
+  await toolTable.getByText("provider content withheld").waitFor();
+  assert.equal(
+    await page.getByText("canary-secret", { exact: false }).count(),
+    0,
+    "free-form provider detail must never render",
+  );
+  const activeParticipantUrl = page.url();
   await page.reload();
+  await page
+    .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+    .waitFor();
+  await page.getByTestId("participant-inspector").waitFor();
+  await page
+    .getByTestId("tool-event-table")
+    .getByText("write applied")
+    .waitFor();
+  assert.equal(
+    page.url(),
+    activeParticipantUrl,
+    "the selected participant and filters must survive reload",
+  );
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Campaign", { exact: true })
+    .selectOption("");
+  await api(`/campaigns/${providerCampaign.id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason: "deterministic browser fixture cleanup" }),
+  });
+
+  await page.getByRole("link", { name: "Lead", exact: true }).click();
+  await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Lead", exact: true }).waitFor();
   const leadRow = page.getByRole("row", {
     name: new RegExp(_leadRequest.id.slice(0, 8)),
@@ -712,6 +930,63 @@ try {
     .getByText("opencode/deepseek-v4.1-flash", { exact: false })
     .first()
     .waitFor();
+
+  await page.getByRole("tab", { name: /WorkGraph/ }).click();
+  await page.getByRole("heading", { name: /WorkGraph \(1 units\)/ }).waitFor();
+  const workGraphNode = page
+    .locator('[data-testid^="workgraph-node-"]')
+    .first();
+  await workGraphNode.waitFor();
+  await page.getByTestId("workgraph-table").waitFor();
+  const workGraphUnit = await workGraphNode.getAttribute("data-testid");
+  assert.ok(workGraphUnit, "the WorkGraph must render its recorded unit");
+  await workGraphNode.click();
+  const workUnitInspector = page.getByTestId("workgraph-inspector");
+  await workUnitInspector.waitFor();
+  await workUnitInspector.getByText("Frozen sequence").waitFor();
+  await page.waitForURL(/tab=workgraph&unit=/);
+  const workGraphUrl = page.url();
+  await page.reload();
+  await page
+    .getByRole("heading", { name: `Campaign ${leadCampaign.id.slice(0, 8)}` })
+    .waitFor();
+  await page.getByTestId("workgraph-inspector").waitFor();
+  assert.equal(
+    page.url(),
+    workGraphUrl,
+    "WorkUnit selection must survive reload",
+  );
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Campaign WorkGraph must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
+    .waitFor();
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Campaign", { exact: true })
+    .selectOption(leadCampaign.id);
+  await page
+    .getByRole("button", {
+      name: new RegExp(`Inspect Lead lead:${_leadRequest.id}`),
+    })
+    .waitFor();
+  await page
+    .getByTestId("agent-filters")
+    .getByLabel("Campaign", { exact: true })
+    .selectOption("");
 
   await page.goto(`${viteUrl}/#/campaigns/${leadCampaign.id}`);
   await page

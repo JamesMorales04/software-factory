@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -135,5 +135,57 @@ describe("CampaignDetail", () => {
       }),
     ).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("?tab=budget");
+  });
+
+  it("deep-links and preserves the selected WorkGraph unit", async () => {
+    mocks.getCampaignDetail.mockResolvedValue({
+      ...detail,
+      tasks: [
+        {
+          task_id: "task-a",
+          campaign_id: "c1",
+          request_id: "lead-1",
+          unit_id: "unit-a",
+          sequence: 0,
+          status: "SUCCEEDED",
+          base_commit: "a".repeat(40),
+          depends_on: [],
+          run_id: "run-1",
+          attempt_id: "attempt-1",
+          candidate_id: "candidate-1",
+          candidate_commit: "b".repeat(40),
+          candidate_tree: "c".repeat(40),
+          updated_at: "2026-10-27T10:00:00Z",
+        },
+        {
+          task_id: "task-b",
+          campaign_id: "c1",
+          request_id: "lead-1",
+          unit_id: "unit-b",
+          sequence: 1,
+          status: "PENDING",
+          base_commit: "a".repeat(40),
+          depends_on: ["unit-a"],
+          run_id: null,
+          attempt_id: null,
+          candidate_id: null,
+          candidate_commit: null,
+          candidate_tree: null,
+          updated_at: "2026-10-27T10:00:00Z",
+        },
+      ],
+    });
+    renderCampaign("/campaigns/c1?tab=workgraph&unit=unit-a");
+    await screen.findByTestId("workgraph-inspector");
+    expect(screen.getByTestId("location").textContent).toContain("unit=unit-a");
+    await userEvent.click(
+      screen.getAllByRole("button", { name: "Inspect" })[1],
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "?tab=workgraph&unit=unit-b",
+      ),
+    );
+    expect(screen.getByTestId("workgraph-inspector")).toBeDefined();
   });
 });

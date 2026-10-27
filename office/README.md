@@ -11,13 +11,17 @@ limits, runtime review policy and configuration audit without returning
 credential values.
 
 Current views: Overview, Decision Inbox, Projects, Actions/Action detail, Lead,
-Delegations, Campaigns/Campaign detail, Runs, Workers, Runtime and Settings,
-inside a responsive shell with grouped navigation, command search, themes and
-density. Campaign detail projects the
+Delegations, Campaigns/Campaign detail, Agent Office, Runs, Workers, Runtime and
+Settings, inside a responsive shell with grouped navigation, command search,
+themes and density. Agent Office projects recorded Lead, Implementer, Verifier,
+Reviewer and Worker participants into URL-backed visual, table and timeline
+views with a shared inspector and bounded provider tool events. Campaign detail projects the
 Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
 Candidate → Verifier → Reviewer → Gate workflow from Core data in URL-backed
 tabs for lifecycle, WorkGraph, execution, candidates, evidence, Gate, budget and
-events/recovery. It shows per-unit dependencies/status, a bounded candidate diff
+events/recovery. The WorkGraph includes a deterministic dependency layout with
+keyboard node selection and an inspector while retaining the authoritative
+table. It shows per-unit dependencies/status, a bounded candidate diff
 summary, receipts, honest pending states for missing evidence, deterministic
 Gate outcome and reasons, provider-session usage/cleanup and a compact
 authorization budget projection. Operators can

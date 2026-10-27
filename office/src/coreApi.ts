@@ -99,6 +99,7 @@ export interface ProviderSession {
   total_tokens: number;
   cost_micros: number;
   usage_known: boolean;
+  cleanup?: string;
   cleanup_receipt: string;
   error: string;
   created_at: string;
@@ -152,6 +153,174 @@ export interface LeadTask {
   candidate_commit: string | null;
   candidate_tree: string | null;
   updated_at: string;
+}
+
+export type ParticipantRole =
+  | "IMPLEMENTER"
+  | "LEAD"
+  | "VERIFIER"
+  | "REVIEWER"
+  | "WORKER";
+
+export type ParticipantObservation =
+  | "CURRENT"
+  | "STALE"
+  | "FINAL"
+  | "NOT_EXPOSED"
+  | "UNKNOWN";
+
+export interface ParticipantRoute {
+  provider: string;
+  model: string;
+  mode: string | null;
+}
+
+export interface ParticipantUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micros: number;
+  usage_known: boolean;
+}
+
+export interface ParticipantSession {
+  session_record_id: string;
+  attempt_id: string;
+  worker_id: string;
+  generation: number;
+  provider: string;
+  model: string;
+  provider_mode: string;
+  state: string;
+  provider_session_id: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_micros: number;
+  usage_known: boolean;
+  cleanup: string;
+  cleanup_receipt: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ParticipantEvidence {
+  candidate_id: string | null;
+  candidate_commit: string | null;
+  candidate_tree: string | null;
+  gate_outcome: string | null;
+  gate_decided_at: string | null;
+  verifier_receipt_id: string | null;
+  reviewer_receipt_id: string | null;
+}
+
+export interface ParticipantRecord {
+  participant_id: string;
+  role: ParticipantRole;
+  identity_kind: string;
+  identity_id: string;
+  principal_id: string | null;
+  project_id: string | null;
+  action_id: string | null;
+  campaign_id: string | null;
+  request_id: string | null;
+  work_unit_id: string | null;
+  run_id: string | null;
+  attempt_id: string | null;
+  attempt_generation: number | null;
+  worker_id: string | null;
+  requested_route: ParticipantRoute | null;
+  observed_route: ParticipantRoute | null;
+  route_provenance: string;
+  session: ParticipantSession | null;
+  status: string;
+  status_source: string;
+  lease_state: string;
+  observation: ParticipantObservation;
+  failure_reason: string | null;
+  usage: ParticipantUsage | null;
+  usage_provenance: string;
+  evidence: ParticipantEvidence | null;
+  model_call_count: number | null;
+  model_call_state: string | null;
+  observation_note: string;
+  recorded_at: string;
+  last_observed_at: string;
+}
+
+export interface ParticipantPageInfo {
+  limit: number;
+  offset: number;
+  returned: number;
+  has_more: boolean;
+  order: string;
+  as_of: string;
+}
+
+export interface ParticipantSource {
+  role: ParticipantRole;
+  source: string;
+  note: string;
+}
+
+export interface ParticipantPage {
+  participants: ParticipantRecord[];
+  page: ParticipantPageInfo;
+  sources: ParticipantSource[];
+}
+
+export interface ParticipantFilters {
+  role?: string;
+  provider?: string;
+  status?: string;
+  campaignId?: string;
+  projectId?: string;
+  participantId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProviderSessionContext {
+  participant_id: string;
+  session_record_id: string;
+  attempt_id: string;
+  run_id: string;
+  campaign_id: string;
+  worker_id: string;
+  generation: number;
+  provider: string;
+  model: string;
+  provider_mode: string;
+  state: string;
+  lease_state: string;
+  cleanup: string;
+  updated_at: string;
+}
+
+export interface ProviderToolEventView {
+  sequence: number;
+  call_ref: string;
+  tool: string;
+  tool_digest: string;
+  decision: string;
+  detail: string | null;
+  detail_state: string;
+  recorded_at: string;
+  provenance: string;
+}
+
+export interface ProviderToolEventProjection {
+  session: ProviderSessionContext;
+  events: ProviderToolEventView[];
+  after_sequence: number;
+  limit: number;
+  returned: number;
+  next_sequence: number | null;
+  has_more: boolean;
+  discarded: number;
+  source: string;
+  note: string;
 }
 
 export interface CandidateDiffSummary {
@@ -950,6 +1119,27 @@ export const coreApi = {
     request<ProviderTurnBudget>("/provider/turn_reservations/budget"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
+  listParticipants: (filters: ParticipantFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.role) params.set("role", filters.role);
+    if (filters.provider) params.set("provider", filters.provider);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.campaignId) params.set("campaign_id", filters.campaignId);
+    if (filters.projectId) params.set("project_id", filters.projectId);
+    if (filters.participantId)
+      params.set("participant_id", filters.participantId);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined)
+      params.set("offset", String(filters.offset));
+    const query = params.toString();
+    return request<ParticipantPage>(
+      `/office/participants${query ? `?${query}` : ""}`,
+    );
+  },
+  listToolEvents: (sessionRecordId: string, afterSequence = 0, limit = 100) =>
+    request<ProviderToolEventProjection>(
+      `/provider/sessions/${encodeURIComponent(sessionRecordId)}/tool_events?after_sequence=${afterSequence}&limit=${limit}`,
+    ),
   getDecisions: () => request<DecisionList>("/office/decisions"),
   resolveModelCall: (id: string, actor: string, reason: string) =>
     request<void>(`/model/calls/${encodeURIComponent(id)}/resolve`, {

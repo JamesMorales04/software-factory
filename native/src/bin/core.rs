@@ -536,6 +536,11 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/actions/{id}/classify", post(classify_action))
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
+        .route("/office/participants", get(office_participants))
+        .route(
+            "/provider/sessions/{session_record_id}/tool_events",
+            get(provider_session_tool_events),
+        )
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/campaigns/{id}", get(campaign_detail))
         .route(
@@ -1920,6 +1925,131 @@ async fn office_decisions(State(app): State<Arc<App>>, headers: HeaderMap) -> Re
         Ok(items) => {
             Json(json!({"items": items, "as_of": chrono::Utc::now().to_rfc3339()})).into_response()
         }
+        Err(error) => api_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParticipantsQuery {
+    role: Option<String>,
+    provider: Option<String>,
+    status: Option<String>,
+    campaign_id: Option<String>,
+    project_id: Option<String>,
+    participant_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolEventsQuery {
+    after_sequence: Option<i64>,
+    limit: Option<usize>,
+}
+
+fn filter_text(
+    value: Option<String>,
+    field: &'static str,
+    max: usize,
+) -> Result<Option<String>, Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
+        return Err(Error::Invalid(field));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn participants_query(
+    query: ParticipantsQuery,
+) -> Result<factory_native::db::ParticipantQuery, Error> {
+    let role = filter_text(query.role, "participant role", 32)?.map(|value| value.to_uppercase());
+    if let Some(role) = &role
+        && !factory_native::db::participants::is_valid_participant_role(role)
+    {
+        return Err(Error::Invalid("participant role"));
+    }
+    let status =
+        filter_text(query.status, "participant status", 64)?.map(|value| value.to_uppercase());
+    if let Some(status) = &status
+        && !factory_native::db::participants::is_valid_participant_status(status)
+    {
+        return Err(Error::Invalid("participant status"));
+    }
+    let provider = filter_text(query.provider, "participant provider", 128)?;
+    let campaign_id = filter_text(query.campaign_id, "participant campaign", 256)?;
+    let project_id = filter_text(query.project_id, "participant project", 256)?;
+    let participant_id = filter_text(query.participant_id, "participant identity", 256)?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=factory_native::db::participants::PARTICIPANT_PAGE_MAX).contains(&limit) {
+        return Err(Error::Invalid("participant limit"));
+    }
+    let offset = query.offset.unwrap_or(0);
+    if offset > factory_native::db::participants::PARTICIPANT_OFFSET_MAX {
+        return Err(Error::Invalid("participant offset"));
+    }
+    Ok(factory_native::db::ParticipantQuery {
+        role,
+        provider,
+        status,
+        campaign_id,
+        project_id,
+        participant_id,
+        limit,
+        offset,
+    })
+}
+
+async fn office_participants(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<ParticipantsQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match participants_query(query) {
+        Ok(query) => match app.db.participants(&query).await {
+            Ok(page) => Json(page).into_response(),
+            Err(error) => api_error(error),
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn provider_session_tool_events(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(session_record_id): AxumPath<String>,
+    Query(query): Query<ToolEventsQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if session_record_id.trim().is_empty()
+        || session_record_id.len() > 256
+        || session_record_id.chars().any(char::is_control)
+    {
+        return api_error(Error::Invalid("provider session identity"));
+    }
+    let after_sequence = query.after_sequence.unwrap_or(0);
+    if after_sequence < 0 {
+        return api_error(Error::Invalid("tool event cursor"));
+    }
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=factory_native::db::participants::TOOL_EVENT_PAGE_MAX).contains(&limit) {
+        return api_error(Error::Invalid("tool event limit"));
+    }
+    match app
+        .db
+        .provider_tool_event_projection(&session_record_id, after_sequence, limit)
+        .await
+    {
+        Ok(projection) => Json(projection).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -4110,6 +4240,119 @@ mod tests {
         assert_eq!(
             router.oneshot(request).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn test_app(path: &Path) -> Arc<App> {
+        Arc::new(App {
+            db: Database::open(path).await.unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        })
+    }
+
+    #[tokio::test]
+    async fn participant_routes_require_operator_credentials_and_validate_filters() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-participant-routes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let router = build_router(test_app(&path).await);
+        for uri in [
+            "/office/participants",
+            "/provider/sessions/missing/tool_events",
+        ] {
+            for bearer in [
+                None,
+                Some("Bearer wrong-token"),
+                Some("Bearer bootstrap-bootstrap-bootstrap-1234"),
+                Some("Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa"),
+                Some("Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb"),
+            ] {
+                let mut request = axum::http::Request::builder().uri(uri);
+                if let Some(bearer) = bearer {
+                    request = request.header("authorization", bearer);
+                }
+                assert_eq!(
+                    router
+                        .clone()
+                        .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                        .await
+                        .unwrap()
+                        .status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{uri} with {bearer:?}"
+                );
+            }
+        }
+
+        for uri in [
+            "/office/participants?role=ADMIN",
+            "/office/participants?status=NOT_A_STATUS",
+            "/office/participants?limit=0",
+            "/office/participants?limit=201",
+            "/office/participants?offset=10001",
+            "/office/participants?campaign_id=",
+            "/provider/sessions/missing/tool_events?after_sequence=-1",
+            "/provider/sessions/missing/tool_events?limit=201",
+        ] {
+            let request = axum::http::Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "{uri}"
+            );
+        }
+
+        let request = axum::http::Request::builder()
+            .uri("/office/participants?limit=1&role=implementer&status=active")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(body["participants"].is_array());
+        assert_eq!(body["page"]["limit"], 1);
+        assert_eq!(
+            body["page"]["order"],
+            "last_observed_at DESC, participant_id ASC"
+        );
+
+        let request = axum::http::Request::builder()
+            .uri("/provider/sessions/missing/tool_events")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
         );
         let _ = std::fs::remove_file(path);
     }

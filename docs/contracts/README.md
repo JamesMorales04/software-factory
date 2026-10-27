@@ -12,6 +12,7 @@
 | Agent observability projection | `agent-observability-s3c.md` | S3-C | cross-Run session listing, Agent/Run-detail projections, evidence levels, redaction |
 | Frozen candidate quality pipeline | `quality-pipeline-s4a.md` | S4-A | ActionSpec, immutable candidate, independent verifier/reviewer, deterministic gate, browser checks |
 | Native campaign orchestration | `campaign-orchestration-s4b.md` | S4-B | Core-owned Campaign/Task plan, native dispatch, repair, budgets, restart and Office projection |
+| Agent Office and interactive WorkGraph | `agent-office-s4.md` | S4 | participant/tool-event projections, redaction, filters, visual Office and dependency graph |
 
 The remaining F0 rows below (Agent Session, Quality–Delivery beyond S4-A/S4-B) are still proposed. Legacy session-identity and recovery contracts are archived; their invariants must be re-expressed against direct provider adapters when provider execution is implemented.
 

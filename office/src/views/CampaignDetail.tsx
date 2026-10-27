@@ -11,6 +11,7 @@ import {
 } from "../components/office/CandidateEvidence";
 import { ParticipantSessionList } from "../components/office/ParticipantSessionList";
 import { StatusBadge } from "../components/office/StatusBadge";
+import { WorkGraphPanel } from "../components/office/WorkGraph";
 import { Button, buttonClass } from "../components/ui/Button";
 import {
   EmptyState,
@@ -169,6 +170,7 @@ export function CampaignDetail() {
   const { campaignId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = resolveTab(searchParams.get("tab"));
+  const selectedUnitId = searchParams.get("unit");
   const [loaded, setLoaded] = useState<LoadedCampaign | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -178,6 +180,14 @@ export function CampaignDetail() {
   const selectTab = (next: string) => {
     const params = new URLSearchParams(searchParams);
     params.set("tab", resolveTab(next));
+    setSearchParams(params);
+  };
+
+  const selectUnit = (unitId: string | null) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("tab", "workgraph");
+    if (unitId) params.set("unit", unitId);
+    else params.delete("unit");
     setSearchParams(params);
   };
 
@@ -698,62 +708,20 @@ export function CampaignDetail() {
               <h2>WorkGraph ({detail.tasks.length} units)</h2>
               <span className="muted">{summarizeCounts(taskCounts)}</span>
             </div>
-            {detail.tasks.length === 0 ? (
-              <EmptyState
-                title="No WorkGraph units"
-                description="No Lead WorkGraph task is recorded for this Campaign."
-              />
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Unit</th>
-                    <th>Status</th>
-                    <th>Depends on</th>
-                    <th>Run</th>
-                    <th>Attempt</th>
-                    <th>Candidate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detail.tasks.map((task) => (
-                    <tr key={task.task_id}>
-                      <td>{task.sequence + 1}</td>
-                      <td>
-                        <code>{task.unit_id}</code>
-                      </td>
-                      <td>
-                        <StatusBadge status={task.status} />
-                      </td>
-                      <td>{task.depends_on.join(", ") || "none"}</td>
-                      <td>
-                        <code>{task.run_id ? shortId(task.run_id) : "—"}</code>
-                      </td>
-                      <td>
-                        <code>
-                          {task.attempt_id ? shortId(task.attempt_id) : "—"}
-                        </code>
-                      </td>
-                      <td>
-                        {task.candidate_id ? (
-                          <>
-                            <code>{shortId(task.candidate_id)}</code>
-                            {task.candidate_commit && (
-                              <div className="muted">
-                                commit {shortId(task.candidate_commit, 12)}
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <WorkGraphPanel
+              tasks={detail.tasks}
+              campaignId={campaign.id}
+              selectedUnitId={selectedUnitId}
+              onSelectUnit={selectUnit}
+              sessions={sessions}
+              gates={gates}
+              receipts={receipts}
+              stale={Boolean(error)}
+              selectedUnitMissing={
+                Boolean(selectedUnitId) &&
+                !detail.tasks.some((task) => task.unit_id === selectedUnitId)
+              }
+            />
           </Panel>
         </TabPanel>
       )}
