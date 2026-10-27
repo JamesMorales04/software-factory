@@ -91,9 +91,9 @@ concrete paths. The branch now includes and locally verifies:
 - `init` and `provider-bundle` are read-only, capability-reduced root one-shots
   with static policy coverage, and the broker-token Debug leak is removed.
 
-At hardening candidate `bc66f460d1e1a8a61742afa10033d4ddb4456666`, the
+At hardening candidate `d9de876f5533827a5a44b07f00c676ac24d7516c`, the
 deterministic Compose E2E still reaches an `ACCEPTED` candidate
-(`8de1d762-6a1c-470a-a7dc-0b6bbc7531d7`) and preserves state across restart.
+(`b9b22a75-082f-4ca8-bc71-b92a7bbdd697`) and preserves state across restart.
 Live OpenCode-in-container inference remains **NOT_TESTED**; it requires the
 separate paid UAT authorization described in
 [the authorization request](container-native-paid-uat-authorization-request-2026-10-27.md).
@@ -128,4 +128,6 @@ Exact-head CI, an independent security/architecture review of the hardening
 candidate, a fresh paid UAT under written authorization, and Product Owner
 approval remain required. The candidate-bound deterministic PASS above is not
 a merge authorization. The independent review that produced the hardening list
-is recorded; its re-review of `bc66f46` is still pending.
+is recorded; a second review found the late-deterministic semantic-review gap,
+which is now fixed at gate acceptance. A focused re-review of the final head is
+pending.
