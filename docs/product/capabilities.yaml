@@ -275,6 +275,7 @@ milestones:
   - CAP-047
   - CAP-048
   - CAP-049
+  - CAP-050
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2138,6 +2139,55 @@ capabilities:
   - The current Office still uses hash routes and polling; stable routes stream/replay, the visual Agent Office and the remaining module migrations are later slices.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.
+- id: CAP-048
+  name: Office design system and application shell
+  category: Product
+  purpose: Factory Office has one accessible visual language and a stable application shell
+  product_objective: Coherent engineering command center
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-047
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-design-system.md
+    source:
+    - office/src/components/AppShell.tsx
+    - office/src/components/ui/Button.tsx
+    - office/src/components/ui/Field.tsx
+    - office/src/components/ui/Surface.tsx
+    - office/src/styles/tokens.css
+    test:
+    - office/src/components/ui/Button.test.tsx
+    - office/src/theme.test.tsx
+    - office/e2e-browser/rust-journey.mjs
+  acceptance:
+    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow.
+    real: Primary Office journeys remain usable at desktop, tablet and narrow widths with visible focus, truthful states and real Core-backed browser acceptance.
+  evidence:
+    deterministic:
+    - docs/evidence/office-design-foundation-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Storybook, visual regression, the full axe audit, the interactive WorkGraph and a full code-diff viewer remain later slices.
+  - Existing operational views still use the legacy compatibility surface until their module redesign.
+  blockers:
+  - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
+
 - id: CAP-049
   name: Operational Overview and Decision Inbox
   category: Product
@@ -2189,10 +2239,10 @@ capabilities:
   blockers:
   - Real browser acceptance and Product Owner review remain pending.
 
-- id: CAP-048
-  name: Office design system and application shell
+- id: CAP-050
+  name: Campaign operational workspace
   category: Product
-  purpose: Factory Office has one accessible visual language and a stable application shell
+  purpose: Operators can understand and inspect a Campaign end to end without raw API calls or terminal inspection
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2205,35 +2255,36 @@ capabilities:
   owner: Office
   dependencies:
   - CAP-011
-  - CAP-047
+  - CAP-049
   target_milestone: F1-S9
   refs:
     adr:
     - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
     contract:
     - docs/product/office-design-system.md
+    - docs/product/factory-office.md
     source:
-    - office/src/components/AppShell.tsx
-    - office/src/components/ui/Button.tsx
-    - office/src/components/ui/Field.tsx
-    - office/src/components/ui/Surface.tsx
-    - office/src/styles/tokens.css
+    - native/src/bin/core.rs
+    - office/src/views/CampaignDetail.tsx
+    - office/src/components/office/CandidateEvidence.tsx
+    - office/src/components/office/ParticipantSessionList.tsx
+    - office/src/components/office/CandidateDiff.tsx
     test:
-    - office/src/components/ui/Button.test.tsx
-    - office/src/theme.test.tsx
+    - office/src/views/CampaignDetail.test.tsx
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow.
-    real: Primary Office journeys remain usable at desktop, tablet and narrow widths with visible focus, truthful states and real Core-backed browser acceptance.
+    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; Core candidate diff metadata requires operator authentication and returns only bounded paths/stat.
+    real: An authenticated Chromium journey opens a Campaign from the list, inspects Overview, WorkGraph, Budget, Candidates, Evidence, Gate and Events, persists the selected tab across reload and observes the accepted Gate only after independent evidence.
   evidence:
     deterministic:
-    - docs/evidence/office-design-foundation-2026-10-27.json
+    - docs/evidence/office-campaign-workspace-2026-10-27.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
-  - Storybook, visual regression, the full axe audit and the WorkGraph/board/diff components remain later slices.
-  - Existing operational views still use the legacy compatibility surface until their module redesign.
+  - The WorkGraph is a table projection; the interactive graph and Agent Office remain later slices.
+  - Candidate diff projection exposes changed paths and diff stat only; file bodies are not returned to the browser.
+  - Campaign authorization and Gate repair remain on their existing module controls.
   blockers:
-  - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
+  - Real browser acceptance and Product Owner review remain pending.

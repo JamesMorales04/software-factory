@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Button } from "./components/ui/Button";
+import { Input } from "./components/ui/Field";
 import { type Campaign, CoreApiError, coreApi } from "./coreApi";
 import { shortId } from "./format";
 
@@ -53,9 +55,9 @@ export function CancelCampaign({
 
   if (!confirming) {
     return (
-      <button
-        type="button"
-        className="danger"
+      <Button
+        variant="danger"
+        size="sm"
         disabled={disabled || busy}
         onClick={() => {
           setError(null);
@@ -63,7 +65,7 @@ export function CancelCampaign({
         }}
       >
         Cancel Campaign
-      </button>
+      </Button>
     );
   }
 
@@ -78,25 +80,23 @@ export function CancelCampaign({
         cancellation, mark queued work cancelled and flag active provider
         sessions. External provider termination may remain unconfirmed.
       </p>
-      <label>
-        Reason (optional)
-        <input
-          data-testid="cancel-reason"
-          value={reason}
-          maxLength={500}
-          onChange={(event) => setReason(event.target.value)}
-        />
-      </label>
+      <Input
+        data-testid="cancel-reason"
+        label="Reason (optional)"
+        value={reason}
+        maxLength={500}
+        onChange={(event) => setReason(event.target.value)}
+      />
       {error && (
         <p className="error" role="alert">
           {error}
         </p>
       )}
       <div className="row">
-        <button type="submit" className="danger" disabled={busy}>
+        <Button type="submit" variant="danger" disabled={busy}>
           {busy ? "Cancelling…" : "Confirm cancellation"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           disabled={busy}
           onClick={() => {
@@ -105,7 +105,7 @@ export function CancelCampaign({
           }}
         >
           Keep Campaign
-        </button>
+        </Button>
       </div>
     </form>
   );
