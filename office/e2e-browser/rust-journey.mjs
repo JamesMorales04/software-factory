@@ -347,6 +347,19 @@ try {
   await pendingCandidate.getByText("GATE PENDING").waitFor();
   await pendingCandidate.getByTestId("candidate-diff").waitFor();
   await pendingCandidate.getByText(/Changed paths/).waitFor();
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Campaign workspace must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   assert.equal(
     await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
     0,
