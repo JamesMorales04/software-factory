@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "slice": "F1-S9 Slice 4 \u2014 Agent Office and interactive WorkGraph",
+  "status": "IMPLEMENTED_PENDING_INDEPENDENT_REVIEW",
+  "result": "PASS",
+  "candidate_sha": "0bddd0f4370cf883adfe475484c78b80551bf161",
+  "parent_sha": "9b7a60197ef230596b2de2eb757fd37d9a2a8522",
+  "base_sha": "0a03c7cd2bd6e6af52395c760c1b81ebe187a548",
+  "branch": "campaign/office-agent-slice4",
+  "environment": {
+    "host": "Linux",
+    "rust": "1.90.0",
+    "node": "22.23.2",
+    "chromium": "Playwright chromium-1248",
+    "podman": "6.1.4 rootless",
+    "podman_compose": "/usr/bin/podman-compose",
+    "paid_inference": false
+  },
+  "checks": [
+    {
+      "name": "rust_format",
+      "pass": true
+    },
+    {
+      "name": "rust_clippy",
+      "pass": true
+    },
+    {
+      "name": "rust_workspace_tests",
+      "pass": true
+    },
+    {
+      "name": "rust_xtask_e2e",
+      "pass": true
+    },
+    {
+      "name": "architecture_and_hygiene",
+      "pass": true
+    },
+    {
+      "name": "office_typecheck_lint_tests_build",
+      "pass": true
+    },
+    {
+      "name": "host_chromium_agent_office_workgraph",
+      "pass": true
+    },
+    {
+      "name": "compose_e2e",
+      "pass": true
+    },
+    {
+      "name": "compose_agent_office_smoke",
+      "pass": true
+    }
+  ],
+  "verification": {
+    "rust": {
+      "format": "PASS",
+      "clippy_all_targets_all_features_deny_warnings": "PASS",
+      "workspace_tests": "PASS",
+      "build_bins": "PASS",
+      "doc": "PASS",
+      "xtask_e2e_recovery": "PASS",
+      "xtask_e2e_dispatch": "PASS (12 tests)",
+      "xtask_e2e_negatives": "PASS (5 tests)",
+      "xtask_e2e_provider": "PASS",
+      "architecture_check_base_origin_main": "PASS",
+      "repository_hygiene_strict": "PASS (0 findings)"
+    },
+    "office": {
+      "typecheck": "PASS",
+      "lint": "PASS (pre-existing base.css warnings only)",
+      "component_tests": "PASS (49 tests, 12 files)",
+      "production_build": "PASS"
+    },
+    "browser_host_journey": {
+      "command": "node office/e2e-browser/rust-journey.mjs",
+      "result": "PASS",
+      "candidate": "e14d6862395fb3922969610720d27014884e4b9b",
+      "gate": "ACCEPTED",
+      "agent_office": "Lead, active provider-backed Implementer, Worker participants; CURRENT/LIVE session; recorded tool events with withheld free-form provider detail; table and timeline views; selected participant survives reload.",
+      "workgraph": "Lead Campaign one-unit WorkGraph rendered; node selection opens the exact inspector and survives reload.",
+      "widths": [
+        1440,
+        834,
+        390
+      ],
+      "console_errors": 0,
+      "unexpected_404s": 0,
+      "unexpected_page_errors": 0
+    },
+    "compose_e2e": {
+      "command": "FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose bash scripts/compose-e2e.sh",
+      "result": "PASS",
+      "candidate": "0ca5d762-1e73-48da-b977-d063845a391a",
+      "attempt": "bfe4741d-d7a4-44cd-a6d7-56e37267b0ec",
+      "gate": "ACCEPTED",
+      "restart_persistence": true,
+      "paid_inference": false
+    },
+    "compose_agent_office_smoke": {
+      "command": "FACTORY_OFFICE_URL=http://127.0.0.1:8894 FACTORY_API_TOKEN=<operator> CHROMIUM_EXE=<chromium> FACTORY_BROWSER_NO_SANDBOX=1 node scripts/compose-agent-office-smoke.mjs",
+      "result": "PASS",
+      "participants": [
+        "implementer",
+        "verifier",
+        "reviewer",
+        "worker"
+      ],
+      "tool_events": "PASS (bounded/redacted; provider detail withheld)",
+      "workgraph_units": 0,
+      "workgraph_state": "truthful empty projection for the API-created deterministic Campaign",
+      "widths": [
+        1440,
+        834,
+        390
+      ],
+      "evidence": "docs/evidence/office-agent-office-slice4-2026-10-27/agent-office-workgraph.png"
+    }
+  },
+  "not_tested": [
+    "Independent verifier/reviewer acceptance of Slice 4",
+    "Product Owner visual and workflow approval",
+    "Live paid provider UAT (not authorized by this slice)",
+    "SEC-01 isolation certification",
+    "Windows deployment"
+  ],
+  "notes": [
+    "Compose browser evidence proves Agent Office with real recorded participants and tool events. The deterministic Compose Campaign has no Lead WorkGraph, so the Compose WorkGraph assertion is the truthful empty state.",
+    "The host browser journey creates a one-unit Lead Campaign and exercises WorkGraph selection. Multi-node/parallel/diamond/eight-unit graph behavior is covered by layout and component tests.",
+    "The host browser journey seeds an active provider session through the real Core Worker protocol (register, claim, intent, active, tool events); it does not call a provider model and does not claim paid inference."
+  ]
+}

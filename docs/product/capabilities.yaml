@@ -806,6 +806,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/native-rust-closure-2026-10-24.json
+    - docs/evidence/office-agent-office-slice4-2026-10-27.json
     live_agent:
     - docs/evidence/managed-live-uat-certification-manifest.json
     uat: []
@@ -2294,6 +2295,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
+    - docs/evidence/office-agent-office-slice4-2026-10-27.json
     live_agent: []
     uat: []
     deployment: []
