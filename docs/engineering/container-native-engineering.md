@@ -97,7 +97,7 @@ topology. It may bind the repository and use a development image. The product
 | Development image with Rust/Node/SQLx | `IMPLEMENTED` | `.devcontainer/Containerfile` |
 | Playwright Chromium in the development image | `IMPLEMENTED` in this policy change; exact-image run recorded with the Slice 1 candidate | Containerfile and Slice 1 evidence |
 | Canonical Compose development service | `IMPLEMENTED` | `compose.dev.yaml` |
-| Rust/Office/browser commands through the service | `LOCALLY_VERIFIED` on the Slice 1 candidate; CI lane `IMPLEMENTED` | Slice 1 candidate evidence |
+| Rust/Office/browser commands through the service | `LOCALLY_VERIFIED` at `a75d4c3f9e65cec4318678f4b0e4d6394e03a008`; container-dev CI lane `IMPLEMENTED` | [Slice 1 evidence](../evidence/office-command-center-slice1-2026-10-27.json) |
 | Windows/Podman Machine | `NOT_TESTED` | No Windows host |
 | SELinux/AppArmor hosts and digest pinning | `NOT_TESTED` / `NOT_IMPLEMENTED` | See security policy |
 

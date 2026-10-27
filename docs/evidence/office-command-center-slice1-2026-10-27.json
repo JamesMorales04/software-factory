@@ -1,0 +1,54 @@
+{
+  "schema": "factory.office-command-center.slice1.v1",
+  "recorded_at": "2026-10-27T07:20:00Z",
+  "result": "PASS (author-run container-native development and governance slice; not independent acceptance)",
+  "implementation_sha": "a75d4c3f9e65cec4318678f4b0e4d6394e03a008",
+  "baseline_sha": "f251ea988571665e4eea9ebfd8446e714af7db8c",
+  "development_image": {
+    "name": "software-factory-dev:local",
+    "id": "43cebaa1770f687c7b25edf457db0e0a54207ff04112a28b1e8fb1325ce69bdc",
+    "digest": "sha256:284c5815f74a61fc85d7f56f96cfcc6742b0748a118f04b2be1e151360def7af",
+    "toolchain": "Rust 1.90.0, Node 22.23.2, SQLx CLI 0.8.6, Clippy/rustfmt, Playwright 1.64.1 Chromium, OpenCode 1.18.32, Codex 0.156.1, bubblewrap",
+    "trust": "trusted development image; not runtime, isolation or an execution sandbox"
+  },
+  "commands": {
+    "dev_image_build": "PASS (`podman compose -f compose.yaml -f compose.dev.yaml build dev`)",
+    "container_rust_gates": "PASS (`podman compose ... run --rm --no-deps dev cargo xtask check-container`)",
+    "container_office_gates": "PASS (`npm --prefix office ci && npm run typecheck && npm run lint && npm run build`)",
+    "container_chromium": "PASS (`cargo xtask e2e office`; candidate a7c36f5239400598834920c7e2fc586accac64f3, gate ACCEPTED)",
+    "host_workspace_tests": "PASS (`cargo test --workspace --locked`)",
+    "pr_impact_tests": "PASS (11 unittest cases)",
+    "office_parity_checker": "PASS (5 unittest cases plus repository matrix)"
+  },
+  "governance": {
+    "skills": [
+      ".agents/skills/container-native-engineering/SKILL.md",
+      ".agents/skills/factory-office-design/SKILL.md",
+      ".agents/skills/office-feature-parity/SKILL.md"
+    ],
+    "external_updates": "manual review only; no automatic updates",
+    "design_skills_evaluated": {
+      "anthropics/frontend-design": "Apache-2.0, pinned dbd4588f9e1033efb41dad4bef2f7947c8993d44; one markdown file, no scripts or network fetch; used as guidance only",
+      "vercel-labs/react-best-practices": "MIT, pinned 063bee94c3f4df8453406c830b0a7df0f2860278; docs only; subset applicable to Vite SPA",
+      "vercel-labs/web-design-guidelines": "MIT, skill pinned 063bee94c3f4df8453406c830b0a7df0f2860278; its referenced guidelines are pinned at 434b7f91364665f2f733b310ec54809bf8f37937 and reviewed as a checklist; never auto-fetched"
+    },
+    "pr_gates": {
+      "architecture": ".github/scripts/check-pr-architecture-impact.py",
+      "office": ".github/scripts/check-office-parity.py",
+      "parity_matrix": "docs/product/office-parity.json"
+    }
+  },
+  "browser_observation": {
+    "console_404_diagnostics": 4,
+    "status": "known existing issue; the Chromium journey reports it and the baseline UI change does not claim those requests as PASS"
+  },
+  "not_tested": [
+    "Windows 11 / Podman Machine",
+    "SELinux/AppArmor hosts",
+    "digest-pinned byte-reproducible development image",
+    "bubblewrap boundary tests inside the development container (host CI lane covers them)",
+    "the new container-dev CI job on GitHub-hosted runners (exact-head PR CI pending)",
+    "independent acceptance of this slice"
+  ],
+  "notes": "The development container is trusted and writable. The product Compose stack is unchanged by this slice. No paid inference was used."
+}
