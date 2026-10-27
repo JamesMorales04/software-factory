@@ -922,6 +922,19 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
     assert_eq!(verifier_receipt["result"], "FAIL");
     assert_eq!(verifier_receipt["evidence"], "EXECUTED");
 
+    let gate: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/quality/candidates/{candidate_id}/gate"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_ne!(gate["outcome"], "ACCEPTED");
+    assert_eq!(gate["outcome"], "REPAIR_REQUIRED");
+
     let reviewer = client
         .post(format!("{base_url}/quality/receipts"))
         .bearer_auth(REVIEWER_TOKEN)
@@ -938,20 +951,7 @@ async fn failing_frozen_check_produces_repair_required_gate_not_accepted() {
         .send()
         .await
         .unwrap();
-    assert_eq!(reviewer.status(), StatusCode::CREATED);
-
-    let gate: Value = operator(
-        &client,
-        reqwest::Method::GET,
-        format!("{base_url}/quality/candidates/{candidate_id}/gate"),
-        None,
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
-    assert_ne!(gate["outcome"], "ACCEPTED");
-    assert_eq!(gate["outcome"], "REPAIR_REQUIRED");
+    assert_eq!(reviewer.status(), StatusCode::CONFLICT);
     let runs: Value = operator(
         &client,
         reqwest::Method::GET,

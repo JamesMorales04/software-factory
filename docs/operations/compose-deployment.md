@@ -29,6 +29,9 @@ systemctl --user enable --now podman.socket
 podman compose up -d --build
 ```
 
+Only `podman-compose` was exercised on the tested host. The Docker Compose
+through rootless-Podman-socket path is advertised but **NOT_TESTED**.
+
 Do not mount the host Podman socket into any service. The product uses its own
 nested engine.
 
@@ -44,7 +47,8 @@ This builds the images (the first build compiles all binaries once), creates
 the private networks and durable volumes, generates per-service secrets,
 imports the provider image into the dedicated engine, starts Core/Office,
 Supervisor, Worker, verifier, reviewer and the runtime broker, and waits for
-health through Compose health checks.
+the Core, Supervisor, Worker and runtime health checks. The verifier and reviewer
+are started after the runtime is healthy but have no Compose healthcheck.
 
 Office is published only on loopback:
 
@@ -96,6 +100,11 @@ Office → **Settings → Providers & Models**:
    does not certify access, pricing or inference capability.
 6. **Revoke credential** clears the secret, disables the route and records an
    audit entry.
+
+The base stack defaults to the live OpenCode adapter. If no matching provider
+settings are saved, the Worker fails closed rather than running the deterministic
+fixture. The fixture adapter is enabled only by the deterministic E2E override
+(`FACTORY_PROVIDER_KIND=fixture`); it is not a silent fallback for a live route.
 
 Semantic Reviewer model calls are separately disabled by default under
 **Review & runtime policy**. Core rejects semantic model calls and MODEL
@@ -181,9 +190,12 @@ the bundle volume transfers its root filesystem to the dedicated engine.
 ## Windows target design (not claimed)
 
 The container provider entrypoint implements OpenCode and the deterministic
-fixture adapter. The Worker fetches the assigned provider route only while it
-holds a live attempt/generation lease. **Live OpenCode-in-container inference
-remains NOT_TESTED**; the fixture path is what the deterministic E2E exercises.
+fixture adapter. The Worker fetches the assigned provider route only while the
+attempt is `LEASED`, the owning Campaign is `AUTHORIZED`, the Worker holds the
+exact lease generation and the authorization deadline has not passed. **Live
+OpenCode-in-container inference remains NOT_TESTED**; the fixture path is what
+the deterministic E2E exercises. A successful live OpenCode container journey
+is part of the pending paid UAT, not a claim of this document.
 Containerized Codex stdio is not implemented.
 
 The intended Windows 11 path is Podman Machine on WSL2 running the same Linux

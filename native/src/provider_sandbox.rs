@@ -120,7 +120,7 @@ impl Default for ProviderSandboxConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ContainerSandboxConfig {
     pub session_dir: PathBuf,
     pub broker_base: String,

@@ -635,6 +635,7 @@ struct ProviderContext<'a> {
     password: &'a str,
     directory: &'a str,
     api_directory: &'a str,
+    provider_kind: &'a str,
     provider_session: &'a std::sync::Arc<std::sync::Mutex<Option<String>>>,
     usage_tracker: &'a std::sync::Arc<std::sync::Mutex<ProviderUsage>>,
     turn_policy: Option<&'a SharedTurnPolicy>,
@@ -844,6 +845,7 @@ async fn execute_provider_assignment(
                 password: &password,
                 directory: &directory,
                 api_directory,
+                provider_kind: provider_kind.as_str(),
                 provider_session: &provider_session,
                 usage_tracker: &usage_tracker,
                 turn_policy: egress_turn_policy.as_ref(),
@@ -875,6 +877,7 @@ async fn execute_provider_assignment(
                 password: "",
                 directory: &directory,
                 api_directory: "/session",
+                provider_kind: provider_kind.as_str(),
                 provider_session: &provider_session,
                 usage_tracker: &usage_tracker,
                 turn_policy: egress_turn_policy.as_ref(),
@@ -3242,6 +3245,14 @@ fn request_digest(value: &serde_json::Value) -> Result<String, Box<dyn std::erro
     factory_native::attempt_grant::request_digest(value).map_err(Into::into)
 }
 
+/// Only the deterministic fixture transport sends the exact canonical request
+/// body authorized by Core. OpenCode and Codex build provider-specific bodies,
+/// so the egress broker must rely on the reservation, model and token bounds
+/// rather than byte equality.
+fn strict_request_digest(provider_kind: &str) -> bool {
+    !matches!(provider_kind, "opencode" | "codex")
+}
+
 async fn authorize_provider_turn(
     context: &ProviderContext<'_>,
     prompt: &serde_json::Value,
@@ -3290,9 +3301,7 @@ async fn authorize_provider_turn(
         expires_at_ms: authorization.expires_at_ms,
         requests: 0,
         max_requests: authorization.max_requests as usize,
-        strict_request_digest: env::var("FACTORY_PROVIDER_KIND")
-            .map(|kind| !matches!(kind.as_str(), "opencode" | "codex"))
-            .unwrap_or(true),
+        strict_request_digest: strict_request_digest(context.provider_kind),
         binding: false,
     });
     Ok(authorization)
@@ -4202,7 +4211,8 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::{
-        opencode_first_action_instruction, validate_provider_tools, validated_loopback_url,
+        opencode_first_action_instruction, strict_request_digest, validate_provider_tools,
+        validated_loopback_url,
     };
 
     #[test]
@@ -4223,6 +4233,13 @@ mod tests {
         assert!(validate_provider_tools(&["run_command".into()]).is_err());
         assert!(validate_provider_tools(&["write_file".into(), "write_file".into()]).is_err());
         assert!(validate_provider_tools(&["read_file".into()]).is_err());
+    }
+
+    #[test]
+    fn only_fixture_requires_exact_egress_body_digest() {
+        assert!(strict_request_digest("fixture"));
+        assert!(!strict_request_digest("opencode"));
+        assert!(!strict_request_digest("codex"));
     }
 
     #[test]

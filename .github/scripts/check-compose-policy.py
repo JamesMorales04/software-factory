@@ -51,6 +51,8 @@ FORBIDDEN_VOLUME_SUBSTRINGS = (
     "/var/run/podman",
     "docker.sock",
 )
+INIT_ALLOWED_CAPS = {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+HOST_NAMESPACE_KEYS = ("pid", "ipc", "uts", "cgroup")
 
 
 def as_set(service, key):
@@ -86,6 +88,17 @@ def main(path: str) -> int:
             fail(f"{name}: device grants are forbidden in the permanent stack")
         if service.get("sysctls"):
             fail(f"{name}: sysctls are forbidden in the permanent stack")
+        for key in HOST_NAMESPACE_KEYS:
+            if service.get(key):
+                fail(f"{name}: {key} namespace override is forbidden")
+        if service.get("volumes_from"):
+            fail(f"{name}: volumes_from is forbidden")
+        if service.get("device_cgroup_rules"):
+            fail(f"{name}: device_cgroup_rules are forbidden")
+        for option in service.get("security_opt", []) or []:
+            normalized = str(option).replace(" ", "")
+            if normalized != "no-new-privileges:true":
+                fail(f"{name}: unsupported security_opt {option!r}")
 
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
@@ -142,8 +155,21 @@ def main(path: str) -> int:
             fail(f"{name}: one-shot initialization must use network_mode none")
         if service.get("networks"):
             fail(f"{name}: one-shot initialization must not join a network")
-        if as_set(service, "cap_add"):
-            fail(f"{name}: one-shot initialization must not add capabilities")
+        if service.get("read_only") is not True:
+            fail(f"{name}: read-only root filesystem is required")
+        if as_set(service, "cap_drop") != {"ALL"}:
+            fail(f"{name}: cap_drop must be exactly ALL")
+        if str(service.get("user")) not in {"0", "0:0"}:
+            fail(f"{name}: one-shot initialization must run as root only")
+        if not any(
+            str(option).replace(" ", "") == "no-new-privileges:true"
+            for option in service.get("security_opt", []) or []
+        ):
+            fail(f"{name}: no-new-privileges is required")
+        allowed_caps = INIT_ALLOWED_CAPS if name == "init" else {"DAC_OVERRIDE"}
+        unexpected = as_set(service, "cap_add") - allowed_caps
+        if unexpected:
+            fail(f"{name}: unsupported one-shot capabilities {sorted(unexpected)}")
 
     init_config = {
         str(volume.get("source", ""))

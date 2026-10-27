@@ -172,52 +172,63 @@ pub fn evaluate_quality_gate(
             "independent verifier receipt is missing",
         );
     };
+    if verifier.receipt_id.trim().is_empty() || verifier.principal_id.trim().is_empty() {
+        return decision(GateOutcome::Blocked, "verifier receipt identity is missing");
+    }
+    if verifier.action_spec_hash != action.hash {
+        return decision(GateOutcome::Blocked, "verifier ActionSpec hash mismatch");
+    }
+    if verifier.candidate_commit_sha != candidate.commit_sha
+        || verifier.candidate_tree_sha != candidate.tree_sha
+    {
+        return decision(GateOutcome::Blocked, "verifier candidate revision mismatch");
+    }
+    if verifier.principal_id == implementer_id {
+        return decision(
+            GateOutcome::Blocked,
+            "implementer cannot verify or review their own candidate",
+        );
+    }
+    if verifier.evidence == EvidenceKind::Mocked {
+        return decision(
+            GateOutcome::Blocked,
+            "mocked evidence cannot satisfy the quality gate",
+        );
+    }
+    if verifier.evidence == EvidenceKind::Unknown {
+        return decision(
+            GateOutcome::NotTested,
+            "receipt evidence provenance is unknown",
+        );
+    }
+    match verifier.result {
+        ReceiptResult::Fail | ReceiptResult::ChangesRequested => {
+            return decision(GateOutcome::RepairRequired, "verification found a failure");
+        }
+        ReceiptResult::NotTested => {
+            return decision(GateOutcome::NotTested, "verification was not tested");
+        }
+        ReceiptResult::Pass => {}
+    }
+
     let Some(reviewer) = reviewer else {
         return decision(
             GateOutcome::NotTested,
             "independent reviewer receipt is missing",
         );
     };
-
-    for (role, receipt_id, principal_id, spec_hash, commit, tree) in [
-        (
-            "verifier",
-            verifier.receipt_id.as_str(),
-            verifier.principal_id.as_str(),
-            verifier.action_spec_hash.as_str(),
-            verifier.candidate_commit_sha.as_str(),
-            verifier.candidate_tree_sha.as_str(),
-        ),
-        (
-            "reviewer",
-            reviewer.receipt_id.as_str(),
-            reviewer.principal_id.as_str(),
-            reviewer.action_spec_hash.as_str(),
-            reviewer.candidate_commit_sha.as_str(),
-            reviewer.candidate_tree_sha.as_str(),
-        ),
-    ] {
-        if receipt_id.trim().is_empty() || principal_id.trim().is_empty() {
-            return decision(
-                GateOutcome::Blocked,
-                format!("{role} receipt identity is missing"),
-            );
-        }
-        if spec_hash != action.hash {
-            return decision(
-                GateOutcome::Blocked,
-                format!("{role} ActionSpec hash mismatch"),
-            );
-        }
-        if commit != candidate.commit_sha || tree != candidate.tree_sha {
-            return decision(
-                GateOutcome::Blocked,
-                format!("{role} candidate revision mismatch"),
-            );
-        }
+    if reviewer.receipt_id.trim().is_empty() || reviewer.principal_id.trim().is_empty() {
+        return decision(GateOutcome::Blocked, "reviewer receipt identity is missing");
     }
-
-    if verifier.principal_id == implementer_id || reviewer.principal_id == implementer_id {
+    if reviewer.action_spec_hash != action.hash {
+        return decision(GateOutcome::Blocked, "reviewer ActionSpec hash mismatch");
+    }
+    if reviewer.candidate_commit_sha != candidate.commit_sha
+        || reviewer.candidate_tree_sha != candidate.tree_sha
+    {
+        return decision(GateOutcome::Blocked, "reviewer candidate revision mismatch");
+    }
+    if reviewer.principal_id == implementer_id {
         return decision(
             GateOutcome::Blocked,
             "implementer cannot verify or review their own candidate",
@@ -235,34 +246,29 @@ pub fn evaluate_quality_gate(
             "verifier and reviewer receipts must be distinct",
         );
     }
-    if verifier.evidence == EvidenceKind::Mocked || reviewer.evidence == EvidenceKind::Mocked {
+    if reviewer.evidence == EvidenceKind::Mocked {
         return decision(
             GateOutcome::Blocked,
             "mocked evidence cannot satisfy the quality gate",
         );
     }
-    if verifier.evidence == EvidenceKind::Unknown || reviewer.evidence == EvidenceKind::Unknown {
+    if reviewer.evidence == EvidenceKind::Unknown {
         return decision(
             GateOutcome::NotTested,
             "receipt evidence provenance is unknown",
         );
     }
-    if verifier.result == ReceiptResult::Fail || reviewer.result == ReceiptResult::Fail {
-        return decision(
-            GateOutcome::RepairRequired,
-            "verification or review found a failure",
-        );
-    }
-    if verifier.result == ReceiptResult::ChangesRequested
-        || reviewer.result == ReceiptResult::ChangesRequested
-    {
-        return decision(GateOutcome::RepairRequired, "review requires changes");
-    }
-    if verifier.result == ReceiptResult::NotTested || reviewer.result == ReceiptResult::NotTested {
-        return decision(
-            GateOutcome::NotTested,
-            "verification or review was not tested",
-        );
+    match reviewer.result {
+        ReceiptResult::Fail => {
+            return decision(GateOutcome::RepairRequired, "review found a failure");
+        }
+        ReceiptResult::ChangesRequested => {
+            return decision(GateOutcome::RepairRequired, "review requires changes");
+        }
+        ReceiptResult::NotTested => {
+            return decision(GateOutcome::NotTested, "review was not tested");
+        }
+        ReceiptResult::Pass => {}
     }
 
     decision(
@@ -355,6 +361,30 @@ mod tests {
         );
         assert_eq!(
             evaluate(Some(&verifier()), None).outcome,
+            GateOutcome::NotTested
+        );
+    }
+
+    #[test]
+    fn failed_verifier_requires_repair_without_a_reviewer() {
+        let mut failed = verifier();
+        failed.result = ReceiptResult::Fail;
+        assert_eq!(
+            evaluate(Some(&failed), None).outcome,
+            GateOutcome::RepairRequired
+        );
+
+        let mut changes = verifier();
+        changes.result = ReceiptResult::ChangesRequested;
+        assert_eq!(
+            evaluate(Some(&changes), None).outcome,
+            GateOutcome::RepairRequired
+        );
+
+        let mut not_tested = verifier();
+        not_tested.result = ReceiptResult::NotTested;
+        assert_eq!(
+            evaluate(Some(&not_tested), None).outcome,
             GateOutcome::NotTested
         );
     }

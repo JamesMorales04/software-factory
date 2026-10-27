@@ -30,6 +30,17 @@ services:
       target: core
     image: software-factory-core:dev
     user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     entrypoint: ["/usr/local/bin/factory-compose-init"]
     environment:
       FACTORY_CONFIG_CORE_DIR: /config-core
@@ -62,6 +73,15 @@ services:
       target: provider
     image: localhost/software-factory-provider:dev
     user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     entrypoint:
       - /bin/sh
       - -ec
@@ -124,7 +144,10 @@ services:
       FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
       FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
       FACTORY_RUNTIME_PROVIDER_IMAGES: localhost/software-factory-provider:dev
-      FACTORY_RUNTIME_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-fixture}
+      # The installed stack is fail-closed for the live OpenCode route:
+      # the deterministic fixture adapter is selected only by the explicit
+      # E2E override, never by the base deployment default.
+      FACTORY_RUNTIME_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_RUNTIME_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_IMPORT_IMAGES: localhost/software-factory-provider:dev=/bundles/provider-rootfs.tar
     networks:
@@ -256,7 +279,9 @@ services:
       FACTORY_SUPERVISOR_TOKEN_FILE: /config/supervisor.token
       FACTORY_WORKER_FIXTURE_IMAGE: docker.io/library/rust:1.90.0-bookworm
       FACTORY_PROVIDER_SANDBOX: container
-      FACTORY_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-fixture}
+      # Fixture execution is an explicit deterministic-test choice, not a
+      # silent fallback for an unconfigured live provider route.
+      FACTORY_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
       FACTORY_PROVIDER_SESSION_ROOT: /provider-sessions
       FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
       FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token

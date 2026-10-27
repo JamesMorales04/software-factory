@@ -44,7 +44,7 @@ This is the exact reason it is not described as rootless-in-rootless.
 | Broker → inner engine | Typed operations only | Arbitrary Podman arguments, host paths, unlisted images |
 | Inner engine → child | Allowlisted image, one workspace volume or provider session subdir, bounded cgroups, no network | Core DB, provider credential, operator/role tokens, host repositories, other workspaces |
 | Worker → provider container | Per-run egress token and non-secret OpenCode config; private session volume | Long-lived provider credential (held by the Worker egress broker) |
-| Core → model provider | Core-held credential, budget reservation, strict schema | Provider credential to the browser or provider sandbox; the Worker receives only the exact assigned route under a live lease |
+| Core → model provider | Core-held credential, budget reservation, strict schema | Provider credential to the browser or provider sandbox; the Worker receives only the exact assigned route while the attempt is `LEASED`, the Campaign is `AUTHORIZED`, the lease generation matches and the authorization deadline is active |
 | Compose → Office | Authenticated operator API | Unauthenticated admin endpoint |
 
 The runtime entrypoint and broker reject any outer user namespace that maps
@@ -110,12 +110,21 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   rejected by Core, leaving them unresolved for recovery. The broker reaper
   removes provider containers after their configured lifetime; a broker crash
   is reconciled on restart.
-- Core enforces the semantic-review toggle for model calls and MODEL receipts.
-  The reviewer binary performs deterministic pre-review before a model call,
-  but Core cannot prove that internal ordering against a compromised reviewer
-  token. If semantic review is enabled but no gateway exists, `review/config`
-  returns DETERMINISTIC rather than pretending model review occurred.
-  Independent review and isolation remain the mitigation.
+- Core enforces the semantic-review toggle for model calls and receipts. When
+  semantic review is enabled and a default gateway exists, Core requires MODEL
+  reviewer evidence; a deterministic PASS is rejected. The reviewer binary
+  performs deterministic pre-review before a model call, but Core cannot prove
+  that internal ordering against a compromised reviewer token. If semantic
+  review is enabled but no gateway exists, `review/config` returns
+  DETERMINISTIC rather than pretending model review occurred. Independent
+  review and isolation remain the mitigation.
+- The execution roles that must call the runtime broker (Worker, Supervisor,
+  verifier and runtime) share the runtime-broker credential. This is a scoped
+  shared engine authority, not per-role secret isolation. The reviewer does not
+  receive this token.
+- A broker-only restart removes all managed containers, including containers
+  that may still belong to live attempts. The Worker/Core recovery path records
+  the resulting failure; graceful in-place broker restart is not supported.
 - The verifier mounts the managed projects volume read-write to create a clean
   worktree; the reviewer mounts it read-only. A verifier role remains a trusted
   process, not an isolation boundary.

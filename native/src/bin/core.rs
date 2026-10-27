@@ -2460,6 +2460,26 @@ async fn model_call(
     }
 }
 
+fn reviewer_receipt_mechanism_allowed(
+    semantic_review_enabled: bool,
+    gateway_configured: bool,
+    mechanism: factory_native::db::ReviewMechanism,
+) -> Result<(), &'static str> {
+    if mechanism == factory_native::db::ReviewMechanism::Model {
+        if !semantic_review_enabled {
+            return Err("semantic review is disabled by the operator");
+        }
+        if !gateway_configured {
+            return Err("semantic review requires a configured default model gateway");
+        }
+        return Ok(());
+    }
+    if semantic_review_enabled && gateway_configured {
+        return Err("semantic review is enabled; reviewer must submit MODEL evidence");
+    }
+    Ok(())
+}
+
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -2474,28 +2494,24 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
-    if role == QualityRole::Reviewer
-        && input.mechanism == factory_native::db::ReviewMechanism::Model
-    {
+    if role == QualityRole::Reviewer {
         let settings = match app.db.factory_settings().await {
             Ok(settings) => settings,
             Err(error) => return api_error(error),
         };
-        if !settings.semantic_review_enabled {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({"error":"semantic review is disabled by the operator"})),
-            )
-                .into_response();
-        }
-        if app.current_model_gateway().await.is_none() {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(
-                    json!({"error":"semantic review requires a configured default model gateway"}),
-                ),
-            )
-                .into_response();
+        let gateway_configured = app.current_model_gateway().await.is_some();
+        if let Err(message) = reviewer_receipt_mechanism_allowed(
+            settings.semantic_review_enabled,
+            gateway_configured,
+            input.mechanism,
+        ) {
+            let status = if message == "semantic review requires a configured default model gateway"
+            {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            return (status, Json(json!({"error": message}))).into_response();
         }
     }
     let receipt = QualityReceiptInput {
@@ -3672,5 +3688,29 @@ mod tests {
         );
         drop(app);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn enabled_semantic_review_requires_model_reviewer_evidence() {
+        use factory_native::db::ReviewMechanism::{Deterministic, Model};
+        assert!(reviewer_receipt_mechanism_allowed(true, true, Model).is_ok());
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, true, Deterministic)
+                .unwrap_err()
+                .contains("must submit MODEL evidence")
+        );
+        assert!(reviewer_receipt_mechanism_allowed(true, false, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, true, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, false, Deterministic).is_ok());
+        assert!(
+            reviewer_receipt_mechanism_allowed(false, true, Model)
+                .unwrap_err()
+                .contains("disabled")
+        );
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, false, Model)
+                .unwrap_err()
+                .contains("configured default model gateway")
+        );
     }
 }

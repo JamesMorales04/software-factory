@@ -1,12 +1,12 @@
 //! Idempotent first-run material generation for the Compose deployment.
 //!
-//! Role secrets are split across per-service configuration volumes so a
-//! compromised Worker, Supervisor, verifier, reviewer or runtime broker
-//! container cannot read every other role's credential. Copies of shared
-//! secrets are generated once and verified equal. Existing material is never
+//! Role secrets are split across per-service configuration volumes. The
+//! runtime-broker credential is intentionally shared by the execution roles
+//! that call the broker (Worker, Supervisor, verifier and runtime); other role
+//! credentials and the Core master key are not shared. Copies of shared secrets
+//! are generated once and verified equal. Existing material is never
 //! overwritten and no secret is printed. Files are owned by the unprivileged
-//! service UID and restricted to mode 0640 (group read is required only for
-//! the dedicated runtime's broker token).
+//! service UID and restricted to mode 0640.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

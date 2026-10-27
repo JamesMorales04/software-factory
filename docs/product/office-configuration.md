@@ -35,7 +35,10 @@ Each provider card exposes:
 - credential replacement and revocation.
 
 Secrets are sent only on save, encrypted with AES-256-GCM in Core, and never
-returned. Saving or testing does not start inference.
+returned. Saving or testing does not start inference. The base Compose stack
+defaults to the live OpenCode adapter and fails closed without matching provider
+settings; the deterministic fixture is enabled only by the explicit E2E
+override, never as a silent fallback.
 
 ## Review & runtime policy
 

@@ -71,6 +71,54 @@ class ComposePolicyTests(unittest.TestCase):
             "network_mode none",
         )
 
+    def test_rejects_writable_or_privileged_one_shot_services(self):
+        self.assert_rejected(
+            lambda c: c["services"]["init"].__setitem__("read_only", False),
+            "init: read-only root filesystem is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["provider-bundle"].__setitem__(
+                "cap_add", ["SYS_ADMIN"]
+            ),
+            "provider-bundle: unsupported one-shot capabilities",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["init"].__setitem__(
+                "cap_add", ["CHOWN", "DAC_OVERRIDE", "SYS_ADMIN"]
+            ),
+            "init: unsupported one-shot capabilities",
+        )
+
+    def test_rejects_host_namespaces_and_shared_mount_sources(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"].__setitem__("pid", "host"),
+            "pid namespace override is forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["worker"].__setitem__("ipc", "host"),
+            "ipc namespace override is forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["worker"].__setitem__(
+                "volumes_from", ["core"]
+            ),
+            "volumes_from is forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["worker"].__setitem__(
+                "device_cgroup_rules", ["c 1:3 rwm"]
+            ),
+            "device_cgroup_rules are forbidden",
+        )
+
+    def test_rejects_unsafe_security_options(self):
+        self.assert_rejected(
+            lambda c: c["services"]["worker"].__setitem__(
+                "security_opt", ["no-new-privileges:true", "seccomp=unconfined"]
+            ),
+            "unsupported security_opt",
+        )
+
     def test_rejects_cross_role_config_volume(self):
         def mutate(config):
             volumes = config["services"]["verifier"]["volumes"]

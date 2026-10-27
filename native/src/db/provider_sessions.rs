@@ -270,8 +270,10 @@ impl Database {
         .bind(&campaign_id)
         .fetch_one(&mut *transaction)
         .await?;
-        let reserved: (i64, i64) = sqlx::query_as::query_as(
-            "SELECT COALESCE(SUM(ptr.max_output_tokens),0),COALESCE(SUM(ptr.max_cost_micros),0)
+        let reserved: (i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT COALESCE(SUM(ptr.max_input_tokens),0),
+                    COALESCE(SUM(ptr.max_output_tokens),0),
+                    COALESCE(SUM(ptr.max_cost_micros),0)
              FROM provider_turn_reservations ptr JOIN attempts a ON a.id=ptr.attempt_id
              JOIN runs r ON r.id=a.run_id
              WHERE r.campaign_id=?1 AND ptr.state='RESERVED'",
@@ -284,16 +286,19 @@ impl Database {
         let used_total = used.2;
         let used_cost = used.3;
         let max_total = max_input.saturating_add(max_output);
-        let remaining_input = max_input.saturating_sub(used_input);
+        let remaining_input = max_input
+            .saturating_sub(used_input)
+            .saturating_sub(reserved.0);
         let remaining_output = max_output
             .saturating_sub(used_output)
-            .saturating_sub(reserved.0);
+            .saturating_sub(reserved.1);
         let remaining_total = max_total
             .saturating_sub(used_total)
-            .saturating_sub(reserved.0);
+            .saturating_sub(reserved.0)
+            .saturating_sub(reserved.1);
         let remaining_cost = max_cost
             .saturating_sub(used_cost)
-            .saturating_sub(reserved.1);
+            .saturating_sub(reserved.2);
         let grant_output = i64::try_from(requested_output_tokens)
             .map_err(|_| Error::Invalid("provider turn output"))?
             .min(remaining_output)
@@ -1453,6 +1458,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_profile_requires_live_attempt_campaign_and_deadline() {
+        let (_path, db, _session) = active_turn_fixture(100).await;
+        let now_ms = Utc::now().timestamp_millis();
+        assert_eq!(
+            db.assigned_provider_route("worker", "attempt", 1, now_ms)
+                .await
+                .unwrap(),
+            ("opencode".into(), "deepseek-v4.1-flash".into())
+        );
+
+        sqlx::query::query("UPDATE attempts SET status='CANDIDATE_READY' WHERE id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.assigned_provider_route("worker", "attempt", 1, now_ms)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
+
+        sqlx::query::query("UPDATE attempts SET status='LEASED' WHERE id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE campaigns SET status='CANCELLED' WHERE id='campaign'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.assigned_provider_route("worker", "attempt", 1, now_ms)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
+
+        sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id='campaign'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.close().await;
+    }
+
+    #[tokio::test]
     async fn provider_turn_binding_binds_the_exact_request_and_requires_operator_release() {
         let (_path, db, session) = active_turn_fixture(100).await;
         let digest = "a".repeat(64);
@@ -1750,6 +1797,24 @@ mod tests {
             .unwrap();
         assert!(matches!(
             db.authorize_provider_turn(&session, "worker", 1, 1, &digest, 1)
+                .await,
+            Err(Error::Forbidden(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn concurrent_turn_reservations_cannot_reuse_the_input_budget() {
+        let (path, db, session) = active_turn_fixture(10).await;
+        let digest = "a".repeat(64);
+        let first = db
+            .authorize_provider_turn(&session, "worker", 1, 10, &digest, 1)
+            .await
+            .unwrap();
+        assert_eq!(first.max_input_tokens, 10);
+        assert!(matches!(
+            db.authorize_provider_turn(&session, "worker", 1, 10, &digest, 1)
                 .await,
             Err(Error::Forbidden(_))
         ));

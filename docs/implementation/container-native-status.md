@@ -65,8 +65,35 @@ Residual findings are not claimed fixed:
   worktree;
 - the real Compose E2E is a manual workflow, not a required PR check; PR CI
   covers static Compose policy, Rust tests and browser regressions;
-- paid UAT, live OpenCode container inference, live Codex, semantic live calls,
-  SEC-01, Windows and human acceptance remain open.
+- paid UAT and live OpenCode container inference remain **NOT_TESTED** pending
+  the separate authorization request; live Codex, semantic live calls, SEC-01,
+  Windows and human acceptance remain open.
+
+## Baseline hardening (2026-10-27)
+
+A second independent read-only review of PR #28 returned **BLOCKED** on four
+concrete paths. The branch now includes and locally verifies:
+
+- a verifier `FAIL` now records `REPAIR_REQUIRED` immediately instead of
+  waiting for a reviewer receipt that the queue never dispatches;
+- strict egress request-digest matching is derived from the resolved provider
+  adapter (fixture only), not the deployment environment, and the base Compose
+  stack defaults to the live OpenCode route while the deterministic fixture is
+  selected only by the explicit E2E override;
+- semantic review, when enabled with a configured gateway, requires MODEL
+  reviewer evidence; a deterministic reviewer `PASS` is rejected;
+- provider credential disclosure now requires a `LEASED` attempt, an
+  `AUTHORIZED` Campaign, the exact lease generation and an unexpired
+  authorization deadline;
+- provider-turn input budget is reserved across concurrent reservations;
+- `init` and `provider-bundle` are read-only, capability-reduced root one-shots
+  with static policy coverage, and the broker-token Debug leak is removed.
+
+The deterministic Compose E2E still reaches an `ACCEPTED` candidate and
+preserves state across restart. Live OpenCode-in-container inference remains
+**NOT_TESTED**; it requires the separate paid UAT authorization described in
+[the authorization request](container-native-paid-uat-authorization-request-2026-10-27.md).
+Evidence: [container-native hardening](evidence/container-native-hardening-2026-10-27.json).
 
 ## Not tested / blocked
 

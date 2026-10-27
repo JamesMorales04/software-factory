@@ -891,10 +891,10 @@ async fn decide_gate(
     candidate: &CandidateRecord,
 ) -> Result<Option<GateRecord>, Error> {
     let verifier = load_receipt_by_role(connection, candidate_id, QualityRole::Verifier).await?;
-    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
-    let (Some(verifier), Some(reviewer)) = (&verifier, &reviewer) else {
+    let Some(verifier) = verifier.as_ref() else {
         return Ok(None);
     };
+    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
     let policy = load_gate_policy(connection, candidate_id).await?;
     let decision = evaluate_quality_gate(
         &FrozenActionSpec {
@@ -907,9 +907,17 @@ async fn decide_gate(
         },
         &candidate.implementer_id,
         Some(&to_verifier_receipt(verifier)),
-        Some(&to_reviewer_receipt(reviewer)),
+        reviewer.as_ref().map(to_reviewer_receipt).as_ref(),
         policy,
     );
+    if reviewer.is_none()
+        && decision
+            .reasons
+            .iter()
+            .any(|reason| reason == "independent reviewer receipt is missing")
+    {
+        return Ok(None);
+    }
     let gate = GateRecord {
         candidate_id: candidate_id.to_owned(),
         outcome: decision.outcome,

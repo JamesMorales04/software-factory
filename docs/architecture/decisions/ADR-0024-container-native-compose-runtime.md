@@ -105,9 +105,11 @@ in the trusted Worker's loopback egress broker. A per-run token and non-secret
 provider configuration reach the sandbox.
 
 The current container provider entrypoint implements OpenCode and the fixture
-adapter. Containerized Codex stdio transport is **not implemented**; Codex
-native ChatGPT authentication remains blocked. The existing host/bwrap Codex
-deterministic regressions are unchanged.
+adapter. The base Compose stack defaults to the OpenCode route and fails closed
+when provider settings are absent; the deterministic fixture is selected only
+by the explicit E2E override. Containerized Codex stdio transport is **not
+implemented**; Codex native ChatGPT authentication remains blocked. The existing
+host/bwrap Codex deterministic regressions are unchanged.
 
 ### 5. Durable configuration and onboarding
 
@@ -125,8 +127,11 @@ start inference.
 First-run enrollment is a one-time 160-bit code written to the private data
 volume, rate-limited, invalidated by removal plus a completion marker. The
 operator completes enrollment in Office. Role secrets are split across
-per-service config volumes so Worker, Supervisor, verifier, reviewer and the
-runtime broker cannot read one another's credentials or the master key.
+per-service config volumes. The execution roles that must call the runtime
+broker (Worker, Supervisor, verifier and the runtime itself) intentionally share
+the runtime-broker credential; the reviewer does not receive it, and only Core
+receives the master key. This is a scoped shared engine credential, not
+cross-role secret isolation.
 
 ### 6. Project and campaign configuration is Office-native
 
@@ -140,9 +145,13 @@ only authority for authorization, budgets and acceptance.
 
 The verifier and reviewer services poll Core with their own tokens. The
 verifier executes frozen checks in a network-disabled child container against
-the exact candidate. The reviewer runs deterministic review first; semantic
-review is an explicit Office-controlled option that requires a configured
-default provider and remains Core-budgeted. The deterministic gate accepts only
+the exact candidate. A verifier failure produces a repair-required gate without
+waiting for the reviewer; a passing verifier is required before the reviewer is
+dispatched. The reviewer runs deterministic review first; semantic review is an
+explicit Office-controlled option that requires a configured default provider
+and remains Core-budgeted. When semantic review is enabled and a gateway is
+configured, Core requires MODEL reviewer evidence; a deterministic reviewer
+PASS cannot silently satisfy that policy. The deterministic gate accepts only
 candidate-bound PASS evidence from both roles.
 
 ## Consequences
@@ -152,10 +161,12 @@ candidate-bound PASS evidence from both roles.
   one shared builder stage; subsequent builds reuse the cache.
 - The provider image is large because it contains pinned provider executables
   and Node. It is distributed through the bundle volume instead of a registry.
-- The runtime container is the only root process in the stack and deliberately
-  carries namespaced `SYS_ADMIN`/`NET_ADMIN`. An engine/broker compromise is
-  equivalent to compromise of the execution supervisor, not host root, but it
-  is not SEC-01 isolation.
+- The runtime container is the only long-lived root process and deliberately
+  carries namespaced `SYS_ADMIN`/`NET_ADMIN`. The one-shot `init` and
+  `provider-bundle` jobs also run as root before application services start;
+  they have no network, no host mounts and a reduced capability set. An
+  engine/broker compromise is equivalent to compromise of the execution
+  supervisor, not host root, but it is not SEC-01 isolation.
 - VFS is slower and larger than overlay; it avoids `/dev/fuse` and
   overlay-on-overlay ambiguity in the nested engine.
 - SELinux/AppArmor hosts, Windows/Podman Machine and multi-arch images remain
