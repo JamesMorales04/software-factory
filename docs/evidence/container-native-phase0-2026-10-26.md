@@ -56,13 +56,13 @@ The harness:
 8. runs `compose down` and `up` without deleting volumes and verifies Project,
    Campaign and gate persistence.
 
-Final author-run result on implementation commit
-`4d36c1a090d34f0c156e889c84447105b19c1ba6`:
+Final author-run result after independent-review remediation on implementation
+commit `889f601b46ec03ff28a2c4b9eb26ea17dabe6116`:
 
 ```text
 status: PASS
-candidate: a72d93fc-2f0d-4429-a215-902f768ddb29
-attempt: 8686fdca-0741-474e-a6be-f06fad9ec5e1
+candidate: d23d48de-fa8c-4466-bebd-e4c833dd9801
+attempt: 4d50e21f-be8f-41a7-b105-b0dc71eec487
 gate: ACCEPTED
 restart_persistence: true
 paid_inference: false
@@ -92,13 +92,12 @@ Screenshots and browser profiles are not committed.
 
 ## Parallel evidence
 
-Two Workers with distinct identities and registration keys produced two
-concurrent fixture attempts on the implementation commit. Provider containers
-`factory-provider-c494da53…` and `factory-provider-504ef6dd…` started 753 ms
-apart in the dedicated engine; candidate acceptance timestamps were within the
-same second. Attempts `53624e29…` / `7165081a…` produced candidates `60274af0…`
-/ `cc063b56…`, and both reached independent verifier/reviewer PASS and
-deterministic `ACCEPTED` gates. This demonstrates container/workspace
+After the independent-review fixes, two Workers produced two concurrent
+fixture attempts. Provider containers started 24 ms apart
+(`00:41:52.481`/`.505` UTC), and candidate acceptance timestamps were within
+the same second. Attempts `d2c19210…` / `151ac11b…` produced candidates
+`2db6e3d8…` / `a6908ba7…`, and both reached independent verifier/reviewer PASS
+and deterministic `ACCEPTED` gates. This demonstrates container/workspace
 independence for two authorized attempts, not multi-unit fan-in integration
 and not paid parallel provider execution.
 
@@ -115,6 +114,20 @@ and not paid parallel provider execution.
 - service startup before runtime readiness (bounded curl waits);
 - DraftCheck UI leakage into Core JSON (fixed);
 - favicon 404 (fixed with inline data URI).
+
+## Independent review
+
+An independent same-model security/architecture review of the first candidate
+returned findings. Rootless outer-namespace enforcement, container TurnBinder
+origin validation, semantic-review authority, provider-profile lease binding,
+worker-scoped recovery, provider lifetime reaping, turn-release binding,
+master-key permissions, static Compose policy and the destructive-project guard
+were remediated and tested. Residual risks (shared provider-session volume and
+UID, total volume quota, mount-path TOCTOU, trusted role receipts and
+read-write verifier project volume, manual-only real E2E CI) are recorded in
+[container-native status](../implementation/container-native-status.md) and the
+[security record](../security/container-runtime.md). They are not claimed
+fixed.
 
 ## Not tested / blocked
 

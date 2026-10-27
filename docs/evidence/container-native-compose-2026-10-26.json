@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "container-native-compose-author-run",
-  "implementation_sha": "4d36c1a090d34f0c156e889c84447105b19c1ba6",
+  "implementation_sha": "889f601b46ec03ff28a2c4b9eb26ea17dabe6116",
   "date": "2026-10-26",
   "environment": {
     "host_os": "CachyOS",
@@ -50,8 +50,8 @@
     {
       "name": "deterministic Compose candidate through nested provider container",
       "pass": true,
-      "candidate_id": "a72d93fc-2f0d-4429-a215-902f768ddb29",
-      "attempt_id": "8686fdca-0741-474e-a6be-f06fad9ec5e1",
+      "candidate_id": "d23d48de-fa8c-4466-bebd-e4c833dd9801",
+      "attempt_id": "4d50e21f-be8f-41a7-b105-b0dc71eec487",
       "gate": "ACCEPTED"
     },
     {
@@ -68,14 +68,14 @@
       "name": "parallel independent attempts with real nested containers",
       "pass": true,
       "candidates": [
-        "60274af0-f916-4219-a81a-c67689d5ec56",
-        "cc063b56-2325-45aa-8b95-53ab8d2cdc9e"
+        "2db6e3d8-c724-426d-8ef3-763bb5b41041",
+        "a6908ba7-7d39-457e-9727-312270046473"
       ],
       "attempts": [
-        "53624e29-1116-48ea-b1d0-f4e873699762",
-        "7165081a-521b-46b9-ae57-74b323d6e3da"
+        "d2c19210-78f4-446f-9904-b664b77fecb2",
+        "151ac11b-0b00-4fbe-a18a-e70707d6e387"
       ],
-      "detail": "two Workers, distinct provider containers started 753ms apart; both gates ACCEPTED"
+      "detail": "two Workers, distinct provider containers started 24ms apart; both gates ACCEPTED"
     },
     {
       "name": "real Chromium Office onboarding and configuration",
@@ -94,6 +94,32 @@
     "Codex API-key live inference is NOT_TESTED; native ChatGPT OAuth is BLOCKED; containerized Codex stdio is NOT_IMPLEMENTED.",
     "Semantic Reviewer live model calls are NOT_TESTED.",
     "Multi-unit WorkGraph parallel integration with a real provider is NOT_TESTED; parallel evidence uses two independent Campaign attempts.",
-    "SEC-01 ISOLATED certification, credential confinement, SELinux/AppArmor hosts, Windows/Podman Machine, independent security review and human acceptance remain open."
-  ]
+    "SEC-01 ISOLATED certification, credential confinement, SELinux/AppArmor hosts, Windows/Podman Machine, independent security review and human acceptance remain open.",
+    "An independent same-model review found HIGH/MEDIUM issues on the first candidate; fixes are recorded in the review object and status document. Residual risks remain explicit."
+  ],
+  "independent_review": {
+    "reviewer": "independent same-model security/architecture review",
+    "verdict": "FINDINGS",
+    "reviewed_candidate": "bb1cccdf115b6094a266f26cca38b5773e3fb13b",
+    "remediated": [
+      "rootful outer namespace rejected by runtime entrypoint and broker",
+      "container OpenCode TurnBinder accepts the control service origin, with regression test",
+      "semantic-review policy enforced for model calls and MODEL receipts, with route test",
+      "provider profile bound to a live attempt/generation lease and exact route",
+      "unresolved provider recovery scoped by worker and directory root validated",
+      "provider lifetime reaper and fsize limit; unconfirmed FAILED cleanup rejected",
+      "turn release bound to session, worker and generation",
+      "master-key permissions and non-symlink regular file enforced",
+      "static Compose policy expanded with per-service posture, config-volume isolation and negative tests",
+      "E2E harness refuses the production project name"
+    ],
+    "residual": [
+      "shared provider-session volume and same UID permit same-UID cross-session access after provider compromise",
+      "total engine-volume quota not enforced; only per-file fsize and provider lifetime reaper",
+      "broker session mount path TOCTOU after canonicalization",
+      "verifier/reviewer receipts are bearer-token self-attestations; verifier project volume is read-write",
+      "real Compose E2E remains a manual workflow; PR CI covers static Compose policy, Rust tests and browser regressions",
+      "paid UAT, live OpenCode container inference, live Codex, semantic live calls, SEC-01, Windows and human acceptance remain open"
+    ]
+  }
 }
