@@ -8,12 +8,13 @@ replace candidate-bound test output, independent review or protected approval.
 
 | Item | Value |
 |---|---|
-| Authoritative main baseline | `9f888ac74512b392c8bf86f856c5a152db5b3566` |
+| Authoritative main baseline | `003d92ca0dea9c8d397f0a37a04cf90bd479c99f` (PR #27 merged) |
 | PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` (closed as superseded) |
 | Product | Software Factory, independent Rust implementation |
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
-| Combined implementation candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
-| Merge state | PRs #17–#26 merged. The managed-live acceptance documentation/test branch is pending exact-head CI and Product Owner review; its candidates are not merged. |
+| Historical combined candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
+| Container-native implementation | `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e` (author-run deterministic Compose evidence; PR #28 not merged) |
+| Merge state | PRs #17–#27 merged. PR #28 (container-native Compose iteration) is open with exact-head CI and awaits independent review/Product Owner authorization; it is not merged. |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
 not merged, is not built or tested by this repository, and is not authoritative.
