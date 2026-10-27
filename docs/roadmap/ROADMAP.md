@@ -418,6 +418,7 @@ Decision: `approved`
 - CAP-047 — Office-first parity governance (approved, in_progress)
 - CAP-048 — Office design system and application shell (approved, in_progress)
 - CAP-049 — Operational Overview and Decision Inbox (approved, in_progress)
+- CAP-050 — Campaign operational workspace (approved, in_progress)
 
 ### Deliverables
 
