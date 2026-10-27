@@ -8,6 +8,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   architecture-consistency:
     runs-on: ubuntu-latest
@@ -15,6 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
@@ -26,6 +30,10 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Test PR impact gate
         run: python3 .github/scripts/test_check_pr_architecture_impact.py
+      - name: Validate Office parity matrix
+        run: python3 .github/scripts/check-office-parity.py --root .
+      - name: Test Office parity checker
+        run: python3 .github/scripts/test_check_office_parity.py
       - name: Run checker tests
         run: cargo test --manifest-path native/Cargo.toml --locked --bin factory-architecture-check
       - name: Validate capability registry and generated roadmap

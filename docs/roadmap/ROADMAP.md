@@ -404,6 +404,53 @@ Decision: `approved`
 - Fresh paid UAT envelope and independent security review remain required
 
 
+## F1-S9 — Office engineering command center
+
+Decision: `approved`
+
+### Dependencies
+
+- F1-S8
+
+### Capabilities
+
+- CAP-046 — Container-native development workflow (approved, in_progress)
+- CAP-047 — Office-first parity governance (approved, in_progress)
+
+### Deliverables
+
+- Container-native development workflow
+- Office-first parity governance and design foundation
+- Operational Overview and Decision Inbox
+- Actions Campaign and Agent Office workflows
+- Issues and Docs foundations
+
+### Exclusions
+
+- Generic SaaS dashboard scope
+- invented backend capability or decorative actions
+- SEC-01 isolation or production deployment claim
+
+### Risks
+
+- design-system drift across views
+- backend-only features without real Office workflows
+- inaccessible drag-only or status-only interactions
+
+### Deterministic acceptance
+
+- The container-native development workflow builds and runs Rust Office and Chromium gates without host toolchains
+- the Office parity matrix references real capabilities APIs routes and browser tests and the impact gate rejects missing declarations
+
+### Real acceptance
+
+- The Product Owner completes the primary engineering journeys in Factory Office against the real Compose stack without raw API calls or terminal inspection
+
+### Product Owner decisions
+
+- Approve each Office slice and any new protected action separately
+
+
 ## LATER — Evaluated extensions
 
 Decision: `proposed`

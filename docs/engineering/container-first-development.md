@@ -1,6 +1,12 @@
 # Container-first development
 
-**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The `.devcontainer` image was built locally and `cargo xtask check`, `cargo xtask migrate` and `cargo xtask e2e recovery` passed inside it on 2026-10-23, using `podman build/run --network=host` because the author host's default rootless networking lacked `/dev/net/tun` (pasta failure). Default container networking, the Office build inside the container, Windows 11/Podman Machine, runtime images, Quadlet and the unified `factory` CLI are **not tested or not implemented**. This guide does not certify a development environment, application runtime or execution sandbox.
+> **Current workflow:** [container-native engineering](container-native-engineering.md)
+> and `compose.dev.yaml` define the permanent containerized development path.
+> This document remains the development-container design, trust and security
+> rationale. Some older "not tested" notes below are historical; the current
+> Slice 1 evidence and the container-native policy are authoritative.
+
+**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md), now governed by [ADR-0025](../architecture/decisions/ADR-0025-container-native-and-office-parity.md). The development image contains the pinned Rust, Node, SQLx and Playwright toolchains; the trusted Compose `dev` service is the supported contributor workflow. This guide does not certify an application runtime, production deployment or execution sandbox.
 
 ## Purpose and non-goals
 
@@ -21,14 +27,15 @@ Running code from an untrusted pull request or model-directed code inside this c
 
 | Item | Status | Notes |
 |---|---|---|
-| `.devcontainer/devcontainer.json` and `.devcontainer/Containerfile` | `IMPLEMENTED` as configuration | Files are present in this change |
-| Development image build | `LOCALLY_VERIFIED` with caveat | `podman build --network=host` succeeded; image `4e4e407f0c7a` (author host). Default build network `BLOCKED` by host pasta `/dev/net/tun`; see below. |
-| Development container run on Linux | `LOCALLY_VERIFIED` with caveat | `cargo xtask check`, `migrate` and `e2e recovery` passed with `--network=host`; default container networking `NOT_TESTED`/environment-blocked |
-| Development container run on Windows 11 / WSL2 | `NOT_TESTED`; Windows verification `BLOCKED` | No Windows host was available |
-| Repository gates inside the container | `LOCALLY_VERIFIED` | Full `cargo xtask check` (fmt, Clippy, 107 tests, build, docs, audit) passed; Office build inside the container `NOT_TESTED` |
+| `.devcontainer/devcontainer.json` and `.devcontainer/Containerfile` | `IMPLEMENTED` | Pinned development image and Compose `dev` service |
+| Development image build | `LOCALLY_VERIFIED` | `podman compose -f compose.yaml -f compose.dev.yaml build dev`; image `43cebaa1770f...` at Slice 1 candidate `a75d4c3` |
+| Development container run on Linux | `LOCALLY_VERIFIED` | `cargo xtask check-container`, Office typecheck/lint/build and real Chromium journey passed inside the image; default container networking used, no host-network workaround |
+| Development container run on Windows 11 / WSL2 | `NOT_TESTED` | No Windows host was available |
+| Repository gates inside the container | `LOCALLY_VERIFIED` | fmt, strict Clippy, workspace tests excluding host-userns/bwrap fixtures, build, docs, audit; Office build and Chromium journey pass |
+| Bubblewrap boundary tests inside the container | `BLOCKED` in the development image | The container cannot mount the nested proc/user namespace; the host Rust CI lane retains these tests |
 | Unified `factory` CLI and `factory doctor` | `IMPLEMENTED` | Linux lifecycle subset exists; installer/restart/update and Windows launcher are not |
 | Untrusted execution in this container | Forbidden; sandbox path `BLOCKED` | SEC-01 remains paused and uncertified |
-| Independent verification | None | No independent verifier ran this change |
+| Independent verification | None | No independent verifier ran this slice |
 
 ## What the image contains
 
@@ -40,12 +47,14 @@ The `Containerfile` is a multi-stage build:
 | Rust components | `clippy`, `rustfmt`, `rust-analyzer`, `rust-src` | Declared by `rust-toolchain.toml` and added by the Containerfile |
 | Node.js and npm | 22.23.2 | `.nvmrc`; copied from the pinned official Node image |
 | SQLx CLI | 0.8.6 | Containerfile build step with SQLite and rustls features; see the command table |
-| Git and build tools | Debian Bookworm packages | `git`, `build-essential`, `pkg-config`, `libssl-dev`, `libsqlite3-dev`, `ca-certificates`, `curl`, `sqlite3` |
+| Git and build tools | Debian Bookworm packages | `git`, `build-essential`, `pkg-config`, `libssl-dev`, `libsqlite3-dev`, `ca-certificates`, `curl`, `sqlite3`, `bubblewrap`, `iproute2` |
+| Playwright and Chromium | 1.64.1 | Development-only browser acceptance; downloads Chromium into the factory user's cache |
+| OpenCode / Codex CLIs | 1.18.32 / 0.156.1 | Development-only provider compatibility probes; same pins as the provider image |
 | Go | Intentionally absent | ADR-0018 selects Rust; the legacy `mise.toml` Go pin is not installed here |
 
 The base images are pinned by tag, not digest, and Debian packages are not snapshot-pinned; byte-reproducible builds are `NOT_IMPLEMENTED`. The build context is the repository root so the Containerfile can read `.nvmrc`. A build-time check fails if `.nvmrc` and the `NODE_VERSION` build argument disagree. The image creates a non-root `factory` user (UID/GID 1000 by default, configurable at build time) and uses `/workspaces/software-factory` as the workspace folder.
 
-The image does not install provider CLIs, provider credentials, GitHub tokens, cloud credentials or a Rust toolchain. It also does not install `cargo-audit`; see the command table below.
+The image installs the pinned provider CLIs for compatibility tests, Playwright Chromium and `cargo-audit`. It does not install provider credentials, GitHub tokens, cloud credentials or a host runtime socket. The provider CLIs are development tooling, not product runtime authority.
 
 ## Development container versus runtime versus sandbox
 
@@ -92,7 +101,20 @@ If a trusted developer needs a local nested-container experiment, any socket mou
 
 ## Commands
 
-Every command named in this guide is listed in the table below with an explicit status. Inline `factory` references use the implemented lifecycle subset unless marked otherwise. The repository's Rust commands exist and are documented in [native/README.md](../../native/README.md); they were not run for this documentation change.
+The canonical commands now run through the trusted `dev` service:
+
+```sh
+podman compose -f compose.yaml -f compose.dev.yaml build dev
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev cargo xtask check-container
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+  sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
+```
+
+The table below records historical status and is not the current command
+authority. Inline `factory` references use the implemented lifecycle subset
+unless marked otherwise.
 
 | Command | Status | Notes |
 |---|---|---|
@@ -138,16 +160,13 @@ The Dev Containers CLI and editor integration are external tools. No Factory com
 
 ## Verification gaps
 
-The following are open and must not be reported as passing:
+The following remain open and must not be reported as passing:
 
-- The image built and the in-container Rust gates passed only with the `--network=host` workaround on this host; default rootless container networking remains unverified and is `BLOCKED` here. Base images are tag-pinned, not digest-pinned. The Office build, application runtime image, Quadlet and Windows path were not exercised.
-- The non-root user, workspace ownership and UID/GID mapping with rootless Podman are unverified.
-- The `.nvmrc` build-time check has not executed.
-- Base images are tag-pinned rather than digest-pinned, and apt packages are not snapshot-pinned.
-- No Linux container run, no Windows WSL2 run and no container E2E journey was performed.
-- `cargo fmt`, strict Clippy, tests, build, migration and audit were not run inside the image.
-- `cargo-audit` is absent from the image.
-- No host path, network, credential or socket negative test was executed.
-- No independent verifier reviewed this configuration.
+- Windows 11 / Podman Machine and SELinux/AppArmor hosts were not exercised.
+- Base images are tag-pinned rather than digest-pinned; Debian packages are not snapshot-pinned, so byte-reproducible builds are `NOT_IMPLEMENTED`.
+- Bubblewrap host-user-namespace boundary tests cannot run inside the development image; the host Rust CI lane retains them.
+- The Dev Containers CLI/editor integration is not exercised by this repository.
+- The GitHub-hosted container-dev lane uses unpinned runner Podman/Compose packages.
+- No independent verifier reviewed this slice; the author-run evidence is not independent acceptance.
 
-These gaps are `NOT_TESTED` or `NOT_IMPLEMENTED`, not `PASS`. The development container remains a trusted convenience environment until candidate-bound evidence says otherwise.
+These gaps are `NOT_TESTED`, `BLOCKED` or `NOT_IMPLEMENTED`, not `PASS`. The development container remains a trusted contributor environment, not an application runtime or sandbox.

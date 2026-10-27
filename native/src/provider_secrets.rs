@@ -194,7 +194,12 @@ mod tests {
     fn rejects_tampered_ciphertext() {
         let key = key();
         let mut encrypted = key.encrypt(b"credential-value").unwrap();
-        encrypted.ciphertext.replace_range(0..2, "00");
+        let tamper = if encrypted.ciphertext.starts_with("00") {
+            "01"
+        } else {
+            "00"
+        };
+        encrypted.ciphertext.replace_range(0..2, tamper);
         assert!(
             key.decrypt(&encrypted.ciphertext, &encrypted.nonce)
                 .is_err()

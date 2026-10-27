@@ -10,16 +10,15 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 
 const root = resolve(import.meta.dirname, "../..");
-const coreBin =
-  process.env.FACTORY_CORE_BIN || join(root, "target/debug/factory-core");
+const targetDir = process.env.CARGO_TARGET_DIR || join(root, "target");
+const debugDir = join(targetDir, "debug");
+const coreBin = process.env.FACTORY_CORE_BIN || join(debugDir, "factory-core");
 const workerBin =
-  process.env.FACTORY_WORKER_BIN || join(root, "target/debug/factory-worker");
+  process.env.FACTORY_WORKER_BIN || join(debugDir, "factory-worker");
 const supervisorBin =
-  process.env.FACTORY_SUPERVISOR_BIN ||
-  join(root, "target/debug/factory-supervisor");
+  process.env.FACTORY_SUPERVISOR_BIN || join(debugDir, "factory-supervisor");
 const reviewerBin =
-  process.env.FACTORY_REVIEWER_BIN ||
-  join(root, "target/debug/factory-reviewer");
+  process.env.FACTORY_REVIEWER_BIN || join(debugDir, "factory-reviewer");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
 const bootstrap = token();
@@ -188,10 +187,22 @@ try {
       }
       throw new Error("no Chromium executable found");
     })();
-  browser = await chromium.launch({ headless: true, executablePath });
+  const launchArgs =
+    process.env.FACTORY_BROWSER_NO_SANDBOX === "1"
+      ? ["--no-sandbox", "--disable-dev-shm-usage"]
+      : [];
+  browser = await chromium.launch({
+    headless: true,
+    executablePath,
+    ...(launchArgs.length > 0 ? { args: launchArgs } : {}),
+  });
   const page = await browser.newPage();
   const consoleErrors = [];
   const pageErrors = [];
+  const notFound = [];
+  page.on("response", (response) => {
+    if (response.status() === 404) notFound.push(response.url());
+  });
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -624,8 +635,30 @@ try {
     [],
     `browser page errors: ${pageErrors.join("; ")}`,
   );
+  // A missing gate is a normal pending projection. The UI intentionally probes
+  // that endpoint and renders PENDING; all other 404s are broken resources.
+  const unexpectedNotFound = notFound.filter(
+    (url) => !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url),
+  );
+  assert.deepEqual(
+    unexpectedNotFound,
+    [],
+    `unexpected 404 responses: ${unexpectedNotFound.join("; ")}`,
+  );
+  const unexpectedConsole = consoleErrors.filter(
+    (message) =>
+      message !==
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+  );
+  assert.deepEqual(
+    unexpectedConsole,
+    [],
+    `unexpected browser console errors: ${unexpectedConsole.join("; ")}`,
+  );
   if (consoleErrors.length > 0) {
-    console.error("browser console diagnostics:", consoleErrors.join("; "));
+    console.error(
+      "browser console diagnostics: expected pending-gate 404 probes",
+    );
   }
   console.log(
     JSON.stringify({

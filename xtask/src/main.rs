@@ -17,6 +17,7 @@ fn main() -> ExitCode {
     }
     let result = match (args[0].as_str(), args.get(1).map(String::as_str)) {
         ("check", None) => check::check(),
+        ("check-container", None) => check::check_container(),
         ("test", None) => check::test(),
         ("migrate", None) => check::migrate(),
         ("security", None) => check::security(),
@@ -53,6 +54,7 @@ Usage: cargo xtask <command>
 
 Commands:
   check                   fmt --check, strict Clippy, tests, build, docs, audit
+  check-container         containerized gates; skips host-userns bwrap boundary tests
   test                    cargo test --workspace --locked
   migrate                 verify migrations against a disposable SQLite database
   security                sandbox isolation tests and repository hygiene audit

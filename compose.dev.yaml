@@ -1,0 +1,49 @@
+# Trusted container-native development override.
+#
+# This file is not part of the installed product. It adds one trusted,
+# writable development container with the pinned Rust/Node/SQLx/Playwright
+# toolchain. It must not gain a host Podman socket, host HOME, provider
+# credentials or a role in the untrusted per-Attempt execution path.
+#
+# Usage:
+#   podman compose -f compose.yaml -f compose.dev.yaml build dev
+#   podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+#     cargo xtask check
+#
+# See docs/engineering/container-native-engineering.md.
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: .devcontainer/Containerfile
+      args:
+        NODE_VERSION: "22.23.2"
+        RUST_VERSION: "1.90.0"
+        SQLX_CLI_VERSION: "0.8.6"
+        PLAYWRIGHT_VERSION: "1.64.1"
+        USER_UID: ${DEV_UID:-1000}
+        USER_GID: ${DEV_GID:-1000}
+    image: software-factory-dev:local
+    userns_mode: keep-id
+    init: true
+    working_dir: /workspaces/software-factory
+    volumes:
+      - .:/workspaces/software-factory
+      - factory-dev-target:/target
+    environment:
+      CARGO_HOME: /home/factory/.cargo
+      CARGO_TARGET_DIR: /target
+      HOME: /home/factory
+      FACTORY_CORE_URL: http://core:8765
+      PLAYWRIGHT_BROWSERS_PATH: /home/factory/.cache/ms-playwright
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - factory-control
+      - factory-egress
+    command: ["sleep", "infinity"]
+    stop_grace_period: 10s
+
+volumes:
+  factory-dev-target:

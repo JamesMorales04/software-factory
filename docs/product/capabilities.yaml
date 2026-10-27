@@ -259,6 +259,35 @@ milestones:
   - parallel independent authorized WorkUnits and controlled self-development are demonstrated without host tooling
   owner_decisions:
   - Fresh paid UAT envelope and independent security review remain required
+- id: F1-S9
+  title: Office engineering command center
+  decision_status: approved
+  dependencies:
+  - F1-S8
+  deliverables:
+  - Container-native development workflow
+  - Office-first parity governance and design foundation
+  - Operational Overview and Decision Inbox
+  - Actions Campaign and Agent Office workflows
+  - Issues and Docs foundations
+  capability_ids:
+  - CAP-046
+  - CAP-047
+  exclusions:
+  - Generic SaaS dashboard scope
+  - invented backend capability or decorative actions
+  - SEC-01 isolation or production deployment claim
+  risks:
+  - design-system drift across views
+  - backend-only features without real Office workflows
+  - inaccessible drag-only or status-only interactions
+  deterministic_acceptance:
+  - The container-native development workflow builds and runs Rust Office and Chromium gates without host toolchains
+  - the Office parity matrix references real capabilities APIs routes and browser tests and the impact gate rejects missing declarations
+  real_acceptance:
+  - The Product Owner completes the primary engineering journeys in Factory Office against the real Compose stack without raw API calls or terminal inspection
+  owner_decisions:
+  - Approve each Office slice and any new protected action separately
 - id: LATER
   title: Evaluated extensions
   decision_status: proposed
@@ -2015,3 +2044,95 @@ capabilities:
   - The Campaign authorization label can remain AUTHORIZED after an ACCEPTED Run; the Run and Quality Gate are authoritative.
   blockers:
   - SEC-01 isolation evaluation, deployment, Windows and independent security review remain open.
+- id: CAP-046
+  name: Container-native development workflow
+  category: Engineering
+  purpose: Developers and CI build test and exercise Factory through the pinned container development environment
+  product_objective: Reproducible engineering operation
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Engineering
+  dependencies:
+  - CAP-045
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/engineering/container-native-engineering.md
+    source:
+    - compose.dev.yaml
+    - .devcontainer/Containerfile
+    - xtask/src/check.rs
+    test:
+    - .github/scripts/test_check_pr_architecture_impact.py
+    - .github/scripts/test_check_office_parity.py
+    - office/e2e-browser/rust-journey.mjs
+  acceptance:
+    deterministic: Rust Office and Chromium gates run inside the pinned development container with no host toolchain; the product Compose stack remains unchanged.
+    real: A developer completes the documented build test and browser workflow on a clean container host; the host Rust lane retains the bubblewrap boundary tests.
+  evidence:
+    deterministic:
+    - docs/evidence/office-command-center-slice1-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - The container development image includes the pinned provider test executables for compatibility probes; it is trusted development, not runtime or isolation.
+  - Windows Podman Machine SELinux AppArmor and digest pinning remain NOT_TESTED or NOT_IMPLEMENTED.
+  - Bubblewrap host-user-namespace boundary tests are skipped in the development container and run in the host CI/real Compose lanes.
+  blockers:
+  - Independent validation on Windows and SELinux/AppArmor hosts remains open.
+- id: CAP-047
+  name: Office-first parity governance
+  category: Product
+  purpose: Every user-facing capability has a traceable Office journey and enforceable parity declarations
+  product_objective: Coherent engineering command center
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-045
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/product/office-parity.json
+    source:
+    - .agents/skills/factory-office-design/SKILL.md
+    - .agents/skills/office-feature-parity/SKILL.md
+    - .github/scripts/check-office-parity.py
+    test:
+    - .github/scripts/test_check_office_parity.py
+    - .github/scripts/test_check_pr_architecture_impact.py
+  acceptance:
+    deterministic: The parity matrix and PR gates validate capability IDs against the registry real Office routes real Core APIs existing acceptance files with browser-test provenance and reject missing or placeholder declarations.
+    real: Primary Office journeys are exercised in real Chromium against real Core state with truthful states keyboard access responsive layouts and evidence.
+  evidence:
+    deterministic:
+    - docs/evidence/office-command-center-slice1-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - This capability covers Office-first parity governance; the design tokens, shared components, application shell and command-center modules are a later design-foundation slice and are not claimed implemented.
+  - The current Office still uses hash routes and polling; stable routes stream/replay and the visual Agent Office are later slices.
+  blockers:
+  - Each Office module requires a real browser journey and Product Owner review before completion.

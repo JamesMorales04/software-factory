@@ -3,6 +3,9 @@ name: Compose end-to-end (manual)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   compose:
     if: vars.FACTORY_COMPOSE_CI == '1'
@@ -12,6 +15,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Install rootless Podman and Compose provider
         run: |
           sudo apt-get update

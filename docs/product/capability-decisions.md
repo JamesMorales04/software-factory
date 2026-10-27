@@ -161,3 +161,5 @@ Product Owner decision.
   migration status, gap and evidence ledger.
 - Historical Git commits and evidence remain provenance and are not rewritten.
 | CAP-045 | Container-native Compose installation | ADOPT | F1-S8 | REQUIRED_FOR_MIGRATION | Rootless Compose stack, nested engine/broker, Office onboarding/settings, automatic verifier/reviewer; author-run deterministic evidence | Compose/container runtime and Office configuration |
+| CAP-046 | Container-native development workflow | ADOPT | F1-S9 | REQUIRED_FOR_MIGRATION | Pinned Compose development image, Rust/Office/Chromium gates and parity-checker evidence | Container image, Compose dev override and xtask orchestration |
+| CAP-047 | Office-first parity governance | ADOPT | F1-S9 | REQUIRED_FOR_MIGRATION | Design direction, parity matrix, repository skills and impact gates; UI design foundation is a later slice | Office parity matrix, design direction and Core projections |
