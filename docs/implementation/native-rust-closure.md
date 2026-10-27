@@ -8,12 +8,14 @@ replace candidate-bound test output, independent review or protected approval.
 
 | Item | Value |
 |---|---|
-| Authoritative main baseline | `9f888ac74512b392c8bf86f856c5a152db5b3566` |
+| Authoritative main baseline | `003d92ca0dea9c8d397f0a37a04cf90bd479c99f` (PR #27 merged) |
 | PR #16 behavioral reference | `19cb4951f7a3d42a1ca27b1800cf49401c81ecc6` (closed as superseded) |
 | Product | Software Factory, independent Rust implementation |
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
-| Combined implementation candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
-| Merge state | PRs #17–#26 merged. The managed-live acceptance documentation/test branch is pending exact-head CI and Product Owner review; its candidates are not merged. |
+| Historical combined candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
+| Container-native implementation | `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e` (author-run deterministic Compose evidence; PR #28 not merged) |
+| Container-native hardening candidate | `d9de876f5533827a5a44b07f00c676ac24d7516c` (post-review quality/provider/policy fixes; deterministic Compose E2E PASS; live inference NOT_TESTED) |
+| Merge state | PRs #17–#27 merged. PR #28 (container-native Compose iteration) remains open. Its hardening candidate has exact-head evidence, a MERGE_READY independent re-review and a passed owner-authorized live OpenCode container UAT, but awaits Product Owner merge approval; it is not merged. |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
 not merged, is not built or tested by this repository, and is not authoritative.
@@ -375,3 +377,35 @@ OAuth refresh/account headers. The only supported Codex live authentication mode
 is an operator API key at `https://api.openai.com/v1`; live Codex inference is
 not tested. Evidence:
 [Codex managed configuration](../evidence/codex-managed-config-2026-10-26.md).
+
+## Container-native Compose iteration (2026-10-26)
+
+A Product Owner campaign directive authorized a container-native installation
+target. The implementation branch adds:
+
+- a mandatory rootless Compose stack for Core/Office, containerized Supervisor
+  and Worker, verifier/reviewer, a dedicated nested Podman engine and narrow
+  runtime broker;
+- first-run Office enrollment, encrypted Core-owned provider settings,
+  revocable credentials and a semantic-review policy toggle;
+- managed Git import, Office project/capability configuration, typed checks and
+  scoped delegation creation;
+- automatic independent verifier and reviewer dispatch and deterministic gate
+  projection;
+- per-service configuration volumes, a bundle-based provider image transfer and
+  startup convergence without host toolchains.
+
+Author-run evidence: a deterministic clean Compose deployment imported a Git
+project, produced a candidate through the fixture provider in a real nested
+container, executed independent verifier/reviewer evidence, reached
+`ACCEPTED`, and preserved Project/Campaign/gate state across restart. The
+same stack passed real-Chromium first-run onboarding and provider
+save/test/revoke; two Workers produced two concurrent accepted candidates.
+See [container-native status](container-native-status.md),
+[phase-zero evidence](../evidence/container-native-phase0-2026-10-26.md) and
+[Compose deployment](../operations/compose-deployment.md).
+
+This iteration does **not** claim a paid provider UAT, live OpenCode-in-container
+inference, Codex API-key live inference, containerized Codex stdio, native
+ChatGPT OAuth, SEC-01 isolation, Windows, independent security review or merge
+authorization. The historical host-managed acceptance remains provenance.

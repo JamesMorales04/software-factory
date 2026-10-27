@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "record": "container-native-compose-author-run",
+  "implementation_sha": "30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e",
+  "date": "2026-10-26",
+  "environment": {
+    "host_os": "CachyOS",
+    "kernel": "7.3.0-3-cachyos",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "inner_engine": "quay.io/podman/stable:v5.8.9",
+    "storage_driver": "vfs",
+    "selinux": "disabled",
+    "apparmor": "disabled"
+  },
+  "result": "PASS (author-run deterministic developer-preview; not independent acceptance, paid UAT, deployment or isolation certification)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "phase-zero nested engine child containers and cgroup limits",
+      "pass": true,
+      "detail": "two child containers, distinct volumes, network=none, memory/pids limits read back"
+    },
+    {
+      "name": "one-command clean Compose startup",
+      "pass": true,
+      "detail": "podman compose up -d --build with fresh volumes; no host Rust/Node/OpenCode/Codex"
+    },
+    {
+      "name": "first-run Office enrollment",
+      "pass": true,
+      "detail": "Chromium setup wizard; one-time code invalidated"
+    },
+    {
+      "name": "Git project import and Office configuration",
+      "pass": true,
+      "detail": "HTTPS Git import, allowed paths, capabilities and quality profile"
+    },
+    {
+      "name": "Action checks and delegation UI",
+      "pass": true,
+      "detail": "functional and negative checks; scoped delegation created and usage displayed"
+    },
+    {
+      "name": "provider settings encryption, masking, test and revocation",
+      "pass": true,
+      "detail": "dummy credential only; AES-GCM at rest; no inference; revoked"
+    },
+    {
+      "name": "deterministic Compose candidate through nested provider container",
+      "pass": true,
+      "candidate_id": "efff416b-68c3-4333-908d-822466e8cc04",
+      "attempt_id": "195b9c39-ed98-47a6-8917-f6baf15880bd",
+      "gate": "ACCEPTED"
+    },
+    {
+      "name": "independent verifier and reviewer receipts",
+      "pass": true,
+      "detail": "verifier PASS EXECUTED; reviewer PASS DETERMINISTIC; deterministic gate ACCEPTED"
+    },
+    {
+      "name": "restart persistence",
+      "pass": true,
+      "detail": "Project, Campaign, candidate and ACCEPTED gate preserved across down/up without volume deletion"
+    },
+    {
+      "name": "parallel independent attempts with real nested containers",
+      "pass": true,
+      "candidates": [
+        "4d75f82d-3a6f-433b-9902-1e641476890d",
+        "6f2d098e-421e-44af-8290-1eba0909373e"
+      ],
+      "attempts": [
+        "ae60133d-59fe-494b-8d41-024ab142c30d",
+        "c2112679-9fff-46af-81d3-612482c3bd62"
+      ],
+      "detail": "two Workers, distinct provider containers started 8ms apart; both gates ACCEPTED"
+    },
+    {
+      "name": "real Chromium Office onboarding and configuration",
+      "pass": true,
+      "detail": "zero console errors and zero 404 responses on tested runs"
+    },
+    {
+      "name": "static Compose security policy",
+      "pass": true,
+      "detail": "no privileged, no host network, no host runtime socket, loopback-only publication, bounded runtime capabilities"
+    }
+  ],
+  "limitations": [
+    "Paid DeepSeek/OpenCode UAT of the container-native stack is BLOCKED pending a fresh Product Owner authorization envelope.",
+    "Live OpenCode inference inside the provider container is NOT_TESTED; the deterministic fixture provider exercised the container path.",
+    "Codex API-key live inference is NOT_TESTED; native ChatGPT OAuth is BLOCKED; containerized Codex stdio is NOT_IMPLEMENTED.",
+    "Semantic Reviewer live model calls are NOT_TESTED.",
+    "Multi-unit WorkGraph parallel integration with a real provider is NOT_TESTED; parallel evidence uses two independent Campaign attempts.",
+    "SEC-01 ISOLATED certification, credential confinement, SELinux/AppArmor hosts, Windows/Podman Machine, independent security review and human acceptance remain open.",
+    "An independent same-model review found HIGH/MEDIUM issues on the first candidate; fixes are recorded in the review object and status document. Residual risks remain explicit.",
+    "A follow-up independent review found partial fixes; the additional gaps were closed in 30cb0db, but total volume quota, mount TOCTOU, shared provider-session UID, signed receipts and manual-only real E2E remain open."
+  ],
+  "independent_review": {
+    "reviewer": "independent same-model security/architecture review",
+    "verdict": "FINDINGS",
+    "reviewed_candidate": "bb1cccdf115b6094a266f26cca38b5773e3fb13b",
+    "remediated": [
+      "rootful outer namespace rejected by runtime entrypoint and broker",
+      "container OpenCode TurnBinder accepts the control service origin, with regression test",
+      "semantic-review policy enforced for model calls and MODEL receipts, with route test",
+      "provider profile bound to a live attempt/generation lease and exact route",
+      "unresolved provider recovery scoped by worker and directory root validated",
+      "provider lifetime reaper and fsize limit; unconfirmed FAILED cleanup rejected",
+      "turn release bound to session, worker and generation",
+      "master-key permissions and non-symlink regular file enforced",
+      "static Compose policy expanded with per-service posture, config-volume isolation and negative tests",
+      "E2E harness refuses the production project name",
+      "rootless parser now rejects any UID 0 -> host UID 0 line and malformed/unreadable maps",
+      "fixture fallback limited to 404/409; authentication/server errors fail the assignment",
+      "provider recovery tolerates a missing session directory and startup recovery is enabled in Compose",
+      "start-failure cleanup is unconfirmed-or-removed and cleared by recovery",
+      "runtime no-new-privileges and named-volume driver_opts bind risks rejected by policy checker",
+      "model-call semantic toggle route test added; master-key symlink test added"
+    ],
+    "residual": [
+      "shared provider-session volume and same UID permit same-UID cross-session access after provider compromise",
+      "total engine-volume quota not enforced; only per-file fsize and provider lifetime reaper",
+      "broker session mount path TOCTOU after canonicalization",
+      "verifier/reviewer receipts are bearer-token self-attestations; verifier project volume is read-write",
+      "real Compose E2E remains a manual workflow; PR CI covers static Compose policy, Rust tests and browser regressions",
+      "paid UAT, live OpenCode container inference, live Codex, semantic live calls, SEC-01, Windows and human acceptance remain open"
+    ],
+    "follow_up_verdict": "FINDINGS (partial fixes); additional rootless/fixture/recovery/policy gaps closed in 30cb0db"
+  }
+}

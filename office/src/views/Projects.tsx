@@ -4,6 +4,7 @@ import {
   coreApi,
   newIdempotencyKey,
   type Project,
+  type ProjectConfig,
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 
@@ -13,6 +14,12 @@ export function Projects() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Project | null>(null);
+  const [config, setConfig] = useState<ProjectConfig | null>(null);
+  const [configPaths, setConfigPaths] = useState("");
+  const [configCapabilities, setConfigCapabilities] = useState<string[]>([]);
+  const [qualityProfile, setQualityProfile] = useState("generic");
+  const [active, setActive] = useState(true);
   const attemptKey = useRef(newIdempotencyKey());
 
   useEffect(() => {
@@ -73,16 +80,17 @@ export function Projects() {
     <div>
       <h2>Projects</h2>
       <p className="muted">
-        Registration resolves one canonical local Git repository and its current
-        base commit in the Rust Core. It does not grant execution authority.
+        In the container deployment, register an HTTPS Git URL. Core imports it
+        into Factory-managed storage and freezes the current base commit.
+        Registration does not grant execution authority.
       </p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
 
       <form className="create" onSubmit={onRegister}>
-        <h3>Register a local Git Project</h3>
+        <h3>Register a Git Project</h3>
         <label>
-          Authorized local Git repository
+          HTTPS Git repository URL (or managed path)
           <input
             data-testid="project-repository"
             value={repository}
@@ -90,7 +98,7 @@ export function Projects() {
               setRepository(event.target.value);
               attemptKey.current = newIdempotencyKey();
             }}
-            placeholder="/absolute/path/to/local/repository"
+            placeholder="https://github.com/owner/repository.git"
             required
           />
         </label>
@@ -110,6 +118,7 @@ export function Projects() {
               <th>Repository</th>
               <th>Base commit</th>
               <th>Created</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -127,10 +136,136 @@ export function Projects() {
                   </code>
                 </td>
                 <td className="muted">{formatTimestamp(project.created_at)}</td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelected(project);
+                      setError(null);
+                      void coreApi
+                        .getProjectConfig(project.id)
+                        .then((next) => {
+                          setConfig(next);
+                          setConfigPaths(next.allowedPaths.join(", "));
+                          setConfigCapabilities(next.capabilities);
+                          setQualityProfile(next.qualityProfile);
+                          setActive(next.active);
+                        })
+                        .catch((cause) =>
+                          setError(
+                            cause instanceof CoreApiError
+                              ? cause.message
+                              : "Project config could not be loaded.",
+                          ),
+                        );
+                    }}
+                  >
+                    Configure
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {selected && config && (
+        <form
+          className="create"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setBusy(true);
+            setError(null);
+            void coreApi
+              .updateProjectConfig(selected.id, {
+                expectedRevision: config.revision,
+                allowedPaths: configPaths
+                  .split(",")
+                  .map((path) => path.trim())
+                  .filter(Boolean),
+                capabilities: configCapabilities,
+                qualityProfile,
+                active,
+              })
+              .then((next) => {
+                setConfig(next);
+                setNotice(
+                  `Project config revision ${next.revision} saved (${next.configHash.slice(0, 12)}).`,
+                );
+              })
+              .catch((cause) =>
+                setError(
+                  cause instanceof CoreApiError
+                    ? cause.message
+                    : "Project config update failed.",
+                ),
+              )
+              .finally(() => setBusy(false));
+          }}
+        >
+          <h3>Project configuration — {shortId(selected.id)}</h3>
+          <p className="muted">
+            Revision {config.revision} · base{" "}
+            <code>{shortId(config.baseCommit, 12)}</code> · hash{" "}
+            <code>{shortId(config.configHash, 12)}</code>
+          </p>
+          <label>
+            Allowed repository paths (comma separated)
+            <input
+              value={configPaths}
+              onChange={(event) => setConfigPaths(event.target.value)}
+              placeholder="src, tests"
+            />
+          </label>
+          <fieldset>
+            <legend>Capabilities</legend>
+            {[
+              "repository-edit",
+              "generic-toolchain",
+              "node-toolchain",
+              "browser",
+            ].map((capability) => (
+              <label className="inline" key={capability}>
+                <input
+                  type="checkbox"
+                  checked={configCapabilities.includes(capability)}
+                  onChange={(event) =>
+                    setConfigCapabilities((current) =>
+                      event.target.checked
+                        ? [...current, capability]
+                        : current.filter((item) => item !== capability),
+                    )
+                  }
+                />
+                {capability}
+              </label>
+            ))}
+          </fieldset>
+          <div className="grid-2">
+            <label>
+              Quality profile
+              <select
+                value={qualityProfile}
+                onChange={(event) => setQualityProfile(event.target.value)}
+              >
+                <option value="generic">generic</option>
+                <option value="node-basic">node-basic</option>
+                <option value="node-browser">node-browser</option>
+              </select>
+            </label>
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={active}
+                onChange={(event) => setActive(event.target.checked)}
+              />
+              Active
+            </label>
+          </div>
+          <button type="submit" disabled={busy}>
+            {busy ? "Saving…" : "Save project config"}
+          </button>
+        </form>
       )}
     </div>
   );

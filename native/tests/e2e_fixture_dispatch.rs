@@ -935,6 +935,16 @@ async fn semantic_reviewer_model_mode_binds_findings_provenance_and_rejects_malf
         .build()
         .unwrap();
     wait_healthy(&client, &base_url, &mut core).await;
+    operator(
+        &client,
+        reqwest::Method::PUT,
+        format!("{base_url}/settings/runtime"),
+        Some(json!({
+            "semanticReviewEnabled": true,
+            "semanticReviewMaxOutputTokens": 8192
+        })),
+    )
+    .await;
 
     let project: Value = operator(
         &client,

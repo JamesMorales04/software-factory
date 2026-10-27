@@ -34,6 +34,7 @@ export interface Project {
   repository: string;
   base_commit: string;
   created_at: string;
+  identity?: string;
 }
 
 export interface Action {
@@ -491,6 +492,147 @@ export interface StartLeadCampaignResult {
   attempt: Attempt;
 }
 
+export interface ProviderView {
+  provider: string;
+  kind: string;
+  displayName: string;
+  defaultModel: string;
+  defaultBaseUrl: string;
+  authModes: string[];
+  chatgptOauth: string;
+  status: string;
+  note: string;
+  configured: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+  model: string;
+  baseUrl: string;
+  credentialFingerprint: string;
+  revision: number;
+  updatedAt: string;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  inputMicrosPerMillion: number;
+  outputMicrosPerMillion: number;
+}
+
+export interface UpdateProviderRequest {
+  model: string;
+  baseUrl: string;
+  credential?: string;
+  enabled: boolean;
+  isDefault: boolean;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  inputMicrosPerMillion: number;
+  outputMicrosPerMillion: number;
+}
+
+export interface ProviderTestResult {
+  provider: string;
+  status: "AUTHENTICATED" | "DENIED" | "UNREACHABLE" | "UNSUPPORTED";
+  models: string[];
+  model: string;
+  modelAvailable: boolean;
+  detail: string;
+}
+
+export interface FactorySettings {
+  semanticReviewEnabled: boolean;
+  semanticReviewMaxOutputTokens: number;
+  updatedAt: string;
+}
+
+export interface UpdateFactorySettings {
+  semanticReviewEnabled: boolean;
+  semanticReviewMaxOutputTokens: number;
+}
+
+export interface ProviderAudit {
+  auditId: string;
+  provider: string;
+  revision: number;
+  action: string;
+  actor: string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface NewDelegationRequest {
+  delegation: {
+    id: string;
+    principalId: string;
+    auditId: string;
+    projectId: string;
+    revision: number;
+    contentHash: string;
+    objectiveClasses: string[];
+    allowedPaths: string[];
+    capabilities: string[];
+    riskClasses: string[];
+    autonomousStart: boolean;
+    autonomousRiskClasses: string[];
+    route: ProviderRoute;
+    maxAttempts: number;
+    maxTimeoutSecs: number;
+    maxRepairCycles: number;
+    maxWallClockSecs: number;
+    maxParallel: number;
+    maxSessions: number;
+    maxRequests: number;
+    maxCumulativeSessions: number;
+    maxCumulativeAttempts: number;
+    expiresAt: string;
+  };
+  idempotency_key: string;
+}
+
+export interface DelegationDetail {
+  delegation: StandingDelegation;
+  usage: {
+    sessions: number;
+    attempts: number;
+    requests: number;
+  };
+}
+
+export interface SetupStatus {
+  required: boolean;
+  version: string;
+}
+
+export async function setupStatus(): Promise<SetupStatus> {
+  const response = await fetch(`${BASE}/setup/status`);
+  if (!response.ok) {
+    throw new CoreApiError(response.status, "Unable to read setup status.");
+  }
+  return (await response.json()) as SetupStatus;
+}
+
+export async function enrollOwner(code: string): Promise<string> {
+  const response = await fetch(`${BASE}/setup/enroll`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+    );
+  }
+  const body = (await response.json()) as { token?: unknown };
+  if (typeof body.token !== "string" || body.token === "") {
+    throw new CoreApiError(500, "Core returned no owner credential.");
+  }
+  return body.token;
+}
+
 const BASE = "/core-api";
 const TOKEN_KEY = "factory-api-token";
 
@@ -564,6 +706,45 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const coreApi = {
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
+  listProviders: () =>
+    request<{ providers: ProviderView[] }>("/settings/providers"),
+  getRuntimeSettings: () => request<FactorySettings>("/settings/runtime"),
+  updateRuntimeSettings: (input: UpdateFactorySettings) =>
+    request<FactorySettings>("/settings/runtime", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  updateProvider: (provider: string, input: UpdateProviderRequest) =>
+    request<ProviderView>(
+      `/settings/providers/${encodeURIComponent(provider)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+  testProvider: (provider: string) =>
+    request<ProviderTestResult>(
+      `/settings/providers/${encodeURIComponent(provider)}/test`,
+      { method: "POST" },
+    ),
+  revokeProviderCredential: (provider: string) =>
+    request<ProviderView>(
+      `/settings/providers/${encodeURIComponent(provider)}/credential`,
+      { method: "DELETE" },
+    ),
+  providerAudit: (provider: string) =>
+    request<{ audit: ProviderAudit[] }>(
+      `/settings/providers/${encodeURIComponent(provider)}/audit`,
+    ),
+  createDelegation: (input: NewDelegationRequest) =>
+    request<StandingDelegation>("/delegations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getDelegation: (id: string) =>
+    request<DelegationDetail>(`/delegations/${encodeURIComponent(id)}`),
+  revokeDelegation: (id: string) =>
+    request<StandingDelegation>(`/delegations/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   getProjectConfig: (projectId: string) =>
     request<ProjectConfig>(`/projects/${encodeURIComponent(projectId)}/config`),
   updateProjectConfig: (projectId: string, input: UpdateProjectConfig) =>

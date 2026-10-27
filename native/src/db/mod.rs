@@ -218,6 +218,8 @@ pub const EVENT_KINDS: &[&str] = &[
     "model.call_released",
     "model.call_resolved",
     "model.call_settled",
+    "provider.settings_configured",
+    "settings.runtime_updated",
     "provider.session_active",
     "provider.tool_event",
     "provider.session_cancel_requested",
@@ -746,7 +748,11 @@ pub use model_calls::{
 mod lifecycle;
 mod project_configs;
 mod provider_sessions;
+pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
+mod provider_settings;
+mod runtime_settings;
 pub use project_configs::NewProjectConfig;
+pub use runtime_settings::FactorySettings;
 mod projects;
 mod quality;
 mod workers;

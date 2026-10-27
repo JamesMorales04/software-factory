@@ -66,6 +66,14 @@ name = "factory-supervisor"
 path = "src/bin/supervisor.rs"
 
 [[bin]]
+name = "factory-runtime-broker"
+path = "src/bin/runtime_broker.rs"
+
+[[bin]]
+name = "factory-compose-init"
+path = "src/bin/compose_init.rs"
+
+[[bin]]
 name = "factory-s4d-evaluate"
 path = "src/bin/s4d_evaluate.rs"
 

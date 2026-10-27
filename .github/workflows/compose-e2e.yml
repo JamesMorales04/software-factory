@@ -1,0 +1,24 @@
+name: Compose end-to-end (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compose:
+    if: vars.FACTORY_COMPOSE_CI == '1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install rootless Podman and Compose provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
+          podman info --format '{{.Host.Security.Rootless}}'
+          command -v podman-compose
+      - name: Deterministic container-native acceptance
+        env:
+          PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
+        run: bash scripts/compose-e2e.sh

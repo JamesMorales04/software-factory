@@ -1362,23 +1362,107 @@ async fn repair_required_gate_projects_run_status() {
 }
 
 #[tokio::test]
-async fn blocked_gate_projects_run_status_to_rejected() {
+async fn failed_verifier_gates_without_waiting_for_reviewer() {
     let fixture = candidate_fixture().await;
     let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
-    let mut verifier = quality_receipt(&fixture, "verifier-run-blocked", "verifier-1");
-    verifier.evidence = EvidenceKind::Mocked;
-    fixture
+    let mut verifier = quality_receipt(&fixture, "verifier-run-verifier-fail", "verifier-1");
+    verifier.result = ReceiptResult::Fail;
+    let result = fixture
         .db
         .record_quality_receipt(&fixture.candidate_id, QualityRole::Verifier, &verifier)
+        .await
+        .unwrap();
+    assert_eq!(result.gate.unwrap().outcome, GateOutcome::RepairRequired);
+    assert_eq!(run_status(&fixture.db, &run_id).await, "REPAIR_REQUIRED");
+    assert!(
+        fixture
+            .db
+            .pending_quality_candidates("reviewer")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn enabled_semantic_review_blocks_a_late_deterministic_reviewer_pass() {
+    let fixture = candidate_fixture().await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Reviewer,
+            &quality_receipt(&fixture, "reviewer-late-deterministic", "reviewer-1"),
+        )
+        .await
+        .unwrap();
+    sqlx::query::query("UPDATE factory_settings SET semantic_review_enabled=1 WHERE id=1")
+        .execute(&fixture.db.pool)
+        .await
+        .unwrap();
+    fixture
+        .db
+        .save_provider_settings(
+            &ProviderSettingsWrite {
+                provider: "opencode-go".into(),
+                kind: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                base_url: "https://opencode.ai/inference/go/openai/v1".into(),
+                auth_mode: "api_key".into(),
+                credential_ciphertext: "ciphertext".into(),
+                credential_nonce: "nonce".into(),
+                credential_fingerprint: "fingerprint".into(),
+                enabled: true,
+                is_default: true,
+                max_turns: 4,
+                max_input_tokens: 60_000,
+                max_output_tokens: 12_000,
+                max_cost_micros: 500_000,
+                input_micros_per_million: 150_000,
+                output_micros_per_million: 600_000,
+            },
+            "test",
+        )
         .await
         .unwrap();
     let result = fixture
         .db
         .record_quality_receipt(
             &fixture.candidate_id,
-            QualityRole::Reviewer,
-            &quality_receipt(&fixture, "reviewer-run-blocked", "reviewer-1"),
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-after-policy", "verifier-1"),
         )
+        .await
+        .unwrap();
+    let gate = result.gate.unwrap();
+    assert_eq!(gate.outcome, GateOutcome::NotTested);
+    assert!(
+        gate.reasons
+            .iter()
+            .any(|reason| reason.contains("MODEL reviewer evidence"))
+    );
+    fixture.db.close().await;
+}
+
+#[tokio::test]
+async fn blocked_gate_projects_run_status_to_rejected() {
+    let fixture = candidate_fixture().await;
+    let run_id = run_id_for_candidate(&fixture.db, &fixture.candidate_id).await;
+    fixture
+        .db
+        .record_quality_receipt(
+            &fixture.candidate_id,
+            QualityRole::Verifier,
+            &quality_receipt(&fixture, "verifier-run-blocked", "verifier-1"),
+        )
+        .await
+        .unwrap();
+    let mut reviewer = quality_receipt(&fixture, "reviewer-run-blocked", "reviewer-1");
+    reviewer.evidence = EvidenceKind::Mocked;
+    let result = fixture
+        .db
+        .record_quality_receipt(&fixture.candidate_id, QualityRole::Reviewer, &reviewer)
         .await
         .unwrap();
     assert_eq!(result.gate.unwrap().outcome, GateOutcome::Blocked);

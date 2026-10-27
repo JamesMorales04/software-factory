@@ -1,4 +1,9 @@
-use std::{env, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    env,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     Json, Router,
@@ -6,7 +11,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use factory_native::lead::StandingDelegation;
 use factory_native::quality::{EvidenceKind, ReceiptResult};
@@ -20,15 +25,25 @@ use factory_native::{
 use serde::Deserialize;
 use serde_json::json;
 
+struct SetupState {
+    failures: u32,
+    blocked_until_ms: i64,
+}
+
 struct App {
     db: Database,
     operator_token: String,
+    enrollment_code_file: Option<PathBuf>,
+    projects_root: Option<PathBuf>,
+    allow_insecure_git: bool,
+    setup: Mutex<SetupState>,
     worker_bootstrap_token: String,
     verifier_token: String,
     reviewer_token: String,
     lead_fixture_assessor: bool,
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
+    master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
 }
@@ -60,7 +75,9 @@ fn default_provider_turn_max_requests() -> u32 {
 #[serde(deny_unknown_fields)]
 struct ProviderTurnRelease {
     reservation_id: String,
+    session_record_id: String,
     worker_id: String,
+    generation: i64,
 }
 
 #[derive(Deserialize)]
@@ -342,14 +359,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(factory_native::telemetry::RedactingMakeWriter)
         .init();
     let database = env::var("FACTORY_DATABASE").unwrap_or_else(|_| "factory-native.sqlite".into());
-    let operator_token =
-        env::var("FACTORY_OPERATOR_TOKEN").map_err(|_| "FACTORY_OPERATOR_TOKEN required")?;
-    let worker_bootstrap_token = env::var("FACTORY_WORKER_BOOTSTRAP_TOKEN")
-        .map_err(|_| "FACTORY_WORKER_BOOTSTRAP_TOKEN required")?;
-    let verifier_token =
-        env::var("FACTORY_VERIFIER_TOKEN").map_err(|_| "FACTORY_VERIFIER_TOKEN required")?;
-    let reviewer_token =
-        env::var("FACTORY_REVIEWER_TOKEN").map_err(|_| "FACTORY_REVIEWER_TOKEN required")?;
+    let operator_token = factory_native::secrets::required("FACTORY_OPERATOR_TOKEN")?;
+    let worker_bootstrap_token =
+        factory_native::secrets::required("FACTORY_WORKER_BOOTSTRAP_TOKEN")?;
+    let verifier_token = factory_native::secrets::required("FACTORY_VERIFIER_TOKEN")?;
+    let reviewer_token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
     let tokens = [
         operator_token.as_str(),
         worker_bootstrap_token.as_str(),
@@ -371,8 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         factory_native::telemetry::register_secret(token);
     }
     let bind = env::var("FACTORY_BIND").unwrap_or_else(|_| "127.0.0.1:8765".into());
-    let attempt_grant_key =
-        env::var("FACTORY_ATTEMPT_GRANT_KEY").map_err(|_| "FACTORY_ATTEMPT_GRANT_KEY required")?;
+    let attempt_grant_key = factory_native::secrets::required("FACTORY_ATTEMPT_GRANT_KEY")?;
     if attempt_grant_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES {
         return Err("FACTORY_ATTEMPT_GRANT_KEY must be at least 32 bytes".into());
     }
@@ -396,9 +409,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             factory_native::observability::ExporterHandle::disabled_with_error(error.to_string())
         }
     };
+    let enrollment_code_file = env::var("FACTORY_ENROLLMENT_CODE_FILE")
+        .ok()
+        .map(PathBuf::from);
+    let projects_root = env::var("FACTORY_PROJECTS_ROOT").ok().map(PathBuf::from);
+    if projects_root
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err("FACTORY_PROJECTS_ROOT must be absolute".into());
+    }
+    let allow_insecure_git = env::var("FACTORY_ALLOW_INSECURE_GIT").as_deref() == Ok("1");
+    let master_key = match env::var("FACTORY_MASTER_KEY_FILE") {
+        Ok(path) => {
+            Some(factory_native::provider_secrets::ProviderSecretKey::from_file(Path::new(&path))?)
+        }
+        Err(_) => None,
+    };
     let app = Arc::new(App {
         db,
         operator_token,
+        enrollment_code_file,
+        projects_root,
+        allow_insecure_git,
+        setup: Mutex::new(SetupState {
+            failures: 0,
+            blocked_until_ms: 0,
+        }),
         worker_bootstrap_token,
         verifier_token,
         reviewer_token,
@@ -407,6 +444,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lead_autonomous_start: env::var("FACTORY_ENABLE_AUTONOMOUS_START").ok().as_deref()
             == Some("1"),
         model_gateway: model_gateway_from_env()?,
+        master_key,
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
     });
@@ -465,6 +503,29 @@ fn api_router(app: Arc<App>) -> Router {
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
         )
+        .route("/setup/status", get(setup_status))
+        .route("/setup/enroll", post(setup_enroll))
+        .route("/quality/pending", get(pending_quality))
+        .route("/settings/providers", get(provider_settings_list))
+        .route(
+            "/settings/runtime",
+            get(runtime_settings).put(update_runtime_settings),
+        )
+        .route("/review/config", get(review_config))
+        .route(
+            "/settings/providers/{provider}",
+            axum::routing::put(update_provider_settings),
+        )
+        .route(
+            "/settings/providers/{provider}/credential",
+            delete(revoke_provider_credential),
+        )
+        .route(
+            "/settings/providers/{provider}/test",
+            post(test_provider_connection),
+        )
+        .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route("/worker/provider_profile", get(worker_provider_profile))
         .route("/projects", get(projects).post(register_project))
         .route(
             "/projects/{id}/config",
@@ -566,6 +627,78 @@ fn api_router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+impl App {
+    async fn current_model_gateway(&self) -> Option<factory_native::model_gateway::ModelGateway> {
+        if let Some(gateway) = &self.model_gateway {
+            return Some(gateway.clone());
+        }
+        let master_key = self.master_key.as_ref()?;
+        let settings = match self.db.default_provider_settings().await {
+            Ok(settings) => settings,
+            Err(factory_native::db::Error::NotFound) => return None,
+            Err(error) => {
+                tracing::warn!(%error, "provider settings could not be loaded");
+                return None;
+            }
+        };
+        if !settings.enabled || settings.kind != "opencode" {
+            return None;
+        }
+        let credential =
+            match master_key.decrypt(&settings.credential_ciphertext, &settings.credential_nonce) {
+                Ok(credential) => String::from_utf8(credential).ok()?,
+                Err(error) => {
+                    tracing::warn!(%error, "provider credential could not be decrypted");
+                    return None;
+                }
+            };
+        factory_native::telemetry::register_secret(&credential);
+        let allow_loopback_http =
+            env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        let mut lead_policy =
+            policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
+        let mut reviewer_policy =
+            policy_from_env("FACTORY_REVIEW_MODEL", 400_000, 8_192, 1_000_000).ok()?;
+        let mut evaluation_policy =
+            policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000).ok()?;
+        let mut global_policy =
+            policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000).ok()?;
+        for policy in [
+            &mut lead_policy,
+            &mut reviewer_policy,
+            &mut evaluation_policy,
+            &mut global_policy,
+        ] {
+            policy.max_input_tokens = policy.max_input_tokens.min(settings.max_input_tokens);
+            policy.max_output_tokens = policy.max_output_tokens.min(settings.max_output_tokens);
+            policy.max_cost_micros = policy.max_cost_micros.min(settings.max_cost_micros);
+        }
+        let config = factory_native::model_gateway::ModelGatewayConfig {
+            base_url: settings.base_url,
+            credential,
+            provider: settings.provider,
+            model: settings.model,
+            timeout: std::time::Duration::from_secs(
+                env_u64("FACTORY_MODEL_TIMEOUT_SECS", 60).ok()?,
+            ),
+            input_micros_per_million: settings.input_micros_per_million,
+            output_micros_per_million: settings.output_micros_per_million,
+            lead_policy,
+            reviewer_policy,
+            evaluation_policy,
+            global_policy,
+            allow_loopback_http,
+        };
+        match factory_native::model_gateway::ModelGateway::new(config) {
+            Ok(gateway) => Some(gateway),
+            Err(error) => {
+                tracing::warn!(%error, "provider settings did not produce a valid model gateway");
+                None
+            }
+        }
+    }
+}
+
 fn model_gateway_from_env()
 -> Result<Option<factory_native::model_gateway::ModelGateway>, Box<dyn std::error::Error>> {
     if env::var_os("FACTORY_LEAD_MODEL_URL").is_some() {
@@ -578,7 +711,7 @@ fn model_gateway_from_env()
         Err(env::VarError::NotPresent) => return Ok(None),
         Err(error) => return Err(Box::new(error)),
     };
-    let token = env::var("FACTORY_MODEL_TOKEN").map_err(|_| "FACTORY_MODEL_TOKEN required")?;
+    let token = factory_native::secrets::required("FACTORY_MODEL_TOKEN")?;
     if token.len() < 16 {
         return Err("FACTORY_MODEL_TOKEN must be at least 16 bytes".into());
     }
@@ -672,6 +805,678 @@ fn api_error(error: Error) -> Response {
     (status, Json(json!({"error":error.to_string()}))).into_response()
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnrollmentRequest {
+    code: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingQualityQuery {
+    role: String,
+}
+
+fn default_max_turns() -> u32 {
+    4
+}
+fn default_max_input_tokens() -> u64 {
+    60_000
+}
+fn default_max_output_tokens() -> u64 {
+    12_000
+}
+fn default_max_cost_micros() -> u64 {
+    500_000
+}
+fn default_input_rate() -> u64 {
+    150_000
+}
+fn default_output_rate() -> u64 {
+    600_000
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ProviderSettingsInput {
+    model: String,
+    base_url: String,
+    #[serde(default)]
+    credential: Option<String>,
+    enabled: bool,
+    is_default: bool,
+    #[serde(default = "default_max_turns")]
+    max_turns: u32,
+    #[serde(default = "default_max_input_tokens")]
+    max_input_tokens: u64,
+    #[serde(default = "default_max_output_tokens")]
+    max_output_tokens: u64,
+    #[serde(default = "default_max_cost_micros")]
+    max_cost_micros: u64,
+    #[serde(default = "default_input_rate")]
+    input_micros_per_million: u64,
+    #[serde(default = "default_output_rate")]
+    output_micros_per_million: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RuntimeSettingsInput {
+    semantic_review_enabled: bool,
+    semantic_review_max_output_tokens: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProviderQuery {
+    provider: String,
+    model: String,
+    worker_id: String,
+    attempt_id: String,
+    generation: i64,
+}
+
+async fn runtime_settings(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.factory_settings().await {
+        Ok(settings) => Json(settings).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn update_runtime_settings(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<RuntimeSettingsInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .update_factory_settings(
+            input.semantic_review_enabled,
+            input.semantic_review_max_output_tokens,
+            "office-operator",
+        )
+        .await
+    {
+        Ok(settings) => Json(settings).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn review_config(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let authorized = token
+        .is_some_and(|token| constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes()));
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let settings = match app.db.factory_settings().await {
+        Ok(settings) => settings,
+        Err(error) => return api_error(error),
+    };
+    let gateway = app.current_model_gateway().await;
+    let mechanism = if settings.semantic_review_enabled && gateway.is_some() {
+        "MODEL"
+    } else {
+        "DETERMINISTIC"
+    };
+    Json(json!({
+        "mechanism": mechanism,
+        "maxOutputTokens": settings.semantic_review_max_output_tokens,
+        "reason": if mechanism == "MODEL" {
+            "operator enabled semantic review and a default provider is configured"
+        } else if settings.semantic_review_enabled {
+            "semantic review is enabled but no model gateway is configured"
+        } else {
+            "semantic review is disabled"
+        }
+    }))
+    .into_response()
+}
+
+async fn pending_quality(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<PendingQualityQuery>,
+) -> Response {
+    let token = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let authorized = match (query.role.as_str(), token) {
+        ("verifier", Some(token)) => {
+            constant_time_eq(token.as_bytes(), app.verifier_token.as_bytes())
+        }
+        ("reviewer", Some(token)) => {
+            constant_time_eq(token.as_bytes(), app.reviewer_token.as_bytes())
+        }
+        _ => false,
+    };
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.pending_quality_candidates(&query.role).await {
+        Ok(candidates) => Json(json!({"candidates": candidates})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn setup_status(State(app): State<Arc<App>>) -> Response {
+    let required = app
+        .enrollment_code_file
+        .as_ref()
+        .is_some_and(|path| path.is_file());
+    Json(json!({
+        "required": required,
+        "version": "0.1.0"
+    }))
+    .into_response()
+}
+
+async fn setup_enroll(
+    State(app): State<Arc<App>>,
+    Json(input): Json<EnrollmentRequest>,
+) -> Response {
+    let Some(path) = app.enrollment_code_file.as_ref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"first-run setup is not enabled"})),
+        )
+            .into_response();
+    };
+    if input.code.trim().is_empty() || input.code.len() > 256 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"enrollment code is invalid"})),
+        )
+            .into_response();
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    {
+        let Ok(state) = app.setup.lock() else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        if state.blocked_until_ms > now {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error":"too many enrollment attempts; wait and retry"})),
+            )
+                .into_response();
+        }
+    }
+    let expected = match std::fs::read_to_string(path) {
+        Ok(value) => value.trim().to_owned(),
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"enrollment is not available"})),
+            )
+                .into_response();
+        }
+    };
+    let submitted = input.code.trim();
+    if expected.is_empty() || !constant_time_eq(submitted.as_bytes(), expected.as_bytes()) {
+        if let Ok(mut state) = app.setup.lock() {
+            state.failures = state.failures.saturating_add(1);
+            if state.failures >= 8 {
+                state.failures = 0;
+                state.blocked_until_ms = now + 60_000;
+            }
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"enrollment code is invalid"})),
+        )
+            .into_response();
+    }
+    if let Err(error) = std::fs::remove_file(path) {
+        tracing::error!(%error, "enrollment code could not be invalidated");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"enrollment could not be completed"})),
+        )
+            .into_response();
+    }
+    let used = path.with_file_name("enrollment-used");
+    if let Err(error) = std::fs::write(&used, b"used\n") {
+        tracing::error!(%error, "enrollment completion marker could not be written");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"enrollment could not be completed"})),
+        )
+            .into_response();
+    }
+    if let Ok(mut state) = app.setup.lock() {
+        state.failures = 0;
+        state.blocked_until_ms = 0;
+    }
+    factory_native::telemetry::register_secret(&app.operator_token);
+    Json(json!({"token": app.operator_token})).into_response()
+}
+
+fn provider_view(
+    settings: Option<&factory_native::db::ProviderSettingsRecord>,
+    catalog: &factory_native::provider_catalog::ProviderCatalogEntry,
+) -> serde_json::Value {
+    json!({
+        "provider": catalog.provider,
+        "kind": catalog.kind,
+        "displayName": catalog.display_name,
+        "defaultModel": catalog.default_model,
+        "defaultBaseUrl": catalog.default_base_url,
+        "authModes": catalog.auth_modes,
+        "chatgptOauth": catalog.chatgpt_oauth,
+        "status": catalog.status,
+        "note": catalog.note,
+        "configured": settings.is_some_and(|settings| !settings.credential_ciphertext.is_empty()),
+        "enabled": settings.is_some_and(|settings| settings.enabled),
+        "isDefault": settings.is_some_and(|settings| settings.is_default),
+        "model": settings.map(|settings| settings.model.clone()).unwrap_or_else(|| catalog.default_model.into()),
+        "baseUrl": settings.map(|settings| settings.base_url.clone()).unwrap_or_else(|| catalog.default_base_url.into()),
+        "credentialFingerprint": settings.map(|settings| settings.credential_fingerprint.clone()).unwrap_or_default(),
+        "revision": settings.map(|settings| settings.revision).unwrap_or(0),
+        "updatedAt": settings.map(|settings| settings.updated_at.clone()).unwrap_or_default(),
+        "maxTurns": settings.map(|settings| settings.max_turns).unwrap_or(default_max_turns()),
+        "maxInputTokens": settings.map(|settings| settings.max_input_tokens).unwrap_or(default_max_input_tokens()),
+        "maxOutputTokens": settings.map(|settings| settings.max_output_tokens).unwrap_or(default_max_output_tokens()),
+        "maxCostMicros": settings.map(|settings| settings.max_cost_micros).unwrap_or(default_max_cost_micros()),
+        "inputMicrosPerMillion": settings.map(|settings| settings.input_micros_per_million).unwrap_or(default_input_rate()),
+        "outputMicrosPerMillion": settings.map(|settings| settings.output_micros_per_million).unwrap_or(default_output_rate()),
+    })
+}
+
+async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let stored = match app.db.provider_settings_all().await {
+        Ok(stored) => stored,
+        Err(error) => return api_error(error),
+    };
+    let providers: Vec<serde_json::Value> = factory_native::provider_catalog::CATALOG
+        .iter()
+        .map(|catalog| {
+            provider_view(
+                stored
+                    .iter()
+                    .find(|settings| settings.provider == catalog.provider),
+                catalog,
+            )
+        })
+        .collect();
+    Json(json!({"providers":providers})).into_response()
+}
+
+async fn update_provider_settings(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+    Json(input): Json<ProviderSettingsInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(catalog) = factory_native::provider_catalog::entry(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    };
+    let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    if let Err(error) = factory_native::provider_catalog::validate_model(&input.model)
+        .and_then(|()| {
+            factory_native::provider_catalog::validate_base_url(
+                &input.base_url,
+                allow_loopback_http,
+            )
+        })
+        .and_then(|()| {
+            factory_native::provider_catalog::validate_budget(
+                input.max_turns,
+                input.max_input_tokens,
+                input.max_output_tokens,
+                input.max_cost_micros,
+            )
+        })
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+    }
+    if input.input_micros_per_million > 10_000_000
+        || input.output_micros_per_million > 10_000_000
+        || (input.input_micros_per_million == 0 && input.output_micros_per_million == 0)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"provider rates are outside the supported bound"})),
+        )
+            .into_response();
+    }
+    let Some(master_key) = app.master_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"provider credential protection is not configured"})),
+        )
+            .into_response();
+    };
+    let existing = match app.db.provider_settings(&provider).await {
+        Ok(settings) => Some(settings),
+        Err(factory_native::db::Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let encrypted = match input
+        .credential
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        Some(credential) => {
+            if let Err(error) = factory_native::provider_catalog::validate_credential(credential) {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+            match master_key.encrypt(credential.as_bytes()) {
+                Ok(encrypted) => encrypted,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": error})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        None => match existing.as_ref() {
+            Some(settings) if !settings.credential_ciphertext.is_empty() => {
+                factory_native::provider_secrets::EncryptedCredential {
+                    ciphertext: settings.credential_ciphertext.clone(),
+                    nonce: settings.credential_nonce.clone(),
+                    fingerprint: settings.credential_fingerprint.clone(),
+                }
+            }
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"an initial credential is required"})),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let write = factory_native::db::ProviderSettingsWrite {
+        provider: provider.clone(),
+        kind: catalog.kind.into(),
+        model: input.model,
+        base_url: input.base_url.trim_end_matches('/').to_owned(),
+        auth_mode: "api_key".into(),
+        credential_ciphertext: encrypted.ciphertext,
+        credential_nonce: encrypted.nonce,
+        credential_fingerprint: encrypted.fingerprint,
+        enabled: input.enabled,
+        is_default: input.is_default,
+        max_turns: input.max_turns,
+        max_input_tokens: input.max_input_tokens,
+        max_output_tokens: input.max_output_tokens,
+        max_cost_micros: input.max_cost_micros,
+        input_micros_per_million: input.input_micros_per_million,
+        output_micros_per_million: input.output_micros_per_million,
+    };
+    match app
+        .db
+        .save_provider_settings(&write, "office-operator")
+        .await
+    {
+        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_provider_credential(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(catalog) = factory_native::provider_catalog::entry(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    };
+    match app
+        .db
+        .clear_provider_credential(&provider, "office-operator")
+        .await
+    {
+        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn test_provider_connection(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(_catalog) = factory_native::provider_catalog::entry(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    };
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(factory_native::db::Error::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"provider is not configured"})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let Some(master_key) = app.master_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"provider credential protection is not configured"})),
+        )
+            .into_response();
+    };
+    let credential =
+        match master_key.decrypt(&settings.credential_ciphertext, &settings.credential_nonce) {
+            Ok(credential) => match String::from_utf8(credential) {
+                Ok(credential) => credential,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error":"stored credential is not valid text"})),
+                    )
+                        .into_response();
+                }
+            },
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error})),
+                )
+                    .into_response();
+            }
+        };
+    factory_native::telemetry::register_secret(&credential);
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let url = format!("{}/models", settings.base_url.trim_end_matches('/'));
+    let response = client.get(&url).bearer_auth(&credential).send().await;
+    let (status, models, detail) = match response {
+        Ok(response) => {
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                ("DENIED", Vec::new(), format!("HTTP {status}"))
+            } else if status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+            {
+                ("UNSUPPORTED", Vec::new(), format!("HTTP {status}"))
+            } else if status.is_success() {
+                let body: serde_json::Value = response.json().await.unwrap_or_default();
+                let models: Vec<String> = body
+                    .get("data")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+                            .take(100)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ("AUTHENTICATED", models, "model list retrieved".into())
+            } else {
+                ("UNREACHABLE", Vec::new(), format!("HTTP {status}"))
+            }
+        }
+        Err(error) => ("UNREACHABLE", Vec::new(), error.to_string()),
+    };
+    let model_available = models.iter().any(|model| model == &settings.model);
+    let _ = app
+        .db
+        .record_provider_test(&provider, "office-operator", &detail)
+        .await;
+    Json(json!({
+        "provider": provider,
+        "status": status,
+        "models": models,
+        "model": settings.model,
+        "modelAvailable": model_available,
+        "detail": detail
+    }))
+    .into_response()
+}
+
+async fn provider_audit(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.provider_settings_audit(&provider).await {
+        Ok(audit) => Json(json!({"audit": audit})).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn worker_provider_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<WorkerProviderQuery>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &query.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (provider, model) = match app
+        .db
+        .assigned_provider_route(
+            &query.worker_id,
+            &query.attempt_id,
+            query.generation,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+    {
+        Ok(route) => route,
+        Err(error) => return api_error(error),
+    };
+    if provider != query.provider || model != query.model {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"provider profile does not match the live authorized assignment"})),
+        )
+            .into_response();
+    }
+    let settings = match app.db.provider_settings(&query.provider).await {
+        Ok(settings) => settings,
+        Err(factory_native::db::Error::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"provider is not configured"})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    if !settings.enabled
+        || settings.model != query.model
+        || settings.credential_ciphertext.is_empty()
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"provider route is not enabled or does not match the assignment"})),
+        )
+            .into_response();
+    }
+    let Some(master_key) = app.master_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"provider credential protection is not configured"})),
+        )
+            .into_response();
+    };
+    let credential =
+        match master_key.decrypt(&settings.credential_ciphertext, &settings.credential_nonce) {
+            Ok(credential) => match String::from_utf8(credential) {
+                Ok(credential) => credential,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            },
+            Err(error) => {
+                tracing::warn!(%error, "worker provider credential could not be decrypted");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+    factory_native::telemetry::register_secret(&credential);
+    Json(json!({
+        "provider": settings.provider,
+        "kind": settings.kind,
+        "model": settings.model,
+        "baseUrl": settings.base_url,
+        "credential": credential,
+        "maxTurns": settings.max_turns,
+        "maxInputTokens": settings.max_input_tokens,
+        "maxOutputTokens": settings.max_output_tokens,
+        "maxCostMicros": settings.max_cost_micros
+    }))
+    .into_response()
+}
+
 async fn register_project(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -683,14 +1488,48 @@ async fn register_project(
     if input.idempotency_key.is_empty() {
         return api_error(Error::Invalid("idempotency key"));
     }
+    let repository = match resolve_project_input(&app, &input.repository).await {
+        Ok(path) => path,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+        }
+    };
     match app
         .db
-        .register_project(Path::new(&input.repository), &input.idempotency_key)
+        .register_project(&repository, &input.idempotency_key)
         .await
     {
         Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn resolve_project_input(app: &App, requested: &str) -> Result<PathBuf, String> {
+    let Some(root) = app.projects_root.as_ref() else {
+        return Ok(PathBuf::from(requested));
+    };
+    if factory_native::project_import::is_remote_repository(requested) {
+        return factory_native::project_import::import(requested, root, app.allow_insecure_git)
+            .await
+            .map_err(|error| error.to_string());
+    }
+    let path = PathBuf::from(requested);
+    if !path.is_absolute() {
+        return Err(
+            "managed project registration requires an HTTPS Git URL or an absolute path inside the managed projects root"
+                .into(),
+        );
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("managed projects root is unavailable: {error}"))?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("managed project path is unavailable: {error}"))?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err("project path is outside the managed projects root".into());
+    }
+    Ok(canonical)
 }
 async fn delegations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
@@ -1249,7 +2088,13 @@ async fn worker_provider_turn_release(
     }
     match app
         .db
-        .release_provider_turn(&input.reservation_id, "worker released turn")
+        .release_provider_turn(
+            &input.reservation_id,
+            &input.session_record_id,
+            &input.worker_id,
+            input.generation,
+            "worker released turn",
+        )
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -1437,7 +2282,11 @@ async fn worker_provider_unresolved(
     if !worker_session_authorized(&app, &headers, worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.unresolved_provider_sessions().await)
+    result_list(
+        app.db
+            .unresolved_provider_sessions_for_worker(Some(worker_id))
+            .await,
+    )
 }
 
 async fn worker_provider_terminal(
@@ -1537,6 +2386,19 @@ async fn model_call(
     if !authenticated {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if role == factory_native::db::ModelCallRole::SemanticReviewer {
+        let settings = match app.db.factory_settings().await {
+            Ok(settings) => settings,
+            Err(error) => return api_error(error),
+        };
+        if !settings.semantic_review_enabled {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"semantic review is disabled by the operator"})),
+            )
+                .into_response();
+        }
+    }
     if matches!(
         role,
         factory_native::db::ModelCallRole::SemanticReviewer
@@ -1549,7 +2411,7 @@ async fn model_call(
         )
             .into_response();
     }
-    let Some(gateway) = &app.model_gateway else {
+    let Some(gateway) = app.current_model_gateway().await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error":"model gateway is not configured"})),
@@ -1598,6 +2460,26 @@ async fn model_call(
     }
 }
 
+fn reviewer_receipt_mechanism_allowed(
+    semantic_review_enabled: bool,
+    gateway_configured: bool,
+    mechanism: factory_native::db::ReviewMechanism,
+) -> Result<(), &'static str> {
+    if mechanism == factory_native::db::ReviewMechanism::Model {
+        if !semantic_review_enabled {
+            return Err("semantic review is disabled by the operator");
+        }
+        if !gateway_configured {
+            return Err("semantic review requires a configured default model gateway");
+        }
+        return Ok(());
+    }
+    if semantic_review_enabled && gateway_configured {
+        return Err("semantic review is enabled; reviewer must submit MODEL evidence");
+    }
+    Ok(())
+}
+
 async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(role) = quality_role(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -1612,6 +2494,26 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
+    if role == QualityRole::Reviewer {
+        let settings = match app.db.factory_settings().await {
+            Ok(settings) => settings,
+            Err(error) => return api_error(error),
+        };
+        let gateway_configured = app.current_model_gateway().await.is_some();
+        if let Err(message) = reviewer_receipt_mechanism_allowed(
+            settings.semantic_review_enabled,
+            gateway_configured,
+            input.mechanism,
+        ) {
+            let status = if message == "semantic review requires a configured default model gateway"
+            {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            return (status, Json(json!({"error": message}))).into_response();
+        }
+    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -1771,7 +2673,8 @@ async fn assess_lead_request(
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
-    if app.model_gateway.is_none() && !app.lead_fixture_assessor {
+    let current_gateway = app.current_model_gateway().await;
+    if current_gateway.is_none() && !app.lead_fixture_assessor {
         return (
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({"error":"no model gateway is authorized; configure FACTORY_MODEL_URL or set FACTORY_LEAD_FIXTURE_ASSESSOR=1 only for deterministic tests"})),
@@ -1788,12 +2691,12 @@ async fn assess_lead_request(
         project_id: action.project_id.clone(),
         status: factory_native::lead::ActionStatus::Pending,
     };
-    let mechanism = if app.model_gateway.is_some() {
+    let mechanism = if current_gateway.is_some() {
         "MODEL"
     } else {
         "FIXTURE"
     };
-    let (mut assessment, mut proposal) = if let Some(gateway) = &app.model_gateway {
+    let (mut assessment, mut proposal) = if let Some(gateway) = &current_gateway {
         match factory_native::lead_model::assess(
             gateway,
             &app.db,
@@ -2226,6 +3129,14 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         };
@@ -2349,6 +3260,14 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
@@ -2481,6 +3400,14 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
@@ -2536,6 +3463,14 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         };
@@ -2559,5 +3494,223 @@ mod tests {
         assert_eq!(quality_role(&app, &headers), None);
         drop(app);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn semantic_review_toggle_is_authoritative_for_receipts() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-semantic-toggle-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = Arc::new(App {
+            db: Database::open(&path).await.unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(Arc::clone(&app));
+        let disabled_model_call = axum::http::Request::builder()
+            .method("POST")
+            .uri("/model/calls")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer",
+                    "projectId": "project-1",
+                    "objectiveId": "candidate-1",
+                    "scopeId": "candidate-1",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "system",
+                    "userPrompt": "user",
+                    "maxOutputTokens": 128
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(disabled_model_call)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let config = axum::http::Request::builder()
+            .uri("/review/config")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(config).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("DETERMINISTIC"));
+
+        let enable = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/settings/runtime")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"semanticReviewEnabled":true,"semanticReviewMaxOutputTokens":2048}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(enable).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let enabled_model_call = axum::http::Request::builder()
+            .method("POST")
+            .uri("/model/calls")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer",
+                    "projectId": "project-1",
+                    "objectiveId": "candidate-1",
+                    "scopeId": "candidate-1",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "system",
+                    "userPrompt": "user",
+                    "maxOutputTokens": 128
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(enabled_model_call)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        let receipt = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "candidate_id": "candidate-1",
+                    "receipt_id": "receipt-1",
+                    "principal_id": "reviewer",
+                    "actionSpecSha256": "a".repeat(64),
+                    "commitSha": "b".repeat(40),
+                    "treeSha": "c".repeat(40),
+                    "result": "PASS",
+                    "evidence": "EXECUTED",
+                    "findings": [],
+                    "mechanism": "MODEL"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(receipt).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let disable = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/settings/runtime")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"semanticReviewEnabled":false,"semanticReviewMaxOutputTokens":2048}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(disable).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let disabled_receipt = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "candidate_id": "candidate-1",
+                    "receipt_id": "receipt-2",
+                    "principal_id": "reviewer",
+                    "actionSpecSha256": "a".repeat(64),
+                    "commitSha": "b".repeat(40),
+                    "treeSha": "c".repeat(40),
+                    "result": "PASS",
+                    "evidence": "EXECUTED",
+                    "findings": [],
+                    "mechanism": "MODEL"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(disabled_receipt).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn enabled_semantic_review_requires_model_reviewer_evidence() {
+        use factory_native::db::ReviewMechanism::{Deterministic, Model};
+        assert!(reviewer_receipt_mechanism_allowed(true, true, Model).is_ok());
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, true, Deterministic)
+                .unwrap_err()
+                .contains("must submit MODEL evidence")
+        );
+        assert!(reviewer_receipt_mechanism_allowed(true, false, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, true, Deterministic).is_ok());
+        assert!(reviewer_receipt_mechanism_allowed(false, false, Deterministic).is_ok());
+        assert!(
+            reviewer_receipt_mechanism_allowed(false, true, Model)
+                .unwrap_err()
+                .contains("disabled")
+        );
+        assert!(
+            reviewer_receipt_mechanism_allowed(true, false, Model)
+                .unwrap_err()
+                .contains("configured default model gateway")
+        );
     }
 }

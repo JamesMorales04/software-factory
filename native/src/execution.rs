@@ -380,6 +380,116 @@ impl RootlessPodmanVolumes {
     }
 }
 
+/// Broker-backed execution backend used by containerized trusted services.
+#[derive(Clone)]
+pub struct BrokerVolumes {
+    client: crate::runtime_broker::RuntimeBrokerClient,
+    max_runtime: Duration,
+}
+
+impl BrokerVolumes {
+    pub fn new(base: &str, token: String) -> Result<Self, ExecutionError> {
+        let client = crate::runtime_broker::RuntimeBrokerClient::new(base, token)
+            .map_err(|error| ExecutionError::Volume(error.to_string()))?;
+        Ok(Self {
+            client,
+            max_runtime: MAX_EXECUTION_RUNTIME,
+        })
+    }
+
+    pub async fn preflight(&self) -> Result<(), ExecutionError> {
+        self.client
+            .preflight()
+            .await
+            .map_err(|error| ExecutionError::Volume(error.to_string()))
+    }
+
+    pub fn client(&self) -> &crate::runtime_broker::RuntimeBrokerClient {
+        &self.client
+    }
+}
+
+impl VolumeBackend for BrokerVolumes {
+    async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
+        validate_volume_name(name)?;
+        validate_workspace_id(workspace_id)?;
+        let _ = self.remove_volume(name).await;
+        self.client
+            .create_volume(&crate::runtime_broker::NewVolume {
+                volume: name.to_owned(),
+                workspace_id: workspace_id.to_owned(),
+            })
+            .await
+            .map_err(ExecutionError::from)
+    }
+
+    async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
+        validate_volume_name(name)?;
+        self.client
+            .remove_volume(name)
+            .await
+            .map_err(ExecutionError::from)
+    }
+
+    async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
+        validate_volume_name(name)?;
+        self.client
+            .import_volume(name, bytes.to_vec())
+            .await
+            .map_err(ExecutionError::from)
+    }
+
+    async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
+        validate_volume_name(name)?;
+        self.client
+            .export_volume(name)
+            .await
+            .map_err(ExecutionError::from)
+    }
+
+    async fn run(
+        &self,
+        volume: &str,
+        container: &str,
+        image: &str,
+        argv: &[String],
+        timeout: Duration,
+    ) -> Result<BoundedOutput, ExecutionError> {
+        validate_volume_name(volume)?;
+        validate_container_name(container)?;
+        if argv.is_empty() || argv[0].is_empty() {
+            return Err(ExecutionError::Invalid(
+                "execution argv must contain an executable".into(),
+            ));
+        }
+        if timeout < Duration::from_secs(1) || timeout > self.max_runtime {
+            return Err(ExecutionError::Invalid(
+                "execution timeout is outside the configured bound".into(),
+            ));
+        }
+        let result = self
+            .client
+            .run_container(&crate::runtime_broker::RunContainer {
+                volume,
+                container,
+                image,
+                argv,
+                timeout_secs: timeout.as_secs(),
+            })
+            .await
+            .map_err(ExecutionError::from)?;
+        Ok(crate::runtime_broker::run_result(result))
+    }
+
+    async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
+        validate_container_name(name)?;
+        self.client
+            .remove_container(name)
+            .await
+            .map_err(ExecutionError::from)
+    }
+}
+
 impl VolumeBackend for RootlessPodmanVolumes {
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         validate_volume_name(name)?;

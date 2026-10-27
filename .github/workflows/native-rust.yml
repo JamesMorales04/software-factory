@@ -90,3 +90,15 @@ jobs:
         run: cargo +1.90.0 test --locked -p factory-native --test browser
       - name: Rust Office browser journey
         run: cargo +1.90.0 xtask e2e office
+
+  compose-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate Compose topology and static security policy
+        run: |
+          docker compose -f compose.yaml config --format json > /tmp/compose.json
+          python3 .github/scripts/check-compose-policy.py /tmp/compose.json
+          COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose_policy.py

@@ -53,7 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         [command, core_url, evaluation_id, output_path] if command == "execute" => {
-            let token = env::var("FACTORY_OPERATOR_TOKEN")
+            let token = factory_native::secrets::required("FACTORY_OPERATOR_TOKEN")
                 .map_err(|_| "FACTORY_OPERATOR_TOKEN required for CAP-014 execution")?;
             let corpus = frozen_corpus()?;
             let evidence = tokio::runtime::Builder::new_current_thread()

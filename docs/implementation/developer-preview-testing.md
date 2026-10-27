@@ -1,8 +1,12 @@
 # Native Rust developer-preview testing guide
 
-**Status:** tested local Linux developer-preview workflow. This is **not**
-production deployment, SEC-01 isolation certification or live paid model
-certification. TRUSTED_LOCAL processes have broad host access.
+**Status:** tested host-managed Linux developer workflow. For the
+**container-native product path**, use
+[Compose deployment](../operations/compose-deployment.md) and
+[`scripts/compose-e2e.sh`](../../scripts/compose-e2e.sh). This guide remains the
+host development/regression workflow and is **not** production deployment,
+SEC-01 isolation certification or live paid model certification. TRUSTED_LOCAL
+processes have broad host access.
 
 The authoritative status remains the [migration closure ledger](native-rust-closure.md).
 The one-command disposable UAT is

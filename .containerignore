@@ -1,0 +1,11 @@
+.git
+target
+**/target
+docs
+office/node_modules
+office/dist
+office/e2e-browser
+native/tests
+*.sqlite
+*.sqlite-*
+.env

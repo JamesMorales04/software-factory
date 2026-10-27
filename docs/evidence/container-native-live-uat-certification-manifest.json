@@ -1,0 +1,22 @@
+{
+  "level": "REAL_PROVIDER_E2E_VERIFIED",
+  "status": "verified",
+  "implementation_sha": "1225baeb123f7a652bb3a927f53562e28c573e26",
+  "candidate_sha": "52a583a4fd82e21db53e7c99688a409bdbb07eb8",
+  "candidate_id": "e8bd7464-f152-4840-bdaf-031d7cd92017",
+  "candidate_tree_sha": "b42a3ac7838c92c6577adbca71612d306a190e2d",
+  "project_id": "db6cf81b-d365-454f-bf4d-ea00435a4ebe",
+  "action_id": "cfab2376-1587-4c5c-94f3-4fc7976703a8",
+  "campaign_id": "0c524008-6a1d-4dae-b604-2098773b11c6",
+  "run_id": "40fc5c15-a844-45bd-9568-4a5d8753d857",
+  "attempt_id": "37d3b08c-505b-45d2-8986-1c20c6231dad",
+  "provider_session_record_id": "eaa7f90a-36cb-436d-b923-e2752304dafd",
+  "provider_session_id": "ses_e84442dd3ffeIug0t00CTODIqi",
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "mode": "TRUSTED_LOCAL_PROVIDER",
+  "quality_gate": "ACCEPTED",
+  "cleanup_receipt": "session_delete_verified_absent",
+  "evidence": "docs/evidence/container-native-live-uat-2026-10-27.json",
+  "notes": "Owner-authorized live OpenCode-in-container UAT through the rootless Compose stack. One provider session, measured 7,817 input / 234 output tokens, 1,914 micro configured-rate cost, UNKNOWN external invoice. Not independent certification, SEC-01, deployment or Windows. The architecture checker validates manifest shape only; the detailed evidence file and Core records are the binding source."
+}

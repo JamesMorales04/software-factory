@@ -176,6 +176,34 @@ impl Database {
         Ok(QualityIngestResult { receipt, gate })
     }
 
+    /// Candidates awaiting one independent quality role. The reviewer queue is
+    /// gated on an executed verifier PASS for the same immutable candidate.
+    pub async fn pending_quality_candidates(&self, role: &str) -> Result<Vec<String>, Error> {
+        if !matches!(role, "verifier" | "reviewer") {
+            return Err(Error::Invalid("pending quality role"));
+        }
+        let reviewer_gate = if role == "reviewer" {
+            "AND EXISTS (SELECT 1 FROM quality_receipts vr
+                         WHERE vr.candidate_id=c.id AND vr.role='verifier' AND vr.result='PASS')"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT c.id FROM candidates c
+             WHERE NOT EXISTS (SELECT 1 FROM quality_receipts r
+                               WHERE r.candidate_id=c.id AND r.role=?1)
+               AND NOT EXISTS (SELECT 1 FROM gate_decisions g WHERE g.candidate_id=c.id)
+               {reviewer_gate}
+             ORDER BY c.created_at ASC
+             LIMIT 8"
+        );
+        let rows: Vec<(String,)> = sqlx::query_as::query_as(&query)
+            .bind(role)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
         let candidate = self.candidate(id).await?;
         let row = sqlx::query::query(
@@ -857,18 +885,35 @@ async fn validate_model_review_receipt(
     Ok(())
 }
 
+async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+    let enabled: Option<(i64,)> =
+        sqlx::query_as::query_as("SELECT semantic_review_enabled FROM factory_settings WHERE id=1")
+            .fetch_optional(&mut *connection)
+            .await?;
+    if enabled.is_none_or(|(enabled,)| enabled == 0) {
+        return Ok(false);
+    }
+    let configured: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT provider FROM provider_settings
+         WHERE is_default=1 AND enabled=1 AND credential_ciphertext<>'' LIMIT 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(configured.is_some())
+}
+
 async fn decide_gate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
     candidate: &CandidateRecord,
 ) -> Result<Option<GateRecord>, Error> {
     let verifier = load_receipt_by_role(connection, candidate_id, QualityRole::Verifier).await?;
-    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
-    let (Some(verifier), Some(reviewer)) = (&verifier, &reviewer) else {
+    let Some(verifier) = verifier.as_ref() else {
         return Ok(None);
     };
+    let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
     let policy = load_gate_policy(connection, candidate_id).await?;
-    let decision = evaluate_quality_gate(
+    let mut decision = evaluate_quality_gate(
         &FrozenActionSpec {
             hash: candidate.action_spec_sha256.clone(),
         },
@@ -879,9 +924,28 @@ async fn decide_gate(
         },
         &candidate.implementer_id,
         Some(&to_verifier_receipt(verifier)),
-        Some(&to_reviewer_receipt(reviewer)),
+        reviewer.as_ref().map(to_reviewer_receipt).as_ref(),
         policy,
     );
+    if decision.outcome == GateOutcome::Accepted
+        && reviewer
+            .as_ref()
+            .is_some_and(|receipt| receipt.mechanism != ReviewMechanism::Model)
+        && semantic_review_requires_model(connection).await?
+    {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::NotTested,
+            reasons: vec!["semantic review is enabled; MODEL reviewer evidence is required".into()],
+        };
+    }
+    if reviewer.is_none()
+        && decision
+            .reasons
+            .iter()
+            .any(|reason| reason == "independent reviewer receipt is missing")
+    {
+        return Ok(None);
+    }
     let gate = GateRecord {
         candidate_id: candidate_id.to_owned(),
         outcome: decision.outcome,

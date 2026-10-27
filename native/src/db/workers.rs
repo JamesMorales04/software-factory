@@ -2,6 +2,22 @@ use super::*;
 
 use chrono::Utc;
 
+fn provider_authorization_expired(
+    authorized_at: &str,
+    deadline_secs: i64,
+    now_ms: i64,
+) -> Result<bool, Error> {
+    if deadline_secs <= 0 {
+        return Ok(false);
+    }
+    let authorized_at = chrono::DateTime::parse_from_rfc3339(authorized_at)
+        .map_err(|_| Error::Invalid("provider authorization deadline"))?;
+    let deadline_ms = authorized_at
+        .timestamp_millis()
+        .saturating_add(deadline_secs.saturating_mul(1000));
+    Ok(now_ms > deadline_ms)
+}
+
 impl Database {
     pub async fn register_worker_session(
         &self,
@@ -104,6 +120,53 @@ impl Database {
             worker_id: worker_id.into(),
             created: true,
         })
+    }
+
+    /// Return the provider route for a live Worker lease. This binds provider
+    /// credential disclosure to the exact attempt, generation and worker.
+    pub async fn assigned_provider_route(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<(String, String), Error> {
+        if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
+            return Err(Error::Invalid("provider assignment identity"));
+        }
+        let row: Option<(String, String, String, i64)> = sqlx::query_as::query_as(
+            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,''),ca.created_at,ca.deadline_secs
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+             JOIN worker_leases wl ON wl.attempt_id=a.id
+             WHERE a.id=?1 AND wl.worker_id=?2 AND wl.generation=?3
+               AND wl.expires_at_ms>?4 AND a.status='LEASED' AND c.status='AUTHORIZED'
+               AND ca.execution_mode='TRUSTED_LOCAL_PROVIDER'",
+        )
+        .bind(attempt_id)
+        .bind(worker_id)
+        .bind(generation)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((provider, model, authorized_at, deadline_secs)) = row else {
+            return Err(Error::Forbidden(
+                "no live authorized provider assignment for this Worker attempt".into(),
+            ));
+        };
+        if provider.is_empty() || model.is_empty() {
+            return Err(Error::Forbidden(
+                "provider assignment has no authorized route".into(),
+            ));
+        }
+        if provider_authorization_expired(&authorized_at, deadline_secs, now_ms)? {
+            return Err(Error::Forbidden(
+                "provider assignment authorization deadline expired".into(),
+            ));
+        }
+        Ok((provider, model))
     }
 
     pub async fn workers(&self) -> Result<Vec<WorkerSummary>, Error> {
@@ -662,5 +725,26 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_authorization_expired;
+
+    #[test]
+    fn provider_authorization_deadline_is_absolute() {
+        let authorized_at = "2026-10-27T00:00:00Z";
+        let authorized_ms = chrono::DateTime::parse_from_rfc3339(authorized_at)
+            .unwrap()
+            .timestamp_millis();
+        assert!(
+            !provider_authorization_expired(authorized_at, 30, authorized_ms + 29_999).unwrap()
+        );
+        assert!(provider_authorization_expired(authorized_at, 30, authorized_ms + 30_001).unwrap());
+        assert!(
+            !provider_authorization_expired(authorized_at, 0, authorized_ms + 999_999).unwrap()
+        );
+        assert!(provider_authorization_expired("not-a-date", 30, authorized_ms).is_err());
     }
 }

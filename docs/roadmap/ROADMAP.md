@@ -357,6 +357,53 @@ Decision: `proposed`
 - Approve portfolio priorities and resource allocation boundaries
 
 
+## F1-S8 — Container-native installation and Office configuration
+
+Decision: `approved`
+
+### Dependencies
+
+- F1-S7
+
+### Capabilities
+
+- CAP-045 — Container-native Compose installation (approved, in_progress)
+
+### Deliverables
+
+- One-command rootless Compose stack
+- dedicated nested execution engine and narrow broker
+- Office-first provider project and delegation configuration
+- automatic independent verifier and reviewer
+
+### Exclusions
+
+- SEC-01 isolation certification
+- production or Windows support claim
+- paid provider UAT without fresh authorization
+
+### Risks
+
+- namespaced runtime capabilities and engine compromise
+- provider image distribution and size
+- container startup ordering and volume ownership
+
+### Deterministic acceptance
+
+- A clean Linux host starts the stack with one Compose command and no host Rust Node OpenCode or Codex installation
+- first-run Office enrollment provider settings project import checks delegation campaign automatic verifier reviewer and gate are exercised without paid inference
+- restart preserves durable state and the dedicated engine cleans managed child containers
+
+### Real acceptance
+
+- An independently authorized paid provider journey completes through the container-native stack with exact candidate-bound evidence
+- parallel independent authorized WorkUnits and controlled self-development are demonstrated without host tooling
+
+### Product Owner decisions
+
+- Fresh paid UAT envelope and independent security review remain required
+
+
 ## LATER — Evaluated extensions
 
 Decision: `proposed`

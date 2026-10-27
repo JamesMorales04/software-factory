@@ -1,0 +1,373 @@
+# Software Factory developer-preview Compose deployment.
+#
+# One command starts Core/Office, Worker, Supervisor, independent verifier and
+# reviewer, the dedicated nested execution engine and its narrow runtime
+# broker. Only Office is published, on host loopback. Durable data lives in
+# named volumes and survives `podman compose down`.
+#
+# Supported Compose providers: podman-compose, or Docker Compose through an
+# enabled rootless Podman socket (podman.socket). See docs/operations/compose.md.
+
+name: software-factory
+
+x-restricted: &restricted
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  init: true
+  restart: unless-stopped
+
+x-control-env: &control-env
+  FACTORY_CORE_URL: http://core:8765
+  FACTORY_CONTAINER_MODE: "1"
+
+services:
+  init:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: core
+    image: software-factory-core:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint: ["/usr/local/bin/factory-compose-init"]
+    environment:
+      FACTORY_CONFIG_CORE_DIR: /config-core
+      FACTORY_CONFIG_WORKER_DIR: /config-worker
+      FACTORY_CONFIG_SUPERVISOR_DIR: /config-supervisor
+      FACTORY_CONFIG_VERIFIER_DIR: /config-verifier
+      FACTORY_CONFIG_REVIEWER_DIR: /config-reviewer
+      FACTORY_CONFIG_RUNTIME_DIR: /config-runtime
+      FACTORY_DATA_DIR: /data
+      FACTORY_PROJECTS_DIR: /projects
+      FACTORY_PROVIDER_SESSIONS_DIR: /provider-sessions
+      FACTORY_CONFIG_UID: "10001"
+    volumes:
+      - factory-config-core:/config-core
+      - factory-config-worker:/config-worker
+      - factory-config-supervisor:/config-supervisor
+      - factory-config-verifier:/config-verifier
+      - factory-config-reviewer:/config-reviewer
+      - factory-config-runtime:/config-runtime
+      - factory-data:/data
+      - factory-projects:/projects
+      - factory-provider-sessions:/provider-sessions
+    network_mode: none
+    restart: "no"
+
+  provider-bundle:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: provider
+    image: localhost/software-factory-provider:dev
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /bundle
+        rm -f /bundle/provider-rootfs.tar /bundle/provider-rootfs.tar.tmp /bundle/provider-rootfs.tar.ready
+        tar --one-file-system \
+          --exclude=./proc --exclude=./sys --exclude=./dev \
+          --exclude=./bundle --exclude=./run --exclude=./tmp \
+          -C / -cf /bundle/provider-rootfs.tar.tmp .
+        sync /bundle/provider-rootfs.tar.tmp || true
+        mv /bundle/provider-rootfs.tar.tmp /bundle/provider-rootfs.tar
+        touch /bundle/provider-rootfs.tar.ready
+    volumes:
+      - factory-image-bundle:/bundle
+    network_mode: none
+    restart: "no"
+
+  runtime:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: runtime
+    image: software-factory-runtime:dev
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - NET_BIND_SERVICE
+      - SETFCAP
+      - SETGID
+      - SETPCAP
+      - SETUID
+      - SYS_CHROOT
+      - SYS_ADMIN
+      - NET_ADMIN
+    group_add:
+      - "10001"
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1g
+      - /run:rw,noexec,nosuid,size=256m
+      - /var/tmp:rw,noexec,nosuid,size=1g
+    volumes:
+      - factory-engine:/var/lib/containers
+      - factory-provider-sessions:/provider-sessions
+      - factory-image-bundle:/bundles:ro
+      - factory-config-runtime:/config:ro
+    environment:
+      TMPDIR: /var/lib/containers/tmp
+      FACTORY_BIND: 0.0.0.0:8770
+      FACTORY_CONTAINER_MODE: "1"
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_RUNTIME_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_RUNTIME_PROVIDER_IMAGES: localhost/software-factory-provider:dev
+      # The installed stack is fail-closed for the live OpenCode route:
+      # the deterministic fixture adapter is selected only by the explicit
+      # E2E override, never by the base deployment default.
+      FACTORY_RUNTIME_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
+      FACTORY_RUNTIME_PROVIDER_SESSION_ROOT: /provider-sessions
+      FACTORY_RUNTIME_IMPORT_IMAGES: localhost/software-factory-provider:dev=/bundles/provider-rootfs.tar
+    networks:
+      - factory-control
+      - factory-egress
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8770/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 600s
+    stop_grace_period: 30s
+
+  core:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: core
+    image: software-factory-core:dev
+    user: "10001:10001"
+    command:
+      - /bin/sh
+      - -c
+      - until [ -f /config/.ready ]; do sleep 1; done; exec /usr/local/bin/factory-core
+    <<: *restricted
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    ports:
+      - "127.0.0.1:${FACTORY_PORT:-8893}:8765"
+    volumes:
+      - factory-data:/data
+      - factory-config-core:/config:ro
+      - factory-projects:/projects
+    environment:
+      FACTORY_BIND: 0.0.0.0:8765
+      FACTORY_CONTAINER_MODE: "1"
+      FACTORY_DATABASE: /data/factory.sqlite
+      FACTORY_OFFICE_DIR: /app/office
+      FACTORY_PROJECTS_ROOT: /projects
+      FACTORY_ENROLLMENT_CODE_FILE: /data/enrollment-code
+      FACTORY_MASTER_KEY_FILE: /config/master.key
+      FACTORY_OPERATOR_TOKEN_FILE: /config/operator.token
+      FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
+      FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
+      FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
+      FACTORY_LEAD_FIXTURE_ASSESSOR: ${FACTORY_LEAD_FIXTURE_ASSESSOR:-0}
+      FACTORY_ENABLE_AUTONOMOUS_START: "0"
+    networks:
+      - factory-control
+      - factory-egress
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8765/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    stop_grace_period: 20s
+
+  supervisor:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: supervisor
+    image: software-factory-supervisor:dev
+    user: "10001:10001"
+    command:
+      - /bin/sh
+      - -c
+      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-supervisor
+    <<: *restricted
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+      - factory-projects:/projects
+      - factory-supervisor-state:/state
+      - factory-config-supervisor:/config:ro
+    environment:
+      <<: *control-env
+      FACTORY_SUPERVISOR_BIND: 0.0.0.0:8766
+      FACTORY_SUPERVISOR_TOKEN_FILE: /config/supervisor.token
+      FACTORY_ATTEMPT_GRANT_KEY_FILE: /config/attempt-grant.key
+      FACTORY_SUPERVISOR_CAPABILITY_KEY_FILE: /config/supervisor-capability.key
+      FACTORY_SUPERVISOR_WORKSPACE_ROOT: /state/workspaces
+      FACTORY_SUPERVISOR_STATE_ROOT: /state
+      FACTORY_SUPERVISOR_PROJECT_ROOTS: /projects
+      FACTORY_SUPERVISOR_IMAGES: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+    networks:
+      - factory-control
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8766/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    stop_grace_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: worker
+    image: software-factory-worker:dev
+    user: "10001:10001"
+    command:
+      - /bin/sh
+      - -c
+      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://supervisor:8766/health >/dev/null 2>&1; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-worker
+    <<: *restricted
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    volumes:
+      - factory-provider-sessions:/provider-sessions
+      - factory-projects:/projects:ro
+      - factory-config-worker:/config:ro
+    environment:
+      <<: *control-env
+      FACTORY_WORKER_ID: compose-worker
+      FACTORY_WORKER_BOOTSTRAP_TOKEN_FILE: /config/worker-bootstrap.token
+      FACTORY_WORKER_REGISTRATION_KEY_FILE: /config/worker-registration.key
+      FACTORY_WORKER_RECOVER_ON_START: "1"
+      FACTORY_SUPERVISOR_URL: http://supervisor:8766
+      FACTORY_SUPERVISOR_TOKEN_FILE: /config/supervisor.token
+      FACTORY_WORKER_FIXTURE_IMAGE: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_PROVIDER_SANDBOX: container
+      # Fixture execution is an explicit deterministic-test choice, not a
+      # silent fallback for an unconfigured live provider route.
+      FACTORY_PROVIDER_KIND: ${FACTORY_PROVIDER_KIND:-opencode}
+      FACTORY_PROVIDER_SESSION_ROOT: /provider-sessions
+      FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_FIXTURE_FILE: src/fixture.txt
+      FACTORY_FIXTURE_CONTENT: "fixture candidate\n"
+    networks:
+      - factory-control
+      - factory-egress
+    stop_grace_period: 20s
+
+  verifier:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: verifier
+    image: software-factory-verifier:dev
+    user: "10001:10001"
+    command:
+      - /bin/sh
+      - -c
+      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-verifier
+    <<: *restricted
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    volumes:
+      - factory-projects:/projects
+      - factory-verifier-state:/state
+      - factory-config-verifier:/config:ro
+    environment:
+      <<: *control-env
+      FACTORY_VERIFIER_TOKEN_FILE: /config/verifier.token
+      FACTORY_RUNTIME_BROKER_URL: http://runtime:8770
+      FACTORY_RUNTIME_BROKER_TOKEN_FILE: /config/runtime-broker.token
+      FACTORY_VERIFIER_IMAGE: docker.io/library/rust:1.90.0-bookworm
+      FACTORY_VERIFIER_WORKSPACE: /state
+      FACTORY_VERIFIER_WATCH: "1"
+    networks:
+      - factory-control
+    stop_grace_period: 20s
+
+  reviewer:
+    build:
+      context: .
+      dockerfile: deploy/Containerfile
+      target: verifier
+    image: software-factory-verifier:dev
+    user: "10001:10001"
+    <<: *restricted
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    command:
+      - /bin/sh
+      - -c
+      - until [ -f /config/.ready ]; do sleep 1; done; until curl -fsS http://runtime:8770/health >/dev/null 2>&1; do sleep 1; done; exec /usr/local/bin/factory-reviewer
+    volumes:
+      - factory-projects:/projects:ro
+      - factory-reviewer-state:/state
+      - factory-config-reviewer:/config:ro
+    environment:
+      <<: *control-env
+      FACTORY_REVIEWER_TOKEN_FILE: /config/reviewer.token
+      FACTORY_REVIEW_MECHANISM: AUTO
+      FACTORY_REVIEWER_WATCH: "1"
+    networks:
+      - factory-control
+    stop_grace_period: 20s
+
+volumes:
+  factory-config-core:
+  factory-config-worker:
+  factory-config-supervisor:
+  factory-config-verifier:
+  factory-config-reviewer:
+  factory-config-runtime:
+  factory-data:
+  factory-projects:
+  factory-provider-sessions:
+  factory-image-bundle:
+  factory-engine:
+  factory-supervisor-state:
+  factory-verifier-state:
+  factory-reviewer-state:
+
+networks:
+  factory-control:
+    internal: true
+  factory-egress:

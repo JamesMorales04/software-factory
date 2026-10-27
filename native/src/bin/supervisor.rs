@@ -10,7 +10,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
     env,
-    net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -25,9 +24,9 @@ use axum::{
 };
 use factory_native::{
     execution::{
-        ApplyFilesRequest, BoundedOutput, ExecuteWorkspace, ExecutionError, MAX_EXECUTION_RUNTIME,
-        RootlessPodmanVolumes, ToolRunRequest, VolumeBackend, WorkspaceAllocation,
-        WorkspaceManager, WriteFilesRequest,
+        ApplyFilesRequest, BoundedOutput, BrokerVolumes, ExecuteWorkspace, ExecutionError,
+        MAX_EXECUTION_RUNTIME, RootlessPodmanVolumes, ToolRunRequest, VolumeBackend,
+        WorkspaceAllocation, WorkspaceManager, WriteFilesRequest,
     },
     workspace::WorkspaceError,
     workspace_archive::ArchiveError,
@@ -51,6 +50,7 @@ const OTHER_SECRET_VARIABLES: [&str; 5] = [
 
 enum SupervisorBackend {
     Podman(RootlessPodmanVolumes),
+    Broker(BrokerVolumes),
     #[cfg(debug_assertions)]
     Local(LocalVolumeBackend),
 }
@@ -59,6 +59,7 @@ impl VolumeBackend for SupervisorBackend {
     async fn create_volume(&self, name: &str, workspace_id: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.create_volume(name, workspace_id).await,
+            Self::Broker(backend) => backend.create_volume(name, workspace_id).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.create_volume(name, workspace_id).await,
         }
@@ -66,6 +67,7 @@ impl VolumeBackend for SupervisorBackend {
     async fn remove_volume(&self, name: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_volume(name).await,
+            Self::Broker(backend) => backend.remove_volume(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.remove_volume(name).await,
         }
@@ -73,6 +75,7 @@ impl VolumeBackend for SupervisorBackend {
     async fn import_volume(&self, name: &str, bytes: &[u8]) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.import_volume(name, bytes).await,
+            Self::Broker(backend) => backend.import_volume(name, bytes).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.import_volume(name, bytes).await,
         }
@@ -80,6 +83,7 @@ impl VolumeBackend for SupervisorBackend {
     async fn export_volume(&self, name: &str) -> Result<Vec<u8>, ExecutionError> {
         match self {
             Self::Podman(backend) => backend.export_volume(name).await,
+            Self::Broker(backend) => backend.export_volume(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.export_volume(name).await,
         }
@@ -94,6 +98,7 @@ impl VolumeBackend for SupervisorBackend {
     ) -> Result<BoundedOutput, ExecutionError> {
         match self {
             Self::Podman(backend) => backend.run(volume, container, image, argv, timeout).await,
+            Self::Broker(backend) => backend.run(volume, container, image, argv, timeout).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.run(volume, container, image, argv, timeout).await,
         }
@@ -101,6 +106,7 @@ impl VolumeBackend for SupervisorBackend {
     async fn remove_container(&self, name: &str) -> Result<(), ExecutionError> {
         match self {
             Self::Podman(backend) => backend.remove_container(name).await,
+            Self::Broker(backend) => backend.remove_container(name).await,
             #[cfg(debug_assertions)]
             Self::Local(backend) => backend.remove_container(name).await,
         }
@@ -224,15 +230,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("factory_native=info")
         .with_writer(factory_native::telemetry::RedactingMakeWriter)
         .init();
-    let token =
-        env::var("FACTORY_SUPERVISOR_TOKEN").map_err(|_| "FACTORY_SUPERVISOR_TOKEN required")?;
+    let token = factory_native::secrets::required("FACTORY_SUPERVISOR_TOKEN")?;
     validate_supervisor_token(&token)?;
     ensure_distinct_from_other_roles(&token)?;
     factory_native::telemetry::register_secret(&token);
-    let attempt_grant_key =
-        env::var("FACTORY_ATTEMPT_GRANT_KEY").map_err(|_| "FACTORY_ATTEMPT_GRANT_KEY required")?;
-    let capability_key = env::var("FACTORY_SUPERVISOR_CAPABILITY_KEY")
-        .map_err(|_| "FACTORY_SUPERVISOR_CAPABILITY_KEY required")?;
+    let attempt_grant_key = factory_native::secrets::required("FACTORY_ATTEMPT_GRANT_KEY")?;
+    let capability_key = factory_native::secrets::required("FACTORY_SUPERVISOR_CAPABILITY_KEY")?;
     if attempt_grant_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES
         || capability_key.len() < factory_native::attempt_grant::MIN_KEY_BYTES
     {
@@ -240,16 +243,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     factory_native::telemetry::register_secret(&attempt_grant_key);
     factory_native::telemetry::register_secret(&capability_key);
-    let core_url = reqwest::Url::parse(
+    let container_mode = env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1");
+    let core_url = factory_native::service_network::validate_http_origin(
         &env::var("FACTORY_CORE_URL").map_err(|_| "FACTORY_CORE_URL required")?,
+        "FACTORY_CORE_URL",
+        container_mode,
+        &["core"],
     )?;
-    if !matches!(core_url.host_str(), Some("127.0.0.1" | "localhost"))
-        || core_url.scheme() != "http"
-        || core_url.port().is_none()
-        || !matches!(core_url.path(), "" | "/")
-    {
-        return Err("FACTORY_CORE_URL must be a loopback HTTP origin with a port".into());
-    }
     let workspace_root = required_path("FACTORY_SUPERVISOR_WORKSPACE_ROOT")?;
     let state_root = required_path("FACTORY_SUPERVISOR_STATE_ROOT")?;
     let images = parse_images(
@@ -259,6 +259,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &env::var("FACTORY_SUPERVISOR_PROJECT_ROOTS")
             .map_err(|_| "FACTORY_SUPERVISOR_PROJECT_ROOTS required")?,
     )?;
+    factory_native::telemetry::register_secret(&token);
+    factory_native::telemetry::register_secret(&attempt_grant_key);
+    factory_native::telemetry::register_secret(&capability_key);
     let max_runtime = match env::var("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS") {
         Ok(value) => Duration::from_secs(value.parse::<u64>()?),
         Err(_) => MAX_EXECUTION_RUNTIME,
@@ -266,6 +269,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if max_runtime < Duration::from_secs(1) || max_runtime > MAX_EXECUTION_RUNTIME {
         return Err("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS is outside the allowed bound".into());
     }
+    let broker_url = env::var("FACTORY_RUNTIME_BROKER_URL").ok();
+    let broker_token = factory_native::secrets::optional("FACTORY_RUNTIME_BROKER_TOKEN")?;
     let backend = if env::var("FACTORY_SUPERVISOR_TEST_BACKEND").ok().as_deref() == Some("local") {
         if !cfg!(debug_assertions) {
             return Err("the local Supervisor backend is not available in release builds".into());
@@ -278,6 +283,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(debug_assertions))]
         unreachable!("release builds reject the local backend above")
+    } else if let (Some(url), Some(token)) = (broker_url.as_deref(), broker_token.as_deref()) {
+        let backend = BrokerVolumes::new(url, token.to_owned())?;
+        backend.preflight().await?;
+        SupervisorBackend::Broker(backend)
+    } else if broker_url.is_some() || broker_token.is_some() {
+        return Err(
+            "FACTORY_RUNTIME_BROKER_URL and FACTORY_RUNTIME_BROKER_TOKEN must be set together"
+                .into(),
+        );
+    } else if container_mode {
+        return Err(
+            "containerized Supervisor requires FACTORY_RUNTIME_BROKER_URL and FACTORY_RUNTIME_BROKER_TOKEN"
+                .into(),
+        );
     } else {
         let backend = RootlessPodmanVolumes::new(images.iter().cloned())?;
         backend.preflight().await?;
@@ -290,10 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!(removed, "reconciled stale workspace executions");
     }
     let bind = env::var("FACTORY_SUPERVISOR_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
-    let addr: SocketAddr = bind.parse()?;
-    if !addr.ip().is_loopback() {
-        return Err("sandbox supervisor may only bind to a loopback address".into());
-    }
+    let addr = factory_native::service_network::validate_bind(&bind, container_mode)?;
     let app = Arc::new(App {
         token,
         manager,

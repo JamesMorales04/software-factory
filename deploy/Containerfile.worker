@@ -1,0 +1,38 @@
+# Containerized trusted Worker. It holds the provider credential, mediates tool
+# calls with the Supervisor and requests provider containers from the runtime
+# broker. It contains no provider executable.
+
+ARG RUST_VERSION=1.90.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY factory-cli/Cargo.toml factory-cli/Cargo.toml
+COPY factory-cli/src factory-cli/src
+COPY native/Cargo.toml native/Cargo.toml
+COPY native/src native/src
+COPY native/fixtures native/fixtures
+COPY xtask/Cargo.toml xtask/Cargo.toml
+COPY xtask/src xtask/src
+COPY migrations migrations
+RUN cargo build --locked --release -p factory-native \
+      --bin factory-worker \
+      --bin factory-provider-bridge \
+      --bin factory-egress-bridge
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git bash util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 factory \
+    && useradd --uid 10001 --gid factory --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin factory \
+    && install -d -o factory -g factory -m 0700 /provider-sessions /tmp
+
+COPY --from=builder /build/target/release/factory-worker /usr/local/bin/factory-worker
+COPY --from=builder /build/target/release/factory-provider-bridge /usr/local/bin/factory-provider-bridge
+COPY --from=builder /build/target/release/factory-egress-bridge /usr/local/bin/factory-egress-bridge
+
+USER 10001:10001
+STOPSIGNAL SIGTERM
