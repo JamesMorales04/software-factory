@@ -80,9 +80,6 @@ describe("buildWorkGraphLayout", () => {
       task("right", 2, "SUCCEEDED", ["root"]),
       task("join", 3, "PENDING", ["left", "right"]),
     ]);
-    const byUnit = new Map(
-      layout.nodes.map((node) => [node.task.unit_id, node]),
-    );
     expect(requireNode(layout, "left").layer).toBe(1);
     expect(requireNode(layout, "right").layer).toBe(1);
     expect(requireNode(layout, "left").row).not.toBe(
