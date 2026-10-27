@@ -1,8 +1,8 @@
 {
   "schema": "factory.office-command-center.slice1.v1",
-  "recorded_at": "2026-10-27T07:20:00Z",
+  "recorded_at": "2026-10-27T08:20:00Z",
   "result": "PASS (author-run container-native development and governance slice; not independent acceptance)",
-  "implementation_sha": "a75d4c3f9e65cec4318678f4b0e4d6394e03a008",
+  "implementation_sha": "914369f216e965bee33124fa443baea8f0784d8b",
   "baseline_sha": "f251ea988571665e4eea9ebfd8446e714af7db8c",
   "development_image": {
     "name": "software-factory-dev:local",
@@ -17,8 +17,10 @@
     "container_office_gates": "PASS (`npm --prefix office ci && npm run typecheck && npm run lint && npm run build`)",
     "container_chromium": "PASS (`cargo xtask e2e office`; candidate a7c36f5239400598834920c7e2fc586accac64f3, gate ACCEPTED)",
     "host_workspace_tests": "PASS (`cargo test --workspace --locked`)",
-    "pr_impact_tests": "PASS (11 unittest cases)",
-    "office_parity_checker": "PASS (5 unittest cases plus repository matrix)"
+    "pr_impact_tests": "PASS (14 unittest cases)",
+    "office_parity_checker": "PASS (6 unittest cases plus repository matrix; routes, Core APIs, capability IDs and browser provenance validated)",
+    "container_ci": "PASS: architecture-consistency, compose-policy, container-dev and rust on exact head 914369f216e96 (run 40471291176); host office-browser lane retired",
+    "container_factory_browser": "PASS (`cargo test -p factory-native --test browser`, 6/6 with real Chromium in the dev image)"
   },
   "governance": {
     "skills": [
@@ -36,19 +38,33 @@
       "architecture": ".github/scripts/check-pr-architecture-impact.py",
       "office": ".github/scripts/check-office-parity.py",
       "parity_matrix": "docs/product/office-parity.json"
+    },
+    "ci": {
+      "run_id": 40471291176,
+      "checks": [
+        "architecture-consistency",
+        "compose-policy",
+        "container-dev",
+        "rust"
+      ],
+      "host_office_browser_lane": "retired; container-dev runs Factory browser capability test and the real Chromium Office journey",
+      "permissions": "contents: read; checkout persist-credentials: false"
     }
   },
   "browser_observation": {
-    "console_404_diagnostics": 4,
-    "status": "known existing issue; the Chromium journey reports it and the baseline UI change does not claim those requests as PASS"
+    "status": "PASS with expected pending-gate probes only",
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only",
+    "unexpected_404s": 0,
+    "unexpected_console_errors": 0,
+    "note": "The UI deliberately treats a missing gate as PENDING. The Chromium journey allows only that exact pending-gate probe and fails on any other 404 or console error."
   },
   "not_tested": [
     "Windows 11 / Podman Machine",
     "SELinux/AppArmor hosts",
     "digest-pinned byte-reproducible development image",
     "bubblewrap boundary tests inside the development container (host CI lane covers them)",
-    "the new container-dev CI job on GitHub-hosted runners (exact-head PR CI pending)",
-    "independent acceptance of this slice"
+    "independent acceptance of this slice",
+    "runner Podman/Compose package versions are not pinned"
   ],
-  "notes": "The development container is trusted and writable. The product Compose stack is unchanged by this slice. No paid inference was used."
+  "notes": "The development container is trusted and writable. The product Compose stack is unchanged by this slice. No paid inference was used. The container-dev CI lane built and exercised the image on rootless Podman; the exact-head run is cited above."
 }
