@@ -22,8 +22,8 @@ services:
         RUST_VERSION: "1.90.0"
         SQLX_CLI_VERSION: "0.8.6"
         PLAYWRIGHT_VERSION: "1.64.1"
-        USER_UID: "1000"
-        USER_GID: "1000"
+        USER_UID: ${DEV_UID:-1000}
+        USER_GID: ${DEV_GID:-1000}
     image: software-factory-dev:local
     userns_mode: keep-id
     init: true
