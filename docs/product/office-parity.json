@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-27T06:50:00Z",
+  "updated_at": "2026-10-27T15:08:13Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -8,9 +8,11 @@
       "user_facing": true,
       "job": "Register Projects, create and inspect Actions, follow Lead/Campaign work, inspect candidates and quality evidence, configure providers and runtime policy.",
       "routes": [
+        "/inbox",
         "/",
         "/projects",
         "/actions",
+        "/actions/:actionId",
         "/lead",
         "/delegations",
         "/campaigns",
@@ -59,7 +61,10 @@
         "POST /settings/providers/{provider}/test",
         "DELETE /settings/providers/{provider}/credential",
         "GET /settings/runtime",
-        "PUT /settings/runtime"
+        "PUT /settings/runtime",
+        "GET /office/overview",
+        "GET /office/decisions",
+        "POST /model/calls/{id}/resolve"
       ],
       "user_actions": [
         "register a Project",
@@ -71,7 +76,8 @@
         "queue a Run Attempt",
         "inspect candidates, receipts, gate, sessions, cleanup and usage",
         "configure, test and revoke provider credentials",
-        "enable or disable the semantic-review policy"
+        "enable or disable the semantic-review policy",
+        "inspect an Action specification, checks and related Core work"
       ],
       "states": [
         "loading",
@@ -88,7 +94,49 @@
         "scripts/compose-office-smoke.mjs",
         "scripts/compose-onboarding-smoke.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Agent Office, Decision Inbox, Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox and Action detail are implemented in the operational-workspace slice. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
+    },
+    "CAP-049": {
+      "name": "Operational Overview and Decision Inbox",
+      "user_facing": true,
+      "job": "See authoritative Core state, inspect blocked work and unresolved usage, and act only through explicit Core operations.",
+      "routes": [
+        "/",
+        "/inbox",
+        "/actions/:actionId"
+      ],
+      "core_api": [
+        "GET /health",
+        "GET /office/overview",
+        "GET /office/decisions",
+        "GET /actions",
+        "GET /campaigns",
+        "GET /provider/sessions",
+        "GET /model/calls",
+        "POST /model/calls/{id}/resolve"
+      ],
+      "user_actions": [
+        "inspect authorized campaigns, blocked work, decisions, measured spend, recent accepted candidates and recent events",
+        "open the Decision Inbox and follow each item to its authoritative module",
+        "resolve an AMBIGUOUS or UNKNOWN Core model call with an explicit operator reason",
+        "inspect an Action frozen specification, checks and related Campaigns, Lead requests and delegations"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "stale-snapshot",
+        "unresolved-usage",
+        "unknown-usage",
+        "not-tested"
+      ],
+      "acceptance": [
+        "office/src/views/Overview.test.tsx",
+        "office/e2e-browser/rust-journey.mjs",
+        "scripts/compose-office-smoke.mjs"
+      ],
+      "notes": "Overview and decisions are operator-authenticated Core projections; the client does not synthesize decisions. The Inbox exposes model-call resolution and navigation only. Campaign authorization and Gate repair remain on their existing module pages. No SSE or live-stream claim."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",
@@ -146,11 +194,6 @@
     }
   },
   "deferred": [
-    {
-      "module": "Decision Inbox",
-      "planned_slice": "Slice 3",
-      "reason": "Requires a typed Core decision projection and authenticated actions; no placeholder buttons."
-    },
     {
       "module": "Visual Agent Office",
       "planned_slice": "Slice 4",

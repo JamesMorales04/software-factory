@@ -3,6 +3,7 @@ import {
   Activity,
   FolderGit2,
   Gauge,
+  Inbox,
   ListChecks,
   Megaphone,
   Play,
@@ -30,9 +31,15 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       {
         to: "/",
-        label: "Dashboard",
+        label: "Overview",
         icon: Gauge,
-        keywords: "overview health activity events",
+        keywords: "overview health activity events status",
+      },
+      {
+        to: "/inbox",
+        label: "Decision Inbox",
+        icon: Inbox,
+        keywords: "decisions approvals blocked unresolved usage",
       },
     ],
   },
@@ -106,6 +113,7 @@ export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
 export function routeLabel(pathname: string): string {
   if (pathname.startsWith("/campaigns/")) return "Campaign detail";
+  if (pathname.startsWith("/actions/")) return "Action detail";
   return (
     NAV_ITEMS.find((item) => item.to === pathname)?.label ?? "Factory Office"
   );

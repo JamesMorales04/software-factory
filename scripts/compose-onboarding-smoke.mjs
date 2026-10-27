@@ -29,7 +29,7 @@ try {
   await page.getByText(/Factory first-run setup/i).waitFor({ timeout: 15000 });
   await page.locator('.gate input[type="password"]').fill(code);
   await page.getByRole("button", { name: "Enroll owner" }).click();
-  await page.getByRole("heading", { name: /Dashboard/i }).waitFor({ timeout: 15000 });
+  await page.getByRole("heading", { name: /Overview/i }).waitFor({ timeout: 15000 });
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: /Providers & Models/i }).waitFor();

@@ -211,7 +211,15 @@ try {
   await page.goto(viteUrl);
   await page.getByPlaceholder("FACTORY_OPERATOR_TOKEN").fill(operator);
   await page.getByRole("button", { name: "Unlock" }).click();
-  await page.getByRole("heading", { name: "Dashboard" }).waitFor();
+  await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
+  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Decision Inbox", exact: true, level: 1 })
+    .waitFor();
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Overview", exact: true, level: 1 })
+    .waitFor();
 
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
@@ -226,11 +234,20 @@ try {
     .fill("Rust Office fixture journey");
   await page.getByRole("button", { name: "Create Action" }).click();
   await page.getByText("Created Action", { exact: false }).waitFor();
+  await page.locator("tbody tr").first().getByRole("link").click();
+  await page.getByRole("heading", { name: /^Action /, level: 1 }).waitFor();
+  await page.getByText("Frozen checks", { exact: false }).waitFor();
+  await page.getByRole("link", { name: "Back to Actions" }).click();
+  await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
 
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.getByTestId("campaign-action").selectOption({ index: 0 });
   await page.getByRole("button", { name: "Create Campaign" }).click();
+  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page.getByText("Campaign awaiting authorization").waitFor();
+  await page.getByRole("link", { name: "Campaigns", exact: true }).click();
+  await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page
     .getByRole("button", { name: "Authorize R0 fixture" })
     .first()

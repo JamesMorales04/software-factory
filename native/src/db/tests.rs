@@ -2169,6 +2169,7 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
     let ModelCallDecision::Reserved(grant) = db.authorize_model_call(&first).await.unwrap() else {
         panic!("expected a reservation");
     };
+    let first_bound = grant.max_cost_micros;
     assert!(matches!(
         db.settle_model_call(&ModelCallUsage {
             reservation_id: grant.reservation_id.clone(),
@@ -2213,6 +2214,16 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
         db.authorize_model_call(&third).await,
         Err(Error::Forbidden(_))
     ));
+    let unresolved = db.unresolved_model_calls().await.unwrap();
+    assert_eq!(unresolved.len(), 2);
+    assert!(
+        unresolved
+            .iter()
+            .all(|record| matches!(record.state.as_str(), "AMBIGUOUS" | "UNKNOWN"))
+    );
+    let (unmeasured, bound) = db.unresolved_model_call_budget().await.unwrap();
+    assert_eq!(unmeasured, 2);
+    assert_eq!(bound, first_bound + grant.max_cost_micros);
     db.resolve_ambiguous_model_call(&grant.reservation_id, "operator", "reconciled")
         .await
         .unwrap();

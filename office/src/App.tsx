@@ -10,12 +10,14 @@ import {
   setToken,
   setupStatus,
 } from "./coreApi";
+import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
-import { Dashboard } from "./views/Dashboard";
+import { DecisionInbox } from "./views/DecisionInbox";
 import { Delegations } from "./views/Delegations";
 import { Lead } from "./views/Lead";
+import { Overview } from "./views/Overview";
 import { Projects } from "./views/Projects";
 import { Runs } from "./views/Runs";
 import { Runtime } from "./views/Runtime";
@@ -187,9 +189,11 @@ export function App() {
       }}
     >
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Overview />} />
+        <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/actions" element={<Actions />} />
+        <Route path="/actions/:actionId" element={<ActionDetail />} />
         <Route path="/lead" element={<Lead />} />
         <Route path="/delegations" element={<Delegations />} />
         <Route path="/campaigns" element={<Campaigns />} />

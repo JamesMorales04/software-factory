@@ -274,6 +274,7 @@ milestones:
   - CAP-046
   - CAP-047
   - CAP-048
+  - CAP-049
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2133,10 +2134,61 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - This capability covers Office-first parity governance; the design tokens, shared components, application shell and command-center modules are a later design-foundation slice and are not claimed implemented.
-  - The current Office still uses hash routes and polling; stable routes stream/replay and the visual Agent Office are later slices.
+  - This capability covers Office-first parity governance; design tokens, shared components, the application shell and the operational Overview/Decision Inbox workspace are implemented slices.
+  - The current Office still uses hash routes and polling; stable routes stream/replay, the visual Agent Office and the remaining module migrations are later slices.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.
+- id: CAP-049
+  name: Operational Overview and Decision Inbox
+  category: Product
+  purpose: Operators see authoritative Core state, decisions, blocked work, measured spend and the unmeasured reservation bound in one workspace
+  product_objective: Coherent engineering command center
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-047
+  - CAP-048
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/product/factory-office.md
+    source:
+    - native/src/bin/core.rs
+    - office/src/views/Overview.tsx
+    - office/src/views/DecisionInbox.tsx
+    - office/src/views/ActionDetail.tsx
+    - office/src/coreApi.ts
+    test:
+    - office/src/views/Overview.test.tsx
+    - office/e2e-browser/rust-journey.mjs
+  acceptance:
+    deterministic: Overview and decisions require operator authentication, return Core snapshot shapes, and their views typecheck, lint, pass component tests and build inside the container-native workflow.
+    real: An authenticated browser journey reaches Overview, Decision Inbox and Action detail; decision items use real Core targets and only the model-call resolution action invokes a Core operation.
+  evidence:
+    deterministic:
+    - docs/evidence/office-operational-workspace-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Overview and Inbox poll Core; they do not claim SSE, replay or live streaming.
+  - Campaign authorization and Quality Gate repair remain on their existing module pages.
+  - The Inbox exposes model-call resolution and navigation only; unresolved provider sessions are awareness-only because no operator termination API exists.
+  blockers:
+  - Real browser acceptance and Product Owner review remain pending.
+
 - id: CAP-048
   name: Office design system and application shell
   category: Product
@@ -2184,4 +2236,4 @@ capabilities:
   - Storybook, visual regression, the full axe audit and the WorkGraph/board/diff components remain later slices.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
-  - The full accessible WorkGraph, Decision Inbox and Agent Office journeys remain to be implemented.
+  - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
