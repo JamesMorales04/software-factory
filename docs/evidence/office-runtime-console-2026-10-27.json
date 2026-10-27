@@ -1,0 +1,50 @@
+{
+  "schema": "factory.office-runtime-console.v1",
+  "recorded_at": "2026-10-27T17:10:00Z",
+  "result": "PASS (author-run Runtime console; not independent acceptance)",
+  "implementation_sha": "0b54c424ce77d871c32ef9b6654a4ff8eb234830",
+  "baseline_sha": "f6199562ec3afa8e40f8eb3020a84b20f8de74a4",
+  "branch": "campaign/office-runtime-20261027",
+  "commands": {
+    "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, cargo build --bins, cargo xtask check-container, npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 21 component tests and production build",
+    "container_chromium_journey": "PASS; real Chromium opened Runtime, inspected Sessions, Model calls and Diagnostics, checked 834px and 390px document widths, and reached fixture candidate 710385cdec712a25efb8c7faf49ee64f32110570 with Quality Gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
+    "host_iteration": "PASS: cargo fmt, clippy, factory-core tests, Office typecheck, 21 component tests, production build and Chromium journey; iteration only"
+  },
+  "implementation": {
+    "workspace": "office/src/views/Runtime.tsx",
+    "tabs": [
+      "Overview",
+      "Sessions",
+      "Model calls",
+      "Diagnostics"
+    ],
+    "health": "Core health and version from GET /health; registered Workers from GET /workers; no heartbeat claim",
+    "sessions": "Filtered by state, usage, cleanup and worker/route; cleanup receipt is recorded evidence, not isolation proof",
+    "model_calls": "Recent model calls are sampled to 100; unresolved reservations are loaded from GET /model/calls/unresolved with the full-ledger query",
+    "usage": "Measured spend includes usage-known sessions and settled model calls. Unresolved reservation ceiling uses max_cost_micros. Unmeasured session cost is a bound, never observed spend.",
+    "release": "ModelCallResolution invokes POST /model/calls/{id}/resolve only after an explicit reason; there is no automatic release",
+    "diagnostics": "Telemetry export status, runtime policy and explicit not-exposed Supervisor, nested Podman runtime and broker state"
+  },
+  "browser_observation": {
+    "desktop": "1440px; Runtime overview showed Core healthy, one registered Worker, zero provider sessions, zero unresolved calls, measured spend 0µ and telemetry disabled; tabs and Service availability rendered without document overflow",
+    "tablet": "834px; document scrollWidth equals clientWidth on Runtime Diagnostics",
+    "mobile": "390px; document scrollWidth equals clientWidth on Runtime Diagnostics",
+    "diagnostics": "Telemetry export, semantic-review policy and Service boundaries rendered; Supervisor, nested Podman and broker were explicitly marked not exposed",
+    "console_errors": 0,
+    "unexpected_404s": 0,
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only"
+  },
+  "not_tested": [
+    "resolving a real AMBIGUOUS or UNKNOWN reservation through the browser; the control is component-tested with a mocked Core response",
+    "a populated Runtime with live provider sessions, failures or cleanup records",
+    "real model-call reserve/settle/release activity and paid inference",
+    "Supervisor, nested Podman runtime and broker projections; the current Core does not expose them",
+    "automated axe/WCAG audit and screen-reader review",
+    "dark-theme and compact-density screenshots of every Runtime tab",
+    "independent acceptance, security review, Windows, SELinux and deployment"
+  ],
+  "notes": "Runtime is a projection of existing Core records. It does not infer a Worker online state, session cleanup success, Supervisor health or nested-runtime health from a missing record. Recent model-call history is explicitly sampled to 100; unresolved calls are not sampled. Reservation release writes off the reservation rather than creating measured usage.",
+  "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
+  "chromium_candidate_commit": "710385cdec712a25efb8c7faf49ee64f32110570"
+}
