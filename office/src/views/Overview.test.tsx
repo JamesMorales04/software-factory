@@ -183,7 +183,7 @@ describe("operational workspace", () => {
   it("resolves an ambiguous model call through the Core operation", async () => {
     renderView(<DecisionInbox />);
     await screen.findByRole("heading", { name: "Decision Inbox" });
-    const reason = screen.getByLabelText("Resolution reason");
+    const reason = screen.getByLabelText("Release reason");
     const resolve = screen.getByRole("button", { name: "Release reservation" });
     expect(resolve.hasAttribute("disabled")).toBe(true);
     await userEvent.type(reason, "Provider aborted before usage was reported.");

@@ -585,6 +585,10 @@ fn api_router(app: Arc<App>) -> Router {
             post(worker_provider_turn_bind),
         )
         .route(
+            "/provider/turn_reservations/budget",
+            get(provider_turn_reservation_budget),
+        )
+        .route(
             "/provider/turn_reservations/{id}/resolve",
             post(resolve_provider_turn),
         )
@@ -604,6 +608,7 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/quality/receipts", post(quality_receipt))
         .route("/model/calls", get(model_calls).post(model_call))
+        .route("/model/calls/unresolved", get(unresolved_model_calls))
         .route("/model/calls/{id}/resolve", post(resolve_model_call))
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
@@ -2658,6 +2663,23 @@ async fn worker_provider_turn_bind(
     }
 }
 
+async fn provider_turn_reservation_budget(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.provider_turn_reservation_budget().await {
+        Ok((reserved_turns, ceiling_micros)) => Json(json!({
+            "reserved_turns": reserved_turns,
+            "ceiling_micros": ceiling_micros,
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 async fn provider_turn_reservations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -2877,6 +2899,13 @@ async fn model_calls(
     }
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     result_list(app.db.model_calls(limit).await)
+}
+
+async fn unresolved_model_calls(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.unresolved_model_calls().await)
 }
 
 async fn resolve_model_call(
@@ -3767,6 +3796,8 @@ mod tests {
             "/office/overview",
             "/office/decisions",
             "/campaigns/missing/candidates/missing/diff",
+            "/model/calls/unresolved",
+            "/provider/turn_reservations/budget",
         ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
@@ -3816,6 +3847,28 @@ mod tests {
             router.clone().oneshot(request).await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
+        let request = axum::http::Request::builder()
+            .uri("/model/calls/unresolved")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let request = axum::http::Request::builder()
+            .uri("/provider/turn_reservations/budget")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let turn_budget: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(turn_budget["reserved_turns"], 0);
+        assert_eq!(turn_budget["ceiling_micros"], 0);
         let _ = std::fs::remove_file(path);
     }
 

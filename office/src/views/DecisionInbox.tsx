@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { ModelCallResolution } from "../components/office/ModelCallResolution";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Input } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -30,74 +30,6 @@ function toneForDecision(severity: DecisionItem["severity"]) {
   return "info" as const;
 }
 
-function ResolveModelCall({
-  item,
-  onResolved,
-}: {
-  item: DecisionItem;
-  onResolved: () => Promise<void>;
-}) {
-  const [actor, setActor] = useState("office-operator");
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const callId = item.action?.model_call_id ?? item.subject_id;
-
-  async function submit() {
-    if (!reason.trim()) {
-      setError("A reason is required.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await coreApi.resolveModelCall(
-        callId,
-        actor.trim() || "office-operator",
-        reason.trim(),
-      );
-      setReason("");
-      await onResolved();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : "Failed to resolve the model call.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="decision-resolve">
-      <Input
-        label="Operator"
-        value={actor}
-        onChange={(event) => setActor(event.target.value)}
-        autoComplete="username"
-        className="decision-resolve-field"
-      />
-      <Input
-        label="Resolution reason"
-        value={reason}
-        onChange={(event) => setReason(event.target.value)}
-        placeholder="Why are you releasing this reservation?"
-        className="decision-resolve-reason"
-      />
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={() => void submit()}
-        disabled={busy || !reason.trim()}
-      >
-        {busy ? "Releasing…" : "Release reservation"}
-      </Button>
-      {error && <p className="error">{error}</p>}
-    </div>
-  );
-}
-
 function DecisionCard({
   item,
   onResolved,
@@ -123,7 +55,10 @@ function DecisionCard({
         <span className="muted">Subject {item.subject_id}</span>
       </div>
       {item.action?.kind === "resolve_model_call" && (
-        <ResolveModelCall item={item} onResolved={onResolved} />
+        <ModelCallResolution
+          modelCallId={item.action.model_call_id ?? item.subject_id}
+          onResolved={onResolved}
+        />
       )}
     </Panel>
   );

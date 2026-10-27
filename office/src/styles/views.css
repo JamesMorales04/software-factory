@@ -271,3 +271,19 @@
 .changed-paths code {
   overflow-wrap: anywhere;
 }
+
+.overview-metric-value--attention {
+  color: var(--attention);
+}
+
+.overview-metric-value--danger {
+  color: var(--danger);
+}
+
+.overview-metric-value--success {
+  color: var(--success);
+}
+
+.overview-metric-value--info {
+  color: var(--info);
+}

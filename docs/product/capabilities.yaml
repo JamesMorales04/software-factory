@@ -276,6 +276,7 @@ milestones:
   - CAP-048
   - CAP-049
   - CAP-050
+  - CAP-051
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2183,7 +2184,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Storybook, visual regression, the full axe audit, the interactive WorkGraph and a full code-diff viewer remain later slices.
+  - Storybook, visual regression, the full axe audit, the interactive WorkGraph, a full code-diff viewer and a visual Agent Office remain later slices.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
   - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
@@ -2286,5 +2287,56 @@ capabilities:
   - The WorkGraph is a table projection; the interactive graph and Agent Office remain later slices.
   - Candidate diff projection exposes changed paths and diff stat only; file bodies are not returned to the browser.
   - Campaign authorization and Gate repair remain on their existing module controls.
+  blockers:
+  - Real browser acceptance and Product Owner review remain pending.
+
+- id: CAP-051
+  name: Runtime operational console
+  category: Product
+  purpose: Operators can inspect runtime health, provider sessions, model-call usage, reservations, cleanup and telemetry without terminal inspection
+  product_objective: Coherent engineering command center
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-049
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/product/factory-office.md
+    source:
+    - native/src/bin/core.rs
+    - native/src/db/model_calls.rs
+    - office/src/views/Runtime.tsx
+    - office/src/components/office/ModelCallResolution.tsx
+    - office/src/components/office/ParticipantSessionList.tsx
+    test:
+    - office/src/views/Runtime.test.tsx
+    - office/e2e-browser/rust-journey.mjs
+  acceptance:
+    deterministic: Runtime typechecks, lints, passes component tests and builds; operator authentication protects unresolved model calls and reservation release.
+    real: An authenticated Chromium journey opens Runtime, inspects session and model-call views, and verifies diagnostics without claiming unsupported Supervisor or nested-runtime state.
+  evidence:
+    deterministic:
+    - docs/evidence/office-runtime-console-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Supervisor, nested Podman and broker state are not exposed by the current Core API.
+  - Recent model-call history is sampled to 200 records; unresolved reservations and open provider-turn ceilings use the full ledger.
+  - Sampled measured spend is not a total; unmeasured session count is not a held ceiling.
+  - Reservation release writes off the reservation; it does not create measured usage.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.

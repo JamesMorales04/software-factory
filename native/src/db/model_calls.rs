@@ -128,6 +128,7 @@ pub struct ModelCallRecord {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub cost_micros: u64,
+    pub max_cost_micros: u64,
     pub usage_known: bool,
     pub state: String,
     pub error: String,
@@ -152,6 +153,7 @@ type IdentityRow = (
     String,
     String,
     String,
+    i64,
     i64,
     i64,
     i64,
@@ -579,7 +581,8 @@ impl Database {
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
                     model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
-                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+                    cost_micros,max_cost_micros,usage_known,state,COALESCE(error,'') AS error,
+                    created_at,updated_at
              FROM model_call_reservations WHERE scope_id=?1 ORDER BY created_at,reservation_id",
         )
         .bind(scope_id)
@@ -595,7 +598,8 @@ impl Database {
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
                     model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
-                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+                    cost_micros,max_cost_micros,usage_known,state,COALESCE(error,'') AS error,
+                    created_at,updated_at
              FROM model_call_reservations
              WHERE role='LEAD' AND objective_id=?1
              ORDER BY created_at,reservation_id",
@@ -609,11 +613,25 @@ impl Database {
     /// Every unresolved reservation regardless of age. Unlike the bounded
     /// recent-call listing, this projection must not hide an old ambiguous
     /// reservation that still holds budget.
+    /// Deterministically expire reservations whose deadline passed. The
+    /// transition and audit event are committed before callers read the full
+    /// unresolved ledger, so an expired-but-unswept reservation cannot hide.
+    pub async fn expire_model_calls(&self, now_ms: i64) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        expire_reserved_model_calls(&mut transaction, now_ms).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn unresolved_model_calls(&self) -> Result<Vec<ModelCallRecord>, Error> {
+        self.expire_model_calls(Utc::now().timestamp_millis())
+            .await?;
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
                     model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
-                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+                    cost_micros,max_cost_micros,usage_known,state,COALESCE(error,'') AS error,
+                    created_at,updated_at
              FROM model_call_reservations
              WHERE state IN ('AMBIGUOUS','UNKNOWN')
              ORDER BY updated_at DESC,reservation_id",
@@ -628,6 +646,8 @@ impl Database {
     /// `cost_micros` column, because an expired reservation may never have
     /// settled any observed cost.
     pub async fn unresolved_model_call_budget(&self) -> Result<(u64, u64), Error> {
+        self.expire_model_calls(Utc::now().timestamp_millis())
+            .await?;
         let row: (i64, i64) = sqlx::query_as::query_as(
             "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
              FROM model_call_reservations
@@ -646,7 +666,8 @@ impl Database {
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
                     model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
-                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+                    cost_micros,max_cost_micros,usage_known,state,COALESCE(error,'') AS error,
+                    created_at,updated_at
              FROM model_call_reservations ORDER BY created_at DESC,reservation_id LIMIT ?1",
         )
         .bind(limit)
@@ -848,7 +869,7 @@ async fn load_model_call_identity(
 ) -> Result<Option<ModelCallRecord>, Error> {
     let row: Option<IdentityRow> = sqlx::query_as::query_as(
         "SELECT reservation_id,role,state,input_tokens,output_tokens,total_tokens,cost_micros,
-                    usage_known,provider,model,created_at,updated_at
+                    max_cost_micros,usage_known,provider,model,created_at,updated_at
              FROM model_call_reservations
              WHERE role=?1 AND objective_id=?2 AND request_sha256=?3
              ORDER BY created_at DESC LIMIT 1",
@@ -867,6 +888,7 @@ async fn load_model_call_identity(
             output_tokens,
             total_tokens,
             cost_micros,
+            max_cost_micros,
             usage_known,
             provider,
             model,
@@ -893,6 +915,8 @@ async fn load_model_call_identity(
                     .map_err(|_| Error::Invalid("stored model call total"))?,
                 cost_micros: u64::try_from(cost_micros)
                     .map_err(|_| Error::Invalid("stored model call cost"))?,
+                max_cost_micros: u64::try_from(max_cost_micros)
+                    .map_err(|_| Error::Invalid("stored model call reservation"))?,
                 usage_known: usage_known != 0,
                 state,
                 error: String::new(),
@@ -969,6 +993,7 @@ fn model_call_records(rows: Vec<sqlx_sqlite::SqliteRow>) -> Result<Vec<ModelCall
         let output_tokens: i64 = row.try_get("output_tokens")?;
         let total_tokens: i64 = row.try_get("total_tokens")?;
         let cost_micros: i64 = row.try_get("cost_micros")?;
+        let max_cost_micros: i64 = row.try_get("max_cost_micros")?;
         let usage_known: i64 = row.try_get("usage_known")?;
         records.push(ModelCallRecord {
             reservation_id: row.try_get("reservation_id")?,
@@ -989,6 +1014,8 @@ fn model_call_records(rows: Vec<sqlx_sqlite::SqliteRow>) -> Result<Vec<ModelCall
                 .map_err(|_| Error::Invalid("stored model call total"))?,
             cost_micros: u64::try_from(cost_micros)
                 .map_err(|_| Error::Invalid("stored model call cost"))?,
+            max_cost_micros: u64::try_from(max_cost_micros)
+                .map_err(|_| Error::Invalid("stored model call reservation"))?,
             usage_known: usage_known != 0,
             state: row.try_get("state")?,
             error: row.try_get("error")?,

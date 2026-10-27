@@ -573,3 +573,8 @@
   background: var(--info-soft);
   color: var(--info);
 }
+
+.decision-resolve--compact {
+  padding-top: 0;
+  border-top: 0;
+}

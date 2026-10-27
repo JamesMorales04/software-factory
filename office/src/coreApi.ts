@@ -72,6 +72,11 @@ export interface Attempt {
   created_at: string;
 }
 
+export interface ProviderTurnBudget {
+  reserved_turns: number;
+  ceiling_micros: number;
+}
+
 export interface WorkerSummary {
   worker_id: string;
   updated_at: string;
@@ -260,6 +265,7 @@ export interface ModelCallRecord {
   output_tokens: number;
   total_tokens: number;
   cost_micros: number;
+  max_cost_micros: number;
   usage_known: boolean;
   state: string;
   error: string;
@@ -938,6 +944,10 @@ export const coreApi = {
   listProviderSessions: () => request<ProviderSession[]>("/provider/sessions"),
   listModelCalls: (limit = 100) =>
     request<ModelCallRecord[]>(`/model/calls?limit=${limit}`),
+  listUnresolvedModelCalls: () =>
+    request<ModelCallRecord[]>("/model/calls/unresolved"),
+  getProviderTurnBudget: () =>
+    request<ProviderTurnBudget>("/provider/turn_reservations/budget"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
   getDecisions: () => request<DecisionList>("/office/decisions"),
