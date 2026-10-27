@@ -26,6 +26,10 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Test PR impact gate
         run: python3 .github/scripts/test_check_pr_architecture_impact.py
+      - name: Validate Office parity matrix
+        run: python3 .github/scripts/check-office-parity.py --root .
+      - name: Test Office parity checker
+        run: python3 .github/scripts/test_check_office_parity.py
       - name: Run checker tests
         run: cargo test --manifest-path native/Cargo.toml --locked --bin factory-architecture-check
       - name: Validate capability registry and generated roadmap

@@ -30,9 +30,95 @@ class ImpactClassificationTests(unittest.TestCase):
                 self.assertTrue(impact_check.is_protected(path))
 
     def test_ordinary_application_code_does_not_need_impact_entry(self):
-        ok, category, _ = impact_check.evaluate(["office/src/components/Button.tsx"], "")
+        ok, category, _ = impact_check.evaluate(["factory-cli/src/text.rs"], "")
         self.assertTrue(ok)
         self.assertEqual(category, "ordinary-change")
+
+    def office_body(self, impact: str = "changed") -> str:
+        if impact == "none":
+            return f"""{impact_check.OFFICE_START}
+impact: none
+rationale: Internal Office refactor with no user-visible or operational change.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.OFFICE_END}"""
+        return f"""{impact_check.OFFICE_START}
+impact: changed
+capabilities: CAP-011
+routes: /actions
+core_api: GET /actions
+user_actions: inspect an Action
+states: loading,empty,error,unauthorized
+acceptance: office/e2e-browser/rust-journey.mjs
+rationale: This changes a real operator journey and its acceptance evidence.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.OFFICE_END}"""
+
+    def container_body(self, impact: str = "changed") -> str:
+        if impact == "none":
+            return f"""{impact_check.CONTAINER_START}
+impact: none
+rationale: Internal documentation-only change with no runtime or Compose behavior.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.CONTAINER_END}"""
+        return f"""{impact_check.CONTAINER_START}
+impact: changed
+services: core,worker
+commands: podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev cargo xtask check
+real_podman: bash scripts/compose-e2e.sh
+negative_tests: compose-policy,provider egress
+not_tested: Windows,SELinux
+rationale: This changes container behavior and requires real Podman evidence.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.CONTAINER_END}"""
+
+    def test_office_change_requires_office_declaration(self):
+        ok, classification, _ = impact_check.evaluate(["office/src/App.tsx"], "", self.base, self.head)
+        self.assertFalse(ok)
+        self.assertEqual(classification, "office-impact-required")
+        ok, classification, _ = impact_check.evaluate(
+            ["office/src/App.tsx"], self.office_body(), self.base, self.head
+        )
+        self.assertTrue(ok)
+        self.assertEqual(classification, "office")
+        self.assertTrue(
+            impact_check.evaluate(
+                ["office/src/App.tsx"], self.office_body("none"), self.base, self.head
+            )[0]
+        )
+
+    def test_container_change_requires_container_declaration(self):
+        ok, classification, _ = impact_check.evaluate(["compose.yaml"], "", self.base, self.head)
+        self.assertFalse(ok)
+        self.assertEqual(classification, "container-native-impact-required")
+        ok, classification, _ = impact_check.evaluate(
+            ["compose.yaml"], self.container_body(), self.base, self.head
+        )
+        self.assertTrue(ok)
+        self.assertEqual(classification, "container-native")
+        self.assertTrue(
+            impact_check.evaluate(
+                ["compose.yaml"], self.container_body("none"), self.base, self.head
+            )[0]
+        )
+
+    def test_protected_container_change_needs_both_declarations(self):
+        architecture = f"""{impact_check.START}
+category: runtime
+rationale: This changes the Worker runtime and its container execution boundary.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.END}"""
+        path = ["native/src/bin/worker.rs"]
+        self.assertFalse(impact_check.evaluate(path, architecture, self.base, self.head)[0])
+        ok, classification, _ = impact_check.evaluate(
+            path, architecture + "\n" + self.container_body(), self.base, self.head
+        )
+        self.assertTrue(ok)
+        self.assertEqual(classification, "runtime+container-native")
 
     def test_protected_diff_requires_meaningful_declaration(self):
         self.assertFalse(impact_check.evaluate(["native/src/db/authorization.rs"], "")[0])

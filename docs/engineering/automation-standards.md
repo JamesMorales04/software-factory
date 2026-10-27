@@ -6,6 +6,13 @@ This doctrine defines where build, test, container and governance automation bel
 
 ## 1. Ownership
 
+Container-native engineering is the permanent default: automation that builds,
+tests, runs or diagnoses the product must work through the Compose topology and
+the containerized development workflow. Host-native commands are development
+convenience only and must not become a product requirement. See
+[container-native engineering](container-native-engineering.md) and
+[ADR-0025](../architecture/decisions/ADR-0025-container-native-and-office-parity.md).
+
 | Responsibility | Canonical owner |
 |---|---|
 | Rust build, check, format, dependency resolution and native tests | Cargo |

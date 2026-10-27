@@ -18,6 +18,10 @@ Open `http://127.0.0.1:8893`, read the one-time enrollment code with `podman com
 
 Software Factory is a local-first, multi-project engineering platform under development. The current Core runs governed Actions and Campaigns through a managed Worker/Supervisor, rootless Podman, independent sandboxed verification and a deterministic Quality Gate. `factory start` accepts strict private Core-model and Worker-provider env files. OpenCode coding is verified on a bounded TRUSTED_LOCAL route; Codex coding is implemented and deterministic-tested, but a supported native ChatGPT-backend live route is not available through the current credential boundary. Maintenance, GitHub delivery and stable-controller self-development remain future roadmap capabilities.
 
+## Development
+
+The permanent development workflow is container-native: the host needs rootless Podman and a Compose provider, not Rust, Node or Playwright. Use the trusted `dev` service from `compose.dev.yaml` and the commands in [container-native engineering](docs/engineering/container-native-engineering.md). Office-first and container-native changes are governed by [ADR-0025](docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md).
+
 ## Start here
 
 - [AGENTS.md](AGENTS.md) — concise operational rules for coding agents.

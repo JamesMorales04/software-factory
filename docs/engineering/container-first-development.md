@@ -1,6 +1,12 @@
 # Container-first development
 
-**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md). The `.devcontainer` image was built locally and `cargo xtask check`, `cargo xtask migrate` and `cargo xtask e2e recovery` passed inside it on 2026-10-23, using `podman build/run --network=host` because the author host's default rootless networking lacked `/dev/net/tun` (pasta failure). Default container networking, the Office build inside the container, Windows 11/Podman Machine, runtime images, Quadlet and the unified `factory` CLI are **not tested or not implemented**. This guide does not certify a development environment, application runtime or execution sandbox.
+> **Current workflow:** [container-native engineering](container-native-engineering.md)
+> and `compose.dev.yaml` define the permanent containerized development path.
+> This document remains the development-container design, trust and security
+> rationale. Some older "not tested" notes below are historical; the current
+> Slice 1 evidence and the container-native policy are authoritative.
+
+**Status:** Documented direction from [ADR-0019](../architecture/decisions/ADR-0019-container-first-cross-platform.md), now governed by [ADR-0025](../architecture/decisions/ADR-0025-container-native-and-office-parity.md). The development image contains the pinned Rust, Node, SQLx and Playwright toolchains; the trusted Compose `dev` service is the supported contributor workflow. This guide does not certify an application runtime, production deployment or execution sandbox.
 
 ## Purpose and non-goals
 
@@ -92,7 +98,20 @@ If a trusted developer needs a local nested-container experiment, any socket mou
 
 ## Commands
 
-Every command named in this guide is listed in the table below with an explicit status. Inline `factory` references use the implemented lifecycle subset unless marked otherwise. The repository's Rust commands exist and are documented in [native/README.md](../../native/README.md); they were not run for this documentation change.
+The canonical commands now run through the trusted `dev` service:
+
+```sh
+podman compose -f compose.yaml -f compose.dev.yaml build dev
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev cargo xtask check-container
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+  sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
+```
+
+The table below records historical status and is not the current command
+authority. Inline `factory` references use the implemented lifecycle subset
+unless marked otherwise.
 
 | Command | Status | Notes |
 |---|---|---|

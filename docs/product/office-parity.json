@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-27T06:50:00Z",
+  "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
+  "capabilities": {
+    "CAP-011": {
+      "name": "Factory Office",
+      "user_facing": true,
+      "job": "Register Projects, create and inspect Actions, follow Lead/Campaign work, inspect candidates and quality evidence, configure providers and runtime policy.",
+      "routes": [
+        "/",
+        "/projects",
+        "/actions",
+        "/lead",
+        "/delegations",
+        "/campaigns",
+        "/campaigns/:campaignId",
+        "/runs",
+        "/workers",
+        "/runtime",
+        "/settings"
+      ],
+      "core_api": [
+        "GET /health",
+        "GET /projects",
+        "POST /projects",
+        "GET /projects/{id}/config",
+        "PUT /projects/{id}/config",
+        "GET /actions",
+        "POST /actions",
+        "GET /lead/requests",
+        "POST /lead/requests",
+        "GET /lead/requests/{id}",
+        "POST /lead/requests/{id}/assess",
+        "POST /lead/requests/{id}/freeze",
+        "POST /lead/requests/{id}/start",
+        "GET /delegations",
+        "POST /delegations",
+        "GET /delegations/{id}",
+        "POST /delegations/{id}",
+        "GET /campaigns",
+        "POST /campaigns",
+        "GET /campaigns/{id}",
+        "POST /campaigns/{id}/authorize",
+        "POST /campaigns/{id}/cancel",
+        "POST /campaigns/{id}/runs",
+        "POST /runs/{id}/attempts",
+        "GET /runs",
+        "GET /attempts",
+        "GET /events",
+        "GET /workers",
+        "GET /provider/sessions",
+        "GET /model/calls",
+        "GET /observability",
+        "GET /quality/candidates/{id}/receipts",
+        "GET /quality/candidates/{id}/gate",
+        "GET /settings/providers",
+        "PUT /settings/providers/{provider}",
+        "POST /settings/providers/{provider}/test",
+        "DELETE /settings/providers/{provider}/credential",
+        "GET /settings/runtime",
+        "PUT /settings/runtime"
+      ],
+      "user_actions": [
+        "register a Project",
+        "configure Project paths, capabilities, quality profile and active state",
+        "create a frozen Action with typed checks",
+        "create and revoke a scoped delegation",
+        "submit, assess, freeze and explicitly start a Lead request",
+        "create, authorize, queue and cancel a Campaign",
+        "queue a Run Attempt",
+        "inspect candidates, receipts, gate, sessions, cleanup and usage",
+        "configure, test and revoke provider credentials",
+        "enable or disable the semantic-review policy"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "pending-gate",
+        "stale-snapshot",
+        "destructive-confirmation",
+        "provider-unconfigured"
+      ],
+      "acceptance": [
+        "office/e2e-browser/rust-journey.mjs",
+        "scripts/compose-office-smoke.mjs",
+        "scripts/compose-onboarding-smoke.mjs"
+      ],
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Agent Office, Decision Inbox, Issues and Docs are tracked as later Office slices and are not claimed here."
+    },
+    "CAP-045": {
+      "name": "Container-native Compose installation",
+      "user_facing": true,
+      "job": "Install and configure the container-native Factory through Office, including first-run enrollment, provider settings, project import and a deterministic authorized journey.",
+      "routes": [
+        "/",
+        "/projects",
+        "/actions",
+        "/campaigns",
+        "/campaigns/:campaignId",
+        "/settings"
+      ],
+      "core_api": [
+        "GET /setup/status",
+        "POST /setup/enroll",
+        "GET /settings/providers",
+        "PUT /settings/providers/{provider}",
+        "POST /settings/providers/{provider}/test",
+        "DELETE /settings/providers/{provider}/credential",
+        "GET /projects",
+        "POST /projects",
+        "GET /projects/{id}/config",
+        "PUT /projects/{id}/config",
+        "GET /actions",
+        "POST /actions",
+        "GET /campaigns",
+        "POST /campaigns",
+        "POST /campaigns/{id}/authorize",
+        "GET /quality/candidates/{id}/gate"
+      ],
+      "user_actions": [
+        "complete first-run enrollment with the one-time code",
+        "save, test, revoke and audit provider credentials",
+        "import an HTTPS Git Project and configure its scope",
+        "create a typed Action and a scoped delegation",
+        "authorize and dispatch a deterministic Campaign",
+        "inspect the candidate and Quality Gate"
+      ],
+      "states": [
+        "first-run-setup",
+        "credential-not-configured",
+        "provider-disabled",
+        "loading",
+        "empty",
+        "error",
+        "unauthorized"
+      ],
+      "acceptance": [
+        "scripts/compose-e2e.sh",
+        "scripts/compose-onboarding-smoke.mjs",
+        "scripts/compose-provider-smoke.mjs"
+      ],
+      "notes": "The deterministic fixture path is the PR CI acceptance path. The owner-authorized live OpenCode container UAT is recorded separately and is not a browser-acceptance gate."
+    }
+  },
+  "deferred": [
+    {
+      "module": "Decision Inbox",
+      "planned_slice": "Slice 3",
+      "reason": "Requires a typed Core decision projection and authenticated actions; no placeholder buttons."
+    },
+    {
+      "module": "Visual Agent Office",
+      "planned_slice": "Slice 4",
+      "reason": "Requires a durable participant/session/tool-event projection; no invented activity."
+    },
+    {
+      "module": "WorkGraph visualization",
+      "planned_slice": "Slice 4",
+      "reason": "Current Campaign detail exposes a table projection; graph/timeline requires the same durable tasks and evidence."
+    },
+    {
+      "module": "Issues",
+      "planned_slice": "Slice 5",
+      "reason": "GitHub synchronization is not implemented; provide only a truthful initial slice and register remaining scope."
+    },
+    {
+      "module": "Docs",
+      "planned_slice": "Slice 5",
+      "reason": "Repository-backed docs require a bounded read-only projection and provenance; editing remains governed through Actions."
+    }
+  ]
+}

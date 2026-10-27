@@ -102,3 +102,39 @@ jobs:
           docker compose -f compose.yaml config --format json > /tmp/compose.json
           python3 .github/scripts/check-compose-policy.py /tmp/compose.json
           COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose_policy.py
+
+  container-dev:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install rootless Podman and Compose provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
+          podman info --format '{{.Host.Security.Rootless}}'
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = "true"
+      - name: Build the container-native development image
+        env:
+          PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
+        run: podman compose -f compose.yaml -f compose.dev.yaml build dev
+      - name: Containerized Rust gates
+        env:
+          PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
+        run: podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev cargo xtask check-container
+      - name: Containerized Office gates
+        env:
+          PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
+        run: |
+          podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
+            sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
+      - name: Containerized Chromium Office journey
+        env:
+          PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
+          FACTORY_BROWSER_NO_SANDBOX: "1"
+        run: |
+          podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
+            -e FACTORY_BROWSER_NO_SANDBOX=1 dev \
+            sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
