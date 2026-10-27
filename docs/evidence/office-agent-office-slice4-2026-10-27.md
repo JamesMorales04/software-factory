@@ -1,6 +1,6 @@
 # Agent Office and WorkGraph — Slice 4 evidence
 
-**Candidate:** `31977718c0dc6774671daea3eb14b4554e06d495`
+**Candidate:** `c770746b1fcfccbc3d3a711f95f48e87895ced42`
 **Evidence run head:** `0bddd0f4370cf883adfe475484c78b80551bf161`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
 **Status:** Implemented; independent review and Product Owner approval pending.
@@ -50,10 +50,11 @@
 
 ## Post-evidence code fix
 
-Commit `3197771` scopes quality-receipt role filtering in SQL so
-`VERIFIER`/`REVIEWER` pagination cannot miss rows beyond the fetch window, and
-advances tool-event cursors across malformed rows. Participant unit tests and
-Clippy pass; full exact-head CI is rerun on the final PR head.
+Commit `c770746` scopes quality-receipt role filtering in SQL so
+`VERIFIER`/`REVIEWER` pagination cannot miss rows beyond the fetch window,
+advances tool-event cursors across malformed rows, and counts non-positive
+legacy tool sequences as discarded. Participant unit tests and Clippy pass;
+full exact-head CI is rerun on the final PR head.
 
 ## Limitations
 
