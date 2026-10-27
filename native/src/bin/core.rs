@@ -604,6 +604,7 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/quality/receipts", post(quality_receipt))
         .route("/model/calls", get(model_calls).post(model_call))
+        .route("/model/calls/unresolved", get(unresolved_model_calls))
         .route("/model/calls/{id}/resolve", post(resolve_model_call))
         .route("/quality/candidates/{id}", get(quality_candidate))
         .route("/quality/candidates/{id}/receipts", get(quality_receipts))
@@ -2879,6 +2880,13 @@ async fn model_calls(
     result_list(app.db.model_calls(limit).await)
 }
 
+async fn unresolved_model_calls(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    result_list(app.db.unresolved_model_calls().await)
+}
+
 async fn resolve_model_call(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -3767,6 +3775,7 @@ mod tests {
             "/office/overview",
             "/office/decisions",
             "/campaigns/missing/candidates/missing/diff",
+            "/model/calls/unresolved",
         ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
@@ -3815,6 +3824,15 @@ mod tests {
         assert_eq!(
             router.clone().oneshot(request).await.unwrap().status(),
             StatusCode::NOT_FOUND
+        );
+        let request = axum::http::Request::builder()
+            .uri("/model/calls/unresolved")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
         );
         let _ = std::fs::remove_file(path);
     }

@@ -9,6 +9,8 @@ const SUCCESS = new Set([
   "SUCCEEDED",
   "SETTLED",
   "VERIFIED",
+  "HEALTHY",
+  "ENABLED",
 ]);
 
 const ATTENTION = new Set([
@@ -30,6 +32,7 @@ const DANGER = new Set([
   "BLOCKED",
   "ERROR",
   "CANCELLED",
+  "UNHEALTHY",
   "CHANGES_REQUESTED",
 ]);
 

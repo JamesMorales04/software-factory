@@ -4,8 +4,8 @@
 slice: semantic tokens, light/dark themes, comfortable/compact density, the
 application shell, shared button/field/badge/surface/tooltip/dialog primitives,
 command navigation and component tests. Operational Overview, Decision Inbox,
-Action detail and the tabbed Campaign workspace are implemented against Core
-projections. Storybook, visual regression, the full accessibility audit, the
+Action detail, the tabbed Campaign workspace and the Runtime console are
+implemented against Core projections. Storybook, visual regression, the full accessibility audit, the
 interactive WorkGraph, a full code-diff viewer, Agent Office and board modules
 remain later slices. Nothing here says those modules exist.
 

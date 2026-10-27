@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-27T16:30:00Z",
+  "updated_at": "2026-10-27T17:00:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -65,7 +65,8 @@
         "GET /office/overview",
         "GET /office/decisions",
         "POST /model/calls/{id}/resolve",
-        "GET /campaigns/{id}/candidates/{candidate_id}/diff"
+        "GET /campaigns/{id}/candidates/{candidate_id}/diff",
+        "GET /model/calls/unresolved"
       ],
       "user_actions": [
         "register a Project",
@@ -95,7 +96,7 @@
         "scripts/compose-office-smoke.mjs",
         "scripts/compose-onboarding-smoke.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail and the tabbed Campaign workspace are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace and the Runtime console are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -178,6 +179,47 @@
         "office/src/views/CampaignDetail.test.tsx"
       ],
       "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The WorkGraph is a truthful table projection, not the future interactive graph. Candidate diff metadata is bounded to changed paths and diff stat; source bodies are not rendered. Agent Office and visual WorkGraph remain later slices."
+    },
+    "CAP-051": {
+      "name": "Runtime operational console",
+      "user_facing": true,
+      "job": "Inspect Core health, registered Workers, provider sessions, model-call usage, reserved ceilings, cleanup, telemetry and runtime policy without terminal inspection.",
+      "routes": [
+        "/runtime"
+      ],
+      "core_api": [
+        "GET /health",
+        "GET /workers",
+        "GET /provider/sessions",
+        "GET /model/calls",
+        "GET /model/calls/unresolved",
+        "GET /model/calls/{id}/resolve",
+        "GET /observability",
+        "GET /settings/runtime"
+      ],
+      "user_actions": [
+        "inspect Core health and registered Worker records",
+        "filter provider sessions by state usage cleanup worker or route",
+        "inspect recent and unresolved model-call reservations with measured usage and reservation ceiling",
+        "release an AMBIGUOUS or UNKNOWN reservation with an explicit audited reason",
+        "inspect telemetry export and semantic-review policy"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "stale-snapshot",
+        "unmeasured-usage",
+        "unresolved-reservation",
+        "not-exposed",
+        "telemetry-degraded"
+      ],
+      "acceptance": [
+        "office/e2e-browser/rust-journey.mjs",
+        "office/src/views/Runtime.test.tsx"
+      ],
+      "notes": "Measured spend, unmeasured session bound and unresolved reservation ceiling are displayed separately. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

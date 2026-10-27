@@ -76,21 +76,26 @@ checks and related Core records. Campaign Detail is a tabbed operational
 workspace with separate lifecycle, WorkGraph, execution/participant,
 candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
 views. Candidate revisions expose a bounded Core diff summary of changed paths
-and diff stat; file bodies are not returned. Agent Office, Issues, Docs and the
-interactive WorkGraph remain unimplemented.
+and diff stat; file bodies are not returned. Runtime is an operational console
+for Core health, registered Workers, filtered provider sessions, measured and
+unmeasured usage, model-call reservations, audited release, cleanup, telemetry
+and explicit unexposed services. Agent Office, Issues, Docs and the interactive
+WorkGraph remain unimplemented.
 
 Known gaps:
 
-- Project, Lead, Delegations, Campaign list, Runs, Workers, Runtime and
-  Settings still use the legacy compatibility surface; they are migrated by
-  module.
+- Project, Lead, Delegations, Campaign list, Runs, Workers and Settings still
+  use the legacy compatibility surface; they are migrated by module.
 - The WorkGraph is a table projection, not an interactive graph.
 - Candidate diff metadata does not include file bodies; there is no code-diff
   viewer.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
 - Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
-- No visual Agent Office or session inspector.
+- Runtime shows Supervisor, nested Podman and broker state as not exposed; it
+  does not infer their health.
+- No visual Agent Office or shared session inspector beyond the Campaign and
+  Runtime tables.
 - No issue board or repository docs/wiki.
 - Hash-only routes, no stable `/office` deep-link base.
 - The design foundation is implemented; Storybook, visual regression, full

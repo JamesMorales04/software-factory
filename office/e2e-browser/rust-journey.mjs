@@ -445,7 +445,29 @@ try {
 
   await page.getByRole("link", { name: "Runtime", exact: true }).click();
   await page.getByRole("heading", { name: "Runtime", exact: true }).waitFor();
-  await page.getByText("No provider sessions recorded.").waitFor();
+  await page.getByRole("tab", { name: /Sessions/ }).click();
+  await page
+    .getByRole("heading", { name: "Provider sessions (0 shown)" })
+    .waitFor();
+  await page.getByText("No matching sessions").waitFor();
+  await page.getByRole("tab", { name: /Model calls/ }).click();
+  await page.getByRole("heading", { name: /Core-owned model calls/ }).waitFor();
+  await page.getByRole("tab", { name: /Diagnostics/ }).click();
+  await page.getByRole("heading", { name: "Service boundaries" }).waitFor();
+  await page.getByText("Not exposed by the current Core API").first().waitFor();
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Runtime diagnostics must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   const _projects = await api("/projects");
   const _leadProject = _projects[0];
