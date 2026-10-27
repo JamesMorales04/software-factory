@@ -457,8 +457,10 @@ impl Database {
         let rows = rows.into_iter().take(limit);
         let mut events = Vec::new();
         let mut discarded = 0_u32;
+        let mut last_sequence = after_sequence;
         for row in rows {
             let sequence: i64 = row.try_get("sequence")?;
+            last_sequence = last_sequence.max(sequence);
             let call_id: String = row.try_get("call_id")?;
             let raw_tool: String = row.try_get("tool")?;
             let decision: String = row.try_get("decision")?;
@@ -496,7 +498,7 @@ impl Database {
                 provenance: "provider_tool_events".into(),
             });
         }
-        let next_sequence = events.last().map(|event| event.sequence);
+        let next_sequence = (last_sequence > after_sequence).then_some(last_sequence);
         Ok(ProviderToolEventProjection {
             session,
             after_sequence,
@@ -829,6 +831,9 @@ impl Database {
                AND (?3 IS NULL OR qr.model_provider=?3)
                AND (?4 IS NULL OR qr.result=?4)
                AND (?5 IS NULL OR ?5 IN ('verifier:'||qr.receipt_id,'reviewer:'||qr.receipt_id))
+               AND (?7 IS NULL
+                    OR (qr.role='verifier' AND ?7='VERIFIER')
+                    OR (qr.role='reviewer' AND ?7='REVIEWER'))
              ORDER BY qr.received_at DESC,qr.receipt_id ASC
              LIMIT ?6",
         )
@@ -838,6 +843,7 @@ impl Database {
         .bind(&query.status)
         .bind(&query.participant_id)
         .bind(fetch as i64)
+        .bind(&query.role)
         .fetch_all(&self.pool)
         .await?;
         let mut participants = Vec::with_capacity(rows.len());
