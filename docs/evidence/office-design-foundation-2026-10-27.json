@@ -1,0 +1,58 @@
+{
+  "schema": "factory.office-design-foundation.v1",
+  "recorded_at": "2026-10-27T13:50:00Z",
+  "result": "PASS (author-run design foundation; not independent acceptance)",
+  "implementation_sha": "18d82e66d644fcd1c86e15da14996936c23a569e",
+  "baseline_sha": "f2f982356ac43a45d0bdeedb0a425457da88ba96",
+  "commands": {
+    "office_typecheck": "PASS",
+    "office_lint": "PASS (4 reduced-motion !important warnings retained as scoped accessibility guidance)",
+    "office_component_tests": "PASS (2 files, 4 tests)",
+    "office_build": "PASS",
+    "container_office_gates": "PASS inside the pinned dev image",
+    "container_chromium_journey": "PASS; candidate 6b22c00a4136ab445758d1b44f21d2c4ef4b37f2; gate ACCEPTED; only expected pending-gate 404 probes"
+  },
+  "design_foundation": {
+    "tokens": "office/src/styles/tokens.css",
+    "themes": ["system", "light", "dark"],
+    "density": ["comfortable", "compact"],
+    "shell": "office/src/components/AppShell.tsx",
+    "components": [
+      "Button",
+      "IconButton",
+      "Badge",
+      "Field/Input/Textarea/Select/Checkbox",
+      "Panel",
+      "PageHeader",
+      "EmptyState",
+      "ErrorState",
+      "LoadingState",
+      "Tooltip",
+      "CommandPalette"
+    ],
+    "navigation": "grouped sidebar with responsive mobile drawer",
+    "command_navigation": "Ctrl/Cmd+K; implemented pages only",
+    "fonts": "self-hosted IBM Plex Sans Variable / IBM Plex Mono",
+    "icons": "Lucide React"
+  },
+  "browser_observation": {
+    "desktop": "1440px; no horizontal overflow; grouped sidebar and command palette rendered",
+    "tablet": "834px; no horizontal overflow",
+    "mobile": "390px; no horizontal overflow; sidebar hidden until opened",
+    "dark_theme": "explicit dark theme applied (background rgb(7, 17, 31))",
+    "compact_density": "applied",
+    "console_errors": 0,
+    "unexpected_404s": 0,
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only"
+  },
+  "not_tested": [
+    "Storybook and isolated visual regression",
+    "automated axe/WCAG audit and screen-reader review",
+    "WorkGraph, board, diff viewer and timeline components",
+    "migration of every operational view off the legacy compatibility surface",
+    "decision-inbox, agent-office, issues and docs journeys",
+    "Windows 11 / Podman Machine and SELinux/AppArmor",
+    "independent acceptance of this slice"
+  ],
+  "notes": "The component test suite is a foundation, not proof that every product journey is accessible. Existing operational views remain functional inside the new shell; their module-specific redesign is later."
+}
