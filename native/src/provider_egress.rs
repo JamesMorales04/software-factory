@@ -88,10 +88,15 @@ impl TurnBinder {
         session_record_id: String,
         worker_id: String,
         generation: i64,
+        container_mode: bool,
     ) -> Result<Self, EgressError> {
-        if !matches!(core.host_str(), Some("127.0.0.1" | "localhost"))
-            || core.scheme() != "http"
-            || core.port().is_none()
+        if crate::service_network::validate_http_origin(
+            core.as_str(),
+            "provider turn binder Core URL",
+            container_mode,
+            &["core"],
+        )
+        .is_err()
             || session_token.len() < 16
             || session_record_id.trim().is_empty()
             || worker_id.trim().is_empty()

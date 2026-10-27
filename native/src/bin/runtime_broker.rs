@@ -224,6 +224,10 @@ fn parse_images(raw: String) -> Result<BTreeSet<String>, String> {
 
 impl App {
     async fn preflight(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let uid_map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+        if is_initial_uid_map(&uid_map) {
+            return Err("runtime broker must run inside a rootless outer user namespace".into());
+        }
         let output = self
             .podman_command(["--version"])
             .output()
@@ -537,6 +541,18 @@ fn parse_import_images(raw: String) -> Result<Vec<(String, PathBuf)>, String> {
         images.push((tag.to_owned(), path));
     }
     Ok(images)
+}
+
+fn is_initial_uid_map(map: &str) -> bool {
+    let mut lines = map.lines().filter(|line| !line.trim().is_empty());
+    let Some(line) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_some() {
+        return false;
+    }
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    fields.len() == 3 && fields[0] == "0" && fields[1] == "0" && fields[2] == "4294967295"
 }
 
 fn bundle_digest(path: &std::path::Path) -> Result<String, String> {
@@ -871,6 +887,7 @@ async fn run_child(app: &App, input: &RunContainer) -> Result<ChildOutput, Strin
         "--cap-drop=all".to_owned(),
         "--cap-add=NET_ADMIN".to_owned(),
         "--security-opt=no-new-privileges".to_owned(),
+        "--ulimit=fsize=67108864".to_owned(),
         "--pids-limit=128".to_owned(),
         "--memory=1g".to_owned(),
         "--cpus=2".to_owned(),
@@ -1079,6 +1096,7 @@ async fn start_provider(
         "--tmpfs=/run:rw,noexec,nosuid,size=16m".into(),
         "--cap-drop=all".into(),
         "--security-opt=no-new-privileges".into(),
+        "--ulimit=fsize=67108864".into(),
         "--user=10001:10001".into(),
         "--pids-limit=256".into(),
         "--memory=4g".into(),
@@ -1101,9 +1119,28 @@ async fn start_provider(
         Err(_) => return operation_error("provider start timed out"),
     };
     if !output.status.success() {
+        let _ = app
+            .podman_output(["rm", "--force", "--time=0", input.container.as_str()])
+            .await;
         return operation_error(format!("provider start failed: {}", stderr(&output)));
     }
     tracing::info!(container=%input.container, subdir=%input.session_subdir, "provider container started");
+    let reaper = Arc::clone(&app);
+    let reaper_container = input.container.clone();
+    let reaper_seconds = input.timeout_secs;
+    tokio::spawn(async move {
+        time::sleep(Duration::from_secs(reaper_seconds)).await;
+        if let Ok(exists) = reaper
+            .podman_output(["container", "exists", reaper_container.as_str()])
+            .await
+            && exists.status.success()
+        {
+            tracing::warn!(container=%reaper_container, "provider container exceeded its lifetime; removing");
+            let _ = reaper
+                .podman_output(["rm", "--force", "--time=0", reaper_container.as_str()])
+                .await;
+        }
+    });
     (
         StatusCode::CREATED,
         Json(json!({
@@ -1153,6 +1190,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rootful_outer_user_namespace_is_rejected() {
+        assert!(is_initial_uid_map("         0          0 4294967295\n"));
+        assert!(!is_initial_uid_map(
+            "         0       1000          1\n         1     100000      65536\n"
+        ));
+        assert!(!is_initial_uid_map(""));
+    }
 
     #[test]
     fn identities_are_strict() {

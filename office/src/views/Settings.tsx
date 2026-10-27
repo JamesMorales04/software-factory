@@ -209,6 +209,11 @@ function ProviderCard({
           {numberField("Input micros / million", inputRate, setInputRate)}
           {numberField("Output micros / million", outputRate, setOutputRate)}
         </div>
+        <p className="muted">
+          These are provider-route defaults and cap Core model calls. The
+          explicit Campaign authorization remains authoritative for provider
+          sessions; provider limits do not widen it.
+        </p>
         <label className="inline">
           <input
             type="checkbox"

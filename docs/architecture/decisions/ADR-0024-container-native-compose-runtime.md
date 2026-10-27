@@ -113,10 +113,14 @@ deterministic regressions are unchanged.
 
 Core owns typed provider settings and a semantic-review enable switch in
 SQLite. Provider credentials are encrypted with AES-256-GCM under a master key
-held only in the Core config volume. Credentials are never returned after
-submission, never placed in browser storage, telemetry or logs, and can be
-revoked. Model calls remain Core-budgeted; saving a setting or testing a
-connection does not start inference.
+held only in the Core config volume. Credentials are never returned to the
+browser after submission, never placed in browser storage, telemetry or logs,
+and can be revoked. The trusted Worker may receive only the exact assigned
+provider route while it holds a live attempt/generation lease; the provider
+sandbox never receives the long-lived credential. Core rejects semantic model
+calls and MODEL reviewer receipts while the operator policy is disabled. Model
+calls remain Core-budgeted; saving a setting or testing a connection does not
+start inference.
 
 First-run enrollment is a one-time 160-bit code written to the private data
 volume, rate-limited, invalidated by removal plus a completion marker. The
@@ -157,6 +161,11 @@ candidate-bound PASS evidence from both roles.
 - SELinux/AppArmor hosts, Windows/Podman Machine and multi-arch images remain
   untested.
 - A paid provider UAT is not authorized by this ADR.
+- The independent review performed after the first author-run candidate found
+  and drove fixes for rootless enforcement, the container TurnBinder origin,
+  semantic-review authority and provider-profile lease binding. Residual
+  risks (shared provider-session volume, total volume quota, static-only PR CI,
+  TOCTOU, reviewer-token trust) are recorded in the status and security docs.
 
 ## Alternatives considered
 

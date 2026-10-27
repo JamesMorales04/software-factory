@@ -60,6 +60,7 @@ struct ReviewerConfig {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let core = env::var("FACTORY_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
     let token = factory_native::secrets::required("FACTORY_REVIEWER_TOKEN")?;
+    factory_native::telemetry::register_secret(&token);
     if token.len() < 32 {
         return Err("FACTORY_REVIEWER_TOKEN must be at least 32 bytes".into());
     }

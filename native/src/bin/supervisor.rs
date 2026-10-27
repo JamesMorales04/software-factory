@@ -259,6 +259,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &env::var("FACTORY_SUPERVISOR_PROJECT_ROOTS")
             .map_err(|_| "FACTORY_SUPERVISOR_PROJECT_ROOTS required")?,
     )?;
+    factory_native::telemetry::register_secret(&token);
+    factory_native::telemetry::register_secret(&attempt_grant_key);
+    factory_native::telemetry::register_secret(&capability_key);
     let max_runtime = match env::var("FACTORY_SUPERVISOR_MAX_RUNTIME_SECS") {
         Ok(value) => Duration::from_secs(value.parse::<u64>()?),
         Err(_) => MAX_EXECUTION_RUNTIME,

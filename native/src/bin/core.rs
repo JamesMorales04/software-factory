@@ -75,7 +75,9 @@ fn default_provider_turn_max_requests() -> u32 {
 #[serde(deny_unknown_fields)]
 struct ProviderTurnRelease {
     reservation_id: String,
+    session_record_id: String,
     worker_id: String,
+    generation: i64,
 }
 
 #[derive(Deserialize)]
@@ -653,6 +655,24 @@ impl App {
         factory_native::telemetry::register_secret(&credential);
         let allow_loopback_http =
             env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        let mut lead_policy =
+            policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
+        let mut reviewer_policy =
+            policy_from_env("FACTORY_REVIEW_MODEL", 400_000, 8_192, 1_000_000).ok()?;
+        let mut evaluation_policy =
+            policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000).ok()?;
+        let mut global_policy =
+            policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000).ok()?;
+        for policy in [
+            &mut lead_policy,
+            &mut reviewer_policy,
+            &mut evaluation_policy,
+            &mut global_policy,
+        ] {
+            policy.max_input_tokens = policy.max_input_tokens.min(settings.max_input_tokens);
+            policy.max_output_tokens = policy.max_output_tokens.min(settings.max_output_tokens);
+            policy.max_cost_micros = policy.max_cost_micros.min(settings.max_cost_micros);
+        }
         let config = factory_native::model_gateway::ModelGatewayConfig {
             base_url: settings.base_url,
             credential,
@@ -663,18 +683,10 @@ impl App {
             ),
             input_micros_per_million: settings.input_micros_per_million,
             output_micros_per_million: settings.output_micros_per_million,
-            lead_policy: policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?,
-            reviewer_policy: policy_from_env("FACTORY_REVIEW_MODEL", 400_000, 8_192, 1_000_000)
-                .ok()?,
-            evaluation_policy: policy_from_env(
-                "FACTORY_EVALUATION_MODEL",
-                400_000,
-                8_192,
-                2_000_000,
-            )
-            .ok()?,
-            global_policy: policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000)
-                .ok()?,
+            lead_policy,
+            reviewer_policy,
+            evaluation_policy,
+            global_policy,
             allow_loopback_http,
         };
         match factory_native::model_gateway::ModelGateway::new(config) {
@@ -860,6 +872,8 @@ struct WorkerProviderQuery {
     provider: String,
     model: String,
     worker_id: String,
+    attempt_id: String,
+    generation: i64,
 }
 
 async fn runtime_settings(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -1388,6 +1402,26 @@ async fn worker_provider_profile(
 ) -> Response {
     if !worker_session_authorized(&app, &headers, &query.worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (provider, model) = match app
+        .db
+        .assigned_provider_route(
+            &query.worker_id,
+            &query.attempt_id,
+            query.generation,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+    {
+        Ok(route) => route,
+        Err(error) => return api_error(error),
+    };
+    if provider != query.provider || model != query.model {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"provider profile does not match the live authorized assignment"})),
+        )
+            .into_response();
     }
     let settings = match app.db.provider_settings(&query.provider).await {
         Ok(settings) => settings,
@@ -2054,7 +2088,13 @@ async fn worker_provider_turn_release(
     }
     match app
         .db
-        .release_provider_turn(&input.reservation_id, "worker released turn")
+        .release_provider_turn(
+            &input.reservation_id,
+            &input.session_record_id,
+            &input.worker_id,
+            input.generation,
+            "worker released turn",
+        )
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -2242,7 +2282,11 @@ async fn worker_provider_unresolved(
     if !worker_session_authorized(&app, &headers, worker_id).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    result_list(app.db.unresolved_provider_sessions().await)
+    result_list(
+        app.db
+            .unresolved_provider_sessions_for_worker(Some(worker_id))
+            .await,
+    )
 }
 
 async fn worker_provider_terminal(
@@ -2342,6 +2386,19 @@ async fn model_call(
     if !authenticated {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if role == factory_native::db::ModelCallRole::SemanticReviewer {
+        let settings = match app.db.factory_settings().await {
+            Ok(settings) => settings,
+            Err(error) => return api_error(error),
+        };
+        if !settings.semantic_review_enabled {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"semantic review is disabled by the operator"})),
+            )
+                .into_response();
+        }
+    }
     if matches!(
         role,
         factory_native::db::ModelCallRole::SemanticReviewer
@@ -2417,6 +2474,30 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
                 .into_response();
         }
     };
+    if role == QualityRole::Reviewer
+        && input.mechanism == factory_native::db::ReviewMechanism::Model
+    {
+        let settings = match app.db.factory_settings().await {
+            Ok(settings) => settings,
+            Err(error) => return api_error(error),
+        };
+        if !settings.semantic_review_enabled {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"semantic review is disabled by the operator"})),
+            )
+                .into_response();
+        }
+        if app.current_model_gateway().await.is_none() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    json!({"error":"semantic review requires a configured default model gateway"}),
+                ),
+            )
+                .into_response();
+        }
+    }
     let receipt = QualityReceiptInput {
         receipt_id: input.receipt_id,
         principal_id: input.principal_id,
@@ -3395,6 +3476,135 @@ mod tests {
             HeaderValue::from_static("Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaab"),
         );
         assert_eq!(quality_role(&app, &headers), None);
+        drop(app);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn semantic_review_toggle_is_authoritative_for_receipts() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-semantic-toggle-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = Arc::new(App {
+            db: Database::open(&path).await.unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(Arc::clone(&app));
+        let config = axum::http::Request::builder()
+            .uri("/review/config")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(config).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("DETERMINISTIC"));
+
+        let enable = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/settings/runtime")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"semanticReviewEnabled":true,"semanticReviewMaxOutputTokens":2048}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(enable).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let receipt = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "candidate_id": "candidate-1",
+                    "receipt_id": "receipt-1",
+                    "principal_id": "reviewer",
+                    "actionSpecSha256": "a".repeat(64),
+                    "commitSha": "b".repeat(40),
+                    "treeSha": "c".repeat(40),
+                    "result": "PASS",
+                    "evidence": "EXECUTED",
+                    "findings": [],
+                    "mechanism": "MODEL"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(receipt).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let disable = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/settings/runtime")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"semanticReviewEnabled":false,"semanticReviewMaxOutputTokens":2048}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(disable).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let disabled_receipt = axum::http::Request::builder()
+            .method("POST")
+            .uri("/quality/receipts")
+            .header(
+                "authorization",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "candidate_id": "candidate-1",
+                    "receipt_id": "receipt-2",
+                    "principal_id": "reviewer",
+                    "actionSpecSha256": "a".repeat(64),
+                    "commitSha": "b".repeat(40),
+                    "treeSha": "c".repeat(40),
+                    "result": "PASS",
+                    "evidence": "EXECUTED",
+                    "findings": [],
+                    "mechanism": "MODEL"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            router.oneshot(disabled_receipt).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
         drop(app);
         let _ = std::fs::remove_file(path);
     }

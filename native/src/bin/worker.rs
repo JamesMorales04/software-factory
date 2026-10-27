@@ -136,6 +136,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if supervisor.timeout_secs == 0 || supervisor.timeout_secs > 600 {
         return Err("FACTORY_WORKER_FIXTURE_TIMEOUT_SECS must be between 1 and 600".into());
     }
+    factory_native::telemetry::register_secret(&bootstrap_token);
+    factory_native::telemetry::register_secret(&registration_key);
+    factory_native::telemetry::register_secret(&supervisor.token);
     let once = env::var("FACTORY_WORKER_ONCE").ok().as_deref() == Some("1");
     let client = reqwest::Client::builder().timeout(CORE_TIMEOUT).build()?;
     let response = client
@@ -404,7 +407,18 @@ fn confined_recovery_receipt(
 }
 
 async fn container_recovery_receipt(directory: &str) -> Result<&'static str, String> {
-    let name = std::path::Path::new(directory)
+    let root = env::var("FACTORY_PROVIDER_SESSION_ROOT")
+        .map_err(|_| "FACTORY_PROVIDER_SESSION_ROOT required for container recovery")?;
+    let root = std::path::Path::new(&root)
+        .canonicalize()
+        .map_err(|error| format!("provider session root is unavailable: {error}"))?;
+    let path = std::path::Path::new(directory)
+        .canonicalize()
+        .map_err(|error| format!("provider session directory is unavailable: {error}"))?;
+    if path.parent() != Some(root.as_path()) || !path.is_dir() {
+        return Err("provider session directory is outside the configured root".into());
+    }
+    let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("provider session directory is missing")?;
@@ -432,7 +446,7 @@ async fn container_recovery_receipt(directory: &str) -> Result<&'static str, Str
         Ok(_) => {}
         Err(_) => {}
     }
-    let _ = std::fs::remove_dir_all(directory);
+    let _ = std::fs::remove_dir_all(&path);
     Ok("container_removed_verified_absent")
 }
 
@@ -641,6 +655,11 @@ async fn execute_provider_assignment(
                 ("provider", assignment.provider.as_str()),
                 ("model", assignment.model.as_str()),
                 ("worker_id", worker_id),
+                ("attempt_id", assignment.lease.attempt_id.as_str()),
+                (
+                    "generation",
+                    assignment.lease.generation.to_string().as_str(),
+                ),
             ])
             .send()
             .await?;
@@ -735,6 +754,7 @@ async fn execute_provider_assignment(
             session_record_id.clone(),
             worker_id.to_owned(),
             assignment.lease.generation,
+            env::var("FACTORY_CONTAINER_MODE").as_deref() == Ok("1"),
         )?)
     } else {
         None
@@ -3307,7 +3327,9 @@ async fn release_provider_turn(context: &ProviderContext<'_>, reservation_id: &s
         .bearer_auth(context.session_token)
         .json(&json!({
             "reservation_id": reservation_id,
-            "worker_id": context.worker_id
+            "session_record_id": context.session_record_id,
+            "worker_id": context.worker_id,
+            "generation": context.assignment.lease.generation
         }))
         .send()
         .await;

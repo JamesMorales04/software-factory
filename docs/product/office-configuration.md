@@ -27,7 +27,9 @@ Each provider card exposes:
 
 - installed/configured status and masked credential fingerprint;
 - model, endpoint, enabled/default route;
-- turn/token/cost budgets and per-million rates;
+- provider-route default turn/token/cost limits and per-million rates; these
+  cap Core model calls but never widen or replace the explicit Campaign
+  authorization that bounds provider sessions;
 - test connection (model list only), configuration revision and audit;
 - credential replacement and revocation.
 
@@ -37,10 +39,13 @@ returned. Saving or testing does not start inference.
 ## Review & runtime policy
 
 Semantic Reviewer model calls are **off by default**. Enabling the policy
-allows bounded Core-owned model calls for each candidate review. The verifier's
-frozen-check execution is always independent and deterministic. The reviewer
-must also pass its deterministic pre-review; a model `approve` alone cannot
-produce an accepted gate.
+allows bounded Core-owned model calls for each candidate review, and Core
+rejects semantic model calls or MODEL receipts while it is disabled. The
+verifier's frozen-check execution is always independent and deterministic. The
+reviewer binary runs its deterministic pre-review before model review; Core
+enforces the policy and budget but cannot prove that internal ordering against
+a compromised reviewer token. A model `approve` alone does not create the
+verifier receipt required by the gate.
 
 ## Projects
 

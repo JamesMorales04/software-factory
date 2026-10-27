@@ -106,6 +106,47 @@ impl Database {
         })
     }
 
+    /// Return the provider route for a live Worker lease. This binds provider
+    /// credential disclosure to the exact attempt, generation and worker.
+    pub async fn assigned_provider_route(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        now_ms: i64,
+    ) -> Result<(String, String), Error> {
+        if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
+            return Err(Error::Invalid("provider assignment identity"));
+        }
+        let row: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,'')
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+             JOIN worker_leases wl ON wl.attempt_id=a.id
+             WHERE a.id=?1 AND wl.worker_id=?2 AND wl.generation=?3
+               AND wl.expires_at_ms>?4 AND ca.execution_mode='TRUSTED_LOCAL_PROVIDER'",
+        )
+        .bind(attempt_id)
+        .bind(worker_id)
+        .bind(generation)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((provider, model)) = row else {
+            return Err(Error::Forbidden(
+                "no live authorized provider assignment for this Worker attempt".into(),
+            ));
+        };
+        if provider.is_empty() || model.is_empty() {
+            return Err(Error::Forbidden(
+                "provider assignment has no authorized route".into(),
+            ));
+        }
+        Ok((provider, model))
+    }
+
     pub async fn workers(&self) -> Result<Vec<WorkerSummary>, Error> {
         let rows: Vec<(String, String)> = sqlx::query_as::query_as(
             "SELECT worker_id,updated_at FROM worker_sessions ORDER BY updated_at,worker_id",

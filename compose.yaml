@@ -145,6 +145,7 @@ services:
       dockerfile: deploy/Containerfile
       target: core
     image: software-factory-core:dev
+    user: "10001:10001"
     command:
       - /bin/sh
       - -c
@@ -191,6 +192,7 @@ services:
       dockerfile: deploy/Containerfile
       target: supervisor
     image: software-factory-supervisor:dev
+    user: "10001:10001"
     command:
       - /bin/sh
       - -c
@@ -231,6 +233,7 @@ services:
       dockerfile: deploy/Containerfile
       target: worker
     image: software-factory-worker:dev
+    user: "10001:10001"
     command:
       - /bin/sh
       - -c
@@ -269,6 +272,7 @@ services:
       dockerfile: deploy/Containerfile
       target: verifier
     image: software-factory-verifier:dev
+    user: "10001:10001"
     command:
       - /bin/sh
       - -c
@@ -299,6 +303,7 @@ services:
       dockerfile: deploy/Containerfile
       target: verifier
     image: software-factory-verifier:dev
+    user: "10001:10001"
     <<: *restricted
     read_only: true
     tmpfs:

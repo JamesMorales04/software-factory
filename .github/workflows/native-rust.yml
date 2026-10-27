@@ -101,3 +101,4 @@ jobs:
         run: |
           docker compose -f compose.yaml config --format json > /tmp/compose.json
           python3 .github/scripts/check-compose-policy.py /tmp/compose.json
+          COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose_policy.py

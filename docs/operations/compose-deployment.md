@@ -6,7 +6,9 @@ production, Windows or SEC-01 isolation claim. Only the rootless
 
 ## Host prerequisites
 
-- A working **rootless** Podman 6.x installation.
+- A working **rootless** Podman 6.x installation. The runtime entrypoint and
+  broker reject an initial (rootful) outer user namespace before starting the
+  engine.
 - A supported Compose provider reachable through `podman compose`:
   - `podman-compose` (tested), or
   - Docker Compose with the rootless Podman socket enabled.
@@ -96,9 +98,12 @@ Office → **Settings → Providers & Models**:
    audit entry.
 
 Semantic Reviewer model calls are separately disabled by default under
-**Review & runtime policy**. Enabling them authorizes Core-budgeted model calls
-for each candidate review and may incur provider charges. Deterministic review
-always runs first.
+**Review & runtime policy**. Core rejects semantic model calls and MODEL
+reviewer receipts while the policy is disabled. Enabling them authorizes
+Core-budgeted model calls for each candidate review and may incur provider
+charges. The reviewer binary performs deterministic pre-review before any
+model request; Core enforces the policy and budget but cannot prove that
+internal ordering against a compromised reviewer token.
 
 Codex status is explicit:
 
@@ -112,6 +117,11 @@ Codex status is explicit:
 - **Projects**: register an HTTPS Git URL. Core imports it into managed storage
   and freezes the base commit. Configure allowed paths, capabilities and the
   quality profile; revisions and hashes are visible.
+Provider-route defaults cap Core model calls. The explicit Campaign
+authorization remains authoritative for Implementer/provider sessions and
+cannot be widened by provider settings. Per-session disk quota beyond the
+64 MiB per-file limit is not implemented.
+
 - **Actions**: enter the objective, provider/model route, allowed paths and
   typed checks (format, lint, build, test, functional, negative, browser).
   Commands are previewed; verification requires at least one executable check.
@@ -144,6 +154,8 @@ starting, then converge through health checks.
 - `podman compose ps` distinguishes created, starting, healthy and exited
   services.
 - `podman compose logs <service>` is the first diagnostic.
+- Provider containers have a broker-side lifetime reaper and a 64 MiB per-file
+  limit. Total engine-volume quota is an open hardening item.
 - Core `/health`, `/setup/status` and authenticated projections identify
   configuration and authorization state.
 - Office shows provider connection status, missing-model status, campaign
@@ -165,6 +177,12 @@ local image digests for any certification. The provider image is not published;
 the bundle volume transfers its root filesystem to the dedicated engine.
 
 ## Windows target design (not claimed)
+
+The container provider entrypoint implements OpenCode and the deterministic
+fixture adapter. The Worker fetches the assigned provider route only while it
+holds a live attempt/generation lease. **Live OpenCode-in-container inference
+remains NOT_TESTED**; the fixture path is what the deterministic E2E exercises.
+Containerized Codex stdio is not implemented.
 
 The intended Windows 11 path is Podman Machine on WSL2 running the same Linux
 images and the same Compose stack. The browser would reach the published

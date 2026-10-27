@@ -29,8 +29,20 @@ impl std::fmt::Debug for ProviderSecretKey {
 
 impl ProviderSecretKey {
     pub fn from_file(path: &Path) -> Result<Self, String> {
-        if !path.is_absolute() || !path.is_file() {
-            return Err("master key file must be an absolute regular file".into());
+        if !path.is_absolute() {
+            return Err("master key file must be absolute".into());
+        }
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect master key file: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err("master key file must be a regular non-symlink file".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o137 != 0 {
+                return Err("master key file permissions are broader than owner/group read".into());
+            }
         }
         let raw = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read master key file: {error}"))?;
@@ -130,6 +142,8 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all("11".repeat(32).as_bytes()).unwrap();
         drop(file);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let key = ProviderSecretKey::from_file(&path).unwrap();
         let _ = std::fs::remove_file(path);
         key
@@ -146,6 +160,17 @@ mod tests {
                 .unwrap(),
             b"super-secret-provider-credential"
         );
+    }
+
+    #[test]
+    fn rejects_broad_master_key_permissions() {
+        let path =
+            std::env::temp_dir().join(format!("factory-master-open-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "11".repeat(32)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(ProviderSecretKey::from_file(&path).is_err());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

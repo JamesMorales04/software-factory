@@ -6,6 +6,11 @@ if [ "$(id -u)" != "0" ]; then
   exit 78
 fi
 
+if [ "$(awk 'NR==1 { print $1, $2, $3 }' /proc/self/uid_map 2>/dev/null)" = "0 0 4294967295" ]; then
+  echo "factory-runtime: the outer container is not running in a user namespace; rootless Podman is required" >&2
+  exit 78
+fi
+
 until [ -f /config/.ready ]; do
   sleep 1
 done

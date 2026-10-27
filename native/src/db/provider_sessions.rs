@@ -737,15 +737,24 @@ impl Database {
     pub async fn release_provider_turn(
         &self,
         reservation_id: &str,
+        session_record_id: &str,
+        worker_id: &str,
+        generation: i64,
         reason: &str,
     ) -> Result<(), Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         let binding: Option<(String, i64)> = sqlx::query_as::query_as(
-            "SELECT actual_request_sha256,requests_bound FROM provider_turn_reservations
-             WHERE reservation_id=?1 AND state='RESERVED'",
+            "SELECT ptr.actual_request_sha256,ptr.requests_bound
+             FROM provider_turn_reservations ptr
+             JOIN provider_sessions ps ON ps.session_record_id=ptr.session_record_id
+             WHERE ptr.reservation_id=?1 AND ptr.session_record_id=?2
+               AND ps.worker_id=?3 AND ptr.generation=?4 AND ptr.state='RESERVED'",
         )
         .bind(reservation_id)
+        .bind(session_record_id)
+        .bind(worker_id)
+        .bind(generation)
         .fetch_optional(&mut *transaction)
         .await?;
         let Some((actual_request_sha256, requests_bound)) = binding else {
@@ -994,9 +1003,13 @@ impl Database {
                 "completed provider session requires confirmed cleanup and known usage".into(),
             ));
         }
-        if input.state == "FAILED" && input.cleanup_receipt.trim().is_empty() {
+        if input.state == "FAILED"
+            && (input.cleanup_receipt.trim().is_empty()
+                || input.cleanup_receipt.contains("unconfirmed"))
+        {
             return Err(Error::Forbidden(
-                "failed provider session requires a cleanup receipt or no_external_session".into(),
+                "failed provider session requires a confirmed cleanup receipt or no_external_session"
+                    .into(),
             ));
         }
         let _write = self.write_lock.lock().await;
@@ -1215,13 +1228,32 @@ impl Database {
 
     /// Recovery Worker view: sessions whose external lifecycle is not terminal.
     pub async fn unresolved_provider_sessions(&self) -> Result<Vec<ProviderSessionRecord>, Error> {
-        let ids: Vec<(String,)> = sqlx::query_as::query_as(
-            "SELECT session_record_id FROM provider_sessions
-             WHERE state IN ('INTENT','ACTIVE','CANCEL_REQUESTED','ORPHANED')
-             ORDER BY created_at,session_record_id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        self.unresolved_provider_sessions_for_worker(None).await
+    }
+
+    /// Recovery Worker view scoped to the worker that owns the session.
+    pub async fn unresolved_provider_sessions_for_worker(
+        &self,
+        worker_id: Option<&str>,
+    ) -> Result<Vec<ProviderSessionRecord>, Error> {
+        let ids: Vec<(String,)> = if let Some(worker_id) = worker_id {
+            sqlx::query_as::query_as(
+                "SELECT session_record_id FROM provider_sessions
+                 WHERE worker_id=?1 AND state IN ('INTENT','ACTIVE','CANCEL_REQUESTED','ORPHANED')
+                 ORDER BY created_at,session_record_id",
+            )
+            .bind(worker_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::query_as(
+                "SELECT session_record_id FROM provider_sessions
+                 WHERE state IN ('INTENT','ACTIVE','CANCEL_REQUESTED','ORPHANED')
+                 ORDER BY created_at,session_record_id",
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
         let mut connection = self.pool.acquire().await?;
         let mut records = Vec::with_capacity(ids.len());
         for (id,) in ids {
@@ -1428,9 +1460,15 @@ mod tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
             .await
             .unwrap();
-        db.release_provider_turn(&unbound.reservation_id, "worker released")
-            .await
-            .unwrap();
+        db.release_provider_turn(
+            &unbound.reservation_id,
+            "session-turn",
+            "worker",
+            1,
+            "worker released",
+        )
+        .await
+        .unwrap();
 
         let turn = db
             .authorize_provider_turn(&session, "worker", 1, 50, &digest, 1)
@@ -1468,8 +1506,14 @@ mod tests {
             Err(Error::Forbidden(_) | Error::Conflict(_))
         ));
         assert!(matches!(
-            db.release_provider_turn(&turn.reservation_id, "worker released")
-                .await,
+            db.release_provider_turn(
+                &turn.reservation_id,
+                &turn.session_record_id,
+                "worker",
+                turn.generation,
+                "worker released"
+            )
+            .await,
             Err(Error::Conflict(_))
         ));
         db.resolve_provider_turn_reservation(&turn.reservation_id, "operator", "reviewed")
@@ -1486,8 +1530,14 @@ mod tests {
         assert_eq!(state, "SETTLED");
         assert!(input > 0 && output > 0 && cost > 0);
         assert!(matches!(
-            db.release_provider_turn(&turn.reservation_id, "worker released")
-                .await,
+            db.release_provider_turn(
+                &turn.reservation_id,
+                &turn.session_record_id,
+                "worker",
+                turn.generation,
+                "worker released"
+            )
+            .await,
             Err(Error::Conflict(_))
         ));
     }
@@ -1882,8 +1932,14 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            db.release_provider_turn(&turn.reservation_id, "worker released")
-                .await,
+            db.release_provider_turn(
+                &turn.reservation_id,
+                &turn.session_record_id,
+                "worker",
+                turn.generation,
+                "worker released"
+            )
+            .await,
             Err(Error::Conflict(_))
         ));
     }

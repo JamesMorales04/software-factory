@@ -41,6 +41,11 @@ This is the exact reason it is not described as rootless-in-rootless.
 | Boundary | What crosses | What must not cross |
 |---|---|---|
 | Host → outer runtime container | Namespaced capabilities, private engine volume, provider-session volume, bundle/config volumes | Host Podman socket, host HOME, host network namespace |
+
+The runtime entrypoint and broker reject an **initial outer user namespace**
+(`/proc/self/uid_map` exactly `0 0 4294967295`). Running the Compose file with
+rootful Podman/Docker therefore fails before the engine starts; the
+`SYS_ADMIN`/`NET_ADMIN` grants remain namespaced only on a rootless host.
 | Broker → inner engine | Typed operations only | Arbitrary Podman arguments, host paths, unlisted images |
 | Inner engine → child | Allowlisted image, one workspace volume or provider session subdir, bounded cgroups, no network | Core DB, provider credential, operator/role tokens, host repositories, other workspaces |
 | Worker → provider container | Per-run egress token and non-secret OpenCode config; private session volume | Long-lived provider credential (held by the Worker egress broker) |
@@ -73,13 +78,41 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
 - Core stores provider credentials as AES-256-GCM ciphertext under a master key
   in the Core-only config volume.
 - The API masks them after submission; there is no read-back.
-- The Worker fetches only the assigned provider profile over the internal
-  control network with its worker session token, then holds the credential in
-  memory inside the loopback egress broker.
+- The Worker fetches the assigned provider profile over the internal control
+  network with its worker session token **and a live attempt/generation lease**.
+  Core returns only the exact authorized route; the credential is held in
+  memory inside the loopback egress broker. It is never returned to the browser
+  or the provider sandbox.
 - The provider container receives only a per-run egress token, the private
   session directory and non-secret configuration. It has no network namespace
   access to Core or the Worker.
 - Revocation clears the ciphertext, disables the route and is audited.
+
+## Residual risks added by the independent review
+
+- Provider session containers share one outer session volume and the same UID.
+  Distinct subdirectories and scoped recovery are enforced, but a malicious
+  provider process could read or modify a sibling session directory at the same
+  UID. Execution workspaces remain separate named volumes. Per-session UID or
+  broker-owned volume isolation is an open hardening item.
+- The broker canonicalizes the provider session directory before Podman mounts
+  it; a Worker with write access to the parent can theoretically race a path
+  swap between check and mount. The Worker is trusted and there is no network
+  in the child, but this remains a defense-in-depth gap.
+- Provider and execution containers have a 64 MiB per-file `fsize` limit and a
+  broker-side provider lifetime reaper, but total volume quota is not enforced.
+  A malicious workload can still consume engine disk up to host capacity.
+- `FAILED` provider sessions with an unconfirmed cleanup receipt are now
+  rejected by Core, leaving them unresolved for recovery. The broker reaper
+  removes provider containers after their configured lifetime; a broker crash
+  is reconciled on restart.
+- Core enforces the semantic-review toggle for model calls and MODEL receipts.
+  The reviewer binary performs deterministic pre-review before a model call,
+  but Core cannot prove that internal ordering against a compromised reviewer
+  token. Independent review and isolation remain the mitigation.
+- The verifier mounts the managed projects volume read-write to create a clean
+  worktree; the reviewer mounts it read-only. A verifier role remains a trusted
+  process, not an isolation boundary.
 
 ## Negative and cleanup evidence
 

@@ -465,6 +465,7 @@ async fn broker_binds_the_actual_emitted_body_to_core_before_forwarding() {
         "session-record".into(),
         "worker".into(),
         1,
+        false,
     )
     .unwrap();
     let socket = std::env::temp_dir().join(format!("bind-{}", uuid::Uuid::new_v4().simple()));
@@ -580,4 +581,28 @@ async fn broker_does_not_retry_an_upstream_that_drops_the_connection() {
     broker.stop();
     server.abort();
     let _ = std::fs::remove_file(socket);
+}
+
+#[test]
+fn turn_binder_accepts_the_container_control_service_origin() {
+    let binder = factory_native::provider_egress::TurnBinder::new(
+        reqwest::Client::new(),
+        reqwest::Url::parse("http://core:8765").unwrap(),
+        "worker-session-token-0123456789abcdef".into(),
+        "session-record".into(),
+        "worker".into(),
+        1,
+        true,
+    );
+    assert!(binder.is_ok());
+    let host_only = factory_native::provider_egress::TurnBinder::new(
+        reqwest::Client::new(),
+        reqwest::Url::parse("http://core:8765").unwrap(),
+        "worker-session-token-0123456789abcdef".into(),
+        "session-record".into(),
+        "worker".into(),
+        1,
+        false,
+    );
+    assert!(host_only.is_err());
 }

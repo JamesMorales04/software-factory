@@ -9,6 +9,10 @@ PROJECT="${FACTORY_E2E_PROJECT:-software-factory-e2e}"
 PORT="${FACTORY_PORT:-8894}"
 BASE="http://127.0.0.1:${PORT}"
 PROVIDER="${PODMAN_COMPOSE_PROVIDER:-/usr/bin/podman-compose}"
+if [[ -z "$PROJECT" || "$PROJECT" == "software-factory" || "$PROJECT" != *e2e* ]]; then
+  printf 'FACTORY_E2E_PROJECT must name a dedicated project containing "e2e"; refusing %s\n' "$PROJECT" >&2
+  exit 2
+fi
 GIT_DIR="$(mktemp -d /tmp/factory-compose-e2e-git.XXXXXXXX)"
 COMPOSE=(podman compose -f compose.yaml -f compose.e2e.yaml)
 export COMPOSE_PROJECT_NAME="$PROJECT"
