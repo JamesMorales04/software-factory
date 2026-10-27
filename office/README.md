@@ -4,9 +4,10 @@ React + TypeScript Office backed by the Rust Core API. The only API client is
 the Rust Core client; former provider-specific views were removed. The app
 renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 
-Current views: Dashboard, Projects, Actions, Lead, Delegations, Campaigns/Campaign detail,
-Runs, Workers, Runtime and Settings, inside a responsive shell with grouped
-navigation, command search, themes and density. Campaign detail projects the
+Current views: Overview, Decision Inbox, Projects, Actions/Action detail, Lead,
+Delegations, Campaigns/Campaign detail, Runs, Workers, Runtime and Settings,
+inside a responsive shell with grouped navigation, command search, themes and
+density. Campaign detail projects the
 Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
 Candidate → Verifier → Reviewer → Gate workflow from Core data. It shows
 per-unit dependencies/status, candidate receipts, honest pending states for

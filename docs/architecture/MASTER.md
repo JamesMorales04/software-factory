@@ -175,7 +175,7 @@ Use frozen code bases, task specs, fixtures and independent acceptance oracles t
 
 ## 13. Factory Office
 
-F1 requires Dashboard, Actions, Agents and Action Detail. Use authenticated Core snapshots and durable event replay for real timeline, sessions, acceptance, PR and blocking reasons. Reconnected clients catch up without invented history or duplicate effects. Display unknown/disconnected status explicitly; the UI cannot reveal private reasoning. A future animated office uses the same records and never creates a parallel authority.
+F1 requires Overview, Decision Inbox, Actions, Agents and Action Detail. Use authenticated Core snapshots and durable event replay for real timeline, sessions, acceptance, PR and blocking reasons. Reconnected clients catch up without invented history or duplicate effects. Display unknown/disconnected status explicitly; the UI cannot reveal private reasoning. A future animated office uses the same records and never creates a parallel authority.
 
 ## 14. Telemetry from inception
 

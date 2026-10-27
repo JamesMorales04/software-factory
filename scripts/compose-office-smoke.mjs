@@ -37,7 +37,7 @@ try {
     await page.locator('.gate input[type="password"]').fill(token);
     await page.getByRole("button", { name: "Unlock" }).click();
   }
-  await page.getByRole("heading", { name: /Dashboard|Factory Office/i }).first().waitFor({ timeout: 15000 });
+  await page.getByRole("heading", { name: /Overview|Factory Office/i }).first().waitFor({ timeout: 15000 });
 
   const nav = ["Settings", "Delegations", "Projects", "Actions", "Lead", "Campaigns"];
   for (const label of nav) {

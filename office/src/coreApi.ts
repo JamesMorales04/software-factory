@@ -271,6 +271,91 @@ export interface Health {
   version: string;
 }
 
+export interface OverviewCounts {
+  projects: number;
+  actions: number;
+  campaigns: number;
+  runs: number;
+  attempts: number;
+  candidates: number;
+  workers: number;
+  lead_requests: number;
+  authorized_campaigns: number;
+  campaigns_awaiting_authorization: number;
+  active_agents: number;
+  unresolved_sessions: number;
+  unresolved_model_calls: number;
+  pending_decisions: number;
+  blocked_work: number;
+}
+
+export interface OverviewBudget {
+  measured_session_cost_micros: number;
+  measured_session_tokens: number;
+  measured_model_cost_micros: number;
+  measured_model_tokens: number;
+  unmeasured_sessions: number;
+  unmeasured_model_calls: number;
+  model_calls_sampled: number;
+  note: string;
+}
+
+export interface OverviewRuntime {
+  core_healthy: boolean;
+  workers: number;
+  active_agents: number;
+  unresolved_sessions: number;
+  unresolved_model_calls: number;
+  observability: ObservabilityStatus;
+}
+
+export interface RecentAcceptedCandidate {
+  candidate_id: string;
+  campaign_id: string;
+  commit_sha: string;
+  decided_at: string;
+  outcome: GateOutcome;
+}
+
+export interface DecisionAction {
+  kind: "resolve_model_call";
+  model_call_id: string;
+  label: string;
+}
+
+export interface DecisionItem {
+  id: string;
+  kind: string;
+  severity: "critical" | "attention" | "info";
+  actionable: boolean;
+  title: string;
+  detail: string;
+  target: string;
+  subject_id: string;
+  updated_at: string;
+  action?: DecisionAction;
+}
+
+export interface OfficeOverview {
+  as_of: string;
+  source: string;
+  counts: OverviewCounts;
+  actions_by_status: Record<string, number>;
+  campaigns_by_status: Record<string, number>;
+  runs_by_status: Record<string, number>;
+  gate_outcomes: Record<string, number>;
+  budget: OverviewBudget;
+  runtime: OverviewRuntime;
+  recent_accepted: RecentAcceptedCandidate[];
+  recent_decisions: DecisionItem[];
+  recent_events: FactoryEvent[];
+}
+
+export interface DecisionList {
+  items: DecisionItem[];
+  as_of: string;
+}
+
 export interface NewProjectRequest {
   repository: string;
   idempotency_key: string;
@@ -838,6 +923,13 @@ export const coreApi = {
   listModelCalls: (limit = 100) =>
     request<ModelCallRecord[]>(`/model/calls?limit=${limit}`),
   getObservability: () => request<ObservabilityStatus>("/observability"),
+  getOverview: () => request<OfficeOverview>("/office/overview"),
+  getDecisions: () => request<DecisionList>("/office/decisions"),
+  resolveModelCall: (id: string, actor: string, reason: string) =>
+    request<void>(`/model/calls/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ actor, reason }),
+    }),
   getCandidateReceipts: (candidateId: string) =>
     request<QualityReceipt[]>(
       `/quality/candidates/${encodeURIComponent(candidateId)}/receipts`,

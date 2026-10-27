@@ -468,7 +468,9 @@ export function Actions() {
             {actions.map((action) => (
               <tr key={action.id}>
                 <td>
-                  <code>{shortId(action.id)}</code>
+                  <Link to={`/actions/${action.id}`}>
+                    <code>{shortId(action.id)}</code>
+                  </Link>
                 </td>
                 <td>
                   <code>{shortId(action.project_id)}</code>

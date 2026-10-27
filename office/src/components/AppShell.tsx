@@ -11,7 +11,7 @@ import {
   Sun,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { NAV_GROUPS, routeLabel } from "../navigation";
 import { type Theme, useTheme } from "../theme";
 import { CommandPalette } from "./CommandPalette";
@@ -66,7 +66,10 @@ export function AppShell({
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const media = window.matchMedia("(max-width: 1000px)");
-    const update = () => setIsMobile(media.matches);
+    const update = () => {
+      setIsMobile(media.matches);
+      if (!media.matches) setMobileOpen(false);
+    };
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -146,21 +149,24 @@ export function AppShell({
                 <p className="nav-group-label">{group.label}</p>
                 {group.items.map((item) => {
                   const Icon = item.icon;
+                  const active =
+                    item.to === "/"
+                      ? pathname === "/"
+                      : pathname === item.to ||
+                        pathname.startsWith(`${item.to}/`);
                   return (
-                    <NavLink
+                    <Link
                       key={item.to}
                       to={item.to}
-                      end={item.to === "/"}
-                      className={({ isActive }) =>
-                        `nav-link ${isActive ? "nav-link--active" : ""}`
-                      }
+                      className={`nav-link ${active ? "nav-link--active" : ""}`}
+                      aria-current={active ? "page" : undefined}
                       aria-label={item.label}
                       title={item.label}
                       onClick={() => setMobileOpen(false)}
                     >
                       <Icon size={18} aria-hidden="true" />
                       <span>{item.label}</span>
-                    </NavLink>
+                    </Link>
                   );
                 })}
               </div>

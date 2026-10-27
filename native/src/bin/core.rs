@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     env,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -13,8 +14,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use factory_native::lead::StandingDelegation;
-use factory_native::quality::{EvidenceKind, ReceiptResult};
+use factory_native::lead::{LeadRequestState, StandingDelegation};
+use factory_native::quality::{EvidenceKind, GateOutcome, ReceiptResult};
 use factory_native::{
     attempt_grant::AttemptGrantClaims,
     db::{
@@ -533,6 +534,8 @@ fn api_router(app: Arc<App>) -> Router {
         )
         .route("/actions", get(actions).post(create_action))
         .route("/actions/{id}/classify", post(classify_action))
+        .route("/office/overview", get(office_overview))
+        .route("/office/decisions", get(office_decisions))
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/campaigns/{id}", get(campaign_detail))
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
@@ -1673,6 +1676,414 @@ async fn campaigns(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
     }
     result_list(app.db.campaigns().await)
 }
+fn count_statuses<T, F>(items: &[T], key: F) -> BTreeMap<String, usize>
+where
+    F: Fn(&T) -> &str,
+{
+    let mut counts = BTreeMap::new();
+    for item in items {
+        *counts.entry(key(item).to_owned()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn campaign_map(
+    runs: &[factory_native::db::Run],
+    attempts: &[factory_native::db::Attempt],
+) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    let run_campaign: BTreeMap<String, String> = runs
+        .iter()
+        .map(|run| (run.id.clone(), run.campaign_id.clone()))
+        .collect();
+    let attempt_campaign: BTreeMap<String, String> = attempts
+        .iter()
+        .filter_map(|attempt| {
+            run_campaign
+                .get(&attempt.run_id)
+                .map(|campaign| (attempt.id.clone(), campaign.clone()))
+        })
+        .collect();
+    (run_campaign, attempt_campaign)
+}
+
+fn decision_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 0,
+        "attention" => 1,
+        _ => 2,
+    }
+}
+
+async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
+    let campaigns = app.db.campaigns().await?;
+    let runs = app.db.runs().await?;
+    let attempts = app.db.attempts().await?;
+    let candidates = app.db.candidates().await?;
+    let lead_requests = app.db.lead_requests().await?;
+    let sessions = app.db.provider_sessions().await?;
+    let model_calls = app.db.model_calls(200).await?;
+    let actions = app.db.actions().await?;
+    let (run_campaign, attempt_campaign) = campaign_map(&runs, &attempts);
+    let mut items = Vec::new();
+
+    for campaign in campaigns
+        .iter()
+        .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
+    {
+        items.push(json!({
+            "id": format!("campaign-authorization:{}", campaign.id),
+            "kind": "campaign.authorization",
+            "severity": "attention",
+            "actionable": true,
+            "title": "Campaign awaiting authorization",
+            "detail": format!("Campaign {} is blocked pending an explicit authorization decision.", campaign.id),
+            "target": "/campaigns",
+            "subject_id": campaign.id,
+            "updated_at": campaign.created_at,
+        }));
+    }
+
+    for request in lead_requests
+        .iter()
+        .filter(|request| request.state == LeadRequestState::Ready)
+    {
+        items.push(json!({
+            "id": format!("lead-ready:{}", request.id),
+            "kind": "lead.ready",
+            "severity": "attention",
+            "actionable": true,
+            "title": "Frozen Lead plan ready",
+            "detail": format!("Lead request {} has a frozen plan and needs an explicit start decision.", request.id),
+            "target": "/lead",
+            "subject_id": request.id,
+            "updated_at": request.updated_at,
+        }));
+    }
+
+    for candidate in &candidates {
+        let Some(gate) = app.db.gate_for_candidate(&candidate.id).await? else {
+            continue;
+        };
+        let needs_attention = matches!(
+            gate.outcome,
+            GateOutcome::RepairRequired
+                | GateOutcome::Blocked
+                | GateOutcome::HumanRequired
+                | GateOutcome::NotTested
+        );
+        if !needs_attention {
+            continue;
+        }
+        let campaign = attempt_campaign
+            .get(&candidate.attempt_id)
+            .cloned()
+            .unwrap_or_default();
+        let target = if campaign.is_empty() {
+            "/campaigns".to_owned()
+        } else {
+            format!("/campaigns/{campaign}")
+        };
+        items.push(json!({
+            "id": format!("candidate-gate:{}", candidate.id),
+            "kind": "quality.gate",
+            "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
+            "actionable": true,
+            "title": format!("Quality Gate: {}", match gate.outcome {
+                GateOutcome::Accepted => "ACCEPTED",
+                GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+                GateOutcome::Blocked => "BLOCKED",
+                GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+                GateOutcome::NotTested => "NOT_TESTED",
+            }),
+            "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign.is_empty() { "unknown" } else { &campaign }, gate.reasons.join("; ")),
+            "target": target,
+            "subject_id": candidate.id,
+            "updated_at": gate.decided_at,
+        }));
+    }
+
+    for call in model_calls
+        .iter()
+        .filter(|call| matches!(call.state.as_str(), "AMBIGUOUS" | "UNKNOWN"))
+    {
+        items.push(json!({
+            "id": format!("model-call:{}", call.reservation_id),
+            "kind": "model.usage-unresolved",
+            "severity": "critical",
+            "actionable": true,
+            "title": "Unresolved model usage",
+            "detail": format!("{} model call {} is {}. Review the reservation before it is treated as measured spend.", call.provider, call.reservation_id, call.state),
+            "target": "/runtime",
+            "subject_id": call.reservation_id,
+            "updated_at": call.updated_at,
+            "action": {
+                "kind": "resolve_model_call",
+                "model_call_id": call.reservation_id,
+                "label": "Resolve usage"
+            }
+        }));
+    }
+
+    for session in sessions.iter().filter(|session| {
+        matches!(
+            session.state.as_str(),
+            "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
+        )
+    }) {
+        items.push(json!({
+            "id": format!("provider-session:{}", session.session_record_id),
+            "kind": "provider.unresolved-session",
+            "severity": "attention",
+            "actionable": false,
+            "title": "Provider session requires monitoring",
+            "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
+            "target": "/runtime",
+            "subject_id": session.session_record_id,
+            "updated_at": session.updated_at,
+        }));
+    }
+
+    for run in runs
+        .iter()
+        .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
+    {
+        let campaign = run_campaign.get(&run.id).cloned().unwrap_or_default();
+        items.push(json!({
+            "id": format!("run:{}", run.id),
+            "kind": "run.failed",
+            "severity": "attention",
+            "actionable": false,
+            "title": "Run failed",
+            "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign.is_empty() { "unknown" } else { &campaign }, run.status),
+            "target": if campaign.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign}") },
+            "subject_id": run.id,
+            "updated_at": run.created_at,
+        }));
+    }
+
+    for action in actions
+        .iter()
+        .filter(|action| action.status == "HUMAN_REQUIRED")
+    {
+        items.push(json!({
+            "id": format!("action:{}", action.id),
+            "kind": "action.human-required",
+            "severity": "attention",
+            "actionable": false,
+            "title": "Action requires human review",
+            "detail": format!("Action {} is HUMAN_REQUIRED.", action.id),
+            "target": format!("/actions/{}", action.id),
+            "subject_id": action.id,
+            "updated_at": action.created_at,
+        }));
+    }
+
+    let mut seen = BTreeSet::new();
+    items.retain(|item| {
+        let id = item["id"].as_str().unwrap_or_default().to_owned();
+        seen.insert(id)
+    });
+    items.sort_by(|left, right| {
+        let left_rank = decision_rank(left["severity"].as_str().unwrap_or("info"));
+        let right_rank = decision_rank(right["severity"].as_str().unwrap_or("info"));
+        left_rank.cmp(&right_rank).then_with(|| {
+            right["updated_at"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(left["updated_at"].as_str().unwrap_or(""))
+        })
+    });
+    Ok(items)
+}
+
+async fn office_overview(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match build_overview(&app).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn office_decisions(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match build_decisions(&app).await {
+        Ok(items) => {
+            Json(json!({"items": items, "as_of": chrono::Utc::now().to_rfc3339()})).into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
+    let projects = app.db.projects().await?;
+    let actions = app.db.actions().await?;
+    let campaigns = app.db.campaigns().await?;
+    let runs = app.db.runs().await?;
+    let attempts = app.db.attempts().await?;
+    let candidates = app.db.candidates().await?;
+    let sessions = app.db.provider_sessions().await?;
+    let workers = app.db.workers().await?;
+    let model_calls = app.db.model_calls(200).await?;
+    let lead_requests = app.db.lead_requests().await?;
+    let events = app.db.events().await?;
+    let (_, attempt_campaign) = campaign_map(&runs, &attempts);
+    let mut recent_accepted = Vec::new();
+    let mut gate_outcomes: BTreeMap<String, usize> = BTreeMap::new();
+    for candidate in &candidates {
+        let Some(gate) = app.db.gate_for_candidate(&candidate.id).await? else {
+            continue;
+        };
+        let label = match gate.outcome {
+            GateOutcome::Accepted => "ACCEPTED",
+            GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+            GateOutcome::Blocked => "BLOCKED",
+            GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+            GateOutcome::NotTested => "NOT_TESTED",
+        };
+        *gate_outcomes.entry(label.to_owned()).or_insert(0) += 1;
+        if gate.outcome == GateOutcome::Accepted {
+            let campaign = attempt_campaign
+                .get(&candidate.attempt_id)
+                .cloned()
+                .unwrap_or_default();
+            recent_accepted.push(json!({
+                "candidate_id": candidate.id,
+                "campaign_id": campaign,
+                "commit_sha": candidate.commit_sha,
+                "decided_at": gate.decided_at,
+                "outcome": "ACCEPTED",
+            }));
+        }
+    }
+    recent_accepted.sort_by(|left, right| {
+        right["decided_at"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(left["decided_at"].as_str().unwrap_or(""))
+    });
+    recent_accepted.truncate(5);
+
+    let decisions = build_decisions(app).await?;
+    let actionable_decisions = decisions
+        .iter()
+        .filter(|item| item["actionable"].as_bool().unwrap_or(false))
+        .count();
+    let authorized_campaigns = campaigns
+        .iter()
+        .filter(|campaign| campaign.status == "AUTHORIZED")
+        .count();
+    let campaigns_awaiting_authorization = campaigns
+        .iter()
+        .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
+        .count();
+    let failed_campaigns = campaigns
+        .iter()
+        .filter(|campaign| campaign.status == "FAILED")
+        .count();
+    let failed_runs = runs
+        .iter()
+        .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
+        .count();
+    let blocked_actions = actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                action.status.as_str(),
+                "HUMAN_REQUIRED" | "FAILED" | "BLOCKED"
+            )
+        })
+        .count();
+    let gate_blocked = gate_outcomes
+        .iter()
+        .filter(|(outcome, _)| {
+            matches!(
+                outcome.as_str(),
+                "REPAIR_REQUIRED" | "BLOCKED" | "HUMAN_REQUIRED" | "NOT_TESTED"
+            )
+        })
+        .map(|(_, count)| count)
+        .sum::<usize>();
+    let unresolved_sessions = sessions
+        .iter()
+        .filter(|session| {
+            matches!(
+                session.state.as_str(),
+                "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
+            )
+        })
+        .count();
+    let active_sessions = sessions
+        .iter()
+        .filter(|session| session.state == "ACTIVE")
+        .count();
+    let unresolved_model_calls = model_calls
+        .iter()
+        .filter(|call| matches!(call.state.as_str(), "AMBIGUOUS" | "UNKNOWN"))
+        .count();
+    let unmeasured_sessions = sessions
+        .iter()
+        .filter(|session| !session.usage_known)
+        .count();
+    let unmeasured_model_calls = model_calls.iter().filter(|call| !call.usage_known).count();
+    let measured_session_cost: u64 = sessions.iter().map(|session| session.cost_micros).sum();
+    let measured_session_tokens: u64 = sessions.iter().map(|session| session.total_tokens).sum();
+    let measured_model_cost: u64 = model_calls.iter().map(|call| call.cost_micros).sum();
+    let measured_model_tokens: u64 = model_calls.iter().map(|call| call.total_tokens).sum();
+    let recent_events: Vec<_> = events.iter().rev().take(12).cloned().collect();
+    let recent_decisions: Vec<_> = decisions.iter().take(5).cloned().collect();
+
+    Ok(json!({
+        "as_of": chrono::Utc::now().to_rfc3339(),
+        "source": "Core durable snapshots; no client-side invented state",
+        "counts": {
+            "projects": projects.len(),
+            "actions": actions.len(),
+            "campaigns": campaigns.len(),
+            "runs": runs.len(),
+            "attempts": attempts.len(),
+            "candidates": candidates.len(),
+            "workers": workers.len(),
+            "lead_requests": lead_requests.len(),
+            "authorized_campaigns": authorized_campaigns,
+            "campaigns_awaiting_authorization": campaigns_awaiting_authorization,
+            "active_agents": active_sessions,
+            "unresolved_sessions": unresolved_sessions,
+            "unresolved_model_calls": unresolved_model_calls,
+            "pending_decisions": actionable_decisions,
+            "blocked_work": blocked_actions + failed_campaigns + failed_runs + gate_blocked + campaigns_awaiting_authorization,
+        },
+        "actions_by_status": count_statuses(&actions, |action| action.status.as_str()),
+        "campaigns_by_status": count_statuses(&campaigns, |campaign| campaign.status.as_str()),
+        "runs_by_status": count_statuses(&runs, |run| run.status.as_str()),
+        "gate_outcomes": gate_outcomes,
+        "budget": {
+            "measured_session_cost_micros": measured_session_cost,
+            "measured_session_tokens": measured_session_tokens,
+            "measured_model_cost_micros": measured_model_cost,
+            "measured_model_tokens": measured_model_tokens,
+            "unmeasured_sessions": unmeasured_sessions,
+            "unmeasured_model_calls": unmeasured_model_calls,
+            "model_calls_sampled": model_calls.len(),
+            "note": "Measured Core records only; model-call totals cover the latest 200 calls. Not a billing statement; unknown usage is not zero."
+        },
+        "runtime": {
+            "core_healthy": true,
+            "workers": workers.len(),
+            "active_agents": active_sessions,
+            "unresolved_sessions": unresolved_sessions,
+            "unresolved_model_calls": unresolved_model_calls,
+            "observability": app.observability.status(),
+        },
+        "recent_accepted": recent_accepted,
+        "recent_decisions": recent_decisions,
+        "recent_events": recent_events,
+    }))
+}
+
 async fn campaign_detail(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -3204,6 +3615,78 @@ mod tests {
             "idempotency_key": "delegation-api-key"
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn office_projections_require_operator_and_return_core_shapes() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-office-projections-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::open(&path).await.unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+        for uri in ["/office/overview", "/office/decisions"] {
+            let request = axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let request = axum::http::Request::builder()
+            .uri("/office/overview")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let overview: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(overview["counts"]["projects"], 0);
+        assert_eq!(overview["runtime"]["core_healthy"], true);
+        assert!(
+            overview["as_of"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        let request = axum::http::Request::builder()
+            .uri("/office/decisions")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let decisions: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(decisions["items"].as_array().map(Vec::len), Some(0));
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

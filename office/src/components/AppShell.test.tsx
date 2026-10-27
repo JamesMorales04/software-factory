@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +51,20 @@ describe("AppShell", () => {
     expect(screen.getByTestId("location").textContent).toBe("/projects");
   });
 
+  it("marks only the current route active", () => {
+    renderShell("/inbox");
+    expect(
+      screen
+        .getByRole("link", { name: "Decision Inbox" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      screen
+        .getByRole("link", { name: "Overview" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
+  });
+
   it("can collapse and expand the desktop sidebar without losing names", async () => {
     renderShell();
     await userEvent.click(
@@ -101,7 +115,7 @@ describe("AppShell", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("link", { name: "Dashboard" }),
+        screen.getByRole("link", { name: "Overview" }),
       ),
     );
     await userEvent.click(
@@ -109,6 +123,42 @@ describe("AppShell", () => {
     );
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     await waitFor(() => expect(document.activeElement).toBe(toggle));
+  });
+
+  it("closes an open mobile drawer when the viewport becomes desktop", async () => {
+    let mobile = true;
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      get matches() {
+        return mobile;
+      },
+      media: query,
+      onchange: null,
+      addEventListener: (_event: string, listener: () => void) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (_event: string, listener: () => void) => {
+        listeners.delete(listener);
+      },
+      addListener: (listener: () => void) => listeners.add(listener),
+      removeListener: (listener: () => void) => listeners.delete(listener),
+      dispatchEvent: () => false,
+    }));
+    renderShell();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Toggle navigation" }),
+    );
+    expect(document.querySelector(".app-shell--mobile-open")).not.toBeNull();
+    mobile = false;
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+    await waitFor(() =>
+      expect(document.querySelector(".app-shell--mobile-open")).toBeNull(),
+    );
+    expect(document.querySelector(".workspace")?.hasAttribute("inert")).toBe(
+      false,
+    );
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {

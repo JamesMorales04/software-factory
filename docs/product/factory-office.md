@@ -62,13 +62,19 @@ filesystem editing.
 The current Office has a responsive command-center shell with grouped
 navigation, route context in the top bar, command navigation (`Ctrl/Cmd+K`),
 light/dark themes, comfortable/compact density, Core health visibility and a
-shared token/component foundation. Existing views are Dashboard, Projects,
-Actions, Lead, Delegations, Campaigns/Campaign Detail, Runs, Workers, Runtime
-and Settings. It uses Core snapshots and polling; it does not claim SSE/live
-streaming. Campaign Detail includes a table-based WorkGraph projection,
-candidate receipts and the deterministic Gate. The browser journey and Compose
-smokes pass on the baseline; Decision Inbox, Agent Office, Issues, Docs,
-graph/timeline views and the command-center Overview are not yet implemented.
+shared token/component foundation. Existing views are Overview, Decision
+Inbox, Projects, Actions/Action Detail, Lead, Delegations, Campaigns/Campaign
+Detail, Runs, Workers, Runtime and Settings. It uses Core snapshots and
+polling; it does not claim SSE/live streaming. Overview projects authoritative
+Core counts, Quality Gate outcomes, measured and unmeasured spend, accepted
+candidates, decisions, runtime health and recent events. Decision Inbox
+aggregates blocked authorizations, frozen Lead plans, Gate repair/human-review
+states, unresolved model usage, unresolved provider sessions and failed work;
+only model-call resolution invokes a Core operation, while other items link to
+their existing authoritative module. Action Detail shows the frozen spec,
+checks and related Core records. Campaign Detail includes a table-based
+WorkGraph projection, candidate receipts and the deterministic Gate. Agent
+Office, Issues, Docs and graph/timeline views are not yet implemented.
 
 Known gaps:
 
@@ -76,15 +82,15 @@ Known gaps:
   to the shared components module by module.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
-- No central decision aggregation or actionable inbox.
+- Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
 - No visual Agent Office or session inspector.
 - No issue board or repository docs/wiki.
 - Hash-only routes, no stable `/office` deep-link base.
 - The design foundation is implemented; Storybook, visual regression, full
   automated accessibility and the remaining graph/board/diff components are not.
 - Polling only; no cursor/replay stream in the browser.
-- Limited responsive behavior, filters and keyboard alternatives for the
-  legacy operational views.
+- Limited filters and keyboard alternatives for the remaining legacy
+  operational views.
 
 ## Verification requirements
 
