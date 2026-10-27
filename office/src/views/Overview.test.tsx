@@ -92,7 +92,7 @@ const overview: OfficeOverview = {
     unresolved_sessions: 0,
     unresolved_model_calls: 1,
     pending_decisions: 1,
-    blocked_work: 1,
+    blocked_signals: 1,
   },
   actions_by_status: { AUTHORIZED: 2 },
   campaigns_by_status: { AUTHORIZED: 3 },
@@ -105,6 +105,7 @@ const overview: OfficeOverview = {
     measured_model_tokens: 0,
     unmeasured_sessions: 0,
     unmeasured_model_calls: 1,
+    unmeasured_bound_cost_micros: 500000,
     model_calls_sampled: 1,
     note: "Measured records only.",
   },
@@ -182,7 +183,7 @@ describe("operational workspace", () => {
     renderView(<DecisionInbox />);
     await screen.findByRole("heading", { name: "Decision Inbox" });
     const reason = screen.getByLabelText("Resolution reason");
-    const resolve = screen.getByRole("button", { name: "Resolve usage" });
+    const resolve = screen.getByRole("button", { name: "Release reservation" });
     expect(resolve.hasAttribute("disabled")).toBe(true);
     await userEvent.type(reason, "Provider aborted before usage was reported.");
     await userEvent.click(resolve);

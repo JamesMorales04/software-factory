@@ -197,7 +197,7 @@ export function ActionDetail() {
               <dd>{leadRequests.length}</dd>
             </div>
             <div>
-              <dt>Delegations</dt>
+              <dt>Project delegations</dt>
               <dd>{delegations.length}</dd>
             </div>
           </dl>
@@ -229,7 +229,7 @@ export function ActionDetail() {
           )}
           {delegations.length > 0 && (
             <p className="muted">
-              Delegations:{" "}
+              Project delegations:{" "}
               {delegations.map((delegation) => (
                 <Link key={delegation.id} to="/delegations">
                   {shortId(delegation.id)}{" "}

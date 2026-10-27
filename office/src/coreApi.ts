@@ -286,7 +286,7 @@ export interface OverviewCounts {
   unresolved_sessions: number;
   unresolved_model_calls: number;
   pending_decisions: number;
-  blocked_work: number;
+  blocked_signals: number;
 }
 
 export interface OverviewBudget {
@@ -296,6 +296,7 @@ export interface OverviewBudget {
   measured_model_tokens: number;
   unmeasured_sessions: number;
   unmeasured_model_calls: number;
+  unmeasured_bound_cost_micros: number;
   model_calls_sampled: number;
   note: string;
 }

@@ -1721,7 +1721,7 @@ async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
     let candidates = app.db.candidates().await?;
     let lead_requests = app.db.lead_requests().await?;
     let sessions = app.db.provider_sessions().await?;
-    let model_calls = app.db.model_calls(200).await?;
+    let model_calls = app.db.unresolved_model_calls().await?;
     let actions = app.db.actions().await?;
     let (run_campaign, attempt_campaign) = campaign_map(&runs, &attempts);
     let mut items = Vec::new();
@@ -1802,24 +1802,21 @@ async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
         }));
     }
 
-    for call in model_calls
-        .iter()
-        .filter(|call| matches!(call.state.as_str(), "AMBIGUOUS" | "UNKNOWN"))
-    {
+    for call in &model_calls {
         items.push(json!({
             "id": format!("model-call:{}", call.reservation_id),
             "kind": "model.usage-unresolved",
             "severity": "critical",
             "actionable": true,
-            "title": "Unresolved model usage",
-            "detail": format!("{} model call {} is {}. Review the reservation before it is treated as measured spend.", call.provider, call.reservation_id, call.state),
+            "title": "Unresolved model reservation",
+            "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
             "target": "/runtime",
             "subject_id": call.reservation_id,
             "updated_at": call.updated_at,
             "action": {
                 "kind": "resolve_model_call",
                 "model_call_id": call.reservation_id,
-                "label": "Resolve usage"
+                "label": "Release reservation"
             }
         }));
     }
@@ -1870,8 +1867,8 @@ async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
             "kind": "action.human-required",
             "severity": "attention",
             "actionable": false,
-            "title": "Action requires human review",
-            "detail": format!("Action {} is HUMAN_REQUIRED.", action.id),
+            "title": "Action is HUMAN_REQUIRED",
+            "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
             "target": format!("/actions/{}", action.id),
             "subject_id": action.id,
             "updated_at": action.created_at,
@@ -1928,6 +1925,7 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
     let sessions = app.db.provider_sessions().await?;
     let workers = app.db.workers().await?;
     let model_calls = app.db.model_calls(200).await?;
+    let unresolved_model_calls = app.db.unresolved_model_calls().await?;
     let lead_requests = app.db.lead_requests().await?;
     let events = app.db.events().await?;
     let (_, attempt_campaign) = campaign_map(&runs, &attempts);
@@ -2020,19 +2018,41 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
         .iter()
         .filter(|session| session.state == "ACTIVE")
         .count();
-    let unresolved_model_calls = model_calls
-        .iter()
-        .filter(|call| matches!(call.state.as_str(), "AMBIGUOUS" | "UNKNOWN"))
-        .count();
+    let unresolved_model_call_count = unresolved_model_calls.len();
     let unmeasured_sessions = sessions
         .iter()
         .filter(|session| !session.usage_known)
         .count();
-    let unmeasured_model_calls = model_calls.iter().filter(|call| !call.usage_known).count();
-    let measured_session_cost: u64 = sessions.iter().map(|session| session.cost_micros).sum();
-    let measured_session_tokens: u64 = sessions.iter().map(|session| session.total_tokens).sum();
-    let measured_model_cost: u64 = model_calls.iter().map(|call| call.cost_micros).sum();
-    let measured_model_tokens: u64 = model_calls.iter().map(|call| call.total_tokens).sum();
+    let unmeasured_model_calls = unresolved_model_calls.len();
+    let unmeasured_bound_cost: u64 = sessions
+        .iter()
+        .filter(|session| !session.usage_known)
+        .map(|session| session.cost_micros)
+        .sum::<u64>()
+        + unresolved_model_calls
+            .iter()
+            .map(|call| call.cost_micros)
+            .sum::<u64>();
+    let measured_session_cost: u64 = sessions
+        .iter()
+        .filter(|session| session.usage_known)
+        .map(|session| session.cost_micros)
+        .sum();
+    let measured_session_tokens: u64 = sessions
+        .iter()
+        .filter(|session| session.usage_known)
+        .map(|session| session.total_tokens)
+        .sum();
+    let measured_model_cost: u64 = model_calls
+        .iter()
+        .filter(|call| call.usage_known)
+        .map(|call| call.cost_micros)
+        .sum();
+    let measured_model_tokens: u64 = model_calls
+        .iter()
+        .filter(|call| call.usage_known)
+        .map(|call| call.total_tokens)
+        .sum();
     let recent_events: Vec<_> = events.iter().rev().take(12).cloned().collect();
     let recent_decisions: Vec<_> = decisions.iter().take(5).cloned().collect();
 
@@ -2052,9 +2072,9 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
             "campaigns_awaiting_authorization": campaigns_awaiting_authorization,
             "active_agents": active_sessions,
             "unresolved_sessions": unresolved_sessions,
-            "unresolved_model_calls": unresolved_model_calls,
+            "unresolved_model_calls": unresolved_model_call_count,
             "pending_decisions": actionable_decisions,
-            "blocked_work": blocked_actions + failed_campaigns + failed_runs + gate_blocked + campaigns_awaiting_authorization,
+            "blocked_signals": blocked_actions + failed_campaigns + failed_runs + gate_blocked + campaigns_awaiting_authorization,
         },
         "actions_by_status": count_statuses(&actions, |action| action.status.as_str()),
         "campaigns_by_status": count_statuses(&campaigns, |campaign| campaign.status.as_str()),
@@ -2067,15 +2087,16 @@ async fn build_overview(app: &App) -> Result<serde_json::Value, Error> {
             "measured_model_tokens": measured_model_tokens,
             "unmeasured_sessions": unmeasured_sessions,
             "unmeasured_model_calls": unmeasured_model_calls,
+            "unmeasured_bound_cost_micros": unmeasured_bound_cost,
             "model_calls_sampled": model_calls.len(),
-            "note": "Measured Core records only; model-call totals cover the latest 200 calls. Not a billing statement; unknown usage is not zero."
+            "note": "Measured totals include usage-known records only; measured model-call totals cover the latest 200 calls. Unresolved reservations are counted from the full ledger. The unmeasured bound is a reservation ceiling, not observed spend. Not a billing statement; unknown usage is not zero."
         },
         "runtime": {
             "core_healthy": true,
             "workers": workers.len(),
             "active_agents": active_sessions,
             "unresolved_sessions": unresolved_sessions,
-            "unresolved_model_calls": unresolved_model_calls,
+            "unresolved_model_calls": unresolved_model_call_count,
             "observability": app.observability.status(),
         },
         "recent_accepted": recent_accepted,

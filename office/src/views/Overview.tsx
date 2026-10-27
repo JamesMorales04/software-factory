@@ -47,7 +47,11 @@ function Metric({
       <p className="overview-metric-value">{value}</p>
       {detail && <p className="overview-metric-detail">{detail}</p>}
       {to && (
-        <Link className="overview-metric-link" to={to}>
+        <Link
+          className="overview-metric-link"
+          to={to}
+          aria-label={`Open ${label}`}
+        >
           Open
         </Link>
       )}
@@ -152,8 +156,8 @@ export function Overview() {
           to="/inbox"
         />
         <Metric
-          label="Blocked work"
-          value={data.counts.blocked_work}
+          label="Blocked signals"
+          value={data.counts.blocked_signals}
           detail="Actions, Runs, Campaigns or Gates"
           to="/campaigns"
         />
@@ -199,6 +203,12 @@ export function Overview() {
             <div>
               <dt>Unmeasured model calls</dt>
               <dd>{data.budget.unmeasured_model_calls}</dd>
+            </div>
+            <div>
+              <dt>Unmeasured bound</dt>
+              <dd>
+                {formatCostMicros(data.budget.unmeasured_bound_cost_micros)}
+              </dd>
             </div>
             <div>
               <dt>Core</dt>

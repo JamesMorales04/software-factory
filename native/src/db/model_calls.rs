@@ -606,6 +606,23 @@ impl Database {
         model_call_records(rows)
     }
 
+    /// Every unresolved reservation regardless of age. Unlike the bounded
+    /// recent-call listing, this projection must not hide an old ambiguous
+    /// reservation that still holds budget.
+    pub async fn unresolved_model_calls(&self) -> Result<Vec<ModelCallRecord>, Error> {
+        let rows = sqlx::query::query(
+            "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
+                    model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
+                    cost_micros,usage_known,state,COALESCE(error,'') AS error,created_at,updated_at
+             FROM model_call_reservations
+             WHERE state IN ('AMBIGUOUS','UNKNOWN')
+             ORDER BY updated_at DESC,reservation_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        model_call_records(rows)
+    }
+
     pub async fn model_calls(&self, limit: usize) -> Result<Vec<ModelCallRecord>, Error> {
         let limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query::query(

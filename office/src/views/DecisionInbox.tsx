@@ -82,7 +82,7 @@ function ResolveModelCall({
         label="Resolution reason"
         value={reason}
         onChange={(event) => setReason(event.target.value)}
-        placeholder="Why is this usage measured, ignored or written off?"
+        placeholder="Why is this reservation released?"
         className="decision-resolve-reason"
       />
       <Button
@@ -91,7 +91,7 @@ function ResolveModelCall({
         onClick={() => void submit()}
         disabled={busy || !reason.trim()}
       >
-        {busy ? "Resolving…" : "Resolve usage"}
+        {busy ? "Releasing…" : "Release reservation"}
       </Button>
       {error && <p className="error">{error}</p>}
     </div>
@@ -226,7 +226,7 @@ export function DecisionInbox() {
         {awareness.length === 0 ? (
           <EmptyState
             title="No unresolved background work"
-            description="Active or orphaned provider sessions and failed Runs appear here."
+            description="Active or orphaned provider sessions, failed Runs and human-required Actions appear here."
           />
         ) : (
           <div className="decision-list">

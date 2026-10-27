@@ -2141,7 +2141,7 @@ capabilities:
 - id: CAP-049
   name: Operational Overview and Decision Inbox
   category: Product
-  purpose: Operators see authoritative Core state, decisions, blocked work, measured spend and recent accepted work in one workspace
+  purpose: Operators see authoritative Core state, decisions, blocked work, measured spend and the unmeasured reservation bound in one workspace
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
