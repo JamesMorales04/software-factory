@@ -645,8 +645,20 @@ try {
     [],
     `unexpected 404 responses: ${unexpectedNotFound.join("; ")}`,
   );
+  const unexpectedConsole = consoleErrors.filter(
+    (message) =>
+      message !==
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+  );
+  assert.deepEqual(
+    unexpectedConsole,
+    [],
+    `unexpected browser console errors: ${unexpectedConsole.join("; ")}`,
+  );
   if (consoleErrors.length > 0) {
-    console.error("browser console diagnostics:", consoleErrors.join("; "));
+    console.error(
+      "browser console diagnostics: expected pending-gate 404 probes",
+    );
   }
   console.log(
     JSON.stringify({

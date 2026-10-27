@@ -131,6 +131,34 @@ head_sha: {self.head}
             )[0]
         )
 
+    def test_compose_variants_and_provider_boundaries_are_container_native(self):
+        self.assertTrue(impact_check.is_container_native("compose.prod.yaml"))
+        self.assertTrue(impact_check.is_container_native("compose.edge.yml"))
+        self.assertTrue(impact_check.is_container_native("native/src/provider_sandbox.rs"))
+        self.assertTrue(impact_check.is_container_native("native/src/execution.rs"))
+        ok, classification, _ = impact_check.evaluate(
+            ["compose.prod.yaml"], self.container_body(), self.base, self.head
+        )
+        self.assertTrue(ok)
+        self.assertEqual(classification, "container-native")
+        architecture = f"""{impact_check.START}
+category: runtime
+rationale: This changes provider sandbox behavior and the container execution boundary.
+base_sha: {self.base}
+head_sha: {self.head}
+{impact_check.END}"""
+        self.assertFalse(
+            impact_check.evaluate(["native/src/provider_sandbox.rs"], architecture, self.base, self.head)[0]
+        )
+        self.assertTrue(
+            impact_check.evaluate(
+                ["native/src/provider_sandbox.rs"],
+                architecture + "\n" + self.container_body(),
+                self.base,
+                self.head,
+            )[0]
+        )
+
     def test_protected_container_change_needs_both_declarations(self):
         architecture = f"""{impact_check.START}
 category: runtime

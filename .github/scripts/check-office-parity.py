@@ -101,6 +101,8 @@ def validate(root: Path) -> list[str]:
             exemption = entry.get("exemption")
             if not isinstance(exemption, str) or exemption.strip() == "":
                 fail(errors, f"{name}: user_facing false requires a documented exemption")
+            elif any(marker in exemption.upper() for marker in PLACEHOLDERS):
+                fail(errors, f"{name}: exemption contains a placeholder")
             continue
         for required in ("name", "job", "notes"):
             value = entry.get(required)

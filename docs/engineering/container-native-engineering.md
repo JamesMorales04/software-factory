@@ -69,6 +69,11 @@ podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
   sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
 
+# Factory-managed browser capability (real Chromium server/cleanup)
+podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
+  -e FACTORY_PLAYWRIGHT_CORE=/workspaces/software-factory/office/e2e-browser/node_modules/playwright-core \
+  dev sh -c 'npm --prefix office/e2e-browser ci && cargo test --locked -p factory-native --test browser'
+
 # Real Chromium Office journey
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
   sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
@@ -104,6 +109,7 @@ topology. It may bind the repository and use a development image. The product
 | Playwright Chromium in the development image | `IMPLEMENTED` in this policy change; exact-image run recorded with the Slice 1 candidate | Containerfile and Slice 1 evidence |
 | Canonical Compose development service | `IMPLEMENTED` | `compose.dev.yaml` |
 | Rust/Office/browser commands through the service | `LOCALLY_VERIFIED` at `a75d4c3f9e65cec4318678f4b0e4d6394e03a008`; container-dev CI lane `VERIFIED` on PR #29 head | [Slice 1 evidence](../evidence/office-command-center-slice1-2026-10-27.json) |
+| Factory-managed browser capability | `LOCALLY_VERIFIED` in the development image; retained in the container-dev CI lane | `cargo test -p factory-native --test browser` with real Chromium |
 | Windows/Podman Machine | `NOT_TESTED` | No Windows host |
 | SELinux/AppArmor hosts and digest pinning | `NOT_TESTED` / `NOT_IMPLEMENTED` | See security policy |
 
