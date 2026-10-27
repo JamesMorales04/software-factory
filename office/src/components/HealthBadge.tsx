@@ -39,7 +39,7 @@ export function HealthBadge() {
       title={label}
     >
       <span className="health-dot" aria-hidden="true" />
-      <span>{label}</span>
+      <span className="health-text">{label}</span>
     </span>
   );
 }

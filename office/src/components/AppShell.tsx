@@ -10,7 +10,7 @@ import {
   Search,
   Sun,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { NAV_GROUPS, routeLabel } from "../navigation";
 import { type Theme, useTheme } from "../theme";
@@ -43,6 +43,7 @@ export function AppShell({
   pathname: string;
 }) {
   const { theme, setTheme, density, setDensity } = useTheme();
+  const menuRef = useRef<HTMLButtonElement>(null);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === "collapsed",
   );
@@ -64,20 +65,43 @@ export function AppShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const first =
+      document.querySelector<HTMLAnchorElement>(".sidebar .nav-link");
+    first?.focus();
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+        requestAnimationFrame(() => menuRef.current?.focus());
+      }
+    }
+    document.addEventListener("keydown", onEscape);
+    return () => document.removeEventListener("keydown", onEscape);
+  }, [mobileOpen]);
+
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
   const DensityIcon = density === "compact" ? Rows4 : Rows3;
 
   return (
     <>
-      <a className="skip-link" href="#main">
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => document.getElementById("main")?.focus()}
+      >
         Skip to main content
-      </a>
+      </button>
       <div
         className={`app-shell ${collapsed ? "app-shell--collapsed" : ""} ${
           mobileOpen ? "app-shell--mobile-open" : ""
         }`}
       >
-        <aside className="sidebar" aria-label="Primary navigation">
+        <aside
+          className="sidebar"
+          id="primary-sidebar"
+          aria-label="Primary navigation"
+        >
           <div className="sidebar-brand">
             <span className="brand-mark" aria-hidden="true">
               SF
@@ -112,6 +136,8 @@ export function AppShell({
                       className={({ isActive }) =>
                         `nav-link ${isActive ? "nav-link--active" : ""}`
                       }
+                      aria-label={item.label}
+                      title={item.label}
                       onClick={() => setMobileOpen(false)}
                     >
                       <Icon size={18} aria-hidden="true" />
@@ -122,9 +148,7 @@ export function AppShell({
               </div>
             ))}
           </nav>
-          <div className="sidebar-footer">
-            <HealthBadge />
-          </div>
+          <div className="sidebar-footer" aria-hidden="true" />
         </aside>
         {mobileOpen && (
           <button
@@ -134,14 +158,27 @@ export function AppShell({
             onClick={() => setMobileOpen(false)}
           />
         )}
-        <div className="workspace">
+        <div className="workspace" inert={mobileOpen || undefined}>
           <header className="topbar">
             <IconButton
-              label="Open navigation"
+              ref={menuRef}
+              label="Toggle navigation"
               className="topbar-menu"
-              onClick={() => setMobileOpen(true)}
+              aria-controls="primary-sidebar"
+              aria-expanded={mobileOpen || !collapsed}
+              onClick={() => {
+                if (window.matchMedia("(max-width: 1000px)").matches) {
+                  setMobileOpen((open) => !open);
+                } else {
+                  setCollapsed((value) => !value);
+                }
+              }}
             >
-              <PanelLeftOpen size={19} aria-hidden="true" />
+              {mobileOpen || collapsed ? (
+                <PanelLeftOpen size={19} aria-hidden="true" />
+              ) : (
+                <PanelLeftClose size={19} aria-hidden="true" />
+              )}
             </IconButton>
             <div className="topbar-context">
               <span className="topbar-crumb">Factory Office</span>
@@ -151,6 +188,7 @@ export function AppShell({
               <span className="topbar-title">{routeLabel(pathname)}</span>
             </div>
             <div className="topbar-actions">
+              <HealthBadge />
               <button
                 type="button"
                 className="command-trigger"

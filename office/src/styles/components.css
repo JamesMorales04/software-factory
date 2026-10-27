@@ -445,7 +445,8 @@
 }
 
 .command-result:hover,
-.command-result:focus-visible {
+.command-result:focus-visible,
+.command-result[aria-selected="true"] {
   background: var(--accent-soft);
 }
 

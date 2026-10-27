@@ -60,7 +60,7 @@ filesystem editing.
 ## Current implementation (truthful baseline)
 
 The current Office has a responsive command-center shell with grouped
-navigation, project/work context in the header, command navigation (`Ctrl/Cmd+K`),
+navigation, route context in the top bar, command navigation (`Ctrl/Cmd+K`),
 light/dark themes, comfortable/compact density, Core health visibility and a
 shared token/component foundation. Existing views are Dashboard, Projects,
 Actions, Lead, Delegations, Campaigns/Campaign Detail, Runs, Workers, Runtime
@@ -83,7 +83,8 @@ Known gaps:
 - The design foundation is implemented; Storybook, visual regression, full
   automated accessibility and the remaining graph/board/diff components are not.
 - Polling only; no cursor/replay stream in the browser.
-- Limited responsive behavior, filters, command search and keyboard alternatives.
+- Limited responsive behavior, filters and keyboard alternatives for the
+  legacy operational views.
 
 ## Verification requirements
 

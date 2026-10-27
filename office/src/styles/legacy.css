@@ -269,7 +269,8 @@ td code {
 .pill.evidence-blocked,
 .pill.evidence-not_tested,
 .pill.review-request_changes,
-.pill.review-blocked {
+.pill.review-blocked,
+.pill.check-CHANGES_REQUESTED {
   border-style: dashed;
   border-color: var(--danger);
   background: var(--danger-soft);

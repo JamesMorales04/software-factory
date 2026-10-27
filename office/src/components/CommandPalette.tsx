@@ -13,6 +13,7 @@ export function CommandPalette({
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const results = useMemo(() => {
@@ -32,7 +33,14 @@ export function CommandPalette({
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        setActiveIndex(0);
+        if (!next) setQuery("");
+        onOpenChange(next);
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="command-overlay" />
         <Dialog.Content
@@ -53,11 +61,36 @@ export function CommandPalette({
             <input
               ref={inputRef}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setActiveIndex(0);
+              }}
+              role="combobox"
+              aria-expanded="true"
+              aria-controls="command-results"
+              aria-activedescendant={
+                results.length > 0 ? `command-option-${activeIndex}` : undefined
+              }
+              aria-autocomplete="list"
               onKeyDown={(event) => {
-                if (event.key === "Enter" && results[0]) {
+                if (event.key === "ArrowDown") {
                   event.preventDefault();
-                  choose(results[0].to);
+                  setActiveIndex((index) =>
+                    results.length === 0 ? 0 : (index + 1) % results.length,
+                  );
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveIndex((index) =>
+                    results.length === 0
+                      ? 0
+                      : (index - 1 + results.length) % results.length,
+                  );
+                } else if (event.key === "Enter") {
+                  const selected = results[activeIndex] ?? results[0];
+                  if (selected) {
+                    event.preventDefault();
+                    choose(selected.to);
+                  }
                 }
               }}
               placeholder="Search implemented pages…"
@@ -66,19 +99,27 @@ export function CommandPalette({
             />
             <kbd className="ui-kbd">Esc</kbd>
           </div>
-          <div className="command-results" role="listbox" aria-label="Pages">
+          <div
+            className="command-results"
+            id="command-results"
+            role="listbox"
+            aria-label="Pages"
+          >
             {results.length === 0 ? (
               <p className="command-empty">No implemented page matches.</p>
             ) : (
-              results.map((item) => {
+              results.map((item, index) => {
                 const Icon = item.icon;
                 return (
                   <button
                     type="button"
                     role="option"
-                    aria-selected="false"
+                    id={`command-option-${index}`}
+                    aria-selected={index === activeIndex}
+                    tabIndex={-1}
                     className="command-result"
                     key={item.to}
+                    onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => choose(item.to)}
                   >
                     <Icon size={17} aria-hidden="true" />
