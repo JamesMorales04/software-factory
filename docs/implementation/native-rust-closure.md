@@ -14,7 +14,8 @@ replace candidate-bound test output, independent review or protected approval.
 | Legacy implementation | retired from the tracked tree; retained only in Git history and archived provenance |
 | Historical combined candidate | `ea2d92724d57d4f96838d84216f39db04b7c5511` (author-run gates and managed live acceptance); exact-head PR checks are authoritative |
 | Container-native implementation | `30cb0db7efbd1b9d4ed8123b4be3d3f8e2e34e9e` (author-run deterministic Compose evidence; PR #28 not merged) |
-| Merge state | PRs #17–#27 merged. PR #28 (container-native Compose iteration) is open with exact-head CI and awaits independent review/Product Owner authorization; it is not merged. |
+| Container-native hardening candidate | `bc66f460d1e1a8a61742afa10033d4ddb4456666` (post-review quality/provider/policy fixes; deterministic Compose E2E PASS; live inference NOT_TESTED) |
+| Merge state | PRs #17–#27 merged. PR #28 (container-native Compose iteration) remains open. Its hardening candidate has exact-head local evidence but awaits an independent re-review, a separately authorized paid UAT and Product Owner approval; it is not merged. |
 
 PR #16 is a product-concept and provenance reference only. Its implementation is
 not merged, is not built or tested by this repository, and is not authoritative.
