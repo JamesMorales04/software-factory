@@ -80,8 +80,10 @@ concrete paths. The branch now includes and locally verifies:
   adapter (fixture only), not the deployment environment, and the base Compose
   stack defaults to the live OpenCode route while the deterministic fixture is
   selected only by the explicit E2E override;
-- semantic review, when enabled with a configured gateway, requires MODEL
-  reviewer evidence; a deterministic reviewer `PASS` is rejected;
+- semantic review, when enabled with a configured default provider, requires
+  MODEL reviewer evidence; a deterministic reviewer `PASS` is rejected at
+  ingestion and again at gate acceptance, including a receipt recorded before
+  the policy change;
 - provider credential disclosure now requires a `LEASED` attempt, an
   `AUTHORIZED` Campaign, the exact lease generation and an unexpired
   authorization deadline;

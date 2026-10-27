@@ -110,14 +110,17 @@ why the engine is trusted infrastructure and why SEC-01 remains blocked.
   rejected by Core, leaving them unresolved for recovery. The broker reaper
   removes provider containers after their configured lifetime; a broker crash
   is reconciled on restart.
-- Core enforces the semantic-review toggle for model calls and receipts. When
-  semantic review is enabled and a default gateway exists, Core requires MODEL
-  reviewer evidence; a deterministic PASS is rejected. The reviewer binary
-  performs deterministic pre-review before a model call, but Core cannot prove
-  that internal ordering against a compromised reviewer token. If semantic
-  review is enabled but no gateway exists, `review/config` returns
-  DETERMINISTIC rather than pretending model review occurred. Independent
-  review and isolation remain the mitigation.
+- Core enforces the semantic-review toggle for model calls, receipts and gate
+  decisions. When semantic review is enabled and a default provider is
+  configured, Core requires MODEL reviewer evidence; a deterministic PASS is
+  rejected at ingestion and again at gate acceptance, so a receipt recorded
+  before the policy change cannot silently accept a candidate. The reviewer
+  binary performs deterministic pre-review before a model call, but Core cannot
+  prove that internal ordering against a compromised reviewer token. If
+  semantic review is enabled but no gateway exists, `review/config` returns
+  DETERMINISTIC rather than pretending model review occurred; a configured
+  default provider without constructible MODEL evidence fails closed at the
+  gate. Independent review and isolation remain the mitigation.
 - The execution roles that must call the runtime broker (Worker, Supervisor,
   verifier and runtime) share the runtime-broker credential. This is a scoped
   shared engine authority, not per-role secret isolation. The reviewer does not

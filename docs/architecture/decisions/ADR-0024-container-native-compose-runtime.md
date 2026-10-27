@@ -149,9 +149,11 @@ the exact candidate. A verifier failure produces a repair-required gate without
 waiting for the reviewer; a passing verifier is required before the reviewer is
 dispatched. The reviewer runs deterministic review first; semantic review is an
 explicit Office-controlled option that requires a configured default provider
-and remains Core-budgeted. When semantic review is enabled and a gateway is
-configured, Core requires MODEL reviewer evidence; a deterministic reviewer
-PASS cannot silently satisfy that policy. The deterministic gate accepts only
+and remains Core-budgeted. When semantic review is enabled and a default
+provider is configured, Core requires MODEL reviewer evidence; a deterministic
+reviewer PASS cannot silently satisfy that policy. The same check is applied at
+gate decision time, so a deterministic receipt recorded before the policy change
+cannot produce an `ACCEPTED` gate after it. The deterministic gate accepts only
 candidate-bound PASS evidence from both roles.
 
 ## Consequences

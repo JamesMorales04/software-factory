@@ -885,6 +885,23 @@ async fn validate_model_review_receipt(
     Ok(())
 }
 
+async fn semantic_review_requires_model(connection: &mut SqliteConnection) -> Result<bool, Error> {
+    let enabled: Option<(i64,)> =
+        sqlx::query_as::query_as("SELECT semantic_review_enabled FROM factory_settings WHERE id=1")
+            .fetch_optional(&mut *connection)
+            .await?;
+    if enabled.is_none_or(|(enabled,)| enabled == 0) {
+        return Ok(false);
+    }
+    let configured: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT provider FROM provider_settings
+         WHERE is_default=1 AND enabled=1 AND credential_ciphertext<>'' LIMIT 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(configured.is_some())
+}
+
 async fn decide_gate(
     connection: &mut SqliteConnection,
     candidate_id: &str,
@@ -896,7 +913,7 @@ async fn decide_gate(
     };
     let reviewer = load_receipt_by_role(connection, candidate_id, QualityRole::Reviewer).await?;
     let policy = load_gate_policy(connection, candidate_id).await?;
-    let decision = evaluate_quality_gate(
+    let mut decision = evaluate_quality_gate(
         &FrozenActionSpec {
             hash: candidate.action_spec_sha256.clone(),
         },
@@ -910,6 +927,17 @@ async fn decide_gate(
         reviewer.as_ref().map(to_reviewer_receipt).as_ref(),
         policy,
     );
+    if decision.outcome == GateOutcome::Accepted
+        && reviewer
+            .as_ref()
+            .is_some_and(|receipt| receipt.mechanism != ReviewMechanism::Model)
+        && semantic_review_requires_model(connection).await?
+    {
+        decision = crate::quality::GateDecision {
+            outcome: GateOutcome::NotTested,
+            reasons: vec!["semantic review is enabled; MODEL reviewer evidence is required".into()],
+        };
+    }
     if reviewer.is_none()
         && decision
             .reasons
