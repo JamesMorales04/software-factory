@@ -32,13 +32,21 @@ export function ModelCallResolution({
         actor.trim() || "office-operator",
         reason.trim(),
       );
-      setReason("");
-      await onResolved();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
           : "Failed to release the model reservation.",
+      );
+      setBusy(false);
+      return;
+    }
+    setReason("");
+    try {
+      await onResolved();
+    } catch {
+      setError(
+        "Reservation released, but the refresh failed. Reload to confirm.",
       );
     } finally {
       setBusy(false);

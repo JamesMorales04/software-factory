@@ -2210,6 +2210,14 @@ async fn model_call_budget_unknown_usage_and_ambiguity_fail_closed() {
     .execute(&db.pool)
     .await
     .unwrap();
+    let swept = db.unresolved_model_calls().await.unwrap();
+    assert_eq!(
+        swept
+            .iter()
+            .find(|record| record.reservation_id == grant.reservation_id)
+            .map(|record| record.state.as_str()),
+        Some("AMBIGUOUS")
+    );
     assert!(matches!(
         db.authorize_model_call(&third).await,
         Err(Error::Forbidden(_))

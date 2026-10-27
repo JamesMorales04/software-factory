@@ -193,7 +193,8 @@
         "GET /provider/sessions",
         "GET /model/calls",
         "GET /model/calls/unresolved",
-        "GET /model/calls/{id}/resolve",
+        "POST /model/calls/{id}/resolve",
+        "GET /provider/turn_reservations/budget",
         "GET /observability",
         "GET /settings/runtime"
       ],
@@ -219,7 +220,7 @@
         "office/e2e-browser/rust-journey.mjs",
         "office/src/views/Runtime.test.tsx"
       ],
-      "notes": "Measured spend, unmeasured session bound and unresolved reservation ceiling are displayed separately. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists."
+      "notes": "Sampled measured spend covers usage-known sessions and the latest 200 model calls. Reserved ceiling uses unresolved model-call max cost plus open provider-turn max cost. Unmeasured session count is shown separately; session cost is not claimed as a held ceiling. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

@@ -21,6 +21,7 @@ import {
   type ModelCallRecord,
   type ObservabilityStatus,
   type ProviderSession,
+  type ProviderTurnBudget,
   type WorkerSummary,
 } from "../coreApi";
 import { formatCostMicros, formatTimestamp, shortId } from "../format";
@@ -95,6 +96,7 @@ export function Runtime() {
   const [settings, setSettings] = useState<FactorySettings | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
+  const [turnBudget, setTurnBudget] = useState<ProviderTurnBudget | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -122,14 +124,16 @@ export function Runtime() {
       unresolved,
       telemetry,
       runtimeSettings,
+      nextTurnBudget,
     ] = await Promise.all([
       coreApi.health(),
       coreApi.listWorkers(),
       coreApi.listProviderSessions(),
-      coreApi.listModelCalls(100),
+      coreApi.listModelCalls(200),
       coreApi.listUnresolvedModelCalls(),
       coreApi.getObservability(),
       coreApi.getRuntimeSettings(),
+      coreApi.getProviderTurnBudget(),
     ]);
     setHealth(nextHealth);
     setWorkers(nextWorkers);
@@ -138,6 +142,7 @@ export function Runtime() {
     setUnresolvedCalls(unresolved);
     setObservability(telemetry);
     setSettings(runtimeSettings);
+    setTurnBudget(nextTurnBudget);
     setLastLoadedAt(new Date().toISOString());
     setLoaded(true);
     setError(null);
@@ -187,14 +192,12 @@ export function Runtime() {
     (sum, call) => sum + call.cost_micros,
     0,
   );
-  const sessionUnmeasuredBound = unmeasuredSessions.reduce(
-    (sum, session) => sum + session.cost_micros,
-    0,
-  );
-  const reservationCeiling = unresolvedCalls.reduce(
+  const modelReservationCeiling = unresolvedCalls.reduce(
     (sum, call) => sum + call.max_cost_micros,
     0,
   );
+  const reservationCeiling =
+    modelReservationCeiling + (turnBudget?.ceiling_micros ?? 0);
   const measuredCost = measuredSessionCost + measuredCallCost;
 
   const sessionStates = ["all", ...Object.keys(sessionCounts(sessions)).sort()];
@@ -300,16 +303,14 @@ export function Runtime() {
         >
           <section className="overview-metrics" aria-label="Runtime summary">
             <Metric
-              label="Measured spend"
+              label="Sampled measured spend"
               value={formatCostMicros(measuredCost)}
-              detail={`${measuredSessions.length} measured session(s), ${measuredCalls.length} measured call(s)`}
+              detail={`Usage-known sessions plus latest 200 model calls; not a total (${measuredSessions.length} sessions, ${measuredCalls.length} calls)`}
             />
             <Metric
               label="Reserved ceiling"
-              value={formatCostMicros(
-                reservationCeiling + sessionUnmeasuredBound,
-              )}
-              detail="Unresolved calls use max cost; unmeasured session cost is a bound"
+              value={formatCostMicros(reservationCeiling)}
+              detail={`${unresolvedCalls.length} unresolved model call(s) + ${turnBudget?.reserved_turns ?? 0} open provider turn(s)`}
               tone="attention"
             />
             <Metric
@@ -319,9 +320,9 @@ export function Runtime() {
               tone={unresolvedCalls.length > 0 ? "attention" : undefined}
             />
             <Metric
-              label="Unresolved sessions"
+              label="Open sessions"
               value={unresolvedSessions.length}
-              detail={`${sessions.length} session(s) recorded`}
+              detail={`${sessions.length} session(s) recorded; INTENT, ACTIVE, cancellation or orphaned`}
               tone={unresolvedSessions.length > 0 ? "attention" : undefined}
             />
             <Metric
@@ -362,8 +363,12 @@ export function Runtime() {
                   <dd>{sessions.length}</dd>
                 </div>
                 <div>
-                  <dt>Model calls</dt>
-                  <dd>{allCalls.length}</dd>
+                  <dt>Recent model calls</dt>
+                  <dd>{modelCalls.length} sampled</dd>
+                </div>
+                <div>
+                  <dt>Open provider turns</dt>
+                  <dd>{turnBudget?.reserved_turns ?? 0}</dd>
                 </div>
               </dl>
               <div className="ui-callout ui-callout--info">
@@ -539,7 +544,7 @@ export function Runtime() {
             <div className="section-heading">
               <h2>Core-owned model calls ({filteredCalls.length} shown)</h2>
               <span className="muted">
-                Recent calls are sampled to 100; unresolved calls use the full
+                Recent calls are sampled to 200; unresolved calls use the full
                 ledger
               </span>
             </div>

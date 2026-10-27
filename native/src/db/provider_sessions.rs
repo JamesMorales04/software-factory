@@ -788,6 +788,21 @@ impl Database {
         Ok(())
     }
 
+    /// Count and sum the ceilings of every currently open provider turn.
+    /// Unlike the bounded recent listing, this covers the full ledger.
+    pub async fn provider_turn_reservation_budget(&self) -> Result<(u64, u64), Error> {
+        let row: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
+             FROM provider_turn_reservations WHERE state='RESERVED'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((
+            u64::try_from(row.0).map_err(|_| Error::Invalid("provider turn count"))?,
+            u64::try_from(row.1).map_err(|_| Error::Invalid("provider turn reservation"))?,
+        ))
+    }
+
     pub async fn provider_turn_reservations(
         &self,
         limit: usize,

@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   listUnresolvedModelCalls: vi.fn(),
   getObservability: vi.fn(),
   getRuntimeSettings: vi.fn(),
+  getProviderTurnBudget: vi.fn(),
   resolveModelCall: vi.fn(),
 }));
 
@@ -82,6 +83,10 @@ describe("Runtime", () => {
       semanticReviewMaxOutputTokens: 8192,
       updatedAt: "2026-10-27T10:00:00Z",
     });
+    mocks.getProviderTurnBudget.mockReset().mockResolvedValue({
+      reserved_turns: 0,
+      ceiling_micros: 0,
+    });
     mocks.resolveModelCall.mockReset().mockResolvedValue(undefined);
   });
 
@@ -98,6 +103,16 @@ describe("Runtime", () => {
     await userEvent.click(screen.getByRole("tab", { name: /Sessions/ }));
     await screen.findByRole("heading", { name: "Provider sessions (0 shown)" });
     expect(screen.getByText("No matching sessions")).toBeDefined();
+  });
+
+  it("deep-links directly to Diagnostics", async () => {
+    renderRuntime("/runtime?tab=diagnostics");
+    await screen.findByRole("heading", { name: "Service boundaries" });
+    expect(
+      screen
+        .getByRole("tab", { name: "Diagnostics" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
   });
 
   it("shows unresolved reservations and releases only after an explicit reason", async () => {

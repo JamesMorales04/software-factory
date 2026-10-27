@@ -2335,7 +2335,8 @@ capabilities:
     isolation: []
   limitations:
   - Supervisor, nested Podman and broker state are not exposed by the current Core API.
-  - Recent model-call history is sampled to 100 records; unresolved reservations are queried from the full ledger.
+  - Recent model-call history is sampled to 200 records; unresolved reservations and open provider-turn ceilings use the full ledger.
+  - Sampled measured spend is not a total; unmeasured session count is not a held ceiling.
   - Reservation release writes off the reservation; it does not create measured usage.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.

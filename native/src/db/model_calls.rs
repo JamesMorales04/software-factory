@@ -613,7 +613,20 @@ impl Database {
     /// Every unresolved reservation regardless of age. Unlike the bounded
     /// recent-call listing, this projection must not hide an old ambiguous
     /// reservation that still holds budget.
+    /// Deterministically expire reservations whose deadline passed. The
+    /// transition and audit event are committed before callers read the full
+    /// unresolved ledger, so an expired-but-unswept reservation cannot hide.
+    pub async fn expire_model_calls(&self, now_ms: i64) -> Result<(), Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        expire_reserved_model_calls(&mut transaction, now_ms).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn unresolved_model_calls(&self) -> Result<Vec<ModelCallRecord>, Error> {
+        self.expire_model_calls(Utc::now().timestamp_millis())
+            .await?;
         let rows = sqlx::query::query(
             "SELECT reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,
                     model,purpose,request_sha256,input_tokens,output_tokens,total_tokens,
@@ -633,6 +646,8 @@ impl Database {
     /// `cost_micros` column, because an expired reservation may never have
     /// settled any observed cost.
     pub async fn unresolved_model_call_budget(&self) -> Result<(u64, u64), Error> {
+        self.expire_model_calls(Utc::now().timestamp_millis())
+            .await?;
         let row: (i64, i64) = sqlx::query_as::query_as(
             "SELECT COUNT(*),COALESCE(SUM(max_cost_micros),0)
              FROM model_call_reservations
