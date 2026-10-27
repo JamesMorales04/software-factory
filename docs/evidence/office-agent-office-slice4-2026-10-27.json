@@ -79,7 +79,6 @@
     "browser_host_journey": {
       "command": "node office/e2e-browser/rust-journey.mjs",
       "result": "PASS",
-      "candidate": "e14d6862395fb3922969610720d27014884e4b9b",
       "gate": "ACCEPTED",
       "agent_office": "Lead, active provider-backed Implementer, Worker participants; CURRENT/LIVE session; recorded tool events with withheld free-form provider detail; table and timeline views; selected participant survives reload.",
       "workgraph": "Lead Campaign one-unit WorkGraph rendered; node selection opens the exact inspector and survives reload.",
@@ -90,16 +89,17 @@
       ],
       "console_errors": 0,
       "unexpected_404s": 0,
-      "unexpected_page_errors": 0
+      "unexpected_page_errors": 0,
+      "factory_candidate_commit": "e14d6862395fb3922969610720d27014884e4b9b"
     },
     "compose_e2e": {
       "command": "FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose bash scripts/compose-e2e.sh",
       "result": "PASS",
-      "candidate": "0ca5d762-1e73-48da-b977-d063845a391a",
-      "attempt": "bfe4741d-d7a4-44cd-a6d7-56e37267b0ec",
       "gate": "ACCEPTED",
       "restart_persistence": true,
-      "paid_inference": false
+      "paid_inference": false,
+      "factory_candidate_id": "0ca5d762-1e73-48da-b977-d063845a391a",
+      "factory_attempt_id": "bfe4741d-d7a4-44cd-a6d7-56e37267b0ec"
     },
     "compose_agent_office_smoke": {
       "command": "FACTORY_OFFICE_URL=http://127.0.0.1:8894 FACTORY_API_TOKEN=<operator> CHROMIUM_EXE=<chromium> FACTORY_BROWSER_NO_SANDBOX=1 node scripts/compose-agent-office-smoke.mjs",

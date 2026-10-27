@@ -224,8 +224,11 @@ Safe-field rules:
   `detail_state` is `WITHHELD`, `REDACTED` or `EMPTY`.
 - `provider_directory`, turn ids, credentials, request bodies and model
   responses are never returned. Error text is bounded and shape-redacted.
-- Rows with non-positive or out-of-order sequences are discarded and counted.
-  The projection never reorders or repairs the durable ledger.
+- Rows outside the requested sequence range, including non-positive legacy
+  sequences, are never returned; the `discarded` counter reports non-positive
+  legacy rows for the exact session. Ordering is guaranteed by the ledger
+  primary key and `ORDER BY sequence`. The projection never reorders or repairs
+  the durable ledger.
 
 `has_more` is computed with a bounded look-ahead. A client appends pages by
 passing `after_sequence = next_sequence`; refetching with the same cursor is

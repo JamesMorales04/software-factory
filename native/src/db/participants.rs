@@ -442,6 +442,13 @@ impl Database {
         }
         let session = self.provider_session_context(session_record_id).await?;
         let limit = limit.clamp(1, TOOL_EVENT_PAGE_MAX);
+        let (legacy_discarded,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events
+             WHERE session_record_id=?1 AND sequence<=0",
+        )
+        .bind(session_record_id)
+        .fetch_one(&self.pool)
+        .await?;
         let rows = sqlx::query::query(
             "SELECT session_record_id,sequence,call_id,tool,decision,detail,created_at
              FROM provider_tool_events
@@ -456,7 +463,7 @@ impl Database {
         let has_more = rows.len() > limit;
         let rows = rows.into_iter().take(limit);
         let mut events = Vec::new();
-        let mut discarded = 0_u32;
+        let discarded = u32::try_from(legacy_discarded).unwrap_or(u32::MAX);
         let mut last_sequence = after_sequence;
         for row in rows {
             let sequence: i64 = row.try_get("sequence")?;
@@ -467,7 +474,6 @@ impl Database {
             let detail: String = row.try_get("detail")?;
             let recorded_at: String = row.try_get("created_at")?;
             if sequence <= after_sequence || sequence <= 0 {
-                discarded = discarded.saturating_add(1);
                 continue;
             }
             let decision_known = TOOL_DECISIONS.contains(&decision.as_str());
@@ -1768,6 +1774,14 @@ mod tests {
         .execute(&mut *connection)
         .await
         .unwrap();
+        sqlx::query::query(
+            "INSERT INTO provider_tool_events
+             (session_record_id,sequence,call_id,tool,decision,detail,created_at)
+             VALUES ('s-at1',-1,'call-negative','write_file','RESULT','negative sequence','2026-10-27T09:59:00+00:00')",
+        )
+        .execute(&mut *connection)
+        .await
+        .unwrap();
         drop(connection);
         let projection = fixture
             .db
@@ -1775,6 +1789,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(projection.returned, 1);
+        assert_eq!(projection.discarded, 1);
         assert_eq!(projection.events[0].decision, "UNKNOWN");
         assert_eq!(projection.events[0].tool, "OTHER");
         assert_eq!(projection.events[0].detail_state, "REDACTED");
