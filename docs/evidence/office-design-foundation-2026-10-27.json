@@ -1,21 +1,29 @@
 {
   "schema": "factory.office-design-foundation.v1",
-  "recorded_at": "2026-10-27T13:50:00Z",
+  "recorded_at": "2026-10-27T14:10:00Z",
   "result": "PASS (author-run design foundation; not independent acceptance)",
-  "implementation_sha": "18d82e66d644fcd1c86e15da14996936c23a569e",
+  "implementation_sha": "fb1b162f43d9ed032388013ac62efc4436c12f32",
   "baseline_sha": "f2f982356ac43a45d0bdeedb0a425457da88ba96",
   "commands": {
     "office_typecheck": "PASS",
     "office_lint": "PASS (4 reduced-motion !important warnings retained as scoped accessibility guidance)",
-    "office_component_tests": "PASS (2 files, 4 tests)",
+    "office_component_tests": "PASS (3 files, 7 tests)",
     "office_build": "PASS",
-    "container_office_gates": "PASS inside the pinned dev image",
-    "container_chromium_journey": "PASS; candidate 6b22c00a4136ab445758d1b44f21d2c4ef4b37f2; gate ACCEPTED; only expected pending-gate 404 probes"
+    "container_office_gates": "PASS inside the pinned dev image, including component tests",
+    "container_chromium_journey": "PASS; fixture candidate af23b4b6e37b6be021ba7b729404c7f76e66d2ca; gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_ci": "PASS: architecture-consistency, compose-policy, container-dev and rust on exact head fb1b162f (run 40516936879)"
   },
   "design_foundation": {
     "tokens": "office/src/styles/tokens.css",
-    "themes": ["system", "light", "dark"],
-    "density": ["comfortable", "compact"],
+    "themes": [
+      "system",
+      "light",
+      "dark"
+    ],
+    "density": [
+      "comfortable",
+      "compact"
+    ],
     "shell": "office/src/components/AppShell.tsx",
     "components": [
       "Button",
@@ -38,12 +46,13 @@
   "browser_observation": {
     "desktop": "1440px; no horizontal overflow; grouped sidebar and command palette rendered",
     "tablet": "834px; no horizontal overflow",
-    "mobile": "390px; no horizontal overflow; sidebar hidden until opened",
+    "mobile": "390px; document overflow false; legacy tables scroll inside the main workspace; Campaign detail reachable",
     "dark_theme": "explicit dark theme applied (background rgb(7, 17, 31))",
     "compact_density": "applied",
     "console_errors": 0,
     "unexpected_404s": 0,
-    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only"
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only",
+    "campaign_detail_mobile": "document scrollWidth equals clientWidth; main workspace provides horizontal table scrolling; no clipped table actions"
   },
   "not_tested": [
     "Storybook and isolated visual regression",
@@ -54,5 +63,6 @@
     "Windows 11 / Podman Machine and SELinux/AppArmor",
     "independent acceptance of this slice"
   ],
-  "notes": "The component test suite is a foundation, not proof that every product journey is accessible. Existing operational views remain functional inside the new shell; their module-specific redesign is later."
+  "notes": "The component and shell tests are a foundation, not proof that every product journey is accessible. The shell collapse/skip/mobile-drawer/command-listbox regressions found in independent review are fixed and covered by AppShell tests; existing operational views remain functional inside the shell.",
+  "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit"
 }
