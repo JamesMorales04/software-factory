@@ -79,13 +79,15 @@ views. Candidate revisions expose a bounded Core diff summary of changed paths
 and diff stat; file bodies are not returned. Runtime is an operational console
 for Core health, registered Workers, filtered provider sessions, measured and
 unmeasured usage, model-call reservations, audited release, cleanup, telemetry
-and explicit unexposed services. Agent Office, Issues, Docs and the interactive
-WorkGraph remain unimplemented.
+and explicit unexposed services. Settings is a provider and policy workspace
+for route configuration, credential lifecycle, connection diagnostics, advanced
+limits, semantic-review policy and configuration audit. Agent Office, Issues,
+Docs and the interactive WorkGraph remain unimplemented.
 
 Known gaps:
 
-- Project, Lead, Delegations, Campaign list, Runs, Workers and Settings still
-  use the legacy compatibility surface; they are migrated by module.
+- Project, Lead, Delegations, Campaign list, Runs and Workers still use the
+  legacy compatibility surface; they are migrated by module.
 - The WorkGraph is a table projection, not an interactive graph.
 - Candidate diff metadata does not include file bodies; there is no code-diff
   viewer.
@@ -96,6 +98,8 @@ Known gaps:
   does not infer their health.
 - No visual Agent Office or shared session inspector beyond the Campaign and
   Runtime tables.
+- Provider connection tests read model discovery only; no live coding inference
+  is authorized by this slice.
 - No issue board or repository docs/wiki.
 - Hash-only routes, no stable `/office` deep-link base.
 - The design foundation is implemented; Storybook, visual regression, full

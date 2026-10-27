@@ -1,4 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { StatusBadge } from "../components/office/StatusBadge";
+import { Button } from "../components/ui/Button";
+import { Checkbox, Input } from "../components/ui/Field";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHeader,
+  Panel,
+} from "../components/ui/Surface";
+import { type TabItem, Tabs } from "../components/ui/Tabs";
 import {
   CoreApiError,
   coreApi,
@@ -9,23 +21,30 @@ import {
 } from "../coreApi";
 import { formatTimestamp } from "../format";
 
-function numberField(
-  label: string,
-  value: number,
-  onChange: (value: number) => void,
-  help?: string,
-) {
+const TABS = ["providers", "runtime"] as const;
+type SettingsTab = (typeof TABS)[number];
+
+function resolveTab(value: string | null): SettingsTab {
+  return TABS.includes(value as SettingsTab)
+    ? (value as SettingsTab)
+    : "providers";
+}
+
+function VerificationStep({
+  label,
+  status,
+  detail,
+}: {
+  label: string;
+  status: string;
+  detail: string;
+}) {
   return (
-    <label>
-      {label}
-      <input
-        type="number"
-        min={0}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-      {help && <span className="muted">{help}</span>}
-    </label>
+    <div className="verification-step">
+      <span className="muted">{label}</span>
+      <StatusBadge status={status} />
+      <p className="muted">{detail}</p>
+    </div>
   );
 }
 
@@ -52,6 +71,7 @@ function ProviderCard({
   const [notice, setNotice] = useState<string | null>(null);
   const [test, setTest] = useState<ProviderTestResult | null>(null);
   const [audit, setAudit] = useState<ProviderAudit[]>([]);
+  const [revoking, setRevoking] = useState(false);
 
   useEffect(() => {
     setModel(provider.model);
@@ -65,6 +85,21 @@ function ProviderCard({
     setInputRate(provider.inputMicrosPerMillion);
     setOutputRate(provider.outputMicrosPerMillion);
   }, [provider]);
+
+  useEffect(() => {
+    let active = true;
+    void coreApi
+      .providerAudit(provider.provider)
+      .then((result) => {
+        if (active) setAudit(result.audit);
+      })
+      .catch(() => {
+        if (active) setAudit([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [provider.provider]);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -119,16 +154,15 @@ function ProviderCard({
   }
 
   async function revoke() {
-    if (!window.confirm(`Revoke the ${provider.displayName} credential?`)) {
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
       await coreApi.revokeProviderCredential(provider.provider);
       setNotice("Credential revoked and provider disabled.");
       setCredential("");
+      setRevoking(false);
       await onChanged();
+      setAudit((await coreApi.providerAudit(provider.provider)).audit);
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
@@ -141,121 +175,240 @@ function ProviderCard({
   }
 
   return (
-    <section className="card">
-      <div className="row">
+    <Panel className="settings-provider" data-testid="provider-card">
+      <div className="settings-provider-head">
         <div>
-          <h3>{provider.displayName}</h3>
+          <h2>{provider.displayName}</h2>
           <p className="muted">
             <code>{provider.provider}</code> / {provider.kind} · {provider.note}
           </p>
         </div>
-        <div>
-          <span
-            className={`pill ${provider.configured ? "accepted" : "blocked"}`}
-          >
-            {provider.configured ? "credential configured" : "not configured"}
-          </span>{" "}
-          <span
-            className={`pill ${provider.enabled ? "accepted" : "not-tested"}`}
-          >
-            {provider.enabled ? "enabled" : "disabled"}
-          </span>{" "}
-          {provider.isDefault && <span className="pill accepted">default</span>}
-        </div>
-      </div>
-      <p className="muted">
-        ChatGPT OAuth: <strong>{provider.chatgptOauth}</strong> · auth:{" "}
-        {provider.authModes.join(", ")}
-      </p>
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
-      <form className="create" onSubmit={(event) => void save(event)}>
-        <div className="grid-2">
-          <label>
-            Model
-            <input
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Base URL
-            <input
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              required
-            />
-          </label>
-        </div>
-        <label>
-          Credential{" "}
-          {provider.configured ? "(leave blank to keep the current value)" : ""}
-          <input
-            type="password"
-            value={credential}
-            onChange={(event) => setCredential(event.target.value)}
-            autoComplete="new-password"
-            placeholder={
-              provider.configured ? "•••••••• unchanged" : "provider API key"
+        <div className="settings-badges">
+          <StatusBadge
+            status={provider.configured ? "CONFIGURED" : "NOT_CONFIGURED"}
+            label={
+              provider.configured ? "credential configured" : "not configured"
             }
           />
-        </label>
-        <div className="grid-2">
-          {numberField("Max turns", maxTurns, setMaxTurns)}
-          {numberField("Max cost (micros)", maxCost, setMaxCost)}
-          {numberField("Max input tokens", maxInput, setMaxInput)}
-          {numberField("Max output tokens", maxOutput, setMaxOutput)}
-          {numberField("Input micros / million", inputRate, setInputRate)}
-          {numberField("Output micros / million", outputRate, setOutputRate)}
+          <StatusBadge
+            status={provider.enabled ? "ENABLED" : "DISABLED"}
+            label={provider.enabled ? "enabled" : "disabled"}
+          />
+          {provider.isDefault && (
+            <StatusBadge status="DEFAULT" label="default route" />
+          )}
+          <StatusBadge status={provider.status} />
         </div>
-        <p className="muted">
-          These are provider-route defaults and cap Core model calls. The
-          explicit Campaign authorization remains authoritative for provider
-          sessions; provider limits do not widen it.
+      </div>
+
+      <dl className="overview-facts">
+        <div>
+          <dt>Model</dt>
+          <dd>{provider.model}</dd>
+        </div>
+        <div>
+          <dt>Endpoint</dt>
+          <dd>
+            <code>{provider.baseUrl}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Auth modes</dt>
+          <dd>{provider.authModes.join(", ")}</dd>
+        </div>
+        <div>
+          <dt>ChatGPT OAuth</dt>
+          <dd>
+            <StatusBadge status={provider.chatgptOauth} />
+          </dd>
+        </div>
+        <div>
+          <dt>Revision</dt>
+          <dd>{provider.revision}</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>{formatTimestamp(provider.updatedAt)}</dd>
+        </div>
+      </dl>
+
+      <section className="verification-path" aria-label="Verification path">
+        <VerificationStep
+          label="Configured route"
+          status={provider.configured ? "CONFIGURED" : "NOT_CONFIGURED"}
+          detail="A saved route and credential are configuration, not proof of access."
+        />
+        <VerificationStep
+          label="Connection test"
+          status={test?.status ?? "NOT_TESTED"}
+          detail={
+            test
+              ? `${test.detail}; model ${test.modelAvailable ? "listed" : "not listed"}`
+              : "Not run in this page load. A model list is not coding inference."
+          }
+        />
+        <VerificationStep
+          label="Coding inference"
+          status="NOT_TESTED"
+          detail="No paid inference is authorized or proven by a /models response."
+        />
+      </section>
+
+      {error && (
+        <p className="error" role="alert">
+          {error}
         </p>
-        <label className="inline">
-          <input
-            type="checkbox"
+      )}
+      {notice && <p className="notice">{notice}</p>}
+
+      <form className="settings-form" onSubmit={(event) => void save(event)}>
+        <div className="grid-2">
+          <Input
+            label="Model"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            required
+          />
+          <Input
+            label="Base URL"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            required
+          />
+        </div>
+        <Input
+          label={
+            provider.configured
+              ? "Replace credential (leave blank to keep current)"
+              : "Provider credential"
+          }
+          type="password"
+          value={credential}
+          onChange={(event) => setCredential(event.target.value)}
+          autoComplete="new-password"
+          placeholder={provider.configured ? "unchanged" : "provider API key"}
+          help="Credentials are encrypted by Core, never returned to the browser and never rendered in audit rows."
+        />
+        <details className="settings-advanced">
+          <summary>Advanced budget and rate limits</summary>
+          <div className="grid-2">
+            <Input
+              label="Max turns"
+              type="number"
+              min={0}
+              value={maxTurns}
+              onChange={(event) => setMaxTurns(Number(event.target.value))}
+            />
+            <Input
+              label="Max cost (micros)"
+              type="number"
+              min={0}
+              value={maxCost}
+              onChange={(event) => setMaxCost(Number(event.target.value))}
+            />
+            <Input
+              label="Max input tokens"
+              type="number"
+              min={0}
+              value={maxInput}
+              onChange={(event) => setMaxInput(Number(event.target.value))}
+            />
+            <Input
+              label="Max output tokens"
+              type="number"
+              min={0}
+              value={maxOutput}
+              onChange={(event) => setMaxOutput(Number(event.target.value))}
+            />
+            <Input
+              label="Input micros / million"
+              type="number"
+              min={0}
+              value={inputRate}
+              onChange={(event) => setInputRate(Number(event.target.value))}
+            />
+            <Input
+              label="Output micros / million"
+              type="number"
+              min={0}
+              value={outputRate}
+              onChange={(event) => setOutputRate(Number(event.target.value))}
+            />
+          </div>
+          <p className="muted">
+            These are provider-route defaults and Core model-call caps. The
+            explicit Campaign authorization remains authoritative for provider
+            sessions; these limits do not widen it. Frozen Campaign bindings are
+            not rewritten by a provider settings revision.
+          </p>
+        </details>
+        <div className="settings-checks">
+          <Checkbox
+            label="Enabled"
             checked={enabled}
             onChange={(event) => setEnabled(event.target.checked)}
           />
-          Enabled
-        </label>
-        <label className="inline">
-          <input
-            type="checkbox"
+          <Checkbox
+            label="Default route for Core model calls"
             checked={isDefault}
             onChange={(event) => setIsDefault(event.target.checked)}
           />
-          Default route for Core model calls
-        </label>
+        </div>
         <div className="row">
-          <button type="submit" disabled={busy}>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? "Saving…" : "Save configuration"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={busy || !provider.configured}
             onClick={() => void runTest()}
           >
-            Test connection
-          </button>
-          <button
+            {busy ? "Working…" : "Test connection"}
+          </Button>
+          <Button
             type="button"
-            className="danger"
+            variant="danger"
             disabled={busy || !provider.configured}
-            onClick={() => void revoke()}
+            onClick={() => setRevoking(true)}
           >
             Revoke credential
-          </button>
+          </Button>
         </div>
       </form>
-      {test && (
-        <div className="notice">
+
+      {revoking && (
+        <div className="ui-callout ui-callout--danger" role="alert">
           <p>
-            Test: <strong>{test.status}</strong> · {test.detail} · model{" "}
-            <code>{test.model}</code>{" "}
+            Revoke the stored credential for{" "}
+            <strong>{provider.displayName}</strong>? Core will disable this
+            provider route. Already frozen Campaign bindings keep their recorded
+            route; no new Core model call can use the credential.
+          </p>
+          <div className="row">
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => void revoke()}
+            >
+              {busy ? "Revoking…" : "Confirm revocation"}
+            </Button>
+            <Button
+              type="button"
+              disabled={busy}
+              onClick={() => setRevoking(false)}
+            >
+              Keep credential
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {test && (
+        <div className="ui-callout ui-callout--info" role="status">
+          <p>
+            Connection test: <StatusBadge status={test.status} /> ·{" "}
+            {test.detail}
+            {" · "}model <code>{test.model}</code>{" "}
             {test.modelAvailable ? "listed" : "not listed"}
           </p>
           {test.models.length > 0 && (
@@ -265,14 +418,19 @@ function ProviderCard({
             </p>
           )}
           <p className="muted">
-            A model list does not certify access, pricing or inference
-            capability.
+            A model list does not certify access, pricing or coding inference.
           </p>
         </div>
       )}
-      {audit.length > 0 && (
-        <details>
-          <summary>Configuration audit ({audit.length})</summary>
+
+      <details className="settings-audit">
+        <summary>Configuration audit ({audit.length})</summary>
+        {audit.length === 0 ? (
+          <EmptyState
+            title="No audit entries"
+            description="Core records provider configuration changes when they occur."
+          />
+        ) : (
           <table>
             <thead>
               <tr>
@@ -295,19 +453,29 @@ function ProviderCard({
               ))}
             </tbody>
           </table>
-        </details>
-      )}
-    </section>
+        )}
+      </details>
+    </Panel>
   );
 }
 
 export function Settings() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = resolveTab(searchParams.get("tab"));
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [runtime, setRuntime] = useState<FactorySettings | null>(null);
   const [reviewEnabled, setReviewEnabled] = useState(false);
   const [reviewTokens, setReviewTokens] = useState(8192);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
+
+  const selectTab = (next: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("tab", resolveTab(next));
+    setSearchParams(params);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -319,95 +487,196 @@ export function Settings() {
       setRuntime(runtimeSettings);
       setReviewEnabled(runtimeSettings.semanticReviewEnabled);
       setReviewTokens(runtimeSettings.semanticReviewMaxOutputTokens);
+      setLastLoadedAt(new Date().toISOString());
+      setLoaded(true);
+      setError(null);
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Failed to load providers.",
+          : "Failed to load provider settings.",
       );
     }
   }, []);
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
   }, [load]);
 
+  async function saveRuntime(event: React.FormEvent) {
+    event.preventDefault();
+    setNotice(null);
+    try {
+      const next = await coreApi.updateRuntimeSettings({
+        semanticReviewEnabled: reviewEnabled,
+        semanticReviewMaxOutputTokens: reviewTokens,
+      });
+      setRuntime(next);
+      setLastLoadedAt(new Date().toISOString());
+      setNotice("Runtime review policy saved.");
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Runtime policy update failed.",
+      );
+    }
+  }
+
+  if (error && !loaded) {
+    return (
+      <ErrorState
+        message={error}
+        action={<Button onClick={() => void load()}>Retry</Button>}
+      />
+    );
+  }
+  if (!loaded) return <LoadingState label="Loading provider settings…" />;
+
+  const tabs: TabItem[] = [
+    { id: "providers", label: "Providers & models", count: providers.length },
+    { id: "runtime", label: "Runtime policy" },
+  ];
+
   return (
-    <div>
-      <h2>Settings — Providers &amp; Models</h2>
-      <p className="muted">
-        Configure Core-owned provider routes. Credentials are encrypted at rest,
-        never returned after submission and never written to logs. Saving a
-        configuration does not start inference. Testing reads the provider model
-        list only.
-      </p>
-      {error && <p className="error">{error}</p>}
+    <div className="settings-workspace">
+      <PageHeader
+        title="Settings"
+        description="Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
+        meta={
+          <>
+            <span>{providers.length} provider(s)</span>
+            <span>
+              Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
+            </span>
+          </>
+        }
+        actions={
+          <Button size="sm" onClick={() => void load()}>
+            Refresh
+          </Button>
+        }
+      />
+      {error && (
+        <div className="ui-callout ui-callout--danger" role="alert">
+          {error} The displayed configuration may be stale.
+        </div>
+      )}
       {notice && <p className="notice">{notice}</p>}
-      <section className="card">
-        <h3>Review &amp; runtime policy</h3>
-        <p className="muted">
-          Semantic Reviewer model calls are disabled by default. Enabling them
-          authorizes bounded Core-owned model calls for each candidate review;
-          they may incur provider charges. The verifier always executes the
-          frozen checks independently.
-        </p>
-        <form
-          className="create"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void coreApi
-              .updateRuntimeSettings({
-                semanticReviewEnabled: reviewEnabled,
-                semanticReviewMaxOutputTokens: reviewTokens,
-              })
-              .then((next) => {
-                setRuntime(next);
-                setNotice("Runtime review policy saved.");
-              })
-              .catch((cause) =>
-                setError(
-                  cause instanceof CoreApiError
-                    ? cause.message
-                    : "Runtime policy update failed.",
-                ),
-              );
-          }}
+      <Tabs
+        items={tabs}
+        value={tab}
+        onChange={selectTab}
+        label="Settings sections"
+      />
+
+      {tab === "providers" && (
+        <div
+          id="panel-providers"
+          role="tabpanel"
+          aria-labelledby="tab-providers"
+          className="campaign-tab-panel"
         >
-          <label className="inline">
-            <input
-              type="checkbox"
-              checked={reviewEnabled}
-              onChange={(event) => setReviewEnabled(event.target.checked)}
+          {providers.length === 0 ? (
+            <EmptyState
+              title="No provider routes"
+              description="Core did not return a provider catalog entry."
             />
-            Enable semantic Reviewer model calls (paid provider route)
-          </label>
-          <label>
-            Semantic review max output tokens
-            <input
-              type="number"
-              min={128}
-              max={32768}
-              value={reviewTokens}
-              onChange={(event) => setReviewTokens(Number(event.target.value))}
-            />
-          </label>
-          <p className="muted">
-            {runtime
-              ? `Current: ${runtime.semanticReviewEnabled ? "MODEL" : "DETERMINISTIC"} · updated ${formatTimestamp(runtime.updatedAt)}`
-              : "Loading runtime policy…"}
-          </p>
-          <button type="submit">Save runtime policy</button>
-        </form>
-      </section>
-      {providers.map((provider) => (
-        <ProviderCard
-          key={provider.provider}
-          provider={provider}
-          onChanged={load}
-        />
-      ))}
+          ) : (
+            providers.map((provider) => (
+              <ProviderCard
+                key={provider.provider}
+                provider={provider}
+                onChanged={load}
+              />
+            ))
+          )}
+        </div>
+      )}
+
+      {tab === "runtime" && (
+        <div
+          id="panel-runtime"
+          role="tabpanel"
+          aria-labelledby="tab-runtime"
+          className="campaign-tab-panel"
+        >
+          <Panel>
+            <div className="section-heading">
+              <h2>Review and runtime policy</h2>
+              <span className="muted">
+                This policy is separate from a provider route or Campaign
+                authorization
+              </span>
+            </div>
+            <p className="muted">
+              Semantic Reviewer model calls are disabled by default. Enabling
+              them authorizes bounded Core-owned model calls for each candidate
+              review; they may incur provider charges. The verifier always
+              executes the frozen checks independently.
+            </p>
+            <form
+              className="settings-form"
+              onSubmit={(event) => void saveRuntime(event)}
+            >
+              <Checkbox
+                label="Enable semantic Reviewer model calls (paid provider route)"
+                checked={reviewEnabled}
+                onChange={(event) => setReviewEnabled(event.target.checked)}
+              />
+              <Input
+                label="Semantic review max output tokens"
+                type="number"
+                min={128}
+                max={32768}
+                value={reviewTokens}
+                onChange={(event) =>
+                  setReviewTokens(Number(event.target.value))
+                }
+              />
+              <p className="muted">
+                {runtime
+                  ? `Current: ${runtime.semanticReviewEnabled ? "MODEL" : "DETERMINISTIC"} · updated ${formatTimestamp(runtime.updatedAt)}`
+                  : "Runtime policy not loaded."}
+              </p>
+              <div className="row">
+                <Button type="submit" variant="primary">
+                  Save runtime policy
+                </Button>
+              </div>
+            </form>
+          </Panel>
+          <Panel>
+            <div className="section-heading">
+              <h2>Configuration boundaries</h2>
+              <Link to="/runtime">Open Runtime diagnostics</Link>
+            </div>
+            <dl className="detail">
+              <dt>Provider credentials</dt>
+              <dd>Encrypted by Core; never returned to this browser.</dd>
+              <dt>Frozen Campaigns</dt>
+              <dd>
+                Provider revisions do not rewrite an already frozen Campaign or
+                Delegation binding.
+              </dd>
+              <dt>Connection test</dt>
+              <dd>
+                Reads the provider model list only. It is not coding inference.
+              </dd>
+              <dt>ChatGPT OAuth</dt>
+              <dd>
+                Unsupported provider OAuth states remain visible as blocked or
+                not applicable; Office does not claim live Codex authentication.
+              </dd>
+              <dt>Credential fingerprint</dt>
+              <dd>
+                Configuration rows carry a non-secret fingerprint; the
+                credential value is never rendered.
+              </dd>
+            </dl>
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }

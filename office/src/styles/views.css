@@ -287,3 +287,90 @@
 .overview-metric-value--info {
   color: var(--info);
 }
+
+.settings-provider + .settings-provider {
+  margin-top: var(--space-4);
+}
+
+.settings-provider-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.settings-provider-head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.verification-path {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.verification-step {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.verification-step p {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.settings-form {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.settings-advanced,
+.settings-audit {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.settings-advanced summary,
+.settings-audit summary {
+  padding: var(--space-3) var(--space-4);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.settings-advanced > :not(summary),
+.settings-audit > :not(summary) {
+  margin: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.settings-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.settings-audit {
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 800px) {
+  .verification-path {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

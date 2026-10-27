@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-27T17:00:00Z",
+  "updated_at": "2026-10-27T17:40:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -96,7 +96,7 @@
         "scripts/compose-office-smoke.mjs",
         "scripts/compose-onboarding-smoke.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace and the Runtime console are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, the Runtime console and the provider Settings workspace are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -221,6 +221,50 @@
         "office/src/views/Runtime.test.tsx"
       ],
       "notes": "Sampled measured spend covers usage-known sessions and the latest 200 model calls. Reserved ceiling uses unresolved model-call max cost plus open provider-turn max cost. Unmeasured session count is shown separately; session cost is not claimed as a held ceiling. Supervisor, nested Podman and broker state are not exposed by the current Core API and are shown as unavailable, never inferred. Reservation release is explicit; no automatic release exists."
+    },
+    "CAP-052": {
+      "name": "Provider and runtime Settings workspace",
+      "user_facing": true,
+      "job": "Configure Core-owned provider routes, credentials, models, limits and review policy while distinguishing configuration, connection testing and proven coding inference.",
+      "routes": [
+        "/settings"
+      ],
+      "core_api": [
+        "GET /settings/providers",
+        "PUT /settings/providers/{provider}",
+        "POST /settings/providers/{provider}/test",
+        "DELETE /settings/providers/{provider}/credential",
+        "GET /settings/providers/{provider}/audit",
+        "GET /settings/runtime",
+        "PUT /settings/runtime"
+      ],
+      "user_actions": [
+        "inspect provider authentication status model endpoint auth modes and ChatGPT OAuth state",
+        "save or replace a provider credential without reading it back",
+        "revoke a credential after explicit consequence confirmation",
+        "set the default route and advanced token cost and rate limits",
+        "test provider model discovery without claiming coding inference",
+        "enable or disable semantic review policy and inspect configuration audit history"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "stale-snapshot",
+        "provider-unconfigured",
+        "credential-configured",
+        "connection-authenticated",
+        "connection-denied",
+        "connection-unreachable",
+        "connection-unsupported",
+        "not-tested"
+      ],
+      "acceptance": [
+        "office/e2e-browser/rust-journey.mjs",
+        "office/src/views/Settings.test.tsx"
+      ],
+      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test reads the provider model list only and is not coding inference. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

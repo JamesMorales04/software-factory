@@ -277,6 +277,7 @@ milestones:
   - CAP-049
   - CAP-050
   - CAP-051
+  - CAP-052
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions
@@ -2185,6 +2186,7 @@ capabilities:
     isolation: []
   limitations:
   - Storybook, visual regression, the full axe audit, the interactive WorkGraph, a full code-diff viewer and a visual Agent Office remain later slices.
+  - Provider connection tests read model discovery only; no live coding inference is authorized by these Office slices.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
   - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
@@ -2340,3 +2342,51 @@ capabilities:
   - Reservation release writes off the reservation; it does not create measured usage.
   blockers:
   - Real browser acceptance and Product Owner review remain pending.
+
+- id: CAP-052
+  name: Provider and runtime Settings workspace
+  category: Product
+  purpose: Operators can configure provider routes, credential lifecycle, limits and review policy while distinguishing configuration from tested or proven inference
+  product_objective: Coherent engineering command center
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-051
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-configuration.md
+    - docs/product/office-design-system.md
+    source:
+    - office/src/views/Settings.tsx
+    - office/src/coreApi.ts
+    - native/src/bin/core.rs
+    test:
+    - office/src/views/Settings.test.tsx
+    - office/e2e-browser/rust-journey.mjs
+  acceptance:
+    deterministic: Settings typechecks, lints, passes component tests and builds; credential values are never returned after submission and destructive revocation requires confirmation.
+    real: An authenticated Chromium journey opens Settings, inspects provider authentication and blocked OAuth state, opens runtime policy and checks responsive widths.
+  evidence:
+    deterministic:
+    - docs/evidence/office-settings-workspace-2026-10-27.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Connection testing reads the provider model list; it does not prove coding inference or pricing.
+  - ChatGPT OAuth remains blocked for Codex; no live OAuth or Codex inference is claimed.
+  - The UI does not expose arbitrary provider payloads or credential values.
+  blockers:
+  - Real live inference and Product Owner review remain pending.
