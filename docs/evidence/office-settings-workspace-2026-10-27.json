@@ -1,0 +1,51 @@
+{
+  "schema": "factory.office-settings-workspace.v1",
+  "recorded_at": "2026-10-27T18:05:00Z",
+  "result": "PASS (author-run Settings workspace; not independent acceptance)",
+  "implementation_sha": "15694923180c4a4438ec208792758981ba6370ea",
+  "baseline_sha": "05e091208d2c1dad36b2a91105c1946b2ac91866",
+  "branch": "campaign/office-settings-20261027",
+  "commands": {
+    "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, cargo build --bins, cargo xtask check-container, npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 27 component tests and production build",
+    "container_chromium_journey": "PASS; real Chromium opened Settings, observed the OpenCode Go and Codex App Server routes and blocked ChatGPT OAuth state, checked 834px and 390px widths on the Providers tab, opened Runtime policy, and checked the same widths; fixture candidate 6623dd8e04a308f856376939afc8b6fecfa1c67d reached Quality Gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
+    "host_iteration": "PASS: cargo fmt, clippy, factory-core tests, Office typecheck, 25 component tests, production build and Chromium journey; iteration only"
+  },
+  "implementation": {
+    "workspace": "office/src/views/Settings.tsx",
+    "tabs": [
+      "Providers & models",
+      "Runtime policy"
+    ],
+    "provider_summary": "Provider/catalog status, model, endpoint, auth modes, ChatGPT OAuth state, revision and updated time",
+    "verification_path": [
+      "Configured route: saved configuration and credential, not proof of access",
+      "Connection test: model discovery status only",
+      "Coding inference: NOT_TESTED; no paid inference is authorized or proven"
+    ],
+    "credential_lifecycle": "Replace only through a password field; blank preserves the current secret; inline consequence confirmation before revocation; the value is never returned to the browser or rendered in audit rows",
+    "advanced": "Token/cost/rate limits behind progressive disclosure; Campaign authorization remains authoritative",
+    "runtime_policy": "Semantic review enablement and output-token cap persisted by Core",
+    "audit": "Provider configuration audit loaded from Core and shown behind disclosure"
+  },
+  "browser_observation": {
+    "desktop": "1440px; OpenCode Go and Codex App Server rendered with configured-route, connection-test and coding-inference states; ChatGPT OAuth BLOCKED visible for Codex; Runtime policy showed DETERMINISTIC",
+    "tablet": "834px; document scrollWidth equals clientWidth on Settings",
+    "mobile": "390px; document scrollWidth equals clientWidth on Settings",
+    "console_errors": 0,
+    "unexpected_404s": 0,
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only"
+  },
+  "not_tested": [
+    "a live provider connection test against a real external provider",
+    "a real credential replacement or revocation through the browser; component tests use mocked Core responses and also assert the submitted secret is cleared and never re-rendered",
+    "paid inference or Codex live inference",
+    "ChatGPT OAuth; it remains blocked for Codex",
+    "automated axe/WCAG audit and screen-reader review",
+    "dark-theme and compact-density screenshots of Settings",
+    "independent acceptance, security review, Windows, SELinux and deployment"
+  ],
+  "notes": "Settings is a projection and configuration client for Core-owned provider routes. It distinguishes a saved route, a model-discovery connection test and proven coding inference. Credential values are never returned after submission. Audit failures render as unknown with retry, never as an empty history. A provider settings revision does not rewrite frozen Campaign or Delegation bindings.",
+  "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
+  "chromium_candidate_commit": "6623dd8e04a308f856376939afc8b6fecfa1c67d"
+}

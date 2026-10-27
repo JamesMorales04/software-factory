@@ -11,6 +11,8 @@ const SUCCESS = new Set([
   "VERIFIED",
   "HEALTHY",
   "ENABLED",
+  "AUTHENTICATED",
+  "CONFIGURED",
 ]);
 
 const ATTENTION = new Set([
@@ -23,6 +25,9 @@ const ATTENTION = new Set([
   "ORPHANED",
   "NOT_TESTED",
   "PENDING",
+  "DENIED",
+  "UNSUPPORTED",
+  "DETERMINISTIC_ONLY",
 ]);
 
 const DANGER = new Set([
@@ -33,6 +38,7 @@ const DANGER = new Set([
   "ERROR",
   "CANCELLED",
   "UNHEALTHY",
+  "UNREACHABLE",
   "CHANGES_REQUESTED",
 ]);
 
@@ -44,6 +50,8 @@ const INFO = new Set([
   "READY",
   "QUEUED",
   "RESERVED",
+  "SUPPORTED_TRUSTED_LOCAL",
+  "DEFAULT",
 ]);
 
 export function statusTone(status: string): BadgeTone {

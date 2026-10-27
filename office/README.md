@@ -5,7 +5,10 @@ the Rust Core client; former provider-specific views were removed. The app
 renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 Runtime is a tabbed console for health, registered Workers, filtered sessions,
 model-call reservations, audited release, cleanup and telemetry; unsupported
-Supervisor and nested-runtime state is shown as not exposed.
+Supervisor and nested-runtime state is shown as not exposed. Settings provides
+provider route and credential lifecycle, connection diagnostics, advanced
+limits, runtime review policy and configuration audit without returning
+credential values.
 
 Current views: Overview, Decision Inbox, Projects, Actions/Action detail, Lead,
 Delegations, Campaigns/Campaign detail, Runs, Workers, Runtime and Settings,
