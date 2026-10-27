@@ -28,7 +28,6 @@ const ATTENTION = new Set([
   "DENIED",
   "UNSUPPORTED",
   "DETERMINISTIC_ONLY",
-  "BLOCKED",
 ]);
 
 const DANGER = new Set([

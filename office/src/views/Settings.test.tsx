@@ -137,6 +137,35 @@ describe("Settings", () => {
     );
   });
 
+  it("saves a replacement credential without echoing it back", async () => {
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    const credential = screen.getByLabelText(
+      "Replace credential (leave blank to keep current)",
+    );
+    await userEvent.type(credential, "secret-provider-key");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateProvider).toHaveBeenCalledWith(
+        "codex",
+        expect.objectContaining({ credential: "secret-provider-key" }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByDisplayValue("secret-provider-key")).toBeNull(),
+    );
+  });
+
+  it("shows an audit read failure as unknown, not empty", async () => {
+    mocks.providerAudit.mockRejectedValue(new Error("audit unavailable"));
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    await userEvent.click(screen.getByText("Configuration audit (0)"));
+    expect(screen.getByText(/unknown, not empty/)).toBeDefined();
+  });
+
   it("deep-links to runtime policy and saves it", async () => {
     renderSettings("/settings?tab=runtime");
     await screen.findByRole("heading", {

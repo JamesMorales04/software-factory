@@ -71,6 +71,7 @@ function ProviderCard({
   const [notice, setNotice] = useState<string | null>(null);
   const [test, setTest] = useState<ProviderTestResult | null>(null);
   const [audit, setAudit] = useState<ProviderAudit[]>([]);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState(false);
 
   useEffect(() => {
@@ -86,20 +87,23 @@ function ProviderCard({
     setOutputRate(provider.outputMicrosPerMillion);
   }, [provider]);
 
-  useEffect(() => {
-    let active = true;
-    void coreApi
-      .providerAudit(provider.provider)
-      .then((result) => {
-        if (active) setAudit(result.audit);
-      })
-      .catch(() => {
-        if (active) setAudit([]);
-      });
-    return () => {
-      active = false;
-    };
+  const refreshAudit = useCallback(async () => {
+    try {
+      const result = await coreApi.providerAudit(provider.provider);
+      setAudit(result.audit);
+      setAuditError(null);
+    } catch (cause) {
+      setAuditError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Configuration audit could not be loaded.",
+      );
+    }
   }, [provider.provider]);
+
+  useEffect(() => {
+    void refreshAudit();
+  }, [refreshAudit]);
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -125,7 +129,7 @@ function ProviderCard({
         "Configuration saved. The credential was not returned to this page.",
       );
       await onChanged();
-      setAudit((await coreApi.providerAudit(provider.provider)).audit);
+      await refreshAudit();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError ? cause.message : "Provider save failed.",
@@ -141,7 +145,7 @@ function ProviderCard({
     setTest(null);
     try {
       setTest(await coreApi.testProvider(provider.provider));
-      setAudit((await coreApi.providerAudit(provider.provider)).audit);
+      await refreshAudit();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
@@ -162,7 +166,7 @@ function ProviderCard({
       setCredential("");
       setRevoking(false);
       await onChanged();
-      setAudit((await coreApi.providerAudit(provider.provider)).audit);
+      await refreshAudit();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
@@ -286,6 +290,7 @@ function ProviderCard({
           value={credential}
           onChange={(event) => setCredential(event.target.value)}
           autoComplete="new-password"
+          required={!provider.configured}
           placeholder={provider.configured ? "unchanged" : "provider API key"}
           help="Credentials are encrypted by Core, never returned to the browser and never rendered in audit rows."
         />
@@ -425,10 +430,17 @@ function ProviderCard({
 
       <details className="settings-audit">
         <summary>Configuration audit ({audit.length})</summary>
-        {audit.length === 0 ? (
+        {auditError ? (
+          <div className="ui-callout ui-callout--danger" role="alert">
+            <p>{auditError} The audit history is unknown, not empty.</p>
+            <Button size="sm" onClick={() => void refreshAudit()}>
+              Retry audit
+            </Button>
+          </div>
+        ) : audit.length === 0 ? (
           <EmptyState
             title="No audit entries"
-            description="Core records provider configuration changes when they occur."
+            description="Core returned an empty audit history for this provider."
           />
         ) : (
           <table>
@@ -506,13 +518,13 @@ export function Settings() {
   async function saveRuntime(event: React.FormEvent) {
     event.preventDefault();
     setNotice(null);
+    setError(null);
     try {
       const next = await coreApi.updateRuntimeSettings({
         semanticReviewEnabled: reviewEnabled,
         semanticReviewMaxOutputTokens: reviewTokens,
       });
       setRuntime(next);
-      setLastLoadedAt(new Date().toISOString());
       setNotice("Runtime review policy saved.");
     } catch (cause) {
       setError(

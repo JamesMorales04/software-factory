@@ -478,6 +478,19 @@ try {
   await page.getByText("Codex App Server").waitFor();
   await page.getByText("Coding inference").first().waitFor();
   await page.getByText("BLOCKED").first().waitFor();
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Settings providers must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("tab", { name: /Runtime policy/ }).click();
   await page
     .getByRole("heading", { name: "Review and runtime policy" })
