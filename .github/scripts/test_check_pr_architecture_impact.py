@@ -90,6 +90,32 @@ head_sha: {self.head}
             )[0]
         )
 
+    def test_office_declaration_rejects_unknown_capability_route_api_or_nonbrowser_acceptance(self):
+        variants = {
+            "capability": ("CAP-999", "GET /actions", "office/e2e-browser/rust-journey.mjs"),
+            "route": ("CAP-011", "GET /actions", "office/e2e-browser/rust-journey.mjs"),
+            "api": ("CAP-011", "GET /missing", "office/e2e-browser/rust-journey.mjs"),
+            "acceptance": ("CAP-011", "GET /actions", "scripts/compose-e2e.sh"),
+        }
+        for name, (capability, api, acceptance) in variants.items():
+            if name == "route":
+                body = self.office_body().replace("routes: /actions", "routes: /missing")
+            else:
+                body = (
+                    self.office_body()
+                    .replace("capabilities: CAP-011", f"capabilities: {capability}")
+                    .replace("core_api: GET /actions", f"core_api: {api}")
+                    .replace("acceptance: office/e2e-browser/rust-journey.mjs", f"acceptance: {acceptance}")
+                )
+            with self.subTest(name=name):
+                self.assertFalse(impact_check.evaluate(["office/src/App.tsx"], body, self.base, self.head)[0])
+
+    def test_container_declaration_requires_bound_fields(self):
+        body = self.container_body().replace("real_podman: bash scripts/compose-e2e.sh", "real_podman: none")
+        self.assertFalse(impact_check.evaluate(["compose.yaml"], body, self.base, self.head)[0])
+        body = self.container_body().replace(self.head, "c" * 40)
+        self.assertFalse(impact_check.evaluate(["compose.yaml"], body, self.base, self.head)[0])
+
     def test_container_change_requires_container_declaration(self):
         ok, classification, _ = impact_check.evaluate(["compose.yaml"], "", self.base, self.head)
         self.assertFalse(ok)

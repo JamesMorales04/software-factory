@@ -78,13 +78,19 @@ podman compose ps
 podman compose logs -f core
 ```
 
-`check-container` runs the full repository gates inside the pinned image and
-skips only the bubblewrap host-user-namespace boundary tests, which the
-development container cannot mount. Those tests remain in the host Rust CI lane;
-real provider/container acceptance uses the Compose stack. Commands and evidence
-must be run from the exact candidate. Do not install a missing host tool to
-bypass a broken development image; repair the image or record the workflow as
-`BLOCKED`.
+`check-container` runs format, strict Clippy, the workspace tests that do not
+require host user namespaces, build, docs and audit inside the pinned image. It
+skips the bubblewrap-dependent provider/campaign/Codex fixtures plus the pure
+bubblewrap boundary tests because the development container cannot mount the
+nested proc/user namespace. It does **not** replace the migration check,
+deterministic recovery/dispatch/negatives/provider E2E, architecture
+consistency or repository hygiene; those remain in the host/CI and Compose
+lanes. No required CI acceptance is lost: the host Rust lane keeps the full
+suite and the container-dev lane exercises the real Compose/Chromium path.
+
+Commands and evidence must be run from the exact candidate. Do not install a
+missing host tool to bypass a broken development image; repair the image or
+record the workflow as `BLOCKED`.
 
 `compose.dev.yaml` is a trusted development override, not part of the installed
 topology. It may bind the repository and use a development image. The product
@@ -97,7 +103,7 @@ topology. It may bind the repository and use a development image. The product
 | Development image with Rust/Node/SQLx | `IMPLEMENTED` | `.devcontainer/Containerfile` |
 | Playwright Chromium in the development image | `IMPLEMENTED` in this policy change; exact-image run recorded with the Slice 1 candidate | Containerfile and Slice 1 evidence |
 | Canonical Compose development service | `IMPLEMENTED` | `compose.dev.yaml` |
-| Rust/Office/browser commands through the service | `LOCALLY_VERIFIED` at `a75d4c3f9e65cec4318678f4b0e4d6394e03a008`; container-dev CI lane `IMPLEMENTED` | [Slice 1 evidence](../evidence/office-command-center-slice1-2026-10-27.json) |
+| Rust/Office/browser commands through the service | `LOCALLY_VERIFIED` at `a75d4c3f9e65cec4318678f4b0e4d6394e03a008`; container-dev CI lane `VERIFIED` on PR #29 head | [Slice 1 evidence](../evidence/office-command-center-slice1-2026-10-27.json) |
 | Windows/Podman Machine | `NOT_TESTED` | No Windows host |
 | SELinux/AppArmor hosts and digest pinning | `NOT_TESTED` / `NOT_IMPLEMENTED` | See security policy |
 

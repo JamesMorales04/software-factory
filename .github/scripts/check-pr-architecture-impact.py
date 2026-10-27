@@ -106,9 +106,23 @@ def is_container_native(path: str) -> bool:
     path = path.removeprefix("./")
     return (
         path in CONTAINER_EXACT
+        or path.startswith("compose.")
+        and path.endswith((".yaml", ".yml"))
         or path.startswith("deploy/")
         or path.startswith(".devcontainer/")
         or path.startswith("native/src/bin/")
+        or path.startswith("native/src/provider_")
+        or path in {
+            "native/src/execution.rs",
+            "native/src/runtime_broker.rs",
+            "native/src/sandbox.rs",
+            "native/src/service_network.rs",
+            "native/src/workspace.rs",
+            "native/src/workspace_archive.rs",
+            "native/src/db/provider_sessions.rs",
+            "native/src/db/provider_settings.rs",
+            "native/src/db/workers.rs",
+        }
         or path.startswith("scripts/compose-")
     )
 
@@ -203,6 +217,41 @@ def csv_values(fields: dict[str, str], key: str) -> list[str]:
     return [item.strip() for item in fields.get(key, "").split(",") if item.strip()]
 
 
+def known_capabilities() -> set[str]:
+    path = Path("docs/product/capabilities.yaml")
+    if not path.is_file():
+        return set()
+    return set(re.findall(r"^- id: (CAP-\d+)$", path.read_text(encoding="utf-8"), re.MULTILINE))
+
+
+def office_route_paths() -> set[str]:
+    path = Path("office/src/App.tsx")
+    if not path.is_file():
+        return set()
+    return set(re.findall(r'path="([^"]+)"', path.read_text(encoding="utf-8")))
+
+
+def core_api_paths() -> set[str]:
+    path = Path("native/src/bin/core.rs")
+    if not path.is_file():
+        return set()
+    return set(re.findall(r'\.route\(\s*"([^"]+)"', path.read_text(encoding="utf-8"), re.DOTALL))
+
+
+def acceptance_has_browser_provenance(items: list[str]) -> bool:
+    for item in items:
+        path = Path(item)
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").lower()
+        except OSError:
+            continue
+        if "playwright" in content or "chromium" in content:
+            return True
+    return False
+
+
 def office_assessment(body: str, base: str, head: str) -> str | None:
     fields = declared_fields(body, OFFICE_START, OFFICE_END)
     if fields is None or not bound_to_head(fields, base, head):
@@ -235,16 +284,27 @@ def office_assessment(body: str, base: str, head: str) -> str | None:
         if not fields.get(key) or has_placeholder(fields[key]):
             return None
     capabilities = csv_values(fields, "capabilities")
-    if not capabilities or any(not re.fullmatch(r"CAP-\d+", item) for item in capabilities):
+    known = known_capabilities()
+    if not capabilities or not known:
+        return None
+    if any(not re.fullmatch(r"CAP-\d+", item) or item not in known for item in capabilities):
         return None
     routes = csv_values(fields, "routes")
-    if not routes or any(not item.startswith("/") for item in routes):
+    known_routes = office_route_paths()
+    if not routes or any(not item.startswith("/") or item not in known_routes for item in routes):
         return None
     apis = csv_values(fields, "core_api")
-    if not apis or any(not re.match(r"^(GET|POST|PUT|DELETE) /", item) for item in apis):
+    known_apis = core_api_paths()
+    if not apis or not known_apis:
         return None
+    for item in apis:
+        match = re.match(r"^(GET|POST|PUT|DELETE) (/\S+)$", item)
+        if match is None or match.group(2) not in known_apis:
+            return None
     acceptance = csv_values(fields, "acceptance")
     if not acceptance or any(not Path(item).exists() for item in acceptance):
+        return None
+    if not acceptance_has_browser_provenance(acceptance):
         return None
     return "changed"
 

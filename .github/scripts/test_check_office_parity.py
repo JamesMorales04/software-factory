@@ -86,14 +86,38 @@ class OfficeParityTests(unittest.TestCase):
             self.assertTrue(any("placeholder" in error for error in errors))
             self.assertTrue(any("states" in error for error in errors))
 
-    def test_non_user_facing_entry_is_exempt(self):
+    def test_non_user_facing_entry_is_exempt_only_with_a_reason(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             parity = valid_parity()
             parity["capabilities"]["CAP-011"]["user_facing"] = False
             parity["capabilities"]["CAP-011"]["routes"] = []
             self.write_repo(root, parity)
+            errors = office_parity.validate(root)
+            self.assertTrue(any("documented exemption" in error for error in errors))
+            parity["capabilities"]["CAP-011"]["exemption"] = "Internal-only fixture."
+            (root / "docs/product/office-parity.json").write_text(
+                json.dumps(parity), encoding="utf-8"
+            )
             self.assertEqual(office_parity.validate(root), [])
+
+    def test_unknown_route_api_and_nonbrowser_acceptance_fail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            parity = valid_parity()
+            parity["capabilities"]["CAP-011"]["routes"] = ["/missing"]
+            parity["capabilities"]["CAP-011"]["core_api"] = ["GET /missing"]
+            parity["capabilities"]["CAP-011"]["acceptance"] = ["scripts/compose-e2e.sh"]
+            self.write_repo(root, parity)
+            (root / "office/src").mkdir(parents=True, exist_ok=True)
+            (root / "office/src/App.tsx").write_text('Route path="/actions"', encoding="utf-8")
+            (root / "native/src/bin").mkdir(parents=True)
+            (root / "native/src/bin/core.rs").write_text('.route("/actions")', encoding="utf-8")
+            (root / "scripts").mkdir()
+            (root / "scripts/compose-e2e.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            errors = office_parity.validate(root)
+            self.assertTrue(any("not declared" in error for error in errors))
+            self.assertTrue(any("browser-test provenance" in error for error in errors))
 
 
 if __name__ == "__main__":

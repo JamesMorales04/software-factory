@@ -1,10 +1,10 @@
 # Factory Office design system
 
 **Status:** Agreed design direction for the Office command-center redesign.
-Tokens, shared components, Storybook and automated visual/accessibility
-foundations are implemented in the design-foundation slice. This document is
-the normative visual and interaction contract; it is not evidence that every
-component or journey exists yet.
+This document is the normative visual and interaction contract, but **the tokens,
+shared components, Storybook, visual regression and automated accessibility
+foundation are not yet implemented**. They are the next design-foundation slice.
+Nothing in this document is evidence that a component, route or journey exists.
 
 **Product job:** the primary workspace where the Product Owner manages
 engineering objectives, decisions, autonomous agents, evidence and multiple
@@ -191,7 +191,8 @@ review.
 ## 11. Implementation stack decision
 
 - Keep React 19, TypeScript, React Router and Vite.
-- One accessible primitives library: Radix UI primitives. Do **not** add
+- One accessible primitives library: Radix UI primitives, selected for the
+  design-foundation slice but not yet installed or implemented. Do **not** add
   Tailwind/shadcn on top of the custom token system in the same slice; that
   would be a second styling stack. Re-evaluate only with a measured
   justification.

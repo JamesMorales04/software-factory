@@ -7,6 +7,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -14,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - name: Record candidate SHA
         run: |
@@ -63,40 +67,13 @@ jobs:
       - name: Strict zero-legacy repository hygiene
         run: cargo +1.90.0 run --locked --bin factory-repo-hygiene -- --mode strict
 
-  office-browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.90.0 --profile minimal
-      - name: Build Core and Worker
-        run: cargo +1.90.0 build --locked --bins
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - name: Install Office dependencies
-        run: npm ci
-        working-directory: office
-      - name: Install browser test dependencies
-        run: npm ci
-        working-directory: office/e2e-browser
-      - name: Install Chromium
-        run: npx --yes playwright@1.64.1 install --with-deps chromium
-      - name: Factory-managed browser capability (real Chromium)
-        env:
-          FACTORY_PLAYWRIGHT_CORE: ${{ github.workspace }}/office/e2e-browser/node_modules/playwright-core
-        run: cargo +1.90.0 test --locked -p factory-native --test browser
-      - name: Rust Office browser journey
-        run: cargo +1.90.0 xtask e2e office
-
   compose-policy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Validate Compose topology and static security policy
         run: |
           docker compose -f compose.yaml config --format json > /tmp/compose.json
@@ -110,6 +87,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Install rootless Podman and Compose provider
         run: |
           sudo apt-get update

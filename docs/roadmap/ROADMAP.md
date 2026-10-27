@@ -415,7 +415,7 @@ Decision: `approved`
 ### Capabilities
 
 - CAP-046 — Container-native development workflow (approved, in_progress)
-- CAP-047 — Office-first parity and design foundation (approved, in_progress)
+- CAP-047 — Office-first parity governance (approved, in_progress)
 
 ### Deliverables
 

@@ -16,11 +16,39 @@ from pathlib import Path
 
 CAPABILITY = re.compile(r"^- id: (CAP-\d+)$", re.MULTILINE)
 API = re.compile(r"^(GET|POST|PUT|DELETE) /")
-PLACEHOLDERS = ("TODO", "TBD", "FIXME")
+PLACEHOLDERS = ("TODO", "TBD", "FIXME", "...", "<", ">")
 
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
+
+
+def office_routes(root: Path) -> set[str]:
+    path = root / "office/src/App.tsx"
+    if not path.is_file():
+        return set()
+    return set(re.findall(r'path="([^"]+)"', path.read_text(encoding="utf-8")))
+
+
+def core_api_paths(root: Path) -> set[str]:
+    path = root / "native/src/bin/core.rs"
+    if not path.is_file():
+        return set()
+    return set(re.findall(r'\.route\(\s*"([^"]+)"', path.read_text(encoding="utf-8"), re.DOTALL))
+
+
+def acceptance_has_browser_provenance(root: Path, items: list[str]) -> bool:
+    for item in items:
+        path = root / item
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").lower()
+        except OSError:
+            continue
+        if "playwright" in content or "chromium" in content:
+            return True
+    return False
 
 
 def text_list(entry: dict, field: str, errors: list[str], name: str) -> list[str]:
@@ -66,26 +94,43 @@ def validate(root: Path) -> list[str]:
         if not isinstance(entry, dict):
             fail(errors, f"{name}: entry must be an object")
             continue
-        if entry.get("user_facing") is not True:
+        if not isinstance(entry.get("user_facing"), bool):
+            fail(errors, f"{name}: user_facing must be a boolean")
+            continue
+        if entry["user_facing"] is not True:
+            exemption = entry.get("exemption")
+            if not isinstance(exemption, str) or exemption.strip() == "":
+                fail(errors, f"{name}: user_facing false requires a documented exemption")
             continue
         for required in ("name", "job", "notes"):
             value = entry.get(required)
             if not isinstance(value, str) or value.strip() == "":
                 fail(errors, f"{name}: {required} is required")
         routes = text_list(entry, "routes", errors, name)
+        known_routes = office_routes(root)
         for route in routes:
             if not route.startswith("/"):
                 fail(errors, f"{name}: route {route!r} must start with /")
+            elif route not in known_routes:
+                fail(errors, f"{name}: route {route!r} is not declared in office/src/App.tsx")
         apis = text_list(entry, "core_api", errors, name)
+        known_apis = core_api_paths(root)
         for api in apis:
-            if not API.match(api):
+            match = API.match(api)
+            if match is None:
                 fail(errors, f"{name}: API {api!r} must be METHOD /path")
+                continue
+            path = api.split(" ", 1)[1]
+            if path not in known_apis:
+                fail(errors, f"{name}: API path {path!r} is not declared in native/src/bin/core.rs")
         text_list(entry, "user_actions", errors, name)
         text_list(entry, "states", errors, name)
         acceptance = text_list(entry, "acceptance", errors, name)
         for path in acceptance:
             if not (root / path).exists():
                 fail(errors, f"{name}: acceptance path is missing: {path}")
+        if acceptance and not acceptance_has_browser_provenance(root, acceptance):
+            fail(errors, f"{name}: acceptance must include browser-test provenance (playwright/chromium)")
 
     deferred = parity.get("deferred")
     if not isinstance(deferred, list):

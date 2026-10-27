@@ -199,6 +199,10 @@ try {
   const page = await browser.newPage();
   const consoleErrors = [];
   const pageErrors = [];
+  const notFound = [];
+  page.on("response", (response) => {
+    if (response.status() === 404) notFound.push(response.url());
+  });
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -630,6 +634,16 @@ try {
     pageErrors,
     [],
     `browser page errors: ${pageErrors.join("; ")}`,
+  );
+  // A missing gate is a normal pending projection. The UI intentionally probes
+  // that endpoint and renders PENDING; all other 404s are broken resources.
+  const unexpectedNotFound = notFound.filter(
+    (url) => !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url),
+  );
+  assert.deepEqual(
+    unexpectedNotFound,
+    [],
+    `unexpected 404 responses: ${unexpectedNotFound.join("; ")}`,
   );
   if (consoleErrors.length > 0) {
     console.error("browser console diagnostics:", consoleErrors.join("; "));

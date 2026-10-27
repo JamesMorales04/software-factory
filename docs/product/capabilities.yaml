@@ -2091,9 +2091,9 @@ capabilities:
   blockers:
   - Independent validation on Windows and SELinux/AppArmor hosts remains open.
 - id: CAP-047
-  name: Office-first parity and design foundation
+  name: Office-first parity governance
   category: Product
-  purpose: Every user-facing capability has a traceable accessible Office journey and one design system
+  purpose: Every user-facing capability has a traceable Office journey and enforceable parity declarations
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2122,7 +2122,7 @@ capabilities:
     - .github/scripts/test_check_office_parity.py
     - .github/scripts/test_check_pr_architecture_impact.py
   acceptance:
-    deterministic: The parity matrix references real capability IDs APIs routes files and browser tests; the PR gate rejects missing Office or container-native impact declarations.
+    deterministic: The parity matrix and PR gates validate capability IDs against the registry real Office routes real Core APIs existing acceptance files with browser-test provenance and reject missing or placeholder declarations.
     real: Primary Office journeys are exercised in real Chromium against real Core state with truthful states keyboard access responsive layouts and evidence.
   evidence:
     deterministic:
@@ -2132,7 +2132,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - This slice establishes governance and design direction only; implementation of the tokens shell and command-center modules remains in progress.
+  - This capability covers Office-first parity governance; the design tokens, shared components, application shell and command-center modules are a later design-foundation slice and are not claimed implemented.
   - The current Office still uses hash routes and polling; stable routes stream/replay and the visual Agent Office are later slices.
   blockers:
   - Each Office module requires a real browser journey and Product Owner review before completion.
