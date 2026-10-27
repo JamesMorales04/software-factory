@@ -4,8 +4,9 @@ React + TypeScript Office backed by the Rust Core API. The only API client is
 the Rust Core client; former provider-specific views were removed. The app
 renders server-authoritative snapshots and polls Core; no live SSE claim is made.
 
-Current views: Dashboard, Projects, Actions, Lead, Campaigns/Campaign detail,
-Runs, Workers and Runtime. Campaign detail projects the
+Current views: Dashboard, Projects, Actions, Lead, Delegations, Campaigns/Campaign detail,
+Runs, Workers, Runtime and Settings, inside a responsive shell with grouped
+navigation, command search, themes and density. Campaign detail projects the
 Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
 Candidate → Verifier → Reviewer → Gate workflow from Core data. It shows
 per-unit dependencies/status, candidate receipts, honest pending states for
@@ -36,6 +37,7 @@ Dependencies are pinned by `package.json` and `package-lock.json`.
 npm ci
 npm run typecheck
 npm run lint
+npm run test
 npm run build
 npm run dev
 ```
@@ -45,7 +47,7 @@ the prefix. The operator token stays in `sessionStorage`.
 
 ## Status
 
-The Rust-backed views typecheck, lint and build. `cargo xtask e2e office` runs
+The Rust-backed views typecheck, lint, pass component tests and build. `cargo xtask e2e office` runs
 the real Chromium journey against the Rust Core, Supervisor and Worker; see
 `e2e-browser/README.md`. That journey is author-run and CI evidence, not
 independent acceptance or isolation certification.

@@ -107,7 +107,7 @@ The canonical commands now run through the trusted `dev` service:
 podman compose -f compose.yaml -f compose.dev.yaml build dev
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev cargo xtask check-container
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
-  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
+  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run test && npm --prefix office run build'
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
   sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
 ```

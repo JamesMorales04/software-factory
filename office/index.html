@@ -3,7 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Factory Office — F1</title>
+    <title>Factory Office</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("factory-office-theme");
+          var density = localStorage.getItem("factory-office-density");
+          document.documentElement.dataset.theme =
+            theme === "light" || theme === "dark" ? theme : "system";
+          document.documentElement.dataset.density =
+            density === "compact" ? "compact" : "comfortable";
+        } catch (error) {
+          document.documentElement.dataset.theme = "system";
+          document.documentElement.dataset.density = "comfortable";
+        }
+      })();
+    </script>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2317191c'/%3E%3Cpath d='M8 22V10h13v3H11v2h8v3h-8v4z' fill='%23f4f4f5'/%3E%3C/svg%3E"

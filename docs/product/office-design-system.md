@@ -1,10 +1,11 @@
 # Factory Office design system
 
-**Status:** Agreed design direction for the Office command-center redesign.
-This document is the normative visual and interaction contract, but **the tokens,
-shared components, Storybook, visual regression and automated accessibility
-foundation are not yet implemented**. They are the next design-foundation slice.
-Nothing in this document is evidence that a component, route or journey exists.
+**Status:** Design foundation implemented in the Office design-foundation
+slice: semantic tokens, light/dark themes, comfortable/compact density, the
+application shell, shared button/field/badge/surface/tooltip/dialog primitives,
+command navigation and component tests. Storybook, visual regression, the
+full accessibility audit, WorkGraph/board/diff components and the command-center
+modules remain later slices. Nothing here says those modules exist.
 
 **Product job:** the primary workspace where the Product Owner manages
 engineering objectives, decisions, autonomous agents, evidence and multiple
@@ -190,22 +191,22 @@ review.
 
 ## 11. Implementation stack decision
 
-- Keep React 19, TypeScript, React Router and Vite.
-- One accessible primitives library: Radix UI primitives, selected for the
-  design-foundation slice but not yet installed or implemented. Do **not** add
-  Tailwind/shadcn on top of the custom token system in the same slice; that
-  would be a second styling stack. Re-evaluate only with a measured
-  justification.
-- Icons: Lucide React, one family.
+- Keep React 19.3.1, TypeScript 5.9.3, React Router 7.18.4 and Vite 7.3.7.
+- One accessible primitives library: Radix UI Dialog and Tooltip, pinned, with
+  custom CSS tokens. Do **not** add Tailwind/shadcn on top of the custom token
+  system in the same slice; that would be a second styling stack.
+- Icons: Lucide React 1.62.0, one family.
+- Typography: self-hosted IBM Plex Sans Variable and IBM Plex Mono 5.3.0.
+- Component tests: Vitest 5.0.5 + Testing Library 16.3.3 + jsdom 30.1.3.
 - Data tables: TanStack Table when sorting/filtering/virtualization justifies
-  it; use native tables for simple read-only projections.
+  it; use native tables for simple read-only projections. Not installed yet.
 - WorkGraph: compare a custom SVG/CSS graph with React Flow at the actual 1–8
   unit bound; choose the simpler accessible option with a table/timeline
   alternative. Do not add React Flow by default.
-- Storybook is a component workshop, not product acceptance; if selected, pin
-  it and run it in the container.
+- Storybook is a component workshop, not product acceptance; evaluate it in the
+  design foundation or add it only when component isolation justifies the cost.
 - Playwright + axe for real browser acceptance; visual regression only when the
-  foundation is stable.
+  foundation is stable. Axe/visual regression are later slices.
 
 ## 12. References
 

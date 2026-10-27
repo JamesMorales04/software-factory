@@ -1,0 +1,69 @@
+{
+  "schema": "factory.office-design-foundation.v1",
+  "recorded_at": "2026-10-27T14:35:00Z",
+  "result": "PASS (author-run design foundation; not independent acceptance)",
+  "implementation_sha": "4b47c38a35afd7b8d6c342ed5876dc579bf25497",
+  "baseline_sha": "f2f982356ac43a45d0bdeedb0a425457da88ba96",
+  "commands": {
+    "office_typecheck": "PASS",
+    "office_lint": "PASS (4 reduced-motion !important warnings retained as scoped accessibility guidance)",
+    "office_component_tests": "PASS (3 files, 9 tests)",
+    "office_build": "PASS",
+    "container_office_gates": "PASS inside the pinned dev image, including 9 component tests",
+    "container_chromium_journey": "PASS; fixture candidate 7a035ad4405378dc5342cbc88827b16b454e8a05; gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_ci": "PASS: architecture-consistency, compose-policy, container-dev and rust on exact head 4b47c38a (run 40520056549)"
+  },
+  "design_foundation": {
+    "tokens": "office/src/styles/tokens.css",
+    "themes": [
+      "system",
+      "light",
+      "dark"
+    ],
+    "density": [
+      "comfortable",
+      "compact"
+    ],
+    "shell": "office/src/components/AppShell.tsx",
+    "components": [
+      "Button",
+      "IconButton",
+      "Badge",
+      "Field/Input/Textarea/Select/Checkbox",
+      "Panel",
+      "PageHeader",
+      "EmptyState",
+      "ErrorState",
+      "LoadingState",
+      "Tooltip",
+      "CommandPalette"
+    ],
+    "navigation": "grouped sidebar with responsive mobile drawer",
+    "command_navigation": "Ctrl/Cmd+K; implemented pages only",
+    "fonts": "self-hosted IBM Plex Sans Variable / IBM Plex Mono",
+    "icons": "Lucide React"
+  },
+  "browser_observation": {
+    "desktop": "1440px; no horizontal overflow; grouped sidebar and command palette rendered",
+    "tablet": "834px; no horizontal overflow",
+    "mobile": "390px; no document overflow; sidebar closed state has aria-expanded=false; drawer focus moves to Dashboard and scrim restores focus; tables scroll in the main workspace",
+    "dark_theme": "explicit dark theme applied (background rgb(7, 17, 31))",
+    "compact_density": "applied",
+    "console_errors": 0,
+    "unexpected_404s": 0,
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only",
+    "campaign_detail_mobile": "document scrollWidth equals clientWidth; main workspace provides horizontal table scrolling; no clipped table actions"
+  },
+  "not_tested": [
+    "Storybook and isolated visual regression",
+    "automated axe/WCAG audit and screen-reader review",
+    "WorkGraph, board, diff viewer and timeline components",
+    "migration of every operational view off the legacy compatibility surface",
+    "decision-inbox, agent-office, issues and docs journeys",
+    "Windows 11 / Podman Machine and SELinux/AppArmor",
+    "independent acceptance of this slice"
+  ],
+  "notes": "The shell/skip/collapse/mobile-drawer/command-listbox fixes are covered by 9 tests. Existing operational views remain functional inside the shell and use a responsive scroll region for wide tables. The design foundation is not proof that every product journey is accessible.",
+  "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
+  "chromium_candidate_commit": "7a035ad4405378dc5342cbc88827b16b454e8a05"
+}

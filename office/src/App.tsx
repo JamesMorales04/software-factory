@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
+import { AppShell } from "./components/AppShell";
+import { Button } from "./components/ui/Button";
 import {
   CoreApiError,
   clearToken,
@@ -20,46 +22,47 @@ import { Runtime } from "./views/Runtime";
 import { Settings } from "./views/Settings";
 import { Workers } from "./views/Workers";
 
-function NavItem({ to, label }: { to: string; label: string }) {
-  return (
-    <NavLink
-      to={to}
-      end
-      className={({ isActive }) => (isActive ? "navlink active" : "navlink")}
-    >
-      {label}
-    </NavLink>
-  );
-}
-
 function TokenGate({ onUnlock }: { onUnlock: () => void }) {
   const [value, setValue] = useState("");
   return (
     <div className="gate">
-      <h2>Factory Office</h2>
+      <div className="gate-brand">
+        <span className="brand-mark" aria-hidden="true">
+          SF
+        </span>
+        <span>
+          <strong>Factory</strong>
+          <span>Office</span>
+        </span>
+      </div>
+      <h1>Unlock Factory Office</h1>
       <p className="muted">
         Paste the operator token from the private{" "}
-        <code>/config/operator.token</code> file (read it with{" "}
-        <code>podman compose exec core cat /config/operator.token</code>). It
-        stays in this tab's session storage only.
+        <code>/config/operator.token</code> file. It stays in this tab's session
+        storage only.
       </p>
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
+        onSubmit={(event) => {
+          event.preventDefault();
           setToken(value.trim());
           onUnlock();
         }}
       >
-        <input
-          type="password"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="FACTORY_OPERATOR_TOKEN"
-          autoComplete="off"
-        />
-        <button type="submit" disabled={value.trim() === ""}>
+        <label className="ui-field">
+          <span className="ui-field-label">Operator token</span>
+          <input
+            className="ui-input"
+            type="password"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="FACTORY_OPERATOR_TOKEN"
+            autoComplete="off"
+            aria-label="Operator token"
+          />
+        </label>
+        <Button type="submit" variant="primary" disabled={value.trim() === ""}>
           Unlock
-        </button>
+        </Button>
       </form>
     </div>
   );
@@ -71,7 +74,16 @@ function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="gate">
-      <h2>Factory first-run setup</h2>
+      <div className="gate-brand">
+        <span className="brand-mark" aria-hidden="true">
+          SF
+        </span>
+        <span>
+          <strong>Factory</strong>
+          <span>Office</span>
+        </span>
+      </div>
+      <h1>First-run setup</h1>
       <p className="muted">
         Factory generated a one-time enrollment code. Read it with{" "}
         <code>podman compose exec core cat /data/enrollment-code</code>, then
@@ -97,18 +109,31 @@ function SetupWizard({ onComplete }: { onComplete: () => void }) {
             .finally(() => setBusy(false));
         }}
       >
-        <input
-          type="password"
-          value={code}
-          onChange={(event) => setCode(event.target.value)}
-          placeholder="one-time enrollment code"
-          autoComplete="off"
-        />
-        <button type="submit" disabled={busy || code.trim() === ""}>
+        <label className="ui-field">
+          <span className="ui-field-label">One-time enrollment code</span>
+          <input
+            className="ui-input"
+            type="password"
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="One-time enrollment code"
+            autoComplete="off"
+            aria-label="One-time enrollment code"
+          />
+        </label>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={busy || code.trim() === ""}
+        >
           {busy ? "Enrolling…" : "Enroll owner"}
-        </button>
+        </Button>
       </form>
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -116,6 +141,7 @@ function SetupWizard({ onComplete }: { onComplete: () => void }) {
 export function App() {
   const [unlocked, setUnlocked] = useState(() => getToken() !== null);
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
+  const location = useLocation();
 
   useEffect(() => {
     let active = true;
@@ -132,7 +158,11 @@ export function App() {
   }, []);
 
   if (setupRequired === null) {
-    return <p className="muted">Contacting Factory Core…</p>;
+    return (
+      <div className="gate">
+        <p className="muted">Contacting Factory Core…</p>
+      </div>
+    );
   }
   if (setupRequired) {
     return (
@@ -149,53 +179,27 @@ export function App() {
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>
-          <Link to="/" className="brand">
-            Factory Office
-          </Link>{" "}
-          <span className="muted">Rust Core</span>
-        </h1>
-        <nav>
-          <NavItem to="/" label="Dashboard" />
-          <NavItem to="/projects" label="Projects" />
-          <NavItem to="/actions" label="Actions" />
-          <NavItem to="/lead" label="Lead" />
-          <NavItem to="/delegations" label="Delegations" />
-          <NavItem to="/campaigns" label="Campaigns" />
-          <NavItem to="/runs" label="Runs" />
-          <NavItem to="/workers" label="Workers" />
-          <NavItem to="/runtime" label="Runtime" />
-          <NavItem to="/settings" label="Settings" />
-          <button
-            type="button"
-            className="linklike"
-            onClick={() => {
-              clearToken();
-              setUnlocked(false);
-            }}
-          >
-            Lock
-          </button>
-        </nav>
-      </header>
-      <main>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/actions" element={<Actions />} />
-          <Route path="/lead" element={<Lead />} />
-          <Route path="/delegations" element={<Delegations />} />
-          <Route path="/campaigns" element={<Campaigns />} />
-          <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
-          <Route path="/runs" element={<Runs />} />
-          <Route path="/workers" element={<Workers />} />
-          <Route path="/runtime" element={<Runtime />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<p className="error">Unknown route.</p>} />
-        </Routes>
-      </main>
-    </div>
+    <AppShell
+      pathname={location.pathname}
+      onLock={() => {
+        clearToken();
+        setUnlocked(false);
+      }}
+    >
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/projects" element={<Projects />} />
+        <Route path="/actions" element={<Actions />} />
+        <Route path="/lead" element={<Lead />} />
+        <Route path="/delegations" element={<Delegations />} />
+        <Route path="/campaigns" element={<Campaigns />} />
+        <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
+        <Route path="/runs" element={<Runs />} />
+        <Route path="/workers" element={<Workers />} />
+        <Route path="/runtime" element={<Runtime />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="*" element={<p className="error">Unknown route.</p>} />
+      </Routes>
+    </AppShell>
   );
 }

@@ -65,9 +65,9 @@ podman compose -f compose.yaml -f compose.dev.yaml build dev
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
   cargo xtask check-container
 
-# Office typecheck, lint and production build
+# Office typecheck, lint, component tests and production build
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev \
-  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run build'
+  sh -c 'npm --prefix office ci && npm --prefix office run typecheck && npm --prefix office run lint && npm --prefix office run test && npm --prefix office run build'
 
 # Factory-managed browser capability (real Chromium server/cleanup)
 podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
