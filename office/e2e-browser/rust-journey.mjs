@@ -336,26 +336,39 @@ try {
   await workflow.getByText("WorkGraph").waitFor();
   await workflow.getByText("Verifier").waitFor();
   await workflow.getByText("Reviewer").waitFor();
+  await page.getByRole("tab", { name: /WorkGraph/ }).click();
+  await page.getByRole("heading", { name: /WorkGraph \(/ }).waitFor();
+  await page.getByRole("tab", { name: /Execution/ }).click();
+  await page.getByRole("heading", { name: "Runs and attempts" }).waitFor();
+  await page.getByRole("heading", { name: "Participant sessions" }).waitFor();
+  await page.getByRole("tab", { name: /Budget & usage/ }).click();
   await page
     .getByRole("heading", { name: "Authorization, budget and observed usage" })
     .waitFor();
   await page.getByText("Unmeasured sessions", { exact: true }).waitFor();
+
+  await page.getByRole("tab", { name: /Candidates/ }).click();
   const pendingCandidate = page.getByTestId("candidate-panel");
-  await pendingCandidate
-    .getByRole("row", { name: /verifier\s+PASS\s+EXECUTED/i })
-    .waitFor();
-  await pendingCandidate
-    .getByRole("row", { name: /reviewer\s+PENDING/i })
-    .waitFor();
   await pendingCandidate.getByText("GATE PENDING").waitFor();
-  await pendingCandidate
-    .getByText("no Core gate decision is recorded", { exact: false })
-    .waitFor();
+  await pendingCandidate.getByTestId("candidate-diff").waitFor();
+  await pendingCandidate.getByText(/Changed paths/).waitFor();
   assert.equal(
     await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
     0,
     "a reviewer-less candidate must not render ACCEPTED",
   );
+  await page.getByRole("tab", { name: /Evidence/ }).click();
+  const pendingReceipts = page.getByTestId("candidate-receipts");
+  await pendingReceipts
+    .getByRole("row", { name: /verifier\s+PASS\s+EXECUTED/i })
+    .waitFor();
+  await pendingReceipts
+    .getByRole("row", { name: /reviewer\s+PENDING/i })
+    .waitFor();
+  await page.getByRole("tab", { name: /Quality Gate/ }).click();
+  await page
+    .getByText("no Core gate decision is recorded", { exact: false })
+    .waitFor();
 
   const reviewerProcess = launch(reviewerBin, [], {
     cwd: temp,
@@ -378,16 +391,52 @@ try {
       name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
     })
     .waitFor();
+  assert.equal(
+    await page
+      .getByRole("tab", { name: /Quality Gate/ })
+      .getAttribute("aria-selected"),
+    "true",
+    "the selected Campaign tab must survive reload",
+  );
+  await page.getByRole("tab", { name: /Candidates/ }).click();
   const acceptedCandidate = page.getByTestId("candidate-panel");
-  await acceptedCandidate
-    .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
-    .waitFor({ timeout: 15000 });
   await acceptedCandidate
     .getByText("ACCEPTED", { exact: true })
     .first()
-    .waitFor();
+    .waitFor({ timeout: 15000 });
+  await page.getByRole("tab", { name: /Evidence/ }).click();
+  await page
+    .getByTestId("candidate-receipts")
+    .getByRole("row", { name: /reviewer\s+PASS\s+EXECUTED/i })
+    .waitFor({ timeout: 15000 });
+  await page.getByRole("tab", { name: /Events/ }).click();
   await page
     .getByText("No unresolved provider session is recorded", { exact: false })
+    .waitFor();
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Campaign Events workspace must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
+  await page
+    .locator(`a[href="#/campaigns/${fixtureCampaign.id}"]`)
+    .first()
+    .click();
+  await page
+    .getByRole("heading", {
+      name: `Campaign ${fixtureCampaign.id.slice(0, 8)}`,
+    })
     .waitFor();
 
   await page.getByRole("link", { name: "Workers", exact: true }).click();
@@ -595,6 +644,7 @@ try {
     .getByText("FIXTURE (deterministic, no provider)", { exact: false })
     .first()
     .waitFor();
+  await page.getByRole("tab", { name: /Budget & usage/ }).click();
   await page
     .getByText("opencode/deepseek-v4.1-flash", { exact: false })
     .first()
@@ -633,6 +683,7 @@ try {
   await page
     .getByRole("heading", { name: `Campaign ${cancelCampaign.id.slice(0, 8)}` })
     .waitFor();
+  await page.getByRole("tab", { name: /Events/ }).click();
   await page.getByText("campaign.cancelled").first().waitFor();
   await page
     .getByText("operator e2e cancellation", { exact: false })

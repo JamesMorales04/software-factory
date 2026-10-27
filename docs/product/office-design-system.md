@@ -3,9 +3,11 @@
 **Status:** Design foundation implemented in the Office design-foundation
 slice: semantic tokens, light/dark themes, comfortable/compact density, the
 application shell, shared button/field/badge/surface/tooltip/dialog primitives,
-command navigation and component tests. Storybook, visual regression, the
-full accessibility audit, WorkGraph/board/diff components and the command-center
-modules remain later slices. Nothing here says those modules exist.
+command navigation and component tests. Operational Overview, Decision Inbox,
+Action detail and the tabbed Campaign workspace are implemented against Core
+projections. Storybook, visual regression, the full accessibility audit, the
+interactive WorkGraph, a full code-diff viewer, Agent Office and board modules
+remain later slices. Nothing here says those modules exist.
 
 **Product job:** the primary workspace where the Product Owner manages
 engineering objectives, decisions, autonomous agents, evidence and multiple
@@ -122,8 +124,8 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 | Callout / InlineAlert | info/attention/danger; action; `aria-live` for asynchronous changes |
 | CommandPalette | implemented commands only, keyboard-first, empty state |
 | Timeline / EventList | durable sequence, cursor/replay awareness, redacted detail, no fabricated activity |
-| Code/DiffViewer | monospace, line wrapping control, file headers, copyable identifiers, no unexpected HTML |
-| WorkGraph | dependency edges, parallel lanes, blocked/active/retry/verification states, accessible table/timeline alternatives |
+| Code/DiffViewer | monospace, line wrapping control, file headers, copyable identifiers, no unexpected HTML; current Campaign view exposes only a bounded diff summary |
+| WorkGraph | dependency edges, parallel lanes, blocked/active/retry/verification states, accessible table/timeline alternatives; current Campaign view is a table projection |
 | Board | keyboard move menu, drag with pointer, no drag-only path, explicit column semantics |
 | EmptyState | explains why, offers a real next action, no decorative illustration dependency |
 | Loading / Skeleton | bounded, no layout jump, cancellation-safe |

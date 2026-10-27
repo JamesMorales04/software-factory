@@ -6,13 +6,17 @@ export function Panel({
   children,
   className,
   as: Component = "section",
+  "data-testid": testId,
 }: {
   children: ReactNode;
   className?: string;
   as?: "section" | "div" | "aside";
+  "data-testid"?: string;
 }) {
   return (
-    <Component className={cn("ui-panel", className)}>{children}</Component>
+    <Component className={cn("ui-panel", className)} data-testid={testId}>
+      {children}
+    </Component>
   );
 }
 

@@ -149,6 +149,17 @@ export interface LeadTask {
   updated_at: string;
 }
 
+export interface CandidateDiffSummary {
+  candidate_id: string;
+  commit_sha: string;
+  tree_sha: string;
+  base_commit: string;
+  changed_paths: string[];
+  changed_paths_truncated: boolean;
+  diff_stat: string;
+  source: string;
+}
+
 export interface CampaignDetail {
   campaign: Campaign;
   authorization: CampaignAuthorization | null;
@@ -881,6 +892,10 @@ export const coreApi = {
   listCampaigns: () => request<Campaign[]>("/campaigns"),
   getCampaignDetail: (id: string) =>
     request<CampaignDetail>(`/campaigns/${encodeURIComponent(id)}`),
+  getCandidateDiff: (campaignId: string, candidateId: string) =>
+    request<CandidateDiffSummary>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/diff`,
+    ),
   createCampaign: (input: NewCampaignRequest) =>
     request<Campaign>("/campaigns", {
       method: "POST",

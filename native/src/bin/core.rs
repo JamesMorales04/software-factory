@@ -538,6 +538,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/office/decisions", get(office_decisions))
         .route("/campaigns", get(campaigns).post(create_campaign))
         .route("/campaigns/{id}", get(campaign_detail))
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/diff",
+            get(candidate_diff),
+        )
         .route("/campaigns/{id}/cancel", post(cancel_campaign))
         .route("/runs", get(runs))
         .route("/attempts", get(attempts))
@@ -2200,6 +2204,100 @@ async fn campaign_detail(
     .into_response()
 }
 
+async fn candidate_diff(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let campaign = match app.db.campaign(&campaign_id).await {
+        Ok(campaign) => campaign,
+        Err(error) => return api_error(error),
+    };
+    let candidate = match app.db.candidates().await {
+        Ok(candidates) => candidates
+            .into_iter()
+            .find(|candidate| candidate.id == candidate_id),
+        Err(error) => return api_error(error),
+    };
+    let Some(candidate) = candidate else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let attempt = match app.db.attempts().await {
+        Ok(attempts) => attempts
+            .into_iter()
+            .find(|attempt| attempt.id == candidate.attempt_id),
+        Err(error) => return api_error(error),
+    };
+    let Some(attempt) = attempt else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let run = match app.db.runs().await {
+        Ok(runs) => runs.into_iter().find(|run| run.id == attempt.run_id),
+        Err(error) => return api_error(error),
+    };
+    let Some(run) = run else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if run.campaign_id != campaign.id {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let action = match app.db.actions().await {
+        Ok(actions) => actions
+            .into_iter()
+            .find(|action| action.id == campaign.action_id),
+        Err(error) => return api_error(error),
+    };
+    let Some(action) = action else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let tasks = match app.db.campaign_tasks(&campaign.id).await {
+        Ok(tasks) => tasks,
+        Err(error) => return api_error(error),
+    };
+    let base_commit = tasks
+        .iter()
+        .find(|task| task.candidate_id.as_deref() == Some(candidate.id.as_str()))
+        .map(|task| task.base_commit.clone())
+        .unwrap_or_else(|| action.spec.base_commit.clone());
+    let repository = Path::new(&action.spec.repository);
+    let changed_paths = match factory_native::workspace::changed_paths(
+        repository,
+        &base_commit,
+        &candidate.commit_sha,
+    ) {
+        Ok(paths) => paths,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "candidate diff summary is unavailable for the recorded revision",
+                    "candidate_id": candidate.id,
+                })),
+            )
+                .into_response();
+        }
+    };
+    let diff_stat =
+        factory_native::workspace::diff_stat(repository, &base_commit, &candidate.commit_sha)
+            .unwrap_or_else(|_| "diff stat unavailable".to_owned());
+    let changed_paths_truncated = changed_paths.len() > 200;
+    let changed_paths = changed_paths.into_iter().take(200).collect::<Vec<_>>();
+    Json(json!({
+        "candidate_id": candidate.id,
+        "commit_sha": candidate.commit_sha,
+        "tree_sha": candidate.tree_sha,
+        "base_commit": base_commit,
+        "changed_paths": changed_paths,
+        "changed_paths_truncated": changed_paths_truncated,
+        "diff_stat": diff_stat,
+        "source": "Core read-only Git diff summary; file bodies are not exposed",
+    }))
+    .into_response()
+}
+
 async fn cancel_campaign(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -3665,7 +3763,11 @@ mod tests {
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
         let router = build_router(app);
-        for uri in ["/office/overview", "/office/decisions"] {
+        for uri in [
+            "/office/overview",
+            "/office/decisions",
+            "/campaigns/missing/candidates/missing/diff",
+        ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
                 .body(axum::body::Body::empty())
@@ -3698,13 +3800,22 @@ mod tests {
             .header("authorization", "Bearer operator-token")
             .body(axum::body::Body::empty())
             .unwrap();
-        let response = router.oneshot(request).await.unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let decisions: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(decisions["items"].as_array().map(Vec::len), Some(0));
+        let request = axum::http::Request::builder()
+            .uri("/campaigns/missing/candidates/missing/diff")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
         let _ = std::fs::remove_file(path);
     }
 

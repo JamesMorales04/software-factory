@@ -1,0 +1,62 @@
+{
+  "schema": "factory.office-campaign-workspace.v1",
+  "recorded_at": "2026-10-27T16:52:00Z",
+  "result": "PASS (author-run Campaign workspace; not independent acceptance)",
+  "implementation_sha": "f18f09f9adc05483e5a5a66ae5eb6f6eca1628ff",
+  "baseline_sha": "1176b8c98308970d1bbabfba140e7b2ce739165a",
+  "branch": "campaign/office-campaign-detail-20261027",
+  "commands": {
+    "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, cargo build --bins, cargo xtask check-container, npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 19 component tests and production build",
+    "container_chromium_journey": "PASS; real Chromium inspected Overview, WorkGraph, Execution, Budget & usage, Candidates, Evidence, Quality Gate and Events tabs, verified the selected tab survives reload, followed an Overview campaign link, and reached fixture candidate 5fd9f0609741b0d30b1ff87c9913e730b9aae6cd with Quality Gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
+    "host_iteration": "PASS: cargo fmt, clippy, factory-core tests, Office typecheck, 19 component tests, production build and Chromium journey; iteration only"
+  },
+  "implementation": {
+    "workspace": "office/src/views/CampaignDetail.tsx",
+    "tabs": [
+      "Overview",
+      "WorkGraph",
+      "Execution",
+      "Candidates",
+      "Evidence",
+      "Quality Gate",
+      "Budget & usage",
+      "Events"
+    ],
+    "deep_link": "The selected tab is stored in the URL query and survives reload; Campaign authorization, Run state, Attempt state and Gate outcome remain separate facts.",
+    "shared_components": [
+      "office/src/components/ui/Tabs.tsx",
+      "office/src/components/office/StatusBadge.tsx",
+      "office/src/components/office/ParticipantSessionList.tsx",
+      "office/src/components/office/CandidateEvidence.tsx",
+      "office/src/components/office/CandidateDiff.tsx"
+    ],
+    "core_projection": "GET /campaigns/{id}/candidates/{candidate_id}/diff returns an operator-authenticated, bounded changed-path and diff-stat summary. It does not return source bodies.",
+    "operator_actions": [
+      "inspect Campaign lifecycle, WorkGraph, execution and sessions, candidate revisions, receipts, Gate, budget and events",
+      "deep-link to a Campaign tab",
+      "load the candidate diff summary",
+      "cancel a Campaign through the existing confirmation workflow"
+    ]
+  },
+  "browser_observation": {
+    "desktop": "1440px; tabs fit without document overflow; Operating picture distinguished Project, Action, authorization, latest Run, latest Attempt, latest Candidate and latest Gate; candidate diff summary showed 1 changed path and 1 file changed, 1 insertion",
+    "tablet": "834px; document scrollWidth equals clientWidth on the Events and recovery tab; tab strip scrolls inside its own region",
+    "mobile": "390px; document scrollWidth equals clientWidth on the Events and recovery tab; Campaign summary, tabs and events stack without document overflow",
+    "tab_persistence": "The Quality Gate tab remained selected after reload and the campaign link from Overview opened the same Campaign",
+    "console_errors": 0,
+    "unexpected_404s": 0,
+    "expected_404_scope": "/core-api/quality/candidates/{id}/gate pending projection only"
+  },
+  "not_tested": [
+    "full source diff or file-body rendering; Core intentionally returns changed paths and diff stat only",
+    "interactive WorkGraph graph and Agent Office",
+    "touch gesture testing on a physical mobile device",
+    "automated axe/WCAG audit and screen-reader review",
+    "dark-theme and compact-density screenshots of every Campaign tab",
+    "live provider inference, paid UAT, independent acceptance, security review, Windows, SELinux and deployment"
+  ],
+  "notes": "The Campaign workspace is a projection of existing Core records. The WorkGraph is a table, not a graph. The diff projection is bounded to 200 changed paths plus a 512-character diff-stat summary and never returns file bodies. A pending Gate is never rendered as ACCEPTED.",
+  "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
+  "chromium_candidate_commit": "5fd9f0609741b0d30b1ff87c9913e730b9aae6cd"
+}

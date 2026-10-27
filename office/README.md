@@ -9,10 +9,12 @@ Delegations, Campaigns/Campaign detail, Runs, Workers, Runtime and Settings,
 inside a responsive shell with grouped navigation, command search, themes and
 density. Campaign detail projects the
 Project → Action → Lead → Assessment → Plan → Campaign → WorkGraph → Attempt →
-Candidate → Verifier → Reviewer → Gate workflow from Core data. It shows
-per-unit dependencies/status, candidate receipts, honest pending states for
-missing evidence, deterministic Gate outcome and reasons, provider-session
-usage/cleanup and a compact authorization budget projection. Operators can
+Candidate → Verifier → Reviewer → Gate workflow from Core data in URL-backed
+tabs for lifecycle, WorkGraph, execution, candidates, evidence, Gate, budget and
+events/recovery. It shows per-unit dependencies/status, a bounded candidate diff
+summary, receipts, honest pending states for missing evidence, deterministic
+Gate outcome and reasons, provider-session usage/cleanup and a compact
+authorization budget projection. Operators can
 request Campaign cancellation with an explicit confirmation; cancelled and
 unconfirmed provider termination are shown from the API rather than inferred.
 Lead detail decodes the recorded assessment, proposal and frozen plan, shows

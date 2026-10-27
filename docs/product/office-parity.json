@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-27T15:08:13Z",
+  "updated_at": "2026-10-27T16:30:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -64,7 +64,8 @@
         "PUT /settings/runtime",
         "GET /office/overview",
         "GET /office/decisions",
-        "POST /model/calls/{id}/resolve"
+        "POST /model/calls/{id}/resolve",
+        "GET /campaigns/{id}/candidates/{candidate_id}/diff"
       ],
       "user_actions": [
         "register a Project",
@@ -94,7 +95,7 @@
         "scripts/compose-office-smoke.mjs",
         "scripts/compose-onboarding-smoke.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox and Action detail are implemented in the operational-workspace slice. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail and the tabbed Campaign workspace are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -137,6 +138,46 @@
         "scripts/compose-office-smoke.mjs"
       ],
       "notes": "Overview and decisions are operator-authenticated Core projections; the client does not synthesize decisions. The Inbox exposes model-call resolution and navigation only. Campaign authorization and Gate repair remain on their existing module pages. No SSE or live-stream claim."
+    },
+    "CAP-050": {
+      "name": "Campaign operational workspace",
+      "user_facing": true,
+      "job": "Understand and inspect a Campaign end to end from authorization through WorkGraph, execution, candidates, evidence, Gate, budget and recovery.",
+      "routes": [
+        "/campaigns",
+        "/campaigns/:campaignId"
+      ],
+      "core_api": [
+        "GET /campaigns",
+        "GET /campaigns/{id}",
+        "GET /campaigns/{id}/candidates/{candidate_id}/diff",
+        "GET /quality/candidates/{id}/receipts",
+        "GET /quality/candidates/{id}/gate",
+        "GET /provider/sessions",
+        "GET /lead/requests/{id}",
+        "POST /campaigns/{id}/cancel"
+      ],
+      "user_actions": [
+        "inspect the Campaign objective lifecycle WorkGraph Runs Attempts sessions candidates evidence Gate budget and recovery",
+        "deep-link directly to the WorkGraph Execution Candidates Evidence Gate Budget or Events tab",
+        "load the bounded candidate Git diff summary for the recorded revision",
+        "cancel a Campaign after an explicit consequence confirmation"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "stale-snapshot",
+        "pending-gate",
+        "diff-unavailable",
+        "cancellation-unconfirmed"
+      ],
+      "acceptance": [
+        "office/e2e-browser/rust-journey.mjs",
+        "office/src/views/CampaignDetail.test.tsx"
+      ],
+      "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The WorkGraph is a truthful table projection, not the future interactive graph. Candidate diff metadata is bounded to changed paths and diff stat; source bodies are not rendered. Agent Office and visual WorkGraph remain later slices."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

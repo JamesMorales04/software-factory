@@ -72,14 +72,21 @@ aggregates blocked authorizations, frozen Lead plans, Gate repair/human-review
 states, unresolved model usage, unresolved provider sessions and failed work;
 only model-call resolution invokes a Core operation, while other items link to
 their existing authoritative module. Action Detail shows the frozen spec,
-checks and related Core records. Campaign Detail includes a table-based
-WorkGraph projection, candidate receipts and the deterministic Gate. Agent
-Office, Issues, Docs and graph/timeline views are not yet implemented.
+checks and related Core records. Campaign Detail is a tabbed operational
+workspace with separate lifecycle, WorkGraph, execution/participant,
+candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
+views. Candidate revisions expose a bounded Core diff summary of changed paths
+and diff stat; file bodies are not returned. Agent Office, Issues, Docs and the
+interactive WorkGraph remain unimplemented.
 
 Known gaps:
 
-- Existing views still use the legacy compatibility surface; they are migrated
-  to the shared components module by module.
+- Project, Lead, Delegations, Campaign list, Runs, Workers, Runtime and
+  Settings still use the legacy compatibility surface; they are migrated by
+  module.
+- The WorkGraph is a table projection, not an interactive graph.
+- Candidate diff metadata does not include file bodies; there is no code-diff
+  viewer.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
 - Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
