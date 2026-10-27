@@ -1,6 +1,7 @@
 # Agent Office and WorkGraph — Slice 4 evidence
 
-**Candidate:** `0bddd0f4370cf883adfe475484c78b80551bf161`
+**Candidate:** `31977718c0dc6774671daea3eb14b4554e06d495`
+**Evidence run head:** `0bddd0f4370cf883adfe475484c78b80551bf161`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
 **Status:** Implemented; independent review and Product Owner approval pending.
 **Paid inference:** none.
@@ -46,6 +47,13 @@
   opened the exact inspector and preserved `tab=workgraph&unit=...` across
   reload.
 - Desktop 1440 px, tablet 834 px and mobile 390 px had no document overflow.
+
+## Post-evidence code fix
+
+Commit `3197771` scopes quality-receipt role filtering in SQL so
+`VERIFIER`/`REVIEWER` pagination cannot miss rows beyond the fetch window, and
+advances tool-event cursors across malformed rows. Participant unit tests and
+Clippy pass; full exact-head CI is rerun on the final PR head.
 
 ## Limitations
 

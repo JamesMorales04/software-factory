@@ -3,10 +3,12 @@
   "slice": "F1-S9 Slice 4 \u2014 Agent Office and interactive WorkGraph",
   "status": "IMPLEMENTED_PENDING_INDEPENDENT_REVIEW",
   "result": "PASS",
-  "candidate_sha": "0bddd0f4370cf883adfe475484c78b80551bf161",
+  "candidate_sha": "31977718c0dc6774671daea3eb14b4554e06d495",
+  "evidence_runs_at_sha": "0bddd0f4370cf883adfe475484c78b80551bf161",
   "parent_sha": "9b7a60197ef230596b2de2eb757fd37d9a2a8522",
   "base_sha": "0a03c7cd2bd6e6af52395c760c1b81ebe187a548",
   "branch": "campaign/office-agent-slice4",
+  "post_evidence_code_fix": "Quality-receipt role filtering now occurs in SQL to preserve pagination correctness for VERIFIER/REVIEWER filters; tool-event cursors advance across malformed rows. Covered by participant unit tests and Clippy at 3197771.",
   "environment": {
     "host": "Linux",
     "rust": "1.90.0",
