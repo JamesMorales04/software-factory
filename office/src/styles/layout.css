@@ -317,12 +317,14 @@
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 1000px) {
   .workspace-main {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
+}
 
+@media (max-width: 720px) {
   .workspace-main table {
     min-width: 640px;
   }

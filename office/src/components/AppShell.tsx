@@ -27,6 +27,14 @@ const THEME_LABEL: Record<Theme, string> = {
   dark: "Dark theme",
 };
 
+function isMobileViewport(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(max-width: 1000px)").matches
+  );
+}
+
 function nextTheme(theme: Theme): Theme {
   if (theme === "system") return "light";
   if (theme === "light") return "dark";
@@ -48,11 +56,21 @@ export function AppShell({
     () => localStorage.getItem(SIDEBAR_KEY) === "collapsed",
   );
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(isMobileViewport);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 1000px)");
+    const update = () => setIsMobile(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -155,7 +173,10 @@ export function AppShell({
             type="button"
             className="sidebar-scrim"
             aria-label="Close navigation"
-            onClick={() => setMobileOpen(false)}
+            onClick={() => {
+              setMobileOpen(false);
+              requestAnimationFrame(() => menuRef.current?.focus());
+            }}
           />
         )}
         <div className="workspace" inert={mobileOpen || undefined}>
@@ -165,19 +186,19 @@ export function AppShell({
               label="Toggle navigation"
               className="topbar-menu"
               aria-controls="primary-sidebar"
-              aria-expanded={mobileOpen || !collapsed}
+              aria-expanded={isMobile ? mobileOpen : !collapsed}
               onClick={() => {
-                if (window.matchMedia("(max-width: 1000px)").matches) {
+                if (isMobile) {
                   setMobileOpen((open) => !open);
                 } else {
                   setCollapsed((value) => !value);
                 }
               }}
             >
-              {mobileOpen || collapsed ? (
-                <PanelLeftOpen size={19} aria-hidden="true" />
-              ) : (
+              {(isMobile ? mobileOpen : !collapsed) ? (
                 <PanelLeftClose size={19} aria-hidden="true" />
+              ) : (
+                <PanelLeftOpen size={19} aria-hidden="true" />
               )}
             </IconButton>
             <div className="topbar-context">

@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "../theme";
 import { AppShell } from "./AppShell";
 
@@ -35,6 +35,10 @@ describe("AppShell", () => {
     document.documentElement.dataset.density = "comfortable";
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("keeps grouped navigation named, skip-link safe and main focusable", async () => {
     renderShell();
     const projects = screen.getByRole("link", { name: "Projects" });
@@ -64,6 +68,47 @@ describe("AppShell", () => {
     expect(
       screen.getByRole("button", { name: "Collapse navigation" }),
     ).toBeDefined();
+  });
+
+  it("recovers a collapsed shell from the visible topbar toggle", async () => {
+    renderShell();
+    const toggle = screen.getByRole("button", { name: "Toggle navigation" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      screen.getByRole("link", { name: "Projects" }).getAttribute("aria-label"),
+    ).toBe("Projects");
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("opens and closes the mobile drawer with correct state and focus", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+    renderShell();
+    const toggle = screen.getByRole("button", { name: "Toggle navigation" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("link", { name: "Dashboard" }),
+      ),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Close navigation" }),
+    );
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await waitFor(() => expect(document.activeElement).toBe(toggle));
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {
