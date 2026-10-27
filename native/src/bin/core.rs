@@ -2282,13 +2282,16 @@ async fn candidate_diff(
     };
     let diff_stat =
         factory_native::workspace::diff_stat(repository, &base_commit, &candidate.commit_sha)
-            .unwrap_or_default();
+            .unwrap_or_else(|_| "diff stat unavailable".to_owned());
+    let changed_paths_truncated = changed_paths.len() > 200;
+    let changed_paths = changed_paths.into_iter().take(200).collect::<Vec<_>>();
     Json(json!({
         "candidate_id": candidate.id,
         "commit_sha": candidate.commit_sha,
         "tree_sha": candidate.tree_sha,
         "base_commit": base_commit,
         "changed_paths": changed_paths,
+        "changed_paths_truncated": changed_paths_truncated,
         "diff_stat": diff_stat,
         "source": "Core read-only Git diff summary; file bodies are not exposed",
     }))

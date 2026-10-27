@@ -522,7 +522,7 @@ export function CampaignDetail() {
               )}
             </span>
             <span>
-              Snapshot {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
+              Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
             </span>
           </>
         }
@@ -1037,8 +1037,8 @@ export function CampaignDetail() {
                     value={`${unmeasuredSessions.length} of ${sessions.length}`}
                   />
                   <BudgetRow
-                    label="Unmeasured bound"
-                    value={`${formatCostMicros(unmeasuredBound)} reservation ceiling, not observed spend`}
+                    label="Session unmeasured bound"
+                    value={`${formatCostMicros(unmeasuredBound)} observed-session ceiling, not observed spend`}
                   />
                   <BudgetRow
                     label="Deadline"

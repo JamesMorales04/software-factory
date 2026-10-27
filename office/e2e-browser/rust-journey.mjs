@@ -336,6 +336,11 @@ try {
   await workflow.getByText("WorkGraph").waitFor();
   await workflow.getByText("Verifier").waitFor();
   await workflow.getByText("Reviewer").waitFor();
+  await page.getByRole("tab", { name: /WorkGraph/ }).click();
+  await page.getByRole("heading", { name: /WorkGraph \(/ }).waitFor();
+  await page.getByRole("tab", { name: /Execution/ }).click();
+  await page.getByRole("heading", { name: "Runs and attempts" }).waitFor();
+  await page.getByRole("heading", { name: "Participant sessions" }).waitFor();
   await page.getByRole("tab", { name: /Budget & usage/ }).click();
   await page
     .getByRole("heading", { name: "Authorization, budget and observed usage" })
@@ -347,19 +352,6 @@ try {
   await pendingCandidate.getByText("GATE PENDING").waitFor();
   await pendingCandidate.getByTestId("candidate-diff").waitFor();
   await pendingCandidate.getByText(/Changed paths/).waitFor();
-  for (const width of [834, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const viewport = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    assert.equal(
-      viewport.scrollWidth,
-      viewport.clientWidth,
-      `Campaign workspace must not overflow the document at ${width}px`,
-    );
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
   assert.equal(
     await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
     0,
@@ -421,6 +413,19 @@ try {
   await page
     .getByText("No unresolved provider session is recorded", { exact: false })
     .waitFor();
+  for (const width of [834, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Campaign Events workspace must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.getByRole("link", { name: "Overview", exact: true }).click();
   await page.getByRole("heading", { name: "Overview", exact: true }).waitFor();
