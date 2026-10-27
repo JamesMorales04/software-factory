@@ -1,14 +1,14 @@
 {
   "schema": "factory.office-operational-workspace.v1",
-  "recorded_at": "2026-10-27T15:45:00Z",
+  "recorded_at": "2026-10-27T15:55:00Z",
   "result": "PASS (author-run operational workspace; not independent acceptance)",
-  "implementation_sha": "406c811b96f003f8d72c572b613e6de2a40533ac",
+  "implementation_sha": "2041b0cd69710584f08724568f8286107495e90a",
   "baseline_sha": "94ba3b4c5c98dcdf55734c6c0b21d974f48f1e97",
   "branch": "campaign/office-operational-workspace-20261027",
   "commands": {
-    "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, cargo build --bins, cargo xtask check-container, npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 14 component tests and production build",
-    "container_chromium_journey": "PASS; real Chromium reached Overview, Decision Inbox, Action detail, Campaigns and the accepted-gate journey; fixture candidate 2efb7749ebc5b8a019fbb936fd54c6c297ee052a; Quality Gate ACCEPTED; only expected pending-gate 404 probes",
-    "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
+    "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, the model-call reservation-bound regression test, cargo build --bins, cargo xtask check-container (full workspace, including the unrelated stale-lease test that passed on rerun after one transient failure), npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 14 component tests and production build",
+    "container_chromium_journey": "PASS; real Chromium reached Overview, Decision Inbox, Action detail, Campaigns and the accepted-gate journey; fixture candidate 18e301b0c05222696ec4493384d680b05a195b58; Quality Gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo test --locked -p factory-native --lib model_call_budget_unknown_usage_and_ambiguity_fail_closed && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
     "host_iteration": "PASS: cargo fmt, clippy, 8 factory-core tests, Office typecheck, 14 component tests and build; used for development iteration, not the acceptance environment"
   },
   "implementation": {
@@ -45,7 +45,9 @@
       "recent accepted candidates",
       "runtime health",
       "recent Core events"
-    ]
+    ],
+    "measured_spend": "usage-known sessions and the latest 200 usage-known model calls only",
+    "unmeasured_bound": "unresolved usage-unknown model calls use max_cost_micros; unresolved model calls are queried from the full ledger"
   },
   "browser_observation": {
     "desktop": "1440px; seeded blocked Campaign and HUMAN_REQUIRED Action; Overview showed 0 authorized campaigns, 1 awaiting authorization, 2 blocked signals and 1 pending decision; Decision Inbox separated 1 actionable item from 1 awareness item; Action detail rendered the frozen spec, checks and Campaign relationship from Core; no unexpected console or page errors",
@@ -64,9 +66,9 @@
     "automated axe/WCAG audit and screen-reader review",
     "dark-theme and compact-density screenshots for the new operational views"
   ],
-  "notes": "Overview and decisions are operator-authenticated projections over existing durable Core records. Measured totals include only usage-known records; the unmeasured bound is displayed separately and is a reservation ceiling, never observed spend. Unresolved model reservations are queried from the full ledger, while measured model-call totals are explicitly limited to the latest 200 calls. The Inbox exposes only reservation release plus navigation; it does not invent provider termination or Gate repair operations.",
+  "notes": "Overview and decisions are operator-authenticated projections over existing durable Core records. Measured totals include only usage-known records. The unmeasured bound uses the reservation ceiling (max_cost_micros) for usage-unknown unresolved model calls and is displayed separately, never treated as observed spend. Unresolved model calls are queried from the full ledger, while measured model-call totals are explicitly limited to the latest 200 calls. The Inbox exposes only reservation release plus navigation; it does not invent provider termination or Gate repair operations.",
   "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
-  "chromium_candidate_commit": "2efb7749ebc5b8a019fbb936fd54c6c297ee052a",
+  "chromium_candidate_commit": "18e301b0c05222696ec4493384d680b05a195b58",
   "overview_sections": [
     "authorized campaigns and pending authorizations",
     "running agents, unresolved provider sessions and unresolved model calls",
