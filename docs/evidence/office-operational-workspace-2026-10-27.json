@@ -1,13 +1,13 @@
 {
   "schema": "factory.office-operational-workspace.v1",
-  "recorded_at": "2026-10-27T15:30:00Z",
+  "recorded_at": "2026-10-27T15:45:00Z",
   "result": "PASS (author-run operational workspace; not independent acceptance)",
-  "implementation_sha": "597390e0efeb04278212cde97ce1d12b20f558aa",
+  "implementation_sha": "406c811b96f003f8d72c572b613e6de2a40533ac",
   "baseline_sha": "94ba3b4c5c98dcdf55734c6c0b21d974f48f1e97",
   "branch": "campaign/office-operational-workspace-20261027",
   "commands": {
     "container_workspace_gates": "PASS in software-factory-dev:local via podman compose: cargo fmt --check, cargo clippy -D warnings, 8 factory-core tests, cargo build --bins, cargo xtask check-container, npm ci, Office typecheck, lint (4 retained reduced-motion !important warnings), 14 component tests and production build",
-    "container_chromium_journey": "PASS; real Chromium reached Overview, Decision Inbox, Action detail, Campaigns and the accepted-gate journey; fixture candidate 606a3d9274d72caaa8ffa9ae014894727e0286f0; Quality Gate ACCEPTED; only expected pending-gate 404 probes",
+    "container_chromium_journey": "PASS; real Chromium reached Overview, Decision Inbox, Action detail, Campaigns and the accepted-gate journey; fixture candidate 2efb7749ebc5b8a019fbb936fd54c6c297ee052a; Quality Gate ACCEPTED; only expected pending-gate 404 probes",
     "container_command": "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps dev sh -c 'cargo fmt --all --check && cargo clippy --locked -p factory-native --bin factory-core -- -D warnings && cargo test --locked -p factory-native --bin factory-core && cargo build --locked -p factory-native --bins && cargo xtask check-container && cd office && npm ci && npm run typecheck && npm run lint && npm test && npm run build && cd .. && node office/e2e-browser/rust-journey.mjs'",
     "host_iteration": "PASS: cargo fmt, clippy, 8 factory-core tests, Office typecheck, 14 component tests and build; used for development iteration, not the acceptance environment"
   },
@@ -48,7 +48,7 @@
     ]
   },
   "browser_observation": {
-    "desktop": "1440px; seeded blocked Campaign and HUMAN_REQUIRED Action; Overview showed 0 authorized campaigns, 1 awaiting authorization, 2 blocked-work signals and 1 pending decision; Decision Inbox separated 1 actionable item from 1 awareness item; Action detail rendered the frozen spec, checks and Campaign relationship from Core; no unexpected console or page errors",
+    "desktop": "1440px; seeded blocked Campaign and HUMAN_REQUIRED Action; Overview showed 0 authorized campaigns, 1 awaiting authorization, 2 blocked signals and 1 pending decision; Decision Inbox separated 1 actionable item from 1 awareness item; Action detail rendered the frozen spec, checks and Campaign relationship from Core; no unexpected console or page errors",
     "mobile": "390px; document scrollWidth equals clientWidth; Overview and Action detail stacked without document overflow; wide check tables use the main workspace scroll region",
     "nav_state": "only the current route carries aria-current=page; a resize from open mobile drawer to desktop closes the drawer and removes workspace inert",
     "console_errors": 0,
@@ -64,7 +64,18 @@
     "automated axe/WCAG audit and screen-reader review",
     "dark-theme and compact-density screenshots for the new operational views"
   ],
-  "notes": "Overview and decisions are operator-authenticated projections over existing durable Core records. Unknown usage is counted separately and is never treated as zero. Model-call spend is bounded to the latest 200 calls and the UI states that limitation. The Inbox intentionally exposes only model-call resolution plus navigation; it does not invent provider termination or Gate repair operations.",
+  "notes": "Overview and decisions are operator-authenticated projections over existing durable Core records. Measured totals include only usage-known records; the unmeasured bound is displayed separately and is a reservation ceiling, never observed spend. Unresolved model reservations are queried from the full ledger, while measured model-call totals are explicitly limited to the latest 200 calls. The Inbox exposes only reservation release plus navigation; it does not invent provider termination or Gate repair operations.",
   "chromium_candidate_kind": "disposable fixture-repository Git candidate produced by the browser journey; not a Factory implementation commit",
-  "chromium_candidate_commit": "606a3d9274d72caaa8ffa9ae014894727e0286f0"
+  "chromium_candidate_commit": "2efb7749ebc5b8a019fbb936fd54c6c297ee052a",
+  "overview_sections": [
+    "authorized campaigns and pending authorizations",
+    "running agents, unresolved provider sessions and unresolved model calls",
+    "actionable decisions",
+    "blocked work signals",
+    "Quality Gate outcomes",
+    "measured spend and the unmeasured reservation bound",
+    "recent accepted candidates",
+    "runtime health",
+    "recent Core events"
+  ]
 }
