@@ -21,8 +21,9 @@ import {
 } from "../coreApi";
 import { formatTimestamp } from "../format";
 import { AccessDevices } from "./AccessDevices";
+import { ExecutionProfiles } from "./ExecutionProfiles";
 
-const TABS = ["providers", "runtime", "access"] as const;
+const TABS = ["profiles", "providers", "runtime", "access"] as const;
 type SettingsTab = (typeof TABS)[number];
 
 function resolveTab(value: string | null): SettingsTab {
@@ -475,6 +476,7 @@ function ProviderCard({
 export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = resolveTab(searchParams.get("tab"));
+  const needsProviderSettings = tab === "providers" || tab === "runtime";
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [runtime, setRuntime] = useState<FactorySettings | null>(null);
   const [reviewEnabled, setReviewEnabled] = useState(false);
@@ -513,8 +515,8 @@ export function Settings() {
   }, []);
 
   useEffect(() => {
-    if (tab !== "access") void load();
-  }, [load, tab]);
+    if (needsProviderSettings) void load();
+  }, [load, needsProviderSettings]);
 
   async function saveRuntime(event: React.FormEvent) {
     event.preventDefault();
@@ -536,7 +538,7 @@ export function Settings() {
     }
   }
 
-  if (tab !== "access" && error && !loaded) {
+  if (needsProviderSettings && error && !loaded) {
     return (
       <ErrorState
         message={error}
@@ -544,10 +546,11 @@ export function Settings() {
       />
     );
   }
-  if (tab !== "access" && !loaded)
+  if (needsProviderSettings && !loaded)
     return <LoadingState label="Loading settings…" />;
 
   const tabs: TabItem[] = [
+    { id: "profiles", label: "Execution profiles" },
     { id: "providers", label: "Providers & models", count: providers.length },
     { id: "runtime", label: "Runtime policy" },
     { id: "access", label: "Access & Devices" },
@@ -560,12 +563,16 @@ export function Settings() {
         description={
           tab === "access"
             ? "Review local and private remote access, pair trusted devices, and revoke sessions."
-            : "Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
+            : tab === "profiles"
+              ? "Create versioned, Core-owned execution profiles for the Lead, Implementer and Semantic Reviewer roles. A profile is configuration, not an authorization."
+              : "Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
         }
         meta={
           <>
-            {tab !== "access" && <span>{providers.length} provider(s)</span>}
-            {tab !== "access" && (
+            {needsProviderSettings && (
+              <span>{providers.length} provider(s)</span>
+            )}
+            {needsProviderSettings && (
               <span>
                 Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
               </span>
@@ -573,14 +580,14 @@ export function Settings() {
           </>
         }
         actions={
-          tab === "access" ? undefined : (
+          needsProviderSettings ? (
             <Button size="sm" onClick={() => void load()}>
               Refresh
             </Button>
-          )
+          ) : undefined
         }
       />
-      {tab !== "access" && error && (
+      {needsProviderSettings && error && (
         <div className="ui-callout ui-callout--danger" role="alert">
           {error} The displayed configuration may be stale.
         </div>
@@ -592,6 +599,17 @@ export function Settings() {
         onChange={selectTab}
         label="Settings sections"
       />
+
+      {tab === "profiles" && (
+        <div
+          id="panel-profiles"
+          role="tabpanel"
+          aria-labelledby="tab-profiles"
+          className="campaign-tab-panel"
+        >
+          <ExecutionProfiles />
+        </div>
+      )}
 
       {tab === "providers" && (
         <div
