@@ -35,6 +35,7 @@ const temp = join(
 const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
 const enrollmentCodeFile = join(temp, "enrollment-code");
+const masterKeyFile = join(temp, "master-key");
 const workspace = join(temp, "workspaces");
 const supervisorWork = join(temp, "supervisor-work");
 const supervisorState = join(temp, "supervisor-state");
@@ -43,6 +44,7 @@ const processes = [];
 
 mkdirSync(repository, { recursive: true });
 mkdirSync(workspace, { recursive: true });
+writeFileSync(masterKeyFile, randomBytes(32).toString("hex"), { mode: 0o600 });
 writeFileSync(
   enrollmentCodeFile,
   JSON.stringify({
@@ -151,6 +153,10 @@ try {
       FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
       FACTORY_VERIFIER_TOKEN: verifier,
       FACTORY_REVIEWER_TOKEN: reviewer,
+      FACTORY_MASTER_KEY_FILE: masterKeyFile,
+      // Managed project registration is permitted only inside the operator
+      // approved root. The fixture repository lives under this temp root.
+      FACTORY_PROJECTS_ROOT: process.env.FACTORY_PROJECTS_ROOT?.trim() || temp,
       FACTORY_LEAD_FIXTURE_ASSESSOR: "1",
       FACTORY_ENABLE_AUTONOMOUS_START: "1",
     },
@@ -316,9 +322,12 @@ try {
 
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
-  await page.getByTestId("project-repository").fill(repository);
-  await page.getByRole("button", { name: "Register Project" }).click();
-  await page.getByText(repository).first().waitFor();
+  await page
+    .getByRole("tab", { name: "Local repository", exact: true })
+    .click();
+  await page.getByTestId("project-local-path").fill(repository);
+  await page.getByRole("button", { name: "Import local repository" }).click();
+  await page.getByRole("link", { name: "Back to Projects" }).waitFor();
 
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
@@ -456,7 +465,7 @@ try {
   const pendingCandidate = page.getByTestId("candidate-panel");
   await pendingCandidate.getByText("GATE PENDING").waitFor();
   await pendingCandidate.getByTestId("candidate-diff").waitFor();
-  await pendingCandidate.getByText(/Changed paths/).waitFor();
+  await pendingCandidate.getByText(/Changed files/).waitFor();
   assert.equal(
     await pendingCandidate.getByText("ACCEPTED", { exact: true }).count(),
     0,
@@ -866,6 +875,25 @@ try {
     body: JSON.stringify({
       action_id: _providerAction.id,
       idempotency_key: "office-provider-session-campaign",
+    }),
+  });
+  // The implementer route is validated against a real stored provider
+  // connection before a TRUSTED_LOCAL_PROVIDER Campaign can be authorized.
+  // This fixture connection is never called by the deterministic journey.
+  await api("/settings/providers/opencode", {
+    method: "PUT",
+    body: JSON.stringify({
+      model: "deepseek-v4.1-flash",
+      baseUrl: "https://opencode.ai/inference/go/openai/v1",
+      credential: "fixture-credential-0123456789abcdef",
+      enabled: true,
+      isDefault: false,
+      maxTurns: 4,
+      maxInputTokens: 100000,
+      maxOutputTokens: 100000,
+      maxCostMicros: 100000,
+      inputMicrosPerMillion: 100000,
+      outputMicrosPerMillion: 400000,
     }),
   });
   await api(`/campaigns/${providerCampaign.id}/authorize`, {
