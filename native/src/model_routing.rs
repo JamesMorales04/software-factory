@@ -407,12 +407,16 @@ mod integration_tests {
     }
 
     fn master_key() -> ProviderSecretKey {
+        master_key_with("22")
+    }
+
+    fn master_key_with(seed: &str) -> ProviderSecretKey {
         let path = std::env::temp_dir().join(format!(
             "factory-routing-master-key-{}.txt",
             uuid::Uuid::new_v4()
         ));
         let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all("22".repeat(32).as_bytes()).unwrap();
+        file.write_all(seed.repeat(32).as_bytes()).unwrap();
         drop(file);
         #[cfg(unix)]
         {
@@ -718,6 +722,24 @@ mod integration_tests {
                     &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
                 )
                 .await,
+            Err(RouteError::CredentialUnavailable { .. })
+        ));
+        // A different master key cannot decrypt the stored credential. The
+        // route fails closed instead of using another provider or the default.
+        let wrong_key = master_key_with("55");
+        assert!(matches!(
+            RoleGatewayFactory::new(
+                &db_two,
+                Some(&wrong_key),
+                caps(),
+                Duration::from_secs(5),
+                true
+            )
+            .for_role(
+                ExecutionRole::Lead,
+                &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+            )
+            .await,
             Err(RouteError::CredentialUnavailable { .. })
         ));
         db_two.close().await;

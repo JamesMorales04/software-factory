@@ -44,6 +44,11 @@ A role-bound gateway rejects a request for another role. There is no silent
 fallback: an unavailable route returns a typed error and the caller returns an
 explicit unavailable response.
 
+Profile executability is derived from stored provider facts (configured,
+enabled, credential present). Gateway construction performs the actual
+decryption; a wrong master key, corrupt ciphertext or rotated credential fails
+closed with `MODEL_CREDENTIAL_UNAVAILABLE` instead of using another provider.
+
 ## 3. Provider model discovery
 
 `GET /settings/providers/{provider}/models` is operator-authenticated and:
