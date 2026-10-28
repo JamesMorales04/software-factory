@@ -134,6 +134,17 @@ journey was changed to use a Lead-only model ID. It passed at implementation
 
 The non-full journey also passed. This is still deterministic fixture evidence.
 
+## Final code-candidate rerun
+
+At code candidate `7063321` with distinct Lead/Implementer routes:
+
+```json
+{"ok":true,"request":"7a140b74-c266-434a-bc90-e437eda695e3","campaign":"29c344d2-576f-4154-ab95-51de1c19738e","profileRevision":"a2ac551d-177b-473c-a1f2-b4af5507e7ec","planHash":"b7808d98806df941bab7e74e436572aa9f6f87c4bcca24005a7809247ad8e975","mode":"DETERMINISTIC_FIXTURE","candidateId":"d59a31f0-c569-4efb-be50-9eee214ea73e","candidateCommit":"1d79f3e3b673cf9aed6a257216c58b58b07cad37","gate":"ACCEPTED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
+```
+
+The legacy Office journey passed at the same code candidate with candidate
+`34449fbe2d8481c4cb58794e0368429a348a3d64` and Gate `ACCEPTED`.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real

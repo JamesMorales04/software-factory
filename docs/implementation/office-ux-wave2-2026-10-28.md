@@ -295,9 +295,10 @@ campaign.
   took about six; the Supervisor fence cancelled the still-valid workspace on
   grant expiry. Long execute/run grants now cover the maximum execution runtime
   with the same 500 ms Core revalidation; short write/apply/finalize grants stay
-  five seconds. Compose run `40763932432` passed at `7d0c67b`. A final
-  Worker-model/short-grant correction is being re-verified at the frozen
-  candidate. See
+  five seconds. Compose runs `40763932432` and `40765699005` passed, the latter
+  at final code candidate `7063321` (request `10ebbe0f…`, Campaign
+  `e3fae868…`, candidate `9ef6983e…` at `5fe84636…`, Gate `ACCEPTED`,
+  restart persistence `true`). See
   [the Compose evidence](../evidence/office-ux-compose-2026-10-28.md).
 
 ### Honest limits
@@ -309,11 +310,14 @@ campaign.
   API projections.
 - Independent verifier/reviewer acceptance and Product Owner authorization are
   **PENDING**. Author-run journeys and CI are not independent acceptance.
-- Aggregate cross-role model spending is **NOT IMPLEMENTED**. Each role call is
-  bounded by its route/provider/Core caps and each Campaign carries an
-  implementation cap, but there is no single durable request/Campaign ledger
-  shared by Lead assessment, semantic review and implementation. Do not claim
-  complete budget intersection.
+- Aggregate cross-role model spending is **NOT IMPLEMENTED** and is the
+  remaining implementation BLOCK in the independent architecture review. Each
+  role call is bounded by its route/provider/Core caps and each Campaign
+  carries an implementation cap, but there is no single durable
+  request/Campaign ledger shared by Lead assessment, semantic review and
+  implementation. Paid profile-bound execution that claims aggregate profile
+  limits must stay disabled until that ledger exists. Do not claim complete
+  budget intersection or campaign completion.
 - Automatic issue start remains **blocked** (protected ADR-0029 amendment, owner
   approval, Core-owned envelope validation, enforced confinement, durable
   accounting, revocation fencing and independent review).
