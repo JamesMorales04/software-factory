@@ -20,6 +20,7 @@ import {
   type ProviderView,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
+import { LanguageSwitcher } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 
 const TABS = ["providers", "runtime", "access"] as const;
@@ -580,6 +581,7 @@ export function Settings() {
           )
         }
       />
+      <LanguageSwitcher />
       {tab !== "access" && error && (
         <div className="ui-callout ui-callout--danger" role="alert">
           {error} The displayed configuration may be stale.

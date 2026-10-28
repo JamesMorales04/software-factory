@@ -8,12 +8,14 @@ import {
   type DeviceClaim,
   getAuthSession,
 } from "../coreApi";
+import { useI18n } from "../i18n";
 
 export function DevicePairClaim({
   onAuthenticated,
 }: {
   onAuthenticated?: (session: AuthSession) => void;
 }) {
+  const { t } = useI18n();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const challengeId = searchParams.get("challengeId") ?? "";
@@ -78,7 +80,7 @@ export function DevicePairClaim({
             setError(
               cause instanceof CoreApiError
                 ? cause.message
-                : "Approval status could not be checked.",
+                : t("pair.errorStatus"),
             );
           }
         });
@@ -87,7 +89,7 @@ export function DevicePairClaim({
       active = false;
       window.clearInterval(timer);
     };
-  }, [challengeId, claim, navigate, onAuthenticated]);
+  }, [challengeId, claim, navigate, onAuthenticated, t]);
 
   const hasClaim = challengeId !== "";
 
@@ -98,14 +100,12 @@ export function DevicePairClaim({
     try {
       const result = await coreApi.claimDevice(
         challengeId,
-        deviceName.trim() || "Mobile device",
+        deviceName.trim() || t("pair.defaultDeviceName"),
       );
       setClaim(result);
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : "This pairing challenge is invalid or expired.",
+        cause instanceof CoreApiError ? cause.message : t("pair.errorClaim"),
       );
     } finally {
       setBusy(false);
@@ -123,65 +123,52 @@ export function DevicePairClaim({
           <span>Office</span>
         </span>
       </div>
-      <h1>Pair this device</h1>
+      <h1>{t("pair.title")}</h1>
       {!hasClaim ? (
-        <p className="muted">
-          This pairing link is missing its one-time challenge. Ask the owner to
-          create a new QR code.
-        </p>
+        <p className="muted">{t("pair.missingChallenge")}</p>
       ) : claim?.status === "PENDING" ? (
         <>
-          <p>
-            Approval is waiting on the enrolled owner device. Verify that the
-            code matches before approving.
-          </p>
+          <p>{t("pair.waitingOwner")}</p>
           <div className="pair-verification">
-            <span className="muted">Verification code</span>
+            <span className="muted">{t("pair.verificationCode")}</span>
             <strong className="access-code">{claim.verificationCode}</strong>
           </div>
           <p className="muted" role="status" aria-live="polite">
-            Waiting for owner approval. Keep this page open; this one-time
-            request is not saved in browser storage.
+            {t("pair.waitingStatus")}
           </p>
         </>
       ) : redirecting || claim?.status === "APPROVED" ? (
         <p className="muted" role="status" aria-live="polite">
-          Approval received. Opening Factory Office…
+          {t("pair.approved")}
         </p>
       ) : claim?.status === "REJECTED" ? (
         <p className="error" role="alert">
-          The owner rejected this device request. Ask them to create a new
-          pairing code.
+          {t("pair.rejected")}
         </p>
       ) : claim?.status === "EXPIRED" ? (
         <p className="error" role="alert">
-          This device request expired. Ask the owner to create a new pairing
-          code.
+          {t("pair.expired")}
         </p>
       ) : claim?.status === "CANCELLED" ? (
         <p className="error" role="alert">
-          The owner cancelled this pairing request. Ask them to create a new
-          pairing code.
+          {t("pair.cancelled")}
         </p>
       ) : (
         <>
-          <p className="muted">
-            Confirm this request on the owner’s Factory Office before the phone
-            receives its own secure session.
-          </p>
+          <p className="muted">{t("pair.confirmOnOwner")}</p>
           <form
             className="pair-form"
             onSubmit={(event) => void requestApproval(event)}
           >
             <label className="ui-field">
-              <span className="ui-field-label">Device name</span>
+              <span className="ui-field-label">{t("pair.deviceName")}</span>
               <input
                 className="ui-input"
                 value={deviceName}
                 onChange={(event) => setDeviceName(event.target.value)}
                 autoComplete="off"
                 maxLength={80}
-                placeholder="My phone"
+                placeholder={t("pair.deviceNamePlaceholder")}
               />
             </label>
             <Button
@@ -189,7 +176,7 @@ export function DevicePairClaim({
               variant="primary"
               disabled={busy || !hasClaim}
             >
-              {busy ? "Requesting approval…" : "Request owner approval"}
+              {busy ? t("pair.requesting") : t("pair.request")}
             </Button>
           </form>
         </>
@@ -199,12 +186,9 @@ export function DevicePairClaim({
           {error}
         </p>
       )}
-      <p className="muted">
-        The challenge identifier is removed from browser history before Office
-        contacts Core. It grants no access; owner approval is required.
-      </p>
+      <p className="muted">{t("pair.privacyNote")}</p>
       <Button variant="quiet" onClick={() => navigate("/")}>
-        Return to Factory
+        {t("pair.return")}
       </Button>
     </main>
   );

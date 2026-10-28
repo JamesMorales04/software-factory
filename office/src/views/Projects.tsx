@@ -6,9 +6,11 @@ import {
   type Project,
   type ProjectConfig,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 export function Projects() {
+  const { t, formatDate } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [repository, setRepository] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -23,19 +25,19 @@ export function Projects() {
   const attemptKey = useRef(newIdempotencyKey());
 
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     async function load() {
       try {
         const next = await coreApi.listProjects();
-        if (active) {
+        if (mounted) {
           setProjects(next);
         }
       } catch (cause) {
-        if (active) {
+        if (mounted) {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load Projects.",
+              : t("projects.error.load"),
           );
         }
       }
@@ -43,10 +45,10 @@ export function Projects() {
     void load();
     const timer = setInterval(() => void load(), 4000);
     return () => {
-      active = false;
+      mounted = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   async function onRegister(event: React.FormEvent) {
     event.preventDefault();
@@ -60,7 +62,10 @@ export function Projects() {
       });
       attemptKey.current = newIdempotencyKey();
       setNotice(
-        `Registered ${shortId(project.id)} at base commit ${shortId(project.base_commit, 12)}.`,
+        t("projects.register.notice", {
+          id: shortId(project.id),
+          commit: shortId(project.base_commit, 12),
+        }),
       );
       setRepository("");
       const next = await coreApi.listProjects();
@@ -69,7 +74,7 @@ export function Projects() {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Project registration failed.",
+          : t("projects.error.register"),
       );
     } finally {
       setBusy(false);
@@ -77,20 +82,16 @@ export function Projects() {
   }
 
   return (
-    <div>
-      <h2>Projects</h2>
-      <p className="muted">
-        In the container deployment, register an HTTPS Git URL. Core imports it
-        into Factory-managed storage and freezes the current base commit.
-        Registration does not grant execution authority.
-      </p>
+    <div className="projects-workspace">
+      <h2>{t("projects.title")}</h2>
+      <p className="muted">{t("projects.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
 
       <form className="create" onSubmit={onRegister}>
-        <h3>Register a Git Project</h3>
+        <h3>{t("projects.register.title")}</h3>
         <label>
-          HTTPS Git repository URL (or managed path)
+          {t("projects.register.label")}
           <input
             data-testid="project-repository"
             value={repository}
@@ -103,70 +104,80 @@ export function Projects() {
           />
         </label>
         <button type="submit" disabled={busy || repository.trim() === ""}>
-          {busy ? "Registering…" : "Register Project"}
+          {busy ? t("projects.register.busy") : t("projects.register.submit")}
         </button>
       </form>
 
-      <h3>Registered Projects ({projects.length})</h3>
+      <h3>{t("projects.list.title", { count: projects.length })}</h3>
       {projects.length === 0 ? (
-        <p className="muted">No Projects registered.</p>
+        <p className="muted">{t("projects.list.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Repository</th>
-              <th>Base commit</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {projects.map((project) => (
-              <tr key={project.id}>
-                <td>
-                  <code>{shortId(project.id)}</code>
-                </td>
-                <td>
-                  <code>{project.repository}</code>
-                </td>
-                <td>
-                  <code title={project.base_commit}>
-                    {shortId(project.base_commit, 12)}
-                  </code>
-                </td>
-                <td className="muted">{formatTimestamp(project.created_at)}</td>
-                <td>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelected(project);
-                      setError(null);
-                      void coreApi
-                        .getProjectConfig(project.id)
-                        .then((next) => {
-                          setConfig(next);
-                          setConfigPaths(next.allowedPaths.join(", "));
-                          setConfigCapabilities(next.capabilities);
-                          setQualityProfile(next.qualityProfile);
-                          setActive(next.active);
-                        })
-                        .catch((cause) =>
-                          setError(
-                            cause instanceof CoreApiError
-                              ? cause.message
-                              : "Project config could not be loaded.",
-                          ),
-                        );
-                    }}
-                  >
-                    Configure
-                  </button>
-                </td>
+        <section
+          className="table-responsive"
+          aria-label={t("projects.table.label")}
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>{t("projects.table.id")}</th>
+                <th>{t("projects.table.repository")}</th>
+                <th>{t("projects.table.baseCommit")}</th>
+                <th>{t("projects.table.created")}</th>
+                <th>{t("projects.table.actions")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {projects.map((project) => (
+                <tr key={project.id}>
+                  <td data-label={t("projects.table.id")}>
+                    <code>{shortId(project.id)}</code>
+                  </td>
+                  <td data-label={t("projects.table.repository")}>
+                    <code>{project.repository}</code>
+                  </td>
+                  <td data-label={t("projects.table.baseCommit")}>
+                    <code title={project.base_commit}>
+                      {shortId(project.base_commit, 12)}
+                    </code>
+                  </td>
+                  <td
+                    className="muted"
+                    data-label={t("projects.table.created")}
+                  >
+                    {formatDate(project.created_at)}
+                  </td>
+                  <td data-label={t("projects.table.actions")}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelected(project);
+                        setError(null);
+                        void coreApi
+                          .getProjectConfig(project.id)
+                          .then((next) => {
+                            setConfig(next);
+                            setConfigPaths(next.allowedPaths.join(", "));
+                            setConfigCapabilities(next.capabilities);
+                            setQualityProfile(next.qualityProfile);
+                            setActive(next.active);
+                          })
+                          .catch((cause) =>
+                            setError(
+                              cause instanceof CoreApiError
+                                ? cause.message
+                                : t("projects.error.configLoad"),
+                            ),
+                          );
+                      }}
+                    >
+                      {t("projects.configure")}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
 
       {selected && config && (
@@ -190,35 +201,40 @@ export function Projects() {
               .then((next) => {
                 setConfig(next);
                 setNotice(
-                  `Project config revision ${next.revision} saved (${next.configHash.slice(0, 12)}).`,
+                  t("projects.config.notice", {
+                    revision: next.revision,
+                    hash: next.configHash.slice(0, 12),
+                  }),
                 );
               })
               .catch((cause) =>
                 setError(
                   cause instanceof CoreApiError
                     ? cause.message
-                    : "Project config update failed.",
+                    : t("projects.error.configSave"),
                 ),
               )
               .finally(() => setBusy(false));
           }}
         >
-          <h3>Project configuration — {shortId(selected.id)}</h3>
+          <h3>{t("projects.config.title", { id: shortId(selected.id) })}</h3>
           <p className="muted">
-            Revision {config.revision} · base{" "}
-            <code>{shortId(config.baseCommit, 12)}</code> · hash{" "}
+            {t("projects.config.revision", { revision: config.revision })} ·{" "}
+            {t("projects.config.base")}{" "}
+            <code>{shortId(config.baseCommit, 12)}</code> ·{" "}
+            {t("projects.config.hash")}{" "}
             <code>{shortId(config.configHash, 12)}</code>
           </p>
           <label>
-            Allowed repository paths (comma separated)
+            {t("projects.config.allowedPaths")}
             <input
               value={configPaths}
               onChange={(event) => setConfigPaths(event.target.value)}
-              placeholder="src, tests"
+              placeholder={t("projects.config.allowedPathsPlaceholder")}
             />
           </label>
           <fieldset>
-            <legend>Capabilities</legend>
+            <legend>{t("projects.config.capabilities")}</legend>
             {[
               "repository-edit",
               "generic-toolchain",
@@ -243,7 +259,7 @@ export function Projects() {
           </fieldset>
           <div className="grid-2">
             <label>
-              Quality profile
+              {t("projects.config.qualityProfile")}
               <select
                 value={qualityProfile}
                 onChange={(event) => setQualityProfile(event.target.value)}
@@ -259,11 +275,11 @@ export function Projects() {
                 checked={active}
                 onChange={(event) => setActive(event.target.checked)}
               />
-              Active
+              {t("projects.config.active")}
             </label>
           </div>
           <button type="submit" disabled={busy}>
-            {busy ? "Saving…" : "Save project config"}
+            {busy ? t("projects.config.saving") : t("projects.config.save")}
           </button>
         </form>
       )}

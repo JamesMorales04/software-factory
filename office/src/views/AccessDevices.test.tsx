@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import QRCode from "qrcode";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 
 const mocks = vi.hoisted(() => ({
@@ -40,6 +41,8 @@ const access = {
 
 describe("Access & Devices", () => {
   beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.lang = "en";
     mocks.getAccessOverview.mockReset().mockResolvedValue(access);
     mocks.listDeviceSessions.mockReset().mockResolvedValue({ devices: [] });
     mocks.createDeviceChallenge.mockReset().mockResolvedValue({
@@ -140,6 +143,47 @@ describe("Access & Devices", () => {
     await waitFor(() =>
       expect(mocks.approveDevice).toHaveBeenCalledWith("pending-1", "483921"),
     );
+  });
+
+  it("renders the access workspace and pairing controls in Spanish", async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider initialLocale="es">
+        <AccessDevices />
+      </I18nProvider>,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Acceso local" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Dispositivos inscritos" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Emparejar dispositivo" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/no se guarda en este navegador/i)).toBeTruthy();
+    expect(document.documentElement.lang).toBe("es");
+
+    await user.click(
+      screen.getByRole("button", { name: "Emparejar dispositivo" }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Escanea con la cámara del teléfono",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("Código de verificación")).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        "Código QR de emparejamiento de dispositivo de un solo uso",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Cancelar código de emparejamiento",
+      }),
+    ).toBeTruthy();
   });
 
   it("shows an explicit recovery error when Core access state cannot load", async () => {

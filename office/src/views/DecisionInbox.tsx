@@ -11,17 +11,21 @@ import {
   Panel,
 } from "../components/ui/Surface";
 import { CoreApiError, coreApi, type DecisionItem } from "../coreApi";
-import { formatTimestamp } from "../format";
+import { type MessageKey, type Translate, useI18n } from "../i18n";
 
-function targetLabel(item: DecisionItem): string {
-  if (item.kind === "campaign.authorization") return "Open Campaigns";
-  if (item.kind === "lead.ready") return "Open Lead";
-  if (item.kind === "quality.gate") return "Open Campaign";
-  if (item.kind === "run.failed") return "Open Campaign";
-  if (item.kind === "model.usage-unresolved") return "Open Runtime";
-  if (item.kind === "provider.unresolved-session") return "Open Runtime";
-  if (item.kind === "action.human-required") return "Open Action";
-  return "Open target";
+const TARGET_LABEL_KEYS: Record<string, MessageKey> = {
+  "campaign.authorization": "decisions.target.campaigns",
+  "lead.ready": "decisions.target.lead",
+  "quality.gate": "decisions.target.campaign",
+  "run.failed": "decisions.target.campaign",
+  "model.usage-unresolved": "decisions.target.runtime",
+  "provider.unresolved-session": "decisions.target.runtime",
+  "action.human-required": "decisions.target.action",
+};
+
+function targetLabel(item: DecisionItem, t: Translate): string {
+  const key = TARGET_LABEL_KEYS[item.kind];
+  return key ? t(key) : t("decisions.target.default");
 }
 
 function toneForDecision(severity: DecisionItem["severity"]) {
@@ -37,12 +41,13 @@ function DecisionCard({
   item: DecisionItem;
   onResolved: () => Promise<void>;
 }) {
+  const { t, formatDate } = useI18n();
   return (
     <Panel className="decision-item">
       <div className="decision-item-head">
         <Badge tone={toneForDecision(item.severity)}>{item.severity}</Badge>
         <h2>{item.title}</h2>
-        <span className="muted">{formatTimestamp(item.updated_at)}</span>
+        <span className="muted">{formatDate(item.updated_at)}</span>
       </div>
       <p>{item.detail}</p>
       <div className="decision-item-actions">
@@ -50,9 +55,11 @@ function DecisionCard({
           className="ui-button ui-button--secondary ui-button--sm"
           to={item.target}
         >
-          {targetLabel(item)}
+          {targetLabel(item, t)}
         </Link>
-        <span className="muted">Subject {item.subject_id}</span>
+        <span className="muted">
+          {t("decisions.subject", { id: item.subject_id })}
+        </span>
       </div>
       {item.action?.kind === "resolve_model_call" && (
         <ModelCallResolution
@@ -65,6 +72,7 @@ function DecisionCard({
 }
 
 export function DecisionInbox() {
+  const { t, formatDate } = useI18n();
   const [items, setItems] = useState<DecisionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asOf, setAsOf] = useState("");
@@ -79,10 +87,10 @@ export function DecisionInbox() {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Failed to load Core decisions.",
+          : t("decisions.error.load"),
       );
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void load();
@@ -93,34 +101,41 @@ export function DecisionInbox() {
   if (error && !items) {
     return (
       <ErrorState
+        title={t("common.errorTitle")}
         message={error}
-        action={<Button onClick={() => void load()}>Retry</Button>}
+        action={
+          <Button onClick={() => void load()}>{t("common.retry")}</Button>
+        }
       />
     );
   }
   if (!items) {
-    return <LoadingState label="Loading decisions…" />;
+    return <LoadingState label={t("decisions.loading")} />;
   }
 
   const actionable = items.filter((item) => item.actionable);
   const awareness = items.filter((item) => !item.actionable);
 
   return (
-    <div>
+    <div className="decision-workspace">
       <PageHeader
-        title="Decision Inbox"
-        description="Core-backed work that needs an operator decision or awareness. Nothing here is inferred from provider prose."
+        title={t("decisions.title")}
+        description={t("decisions.description")}
         meta={
           <>
-            <span>{actionable.length} actionable</span>
+            <span>
+              {t("decisions.actionableCount", { count: actionable.length })}
+            </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>{awareness.length} for awareness</span>
+            <span>
+              {t("decisions.awarenessCount", { count: awareness.length })}
+            </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>as of {formatTimestamp(asOf)}</span>
+            <span>{t("decisions.asOf", { date: formatDate(asOf) })}</span>
           </>
         }
       />
@@ -130,15 +145,13 @@ export function DecisionInbox() {
         aria-labelledby="decision-actionable"
       >
         <div className="section-heading">
-          <h2 id="decision-actionable">Needs action</h2>
-          <span className="muted">
-            Only Core operations and links are shown
-          </span>
+          <h2 id="decision-actionable">{t("decisions.needsAction")}</h2>
+          <span className="muted">{t("decisions.needsActionHint")}</span>
         </div>
         {actionable.length === 0 ? (
           <EmptyState
-            title="Nothing needs action"
-            description="Approvals, Gate repairs and unresolved usage appear when Core records them."
+            title={t("decisions.emptyActionableTitle")}
+            description={t("decisions.emptyActionableDescription")}
           />
         ) : (
           <div className="decision-list">
@@ -153,15 +166,13 @@ export function DecisionInbox() {
         aria-labelledby="decision-awareness"
       >
         <div className="section-heading">
-          <h2 id="decision-awareness">For awareness</h2>
-          <span className="muted">
-            Monitoring only; no operator action is exposed
-          </span>
+          <h2 id="decision-awareness">{t("decisions.awareness")}</h2>
+          <span className="muted">{t("decisions.awarenessHint")}</span>
         </div>
         {awareness.length === 0 ? (
           <EmptyState
-            title="No unresolved background work"
-            description="Active or orphaned provider sessions, failed Runs and human-required Actions appear here."
+            title={t("decisions.emptyAwarenessTitle")}
+            description={t("decisions.emptyAwarenessDescription")}
           />
         ) : (
           <div className="decision-list">

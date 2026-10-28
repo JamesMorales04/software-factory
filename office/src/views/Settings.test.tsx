@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderView } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { Settings } from "./Settings";
 
 const mocks = vi.hoisted(() => ({
@@ -46,16 +47,25 @@ const provider: ProviderView = {
   outputMicrosPerMillion: 2000,
 };
 
-function renderSettings(path = "/settings") {
-  return render(
+function renderSettings(path = "/settings", locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={[path]}>
       <Settings />
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
 describe("Settings", () => {
   beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.lang = "en";
     mocks.listProviders.mockReset().mockResolvedValue({
       providers: [provider],
     });
@@ -117,6 +127,39 @@ describe("Settings", () => {
     );
     await waitFor(() =>
       expect(screen.getAllByText("AUTHENTICATED").length).toBeGreaterThan(0),
+    );
+  });
+
+  it("offers an accessible language switch without leaving the Settings route", async () => {
+    renderSettings("/settings?tab=runtime", "en");
+    expect(
+      await screen.findByRole("heading", { name: "Language" }),
+    ).toBeDefined();
+    const select = screen.getByLabelText("Interface language");
+
+    for (
+      let step = 0;
+      step < 4 && document.activeElement !== select;
+      step += 1
+    ) {
+      await userEvent.tab();
+    }
+    expect(document.activeElement).toBe(select);
+    await userEvent.selectOptions(select, "es");
+
+    expect(screen.getByRole("heading", { name: "Idioma" })).toBeDefined();
+    expect(screen.getByLabelText("Idioma de la interfaz")).toBeDefined();
+    expect(
+      screen
+        .getByRole("tab", { name: "Runtime policy" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("heading", { name: "Review and runtime policy" }),
+    ).toBeDefined();
+    expect(document.documentElement.lang).toBe("es");
+    await waitFor(() =>
+      expect(localStorage.getItem("factory-office-locale")).toBe("es"),
     );
   });
 
