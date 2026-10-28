@@ -1074,6 +1074,185 @@ export const en = {
     "Untrusted GitHub content shown as plain text. It is not an instruction to Factory agents and it grants no authority.",
   "issues.detail.open": "Open issue on GitHub",
 
+  "issues.intake.loading": "Loading issue-intake policy…",
+  "issues.intake.unavailableTitle": "Issue intake unavailable",
+  "issues.intake.title": "Governed issue intake",
+  "issues.intake.badge.enabled": "ENABLED",
+  "issues.intake.badge.off": "OFF",
+  "issues.intake.description":
+    "Default off. A policy acknowledges exact repository, author, label, profile, path and budget bounds. A batch acknowledges exact issue snapshots. Neither starts a Campaign: execution, approval and Worker dispatch remain separate explicit operations.",
+  "issues.intake.cancel": "Cancel",
+  "issues.intake.error.load": "Failed to load the issue-intake policy.",
+  "issues.intake.editPolicy": "Edit and re-acknowledge",
+  "issues.intake.disable": "Disable issue intake",
+  "issues.intake.disableReason": "Disable reason",
+  "issues.intake.disableReasonPlaceholder":
+    "why issue intake is being disabled",
+  "issues.intake.disabling": "Disabling…",
+  "issues.intake.confirmDisable": "Confirm disable",
+  "issues.intake.notice.disabled":
+    "Issue intake is disabled. Active batches and their delegations were revoked.",
+  "issues.intake.error.disable": "Issue intake could not be disabled.",
+  "issues.intake.defaultDisableReason": "operator disabled issue intake",
+
+  "issues.intake.error.noBinding":
+    "Bind a GitHub repository before enabling issue intake.",
+  "issues.intake.error.legacyBinding":
+    "This binding predates immutable repository identity. Rebind from Browse GitHub repositories. Labels alone never authorize intake.",
+  "issues.intake.error.noConnection":
+    "GitHub is not connected. Connect a credential before enabling issue intake.",
+  "issues.intake.error.profile": "Select an executable execution profile.",
+  "issues.intake.error.acknowledgePolicy":
+    "Acknowledge the exact policy before enabling issue intake.",
+  "issues.intake.error.repositoryIdentity":
+    "The Project binding has no immutable repository ID. Rebind from Browse GitHub repositories.",
+  "issues.intake.error.configUnavailable":
+    "Project configuration is unavailable.",
+  "issues.intake.error.reason": "A reason is required for the audit record.",
+
+  "issues.intake.fact.policyRevision": "Policy revision",
+  "issues.intake.fact.repository": "Repository",
+  "issues.intake.fact.repositoryValue": "{name} (ID {id})",
+  "issues.intake.fact.requiredLabels": "Required labels",
+  "issues.intake.fact.excludedLabels": "Excluded labels",
+  "issues.intake.fact.authorIds": "Author IDs",
+  "issues.intake.fact.authorAssociation": "Author association",
+  "issues.intake.fact.profile": "Profile",
+  "issues.intake.fact.profileValue": "{id} rev {revision}",
+  "issues.intake.fact.riskCeiling": "Risk ceiling",
+  "issues.intake.fact.paths": "Paths",
+  "issues.intake.fact.capabilities": "Capabilities",
+  "issues.intake.fact.maxIssues": "Max issues / concurrency",
+  "issues.intake.fact.cost": "Cost per issue / batch",
+  "issues.intake.fact.costValue": "{perIssue} / {perBatch} micros",
+  "issues.intake.fact.expires": "Expires",
+  "issues.intake.fact.autoStart": "Auto-start",
+  "issues.intake.fact.autoStartValue": "not granted by this policy",
+  "issues.intake.fact.autoStartNote":
+    "Profile autoStart is ignored for issue intake. This policy only permits deterministic reconciliation into ordinary proposals.",
+
+  "issues.intake.field.repository": "Bound repository",
+  "issues.intake.field.repositoryHelp":
+    "Bound repository; the immutable GitHub repository ID is required.",
+  "issues.intake.field.profile": "Execution profile",
+  "issues.intake.field.profileHelp":
+    "Only executable exact revisions can be acknowledged.",
+  "issues.intake.field.profileSelect": "Select a profile…",
+  "issues.intake.field.profileOption": "{name} rev {revision}",
+  "issues.intake.field.notExecutable": " (not executable)",
+  "issues.intake.field.requiredLabels": "Required labels (comma separated)",
+  "issues.intake.field.requiredLabelsHelp":
+    "All listed labels must be present. Labels alone never authorize anything.",
+  "issues.intake.field.excludedLabels": "Excluded labels",
+  "issues.intake.field.authorIds": "Author IDs (immutable GitHub user IDs)",
+  "issues.intake.field.authorIdsHelp":
+    "Logins are not identity. Unknown author IDs fail closed.",
+  "issues.intake.field.associations": "Allowed associations",
+  "issues.intake.field.paths": "Allowed paths (comma separated)",
+  "issues.intake.field.pathsHelp":
+    "Must be inside the Project configuration. Protected policy, delivery, credential and migration paths are rejected.",
+  "issues.intake.field.capabilities": "Capabilities",
+  "issues.intake.field.capabilitiesHelp":
+    "Kebab-case capabilities already present in the Project configuration.",
+  "issues.intake.field.maxIssues": "Max issues per batch",
+  "issues.intake.field.maxCostPerIssue": "Max cost per issue (micros)",
+  "issues.intake.field.maxBatchCost": "Max batch cost (micros)",
+  "issues.intake.field.maxAttempts": "Max attempts per request",
+  "issues.intake.field.maxSessions": "Max sessions per request",
+  "issues.intake.field.maxTurns": "Max turns per request",
+  "issues.intake.field.maxWallClock": "Max wall clock (seconds)",
+  "issues.intake.field.policyExpiry": "Policy expiry",
+  "issues.intake.field.reason": "Acknowledgement reason",
+  "issues.intake.field.reasonHelp":
+    "Stored in the append-only audit. Do not include secrets or issue bodies.",
+  "issues.intake.field.acknowledge":
+    "I acknowledge this exact repository, author, label, profile, path, R0 and budget policy. This does not start any Campaign.",
+  "issues.intake.acknowledging": "Acknowledging…",
+  "issues.intake.saveRevision": "Save new policy revision",
+  "issues.intake.enable": "Enable issue intake",
+  "issues.intake.notice.policySaved":
+    "Issue-intake policy revision acknowledged. Execution remains disabled; every batch and proposal is still explicit.",
+  "issues.intake.error.savePolicy": "Issue-intake policy could not be saved.",
+  "issues.intake.notice.autoStart":
+    "This profile has autoStart enabled. Issue intake ignores it: a policy, batch and explicit approval are still required, and no autonomous Campaign start is available from this panel.",
+
+  "issues.intake.selection.title": "Exact snapshot selection",
+  "issues.intake.selection.empty":
+    "Select issues with the checkboxes in the synchronized issue table. Selection is manual only; there is no subscription to future issues.",
+  "issues.intake.selection.selected":
+    "{count} snapshot(s) selected. Maximum acknowledged cost {cost} micros.",
+  "issues.intake.selection.badge": "{count} SELECTED",
+  "issues.intake.field.batchBudget": "Batch budget (micros)",
+  "issues.intake.field.batchBudgetHelp":
+    "Must cover the {count} selected snapshot(s): at least {minimum} micros.",
+  "issues.intake.field.batchExpiry": "Batch expiry",
+  "issues.intake.field.batchReason": "Batch reason",
+  "issues.intake.field.batchReasonHelp":
+    "No issue body is copied into audit or telemetry.",
+  "issues.intake.field.batchAcknowledge":
+    "I acknowledge these exact issue IDs and content digests. A later edit or new issue requires a new acknowledgement.",
+  "issues.intake.acknowledgingBatch": "Acknowledging batch…",
+  "issues.intake.acknowledgeBatch": "Acknowledge finite batch",
+  "issues.intake.error.noSelection":
+    "Select at least one exact issue snapshot.",
+  "issues.intake.error.acknowledgeBatch":
+    "Acknowledge the exact selected snapshots before creating a batch.",
+  "issues.intake.error.batchReason":
+    "A reason is required for the batch acknowledgement.",
+  "issues.intake.error.batchBudget":
+    "The batch budget must cover the selected snapshots (minimum {minimum} micros).",
+  "issues.intake.notice.batchCreated":
+    "Acknowledged {count} exact snapshot(s). Reconciliation still requires a separate operator action and never starts a Campaign.",
+  "issues.intake.error.batch": "Batch acknowledgement failed.",
+  "issues.intake.error.withCode": "{message} ({code})",
+
+  "issues.intake.batches.title": "Batches and durable queue",
+  "issues.intake.batches.emptyTitle": "No active batch",
+  "issues.intake.batches.emptyDescription":
+    "A batch is the finite acknowledgement of exact issue snapshots. It does not authorize a Campaign.",
+  "issues.intake.field.revokeReason": "Revocation reason",
+  "issues.intake.field.revokeReasonPlaceholder":
+    "optional; defaults to operator revoked issue batch",
+  "issues.intake.batch.meta":
+    "policy rev {revision} · {count} issue(s) · expires {date}",
+  "issues.intake.batch.remaining":
+    "Remaining issues {issues}; remaining cost {cost} micros. Acknowledgement does not grant execution or merge authority.",
+  "issues.intake.batch.proposalIntake": "Proposal intake",
+  "issues.intake.batch.proposalRecorded":
+    "recorded. Campaign start remains separate.",
+  "issues.intake.revokingBatch": "Revoking…",
+  "issues.intake.revokeBatch": "Revoke batch",
+  "issues.intake.notice.batchRevoked":
+    "Batch revoked. Existing reservations are retained.",
+  "issues.intake.error.revoke": "Batch could not be revoked.",
+  "issues.intake.defaultRevokeReason": "operator revoked issue batch",
+  "issues.intake.item.meta": "author {author} (ID {id}, {association})",
+  "issues.intake.item.digest": "digest",
+  "issues.intake.eligibility.eligible": "ELIGIBLE",
+  "issues.intake.eligibility.blocked": "BLOCKED",
+
+  "issues.intake.queue.title": "Durable reconciliation queue",
+  "issues.intake.queue.description":
+    "A dispatch performs one direct GitHub freshness read and may create one ordinary REVIEW_PLAN proposal. Execution stays disabled; a Campaign still requires separate explicit approval.",
+  "issues.intake.queue.attempt": "attempt {attempts}/{max}",
+  "issues.intake.queue.next": " · next {date}",
+  "issues.intake.queue.proposal": "Proposal",
+  "issues.intake.queue.lead": "Lead",
+  "issues.intake.queue.noCampaign": "no Campaign started.",
+  "issues.intake.checkingFreshness": "Checking freshness…",
+  "issues.intake.createProposal": "Create proposal",
+  "issues.intake.notice.proposalCreated":
+    "Proposal {id} created as {mode}. No Campaign was started and no provider call was made.",
+  "issues.intake.notice.proposalReplayed":
+    "Queue item replayed from its committed proposal. No Campaign was started.",
+  "issues.intake.error.reconciliation": "Reconciliation {status}",
+  "issues.intake.error.reconciliationReasons":
+    "Reconciliation {status}: {reasons}",
+  "issues.intake.error.dispatch":
+    "Issue reconciliation failed before creating a proposal.",
+  "issues.intake.audit.title": "Issue-intake audit ({count})",
+  "issues.intake.audit.by": "by {actor}",
+
   "settings.language.title": "Language",
   "settings.language.description":
     "Choose the language for Office controls, labels and messages. Core identifiers, status codes, provider routes and repository content are never translated.",

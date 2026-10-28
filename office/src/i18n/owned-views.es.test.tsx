@@ -557,7 +557,7 @@ describe("newly translated operational surfaces", () => {
     ).toBeDefined();
     expect(screen.getByText("Base congelada")).toBeDefined();
     expect(screen.getByText("Árbol del repositorio")).toBeDefined();
-    expect(screen.getByText(/Mostrando 1 de 1 entradas/)).toBeDefined();
+    expect(await screen.findByText(/Mostrando 1 de 1 entradas/)).toBeDefined();
     expect(
       screen.getByRole("button", { name: "Abrir archivo README.md" }),
     ).toBeDefined();
