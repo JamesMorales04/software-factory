@@ -38,6 +38,8 @@ pub enum Error {
     Repository(String),
     #[error("invalid request: {0}")]
     Invalid(&'static str),
+    #[error("invalid request: {0}")]
+    Validation(String),
     #[error("record not found")]
     NotFound,
     #[error("conflict: {0}")]
@@ -575,6 +577,12 @@ impl From<crate::lead::LeadError> for Error {
     }
 }
 
+impl From<crate::execution_profile::ExecutionProfileError> for Error {
+    fn from(error: crate::execution_profile::ExecutionProfileError) -> Self {
+        Self::Validation(error.to_string())
+    }
+}
+
 impl From<sqlx::Error> for Error {
     fn from(error: sqlx::Error) -> Self {
         match &error {
@@ -740,6 +748,11 @@ pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod device_sessions;
 pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
+mod execution_profiles;
+pub use execution_profiles::{
+    ExecutionProfileAudit, ExecutionProfileDefaultBinding, ExecutionProfileDefaultSource,
+    ExecutionProfileRecord, ResolvedExecutionProfile,
+};
 mod lead;
 mod model_calls;
 pub use lead::LeadTaskRecord;

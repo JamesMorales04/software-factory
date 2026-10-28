@@ -631,6 +631,22 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
         )
+        .route(
+            "/execution-profiles",
+            get(execution_profiles_list).post(create_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}",
+            get(execution_profile_detail).put(update_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}/default",
+            post(set_execution_profile_default).delete(clear_execution_profile_default),
+        )
+        .route(
+            "/projects/{id}/execution-profile",
+            get(project_execution_profile),
+        )
         .route("/actions", get(actions).post(create_action))
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
@@ -741,6 +757,22 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
+        )
+        .route(
+            "/execution-profiles",
+            get(execution_profiles_list).post(create_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}",
+            get(execution_profile_detail).put(update_execution_profile),
+        )
+        .route(
+            "/execution-profiles/{id}/default",
+            post(set_execution_profile_default).delete(clear_execution_profile_default),
+        )
+        .route(
+            "/projects/{id}/execution-profile",
+            get(project_execution_profile),
         )
         .route("/actions", get(actions).post(create_action))
         .route("/actions/{id}/classify", post(classify_action))
@@ -1268,7 +1300,9 @@ fn authority_matches(
 
 fn api_error(error: Error) -> Response {
     let status = match error {
-        Error::Invalid(_) | Error::Repository(_) | Error::Delegation(_) => StatusCode::BAD_REQUEST,
+        Error::Invalid(_) | Error::Validation(_) | Error::Repository(_) | Error::Delegation(_) => {
+            StatusCode::BAD_REQUEST
+        }
         Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
@@ -4387,6 +4421,229 @@ fn result_list<T: serde::Serialize>(result: Result<Vec<T>, Error>) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileAutoStartRequest {
+    enabled: bool,
+    #[serde(default)]
+    risk_classes: Vec<factory_native::lead::RiskClass>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+    category: factory_native::execution_profile::ExecutionProfileCategory,
+    roles: factory_native::execution_profile::ExecutionProfileRoles,
+    budgets: factory_native::execution_profile::CampaignBudgets,
+    #[serde(rename = "auto_start")]
+    auto_start: ExecutionProfileAutoStartRequest,
+    #[serde(default)]
+    expected_revision: Option<u32>,
+}
+
+impl ExecutionProfileRequest {
+    fn into_content(
+        self,
+    ) -> Result<factory_native::execution_profile::ExecutionProfileContent, String> {
+        let content = factory_native::execution_profile::ExecutionProfileContent {
+            name: self.name,
+            description: self.description,
+            category: self.category,
+            roles: self.roles,
+            budgets: self.budgets,
+            auto_start: factory_native::execution_profile::AutoStartPolicy {
+                enabled: self.auto_start.enabled,
+                risk_classes: self.auto_start.risk_classes,
+            },
+        };
+        content.validate().map_err(|error| error.to_string())?;
+        Ok(content)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionProfileDefaultRequest {
+    scope: String,
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+impl ExecutionProfileDefaultRequest {
+    fn into_project_id(self) -> Result<Option<String>, String> {
+        match (self.scope.as_str(), self.project_id) {
+            ("global", None) => Ok(None),
+            ("global", Some(_)) => Err("global scope must not include project_id".into()),
+            ("project", Some(project_id)) if !project_id.is_empty() => Ok(Some(project_id)),
+            ("project", _) => Err("project scope requires project_id".into()),
+            _ => Err("scope must be global or project".into()),
+        }
+    }
+}
+
+async fn execution_profiles_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.execution_profiles().await {
+        Ok(profiles) => Json(json!({
+            "profiles": profiles,
+            "supportedRoutes": factory_native::execution_profile::SUPPORTED_ROUTES,
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn execution_profile_detail(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.execution_profile(&id).await {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<ExecutionProfileRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.expected_revision.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_revision is only valid for updates"})),
+        )
+            .into_response();
+    }
+    let content = match input.into_content() {
+        Ok(content) => content,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .create_execution_profile(&content, "office-operator")
+        .await
+    {
+        Ok(profile) => (StatusCode::CREATED, Json(profile)).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn update_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(expected_revision) = input.expected_revision else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_revision is required for updates"})),
+        )
+            .into_response();
+    };
+    let content = match input.into_content() {
+        Ok(content) => content,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .update_execution_profile(&id, expected_revision, &content, "office-operator")
+        .await
+    {
+        Ok(profile) => Json(profile).into_response(),
+        Err(Error::Conflict("execution profile revision is stale")) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error":"execution profile revision is stale"})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn set_execution_profile_default(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileDefaultRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = match input.into_project_id() {
+        Ok(project_id) => project_id,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .set_execution_profile_default(&id, project_id.as_deref(), "office-operator")
+        .await
+    {
+        Ok(binding) => Json(binding).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn clear_execution_profile_default(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ExecutionProfileDefaultRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project_id = match input.into_project_id() {
+        Ok(project_id) => project_id,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    match app
+        .db
+        .clear_execution_profile_default(&id, project_id.as_deref(), "office-operator")
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_execution_profile(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.resolve_project_execution_profile(&id).await {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6135,5 +6392,387 @@ mod tests {
                 .unwrap_err()
                 .contains("configured default model gateway")
         );
+    }
+
+    #[tokio::test]
+    async fn execution_profile_api_is_versioned_defaultable_and_typed() {
+        use factory_native::db::ProviderSettingsWrite;
+        use tower::ServiceExt;
+
+        async fn send(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            token: Option<&str>,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut builder = axum::http::Request::builder().method(method).uri(uri);
+            if let Some(token) = token {
+                builder = builder.header("authorization", format!("Bearer {token}"));
+            }
+            let body = if let Some(body) = body {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(body.to_string())
+            } else {
+                axum::body::Body::empty()
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            (status, value)
+        }
+
+        fn role(provider: &str, model: &str) -> Value {
+            json!({
+                "provider": provider,
+                "model": model,
+                "reasoning": "medium",
+                "maxInputTokens": 64000,
+                "maxOutputTokens": 8192,
+                "maxCostMicros": 300000
+            })
+        }
+
+        fn profile_body(name: &str) -> Value {
+            json!({
+                "name": name,
+                "description": "Default supported routes",
+                "category": "BALANCED",
+                "roles": {
+                    "lead": role("opencode-go", "deepseek-v4.1-flash"),
+                    "implementer": role("opencode-go", "deepseek-v4.1-flash"),
+                    "semanticReviewer": role("codex", "gpt-6-luna")
+                },
+                "budgets": {
+                    "maxAttempts": 3,
+                    "maxSessions": 2,
+                    "maxTurns": 4,
+                    "maxInputTokens": 40000,
+                    "maxOutputTokens": 12000,
+                    "maxCostMicros": 500000,
+                    "deadlineSecs": 600
+                },
+                "auto_start": {"enabled": false, "risk_classes": []}
+            })
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-execution-profiles-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = std::env::temp_dir().join(format!(
+            "factory-core-execution-profiles-repo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&repository).unwrap();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+        for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+
+        let app = test_app(&path).await;
+        for (provider, kind, model, is_default) in [
+            ("opencode-go", "opencode", "deepseek-v4.1-flash", true),
+            ("codex", "codex", "gpt-6-luna", false),
+        ] {
+            app.db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: provider.into(),
+                        kind: kind.into(),
+                        model: model.into(),
+                        base_url: "https://provider.example/v1".into(),
+                        auth_mode: "api_key".into(),
+                        credential_ciphertext: "ciphertext".into(),
+                        credential_nonce: "nonce".into(),
+                        credential_fingerprint: "fingerprint".into(),
+                        enabled: true,
+                        is_default,
+                        max_turns: 4,
+                        max_input_tokens: 100_000,
+                        max_output_tokens: 12_000,
+                        max_cost_micros: 500_000,
+                        input_micros_per_million: 1000,
+                        output_micros_per_million: 2000,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+        }
+        let project = app
+            .db
+            .register_project(&repository, "execution-profile-project")
+            .await
+            .unwrap();
+        let router = build_router(app);
+
+        let (status, _) = send(&router, "GET", "/execution-profiles", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            None,
+            Some(profile_body("Denied")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, list) = send(
+            &router,
+            "GET",
+            "/execution-profiles",
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["profiles"].as_array().map(Vec::len), Some(0));
+        assert_eq!(list["supportedRoutes"].as_array().map(Vec::len), Some(3));
+
+        let (status, created) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(profile_body("Balanced")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["revision"], 1);
+        assert_eq!(created["executable"], true, "{created}");
+        assert_eq!(created["warnings"].as_array().map(Vec::len), Some(0));
+        assert_eq!(created["contentHash"].as_str().map(str::len), Some(64));
+        assert_eq!(created["autoStart"]["enabled"], false);
+        assert_eq!(created["roles"]["semanticReviewer"]["provider"], "codex");
+        let profile_id = created["id"].as_str().unwrap().to_owned();
+
+        let (status, detail) = send(
+            &router,
+            "GET",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["name"], "Balanced");
+        assert_eq!(detail["revisionId"], created["revisionId"]);
+
+        let (status, binding) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{profile_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{binding}");
+        assert_eq!(binding["scope"], "global");
+        assert_eq!(binding["profileId"], profile_id);
+
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{resolved}");
+        assert_eq!(resolved["source"], "GLOBAL_DEFAULT");
+        assert_eq!(resolved["revision"], 1);
+        assert_eq!(resolved["profileId"], profile_id);
+        assert!(resolved.get("name").is_none());
+
+        let mut update = profile_body("Balanced v2");
+        update["expected_revision"] = json!(1);
+        let (status, updated) = send(
+            &router,
+            "PUT",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            Some(update),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["revision"], 2);
+        assert_ne!(updated["contentHash"], created["contentHash"]);
+
+        let mut stale = profile_body("Stale edit");
+        stale["expected_revision"] = json!(1);
+        let (status, conflict) = send(
+            &router,
+            "PUT",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            Some(stale),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(conflict["error"], "execution profile revision is stale");
+
+        let (status, second) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(profile_body("Conservative")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let second_id = second["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{second_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "project", "project_id": project.id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resolved["source"], "PROJECT_DEFAULT");
+        assert_eq!(resolved["profileId"], second_id);
+        let (_, first_after) = send(
+            &router,
+            "GET",
+            &format!("/execution-profiles/{profile_id}"),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(first_after["globalDefault"], true);
+
+        let (status, _) = send(
+            &router,
+            "DELETE",
+            &format!("/execution-profiles/{second_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "project", "project_id": project.id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, resolved) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resolved["source"], "GLOBAL_DEFAULT");
+
+        let (status, _) = send(
+            &router,
+            "DELETE",
+            &format!("/execution-profiles/{profile_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _) = send(
+            &router,
+            "GET",
+            &format!("/projects/{}/execution-profile", project.id),
+            Some("operator-token"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let mut unsupported = profile_body("Unsupported");
+        unsupported["roles"]["lead"] = role("other-provider", "deepseek-v4.1-flash");
+        let (status, error) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(unsupported),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("unsupported"))
+        );
+
+        let mut draft = profile_body("Draft");
+        draft["roles"]["lead"] = role("opencode", "deepseek-v4.1-flash");
+        draft["roles"]["implementer"] = role("opencode", "deepseek-v4.1-flash");
+        let (status, draft) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(draft),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{draft}");
+        assert_eq!(draft["executable"], false);
+        assert!(
+            draft["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.len() == 2)
+        );
+        let draft_id = draft["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{draft_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(repository);
     }
 }
