@@ -950,7 +950,10 @@ export async function getAuthSession(): Promise<AuthSession> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new CoreApiError(response.status, messageFromBody(response.status, text));
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+    );
   }
   const session = (await response.json()) as AuthSession;
   setAuthSession(session);
@@ -979,7 +982,10 @@ async function authPost(path: string): Promise<void> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new CoreApiError(response.status, messageFromBody(response.status, text));
+    throw new CoreApiError(
+      response.status,
+      messageFromBody(response.status, text),
+    );
   }
 }
 

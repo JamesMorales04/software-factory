@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/ui/Button";
+import type { AuthSession } from "./coreApi";
 import {
   bootstrapOwner,
   CoreApiError,
@@ -9,7 +10,6 @@ import {
   logoutCurrentDevice,
   setupStatus,
 } from "./coreApi";
-import type { AuthSession } from "./coreApi";
 import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
 import { AgentOffice } from "./views/AgentOffice";

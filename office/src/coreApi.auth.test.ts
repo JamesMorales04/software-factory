@@ -1,9 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  bootstrapOwner,
-  getAuthSession,
-  logoutCurrentDevice,
-} from "./coreApi";
+import { bootstrapOwner, getAuthSession, logoutCurrentDevice } from "./coreApi";
 
 function jsonResponse(body: unknown, status = 200) {
   return {
@@ -14,16 +10,28 @@ function jsonResponse(body: unknown, status = 200) {
   } as Response;
 }
 
+function clearTestCookies() {
+  // biome-ignore lint/suspicious/noDocumentCookie: jsdom exposes cookie state only through document.cookie.
+  document.cookie = "factory_csrf=; Max-Age=0; path=/";
+}
+
+function setCsrfCookie(value: string) {
+  // biome-ignore lint/suspicious/noDocumentCookie: the CSRF cookie is the production source read by coreApi.
+  document.cookie = `factory_csrf=${value}; path=/; SameSite=Strict`;
+}
+
 describe("Office device-session API", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    document.cookie = "factory_csrf=; Max-Age=0; path=/";
+    clearTestCookies();
   });
 
   it("loads the cookie session without sending a bearer credential", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ authenticated: true, device: { id: "device-1" } }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({ authenticated: true, device: { id: "device-1" } }),
+      );
 
     await getAuthSession();
 
@@ -36,10 +44,12 @@ describe("Office device-session API", () => {
   });
 
   it("submits owner confirmation in the request body and uses the CSRF cookie", async () => {
-    document.cookie = "factory_csrf=csrf-value; path=/; SameSite=Strict";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({ authenticated: true, device: { id: "device-1" } }),
-    );
+    setCsrfCookie("csrf-value");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse({ authenticated: true, device: { id: "device-1" } }),
+      );
 
     await bootstrapOwner("one-time-confirmation", "Workstation");
 
@@ -47,23 +57,28 @@ describe("Office device-session API", () => {
     expect(url).toBe("/core-api/auth/bootstrap");
     expect(request?.credentials).toBe("same-origin");
     expect(request?.body).toBe(
-      JSON.stringify({ code: "one-time-confirmation", deviceName: "Workstation" }),
+      JSON.stringify({
+        code: "one-time-confirmation",
+        deviceName: "Workstation",
+      }),
     );
     expect(String(request?.body)).not.toMatch(/https?:\/\//);
     expect(new Headers(request?.headers).has("authorization")).toBe(false);
   });
 
   it("sends CSRF on logout and does not persist a session token", async () => {
-    document.cookie = "factory_csrf=csrf-value; path=/; SameSite=Strict";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(undefined, 204),
-    );
+    setCsrfCookie("csrf-value");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(undefined, 204));
 
     await logoutCurrentDevice();
 
     const [url, request] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("/core-api/auth/logout");
-    expect(new Headers(request?.headers).get("x-factory-csrf")).toBe("csrf-value");
+    expect(new Headers(request?.headers).get("x-factory-csrf")).toBe(
+      "csrf-value",
+    );
     expect(new Headers(request?.headers).has("authorization")).toBe(false);
     expect(sessionStorage.length).toBe(0);
   });

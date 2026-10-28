@@ -165,9 +165,14 @@ td {
   *,
   *::before,
   *::after {
+    /* Reduced-motion overrides must win over component animation rules. */
+    /* biome-ignore lint/complexity/noImportantStyles: accessibility override */
     animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: accessibility override */
     animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: accessibility override */
     scroll-behavior: auto !important;
+    /* biome-ignore lint/complexity/noImportantStyles: accessibility override */
     transition-duration: 0.01ms !important;
   }
 }
