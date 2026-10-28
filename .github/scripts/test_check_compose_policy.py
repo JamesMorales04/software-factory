@@ -218,15 +218,27 @@ class ComposePolicyTests(unittest.TestCase):
         )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_AUTHKEY", "unexpected"),
-            "authentication material must not be in Compose environment",
+            "unsupported environment variable(s)",
         )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_EXTRA_ARGS", "--ssh"),
-            "extra Tailscale features and flags are forbidden",
+            "unsupported environment variable(s)",
         )
         self.assert_rejected(
             lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_STATE_DIR", "/tmp/state"),
             "persistent node state path is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__(
+                "TS_ENABLE_HEALTH_CHECK", "false"
+            ),
+            "sanitized health endpoint is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__(
+                "TS_LOCAL_ADDR_PORT", "127.0.0.1:9003"
+            ),
+            "health endpoint must use the private container port",
         )
         def move_state_volume(config):
             state_volume = next(
@@ -252,6 +264,17 @@ class ComposePolicyTests(unittest.TestCase):
             "must use only the isolated Office and uplink networks",
         )
         self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "factory-config-core",
+                    "target": "/stolen-core-config",
+                    "read_only": True,
+                }
+            ),
+            "mounts must be limited to persistent state and read-only Serve config",
+        )
+        self.assert_rejected(
             lambda c: c["services"]["core"]["environment"].__setitem__("FACTORY_TRUSTED_ORIGINS", "https://*.ts.net"),
             "one exact HTTPS MagicDNS origin",
         )
@@ -260,6 +283,51 @@ class ComposePolicyTests(unittest.TestCase):
             .setdefault("networks", {})
             .__setitem__("factory-office-private", {}),
             "only Core and Tailscale may be members",
+        )
+
+    def test_rejects_tailscale_route_proxy_and_feature_environment(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        for name, value in (
+            ("TS_ROUTES", "192.168.0.0/16"),
+            ("TS_DEST_IP", "172.20.0.10"),
+            ("TS_EXPERIMENTAL_DEST_DNS_NAME", "core"),
+            ("TS_SOCKS5_SERVER", ":1055"),
+            ("TS_OUTBOUND_HTTP_PROXY_LISTEN", ":8080"),
+            ("TS_KUBE_SECRET", "factory"),
+        ):
+            with self.subTest(environment_key=name):
+                self.assert_rejected(
+                    lambda c, key=name, item=value: c["services"]["tailscale"][
+                        "environment"
+                    ].__setitem__(key, item),
+                    "unsupported environment variable(s)",
+                )
+
+    def test_rejects_tailscale_command_dns_and_network_overrides(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        for name, value in (
+            ("command", ["tailscale", "funnel", "443"]),
+            ("entrypoint", ["/bin/sh", "-c"]),
+            ("extra_hosts", ["core:203.0.113.9"]),
+            ("dns", ["203.0.113.53"]),
+            ("dns_search", ["attacker.invalid"]),
+            ("links", ["core:office"]),
+            ("network_mode", "service:core"),
+        ):
+            with self.subTest(override=name):
+                self.assert_rejected(
+                    lambda c, key=name, item=value: c["services"]["tailscale"].__setitem__(
+                        key, item
+                    ),
+                    f"{name} overrides are forbidden",
+                )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["networks"].__setitem__(
+                "factory-office-private", {"aliases": ["core"]}
+            ),
+            "network aliases and address overrides are forbidden",
         )
 
 

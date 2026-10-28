@@ -264,6 +264,17 @@ def main(path: str) -> int:
             fail("tailscale: official image must remain pinned to the reviewed digest")
         if tailscale.get("privileged") or tailscale.get("network_mode") == "host":
             fail("tailscale: privileged mode and host networking are forbidden")
+        for override in (
+            "command",
+            "entrypoint",
+            "extra_hosts",
+            "dns",
+            "dns_search",
+            "links",
+            "network_mode",
+        ):
+            if tailscale.get(override):
+                fail(f"tailscale: {override} overrides are forbidden")
         if tailscale.get("devices") or tailscale.get("ports"):
             fail("tailscale: device and published-port grants are forbidden")
         if as_set(tailscale, "cap_drop") != {"ALL"} or as_set(tailscale, "cap_add"):
@@ -276,6 +287,22 @@ def main(path: str) -> int:
         ):
             fail("tailscale: no-new-privileges is required")
         environment = tailscale.get("environment") or {}
+        allowed_environment = {
+            "TS_ACCEPT_DNS",
+            "TS_AUTH_ONCE",
+            "TS_ENABLE_HEALTH_CHECK",
+            "TS_HOSTNAME",
+            "TS_LOCAL_ADDR_PORT",
+            "TS_SERVE_CONFIG",
+            "TS_STATE_DIR",
+            "TS_USERSPACE",
+        }
+        unexpected_environment = set(environment) - allowed_environment
+        if unexpected_environment:
+            fail(
+                "tailscale: unsupported environment variable(s): "
+                f"{sorted(unexpected_environment)}"
+            )
         if environment.get("TS_USERSPACE") != "true":
             fail("tailscale: userspace networking is required")
         if environment.get("TS_AUTH_ONCE") != "true":
@@ -284,6 +311,10 @@ def main(path: str) -> int:
             fail("tailscale: Serve config path is required")
         if environment.get("TS_STATE_DIR") != "/var/lib/tailscale":
             fail("tailscale: persistent node state path is required")
+        if environment.get("TS_ENABLE_HEALTH_CHECK") != "true":
+            fail("tailscale: the sanitized health endpoint is required")
+        if environment.get("TS_LOCAL_ADDR_PORT") != "0.0.0.0:9002":
+            fail("tailscale: health endpoint must use the private container port")
         state_mounts = [
             volume for volume in tailscale.get("volumes", []) or []
             if volume.get("source") == "factory-tailscale-state"
@@ -297,6 +328,21 @@ def main(path: str) -> int:
             Path(__file__).resolve().parents[2] / "deploy" / "tailscale" / "serve.json"
         ).resolve()
         errors.extend(tailscale_serve_config_errors(expected_serve_path))
+        allowed_tailscale_mounts = {
+            ("factory-tailscale-state", "/var/lib/tailscale", "volume", False),
+            (str(expected_serve_path), "/etc/factory/serve.json", "bind", True),
+        }
+        actual_tailscale_mounts = {
+            (
+                str(volume.get("source", "")),
+                str(volume.get("target", "")),
+                str(volume.get("type", "")),
+                volume.get("read_only", False) is True,
+            )
+            for volume in tailscale.get("volumes", []) or []
+        }
+        if actual_tailscale_mounts != allowed_tailscale_mounts:
+            fail("tailscale: mounts must be limited to persistent state and read-only Serve config")
         if any(
             environment.get(name)
             for name in ("TS_AUTHKEY", "TS_CLIENT_SECRET", "TS_ID_TOKEN")
@@ -315,9 +361,16 @@ def main(path: str) -> int:
             "factory-tailscale-uplink",
         }:
             fail("tailscale: must use only the isolated Office and uplink networks")
+        if any(value is not None for value in (tailscale.get("networks") or {}).values()):
+            fail("tailscale: network aliases and address overrides are forbidden")
         expected_core_networks = EXPECTED_NETWORKS["core"] | {"factory-office-private"}
         if set(services["core"].get("networks", {})) != expected_core_networks:
             fail("core: Tailscale mode must expose only its dedicated Office network")
+        if any(
+            value is not None
+            for value in (services["core"].get("networks") or {}).values()
+        ):
+            fail("core: network aliases and address overrides are forbidden in Tailscale mode")
         office_members = {
             service_name for service_name, service in services.items()
             if "factory-office-private" in (service.get("networks") or {})
