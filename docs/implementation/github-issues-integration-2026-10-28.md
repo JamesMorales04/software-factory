@@ -39,10 +39,10 @@ never writes SQLite and never grants authority. Issue title/body/label text is
 untrusted data. It is stored as bounded text, rendered as plain React text, and
 never passed to a model, agent, shell or instruction interpreter.
 
-## Schema — migrations `0028_github_integrations.sql` and `0029_github_generation_backoff.sql`
+## Schema — migrations `0028_github_integrations.sql` and `0030_github_generation_backoff.sql`
 
 Migration `0026` and `0027` are reserved by the execution-profile and intake
-lanes, so this lane allocates `0028` and its hardening migration `0029`. `sqlx`
+lanes, so this lane allocates `0028` and its hardening migration `0030`. `sqlx`
 versioned migrations preserve existing data; the new tables are additive.
 
 | Table | Purpose |
