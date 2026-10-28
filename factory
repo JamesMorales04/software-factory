@@ -18,14 +18,38 @@ case "$command_name" in
     ;;
 esac
 
-podman compose up -d --build
+# Prefer podman-compose when the Podman wrapper would otherwise select a
+# Docker socket provider on hosts that have both installed.
+if [ -z "${PODMAN_COMPOSE_PROVIDER:-}" ] && command -v podman-compose >/dev/null 2>&1; then
+  PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)
+  export PODMAN_COMPOSE_PROVIDER
+fi
+
+compose() {
+  podman compose "$@"
+}
+
+wait_for_core() {
+  attempts=0
+  until compose exec -T core curl -fsS http://127.0.0.1:8765/health >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 180 ]; then
+      echo "Factory Core did not become healthy" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+compose up -d --build
+wait_for_core
 
 if [ "$command_name" = "recover" ]; then
-  code=$(podman compose exec -T core /usr/local/bin/factory-core issue-recovery-code)
+  code=$(compose exec -T core /usr/local/bin/factory-core issue-recovery-code)
   printf 'Local recovery confirmation code (valid for 5 minutes): %s\n' "$code"
   printf 'Enter this code once in Office to enroll this browser.\n'
 else
-  code=$(podman compose exec -T core /usr/local/bin/factory-core issue-bootstrap-code)
+  code=$(compose exec -T core /usr/local/bin/factory-core issue-bootstrap-code)
   if [ "$code" != "OWNER_ALREADY_ENROLLED" ]; then
     printf 'Owner confirmation code (valid for 5 minutes): %s\n' "$code"
     printf 'Enter this code once in Office to enroll this browser.\n'

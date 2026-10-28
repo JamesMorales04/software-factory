@@ -4263,6 +4263,46 @@ mod tests {
         assert!(validate_bind("203.0.113.4:8765", true).is_err());
     }
 
+    #[test]
+    fn browser_host_and_origin_policy_rejects_forgeries() {
+        let trusted = vec!["https://factory-office.example.ts.net".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("factory-office.example.ts.net"),
+        );
+        assert!(request_host_allowed(&headers, &trusted));
+        assert!(origin_allowed(
+            "https://factory-office.example.ts.net",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed(
+            "https://factory-office.example.ts.net/evil",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed(
+            "https://factory-office.example.ts.net?x=1",
+            &headers,
+            &trusted
+        ));
+        assert!(!origin_allowed("https://evil.example", &headers, &trusted));
+        assert!(!origin_allowed(
+            "http://factory-office.example.ts.net",
+            &headers,
+            &trusted
+        ));
+
+        headers.insert(header::HOST, HeaderValue::from_static("attacker.example"));
+        assert!(!request_host_allowed(&headers, &trusted));
+
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8893"));
+        assert!(request_host_allowed(&headers, &trusted));
+        assert!(origin_allowed("http://127.0.0.1:8893", &headers, &trusted));
+        assert!(!origin_allowed("http://127.0.0.1:9999", &headers, &trusted));
+    }
+
     #[tokio::test]
     async fn worker_session_is_bound_to_registered_json_identity() {
         let path =
@@ -4779,6 +4819,39 @@ mod tests {
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
         let router = build_router(app.clone());
+        let wrong_code = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":"wrong-code","deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_code.status(), StatusCode::UNAUTHORIZED);
+        let missing_origin = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":code,"deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
         let response = router
             .clone()
             .oneshot(
@@ -5037,6 +5110,7 @@ mod tests {
         let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(session["authenticated"], true);
         let persisted = router
+            .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/auth/session")
@@ -5053,6 +5127,26 @@ mod tests {
             .unwrap();
         let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(session["authenticated"], true);
+        let replay = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "code": recovery_code,
+                            "deviceName": "Replay"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
         let _ = std::fs::remove_file(database_path);
         let _ = std::fs::remove_file(code_path);
     }
