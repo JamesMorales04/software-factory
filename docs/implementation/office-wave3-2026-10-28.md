@@ -36,7 +36,22 @@ has been reviewed but promotion is blocked on #73 (see
 No paid inference was performed. The probes are text-only and use the owner's
 existing authenticated sessions.
 
-## 3. Issue reconciliation (campaign view)
+## 3. Provider evidence for #59 (observed, no credential)
+
+| Request | Observed |
+|---|---|
+| `GET https://opencode.ai/inference/go/v1/models` | **200**, 2,518 bytes, OpenAI list with **30** real model IDs (`deepseek-v4.1-flash`, `deepseek-v4-pro`, `gpt-6-luna`, …) |
+| `GET https://opencode.ai/inference/go/openai/v1/models` (Factory's current composition) | **404**, empty body |
+| `GET https://models.dev/api.json` | 200, 5.9 MiB (not needed for the primary fix) |
+
+Root cause: the configured inference base URL ends in `/openai/v1`, while the
+documented catalog lives at the sibling `/inference/go/v1/models`. Factory
+composes `{inference_base}/models` unconditionally, so the catalog 404 proves a
+wrong path, not an invalid credential. The fix must model **catalog URL and
+inference base URL separately per provider** and keep 404 neutral about
+credential validity. A models.dev integration is not the primary fix.
+
+## 4. Issue reconciliation (campaign view)
 
 Statuses are the campaign's working view from the recorded evidence and actual
 source inspection; each issue still needs its own closing evidence.
@@ -73,7 +88,7 @@ source inspection; each issue still needs its own closing evidence.
 | #72 Execution Policy V2 | **Not implemented**; caps confirmed in code | **Wave 3 lane C** |
 | #73 shared campaign ledger | **Not implemented**; Wave 2 blocking finding | **Wave 3 lane L** |
 
-## 4. Dependency graph
+## 5. Dependency graph
 
 ```
 P  #59 OpenCode Go discovery ──────────────┐
@@ -92,7 +107,7 @@ P and I are independent and start immediately. C and L require the Sol contract
 and must not share Rust modules or migration numbers; the ledger lane owns the
 new spend migration, the policy lane owns policy fields in existing tables.
 
-## 5. Lane matrix
+## 6. Lane matrix
 
 | Lane | Branch | Worktree | Owner | Issue | Depends | Reviewer |
 |---|---|---|---|---|---|---|
@@ -106,7 +121,7 @@ Director owns shared files: `native/src/bin/core.rs`, `native/src/lib.rs`,
 `native/src/db/mod.rs`, migrations, `office/src/coreApi.ts`, `App.tsx`,
 `navigation.ts`, shared CSS, parity JSON, capability registry.
 
-## 6. First checkpoint acceptance
+## 7. First checkpoint acceptance
 
 1. Lanes P and I have a committed implementation on their branch with focused
    tests, or a truthful blocker report.
@@ -115,7 +130,7 @@ Director owns shared files: `native/src/bin/core.rs`, `native/src/lib.rs`,
 3. No change to `main`; no fabricated provider or acceptance claim.
 4. This ledger and the campaign state are committed on the integration branch.
 
-## 7. Change log
+## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
   (`MODEL_OK`, `SOL_OK`, `LUNA_OK`). Five worktrees created. P/I started; Sol
