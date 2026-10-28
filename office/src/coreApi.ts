@@ -585,6 +585,69 @@ export interface ProviderRoute {
   mode: string;
 }
 
+export type ExecutionProfileCategory =
+  | "BUDGET"
+  | "BALANCED"
+  | "QUALITY"
+  | "CUSTOM";
+
+export interface ExecutionRoleAssignment {
+  provider: string;
+  model: string;
+  reasoning?: string | null;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+}
+
+export interface ExecutionProfileRoles {
+  lead?: ExecutionRoleAssignment;
+  implementer?: ExecutionRoleAssignment;
+  semanticReviewer?: ExecutionRoleAssignment;
+}
+
+export interface ExecutionProfileBudgets {
+  maxAttempts: number;
+  maxSessions: number;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  deadlineSecs: number;
+}
+
+export interface ExecutionProfileAutoStart {
+  enabled: boolean;
+  riskClasses: string[];
+}
+
+export interface ExecutionProfile {
+  id: string;
+  name: string;
+  description: string;
+  category: ExecutionProfileCategory;
+  revision: number;
+  revisionId: string;
+  contentHash: string;
+  globalDefault: boolean;
+  projectDefaults: string[];
+  roles: ExecutionProfileRoles;
+  budgets: ExecutionProfileBudgets;
+  autoStart: ExecutionProfileAutoStart;
+  executable: boolean;
+  warnings: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectExecutionProfile {
+  projectId: string;
+  profileId: string;
+  revisionId: string;
+  revision: number;
+  source: "PROJECT_DEFAULT" | "GLOBAL_DEFAULT";
+}
+
 export interface StandingDelegation {
   id: string;
   principalId: string;
@@ -730,6 +793,93 @@ export interface NewLeadRequest {
   objective: string;
   project_config_hash: string;
   idempotency_key: string;
+}
+
+export type IntakeMode = "REVIEW_PLAN" | "AUTONOMOUS";
+
+export type IntakeState =
+  | "SUBMITTED"
+  | "ASSESSING"
+  | "PLAN_READY"
+  | "AWAITING_APPROVAL"
+  | "EXECUTING"
+  | "BLOCKED"
+  | "FAILED"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export interface IntakeProfileReference {
+  id: string;
+  revisionId: string;
+  revision: number;
+  name: string;
+  contentHash: string;
+}
+
+export interface IntakeAuthorizationState {
+  required: boolean;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface IntakeMessage {
+  id: string;
+  role: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface IntakeRequestSummary {
+  id: string;
+  projectId: string;
+  objective: string;
+  mode: IntakeMode;
+  state: IntakeState;
+  stateDetail: string | null;
+  profile: IntakeProfileReference;
+  actionId: string;
+  delegationId: string;
+  leadRequestId: string;
+  campaignId: string | null;
+  authorization: IntakeAuthorizationState;
+  campaignStatus?: string | null;
+  gateOutcome?: GateOutcome | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntakeRequestProjection extends IntakeRequestSummary {
+  assessment: LeadAssessmentView | null;
+  proposal: LeadPlanProposalView | null;
+  plan: FrozenLeadPlanRecord | null;
+  campaign: CampaignDetail | null;
+  messages: IntakeMessage[];
+}
+
+export interface NewIntakeRequest {
+  project_id: string;
+  objective: string;
+  execution_profile_id?: string;
+  mode: IntakeMode;
+  idempotency_key: string;
+}
+
+export interface ApproveIntakeRequest {
+  expected_plan_hash: string;
+  actor: string;
+  rationale: string;
+}
+
+export interface IntakeMessageRequest {
+  body: string;
+  idempotency_key: string;
+}
+
+export interface IntakeRequestFilters {
+  state?: IntakeState;
+  projectId?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export interface NewCampaignRequest {
@@ -1176,6 +1326,12 @@ export const coreApi = {
     ),
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
+  listExecutionProfiles: () =>
+    request<ExecutionProfile[]>("/execution-profiles"),
+  getProjectExecutionProfile: (projectId: string) =>
+    request<ProjectExecutionProfile>(
+      `/projects/${encodeURIComponent(projectId)}/execution-profile`,
+    ),
   listProviders: () =>
     request<{ providers: ProviderView[] }>("/settings/providers"),
   getRuntimeSettings: () => request<FactorySettings>("/settings/runtime"),
@@ -1250,6 +1406,47 @@ export const coreApi = {
           ? {}
           : { body: JSON.stringify(authorization) }),
       },
+    ),
+  listIntakeRequests: (filters: IntakeRequestFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.state) params.set("state", filters.state);
+    if (filters.projectId) params.set("project_id", filters.projectId);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined)
+      params.set("offset", String(filters.offset));
+    const query = params.toString();
+    return request<IntakeRequestSummary[]>(
+      `/intake/requests${query ? `?${query}` : ""}`,
+    );
+  },
+  getIntakeRequest: (id: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}`,
+    ),
+  createIntakeRequest: (input: NewIntakeRequest) =>
+    request<IntakeRequestProjection>("/intake/requests", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  assessIntakeRequest: (id: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/assess`,
+      { method: "POST" },
+    ),
+  approveIntakeRequest: (id: string, input: ApproveIntakeRequest) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/approve`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  messageIntakeRequest: (id: string, input: IntakeMessageRequest) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/message`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  cancelIntakeRequest: (id: string, reason: string) =>
+    request<IntakeRequestProjection>(
+      `/intake/requests/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", body: JSON.stringify({ reason }) },
     ),
   registerProject: (input: NewProjectRequest) =>
     request<Project>("/projects", {
