@@ -328,9 +328,18 @@ these are resolved and re-reviewed.**
    checks lifecycle before replay. Extract shared transaction-scoped operations
    and add upgrade/concurrency/replay tests.
 
-The concrete design is tracked in the campaign ledger. Until it is recorded and
+The concrete design is recorded in
+[ADR-0029](../architecture/decisions/ADR-0029-request-scoped-operator-approval.md)
+as **Proposed**. Until the three foundation commits are implemented and
 re-reviewed, the intake endpoints and the Home approval action remain
-provisional UI states only.
+provisional UI states only. The implementation sequence is:
+
+1. `feat(domain): freeze intake context and defer executable ActionSpec insertion`
+2. `feat(auth): add protected operator Lead start and withdrawal fencing`
+3. `feat(execution): enforce frozen role routes and aggregate intake budgets`
+
+The operators of the campaign must not enable autonomous start by default to
+make manual approval work.
 
 ## 4. Integration rules
 
