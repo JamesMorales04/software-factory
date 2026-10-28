@@ -178,6 +178,12 @@ EXPIRES="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.ti
 api POST /delegations \
   "{\"delegation\":{\"id\":\"e2e-grant\",\"principalId\":\"owner\",\"auditId\":\"e2e\",\"projectId\":\"$PROJECT_ID\",\"revision\":1,\"contentHash\":\"\",\"objectiveClasses\":[\"feature\"],\"allowedPaths\":[\"src\"],\"capabilities\":[\"repository-edit\",\"generic-toolchain\"],\"riskClasses\":[\"R0\",\"R1\"],\"autonomousStart\":false,\"autonomousRiskClasses\":[],\"route\":{\"provider\":\"opencode\",\"model\":\"deepseek-v4.1-flash\",\"mode\":\"build\"},\"maxAttempts\":2,\"maxTimeoutSecs\":300,\"maxRepairCycles\":0,\"maxWallClockSecs\":1800,\"maxParallel\":1,\"maxSessions\":16,\"maxRequests\":4,\"maxCumulativeSessions\":32,\"maxCumulativeAttempts\":32,\"expiresAt\":\"$EXPIRES\"},\"idempotency_key\":\"e2e-delegation\"}" >/dev/null
 
+log "== configuring the fixture implementer connection"
+# Campaign authorization validates that the declared implementer route exists as
+# an enabled provider connection. The deterministic Worker never calls it.
+api PUT /settings/providers/opencode \
+  '{"model":"deepseek-v4.1-flash","baseUrl":"https://opencode.ai/inference/go/openai/v1","credential":"compose-fixture-credential-0123456789","enabled":true,"isDefault":false,"maxTurns":4,"maxInputTokens":20000,"maxOutputTokens":8000,"maxCostMicros":500000,"inputMicrosPerMillion":1000,"outputMicrosPerMillion":2000}' >/dev/null
+
 log "== authorizing and dispatching a Campaign"
 CAMPAIGN_ID="$(api POST /campaigns \
   "{\"action_id\":\"$ACTION_ID\",\"idempotency_key\":\"e2e-campaign\"}" \
