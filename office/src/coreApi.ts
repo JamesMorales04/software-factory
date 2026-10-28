@@ -877,6 +877,23 @@ export interface SetupStatus {
   version: string;
 }
 
+export interface DeviceSession {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastActivityAt: string;
+  expiresAt: string;
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  bootstrapAvailable?: boolean;
+  csrfToken?: string;
+  device?: DeviceSession;
+}
+
+let csrfToken: string | null = null;
+
 export async function setupStatus(): Promise<SetupStatus> {
   const response = await fetch(`${BASE}/setup/status`);
   if (!response.ok) {
@@ -885,11 +902,15 @@ export async function setupStatus(): Promise<SetupStatus> {
   return (await response.json()) as SetupStatus;
 }
 
-export async function enrollOwner(code: string): Promise<string> {
-  const response = await fetch(`${BASE}/setup/enroll`, {
+export async function bootstrapOwner(
+  code: string,
+  deviceName?: string,
+): Promise<AuthSession> {
+  const response = await fetch(`${BASE}/auth/bootstrap`, {
     method: "POST",
+    credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, ...(deviceName ? { deviceName } : {}) }),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -898,26 +919,68 @@ export async function enrollOwner(code: string): Promise<string> {
       messageFromBody(response.status, text),
     );
   }
-  const body = (await response.json()) as { token?: unknown };
-  if (typeof body.token !== "string" || body.token === "") {
-    throw new CoreApiError(500, "Core returned no owner credential.");
-  }
-  return body.token;
+  const body = (await response.json()) as AuthSession;
+  setAuthSession(body);
+  return body;
 }
 
 const BASE = "/core-api";
-const TOKEN_KEY = "factory-api-token";
 
-export function getToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+function setAuthSession(session: AuthSession): void {
+  csrfToken = session.csrfToken ?? readCsrfCookie();
 }
 
-export function setToken(token: string): void {
-  sessionStorage.setItem(TOKEN_KEY, token);
+function readCsrfCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const item = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("factory_csrf="));
+  if (!item) return null;
+  try {
+    return decodeURIComponent(item.slice("factory_csrf=".length));
+  } catch {
+    return null;
+  }
 }
 
-export function clearToken(): void {
-  sessionStorage.removeItem(TOKEN_KEY);
+export async function getAuthSession(): Promise<AuthSession> {
+  const response = await fetch(`${BASE}/auth/session`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new CoreApiError(response.status, messageFromBody(response.status, text));
+  }
+  const session = (await response.json()) as AuthSession;
+  setAuthSession(session);
+  return session;
+}
+
+export async function logoutCurrentDevice(): Promise<void> {
+  await authPost("/auth/logout");
+  csrfToken = null;
+}
+
+export async function logoutAllDevices(): Promise<void> {
+  await authPost("/auth/logout-all");
+  csrfToken = null;
+}
+
+async function authPost(path: string): Promise<void> {
+  const headers = new Headers({ "content-type": "application/json" });
+  const token = csrfToken ?? readCsrfCookie();
+  if (token) headers.set("x-factory-csrf", token);
+  const response = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: "{}",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new CoreApiError(response.status, messageFromBody(response.status, text));
+  }
 }
 
 export function newIdempotencyKey(): string {
@@ -952,16 +1015,20 @@ function messageFromBody(status: number, text: string): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getToken();
-  if (!token) {
-    throw new CoreApiError(401, "Office is locked.");
-  }
   const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${token}`);
   if (init.body !== undefined) {
     headers.set("content-type", "application/json");
   }
-  const response = await fetch(`${BASE}${path}`, { ...init, headers });
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const token = csrfToken ?? readCsrfCookie();
+    if (token) headers.set("x-factory-csrf", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: "same-origin",
+    headers,
+  });
   if (!response.ok) {
     const text = await response.text();
     throw new CoreApiError(
