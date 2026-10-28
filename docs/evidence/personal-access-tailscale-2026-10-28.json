@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-tailscale-author-run",
-  "implementation_sha": "e17eb80649a910089c98c6fbf87826ed265de5bc",
+  "implementation_sha": "63e2098ca2d6375c8de98b6259d3c2a6809bd658",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -81,5 +81,11 @@
     "The committed Tailscale overlay does not enable a SOCKS proxy; the proxy was a temporary test-only listener used to originate the HTTPS check from a separate container.",
     "No reusable Tailscale auth key, session cookie, bootstrap code or Core credential is recorded in this evidence.",
     "The node has network access only to Core's restricted Office listener; Factory sessions remain the authorization authority."
-  ]
+  ],
+  "rebase_provenance": {
+    "tested_original_sha": "e17eb80649a910089c98c6fbf87826ed265de5bc",
+    "rebased_sha": "63e2098ca2d6375c8de98b6259d3c2a6809bd658",
+    "base_sha": "7c98c0014116571a8c13d9aa56444356d2fee434",
+    "content_equivalent": true
+  }
 }

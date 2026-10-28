@@ -421,6 +421,7 @@ Decision: `approved`
 - CAP-050 — Campaign operational workspace (approved, in_progress)
 - CAP-051 — Runtime operational console (approved, in_progress)
 - CAP-052 — Provider and runtime Settings workspace (approved, in_progress)
+- CAP-053 — Private Tailscale Office access (approved, in_progress)
 
 ### Deliverables
 
