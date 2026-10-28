@@ -680,7 +680,7 @@ try {
     .first()
     .waitFor({ timeout: 15000 });
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -856,7 +856,7 @@ try {
     );
   }
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -1005,7 +1005,7 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
