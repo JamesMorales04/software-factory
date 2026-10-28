@@ -9,10 +9,17 @@ projection/client of typed Core APIs; it is never an authorization bypass.
 ## Onboarding
 
 - First-run status is public but read-only.
-- Enrollment requires the one-time code from the private data volume.
-- The operator token is returned once to the tab and kept in session storage;
-  it is not written to a provider setting or URL.
-- After enrollment, no unauthenticated administrative mutation endpoint exists.
+- `./factory open` obtains a five-minute, single-use confirmation code through
+  a protected Core container operation. The Owner enters it once in Office;
+  it is not placed in a URL or request log.
+- Office uses an opaque server-managed device session in an HttpOnly,
+  SameSite=Strict cookie. Core persists only its SHA-256 digest. A separate
+  readable CSRF cookie is sent in `x-factory-csrf` for browser mutations.
+- Browser sessions use exact Host/Origin checks and require loopback HTTP for
+  local development. Exact private HTTPS origins are configured explicitly.
+- `./factory recover` revokes enrolled sessions and issues a new one-time local
+  confirmation code. The permanent operator credential remains a protected
+  internal API/recovery mechanism and is not returned to Office.
 
 ## Settings → Providers & Models
 

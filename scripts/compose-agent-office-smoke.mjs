@@ -1,16 +1,17 @@
 // Real Chromium smoke for Agent Office and Campaign WorkGraph against Compose.
-// Requires an already-running deterministic Compose stack and an operator token.
+// Requires an already-running deterministic Compose stack and a short-lived
+// local bootstrap confirmation code. This is a developer-only browser harness.
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "../office/e2e-browser/node_modules/playwright-core/index.mjs";
 
 const base = process.env.FACTORY_OFFICE_URL || "http://127.0.0.1:8893";
-const token = process.env.FACTORY_API_TOKEN;
+const bootstrapCode = process.env.FACTORY_BOOTSTRAP_CODE;
 const executablePath = process.env.CHROMIUM_EXE;
 const evidenceDir =
   process.env.S4A_BROWSER_EVIDENCE_DIR || "/tmp/factory-agent-office-smoke";
-if (!token) throw new Error("FACTORY_API_TOKEN is required");
+if (!bootstrapCode) throw new Error("FACTORY_BOOTSTRAP_CODE is required");
 if (!executablePath) throw new Error("CHROMIUM_EXE is required");
 mkdirSync(evidenceDir, { recursive: true });
 
@@ -37,8 +38,10 @@ try {
   });
 
   await page.goto(base);
-  await page.getByPlaceholder("FACTORY_OPERATOR_TOKEN").fill(token);
-  await page.getByRole("button", { name: "Unlock" }).click();
+  await page
+    .getByLabel("One-time owner confirmation")
+    .fill(bootstrapCode);
+  await page.getByRole("button", { name: "Enroll this device" }).click();
   await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
 
   await page.getByRole("link", { name: "Agent Office", exact: true }).click();

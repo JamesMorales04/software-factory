@@ -14,6 +14,8 @@ if [[ -z "$PROJECT" || "$PROJECT" == "software-factory" || "$PROJECT" != *e2e* ]
   exit 2
 fi
 GIT_DIR="$(mktemp -d /tmp/factory-compose-e2e-git.XXXXXXXX)"
+COOKIE_JAR="$(mktemp /tmp/factory-compose-e2e-cookie.XXXXXXXX)"
+chmod 600 "$COOKIE_JAR"
 COMPOSE=(podman compose -f compose.yaml -f compose.e2e.yaml)
 export COMPOSE_PROJECT_NAME="$PROJECT"
 export FACTORY_PORT="$PORT"
@@ -24,9 +26,10 @@ export FACTORY_PROVIDER_KIND=fixture
 cleanup() {
   "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   rm -rf "$GIT_DIR"
+  rm -f "$COOKIE_JAR"
 }
 if [[ "${FACTORY_E2E_KEEP:-0}" == "1" ]]; then
-  trap 'rm -rf "$GIT_DIR"' EXIT
+  trap 'rm -rf "$GIT_DIR"; rm -f "$COOKIE_JAR"' EXIT
 else
   trap cleanup EXIT
 fi
@@ -64,15 +67,18 @@ core_container() {
 }
 
 api() {
-  local method="$1" path="$2" body="${3:-}" response status payload
-  if [[ -n "$body" ]]; then
-    response=$(curl -sS -X "$method" "$BASE$path" \
-      -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-      -d "$body" -w $'\n%{http_code}')
-  else
-    response=$(curl -sS -X "$method" "$BASE$path" \
-      -H "authorization: Bearer $TOKEN" -w $'\n%{http_code}')
+  local method="$1" path="$2" body="${3:-}" response status payload csrf
+  csrf="$(awk -F '\t' '$6 == "factory_csrf" {print $7}' "$COOKIE_JAR" | tail -1)"
+  local args=(curl -sS -X "$method" "$BASE$path" -b "$COOKIE_JAR" -c "$COOKIE_JAR" -H "Origin: $BASE")
+  if [[ "$method" != "GET" && "$method" != "HEAD" && "$method" != "OPTIONS" ]]; then
+    args+=(-H "x-factory-csrf: $csrf")
   fi
+  if [[ -n "$body" ]]; then
+    args+=(-H 'content-type: application/json' -d "$body")
+  else
+    args+=(-H 'content-type: application/json')
+  fi
+  response=$("${args[@]}" -w $'\n%{http_code}')
   status="${response##*$'\n'}"
   payload="${response%$'\n'*}"
   if [[ "$status" -ge 400 ]]; then
@@ -118,10 +124,14 @@ done
 [[ "$GIT_READY" -eq 1 ]] || { log "Git fixture did not become reachable"; exit 1; }
 
 log "== first-run enrollment"
-CODE="$(podman exec "$CORE" cat /data/enrollment-code)"
-TOKEN="$(curl -fsS -X POST "$BASE/setup/enroll" -H 'content-type: application/json' \
-  -d "$(python3 -c 'import json,sys; print(json.dumps({"code":sys.argv[1]}))' "$CODE")" \
-  | json 'import json,sys; print(json.load(sys.stdin)["token"])')"
+CODE="$(podman exec "$CORE" /usr/local/bin/factory-core issue-bootstrap-code)"
+[[ "$CODE" != "OWNER_ALREADY_ENROLLED" ]] || { log "fresh stack was already enrolled"; exit 1; }
+curl -fsS -X POST "$BASE/auth/bootstrap" \
+  -H "Origin: $BASE" -H 'content-type: application/json' \
+  -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
+  -d "$(python3 -c 'import json,sys; print(json.dumps({"code":sys.argv[1],"deviceName":"Compose E2E"}))' "$CODE")" \
+  >/dev/null
+unset CODE
 STATUS="$(curl -fsS "$BASE/setup/status")"
 [[ "$STATUS" == *'"required":false'* ]] || { log "enrollment was not invalidated"; exit 1; }
 for _ in $(seq 1 60); do

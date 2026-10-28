@@ -68,25 +68,34 @@ executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
 ## First-run enrollment
 
-The stack starts unconfigured and safe: no provider inference is started. Core
-generates a one-time 160-bit enrollment code in the private data volume.
-
-Read it locally without editing a container file:
+Start and open Office with the host launcher:
 
 ```sh
-podman compose exec core cat /data/enrollment-code
+./factory open
 ```
 
-Open Office. The setup wizard asks for the code and returns the operator
-credential to that browser tab only. The code is rate-limited and removed on
-success; a completion marker prevents re-generation after restart. The
-long-lived operator token may be read later with:
+The launcher selects the installed `podman-compose` provider when the Podman
+Compose wrapper would otherwise choose an unavailable Docker-socket provider,
+waits for Core health, and only then issues a random, single-use confirmation
+code that expires after five minutes. Enter it once in Office to enroll this
+browser. It is never put in a URL, request log or browser history. Core stores
+only the code digest and expiry, consumes the code on success, and issues a
+persistent HttpOnly device session. The session and CSRF cookies are
+SameSite=Strict; session tokens are stored only as SHA-256 digests. Browser
+mutations require exact Origin validation and a CSRF header. HTTPS origins
+receive Secure cookies. Local HTTP is accepted only on loopback.
+
+To recover after losing every enrolled device, run:
 
 ```sh
-podman compose exec core cat /config/operator.token
+./factory recover
 ```
 
-Provider secrets are never stored in browser storage, logs or telemetry.
+This protected local operation revokes all device sessions and issues a new
+five-minute confirmation code. The permanent operator credential remains an
+internal recovery/API mechanism and is not part of browser onboarding. Existing
+Projects, Campaigns, credentials and evidence are retained by the additive
+session migration.
 
 ## Configure providers and models
 
@@ -170,23 +179,34 @@ FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose \
   bash scripts/compose-e2e.sh
 ```
 
-`FACTORY_E2E_KEEP=1` leaves the dedicated `software-factory-e2e` stack running
-so the real-browser Agent Office and Campaign WorkGraph smoke can attach:
+`FACTORY_E2E_KEEP=1` leaves the dedicated `software-factory-e2e` stack running.
+For this developer-only browser smoke, issue a short-lived local recovery code
+and pass it through the environment. The code is captured by the shell variable
+and is not printed by these commands:
 
 ```sh
-TOKEN="$(podman exec software-factory-e2e_core_1 cat /config/operator.token)"
+CODE="$(podman exec software-factory-e2e_core_1 /usr/local/bin/factory-core issue-recovery-code)"
 FACTORY_OFFICE_URL=http://127.0.0.1:8894 \
-FACTORY_API_TOKEN="$TOKEN" \
+FACTORY_BOOTSTRAP_CODE="$CODE" \
 CHROMIUM_EXE=/absolute/path/to/chrome \
 FACTORY_BROWSER_NO_SANDBOX=1 \
   node scripts/compose-agent-office-smoke.mjs
+unset CODE
 ```
 
-The smoke unlocks Office, inspects real Implementer/Verifier/Reviewer/Worker
-participants, reads the recorded tool-event projection, preserves participant
-context across reload, opens the Campaign WorkGraph (empty or populated), and
-checks document overflow at 1440/834/390 px. It writes evidence under
+The smoke enrolls its isolated browser context through the one-time confirmation
+flow, then inspects real Implementer/Verifier/Reviewer/Worker participants,
+reads the recorded tool-event projection, preserves participant context across
+reload, opens the Campaign WorkGraph (empty or populated), and checks document
+overflow at 1440/834/390 px. It writes evidence under
 `/tmp/factory-agent-office-smoke` unless `S4A_BROWSER_EVIDENCE_DIR` is set.
+The managed-session harness and the existing `cargo xtask e2e office` journey passed against implementation `f2d1be5` together with session
+persistence across Core restart, logout revocation, local recovery and a safe
+migration copy from schema 23 to 24; see
+[personal-access-auth-2026-10-28.json](../evidence/personal-access-auth-2026-10-28.json).
+Tailscale remote HTTPS, mobile-data access, paid inference, independent review
+and isolation remain **NOT_TESTED**. The short-lived confirmation is for this
+local test harness and is not part of normal onboarding.
 Tear down the kept stack with:
 
 ```sh

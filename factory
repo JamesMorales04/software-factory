@@ -1,0 +1,68 @@
+#!/bin/sh
+set -eu
+
+command_name=${1:-open}
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: ./factory [open|recover]" >&2
+  exit 2
+fi
+
+case "$command_name" in
+  open|recover) ;;
+  *)
+    echo "usage: ./factory [open|recover]" >&2
+    exit 2
+    ;;
+esac
+
+# Prefer podman-compose when the Podman wrapper would otherwise select a
+# Docker socket provider on hosts that have both installed.
+if [ -z "${PODMAN_COMPOSE_PROVIDER:-}" ] && command -v podman-compose >/dev/null 2>&1; then
+  PODMAN_COMPOSE_PROVIDER=$(command -v podman-compose)
+  export PODMAN_COMPOSE_PROVIDER
+fi
+
+compose() {
+  podman compose "$@"
+}
+
+wait_for_core() {
+  attempts=0
+  until compose exec -T core curl -fsS http://127.0.0.1:8765/health >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 180 ]; then
+      echo "Factory Core did not become healthy" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+compose up -d --build
+wait_for_core
+
+if [ "$command_name" = "recover" ]; then
+  code=$(compose exec -T core /usr/local/bin/factory-core issue-recovery-code)
+  printf 'Local recovery confirmation code (valid for 5 minutes): %s\n' "$code"
+  printf 'Enter this code once in Office to enroll this browser.\n'
+else
+  code=$(compose exec -T core /usr/local/bin/factory-core issue-bootstrap-code)
+  if [ "$code" != "OWNER_ALREADY_ENROLLED" ]; then
+    printf 'Owner confirmation code (valid for 5 minutes): %s\n' "$code"
+    printf 'Enter this code once in Office to enroll this browser.\n'
+  fi
+fi
+
+port=${FACTORY_PORT:-8893}
+office_url="http://127.0.0.1:${port}"
+printf 'Opening Factory Office at %s\n' "$office_url"
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$office_url" >/dev/null 2>&1 &
+elif command -v open >/dev/null 2>&1; then
+  open "$office_url" >/dev/null 2>&1 &
+else
+  printf 'Open this address in your browser: %s\n' "$office_url"
+fi

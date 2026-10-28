@@ -2,7 +2,7 @@
 // Starts the real Rust Core, Worker and Vite dev server in disposable state.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -21,6 +21,7 @@ const reviewerBin =
   process.env.FACTORY_REVIEWER_BIN || join(debugDir, "factory-reviewer");
 const token = () => randomBytes(32).toString("hex");
 const operator = token();
+const enrollmentCode = randomBytes(16).toString("hex");
 const bootstrap = token();
 const verifier = token();
 const reviewer = token();
@@ -33,6 +34,7 @@ const temp = join(
 );
 const repository = join(temp, "repo");
 const database = join(temp, "factory.sqlite");
+const enrollmentCodeFile = join(temp, "enrollment-code");
 const workspace = join(temp, "workspaces");
 const supervisorWork = join(temp, "supervisor-work");
 const supervisorState = join(temp, "supervisor-state");
@@ -41,6 +43,14 @@ const processes = [];
 
 mkdirSync(repository, { recursive: true });
 mkdirSync(workspace, { recursive: true });
+writeFileSync(
+  enrollmentCodeFile,
+  JSON.stringify({
+    codeSha256: createHash("sha256").update(enrollmentCode).digest("hex"),
+    expiresAtMs: Date.now() + 5 * 60 * 1000,
+  }),
+  { mode: 0o600 },
+);
 
 function git(args) {
   const result = spawn("git", ["-C", repository, ...args], { stdio: "ignore" });
@@ -83,20 +93,31 @@ async function waitFor(url, timeoutMs = 15000) {
 }
 
 async function api(path, options = {}, bearer = operator) {
-  const response = await fetch(`${coreUrl}${path}`, {
-    ...options,
-    headers: {
-      authorization: `Bearer ${bearer}`,
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  const text = await response.text();
-  if (!response.ok)
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(`${coreUrl}${path}`, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    const text = await response.text();
+    if (response.ok) return text ? JSON.parse(text) : null;
+    // Core deliberately reports SQLite writer contention as a retryable 503.
+    // Fixture mutations carry idempotency keys, so a bounded retry is safe.
+    if (
+      response.status === 503 &&
+      text.includes("database is busy") &&
+      attempt < 5
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+      continue;
+    }
     throw new Error(
       `${options.method || "GET"} ${path}: ${response.status} ${text}`,
     );
-  return text ? JSON.parse(text) : null;
+  }
 }
 
 const corePort = await freePort();
@@ -125,6 +146,7 @@ try {
       FACTORY_DATABASE: database,
       FACTORY_BIND: `127.0.0.1:${corePort}`,
       FACTORY_OPERATOR_TOKEN: operator,
+      FACTORY_ENROLLMENT_CODE_FILE: enrollmentCodeFile,
       FACTORY_ATTEMPT_GRANT_KEY: attemptGrantKey,
       FACTORY_WORKER_BOOTSTRAP_TOKEN: bootstrap,
       FACTORY_VERIFIER_TOKEN: verifier,
@@ -209,8 +231,10 @@ try {
   page.on("pageerror", (error) => pageErrors.push(String(error)));
 
   await page.goto(viteUrl);
-  await page.getByPlaceholder("FACTORY_OPERATOR_TOKEN").fill(operator);
-  await page.getByRole("button", { name: "Unlock" }).click();
+  await page.getByRole("heading", { name: "Set up this Factory" }).waitFor();
+  await page.getByLabel("One-time owner confirmation").fill(enrollmentCode);
+  await page.getByLabel("This device name").fill("Rust Office E2E");
+  await page.getByRole("button", { name: "Enroll this device" }).click();
   await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
   await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
   await page

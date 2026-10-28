@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "record": "personal-access-auth-author-run",
+  "implementation_sha": "f2d1be58172ce89b9544cad94a80c3c8aa4a39a1",
+  "date": "2026-10-28",
+  "environment": {
+    "host_os": "CachyOS",
+    "kernel": "7.3.0-3-cachyos",
+    "podman": "6.1.4 rootless",
+    "compose_provider": "podman-compose 1.6.0",
+    "node": "22.23.2 in software-factory-dev:local",
+    "browser": "Playwright Chromium 1248 (playwright-core 1.64.1)"
+  },
+  "result": "PASS (author-run deterministic and real browser evidence; not independent acceptance, not Tailscale remote access, not paid inference)",
+  "status": "author_run",
+  "paid_inference": false,
+  "checks": [
+    {
+      "name": "containerized Office gates",
+      "pass": true,
+      "detail": "npm ci, typecheck, biome check, 54 vitest tests and production build passed; zero Biome warnings remain"
+    },
+    {
+      "name": "focused Rust session tests",
+      "pass": true,
+      "detail": "4 device-session integration tests and 2 Core auth tests passed, including token hashing, rotation, revocation, expiry, exact HTTPS cookie scoping, forged Host/Origin rejection, invalid bootstrap code and bootstrap replay"
+    },
+    {
+      "name": "real product Compose deterministic E2E",
+      "pass": true,
+      "project": "factory-auth-e2e",
+      "detail": "fresh volumes; local owner bootstrap; Project, Action, Delegation, Campaign, Run and Attempt; verifier and reviewer receipts; Quality Gate ACCEPTED; Core restart preserved Project, candidate and gate",
+      "candidate_id": "1af1f957-5ff0-4092-ab13-3db83c036363",
+      "attempt_id": "b2663d69-b73d-437d-9473-b05554caf7dc"
+    },
+    {
+      "name": "API authorization and CSRF negatives",
+      "pass": true,
+      "detail": "no cookie 401; forged Host 400; untrusted Origin 403; missing and wrong CSRF 403; reviewer-only route with browser session 401; bootstrap replay rejected; valid session 200"
+    },
+    {
+      "name": "real Chromium Office journey",
+      "pass": true,
+      "detail": "one-time owner enrollment, Overview, Agent Office participants implementer/verifier/reviewer/worker, tool-event projection, Campaign WorkGraph, reload persistence, viewport checks at 1440/834/390 px"
+    },
+    {
+      "name": "session persistence, revocation and recovery",
+      "pass": true,
+      "detail": "persistent browser profile survived reload and Core restart; logout returned 204 and revoked the cookie; revoked cookie returned 401; local recovery code re-enrolled the browser; no operator token or bearer material in browser storage"
+    },
+    {
+      "name": "local launcher",
+      "pass": true,
+      "detail": "./factory open selected podman-compose, waited for Core health, issued the one-time confirmation, and the dev stack returned 200 for bootstrap and an authenticated project request; disposable launcher stack removed"
+    },
+    {
+      "name": "migration from a preserved installation",
+      "pass": true,
+      "detail": "safe copy of a PR 35-era database at schema 23 migrated to version 24; 39 tables including device_sessions, device_session_audit and owner_bootstrap_claim; owner bootstrap available; a new confirmation code was issued",
+      "preserved_counts": {
+        "projects": 1,
+        "actions": 3,
+        "campaigns": 12,
+        "runs": 12,
+        "attempts": 12,
+        "candidates": 8,
+        "quality_receipts": 16,
+        "provider_settings": 1,
+        "provider_sessions": 12
+      }
+    },
+    {
+      "name": "existing containerized Chromium Office journey",
+      "pass": true,
+      "detail": "cargo xtask e2e office passed against real Core, Supervisor, Worker, Vite Office and Chromium after replacing the removed operator-token form with one-time owner enrollment; deterministic candidate 04488f7f03cd6bac8d90904de093fea2c23e2e8f reached ACCEPTED"
+    },
+    {
+      "name": "session writer contention",
+      "pass": true,
+      "detail": "last-activity writes are throttled to one per minute under the write gate; the full Chromium Office journey passed and retries the documented 503 busy response with bounded idempotent backoff"
+    }
+  ],
+  "not_tested": [
+    "Tailscale Serve HTTPS remote access",
+    "mobile-data access from a phone",
+    "paid model inference",
+    "independent verification and review",
+    "Windows",
+    "SEC-01 isolation"
+  ],
+  "security_notes": [
+    "Raw session and CSRF tokens are never persisted; only SHA-256 digests are stored.",
+    "Browser mutations require an exact trusted Origin, a matching CSRF cookie/header pair, and a live unexpired session.",
+    "The Tailscale restricted Office listener, QR pairing and mobile device sessions remain follow-up work and are not certified by this record."
+  ]
+}

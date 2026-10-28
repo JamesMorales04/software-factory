@@ -85,7 +85,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             secrets: RUNTIME_SECRETS,
         },
     ];
-    let operator_preexisting = placements[0].directory.join("operator.token").is_file();
     for placement in &placements {
         prepare_directory(&placement.directory, uid)?;
         let _ = fs::remove_file(placement.directory.join(".ready"));
@@ -126,14 +125,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         values.insert(name, value);
     }
 
-    let enrollment = data.join("enrollment-code");
-    if !operator_preexisting && !enrollment.exists() && !data.join("enrollment-used").exists() {
-        write_secret(&enrollment, &random_hex(20)?, uid)?;
-        println!("First-run enrollment code material created.");
-    }
-    if enrollment.exists() {
-        ensure_mode(&enrollment)?;
-    }
     for placement in &placements {
         write_secret(&placement.directory.join(".ready"), "ready", uid)?;
     }

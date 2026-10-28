@@ -1,6 +1,7 @@
 pub mod attempt_grant;
 pub mod browser;
 pub mod db;
+pub mod device_session;
 pub mod evaluation;
 pub mod execution;
 pub mod lead;
