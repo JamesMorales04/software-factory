@@ -68,6 +68,20 @@ pub struct Project {
     pub base_commit: String,
     pub created_at: String,
     pub identity: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub source_key: String,
+    #[serde(default)]
+    pub source_visibility: String,
+    #[serde(default)]
+    pub default_branch: String,
+    #[serde(default)]
+    pub remote_origin: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -256,6 +270,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "provider.turn_settled",
     "provider.session_terminal",
     "project.config_updated",
+    "project.discovery_completed",
     "project.registered",
     "quality.gate_decided",
     "quality.receipt_recorded",
@@ -843,6 +858,7 @@ mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;
 mod projects;
+pub use projects::{ProjectCampaignSummary, ProjectDiscoveryRecord, RegisterProjectSource};
 mod quality;
 mod workers;
 

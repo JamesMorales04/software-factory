@@ -23,6 +23,7 @@ import { Home } from "./views/Home";
 import { Issues } from "./views/Issues";
 import { Lead } from "./views/Lead";
 import { Overview } from "./views/Overview";
+import { ProjectDetail } from "./views/ProjectDetail";
 import { ProjectFiles } from "./views/ProjectFiles";
 import { Projects } from "./views/Projects";
 import { RequestWorkspace } from "./views/RequestWorkspace";
@@ -236,6 +237,7 @@ export function App() {
         <Route path="/overview" element={<Overview />} />
         <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />
+        <Route path="/projects/:projectId" element={<ProjectDetail />} />
         <Route path="/projects/:projectId/files" element={<ProjectFiles />} />
         <Route path="/actions" element={<Actions />} />
         <Route path="/actions/:actionId" element={<ActionDetail />} />

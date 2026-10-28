@@ -172,6 +172,28 @@ pub struct GitHubRepository {
     pub default_branch: String,
     pub html_url: String,
     pub pushed_at: Option<String>,
+    pub permissions: Option<GitHubRepositoryPermissions>,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GitHubRepositoryPermissions {
+    pub admin: bool,
+    pub maintain: bool,
+    pub push: bool,
+    pub triage: bool,
+    pub pull: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GitHubRepositoryDetail {
+    pub full_name: String,
+    pub private: bool,
+    pub default_branch: String,
+    pub html_url: String,
+    pub pushed_at: Option<String>,
+    pub permissions: Option<GitHubRepositoryPermissions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -493,6 +515,7 @@ impl GitHubClient {
                     default_branch,
                     html_url: safe_https_url(&item.html_url),
                     pushed_at: item.pushed_at.as_deref().and_then(normalize_timestamp),
+                    permissions: item.permissions.map(Into::into),
                 });
                 if repositories.len() >= PER_PAGE {
                     return Ok(repositories);
@@ -972,6 +995,45 @@ impl GitHubClient {
         })
     }
 
+    /// Fetch one repository the credential can see. Used by project onboarding
+    /// to verify access and the default branch before a bounded clone. The
+    /// clone URL is never taken from this payload.
+    pub async fn repository(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<GitHubRepositoryDetail, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        let response = self
+            .execute(
+                self.client
+                    .get(format!("{}/repos/{owner}/{repo}", self.base_url)),
+                token,
+            )
+            .await?;
+        let raw: RawRepositoryDetail = parse_json(&response.body, "repository")?;
+        let expected_full_name = format!("{owner}/{repo}");
+        if !raw.full_name.eq_ignore_ascii_case(&expected_full_name)
+            || !valid_repository_part(&raw.full_name)
+        {
+            return Err(GitHubError::InvalidResponse(
+                "repository identity did not match the request".into(),
+            ));
+        }
+        let default_branch = raw.default_branch.unwrap_or_default();
+        validate_default_branch(&default_branch)?;
+        Ok(GitHubRepositoryDetail {
+            full_name: raw.full_name,
+            private: raw.private,
+            default_branch,
+            html_url: safe_https_url(&raw.html_url),
+            pushed_at: raw.pushed_at.as_deref().and_then(normalize_timestamp),
+            permissions: raw.permissions.map(Into::into),
+        })
+    }
+
     /// Fetch one bounded issue page. Pull requests are excluded because GitHub
     /// returns them from the issues endpoint. Callers validate each page's
     /// generation and ETag independently.
@@ -1355,6 +1417,49 @@ struct RawRepository {
     html_url: String,
     #[serde(default)]
     pushed_at: Option<String>,
+    #[serde(default)]
+    permissions: Option<RawRepositoryPermissions>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRepositoryDetail {
+    full_name: String,
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    default_branch: Option<String>,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    pushed_at: Option<String>,
+    #[serde(default)]
+    permissions: Option<RawRepositoryPermissions>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawRepositoryPermissions {
+    #[serde(default)]
+    admin: Option<bool>,
+    #[serde(default)]
+    maintain: Option<bool>,
+    #[serde(default)]
+    push: Option<bool>,
+    #[serde(default)]
+    triage: Option<bool>,
+    #[serde(default)]
+    pull: Option<bool>,
+}
+
+impl From<RawRepositoryPermissions> for GitHubRepositoryPermissions {
+    fn from(permissions: RawRepositoryPermissions) -> Self {
+        Self {
+            admin: permissions.admin.unwrap_or(false),
+            maintain: permissions.maintain.unwrap_or(false),
+            push: permissions.push.unwrap_or(false),
+            triage: permissions.triage.unwrap_or(false),
+            pull: permissions.pull.unwrap_or(false),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -2178,7 +2283,8 @@ mod tests {
                         "private": true,
                         "default_branch": "develop",
                         "html_url": "https://github.com/acme/private-widgets",
-                        "pushed_at": "2026-10-01T00:00:00Z"
+                        "pushed_at": "2026-10-01T00:00:00Z",
+                        "permissions": {"admin": false, "maintain": true, "push": true, "triage": true, "pull": true}
                     },
                     {
                         "full_name": "acme/public-tools",
@@ -2200,6 +2306,8 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert!(all[0].private);
         assert_eq!(all[0].default_branch, "develop");
+        assert!(all[0].permissions.unwrap().push);
+        assert!(all[1].permissions.is_none());
         let filtered = client.repositories(TOKEN, Some("private")).await.unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].full_name, "acme/private-widgets");
@@ -2209,6 +2317,67 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_one_private_repository_with_its_permissions() {
+        #[derive(Clone)]
+        struct Fake {
+            auth: Arc<Mutex<Option<String>>>,
+        }
+        async fn handler(State(fake): State<Fake>, headers: HeaderMap) -> Response {
+            *fake.auth.lock().unwrap() = headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            axum::Json(serde_json::json!({
+                "full_name": "acme/private-widgets",
+                "private": true,
+                "default_branch": "develop",
+                "html_url": "https://github.com/acme/private-widgets",
+                "pushed_at": "2026-10-01T00:00:00Z",
+                "permissions": {
+                    "admin": false,
+                    "maintain": true,
+                    "push": true,
+                    "triage": true,
+                    "pull": true
+                }
+            }))
+            .into_response()
+        }
+        let fake = Fake {
+            auth: Arc::new(Mutex::new(None)),
+        };
+        let app = Router::new()
+            .route("/repos/{owner}/{repo}", get(handler))
+            .with_state(fake.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = GitHubClient::with_base_url(&url, true).unwrap();
+        let detail = client
+            .repository(TOKEN, "acme", "private-widgets")
+            .await
+            .unwrap();
+        assert!(detail.private);
+        assert_eq!(detail.default_branch, "develop");
+        let permissions = detail.permissions.unwrap();
+        assert!(permissions.push);
+        assert!(permissions.pull);
+        assert!(!permissions.admin);
+        assert_eq!(
+            fake.auth.lock().unwrap().as_deref(),
+            Some("Bearer ghp_test_token_1234567890")
+        );
+        assert!(
+            client
+                .repository(TOKEN, "acme", "widgets.git")
+                .await
+                .is_err()
         );
     }
 

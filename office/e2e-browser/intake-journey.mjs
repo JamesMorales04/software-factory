@@ -1014,7 +1014,10 @@ try {
 
     await page.getByRole("tab", { name: /Candidates/ }).click();
     const candidatePanel = page.getByTestId("candidate-panel");
-    await candidatePanel.getByText("ACCEPTED", { exact: true }).first().waitFor();
+    await candidatePanel
+      .getByText("ACCEPTED", { exact: true })
+      .first()
+      .waitFor();
     await candidatePanel
       .getByText(candidate.commit_sha.slice(0, 12), { exact: true })
       .first()
@@ -1134,7 +1137,10 @@ try {
       .waitFor();
     await page.getByRole("tab", { name: /Candidates/ }).click();
     const persistedPanel = page.getByTestId("candidate-panel");
-    await persistedPanel.getByText("ACCEPTED", { exact: true }).first().waitFor();
+    await persistedPanel
+      .getByText("ACCEPTED", { exact: true })
+      .first()
+      .waitFor();
     await persistedPanel.getByTestId("candidate-diff").waitFor();
     await page.getByRole("tab", { name: /Evidence/ }).click();
     await page

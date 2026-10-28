@@ -193,6 +193,7 @@ export function routeLabel(
   if (pathname.startsWith("/requests/")) return t("nav.request");
   if (pathname.startsWith("/projects/") && pathname.endsWith("/files"))
     return t("nav.projectFiles");
+  if (pathname.startsWith("/projects/")) return t("nav.projectDetail");
   if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
   if (pathname.startsWith("/actions/")) return t("nav.actionDetail");
   if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");

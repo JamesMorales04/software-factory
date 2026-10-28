@@ -62,6 +62,29 @@ const CSRF_HEADER: &str = "x-factory-csrf";
 struct NewProject {
     repository: String,
     idempotency_key: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    default_branch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubProjectImportInput {
+    owner: String,
+    repo: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    default_branch: Option<String>,
+    idempotency_key: String,
+}
+
+struct ResolvedProjectInput {
+    repository: PathBuf,
+    source_kind: &'static str,
+    source_url: String,
+    source_key: String,
 }
 
 #[derive(Deserialize)]
@@ -2590,15 +2613,23 @@ async fn register_project(
     if input.idempotency_key.is_empty() {
         return api_error(Error::Invalid("idempotency key"));
     }
-    let repository = match resolve_project_input(&app, &input.repository).await {
-        Ok(path) => path,
+    let resolved = match resolve_project_input(&app, &input.repository).await {
+        Ok(resolved) => resolved,
         Err(message) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
         }
     };
+    let source = factory_native::db::RegisterProjectSource {
+        name: input.name.unwrap_or_default(),
+        source_kind: resolved.source_kind.into(),
+        source_url: resolved.source_url,
+        source_key: resolved.source_key,
+        source_visibility: String::new(),
+        default_branch: input.default_branch.unwrap_or_default(),
+    };
     match app
         .db
-        .register_project(&repository, &input.idempotency_key)
+        .register_project_with_source(&resolved.repository, &source, &input.idempotency_key)
         .await
     {
         Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
@@ -2606,32 +2637,31 @@ async fn register_project(
     }
 }
 
-async fn resolve_project_input(app: &App, requested: &str) -> Result<PathBuf, String> {
-    let Some(root) = app.projects_root.as_ref() else {
-        return Ok(PathBuf::from(requested));
-    };
+async fn resolve_project_input(app: &App, requested: &str) -> Result<ResolvedProjectInput, String> {
+    let root = app.projects_root.as_ref().ok_or_else(|| {
+        "managed project registration requires an operator-approved FACTORY_PROJECTS_ROOT"
+            .to_owned()
+    })?;
     if factory_native::project_import::is_remote_repository(requested) {
-        return factory_native::project_import::import(requested, root, app.allow_insecure_git)
-            .await
-            .map_err(|error| error.to_string());
+        let repository =
+            factory_native::project_import::import(requested, root, app.allow_insecure_git)
+                .await
+                .map_err(|error| error.to_string())?;
+        return Ok(ResolvedProjectInput {
+            repository,
+            source_kind: "git",
+            source_url: requested.to_owned(),
+            source_key: format!("git:{requested}"),
+        });
     }
-    let path = PathBuf::from(requested);
-    if !path.is_absolute() {
-        return Err(
-            "managed project registration requires an HTTPS Git URL or an absolute path inside the managed projects root"
-                .into(),
-        );
-    }
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("managed projects root is unavailable: {error}"))?;
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("managed project path is unavailable: {error}"))?;
-    if !canonical.starts_with(&canonical_root) {
-        return Err("project path is outside the managed projects root".into());
-    }
-    Ok(canonical)
+    let canonical = factory_native::project_import::approved_local_path(Some(root), requested)
+        .map_err(|error| error.to_string())?;
+    Ok(ResolvedProjectInput {
+        repository: canonical.clone(),
+        source_kind: "local",
+        source_url: String::new(),
+        source_key: format!("local:{}", canonical.to_string_lossy()),
+    })
 }
 async fn delegations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
@@ -2851,6 +2881,13 @@ fn github_integration_routes() -> Router<Arc<App>> {
         .route(
             "/campaigns/{id}/candidates/{candidate_id}/pull-request/merge",
             post(merge_candidate_pull_request),
+        )
+        .route("/projects/import/options", get(project_import_options))
+        .route("/projects/import/github", post(import_github_project))
+        .route("/projects/{id}/summary", get(project_summary))
+        .route(
+            "/projects/{id}/discovery",
+            get(project_discovery_view).post(scan_project_discovery),
         )
 }
 
@@ -3158,6 +3195,448 @@ async fn github_repositories(
         "detail": listing.detail,
     }))
     .into_response()
+}
+
+async fn project_import_options(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection = github_connection_view(record.as_ref());
+    let connected = connection["configured"].as_bool().unwrap_or(false);
+    let local_enabled = app.projects_root.is_some();
+    Json(json!({
+        "github": {
+            "connected": connected,
+            "enabled": connection["enabled"],
+            "login": connection["login"],
+            "scopes": connection["scopes"],
+            "scopes_reported": connection["scopes_reported"],
+            "revision": connection["revision"],
+            "verified_at": connection["verified_at"],
+            "revoked_at": connection["revoked_at"],
+            "detail": if connected {
+                "The encrypted GitHub token is verified for this Core. Repository access is limited to the repositories and permissions granted to that token."
+            } else {
+                "GitHub is not connected. Configure an encrypted token in the GitHub integration before importing a repository."
+            },
+            "fine_grained_detail": "Fine-grained tokens do not report OAuth scopes. GitHub App and OAuth onboarding are not implemented; Core cannot imply installation-wide access.",
+            "app_oauth_available": false,
+        },
+        "local": {
+            "enabled": local_enabled,
+            "managed_root": app.projects_root.as_ref().map(|root| root.to_string_lossy().to_string()),
+            "detail": if local_enabled {
+                "Local import accepts only a Git repository whose canonical path is inside the operator-approved projects root. Symlink escapes are rejected."
+            } else {
+                "Local import is disabled because FACTORY_PROJECTS_ROOT is not configured."
+            },
+        },
+        "managed_storage_required": true,
+    }))
+    .into_response()
+}
+
+async fn import_github_project(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<GitHubProjectImportInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.idempotency_key.trim().is_empty() || input.idempotency_key.len() > 256 {
+        return api_error(Error::Invalid("idempotency key"));
+    }
+    if let Err(error) = factory_native::github::validate_repo_coordinates(&input.owner, &input.repo)
+    {
+        return github_upstream_error(error);
+    }
+    let Some(root) = app.projects_root.as_ref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "managed project storage is not configured; GitHub import requires FACTORY_PROJECTS_ROOT"
+            })),
+        )
+            .into_response();
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    match app.db.github_backoff_until().await {
+        Ok(Some(until)) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("GitHub rate limit backoff is active until {until}"),
+                    "next_allowed_at": until,
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let repository = match app
+        .github
+        .repository(credential.token(), &input.owner, &input.repo)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(error) => return github_upstream_error(error),
+    };
+    if let Some(requested_branch) = input
+        .default_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        && requested_branch != repository.default_branch
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "default branch {requested_branch:?} does not match the repository's recorded default branch {:?}",
+                    repository.default_branch
+                )
+            })),
+        )
+            .into_response();
+    }
+    let source_key = format!(
+        "github:{}/{}",
+        input.owner.to_ascii_lowercase(),
+        input.repo.to_ascii_lowercase()
+    );
+    match app.db.project_by_source_key(&source_key).await {
+        Ok(Some(existing)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "this GitHub repository is already registered",
+                    "project_id": existing.id,
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let repository_path = match factory_native::project_import::import_github(
+        &input.owner,
+        &input.repo,
+        credential.token(),
+        root,
+    )
+    .await
+    {
+        Ok(path) => path,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("GitHub repository import failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = app
+        .db
+        .require_github_connection_revision(credential.revision())
+        .await
+    {
+        return api_error(error);
+    }
+    let source = factory_native::db::RegisterProjectSource {
+        name: input.name.unwrap_or_default(),
+        source_kind: "github".into(),
+        source_url: format!("https://github.com/{}/{}", input.owner, input.repo),
+        source_key,
+        source_visibility: if repository.private {
+            "private".into()
+        } else {
+            "public".into()
+        },
+        default_branch: repository.default_branch.clone(),
+    };
+    let project = match app
+        .db
+        .register_project_with_source(&repository_path, &source, &input.idempotency_key)
+        .await
+    {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let (binding, binding_error) = match app
+        .db
+        .bind_project_github(
+            &project.id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: &input.owner,
+                repo: &input.repo,
+                default_branch: &repository.default_branch,
+            },
+            "office-operator",
+        )
+        .await
+    {
+        Ok(binding) => (Some(binding), None),
+        Err(error) => {
+            tracing::warn!(%error, project_id = %project.id, "project GitHub binding failed after import");
+            (None, Some(error.to_string()))
+        }
+    };
+    let sync_state = match app.db.github_sync_state(&project.id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "project": project,
+            "repository": repository,
+            "binding": binding,
+            "binding_error": binding_error,
+            "sync_state": sync_state,
+            "connection": github_connection_view(app.db.github_connection().await.ok().as_ref()),
+        })),
+    )
+        .into_response()
+}
+
+async fn project_summary(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection_record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let connection = github_connection_view(connection_record.as_ref());
+    let connected = connection["configured"].as_bool().unwrap_or(false);
+    let enabled = connection["enabled"].as_bool().unwrap_or(false);
+    let connection_health = if binding.is_none() && project.source_kind != "github" {
+        "NOT_APPLICABLE"
+    } else if !connected {
+        "NOT_CONNECTED"
+    } else if !enabled {
+        "REVOKED"
+    } else {
+        "CONNECTED"
+    };
+    let campaigns = match app.db.project_campaigns(&id).await {
+        Ok(campaigns) => campaigns,
+        Err(error) => return api_error(error),
+    };
+    let active_campaigns: Vec<_> = campaigns
+        .iter()
+        .filter(|campaign| {
+            !matches!(
+                campaign.status.as_str(),
+                "CANCELLED" | "FAILED" | "COMPLETED" | "ACCEPTED" | "REJECTED"
+            )
+        })
+        .cloned()
+        .collect();
+    let decisions = match build_decisions(&app).await {
+        Ok(decisions) => decisions,
+        Err(error) => return api_error(error),
+    };
+    let pending_decisions: Vec<_> = decisions
+        .into_iter()
+        .filter(|item| {
+            // Decision items carry an enriched `project` object; older/plain
+            // projections carry only `project_id`. Accept either exact match.
+            item["project_id"].as_str() == Some(id.as_str())
+                || item["project"]["id"].as_str() == Some(id.as_str())
+        })
+        .collect();
+    let pending_decision_count = pending_decisions.len();
+    let active_campaign_count = active_campaigns.len();
+    let last_activity = match app.db.project_last_activity(&id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let discovery = match app.db.project_discovery(&id).await {
+        Ok(value) => value,
+        Err(error) => return api_error(error),
+    };
+    let display_name = if project.name.trim().is_empty() {
+        project
+            .source_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .or_else(|| project.repository.trim_end_matches('/').rsplit('/').next())
+            .unwrap_or("Project")
+            .trim_end_matches(".git")
+            .to_owned()
+    } else {
+        project.name.clone()
+    };
+    let tooling = discovery.as_ref().map(|record| {
+        json!({
+            "base_commit": record.base_commit,
+            "scanned_at": record.scanned_at,
+            "stale": record.base_commit != project.base_commit,
+            "toolchains": record.discovery.toolchains.iter().map(|toolchain| json!({
+                "id": toolchain.id,
+                "label": toolchain.label,
+                "manifests": toolchain.manifests,
+                "evidence": toolchain.evidence,
+            })).collect::<Vec<_>>(),
+            "suggested_capabilities": record.discovery.suggested_capabilities,
+            "suggested_checks": record.discovery.suggested_checks,
+            "truncated": record.discovery.truncated,
+            "provenance": record.discovery.provenance,
+        })
+    });
+    Json(json!({
+        "as_of": chrono::Utc::now().to_rfc3339(),
+        "project": {
+            "id": project.id,
+            "name": display_name,
+            "source_kind": project.source_kind,
+            "source_url": project.source_url,
+            "source_visibility": project.source_visibility,
+            "default_branch": if project.default_branch.is_empty() {
+                binding.as_ref().map(|binding| binding.default_branch.clone()).unwrap_or_default()
+            } else {
+                project.default_branch.clone()
+            },
+            "base_commit": project.base_commit,
+            "created_at": project.created_at,
+            "last_activity_at": last_activity,
+            "remote_origin": project.remote_origin,
+            "technical": {
+                "id": project.id,
+                "repository_path": project.repository,
+                "identity": project.identity,
+                "source_key": project.source_key,
+                "remote_origin": project.remote_origin,
+            },
+        },
+        "github": {
+            "health": connection_health,
+            "connection": connection,
+            "binding": binding,
+            "sync_state": sync_state,
+        },
+        "config": {
+            "revision": config.revision,
+            "config_hash": config.config_hash,
+            "allowed_paths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "quality_profile": config.quality_profile,
+            "active": config.active,
+            "updated_at": config.updated_at,
+        },
+        "campaigns": {
+            "active": active_campaigns,
+            "active_count": active_campaign_count,
+            "recent": campaigns.iter().take(10).cloned().collect::<Vec<_>>(),
+            "total": campaigns.len(),
+        },
+        "pending_decisions": pending_decisions,
+        "pending_decision_count": pending_decision_count,
+        "tooling": tooling,
+    }))
+    .into_response()
+}
+
+async fn project_discovery_view(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    match app.db.project_discovery(&id).await {
+        Ok(discovery) => Json(json!({
+            "discovery": discovery,
+            "current_base_commit": project.base_commit,
+            "stale": discovery
+                .as_ref()
+                .is_some_and(|record| record.base_commit != project.base_commit),
+        }))
+        .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn scan_project_discovery(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let repository = PathBuf::from(&project.repository);
+    let base_commit = project.base_commit.clone();
+    let discovery = match tokio::task::spawn_blocking(move || {
+        factory_native::project_import::discover(&repository, &base_commit)
+    })
+    .await
+    {
+        Ok(Ok(discovery)) => discovery,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": format!("toolchain discovery failed: {error}")})),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("toolchain discovery task failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+    match app.db.save_project_discovery(&id, &discovery).await {
+        Ok(record) => Json(record).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn bind_project_github(
@@ -8929,6 +9408,219 @@ mod tests {
         assert_eq!(turn_budget["reserved_turns"], 0);
         assert_eq!(turn_budget["ceiling_micros"], 0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn project_onboarding_summary_and_discovery_are_core_governed() {
+        use tower::ServiceExt;
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-project-onboarding-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = root.join("checkout");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(
+            repository.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(repository.join("src/lib.rs"), "pub fn fixture() {}\n").unwrap();
+        let git = |arguments: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "fixture"]);
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project_with_source(
+                &repository,
+                &factory_native::db::RegisterProjectSource {
+                    name: "Widgets".into(),
+                    source_kind: "local".into(),
+                    source_url: String::new(),
+                    source_key: "local:widgets".into(),
+                    source_visibility: String::new(),
+                    default_branch: "main".into(),
+                },
+                "project-key",
+            )
+            .await
+            .unwrap();
+        let master_key_path = root.join("master.key");
+        std::fs::write(&master_key_path, "ab".repeat(32)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&master_key_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        let master_key =
+            factory_native::provider_secrets::ProviderSecretKey::from_file(&master_key_path)
+                .unwrap();
+        let encrypted = master_key
+            .encrypt(b"revoked-token-value-0123456789")
+            .unwrap();
+        db.save_github_connection(&encrypted, "acme-bot", &[], false, "test")
+            .await
+            .unwrap();
+        db.revoke_github_connection("test").await.unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: Some(master_key),
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: Some(root.clone()),
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+
+        let request = axum::http::Request::builder()
+            .uri("/projects/import/options")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(options["github"]["connected"], false);
+        assert_eq!(options["github"]["app_oauth_available"], false);
+        assert_eq!(options["local"]["enabled"], true);
+        assert_eq!(
+            options["local"]["managed_root"].as_str(),
+            Some(root.to_string_lossy().as_ref())
+        );
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects/import/github")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"owner":"acme","repo":"private-widgets","idempotency_key":"github-import-key"}"#,
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("GitHub connection is revoked")
+        );
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects")
+            .header("authorization", "Bearer operator-token")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"repository":"/etc","idempotency_key":"local-escape"}"#,
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let request = axum::http::Request::builder()
+            .uri(format!("/projects/{}/summary", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(summary["project"]["name"], "Widgets");
+        assert_eq!(summary["project"]["source_kind"], "local");
+        assert_eq!(summary["github"]["health"], "NOT_APPLICABLE");
+        assert_eq!(summary["pending_decision_count"], 0);
+        assert_eq!(summary["campaigns"]["active_count"], 0);
+        assert_eq!(
+            summary["project"]["technical"]["repository_path"].as_str(),
+            Some(repository.to_string_lossy().as_ref())
+        );
+        assert_eq!(summary["tooling"], Value::Null);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/projects/{}/discovery", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovery: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            discovery["baseCommit"].as_str(),
+            Some(project.base_commit.as_str())
+        );
+        assert_eq!(
+            discovery["discovery"]["suggestedCapabilities"],
+            serde_json::json!(["repository-edit", "generic-toolchain"])
+        );
+        assert!(
+            discovery["discovery"]["suggestedChecks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["id"] == "rust-test")
+        );
+
+        let request = axum::http::Request::builder()
+            .uri(format!("/projects/{}/summary", project.id))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            summary["tooling"]["suggested_capabilities"],
+            serde_json::json!(["repository-edit", "generic-toolchain"])
+        );
+        assert_eq!(summary["tooling"]["stale"], false);
+        drop(router);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

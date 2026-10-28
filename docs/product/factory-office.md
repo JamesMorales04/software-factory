@@ -32,6 +32,7 @@ filesystem editing.
 | Overview | Active Campaigns, running agents, pending decisions, blocked work, recent accepted candidates, gate outcomes, measured budget/spend, runtime health and meaningful events; every signal deep-links to the affected object |
 | Decision Inbox | Campaign authorization, budget/recovery requests where supported, blocked execution, manual review, unresolved usage/cleanup, conflicting requirements and delivery requests; actionable items separated from informational notifications; every button invokes an existing authenticated Core operation |
 | Actions | List, search, filter, create and detail; objective, frozen spec, Project, risk, scope, route, Lead assessment, WorkGraph, budget, campaigns, runs/attempts, candidates, evidence and delivery; progressive disclosure with expert controls |
+| Projects / Project Detail | Authorized public/private GitHub repository search and import through the existing encrypted connection, approved-root local import, explicit human name and source identity, Core-backed summary with origin/base revision/last activity/connection health/Campaigns/decisions/capabilities, and bounded manifest discovery whose advisory toolchain and check evidence never grants authority |
 | Campaigns / Campaign Detail | Authorization, execution and quality states kept distinct; WorkGraph, timeline, participants, attempts, integrations, candidates, diffs, receipts, gate, budgets and cleanup |
 | Agent Office | Actual recorded participants, roles, provider/model, assigned Action/Run, observable status, Worker/session linkage, authorized capabilities, bounded tool events, errors, usage and times; visual, table and timeline views over the same data |
 | Issues | Governed issue intake/board, relationships to Actions and Campaigns, filters, priority, accessible drag-and-drop and keyboard moves; GitHub synchronization only when implemented and labeled |
@@ -103,7 +104,15 @@ foundation: encrypted connection, Project repository binding, bounded sync and
 plain-text issue detail are implemented in the lane view; governed intake,
 board ordering, Action/Campaign relationships and issue writing remain
 unimplemented. The view is wired at `/issues`; real browser acceptance is
-pending. Home is now a unified intake composer: a Project-scoped objective and
+pending. Projects now offers three Core-governed onboarding journeys: import an
+authorized GitHub repository through the existing encrypted connection,
+import a local repository only inside the operator-approved managed root, or
+register a public Git URL with an explicit human name. Project detail shows a
+Core summary, exact base revision, connection and issue-sync health, active
+Campaigns, pending decisions and persisted discovery evidence. GitHub App/OAuth
+installation onboarding is not implemented; fine-grained tokens do not report
+OAuth scopes, and Office does not imply installation-wide access. Home is now a
+unified intake composer: a Project-scoped objective and
 exact execution profile revision create a durable intake request. Every request
 stops for explicit operator approval; the composer does not offer or imply
 automatic start. A 409 `EXECUTION_POLICY_REQUIRED` surfaces an explicit

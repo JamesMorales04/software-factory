@@ -33,6 +33,7 @@ export const es: Catalog = {
   "nav.accessDevices": "Acceso y dispositivos",
   "nav.request": "Solicitud",
   "nav.projectFiles": "Archivos del proyecto",
+  "nav.projectDetail": "Detalle del proyecto",
   "nav.campaignDetail": "Detalle de la campaña",
   "nav.actionDetail": "Detalle de la acción",
   "nav.agentParticipant": "Participante de la oficina de agentes",
@@ -1390,7 +1391,7 @@ export const es: Catalog = {
 
   "projects.title": "Proyectos",
   "projects.description":
-    "En el despliegue en contenedores, registra una URL Git HTTPS. Core la importa al almacenamiento gestionado por Factory y congela el commit base actual. El registro no concede autoridad de ejecución.",
+    "Conecta un repositorio autorizado de GitHub, importa un repositorio local de la raíz gestionada aprobada o registra una URL Git pública. Core realiza la importación y congela el commit base actual; el registro no concede autoridad de ejecución.",
   "projects.error.load": "No se pudieron cargar los proyectos.",
   "projects.error.register": "Falló el registro del proyecto.",
   "projects.error.configLoad":
@@ -1427,6 +1428,151 @@ export const es: Catalog = {
   "projects.config.saving": "Guardando…",
   "projects.config.notice":
     "Configuración del proyecto revisión {revision} guardada ({hash}).",
+  "projects.count": "{count} proyectos",
+  "projects.countOne": "{count} proyecto",
+  "projects.openIssues": "Integración con GitHub",
+  "projects.import.title": "Añadir un proyecto",
+  "projects.import.description":
+    "Importa un repositorio autorizado de GitHub mediante la conexión cifrada de Core, importa un repositorio dentro de la raíz gestionada aprobada o registra una URL Git pública. Core realiza la importación; la Office nunca recibe un token.",
+  "projects.import.loading": "Cargando opciones de importación…",
+  "projects.import.tab.github": "GitHub",
+  "projects.import.tab.local": "Repositorio local",
+  "projects.import.tab.url": "URL Git pública",
+  "projects.import.name": "Nombre del proyecto (opcional)",
+  "projects.import.namePlaceholder":
+    "Se deriva del repositorio cuando está vacío",
+  "projects.import.github.connected": "Conectado",
+  "projects.import.github.disconnectedTitle": "GitHub no está conectado",
+  "projects.import.github.disconnectedBody":
+    "Configura un token cifrado en la integración con GitHub antes de importar un repositorio público o privado. La Office nunca recibe el token.",
+  "projects.import.github.openSettings": "Abrir integración con GitHub",
+  "projects.import.github.login": "Sesión iniciada como {login}",
+  "projects.import.github.scopes": "Ámbitos informados: {scopes}",
+  "projects.import.github.scopesUnreported":
+    "Este token no informa ámbitos; GitHub informa el acceso específico por repositorio.",
+  "projects.import.github.revision": "Revisión de conexión {revision}",
+  "projects.import.github.appUnavailable":
+    "La incorporación mediante GitHub App y OAuth no está implementada. Solo la conexión por token existente puede listar e importar repositorios.",
+  "projects.import.github.searchLabel": "Buscar un repositorio autorizado",
+  "projects.import.github.searchPlaceholder": "propietario/repositorio",
+  "projects.import.github.search": "Buscar repositorios",
+  "projects.import.github.loading": "Cargando repositorios…",
+  "projects.import.github.empty": "No hay repositorios autorizados",
+  "projects.import.github.emptyDescription":
+    "El token no ve ningún repositorio que coincida con esta búsqueda. Revisa el acceso del token; Factory no lo amplía.",
+  "projects.import.github.rateLimited":
+    "El límite de GitHub está agotado hasta {until}.",
+  "projects.import.github.defaultBranch": "Rama por defecto",
+  "projects.import.github.pushed": "Último push {date}",
+  "projects.import.github.connect": "Importar repositorio",
+  "projects.import.github.connecting": "Importando…",
+  "projects.import.github.notice": "Se importó {name}. Abriendo su resumen.",
+  "projects.import.github.error":
+    "No se pudieron cargar los repositorios autorizados.",
+  "projects.import.github.errorConnect":
+    "Falló la importación del repositorio.",
+  "projects.import.local.disabledTitle":
+    "La importación local está deshabilitada",
+  "projects.import.local.path": "Ruta absoluta del repositorio local",
+  "projects.import.local.submit": "Importar repositorio local",
+  "projects.import.local.busy": "Importando…",
+  "projects.import.url.label": "URL HTTPS de repositorio Git público",
+  "projects.import.url.help":
+    "Úsala para un host Git público sin credenciales. Un repositorio privado de GitHub debe importarse desde la pestaña GitHub para que Core reutilice la conexión cifrada.",
+  "projects.visibility.public": "público",
+  "projects.visibility.private": "privado",
+  "projects.search.label": "Buscar proyectos",
+  "projects.search.placeholder": "Nombre, propietario o repositorio",
+  "projects.search.clear": "Borrar búsqueda",
+  "projects.list.emptyDescription":
+    "Conecta un repositorio autorizado de GitHub o importa un repositorio de la raíz gestionada aprobada para crear el primer proyecto.",
+  "projects.list.emptyAction": "Conectar GitHub",
+  "projects.list.noMatches": "Ningún proyecto coincide con esta búsqueda",
+  "projects.table.project": "Proyecto",
+  "projects.table.source": "Origen",
+  "projects.table.branch": "Rama por defecto",
+  "projects.table.registered": "Registrado",
+  "projects.detail.open": "Abrir resumen",
+  "projects.detail.back": "Volver a Proyectos",
+  "projects.detail.loading": "Cargando el resumen del proyecto…",
+  "projects.detail.error": "No se pudo cargar el resumen del proyecto.",
+  "projects.detail.errorTitle": "Resumen del proyecto no disponible",
+  "projects.detail.notFound": "Proyecto no encontrado",
+  "projects.detail.browseFiles": "Explorar archivos",
+  "projects.detail.active": "Activo",
+  "projects.detail.inactive": "Inactivo",
+  "projects.detail.localRepository":
+    "Repositorio en almacenamiento gestionado por Factory",
+  "projects.detail.sourceTitle": "Origen y revisión",
+  "projects.detail.sourceUrl": "URL de origen",
+  "projects.detail.defaultBranch": "Rama por defecto",
+  "projects.detail.baseCommit": "Commit base congelado",
+  "projects.detail.created": "Registrado",
+  "projects.detail.lastActivity": "Última actividad",
+  "projects.detail.noActivity": "Aún no hay actividad registrada",
+  "projects.detail.remoteOrigin": "Origen Git local",
+  "projects.detail.connection": "Conexión con GitHub",
+  "projects.detail.login": "Sesión iniciada como {login}",
+  "projects.detail.scopes": "Ámbitos informados: {scopes}",
+  "projects.detail.scopesUnreported":
+    "Este token no informa ámbitos; el acceso queda limitado a lo que GitHub le conceda.",
+  "projects.detail.connectionRevision": "Revisión de conexión {revision}",
+  "projects.detail.connectionNotApplicable":
+    "Este proyecto local no usa una conexión con GitHub.",
+  "projects.detail.binding": "Repositorio vinculado",
+  "projects.detail.boundAt": "Vinculado",
+  "projects.detail.sync": "Sincronización de issues",
+  "projects.detail.notSynced": "No hay sincronización de issues registrada.",
+  "projects.detail.notBound":
+    "Este proyecto no está vinculado a un repositorio de GitHub. La sincronización de issues no está disponible.",
+  "projects.detail.activityTitle": "Campañas y decisiones",
+  "projects.detail.activeCampaigns": "Campañas activas: {count}",
+  "projects.detail.noActiveCampaigns": "No hay campañas activas.",
+  "projects.detail.pendingDecisions": "Decisiones pendientes: {count}",
+  "projects.detail.noPendingDecisions": "No hay decisiones pendientes.",
+  "projects.detail.capabilitiesTitle": "Herramientas y capacidades",
+  "projects.detail.noCapabilities":
+    "No se concede ninguna capacidad. Configúralas explícitamente antes de ejecutar.",
+  "projects.detail.qualityProfile": "Perfil de calidad",
+  "projects.detail.configRevision": "Revisión de configuración",
+  "projects.detail.allowedPaths": "Rutas permitidas del repositorio",
+  "projects.detail.toolingTitle": "Descubrimiento de toolchain",
+  "projects.detail.toolingDescription":
+    "Un escaneo acotado lee manifiestos conocidos del commit base congelado. El resultado es evidencia orientativa, no prueba de que un comando funcione ni una concesión de capacidad.",
+  "projects.detail.scan": "Escanear repositorio",
+  "projects.detail.rescan": "Volver a escanear",
+  "projects.detail.scanning": "Escaneando…",
+  "projects.detail.scanNotice": "El escaneo registró {count} toolchain(s).",
+  "projects.detail.noDiscovery":
+    "No hay un escaneo registrado. Ejecuta uno para inspeccionar la evidencia de manifiestos en el commit base.",
+  "projects.detail.discoveryMeta": "Escaneado {commit} el {date}.",
+  "projects.detail.discoveryStale": "El commit base ha avanzado",
+  "projects.detail.noToolchains":
+    "No se encontró ningún manifiesto de toolchain conocido. No se sugiere ninguna capacidad ni comprobación.",
+  "projects.detail.advisory":
+    "La evidencia se limita a este escaneo acotado de manifiestos. Procedencia:",
+  "projects.detail.suggestedCapabilities": "Capacidades sugeridas",
+  "projects.detail.suggestedChecks": "Comprobaciones seguras sugeridas",
+  "projects.detail.noSuggestedChecks":
+    "No se dedujo ningún comando de comprobación a partir de la evidencia disponible.",
+  "projects.detail.allowedPathsRequired":
+    "Rutas permitidas del repositorio (obligatorias antes de aplicar capacidades)",
+  "projects.detail.applyCapabilities": "Aplicar capacidades sugeridas",
+  "projects.detail.applying": "Aplicando…",
+  "projects.detail.applied":
+    "Las capacidades sugeridas se añadieron a la revisión de configuración del proyecto.",
+  "projects.detail.errorScan": "Falló el descubrimiento de toolchain.",
+  "projects.detail.errorApply":
+    "No se pudieron aplicar las capacidades sugeridas. Actualiza el resumen y reintenta.",
+  "projects.detail.checkId": "Comprobación",
+  "projects.detail.checkKind": "Tipo",
+  "projects.detail.checkCommand": "Comando",
+  "projects.detail.technical": "Detalles técnicos",
+  "projects.detail.projectId": "ID del proyecto",
+  "projects.detail.repositoryPath": "Ruta del repositorio gestionado",
+  "projects.detail.identity": "Identidad del repositorio",
+  "projects.detail.sourceKey": "Clave de identidad del origen",
+  "projects.detail.configHash": "Hash de configuración",
 
   "runs.title": "Ejecuciones",
   "runs.description":

@@ -43,6 +43,7 @@ impl CoreProcess {
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
             .env("FACTORY_MODEL_URL", model_url)
             .env("FACTORY_MODEL_TOKEN", MODEL_TOKEN)
             .env("FACTORY_MODEL_PROVIDER", "opencode-go")
