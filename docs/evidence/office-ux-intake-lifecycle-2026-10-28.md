@@ -76,6 +76,16 @@ implementation `bd424c2` and passed again (request `ce2a1b8b…`, Campaign
 restart/reload persistence). This verifies the localization changes did not
 break the flagship selectors or state projection.
 
+## Post-projects-merge rerun
+
+After merging governed project onboarding and the Compose intake lane (which
+added the approved-root guard exercised here), the journey passed at
+implementation `8922bc6` after setting `FACTORY_PROJECTS_ROOT` in the harness:
+request `73c2ca0a…`, Campaign `bf95d14c…`, candidate `f5cdd297…` at commit
+`5255fab2…`, verifier/reviewer receipts, Gate `ACCEPTED`, restart/reload
+persistence. The harness change reflects the real product guard; Core was not
+loosened.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
