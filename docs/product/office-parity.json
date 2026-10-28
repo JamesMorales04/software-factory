@@ -6,7 +6,7 @@
     "CAP-011": {
       "name": "Factory Office",
       "user_facing": true,
-      "job": "Register Projects, create and inspect Actions, follow Lead/Campaign work, inspect candidates and quality evidence, configure providers and runtime policy.",
+      "job": "Register Projects, create and inspect Actions, follow Lead/Campaign work, inspect candidates and quality evidence, configure providers and runtime policy, and manage secure browser/device access.",
       "routes": [
         "/inbox",
         "/",
@@ -21,6 +21,7 @@
         "/workers",
         "/runtime",
         "/settings",
+        "/pair",
         "/agents",
         "/agents/:participantId"
       ],
@@ -64,6 +65,18 @@
         "DELETE /settings/providers/{provider}/credential",
         "GET /settings/runtime",
         "PUT /settings/runtime",
+        "GET /auth/session",
+        "POST /auth/bootstrap",
+        "POST /auth/logout",
+        "POST /auth/logout-all",
+        "GET /auth/access",
+        "GET /auth/devices",
+        "POST /auth/device-challenges",
+        "POST /auth/device-claims/{id}",
+        "POST /auth/device-claims/{id}/poll",
+        "POST /auth/devices/{id}/approve",
+        "POST /auth/devices/{id}/reject",
+        "DELETE /auth/devices/{id}",
         "GET /office/overview",
         "GET /office/decisions",
         "POST /model/calls/{id}/resolve",
@@ -86,7 +99,8 @@
         "inspect an Action specification, checks and related Core work",
         "inspect recorded participants in a visual floor, table and timeline with a shared inspector",
         "follow a participant to its Campaign, WorkUnit, Run, Attempt, candidate and Gate evidence",
-        "inspect bounded, redacted provider tool events for an exact session generation"
+        "inspect bounded, redacted provider tool events for an exact session generation",
+        "enroll and revoke browser sessions, create a device pairing challenge, and approve or reject a pending phone"
       ],
       "states": [
         "loading",
@@ -100,7 +114,11 @@
         "stale-observation",
         "disconnected",
         "not-exposed",
-        "withheld-detail"
+        "withheld-detail",
+        "pairing-pending",
+        "pairing-expired",
+        "pairing-rejected",
+        "remote-access-unknown"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
@@ -108,9 +126,12 @@
         "scripts/compose-onboarding-smoke.mjs",
         "office/src/views/AgentOffice.test.tsx",
         "office/src/components/office/ParticipantSessionList.tsx",
-        "scripts/compose-agent-office-smoke.mjs"
+        "scripts/compose-agent-office-smoke.mjs",
+        "office/src/views/AccessDevices.test.tsx",
+        "office/src/views/DevicePairClaim.test.tsx",
+        "office/e2e-browser/personal-access.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, the Runtime console, the provider Settings workspace and Agent Office are implemented. Agent Office projects only recorded Lead, Implementer, Verifier, Reviewer and Worker records; provider tool events reuse the durable provider_tool_events ledger with a bounded allowlisted read projection. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Tailscale connectivity is UNKNOWN unless Core reports a verified service signal. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices and Agent Office are implemented. Agent Office projects recorded participants only. Issues and Docs remain later slices."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -350,6 +371,54 @@
         "scripts/compose-provider-smoke.mjs"
       ],
       "notes": "The deterministic fixture path is the PR CI acceptance path. The owner-authorized live OpenCode container UAT is recorded separately and is not a browser-acceptance gate."
+    },
+    "CAP-053": {
+      "name": "Personal access and device sessions",
+      "user_facing": true,
+      "job": "Enroll a browser without a permanent API token, maintain independent device sessions, pair a phone with owner approval, and inspect optional private Tailscale access.",
+      "routes": [
+        "/settings?tab=access",
+        "/pair"
+      ],
+      "core_api": [
+        "GET /auth/session",
+        "POST /auth/bootstrap",
+        "POST /auth/logout",
+        "POST /auth/logout-all",
+        "GET /auth/access",
+        "GET /auth/devices",
+        "POST /auth/device-challenges",
+        "POST /auth/device-claims/{id}",
+        "POST /auth/device-claims/{id}/poll",
+        "POST /auth/devices/{id}/approve",
+        "POST /auth/devices/{id}/reject",
+        "DELETE /auth/devices/{id}"
+      ],
+      "user_actions": [
+        "complete first-run enrollment through the one-time local confirmation",
+        "inspect local and optional private remote access state",
+        "create a short-lived QR pairing challenge with a non-authorizing public identifier",
+        "compare verification codes and approve or reject a pending device",
+        "revoke a single device or all sessions"
+      ],
+      "states": [
+        "loading",
+        "empty",
+        "error",
+        "unauthorized",
+        "offline",
+        "pending",
+        "expired",
+        "rejected",
+        "revoked",
+        "remote-access-unknown"
+      ],
+      "acceptance": [
+        "office/src/views/AccessDevices.test.tsx",
+        "office/src/views/DevicePairClaim.test.tsx",
+        "office/e2e-browser/personal-access.mjs"
+      ],
+      "notes": "Session cookie material is HttpOnly. CSRF uses the dedicated readable SameSite cookie. Pairing challenge IDs do not grant authority and are stripped from browser history before phone requests. The PWA service worker uses network-only requests; no offline authorization or sensitive-response caching is claimed. Tailscale reports UNKNOWN without a verified Core health signal. Browser and remote-network acceptance remain pending."
     }
   },
   "deferred": [

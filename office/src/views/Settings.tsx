@@ -20,8 +20,9 @@ import {
   type ProviderView,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
+import { AccessDevices } from "./AccessDevices";
 
-const TABS = ["providers", "runtime"] as const;
+const TABS = ["providers", "runtime", "access"] as const;
 type SettingsTab = (typeof TABS)[number];
 
 function resolveTab(value: string | null): SettingsTab {
@@ -512,8 +513,8 @@ export function Settings() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (tab !== "access") void load();
+  }, [load, tab]);
 
   async function saveRuntime(event: React.FormEvent) {
     event.preventDefault();
@@ -535,7 +536,7 @@ export function Settings() {
     }
   }
 
-  if (error && !loaded) {
+  if (tab !== "access" && error && !loaded) {
     return (
       <ErrorState
         message={error}
@@ -543,33 +544,43 @@ export function Settings() {
       />
     );
   }
-  if (!loaded) return <LoadingState label="Loading provider settings…" />;
+  if (tab !== "access" && !loaded)
+    return <LoadingState label="Loading settings…" />;
 
   const tabs: TabItem[] = [
     { id: "providers", label: "Providers & models", count: providers.length },
     { id: "runtime", label: "Runtime policy" },
+    { id: "access", label: "Access & Devices" },
   ];
 
   return (
     <div className="settings-workspace">
       <PageHeader
         title="Settings"
-        description="Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
+        description={
+          tab === "access"
+            ? "Review local and private remote access, pair trusted devices, and revoke sessions."
+            : "Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
+        }
         meta={
           <>
-            <span>{providers.length} provider(s)</span>
-            <span>
-              Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
-            </span>
+            {tab !== "access" && <span>{providers.length} provider(s)</span>}
+            {tab !== "access" && (
+              <span>
+                Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
+              </span>
+            )}
           </>
         }
         actions={
-          <Button size="sm" onClick={() => void load()}>
-            Refresh
-          </Button>
+          tab === "access" ? undefined : (
+            <Button size="sm" onClick={() => void load()}>
+              Refresh
+            </Button>
+          )
         }
       />
-      {error && (
+      {tab !== "access" && error && (
         <div className="ui-callout ui-callout--danger" role="alert">
           {error} The displayed configuration may be stale.
         </div>
@@ -687,6 +698,17 @@ export function Settings() {
               </dd>
             </dl>
           </Panel>
+        </div>
+      )}
+
+      {tab === "access" && (
+        <div
+          id="panel-access"
+          role="tabpanel"
+          aria-labelledby="tab-access"
+          className="campaign-tab-panel"
+        >
+          <AccessDevices />
         </div>
       )}
     </div>

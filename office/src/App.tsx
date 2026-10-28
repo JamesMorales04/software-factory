@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/ui/Button";
@@ -17,6 +17,7 @@ import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { DecisionInbox } from "./views/DecisionInbox";
 import { Delegations } from "./views/Delegations";
+import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Lead } from "./views/Lead";
 import { Overview } from "./views/Overview";
 import { Projects } from "./views/Projects";
@@ -54,8 +55,8 @@ function BootstrapGate({
         {initial
           ? "Run ./factory open on this workstation. Enter the one-time owner confirmation it provides. It is sent once over this local connection and is never placed in the page URL."
           : available
-            ? "Enter the one-time owner confirmation provided by the local Factory recovery flow. This browser cannot recover ownership by itself."
-            : "This browser has no active device session. Use the local Factory recovery flow on the workstation to issue a new one-time confirmation, then reload this page."}
+            ? "Enter the one-time owner confirmation provided by ./factory recover. This browser cannot recover ownership by itself."
+            : "This browser has no active device session. Run ./factory recover on the workstation to issue a new one-time confirmation, then reload this page."}
       </p>
       {available && (
         <form
@@ -123,6 +124,16 @@ export function App() {
   const [authActionError, setAuthActionError] = useState<string | null>(null);
   const location = useLocation();
 
+  useLayoutEffect(() => {
+    if (location.pathname !== "/pair" || !location.search) return;
+    const cleanHash = window.location.hash.split("?")[0];
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${cleanHash}`,
+    );
+  }, [location.pathname, location.search]);
+
   useEffect(() => {
     let active = true;
     void Promise.all([setupStatus(), getAuthSession()])
@@ -170,6 +181,7 @@ export function App() {
       />
     );
   }
+  if (location.pathname === "/pair") return <DevicePairClaim />;
   if (authSession === null) return null;
   if (!authSession.authenticated) {
     return (

@@ -2461,3 +2461,134 @@ capabilities:
   - The optional overlay does not start for the default local-only installation.
   blockers:
   - Mobile-data UAT, independent security review and deployment remain pending.
+
+- id: CAP-054
+  name: Personal Access and Device Sessions
+  category: Product
+  purpose: Operators enroll browsers without exposing permanent credentials, pair independent devices through explicit owner approval, and inspect optional private remote access
+  product_objective: Secure local-first multi-device Factory access
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: not_tested
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-045
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    - docs/architecture/decisions/ADR-0028-device-pairing-approval-boundary.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/operations/compose-deployment.md
+    source:
+    - office/src/App.tsx
+    - office/src/coreApi.ts
+    - office/src/views/AccessDevices.tsx
+    - office/src/views/DevicePairClaim.tsx
+    - office/src/styles/access.css
+    test:
+    - office/src/coreApi.auth.test.ts
+    - office/src/views/AccessDevices.test.tsx
+    - office/src/views/DevicePairClaim.test.tsx
+    - office/e2e-browser/personal-access.mjs
+  acceptance:
+    deterministic: Office uses the cookie session contract with CSRF headers, renders device pairing and revocation against Core APIs, strips the public challenge identifier from phone browser history before submitting, and keeps Core responses network-only in the PWA service worker.
+    real: A fresh Compose installation enrolls the owner, preserves desktop session across restart, pairs a phone using code confirmation, approves and rejects requests, revokes sessions and inspects access at 1440px, 834px and 390px; remote mobile-data acceptance requires private HTTPS through Tailscale and no Funnel or public service exposure.
+  evidence:
+    deterministic: []
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Tailscale connectivity is shown as UNKNOWN without a verified Core health signal.
+  - The service worker does not cache API responses and does not offer offline authorization.
+  blockers:
+  - Real Compose and mobile-network browser acceptance remains pending.
+  - Independent review and Product Owner approval remain pending.
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+<<<<<<< HEAD
+  owner: Core
+  dependencies:
+  - CAP-011
+  - CAP-045
+  target_milestone: F1-S8
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0027-optional-tailscale-access.md
+    contract:
+    - docs/operations/compose-deployment.md
+    - docs/architecture/assessments/tailscale-service.md
+    source:
+    - compose.tailscale.yaml
+    - deploy/tailscale/serve.json
+    - native/src/bin/core.rs
+    test:
+    - native/src/bin/core.rs
+    - .github/scripts/check-compose-policy.py
+    - .github/scripts/test_check_compose_policy.py
+  acceptance:
+    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume, private HTTPS Serve and a restricted Office listener; control routes and forged Host or Origin requests are denied.
+    real: An authenticated Office journey works over the enrolled tailnet HTTPS origin with Secure session cookies, while tailnet membership alone is unauthenticated and mobile-data reachability is confirmed by the owner.
+  evidence:
+    deterministic:
+    - docs/evidence/personal-access-tailscale-2026-10-28.json
+=======
+  owner: Office
+  dependencies:
+  - CAP-011
+  - CAP-045
+  - CAP-052
+  target_milestone: F1-S9
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0025-container-native-and-office-parity.md
+    contract:
+    - docs/product/office-design-system.md
+    - docs/operations/compose-deployment.md
+    source:
+    - office/src/App.tsx
+    - office/src/coreApi.ts
+    - office/src/views/AccessDevices.tsx
+    - office/src/views/DevicePairClaim.tsx
+    - office/src/styles/access.css
+    test:
+    - office/src/coreApi.auth.test.ts
+    - office/src/views/AccessDevices.test.tsx
+    - office/src/views/DevicePairClaim.test.tsx
+    - office/e2e-browser/personal-access.mjs
+  acceptance:
+    deterministic: Office uses the cookie session contract with CSRF headers, renders device pairing and revocation against Core APIs, strips the public challenge identifier from phone browser history before submitting, and keeps Core responses network-only in the PWA service worker.
+    real: A fresh Compose installation enrolls the owner, preserves desktop session across restart, pairs a phone using code confirmation, approves and rejects requests, revokes sessions and inspects access at 1440px, 834px and 390px; remote mobile-data acceptance requires private HTTPS through Tailscale and no Funnel or public service exposure.
+  evidence:
+    deterministic: []
+>>>>>>> 279be9f (feat(office): add access and device pairing)
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+<<<<<<< HEAD
+  - Only Tailscale Serve is supported; public Funnel, host networking, privileged mode and a host Podman socket are forbidden.
+  - Tailnet device identity does not confer Factory operator authorization; a separate Core device session is required.
+  - The optional overlay does not start for the default local-only installation.
+  blockers:
+  - Mobile-data UAT, independent security review and deployment remain pending.
+=======
+  - Tailscale connectivity is shown as UNKNOWN without a verified Core health signal.
+  - The service worker does not cache API responses and does not offer offline authorization.
+  blockers:
+  - Real Compose and mobile-network browser acceptance remains pending.
+  - Independent review and Product Owner approval remain pending.
+>>>>>>> 279be9f (feat(office): add access and device pairing)
