@@ -35,6 +35,167 @@ export interface Project {
   base_commit: string;
   created_at: string;
   identity?: string;
+  name?: string;
+  source_kind?: "local" | "git" | "github";
+  source_url?: string;
+  source_key?: string;
+  source_visibility?: "" | "public" | "private";
+  default_branch?: string;
+  remote_origin?: string;
+}
+
+export interface ProjectImportOptions {
+  github: {
+    connected: boolean;
+    enabled: boolean;
+    login: string | null;
+    scopes: string[];
+    scopes_reported: boolean;
+    revision: number;
+    verified_at: string | null;
+    revoked_at: string | null;
+    detail: string;
+    fine_grained_detail: string;
+    app_oauth_available: boolean;
+  };
+  local: {
+    enabled: boolean;
+    managed_root: string | null;
+    detail: string;
+  };
+  managed_storage_required: boolean;
+}
+
+export interface GitHubProjectImportRequest {
+  owner: string;
+  repo: string;
+  name?: string;
+  default_branch?: string;
+  idempotency_key: string;
+}
+
+export interface GitHubRepositoryPermissions {
+  admin: boolean;
+  maintain: boolean;
+  push: boolean;
+  triage: boolean;
+  pull: boolean;
+}
+
+export interface GitHubRepositoryDetail extends GitHubRepository {
+  permissions: GitHubRepositoryPermissions | null;
+}
+
+export interface GitHubProjectImportResult {
+  project: Project;
+  repository: GitHubRepositoryDetail;
+  binding: ProjectGitHubBinding | null;
+  binding_error: string | null;
+  sync_state: GitHubSyncState | null;
+  connection: GitHubConnection;
+}
+
+export interface ProjectCampaignSummary {
+  id: string;
+  actionId: string;
+  objective: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface ProjectToolchainSummary {
+  id: string;
+  label: string;
+  manifests: string[];
+  evidence: string[];
+}
+
+export interface ProjectDiscoveryTooling {
+  base_commit: string;
+  scanned_at: string;
+  stale: boolean;
+  toolchains: ProjectToolchainSummary[];
+  suggested_capabilities: string[];
+  suggested_checks: SpecCheck[];
+  truncated: boolean;
+  provenance: string;
+}
+
+export interface DiscoveredToolchain extends ProjectToolchainSummary {
+  suggestedCapability: string | null;
+  suggestedChecks: SpecCheck[];
+}
+
+export interface ProjectDiscovery {
+  baseCommit: string;
+  toolchains: DiscoveredToolchain[];
+  suggestedCapabilities: string[];
+  suggestedChecks: SpecCheck[];
+  scannedManifests: string[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+  scannedAt: string;
+}
+
+export interface ProjectDiscoveryRecord {
+  projectId: string;
+  baseCommit: string;
+  scannedAt: string;
+  discovery: ProjectDiscovery;
+}
+
+export interface ProjectDiscoveryView {
+  discovery: ProjectDiscoveryRecord | null;
+  current_base_commit: string;
+  stale: boolean;
+}
+
+export interface ProjectSummary {
+  as_of: string;
+  project: {
+    id: string;
+    name: string;
+    source_kind: "local" | "git" | "github";
+    source_url: string;
+    source_visibility: "" | "public" | "private";
+    default_branch: string;
+    base_commit: string;
+    created_at: string;
+    last_activity_at: string | null;
+    remote_origin: string;
+    technical: {
+      id: string;
+      repository_path: string;
+      identity: string;
+      source_key: string;
+      remote_origin: string;
+    };
+  };
+  github: {
+    health: "NOT_APPLICABLE" | "NOT_CONNECTED" | "REVOKED" | "CONNECTED";
+    connection: GitHubConnection;
+    binding: ProjectGitHubBinding | null;
+    sync_state: GitHubSyncState | null;
+  };
+  config: {
+    revision: number;
+    config_hash: string;
+    allowed_paths: string[];
+    capabilities: string[];
+    quality_profile: string;
+    active: boolean;
+    updated_at: string;
+  };
+  campaigns: {
+    active: ProjectCampaignSummary[];
+    active_count: number;
+    recent: ProjectCampaignSummary[];
+    total: number;
+  };
+  pending_decisions: DecisionItem[];
+  pending_decision_count: number;
+  tooling: ProjectDiscoveryTooling | null;
 }
 
 export type ProjectTreeEntryKind =
@@ -608,6 +769,8 @@ export interface DecisionList {
 export interface NewProjectRequest {
   repository: string;
   idempotency_key: string;
+  name?: string;
+  default_branch?: string;
 }
 
 export interface NewActionRequest {
@@ -1566,6 +1729,7 @@ export interface GitHubRepository {
   default_branch: string;
   html_url: string;
   pushed_at: string | null;
+  permissions?: GitHubRepositoryPermissions | null;
 }
 
 export interface GitHubRepositoryList {
@@ -1897,6 +2061,26 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  getProjectImportOptions: () =>
+    request<ProjectImportOptions>("/projects/import/options"),
+  importGitHubProject: (input: GitHubProjectImportRequest) =>
+    request<GitHubProjectImportResult>("/projects/import/github", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getProjectSummary: (projectId: string) =>
+    request<ProjectSummary>(
+      `/projects/${encodeURIComponent(projectId)}/summary`,
+    ),
+  getProjectDiscovery: (projectId: string) =>
+    request<ProjectDiscoveryView>(
+      `/projects/${encodeURIComponent(projectId)}/discovery`,
+    ),
+  scanProjectDiscovery: (projectId: string) =>
+    request<ProjectDiscoveryRecord>(
+      `/projects/${encodeURIComponent(projectId)}/discovery`,
+      { method: "POST" },
+    ),
   listActions: () => request<Action[]>("/actions"),
   createAction: (input: NewActionRequest) =>
     request<Action>("/actions", {

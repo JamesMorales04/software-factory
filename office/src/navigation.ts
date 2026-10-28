@@ -186,6 +186,7 @@ export function routeLabel(pathname: string, search = ""): string {
   if (pathname.startsWith("/requests/")) return "Request";
   if (pathname.startsWith("/projects/") && pathname.endsWith("/files"))
     return "Project files";
+  if (pathname.startsWith("/projects/")) return "Project detail";
   if (pathname.startsWith("/campaigns/")) return "Campaign detail";
   if (pathname.startsWith("/actions/")) return "Action detail";
   if (pathname.startsWith("/agents/")) return "Agent Office participant";
