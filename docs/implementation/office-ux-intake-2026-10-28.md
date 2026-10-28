@@ -44,18 +44,22 @@ acceptance and does not claim a real browser/Compose run.
   capacity. Replaying the same acknowledgement returns the same grant; an
   exhausted/revoked revision needs a new explicit grant. Existing grants are
   never widened or replenished.
-- Office Home shows the execution-policy panel and retries the same request
-  with the same idempotency key after an explicit acknowledgement. Request
-  workspace uses the intake assess/approve/message/cancel routes and shows the
-  frozen profile revision, plan hash and truthful authorization reason.
+- Office Home always submits `REVIEW_PLAN` and states that every request stops
+  for explicit operator approval; it does not offer or imply automatic start.
+  The execution-policy panel shows the Core-returned objective scope,
+  per-request limits and cumulative grant bounds before acknowledgement, then
+  retries the same request with the same idempotency key. Request workspace uses
+  the intake assess/approve/message/cancel routes and shows the frozen profile
+  revision, plan hash and truthful authorization reason.
 
 ## Limits
 
 - One active default model gateway: all profile roles must match it to be
   executable. Role-specific routing remains unimplemented.
 - Aggregate token/cost/turn accounting across assessment plus implementation is
-  not implemented. Approval uses the intersection of per-task profile, plan,
-  delegation and existing Core ceilings; it does not claim an aggregate ledger.
+  not implemented. Approval uses the intersection of the profile campaign
+  budget, the frozen implementer role route, plan, delegation and existing Core
+  ceilings; it does not claim an aggregate ledger.
 - Execution-policy grants use zero repair cycles, one parallel unit, four
   requests, profile attempts (capped at 5) and profile sessions. A profile with
   fewer than two sessions or a deadline below 120 seconds is rejected.

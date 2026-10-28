@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::execution_profile::{CampaignBudgets, ExecutionProfileContent};
-use crate::lead::{LeadPlanProposal, RiskClass, StandingDelegation};
+use crate::lead::{LeadPlanProposal, ObjectiveClass, RiskClass, StandingDelegation};
 
 /// Conservative Core ceilings used when deriving an operator Campaign
 /// authorization. These mirror the existing authorization boundary; they are
@@ -22,6 +22,91 @@ const CORE_MAX_IMPLEMENTATION_SESSIONS: u32 = 2;
 const CORE_MAX_TURNS: u32 = 4;
 const CORE_MAX_DEADLINE_SECS: u64 = 600;
 const CORE_MIN_DEADLINE_SECS: u64 = 30;
+
+/// Bounded cumulative execution-policy grant terms. These are Core policy
+/// constants, exposed in the `EXECUTION_POLICY_REQUIRED` scope so Office can
+/// show the exact grant before acknowledgement instead of duplicating policy.
+pub const EXECUTION_POLICY_REQUESTS: u32 = 4;
+pub const EXECUTION_POLICY_VALIDITY_DAYS: i64 = 30;
+pub const EXECUTION_POLICY_MIN_DEADLINE_SECS: u64 = 120;
+pub const EXECUTION_POLICY_MAX_REPAIR_CYCLES: u32 = 0;
+pub const EXECUTION_POLICY_MAX_PARALLEL: u32 = 1;
+pub const EXECUTION_POLICY_ATTEMPTS_CAP: u32 = 5;
+
+/// Material bounds of the non-autonomous grant that an operator is
+/// acknowledging. This is a projection of Core policy, not a second authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntakeExecutionPolicyTerms {
+    pub objective_classes: Vec<ObjectiveClass>,
+    pub risk_classes: Vec<RiskClass>,
+    pub autonomous_start: bool,
+    pub validity_days: i64,
+    pub max_requests: u32,
+    pub max_attempts_per_request: u32,
+    pub max_sessions_per_request: u32,
+    pub max_turns_per_request: u32,
+    pub max_input_tokens_per_request: u64,
+    pub max_output_tokens_per_request: u64,
+    pub max_cost_micros_per_request: u64,
+    pub max_timeout_secs_per_request: u64,
+    pub max_wall_clock_secs_per_request: u64,
+    pub max_repair_cycles: u32,
+    pub max_parallel: u32,
+    pub max_cumulative_sessions: u32,
+    pub max_cumulative_attempts: u32,
+}
+
+/// Derive the exact bounded grant terms from one profile revision. The
+/// execution-policy writer and the `EXECUTION_POLICY_REQUIRED` projection both
+/// use this function so the acknowledgement cannot disagree with the grant.
+pub fn execution_policy_terms(profile: &ExecutionProfileContent) -> IntakeExecutionPolicyTerms {
+    let implementer = &profile.roles.implementer;
+    let max_attempts = profile
+        .budgets
+        .max_attempts
+        .min(EXECUTION_POLICY_ATTEMPTS_CAP);
+    let max_sessions = profile.budgets.max_sessions;
+    IntakeExecutionPolicyTerms {
+        objective_classes: vec![
+            ObjectiveClass::Feature,
+            ObjectiveClass::Maintenance,
+            ObjectiveClass::Refactor,
+        ],
+        risk_classes: vec![RiskClass::R0],
+        autonomous_start: false,
+        validity_days: EXECUTION_POLICY_VALIDITY_DAYS,
+        max_requests: EXECUTION_POLICY_REQUESTS,
+        max_attempts_per_request: max_attempts,
+        max_sessions_per_request: max_sessions,
+        max_turns_per_request: profile.budgets.max_turns,
+        max_input_tokens_per_request: profile
+            .budgets
+            .max_input_tokens
+            .min(implementer.max_input_tokens),
+        max_output_tokens_per_request: profile
+            .budgets
+            .max_output_tokens
+            .min(implementer.max_output_tokens),
+        max_cost_micros_per_request: profile
+            .budgets
+            .max_cost_micros
+            .min(implementer.max_cost_micros),
+        max_timeout_secs_per_request: profile.budgets.deadline_secs.clamp(30, 600),
+        max_wall_clock_secs_per_request: profile
+            .budgets
+            .deadline_secs
+            .clamp(EXECUTION_POLICY_MIN_DEADLINE_SECS, 7_200),
+        max_repair_cycles: EXECUTION_POLICY_MAX_REPAIR_CYCLES,
+        max_parallel: EXECUTION_POLICY_MAX_PARALLEL,
+        max_cumulative_sessions: max_sessions
+            .saturating_mul(EXECUTION_POLICY_REQUESTS)
+            .min(crate::lead::MAX_CUMULATIVE_SESSIONS),
+        max_cumulative_attempts: max_attempts
+            .saturating_mul(EXECUTION_POLICY_REQUESTS)
+            .min(crate::lead::MAX_CUMULATIVE_ATTEMPTS),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -151,10 +236,12 @@ impl IntakeAuthorizationState {
 }
 
 /// Budget intersect for one operator-approved Campaign. Every value is the
-/// minimum of the frozen profile, frozen plan, active delegation and the
-/// existing Core authorization ceilings. Plan and delegation do not carry
-/// token/cost/turn ceilings today, so those dimensions use the profile bounded
-/// by Core policy; this is a documented limitation, not additional authority.
+/// minimum of the frozen profile campaign budget, the frozen implementer role
+/// route, frozen plan, active delegation and the existing Core authorization
+/// ceilings. Plan and delegation do not carry token/cost/turn ceilings today,
+/// so those dimensions use the stricter of the profile campaign budget and the
+/// implementer route; this is a documented limitation, not additional
+/// authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntakeCampaignBudget {
     pub max_attempts: u32,
@@ -176,6 +263,7 @@ pub fn intersect_campaign_budget(
     behavior: &IntakeMode,
 ) -> Result<IntakeCampaignBudget, IntakeBudgetError> {
     let profile_budgets: &CampaignBudgets = &profile.budgets;
+    let implementer = &profile.roles.implementer;
     // The frozen plan's session ceiling includes the assessment session. The
     // Campaign authorization may only use the remaining implementation part.
     let plan_sessions = proposal.max_sessions.saturating_sub(1);
@@ -215,9 +303,15 @@ pub fn intersect_campaign_budget(
         max_attempts,
         max_sessions,
         max_turns,
-        max_input_tokens: profile_budgets.max_input_tokens,
-        max_output_tokens: profile_budgets.max_output_tokens,
-        max_cost_micros: profile_budgets.max_cost_micros,
+        max_input_tokens: profile_budgets
+            .max_input_tokens
+            .min(implementer.max_input_tokens),
+        max_output_tokens: profile_budgets
+            .max_output_tokens
+            .min(implementer.max_output_tokens),
+        max_cost_micros: profile_budgets
+            .max_cost_micros
+            .min(implementer.max_cost_micros),
         deadline_secs,
     })
 }
@@ -385,7 +479,48 @@ mod tests {
         assert_eq!(budget.max_attempts, 2);
         assert_eq!(budget.max_sessions, 2);
         assert_eq!(budget.max_turns, 4);
+        assert_eq!(budget.max_input_tokens, 40_000);
+        assert_eq!(budget.max_output_tokens, 8_192);
+        assert_eq!(budget.max_cost_micros, 300_000);
         assert_eq!(budget.deadline_secs, 600);
+    }
+
+    #[test]
+    fn implementer_route_caps_bind_tokens_and_cost_independently() {
+        let mut input_capped = profile();
+        input_capped.roles.implementer.max_input_tokens = 10_000;
+        let budget = intersect_campaign_budget(
+            &input_capped,
+            &proposal(),
+            &grant(),
+            &IntakeMode::ReviewPlan,
+        )
+        .unwrap();
+        assert_eq!(budget.max_input_tokens, 10_000);
+        assert_eq!(budget.max_output_tokens, 8_192);
+        assert_eq!(budget.max_cost_micros, 300_000);
+
+        let mut output_capped = profile();
+        output_capped.roles.implementer.max_output_tokens = 1_000;
+        let budget = intersect_campaign_budget(
+            &output_capped,
+            &proposal(),
+            &grant(),
+            &IntakeMode::ReviewPlan,
+        )
+        .unwrap();
+        assert_eq!(budget.max_input_tokens, 40_000);
+        assert_eq!(budget.max_output_tokens, 1_000);
+        assert_eq!(budget.max_cost_micros, 300_000);
+
+        let mut cost_capped = profile();
+        cost_capped.roles.implementer.max_cost_micros = 100_000;
+        let budget =
+            intersect_campaign_budget(&cost_capped, &proposal(), &grant(), &IntakeMode::ReviewPlan)
+                .unwrap();
+        assert_eq!(budget.max_input_tokens, 40_000);
+        assert_eq!(budget.max_output_tokens, 8_192);
+        assert_eq!(budget.max_cost_micros, 100_000);
     }
 
     #[test]

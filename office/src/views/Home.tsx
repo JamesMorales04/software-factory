@@ -14,7 +14,6 @@ import {
   coreApi,
   type ExecutionProfile,
   type IntakeExecutionPolicyScope,
-  type IntakeMode,
   type IntakeRequestSummary,
   type NewIntakeRequest,
   newIdempotencyKey,
@@ -23,13 +22,6 @@ import {
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
 import { IntakeModeBadge, IntakeStateBadge } from "./RequestState";
-
-const MODE_COPY: Record<IntakeMode, string> = {
-  REVIEW_PLAN:
-    "Core assesses the request, freezes a plan and waits for your explicit approval before execution.",
-  AUTONOMOUS:
-    "Core may start within the frozen plan only when the selected profile enables auto-start and Core policy permits it. Otherwise it stops for approval.",
-};
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof CoreApiError
@@ -82,7 +74,6 @@ export function Home() {
   const [projectId, setProjectId] = useState("");
   const [profileId, setProfileId] = useState("");
   const [objective, setObjective] = useState("");
-  const [mode, setMode] = useState<IntakeMode>("REVIEW_PLAN");
   const [fieldErrors, setFieldErrors] = useState<{
     project?: string;
     objective?: string;
@@ -271,7 +262,7 @@ export function Home() {
       project_id: projectId,
       objective: trimmed,
       ...(profileId === "" ? {} : { execution_profile_id: profileId }),
-      mode,
+      mode: "REVIEW_PLAN",
       idempotency_key: requestKey.current,
     };
     await submitRequest(input);
@@ -303,21 +294,6 @@ export function Home() {
       setPolicyBusy(false);
     }
   }
-
-  const modeProfileNote = (() => {
-    if (mode !== "AUTONOMOUS") return null;
-    if (selectedProfile === undefined) {
-      return "No explicit profile is selected. Core resolves the Project default and applies that profile's auto-start policy.";
-    }
-    if (!selectedProfile.autoStart.enabled) {
-      return "The selected profile does not enable auto-start. Core will stop at explicit approval.";
-    }
-    const risks =
-      selectedProfile.autoStart.riskClasses.length === 0
-        ? "no risk classes"
-        : selectedProfile.autoStart.riskClasses.join(", ");
-    return `The selected profile declares auto-start for ${risks}. Core policy must also permit it, otherwise the request stops for explicit approval.`;
-  })();
 
   return (
     <div className="home">
@@ -496,46 +472,14 @@ export function Home() {
                   </p>
                 )}
 
-                <fieldset className="home-mode">
-                  <legend className="ui-field-label">Mode</legend>
-                  <div className="home-mode-options">
-                    {(["REVIEW_PLAN", "AUTONOMOUS"] as const).map((value) => (
-                      <label
-                        key={value}
-                        className={`home-mode-option ${
-                          mode === value ? "home-mode-option--selected" : ""
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="execution-mode"
-                          value={value}
-                          checked={mode === value}
-                          onChange={() => {
-                            setMode(value);
-                            resetRequestKey();
-                          }}
-                        />
-                        <span>
-                          <strong>
-                            {value === "REVIEW_PLAN"
-                              ? "Review plan"
-                              : "Autonomous"}
-                          </strong>
-                          <span>{MODE_COPY[value]}</span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                  <p className="muted home-mode-help" aria-live="polite">
-                    {MODE_COPY[mode]}
-                  </p>
-                  {modeProfileNote && (
-                    <p className="ui-callout ui-callout--attention">
-                      {modeProfileNote}
-                    </p>
-                  )}
-                </fieldset>
+                <p className="ui-callout ui-callout--info home-mode-help">
+                  <strong>
+                    Every request stops for explicit operator approval.
+                  </strong>{" "}
+                  Core assesses the request, freezes a plan and waits for your
+                  approval before any Campaign starts. This build has no
+                  automatic start for intake requests.
+                </p>
 
                 {policySetup && (
                   <div
@@ -600,13 +544,86 @@ export function Home() {
                           </dd>
                         </div>
                         <div>
-                          <dt>Grant terms</dt>
+                          <dt>Objective scope</dt>
                           <dd>
-                            R0 only · non-autonomous · 30 days ·{" "}
-                            {policySetup.scope.profile.budgets.maxAttempts}{" "}
+                            {policySetup.scope.profile.grantTerms.objectiveClasses.join(
+                              ", ",
+                            )}{" "}
+                            · risk{" "}
+                            {policySetup.scope.profile.grantTerms.riskClasses.join(
+                              ", ",
+                            )}{" "}
+                            ·{" "}
+                            {policySetup.scope.profile.grantTerms
+                              .autonomousStart
+                              ? "autonomous start enabled"
+                              : "non-autonomous; explicit approval required"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Per-request limits</dt>
+                          <dd>
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxAttemptsPerRequest
+                            }{" "}
                             attempts ·{" "}
-                            {policySetup.scope.profile.budgets.maxSessions}{" "}
-                            sessions
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxSessionsPerRequest
+                            }{" "}
+                            sessions ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxTurnsPerRequest
+                            }{" "}
+                            turns ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxInputTokensPerRequest
+                            }{" "}
+                            input tokens ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxOutputTokensPerRequest
+                            }{" "}
+                            output tokens ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxCostMicrosPerRequest
+                            }{" "}
+                            cost micros ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxTimeoutSecsPerRequest
+                            }
+                            s timeout
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Cumulative grant limits</dt>
+                          <dd>
+                            {policySetup.scope.profile.grantTerms.maxRequests}{" "}
+                            requests ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxCumulativeSessions
+                            }{" "}
+                            sessions ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxCumulativeAttempts
+                            }{" "}
+                            attempts · valid{" "}
+                            {policySetup.scope.profile.grantTerms.validityDays}{" "}
+                            days ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxRepairCycles
+                            }{" "}
+                            repair cycles ·{" "}
+                            {policySetup.scope.profile.grantTerms.maxParallel}{" "}
+                            parallel
                           </dd>
                         </div>
                       </dl>

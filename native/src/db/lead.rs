@@ -1620,19 +1620,30 @@ fn validate_profile_authorization(
             "authorization turn budget exceeds the frozen profile".into(),
         ));
     }
-    if input.max_input_tokens == 0 || input.max_input_tokens > profile.budgets.max_input_tokens {
+    if input.max_input_tokens == 0
+        || input.max_input_tokens > profile.budgets.max_input_tokens
+        || input.max_input_tokens > profile.roles.implementer.max_input_tokens
+    {
         return Err(Error::Forbidden(
-            "authorization input-token budget exceeds the frozen profile".into(),
+            "authorization input-token budget exceeds the frozen profile or implementer route"
+                .into(),
         ));
     }
-    if input.max_output_tokens == 0 || input.max_output_tokens > profile.budgets.max_output_tokens {
+    if input.max_output_tokens == 0
+        || input.max_output_tokens > profile.budgets.max_output_tokens
+        || input.max_output_tokens > profile.roles.implementer.max_output_tokens
+    {
         return Err(Error::Forbidden(
-            "authorization output-token budget exceeds the frozen profile".into(),
+            "authorization output-token budget exceeds the frozen profile or implementer route"
+                .into(),
         ));
     }
-    if input.max_cost_micros == 0 || input.max_cost_micros > profile.budgets.max_cost_micros {
+    if input.max_cost_micros == 0
+        || input.max_cost_micros > profile.budgets.max_cost_micros
+        || input.max_cost_micros > profile.roles.implementer.max_cost_micros
+    {
         return Err(Error::Forbidden(
-            "authorization cost budget exceeds the frozen profile".into(),
+            "authorization cost budget exceeds the frozen profile or implementer route".into(),
         ));
     }
     if input.deadline_secs < 30

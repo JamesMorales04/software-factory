@@ -91,15 +91,18 @@ foundation: encrypted connection, Project repository binding, bounded sync and
 plain-text issue detail are implemented in the lane view; governed intake,
 board ordering, Action/Campaign relationships and issue writing remain
 unimplemented. The view is wired at `/issues`; real browser acceptance is
-pending. Home is now a unified intake composer: a Project-scoped objective,
-exact execution profile revision and mode create a durable intake request, and
-a 409 `EXECUTION_POLICY_REQUIRED` surfaces an explicit "Enable governed
-execution" acknowledgement that creates a bounded, non-autonomous R0 policy
-before retrying the same request. The Request workspace derives its state from
-the authoritative Lead request, shows the frozen profile revision and plan
-hash, runs the bounded assessment, approves the exact frozen plan, appends
-pre-freeze operator messages and withdraws through the authoritative Lead
-boundary. It does not expose an intake-only terminal flag. Docs and a stable
+pending. Home is now a unified intake composer: a Project-scoped objective and
+exact execution profile revision create a durable intake request. Every request
+stops for explicit operator approval; the composer does not offer or imply
+automatic start. A 409 `EXECUTION_POLICY_REQUIRED` surfaces an explicit
+"Enable governed execution" acknowledgement that shows the exact objective
+scope, per-request limits and cumulative grant bounds, then creates a bounded,
+non-autonomous R0 policy before retrying the same request. The Request
+workspace derives its state from the authoritative Lead request, shows the
+frozen profile revision and plan hash, runs the bounded assessment, approves
+the exact frozen plan, appends pre-freeze operator messages and withdraws
+through the authoritative Lead boundary. It does not expose an intake-only
+terminal flag. Docs and a stable
 `/office` deep-link base remain unimplemented.
 
 Known gaps:

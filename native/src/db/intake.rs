@@ -16,12 +16,10 @@ use uuid::Uuid;
 
 use crate::execution_profile::{ExecutionProfileContent, evaluate_executability};
 use crate::intake::{
-    IntakeAuthorizationReason, IntakeAuthorizationState, IntakeCampaignBudget, IntakeMode,
-    intersect_campaign_budget,
+    EXECUTION_POLICY_MIN_DEADLINE_SECS, IntakeAuthorizationReason, IntakeAuthorizationState,
+    IntakeCampaignBudget, IntakeMode, execution_policy_terms, intersect_campaign_budget,
 };
-use crate::lead::{
-    ActionStatus, LeadPlanProposal, ObjectiveClass, RiskClass, StandingDelegation, plan_hash,
-};
+use crate::lead::{ActionStatus, LeadPlanProposal, RiskClass, StandingDelegation, plan_hash};
 
 use super::delegations::{DelegationUsage, create_standing_delegation_in_tx, load_delegation};
 use super::execution_profiles::{
@@ -32,16 +30,6 @@ use super::lead::{
     load_lead_request, prepare_draft_lead_request, withdrawal_in_tx,
 };
 use super::project_configs::load_project_config;
-
-/// Bounded standing-grant capacity created by one explicit execution policy.
-/// These are cumulative ceilings, not per-request budgets; the frozen profile,
-/// plan and delegation still intersect per Campaign.
-const EXECUTION_POLICY_REQUESTS: u32 = 4;
-const EXECUTION_POLICY_DAYS: i64 = 30;
-const EXECUTION_POLICY_MIN_DEADLINE_SECS: u64 = 120;
-const EXECUTION_POLICY_MAX_REPAIR_CYCLES: u32 = 0;
-const EXECUTION_POLICY_MAX_PARALLEL: u32 = 1;
-const EXECUTION_POLICY_ATTEMPTS_CAP: u32 = 5;
 
 const INTAKE_LIST_SCAN_LIMIT: i64 = 500;
 
@@ -632,12 +620,7 @@ impl Database {
                         .into(),
             });
         }
-        let max_attempts = current
-            .content
-            .budgets
-            .max_attempts
-            .min(EXECUTION_POLICY_ATTEMPTS_CAP);
-        let max_sessions = current.content.budgets.max_sessions;
+        let terms = execution_policy_terms(&current.content);
         let mut delegation = StandingDelegation {
             id: Uuid::new_v4().to_string(),
             principal_id: input.principal_id.into(),
@@ -645,40 +628,27 @@ impl Database {
             project_id: input.project_id.into(),
             revision: 1,
             content_hash: String::new(),
-            objective_classes: vec![
-                ObjectiveClass::Feature,
-                ObjectiveClass::Maintenance,
-                ObjectiveClass::Refactor,
-            ],
+            objective_classes: terms.objective_classes.clone(),
             allowed_paths: config.allowed_paths.clone(),
             capabilities: config.capabilities.clone(),
-            risk_classes: vec![RiskClass::R0],
-            autonomous_start: false,
+            risk_classes: terms.risk_classes.clone(),
+            autonomous_start: terms.autonomous_start,
             autonomous_risk_classes: Vec::new(),
             route: crate::lead::ProviderRoute {
                 provider: current.content.roles.implementer.provider.clone(),
                 model: current.content.roles.implementer.model.clone(),
                 mode: "build".into(),
             },
-            max_attempts,
-            max_timeout_secs: current.content.budgets.deadline_secs.clamp(30, 600) as u32,
-            max_repair_cycles: EXECUTION_POLICY_MAX_REPAIR_CYCLES,
-            max_wall_clock_secs: current
-                .content
-                .budgets
-                .deadline_secs
-                .clamp(EXECUTION_POLICY_MIN_DEADLINE_SECS, 7_200)
-                as u32,
-            max_parallel: EXECUTION_POLICY_MAX_PARALLEL,
-            max_sessions,
-            max_requests: EXECUTION_POLICY_REQUESTS,
-            max_cumulative_sessions: max_sessions
-                .saturating_mul(EXECUTION_POLICY_REQUESTS)
-                .min(crate::lead::MAX_CUMULATIVE_SESSIONS),
-            max_cumulative_attempts: max_attempts
-                .saturating_mul(EXECUTION_POLICY_REQUESTS)
-                .min(crate::lead::MAX_CUMULATIVE_ATTEMPTS),
-            expires_at: Utc::now() + chrono::Duration::days(EXECUTION_POLICY_DAYS),
+            max_attempts: terms.max_attempts_per_request,
+            max_timeout_secs: terms.max_timeout_secs_per_request as u32,
+            max_repair_cycles: terms.max_repair_cycles,
+            max_wall_clock_secs: terms.max_wall_clock_secs_per_request as u32,
+            max_parallel: terms.max_parallel,
+            max_sessions: terms.max_sessions_per_request,
+            max_requests: terms.max_requests,
+            max_cumulative_sessions: terms.max_cumulative_sessions,
+            max_cumulative_attempts: terms.max_cumulative_attempts,
+            expires_at: Utc::now() + chrono::Duration::days(terms.validity_days),
             revoked_at: None,
         };
         delegation.content_hash = delegation.compute_content_hash();
@@ -2289,6 +2259,101 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(second_key, Error::AlreadyStarted { .. }));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn approval_budget_and_start_enforce_implementer_route_caps() {
+        let (path, db, _base_profile, config) = fixture().await;
+        let mut route_capped = profile_content("Route capped");
+        route_capped.roles.implementer.max_input_tokens = 10_000;
+        route_capped.roles.implementer.max_output_tokens = 1_000;
+        route_capped.roles.implementer.max_cost_micros = 100_000;
+        let profile = db
+            .create_execution_profile(&route_capped, "owner")
+            .await
+            .unwrap();
+        db.create_execution_policy_grant(NewExecutionPolicyGrant {
+            project_id: "project",
+            profile_id: &profile.id,
+            expected_revision: profile.revision,
+            expected_revision_hash: &profile.content_hash,
+            project_config_hash: &config.config_hash,
+            acknowledge: true,
+            idempotency_key: "policy-route-capped",
+            principal_id: "operator-token",
+            principal_label: None,
+        })
+        .await
+        .unwrap();
+        let request = create_request(&db, &profile, "request-route-capped").await;
+        let context = record_fixture_plan(&db, &request).await;
+        assert_eq!(context.budget.max_input_tokens, 10_000);
+        assert_eq!(context.budget.max_output_tokens, 1_000);
+        assert_eq!(context.budget.max_cost_micros, 100_000);
+
+        let approval = |rationale: &'static str| {
+            AuthenticatedOperatorApproval::new("operator-token", None, rationale).unwrap()
+        };
+        let mut inflated_input = authorization(&context);
+        inflated_input.max_input_tokens = 10_001;
+        let error = db
+            .start_lead_campaign(
+                &context.lead.id,
+                "route-input",
+                StartAuthority::Operator(approval("input")),
+                Some(&binding(&context)),
+                Some(&inflated_input),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let mut inflated_output = authorization(&context);
+        inflated_output.max_output_tokens = 1_001;
+        let error = db
+            .start_lead_campaign(
+                &context.lead.id,
+                "route-output",
+                StartAuthority::Operator(approval("output")),
+                Some(&binding(&context)),
+                Some(&inflated_output),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let mut inflated_cost = authorization(&context);
+        inflated_cost.max_cost_micros = 100_001;
+        let error = db
+            .start_lead_campaign(
+                &context.lead.id,
+                "route-cost",
+                StartAuthority::Operator(approval("cost")),
+                Some(&binding(&context)),
+                Some(&inflated_cost),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let result = db
+            .start_lead_campaign(
+                &context.lead.id,
+                "route-ok",
+                StartAuthority::Operator(approval("ok")),
+                Some(&binding(&context)),
+                Some(&authorization(&context)),
+            )
+            .await
+            .unwrap();
+        assert!(!result.replayed);
+        let evidence = db
+            .lead_start_evidence(&context.lead.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.campaign_id, result.campaign.id);
         let _ = std::fs::remove_file(path);
     }
 

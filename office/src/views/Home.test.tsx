@@ -244,13 +244,10 @@ describe("Home", () => {
     expect(screen.getByLabelText("Project")).toBeDefined();
     expect(screen.getByLabelText("What should the Factory do?")).toBeDefined();
     expect(screen.getByLabelText("Execution profile")).toBeDefined();
+    expect(screen.queryByRole("radio", { name: /Autonomous/ })).toBeNull();
     expect(
-      (screen.getByRole("radio", { name: /Review plan/ }) as HTMLInputElement)
-        .checked,
-    ).toBe(true);
-    expect(
-      screen.getAllByText(/Core assesses the request, freezes a plan/).length,
-    ).toBeGreaterThan(0);
+      screen.getByText(/Every request stops for explicit operator approval/),
+    ).toBeDefined();
     expect(await screen.findByText("Add a CSV export endpoint")).toBeDefined();
     expect(screen.getByText("Awaiting approval")).toBeDefined();
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
@@ -288,15 +285,14 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
   });
 
-  it("submits the selected Project, profile and mode to intake", async () => {
+  it("submits the selected Project and profile with explicit review-plan intent", async () => {
     renderHome();
     await screen.findByLabelText("Execution profile");
     await userEvent.selectOptions(
       screen.getByLabelText("Execution profile"),
       "profile-1",
     );
-    await userEvent.click(screen.getByRole("radio", { name: /Autonomous/ }));
-    expect(screen.getByText(/does not enable auto-start/)).toBeDefined();
+    expect(screen.queryByRole("radio", { name: /Autonomous/ })).toBeNull();
     await userEvent.type(
       screen.getByLabelText("What should the Factory do?"),
       "Add a CSV export endpoint.",
@@ -309,7 +305,7 @@ describe("Home", () => {
       project_id: "project-1",
       objective: "Add a CSV export endpoint.",
       execution_profile_id: "profile-1",
-      mode: "AUTONOMOUS",
+      mode: "REVIEW_PLAN",
       idempotency_key: "idem-test",
     });
   });
@@ -451,6 +447,25 @@ describe("Home", () => {
               budgets: profile.budgets,
               autoStart: { enabled: false, riskClasses: [] },
               implementer: roleRoute,
+              grantTerms: {
+                objectiveClasses: ["feature", "maintenance", "refactor"],
+                riskClasses: ["R0"],
+                autonomousStart: false,
+                validityDays: 30,
+                maxRequests: 4,
+                maxAttemptsPerRequest: 3,
+                maxSessionsPerRequest: 2,
+                maxTurnsPerRequest: 4,
+                maxInputTokensPerRequest: 40000,
+                maxOutputTokensPerRequest: 12000,
+                maxCostMicrosPerRequest: 500000,
+                maxTimeoutSecsPerRequest: 600,
+                maxWallClockSecsPerRequest: 600,
+                maxRepairCycles: 0,
+                maxParallel: 1,
+                maxCumulativeSessions: 8,
+                maxCumulativeAttempts: 12,
+              },
             },
           },
         }),
@@ -472,6 +487,12 @@ describe("Home", () => {
     ).toBeDefined();
     expect(screen.getByText(/Balanced r3/)).toBeDefined();
     expect(screen.getByText(/repository-edit/)).toBeDefined();
+    expect(screen.getByText(/feature, maintenance, refactor/)).toBeDefined();
+    expect(screen.getByText(/4 requests/)).toBeDefined();
+    expect(screen.getByText(/valid 30 days/)).toBeDefined();
+    expect(
+      screen.getByText(/non-autonomous; explicit approval required/),
+    ).toBeDefined();
     const enable = screen.getByRole("button", {
       name: "Enable governed execution",
     });

@@ -882,6 +882,26 @@ export interface IntakeRequestFilters {
   offset?: number;
 }
 
+export interface IntakeExecutionPolicyTerms {
+  objectiveClasses: string[];
+  riskClasses: string[];
+  autonomousStart: boolean;
+  validityDays: number;
+  maxRequests: number;
+  maxAttemptsPerRequest: number;
+  maxSessionsPerRequest: number;
+  maxTurnsPerRequest: number;
+  maxInputTokensPerRequest: number;
+  maxOutputTokensPerRequest: number;
+  maxCostMicrosPerRequest: number;
+  maxTimeoutSecsPerRequest: number;
+  maxWallClockSecsPerRequest: number;
+  maxRepairCycles: number;
+  maxParallel: number;
+  maxCumulativeSessions: number;
+  maxCumulativeAttempts: number;
+}
+
 export interface IntakeExecutionPolicyScope {
   project: {
     id: string;
@@ -903,6 +923,7 @@ export interface IntakeExecutionPolicyScope {
     budgets: ExecutionProfileBudgets;
     autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] };
     implementer: ExecutionRoleRoute;
+    grantTerms: IntakeExecutionPolicyTerms;
   } | null;
 }
 

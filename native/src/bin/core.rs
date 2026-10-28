@@ -5309,6 +5309,7 @@ async fn intake_policy_scope(
         },
     }
     .map(|profile| {
+        let terms = factory_native::intake::execution_policy_terms(&profile.content);
         json!({
             "id": profile.id,
             "revisionId": profile.revision_id,
@@ -5320,6 +5321,7 @@ async fn intake_policy_scope(
             "budgets": profile.content.budgets,
             "autoStart": profile.content.auto_start,
             "implementer": profile.content.roles.implementer,
+            "grantTerms": terms,
         })
     });
     json!({"project": project, "profile": profile})
@@ -9797,6 +9799,24 @@ mod tests {
             assert_eq!(
                 body["scope"]["project"]["configHash"],
                 fixture.config.config_hash
+            );
+            assert_eq!(body["scope"]["profile"]["grantTerms"]["maxRequests"], 4);
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["objectiveClasses"],
+                json!(["feature", "maintenance", "refactor"])
+            );
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["riskClasses"],
+                json!(["R0"])
+            );
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["autonomousStart"],
+                false
+            );
+            assert_eq!(body["scope"]["profile"]["grantTerms"]["validityDays"], 30);
+            assert_eq!(
+                body["scope"]["profile"]["grantTerms"]["maxAttemptsPerRequest"],
+                fixture.profile.content.budgets.max_attempts
             );
 
             let (status, policy) = enable_policy(&fixture).await;
