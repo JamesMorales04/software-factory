@@ -16,7 +16,8 @@ import {
   type IntakeRequestProjection,
   newIdempotencyKey,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 import { RequestAssessment } from "./RequestAssessment";
 import { RequestPlan } from "./RequestPlan";
 import {
@@ -37,14 +38,18 @@ function isNotFound(cause: unknown): boolean {
   return cause instanceof CoreApiError && cause.status === 404;
 }
 
-function messageRoleLabel(role: string): string {
-  if (role === "operator") return "Operator";
-  if (role === "system") return "System";
+function messageRoleLabel(
+  role: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (role === "operator") return t("request.conversation.roleOperator");
+  if (role === "system") return t("request.conversation.roleSystem");
   return role.replaceAll("_", " ");
 }
 
 export function RequestWorkspace() {
   const { requestId = "" } = useParams<{ requestId: string }>();
+  const { t, formatDate, formatNumber } = useI18n();
   const [data, setData] = useState<IntakeRequestProjection | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -71,7 +76,7 @@ export function RequestWorkspace() {
         setConnectionError(null);
         setLastLoadedAt(new Date().toISOString());
       } catch (cause) {
-        const message = errorMessage(cause, "Failed to load the request.");
+        const message = errorMessage(cause, t("request.load.error"));
         if (background) {
           setConnectionError(message);
         } else {
@@ -80,7 +85,7 @@ export function RequestWorkspace() {
         }
       }
     },
-    [requestId],
+    [requestId, t],
   );
 
   useEffect(() => {
@@ -133,14 +138,12 @@ export function RequestWorkspace() {
         setFencedCampaignId(campaignId);
         setActionError(
           campaignId
-            ? `A Campaign already started (${shortId(campaignId)}). Use the Campaign workspace for cancellation.`
-            : "A Campaign already started. Use the Campaign workspace for cancellation.",
+            ? t("request.fenced.withId", { id: shortId(campaignId) })
+            : t("request.fenced.withoutId"),
         );
         return false;
       }
-      setActionError(
-        errorMessage(cause, "The Core operation could not be completed."),
-      );
+      setActionError(errorMessage(cause, t("request.action.error")));
       return false;
     } finally {
       setBusy(null);
@@ -151,20 +154,22 @@ export function RequestWorkspace() {
     if (loadError !== null) {
       return (
         <ErrorState
-          title={notFound ? "Request not found" : "Unable to load request"}
+          title={notFound ? t("request.notFound") : t("request.load.title")}
           message={loadError}
           action={
             <div className="request-error-actions">
-              <Button onClick={() => void load(false)}>Retry</Button>
+              <Button onClick={() => void load(false)}>
+                {t("common.retry")}
+              </Button>
               <Link className={buttonClass("quiet")} to="/">
-                Back to Home
+                {t("request.backHome")}
               </Link>
             </div>
           }
         />
       );
     }
-    return <LoadingState label="Loading request…" />;
+    return <LoadingState label={t("request.loading")} />;
   }
 
   const terminal = isTerminalIntakeState(data.state);
@@ -194,7 +199,7 @@ export function RequestWorkspace() {
       async () => {
         await coreApi.assessIntakeRequest(data.id);
       },
-      "Core recorded the assessment. Review the proposal and frozen plan before authorizing.",
+      t("request.notice.assessed"),
     );
   }
 
@@ -205,7 +210,7 @@ export function RequestWorkspace() {
       async () => {
         await coreApi.assessIntakeRequest(data.id);
       },
-      "Core froze the plan. Approval now requires the exact plan hash shown below.",
+      t("request.notice.frozen"),
     );
   }
 
@@ -224,7 +229,7 @@ export function RequestWorkspace() {
           rationale: rationale.trim(),
         });
       },
-      "Core recorded the approval. Execution state is shown from the refreshed projection.",
+      t("request.notice.approved"),
     );
     if (ok) {
       setRationale("");
@@ -245,7 +250,7 @@ export function RequestWorkspace() {
           idempotency_key: messageKey.current,
         });
       },
-      "Message recorded by Core.",
+      t("request.notice.message"),
     );
     if (ok) {
       messageKey.current = newIdempotencyKey();
@@ -261,7 +266,7 @@ export function RequestWorkspace() {
       async () => {
         await coreApi.cancelIntakeRequest(data.id, cancelReason.trim());
       },
-      "Core recorded the request cancellation. This does not cancel an authorized Campaign.",
+      t("request.notice.cancelled"),
     );
     if (ok) {
       setCancelOpen(false);
@@ -273,28 +278,36 @@ export function RequestWorkspace() {
     <div className="request-workspace">
       <PageHeader
         title={data.objective}
-        description="Operator request, Core-derived assessment and the exact plan and authority state behind execution."
+        description={t("request.workspace.description")}
         meta={
           <>
             <span>
-              Request <code>{shortId(data.id)}</code>
+              {t("request.meta.request")} <code>{shortId(data.id)}</code>
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
             <span>
-              Project <code>{shortId(data.projectId)}</code>
+              {t("request.meta.project")} <code>{shortId(data.projectId)}</code>
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
             <span>
-              Profile {data.profile.name} r{data.profile.revision}
+              {t("request.meta.profile")}{" "}
+              {t("request.meta.profileValue", {
+                name: data.profile.name,
+                revision: data.profile.revision,
+              })}
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>Updated {formatTimestamp(data.updatedAt)}</span>
+            <span>
+              {t("request.meta.updated", {
+                date: formatDate(data.updatedAt),
+              })}
+            </span>
           </>
         }
         actions={
@@ -306,11 +319,11 @@ export function RequestWorkspace() {
                 className={buttonClass("secondary")}
                 to={`/campaigns/${encodeURIComponent(data.campaignId)}`}
               >
-                Open Campaign
+                {t("request.openCampaign")}
               </Link>
             )}
             <Link className={buttonClass("quiet")} to="/">
-              Back to Home
+              {t("request.backHome")}
             </Link>
           </>
         }
@@ -322,13 +335,14 @@ export function RequestWorkspace() {
           role="status"
         >
           <p>
-            Core could not be refreshed: {connectionError}. Showing the last
-            response loaded {formatTimestamp(lastLoadedAt ?? data.updatedAt)}.
-            The request was last updated {formatTimestamp(data.updatedAt)}.
-            Actions are paused until the next successful refresh.
+            {t("request.offline", {
+              error: connectionError,
+              loadedAt: formatDate(lastLoadedAt ?? data.updatedAt),
+              updatedAt: formatDate(data.updatedAt),
+            })}
           </p>
           <Button size="sm" onClick={() => void load(true)}>
-            Retry now
+            {t("request.retryNow")}
           </Button>
         </div>
       )}
@@ -350,9 +364,8 @@ export function RequestWorkspace() {
         data.authorization.required &&
         data.authorization.available && (
           <p className="ui-callout ui-callout--attention request-callout">
-            <strong>Authorization required.</strong> Core holds the frozen plan.
-            Execution starts only after an explicit operator approval; the
-            approval cannot widen the plan, budget, route or paths.
+            <strong>{t("request.authorization.requiredTitle")}</strong>{" "}
+            {t("request.authorization.requiredBody")}
           </p>
         )}
       {authorizationPending &&
@@ -362,16 +375,15 @@ export function RequestWorkspace() {
             className="ui-callout ui-callout--danger request-callout"
             role="alert"
           >
-            <strong>Authorization unavailable.</strong>{" "}
+            <strong>{t("request.authorization.unavailableTitle")}</strong>{" "}
             {data.authorization.reason ??
-              "Core did not provide a reason for this state."}{" "}
-            The request cannot start until Core can derive the authorization.
+              t("request.authorization.unavailableFallback")}{" "}
+            {t("request.authorization.unavailableBody")}
           </p>
         )}
       {authorizationPending && !data.authorization.required && (
         <p className="ui-callout ui-callout--info request-callout">
-          Core reports that no additional authorization is required for this
-          request. Campaign lifecycle state remains authoritative.
+          {t("request.authorization.notRequired")}
         </p>
       )}
 
@@ -383,7 +395,7 @@ export function RequestWorkspace() {
               className={buttonClass("secondary")}
               to={`/campaigns/${encodeURIComponent(fencedCampaignId)}`}
             >
-              Open Campaign
+              {t("request.openCampaign")}
             </Link>
           )}
         </div>
@@ -402,36 +414,33 @@ export function RequestWorkspace() {
             data.state === "AWAITING_APPROVAL") && (
             <Panel className="request-panel request-next-step">
               <div className="section-heading">
-                <h2>Next step</h2>
-                <span className="muted">Core-owned operation</span>
+                <h2>{t("request.next.title")}</h2>
+                <span className="muted">{t("request.next.hint")}</span>
               </div>
               {data.state === "SUBMITTED" && (
                 <>
-                  <p className="muted">
-                    Run the bounded assessment with the frozen profile&apos;s
-                    Lead route. If Core has no routable model, it returns an
-                    explicit unavailable error rather than falling back.
-                  </p>
+                  <p className="muted">{t("request.next.assessDescription")}</p>
                   <Button
                     variant="primary"
                     disabled={busy !== null || offline}
                     onClick={() => void assess()}
                   >
-                    {busy === "assess" ? "Assessing…" : "Run assessment"}
+                    {busy === "assess"
+                      ? t("request.next.assessing")
+                      : t("request.next.assess")}
                   </Button>
                 </>
               )}
               {data.state === "ASSESSING" && (
                 <>
                   <p className="muted" role="status">
-                    Core reports an assessment in progress. This view does not
-                    stream progress; it refreshes from Core.
+                    {t("request.next.assessingDescription")}
                   </p>
                   <Button
                     disabled={busy !== null}
                     onClick={() => void load(true)}
                   >
-                    Refresh request
+                    {t("request.next.refresh")}
                   </Button>
                 </>
               )}
@@ -439,9 +448,7 @@ export function RequestWorkspace() {
                 (data.proposal ? (
                   <>
                     <p className="muted">
-                      Core proposed a plan but has not frozen its executable
-                      identity. Complete the assessment so Core derives and
-                      freezes the first ActionSpec before approval.
+                      {t("request.next.freezeDescription")}
                     </p>
                     <Button
                       variant="primary"
@@ -449,36 +456,27 @@ export function RequestWorkspace() {
                       onClick={() => void completeAssessment()}
                     >
                       {busy === "freeze"
-                        ? "Freezing…"
-                        : "Complete assessment and freeze plan"}
+                        ? t("request.next.freezing")
+                        : t("request.next.freeze")}
                     </Button>
                   </>
                 ) : (
-                  <p className="muted">
-                    Core reports a ready plan without a recorded proposal.
-                    Refresh the request or inspect the Lead record.
-                  </p>
+                  <p className="muted">{t("request.next.readyNoProposal")}</p>
                 ))}
               {data.state === "AWAITING_APPROVAL" &&
                 (data.plan === null ? (
                   <p className="ui-callout ui-callout--danger">
-                    Core reports awaiting approval without a frozen plan.
-                    Approval is unavailable; refresh or inspect the Lead record.
+                    {t("request.next.awaitingNoPlan")}
                   </p>
                 ) : (
                   <form
                     className="request-approval"
                     onSubmit={(event) => void approve(event)}
                   >
-                    <p className="muted">
-                      Approving composes the existing Lead start and Campaign
-                      authorization operations. Core derives the implementer
-                      route and bounded authority from the exact frozen profile
-                      revision.
-                    </p>
+                    <p className="muted">{t("request.approval.description")}</p>
                     <dl className="request-facts">
                       <div>
-                        <dt>Plan hash</dt>
+                        <dt>{t("request.approval.planHash")}</dt>
                         <dd>
                           <code title={data.plan.plan_hash}>
                             {data.plan.plan_hash}
@@ -486,7 +484,7 @@ export function RequestWorkspace() {
                         </dd>
                       </div>
                       <div>
-                        <dt>Profile revision</dt>
+                        <dt>{t("request.approval.profileRevision")}</dt>
                         <dd>
                           {data.profile.name} r{data.profile.revision} ·{" "}
                           <code title={data.profile.contentHash}>
@@ -498,19 +496,19 @@ export function RequestWorkspace() {
                     {!authorizationAvailable && (
                       <p className="ui-callout ui-callout--danger">
                         {data.authorization.reason ??
-                          "Core cannot derive an authorization for this plan."}
+                          t("request.approval.reasonFallback")}
                       </p>
                     )}
                     <Textarea
-                      label="Approval rationale"
+                      label={t("request.approval.rationale")}
                       value={rationale}
                       onChange={(event) => setRationale(event.target.value)}
                       disabled={!authorizationAvailable || offline}
-                      help="Recorded with the authorization. It does not alter the frozen plan."
+                      help={t("request.approval.rationaleHelp")}
                       required
                     />
                     <Checkbox
-                      label="I reviewed the frozen scope, route, budget and acceptance plan."
+                      label={t("request.approval.reviewed")}
                       checked={approvedScope}
                       onChange={(event) =>
                         setApprovedScope(event.target.checked)
@@ -524,13 +522,12 @@ export function RequestWorkspace() {
                         disabled={approveDisabled}
                       >
                         {busy === "approve"
-                          ? "Recording approval…"
-                          : "Approve frozen plan and start"}
+                          ? t("request.approval.record")
+                          : t("request.approval.approve")}
                       </Button>
                       {!authorizationAvailable && (
                         <span className="muted">
-                          Approval is disabled until Core can derive the
-                          authorization.
+                          {t("request.approval.disabled")}
                         </span>
                       )}
                     </div>
@@ -541,23 +538,20 @@ export function RequestWorkspace() {
 
           {data.state === "EXECUTING" && (
             <Panel className="request-panel">
-              <h2>Execution</h2>
-              <p className="muted">
-                Core reports an authorized Campaign. Campaign, Run, candidate
-                and Quality Gate state remain separate facts and are shown in
-                the Campaign workspace.
-              </p>
+              <h2>{t("request.execution.title")}</h2>
+              <p className="muted">{t("request.execution.description")}</p>
               {data.campaignId ? (
                 <Link
                   className={buttonClass("primary")}
                   to={`/campaigns/${encodeURIComponent(data.campaignId)}`}
                 >
-                  Open Campaign {shortId(data.campaignId)}
+                  {t("request.openCampaignWithId", {
+                    id: shortId(data.campaignId),
+                  })}
                 </Link>
               ) : (
                 <p className="ui-callout ui-callout--attention">
-                  Core reports execution without a Campaign id in this
-                  projection. Refresh or inspect Campaigns.
+                  {t("request.execution.missing")}
                 </p>
               )}
             </Panel>
@@ -565,45 +559,34 @@ export function RequestWorkspace() {
 
           {data.state === "BLOCKED" && (
             <Panel className="request-panel">
-              <h2>Blocked request</h2>
-              <p className="muted">
-                Core blocked this request. A new request is required if the
-                cause is outside the frozen plan; messages can preserve the
-                operator context.
-              </p>
+              <h2>{t("request.blocked.title")}</h2>
+              <p className="muted">{t("request.blocked.description")}</p>
               <Link className={buttonClass("secondary")} to="/">
-                Start a new request
+                {t("request.newRequest")}
               </Link>
             </Panel>
           )}
 
           {data.state === "FAILED" && (
             <Panel className="request-panel">
-              <h2>Failed request</h2>
-              <p className="muted">
-                Core recorded a failure. Review the state detail above; Office
-                does not retry paid or externally effectful work silently.
-              </p>
+              <h2>{t("request.failed.title")}</h2>
+              <p className="muted">{t("request.failed.description")}</p>
               <Link className={buttonClass("secondary")} to="/">
-                Start a new request
+                {t("request.newRequest")}
               </Link>
             </Panel>
           )}
 
           {data.state === "COMPLETED" && (
             <Panel className="request-panel">
-              <h2>Completed</h2>
-              <p className="muted">
-                Core reports this request as completed. Quality Gate acceptance
-                is only shown where the exact candidate has an ACCEPTED
-                decision.
-              </p>
+              <h2>{t("request.completed.title")}</h2>
+              <p className="muted">{t("request.completed.description")}</p>
               {data.campaignId && (
                 <Link
                   className={buttonClass("secondary")}
                   to={`/campaigns/${encodeURIComponent(data.campaignId)}`}
                 >
-                  Open Campaign
+                  {t("request.openCampaign")}
                 </Link>
               )}
             </Panel>
@@ -611,12 +594,8 @@ export function RequestWorkspace() {
 
           {data.state === "CANCELLED" && (
             <Panel className="request-panel">
-              <h2>Cancelled request</h2>
-              <p className="muted">
-                Core recorded an authoritative Lead-boundary withdrawal. An
-                authorized Campaign, if any, has its own cancellation state and
-                remains authoritative.
-              </p>
+              <h2>{t("request.cancelled.title")}</h2>
+              <p className="muted">{t("request.cancelled.description")}</p>
             </Panel>
           )}
 
@@ -626,18 +605,20 @@ export function RequestWorkspace() {
           {(data.campaignId || data.campaign) && (
             <Panel className="request-panel">
               <div className="section-heading">
-                <h2>Campaign</h2>
+                <h2>{t("request.campaign.title")}</h2>
                 {data.gateOutcome && (
                   <Badge
                     tone={data.gateOutcome === "ACCEPTED" ? "success" : "muted"}
                   >
-                    Gate {data.gateOutcome}
+                    {t("request.campaign.gate", {
+                      outcome: data.gateOutcome,
+                    })}
                   </Badge>
                 )}
               </div>
               <dl className="request-facts">
                 <div>
-                  <dt>Campaign</dt>
+                  <dt>{t("request.campaign.campaign")}</dt>
                   <dd>
                     {data.campaignId ? (
                       <Link
@@ -646,32 +627,37 @@ export function RequestWorkspace() {
                         <code>{shortId(data.campaignId)}</code>
                       </Link>
                     ) : (
-                      <span className="muted">Not exposed</span>
+                      <span className="muted">{t("request.notExposed")}</span>
                     )}
                   </dd>
                 </div>
                 <div>
-                  <dt>Status</dt>
+                  <dt>{t("request.campaign.status")}</dt>
                   <dd>
                     {data.campaign?.campaign.status ??
                       data.campaignStatus ??
-                      "Not exposed"}
+                      t("request.notExposed")}
                   </dd>
                 </div>
                 <div>
-                  <dt>Authorization</dt>
+                  <dt>{t("request.campaign.authorization")}</dt>
                   <dd>
                     {data.campaign?.authorization
                       ? `${data.campaign.authorization.risk_class} · ${data.campaign.authorization.execution_mode}`
-                      : "Not exposed"}
+                      : t("request.notExposed")}
                   </dd>
                 </div>
                 <div>
-                  <dt>Runs / candidates</dt>
+                  <dt>{t("request.campaign.runsCandidates")}</dt>
                   <dd>
                     {data.campaign
-                      ? `${data.campaign.runs.length} / ${data.campaign.candidates.length}`
-                      : "Not exposed"}
+                      ? t("request.campaign.counts", {
+                          runs: formatNumber(data.campaign.runs.length),
+                          candidates: formatNumber(
+                            data.campaign.candidates.length,
+                          ),
+                        })
+                      : t("request.notExposed")}
                   </dd>
                 </div>
               </dl>
@@ -680,17 +666,18 @@ export function RequestWorkspace() {
 
           <Panel className="request-panel">
             <div className="section-heading">
-              <h2>Conversation</h2>
-              <span className="muted">{data.messages.length} message(s)</span>
+              <h2>{t("request.conversation.title")}</h2>
+              <span className="muted">
+                {t("request.conversation.count", {
+                  count: formatNumber(data.messages.length),
+                })}
+              </span>
             </div>
-            <p className="muted">
-              Durable operator context. Messages never mutate a frozen plan; a
-              material amendment requires a new request.
-            </p>
+            <p className="muted">{t("request.conversation.description")}</p>
             {data.messages.length === 0 ? (
               <EmptyState
-                title="No messages yet"
-                description="Use the composer to add durable context for this request."
+                title={t("request.conversation.emptyTitle")}
+                description={t("request.conversation.emptyDescription")}
               />
             ) : (
               <ol className="request-messages">
@@ -700,9 +687,9 @@ export function RequestWorkspace() {
                     className={`request-message request-message--${message.role}`}
                   >
                     <div className="request-message-head">
-                      <strong>{messageRoleLabel(message.role)}</strong>
+                      <strong>{messageRoleLabel(message.role, t)}</strong>
                       <time dateTime={message.createdAt}>
-                        {formatTimestamp(message.createdAt)}
+                        {formatDate(message.createdAt)}
                       </time>
                     </div>
                     <p className="request-message-body">{message.body}</p>
@@ -716,10 +703,10 @@ export function RequestWorkspace() {
                 onSubmit={(event) => void sendMessage(event)}
               >
                 <Textarea
-                  label="Message the Factory"
+                  label={t("request.conversation.messageLabel")}
                   value={messageBody}
                   onChange={(event) => setMessageBody(event.target.value)}
-                  placeholder="Add operator context or a question"
+                  placeholder={t("request.conversation.messagePlaceholder")}
                   disabled={offline}
                 />
                 <div className="request-form-actions">
@@ -729,42 +716,38 @@ export function RequestWorkspace() {
                       busy !== null || offline || messageBody.trim() === ""
                     }
                   >
-                    {busy === "message" ? "Sending…" : "Send message"}
+                    {busy === "message"
+                      ? t("request.conversation.sending")
+                      : t("request.conversation.send")}
                   </Button>
                 </div>
               </form>
             ) : data.plan !== null ? (
-              <p className="muted">
-                The executable plan is frozen. Core does not accept amendments
-                here; start a new request to change the objective or plan.
-              </p>
+              <p className="muted">{t("request.conversation.frozen")}</p>
             ) : (
-              <p className="muted">
-                Core reports this request as terminal, so new messages are not
-                offered here.
-              </p>
+              <p className="muted">{t("request.conversation.terminal")}</p>
             )}
           </Panel>
         </div>
 
-        <aside className="request-side" aria-label="Request details">
+        <aside className="request-side" aria-label={t("request.details.aria")}>
           <Panel className="request-panel">
-            <h2>Request details</h2>
+            <h2>{t("request.details.title")}</h2>
             <dl className="request-facts">
               <div>
-                <dt>Request</dt>
+                <dt>{t("request.details.request")}</dt>
                 <dd>
                   <code>{shortId(data.id)}</code>
                 </dd>
               </div>
               <div>
-                <dt>Project</dt>
+                <dt>{t("request.details.project")}</dt>
                 <dd>
                   <code>{shortId(data.projectId)}</code>
                 </dd>
               </div>
               <div>
-                <dt>Profile</dt>
+                <dt>{t("request.details.profile")}</dt>
                 <dd>
                   {data.profile.name} r{data.profile.revision}
                   <div className="muted">
@@ -775,7 +758,7 @@ export function RequestWorkspace() {
                 </dd>
               </div>
               <div>
-                <dt>Action</dt>
+                <dt>{t("request.details.action")}</dt>
                 <dd>
                   <Link to={`/actions/${encodeURIComponent(data.actionId)}`}>
                     <code>{shortId(data.actionId)}</code>
@@ -783,13 +766,13 @@ export function RequestWorkspace() {
                 </dd>
               </div>
               <div>
-                <dt>Delegation</dt>
+                <dt>{t("request.details.delegation")}</dt>
                 <dd>
                   <code>{shortId(data.delegationId)}</code>
                 </dd>
               </div>
               <div>
-                <dt>Lead request</dt>
+                <dt>{t("request.details.leadRequest")}</dt>
                 <dd>
                   <Link to="/lead">
                     <code>{shortId(data.leadRequestId)}</code>
@@ -797,29 +780,28 @@ export function RequestWorkspace() {
                 </dd>
               </div>
               <div>
-                <dt>Created</dt>
-                <dd>{formatTimestamp(data.createdAt)}</dd>
+                <dt>{t("request.details.created")}</dt>
+                <dd>{formatDate(data.createdAt)}</dd>
               </div>
               <div>
-                <dt>Updated</dt>
-                <dd>{formatTimestamp(data.updatedAt)}</dd>
+                <dt>{t("request.details.updated")}</dt>
+                <dd>{formatDate(data.updatedAt)}</dd>
               </div>
             </dl>
           </Panel>
 
           {canCancel && (
             <Panel className="request-panel">
-              <h2>Cancel request</h2>
-              <p className="muted">
-                Records an authoritative withdrawal at the Lead boundary. It
-                does not cancel an authorized Campaign.
-              </p>
+              <h2>{t("request.cancel.title")}</h2>
+              <p className="muted">{t("request.cancel.description")}</p>
               <Button
                 variant="quiet"
                 aria-expanded={cancelOpen}
                 onClick={() => setCancelOpen((open) => !open)}
               >
-                {cancelOpen ? "Close cancellation" : "Cancel this request…"}
+                {cancelOpen
+                  ? t("request.cancel.close")
+                  : t("request.cancel.open")}
               </Button>
               {cancelOpen && (
                 <form
@@ -827,7 +809,7 @@ export function RequestWorkspace() {
                   onSubmit={(event) => void cancelRequest(event)}
                 >
                   <Textarea
-                    label="Cancellation reason"
+                    label={t("request.cancel.reason")}
                     value={cancelReason}
                     onChange={(event) => setCancelReason(event.target.value)}
                     disabled={offline}
@@ -840,7 +822,9 @@ export function RequestWorkspace() {
                       busy !== null || offline || cancelReason.trim() === ""
                     }
                   >
-                    {busy === "cancel" ? "Cancelling…" : "Confirm cancellation"}
+                    {busy === "cancel"
+                      ? t("request.cancel.cancelling")
+                      : t("request.cancel.confirm")}
                   </Button>
                 </form>
               )}

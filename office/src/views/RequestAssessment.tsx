@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import { EmptyState, Panel } from "../components/ui/Surface";
 import type { LeadAssessmentView } from "../coreApi";
+import { useI18n } from "../i18n";
 
 function ValueList({ values }: { values: string[] }) {
+  const { t } = useI18n();
   const unique = [...new Set(values)];
   if (unique.length === 0) {
-    return <span className="muted">None recorded</span>;
+    return <span className="muted">{t("request.values.noneRecorded")}</span>;
   }
   return (
     <ul className="request-value-list">
@@ -43,50 +45,56 @@ export function RequestAssessment({
 }: {
   assessment: LeadAssessmentView | null;
 }) {
+  const { t } = useI18n();
   return (
     <Panel className="request-panel" as="section">
       <div className="section-heading">
-        <h2>Assessment</h2>
-        <span className="muted">Core-recorded semantic assessment</span>
+        <h2>{t("request.assessment.title")}</h2>
+        <span className="muted">{t("request.assessment.hint")}</span>
       </div>
       {assessment === null ? (
         <EmptyState
-          title="No assessment recorded"
-          description="Core records an assessment after the Lead route runs. It is advisory and does not authorize a Campaign."
+          title={t("request.assessment.emptyTitle")}
+          description={t("request.assessment.emptyDescription")}
         />
       ) : (
         <>
           <dl className="request-facts">
-            <Fact label="Intent">{assessment.intent}</Fact>
-            <Fact label="Complexity">{assessment.complexity}</Fact>
-            <Fact label="Effort">{effortText(assessment)}</Fact>
-            <Fact label="Suggested next action">
+            <Fact label={t("request.assessment.intent")}>
+              {assessment.intent}
+            </Fact>
+            <Fact label={t("request.assessment.complexity")}>
+              {assessment.complexity}
+            </Fact>
+            <Fact label={t("request.assessment.effort")}>
+              {effortText(assessment)}
+            </Fact>
+            <Fact label={t("request.assessment.suggestedNextAction")}>
               {assessment.suggestedNextAction}
             </Fact>
           </dl>
           <dl className="request-facts request-facts--wide">
-            <Fact label="Change impact">
+            <Fact label={t("request.assessment.changeImpact")}>
               <ValueList values={assessment.changeImpact} />
             </Fact>
-            <Fact label="Validation needs">
+            <Fact label={t("request.assessment.validationNeeds")}>
               <ValueList values={assessment.validationNeeds} />
             </Fact>
-            <Fact label="Knowledge gaps">
+            <Fact label={t("request.assessment.knowledgeGaps")}>
               <ValueList values={assessment.knowledgeGaps} />
             </Fact>
-            <Fact label="Assumptions">
+            <Fact label={t("request.assessment.assumptions")}>
               <ValueList values={assessment.assumptions} />
             </Fact>
-            <Fact label="Uncertainty">
+            <Fact label={t("request.assessment.uncertainty")}>
               <ValueList values={assessment.uncertainty} />
             </Fact>
-            <Fact label="Evidence references">
+            <Fact label={t("request.assessment.evidenceRefs")}>
               <ValueList values={assessment.evidenceRefs} />
             </Fact>
           </dl>
           <p className="muted request-footnote">
-            Assessment is model-assisted judgment. Core policy, the frozen plan
-            and the authorization remain authoritative.
+            {t("request.assessment.footnote")}
           </p>
         </>
       )}

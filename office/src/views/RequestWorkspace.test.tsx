@@ -10,6 +10,7 @@ import {
   type LeadPlanProposalView,
   type SpecCheck,
 } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { RequestWorkspace } from "./RequestWorkspace";
 
 const mocks = vi.hoisted(() => ({
@@ -188,14 +189,21 @@ const planReady = makeProjection({
 
 const awaiting = makeProjection();
 
-function renderRequest() {
-  return render(
+function renderRequest(locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={["/requests/request-1"]}>
       <Routes>
         <Route path="/requests/:requestId" element={<RequestWorkspace />} />
         <Route path="/" element={<div>Home probe</div>} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
@@ -206,6 +214,27 @@ describe("RequestWorkspace", () => {
     mocks.approveIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.messageIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
+  });
+
+  it("renders the request workspace in Spanish and preserves machine identifiers", async () => {
+    renderRequest("es");
+    await screen.findByRole("heading", { name: "Evaluación" });
+    expect(screen.getByRole("heading", { name: "Plan" })).toBeDefined();
+    expect(screen.getByText("Pendiente de aprobación")).toBeDefined();
+    expect(
+      screen.getByLabelText("Justificación de la aprobación"),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("button", {
+        name: "Aprobar el plan congelado e iniciar",
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("heading", { name: "Detalles de la solicitud" }),
+    ).toBeDefined();
+    expect(screen.getAllByText("plan-hash").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Congelado").length).toBeGreaterThan(0);
+    expect(screen.getByText("Unidades de trabajo")).toBeDefined();
   });
 
   it("renders the assessment, frozen plan, authorization state and messages", async () => {

@@ -10,6 +10,7 @@ import {
   type OfficeOverview,
   type Project,
 } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { Home } from "./Home";
 
 const mocks = vi.hoisted(() => ({
@@ -207,8 +208,8 @@ const overview: OfficeOverview = {
   ],
 };
 
-function renderHome() {
-  return render(
+function renderHome(locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={["/"]}>
       <Routes>
         <Route path="/" element={<Home />} />
@@ -217,7 +218,14 @@ function renderHome() {
           element={<div>Request workspace probe</div>}
         />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
@@ -253,6 +261,24 @@ describe("Home", () => {
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
     expect(screen.getByText("ActionCreated")).toBeDefined();
     expect(screen.getByText("Core status")).toBeDefined();
+  });
+
+  it("renders the operator request surface in Spanish", async () => {
+    renderHome("es");
+    await screen.findByRole("heading", { name: "Inicio" });
+    expect(screen.getByLabelText("Proyecto")).toBeDefined();
+    expect(screen.getByLabelText("¿Qué debe hacer la Factory?")).toBeDefined();
+    expect(screen.getByLabelText("Perfil de ejecución")).toBeDefined();
+    expect(
+      screen.getByText(
+        /Cada solicitud se detiene para la aprobación explícita del operador/,
+      ),
+    ).toBeDefined();
+    expect(await screen.findByText("Pendiente de aprobación")).toBeDefined();
+    expect(screen.getByText("Estado de Core")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Enviar solicitud" }),
+    ).toBeDefined();
   });
 
   it("validates Project and objective before creating a request", async () => {

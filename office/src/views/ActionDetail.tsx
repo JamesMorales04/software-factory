@@ -18,7 +18,8 @@ import {
   type Project,
   type StandingDelegation,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 interface LoadedAction {
   action: Action;
@@ -39,6 +40,7 @@ function statusTone(status: string) {
 
 export function ActionDetail() {
   const { actionId = "" } = useParams();
+  const { t, formatDate, formatNumber } = useI18n();
   const [loaded, setLoaded] = useState<LoadedAction | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +83,7 @@ export function ActionDetail() {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load the Action.",
+              : t("actionDetail.error.load"),
           );
         }
       }
@@ -90,27 +92,32 @@ export function ActionDetail() {
     return () => {
       active = false;
     };
-  }, [actionId]);
+  }, [actionId, t]);
 
   if (error && !loaded) {
     return (
       <ErrorState
+        title={t("common.errorTitle")}
         message={error}
-        action={<Button onClick={() => window.location.reload()}>Retry</Button>}
+        action={
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
+        }
       />
     );
   }
   if (missing) {
     return (
       <EmptyState
-        title="Action not found"
-        description={`No Action ${actionId} is recorded in Core.`}
-        action={<Link to="/actions">Back to Actions</Link>}
+        title={t("actionDetail.notFoundTitle")}
+        description={t("actionDetail.notFoundDescription", { id: actionId })}
+        action={<Link to="/actions">{t("actionDetail.back")}</Link>}
       />
     );
   }
   if (!loaded) {
-    return <LoadingState label="Loading Action…" />;
+    return <LoadingState label={t("actionDetail.loading")} />;
   }
 
   const { action, project, campaigns, leadRequests, delegations } = loaded;
@@ -118,13 +125,13 @@ export function ActionDetail() {
   return (
     <div>
       <PageHeader
-        title={`Action ${shortId(action.id)}`}
+        title={t("actionDetail.title", { id: shortId(action.id) })}
         description={action.objective}
         meta={
           <>
             <Badge tone={statusTone(action.status)}>{action.status}</Badge>
-            <span>Risk {action.risk}</span>
-            <span>{formatTimestamp(action.created_at)}</span>
+            <span>{t("actionDetail.risk", { risk: action.risk })}</span>
+            <span>{formatDate(action.created_at)}</span>
           </>
         }
         actions={
@@ -132,7 +139,7 @@ export function ActionDetail() {
             className="ui-button ui-button--quiet ui-button--sm"
             to="/actions"
           >
-            Back to Actions
+            {t("actionDetail.back")}
           </Link>
         }
       />
@@ -141,14 +148,16 @@ export function ActionDetail() {
       <div className="overview-grid">
         <Panel>
           <div className="section-heading">
-            <h2>Frozen specification</h2>
+            <h2>{t("actionDetail.specTitle")}</h2>
             <code title={action.spec_sha256}>
-              spec {shortId(action.spec_sha256, 12)}
+              {t("actionDetail.specHash", {
+                id: shortId(action.spec_sha256, 12),
+              })}
             </code>
           </div>
           <dl className="overview-facts">
             <div>
-              <dt>Project</dt>
+              <dt>{t("actionDetail.project")}</dt>
               <dd>
                 {project ? (
                   <Link to="/projects">{shortId(project.id)}</Link>
@@ -158,47 +167,47 @@ export function ActionDetail() {
               </dd>
             </div>
             <div>
-              <dt>Route</dt>
+              <dt>{t("actionDetail.route")}</dt>
               <dd>
                 {action.provider}/{action.model}
               </dd>
             </div>
             <div>
-              <dt>Base commit</dt>
+              <dt>{t("actionDetail.baseCommit")}</dt>
               <dd>
                 <code>{shortId(action.spec.base_commit, 12)}</code>
               </dd>
             </div>
             <div>
-              <dt>Risk class</dt>
+              <dt>{t("actionDetail.riskClass")}</dt>
               <dd>{action.risk}</dd>
             </div>
           </dl>
-          <p className="muted">Allowed paths</p>
+          <p className="muted">{t("actionDetail.allowedPaths")}</p>
           <p>
             {action.spec.allowed_paths.length === 0
-              ? "None recorded"
+              ? t("request.values.noneRecorded")
               : action.spec.allowed_paths.join(", ")}
           </p>
         </Panel>
 
         <Panel>
           <div className="section-heading">
-            <h2>Relationships</h2>
-            <span className="muted">Read-only Core projections</span>
+            <h2>{t("actionDetail.relationships")}</h2>
+            <span className="muted">{t("actionDetail.relationshipsHint")}</span>
           </div>
           <dl className="overview-facts">
             <div>
-              <dt>Campaigns</dt>
-              <dd>{campaigns.length}</dd>
+              <dt>{t("actionDetail.campaigns")}</dt>
+              <dd>{formatNumber(campaigns.length)}</dd>
             </div>
             <div>
-              <dt>Lead requests</dt>
-              <dd>{leadRequests.length}</dd>
+              <dt>{t("actionDetail.leadRequests")}</dt>
+              <dd>{formatNumber(leadRequests.length)}</dd>
             </div>
             <div>
-              <dt>Project delegations</dt>
-              <dd>{delegations.length}</dd>
+              <dt>{t("actionDetail.delegations")}</dt>
+              <dd>{formatNumber(delegations.length)}</dd>
             </div>
           </dl>
           <div className="overview-badges">
@@ -220,8 +229,10 @@ export function ActionDetail() {
                   </Badge>
                   <p className="muted">
                     {request.campaign_id
-                      ? `Campaign ${shortId(request.campaign_id)}`
-                      : "No Campaign linked"}
+                      ? t("actionDetail.campaignLinked", {
+                          id: shortId(request.campaign_id),
+                        })
+                      : t("actionDetail.noCampaign")}
                   </p>
                 </li>
               ))}
@@ -229,7 +240,7 @@ export function ActionDetail() {
           )}
           {delegations.length > 0 && (
             <p className="muted">
-              Project delegations:{" "}
+              {t("actionDetail.delegationsList")}{" "}
               {delegations.map((delegation) => (
                 <Link key={delegation.id} to="/delegations">
                   {shortId(delegation.id)}{" "}
@@ -242,42 +253,56 @@ export function ActionDetail() {
 
       <Panel>
         <div className="section-heading">
-          <h2>Frozen checks ({action.spec.checks.length})</h2>
-          <span className="muted">Bound to every candidate</span>
+          <h2>
+            {t("actionDetail.checks", {
+              count: formatNumber(action.spec.checks.length),
+            })}
+          </h2>
+          <span className="muted">{t("actionDetail.checksHint")}</span>
         </div>
         {action.spec.checks.length === 0 ? (
           <EmptyState
-            title="No checks"
-            description="This Action cannot produce an accepted candidate without independent checks."
+            title={t("actionDetail.noChecksTitle")}
+            description={t("actionDetail.noChecksDescription")}
           />
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Kind</th>
-                <th>Command</th>
-                <th>Expect</th>
-                <th>Timeout</th>
-              </tr>
-            </thead>
-            <tbody>
-              {action.spec.checks.map((check) => (
-                <tr key={check.id}>
-                  <td>
-                    <code>{check.id}</code>
-                  </td>
-                  <td>{check.kind}</td>
-                  <td>
-                    <code>{check.command.join(" ")}</code>
-                    <div className="muted">{check.description}</div>
-                  </td>
-                  <td>{check.expectExit}</td>
-                  <td>{check.timeoutSecs}s</td>
+          <div className="table-responsive">
+            <table aria-label={t("actionDetail.table.label")}>
+              <thead>
+                <tr>
+                  <th>{t("actionDetail.table.id")}</th>
+                  <th>{t("actionDetail.table.kind")}</th>
+                  <th>{t("actionDetail.table.command")}</th>
+                  <th>{t("actionDetail.table.expect")}</th>
+                  <th>{t("actionDetail.table.timeout")}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {action.spec.checks.map((check) => (
+                  <tr key={check.id}>
+                    <td data-label={t("actionDetail.table.id")}>
+                      <code>{check.id}</code>
+                    </td>
+                    <td data-label={t("actionDetail.table.kind")}>
+                      {check.kind}
+                    </td>
+                    <td data-label={t("actionDetail.table.command")}>
+                      <code>{check.command.join(" ")}</code>
+                      <div className="muted">{check.description}</div>
+                    </td>
+                    <td data-label={t("actionDetail.table.expect")}>
+                      {check.expectExit}
+                    </td>
+                    <td data-label={t("actionDetail.table.timeout")}>
+                      {t("actionDetail.timeoutValue", {
+                        seconds: check.timeoutSecs,
+                      })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Panel>
     </div>

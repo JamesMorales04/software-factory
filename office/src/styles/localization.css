@@ -58,19 +58,56 @@
   font-size: var(--text-xs);
 }
 
+/* Global header language control. It stays visible at every width because a
+   Spanish reader must be able to leave an English interface without finding
+   Settings first. */
+.language-switcher-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.language-switcher-compact .language-switcher-select {
+  width: auto;
+  min-width: 54px;
+  min-height: 34px;
+  padding: 0 4px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.language-switcher-compact .language-switcher-select:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
 .table-responsive {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
 }
 
+.table-responsive table,
+.table-responsive td {
+  overflow-wrap: anywhere;
+}
+
 .table-responsive table {
   min-width: 600px;
 }
 
-.table-responsive table,
-.table-responsive td {
-  overflow-wrap: anywhere;
+.agent-office .agent-table-wrap.table-responsive table {
+  min-width: 880px;
+}
+
+.agent-office .agent-tool-events-wrap.table-responsive table {
+  min-width: 720px;
 }
 
 @media (max-width: 640px) {
@@ -90,6 +127,12 @@
   .table-responsive table {
     min-width: 0;
     border-collapse: separate;
+  }
+
+  .agent-office .agent-table-wrap.table-responsive table,
+  .agent-office .agent-tool-events-wrap.table-responsive table,
+  .issues-view .issues-table-wrap.table-responsive table {
+    min-width: 0;
   }
 
   .table-responsive thead {
@@ -150,6 +193,14 @@
     align-items: stretch;
   }
 
+  .language-switcher-compact .language-switcher-select {
+    min-height: 40px;
+  }
+
+  .topbar-actions {
+    gap: 4px;
+  }
+
   .settings-language-copy {
     flex-basis: 100%;
   }
@@ -178,6 +229,73 @@
   .access-workspace button,
   .pair-gate button {
     min-height: 44px;
+  }
+
+  .actions-workspace .create,
+  .campaigns-workspace .create,
+  .lead-workspace .create,
+  .issues-view .create {
+    max-width: none;
+    padding: var(--space-4);
+  }
+
+  .actions-workspace button,
+  .campaigns-workspace button,
+  .lead-workspace button,
+  .agent-office button,
+  .agent-office .ui-button,
+  .issues-view button,
+  .issues-view .ui-button {
+    min-height: 44px;
+  }
+
+  .actions-workspace input,
+  .actions-workspace select,
+  .actions-workspace textarea,
+  .campaigns-workspace input,
+  .campaigns-workspace select,
+  .campaigns-workspace textarea,
+  .lead-workspace input,
+  .lead-workspace select,
+  .lead-workspace textarea,
+  .issues-view input,
+  .issues-view select,
+  .issues-view textarea {
+    min-height: 44px;
+  }
+
+  .nav-link {
+    min-height: 44px;
+  }
+
+  .topbar .ui-icon-button,
+  .sidebar .ui-icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .actions-workspace .table-responsive td button,
+  .campaigns-workspace .table-responsive td button,
+  .lead-workspace .table-responsive td button,
+  .agent-office .table-responsive td button {
+    min-height: 40px;
+  }
+
+  .cancel-confirm .row {
+    align-items: stretch;
+  }
+
+  .cancel-confirm .row .ui-button {
+    flex: 1 1 180px;
+  }
+
+  .issues-filters,
+  .agent-filters {
+    align-items: stretch;
+  }
+
+  .issues-pagination {
+    justify-content: flex-start;
   }
 
   .runtime-workspace .filters,
@@ -209,6 +327,36 @@
   .runtime-workspace .ui-page-actions,
   .settings-workspace .ui-page-actions {
     width: 100%;
+  }
+
+  .home-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .home-form-actions .ui-button,
+  .request-form-actions .ui-button {
+    min-height: 44px;
+  }
+
+  .request-form-actions .ui-button {
+    width: 100%;
+  }
+
+  .issues-filter-actions .ui-button,
+  .issues-pagination .ui-button,
+  .actions-workspace .create button[type="submit"],
+  .campaigns-workspace .create button[type="submit"],
+  .lead-workspace .create button[type="submit"] {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+
+  .agent-office .agent-filter-action .ui-button {
+    width: 100%;
+  }
+
+  .topbar-title {
+    max-width: 34vw;
   }
 }
 
@@ -242,5 +390,46 @@
 
   .runtime-workspace .overview-facts {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .language-switcher-compact > svg {
+    display: none;
+  }
+
+  .language-switcher-compact .language-switcher-select {
+    min-width: 48px;
+    padding: 0 2px;
+  }
+
+  .topbar {
+    gap: 2px;
+    padding: 0 var(--space-3);
+  }
+
+  .topbar-actions {
+    gap: 0;
+  }
+
+  .topbar-title {
+    max-width: 30vw;
+  }
+
+  .actions-workspace .table-responsive td button,
+  .campaigns-workspace .table-responsive td button,
+  .lead-workspace .table-responsive td button,
+  .agent-office .table-responsive td button,
+  .cancel-confirm .row .ui-button {
+    flex: 1 1 100%;
+    justify-content: center;
+    min-height: 44px;
+  }
+
+  .agent-zone-header {
+    flex-direction: column;
+  }
+
+  .issues-detail-meta {
+    flex-direction: column;
+    gap: var(--space-1);
   }
 }

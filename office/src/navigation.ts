@@ -15,16 +15,17 @@ import {
   ShieldCheck,
   Users,
 } from "lucide-react";
+import type { MessageKey, Translate } from "./i18n";
 
 export interface NavItem {
   to: string;
-  label: string;
+  labelKey: MessageKey;
   icon: LucideIcon;
   keywords: string;
 }
 
 export interface NavGroup {
-  label: string;
+  labelKey: MessageKey;
   items: NavItem[];
   collapsible?: boolean;
 }
@@ -33,52 +34,54 @@ export interface NavGroup {
  * Operator-intent navigation. The primary group answers "what do I want to do
  * next"; the advanced group keeps every existing operational view reachable
  * without presenting internal domain objects as the first-run experience.
+ * Labels are catalog keys so the shell, command palette and route titles share
+ * one translation source.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Workspace",
+    labelKey: "nav.group.workspace",
     items: [
       {
         to: "/",
-        label: "Home",
+        labelKey: "nav.home",
         icon: House,
         keywords: "home request compose objective start work intake",
       },
       {
         to: "/projects",
-        label: "Projects",
+        labelKey: "nav.projects",
         icon: FolderGit2,
         keywords: "repositories imports configuration",
       },
       {
         to: "/campaigns",
-        label: "Campaigns",
+        labelKey: "nav.campaigns",
         icon: Megaphone,
         keywords: "runs attempts candidates gate quality",
       },
       {
         to: "/issues",
-        label: "Issues",
+        labelKey: "nav.issues",
         icon: ListChecks,
         keywords: "github issues sync repository labels triage backlog intake",
       },
       {
         to: "/inbox",
-        label: "Decisions",
+        labelKey: "nav.decisions",
         icon: Inbox,
         keywords:
           "decision inbox approvals blocked unresolved usage needs action",
       },
       {
         to: "/agents",
-        label: "Agents",
+        labelKey: "nav.agents",
         icon: Bot,
         keywords:
           "agent office participants sessions implementer lead verifier reviewer worker tool events",
       },
       {
         to: "/settings",
-        label: "Settings",
+        labelKey: "nav.settings",
         icon: Settings,
         keywords:
           "providers models credentials runtime policy profiles access devices sessions tailscale pairing",
@@ -86,54 +89,54 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    label: "Advanced",
+    labelKey: "nav.group.advanced",
     collapsible: true,
     items: [
       {
         to: "/overview",
-        label: "Overview",
+        labelKey: "nav.overview",
         icon: Gauge,
         keywords: "overview health activity events status metrics operations",
       },
       {
         to: "/actions",
-        label: "Actions",
+        labelKey: "nav.actions",
         icon: ListChecks,
         keywords: "objectives specs checks risk frozen action",
       },
       {
         to: "/lead",
-        label: "Lead",
+        labelKey: "nav.lead",
         icon: Route,
         keywords: "assessment plan freeze authorize legacy",
       },
       {
         to: "/delegations",
-        label: "Delegations",
+        labelKey: "nav.delegations",
         icon: ShieldCheck,
         keywords: "scoped grants budgets revoke",
       },
       {
         to: "/runs",
-        label: "Runs",
+        labelKey: "nav.runs",
         icon: Play,
         keywords: "attempts queue execution",
       },
       {
         to: "/workers",
-        label: "Workers",
+        labelKey: "nav.workers",
         icon: Users,
         keywords: "registered credentials",
       },
       {
         to: "/runtime",
-        label: "Runtime",
+        labelKey: "nav.runtime",
         icon: Activity,
         keywords: "provider sessions model calls telemetry cleanup",
       },
       {
         to: "/settings?tab=access",
-        label: "Access & Devices",
+        labelKey: "nav.accessDevices",
         icon: MonitorSmartphone,
         keywords:
           "access devices sessions pairing tailscale remote trust revoke",
@@ -182,22 +185,25 @@ export function isAdvancedRoute(pathname: string, search = ""): boolean {
   );
 }
 
-export function routeLabel(pathname: string, search = ""): string {
-  if (pathname.startsWith("/requests/")) return "Request";
+export function routeLabel(
+  pathname: string,
+  search: string,
+  t: Translate,
+): string {
+  if (pathname.startsWith("/requests/")) return t("nav.request");
   if (pathname.startsWith("/projects/") && pathname.endsWith("/files"))
-    return "Project files";
-  if (pathname.startsWith("/campaigns/")) return "Campaign detail";
-  if (pathname.startsWith("/actions/")) return "Action detail";
-  if (pathname.startsWith("/agents/")) return "Agent Office participant";
+    return t("nav.projectFiles");
+  if (pathname.startsWith("/campaigns/")) return t("nav.campaignDetail");
+  if (pathname.startsWith("/actions/")) return t("nav.actionDetail");
+  if (pathname.startsWith("/agents/")) return t("nav.agentParticipant");
   if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
-    return "Access & Devices";
+    return t("nav.accessDevices");
   }
-  return (
-    NAV_ITEMS.find(
-      (item) =>
-        item.to.split("?")[0] === pathname &&
-        !item.to.includes("?") &&
-        isNavItemActive(item, pathname, search),
-    )?.label ?? "Factory Office"
+  const item = NAV_ITEMS.find(
+    (candidate) =>
+      candidate.to.split("?")[0] === pathname &&
+      !candidate.to.includes("?") &&
+      isNavItemActive(candidate, pathname, search),
   );
+  return item ? t(item.labelKey) : t("nav.factoryOffice");
 }

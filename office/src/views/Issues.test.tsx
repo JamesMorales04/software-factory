@@ -12,6 +12,7 @@ import {
   type Project,
   type ProjectGitHubBinding,
 } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { Issues } from "./Issues";
 
 const mocks = vi.hoisted(() => ({
@@ -146,11 +147,18 @@ const detail: GitHubIssueDetail = {
   body_truncated: false,
 };
 
-function renderIssues(path = "/issues?project=project-1") {
-  return render(
+function renderIssues(path = "/issues?project=project-1", locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={[path]}>
       <Issues />
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
@@ -195,6 +203,26 @@ describe("Issues", () => {
     expect(screen.getByText(/Please build the export/)).toBeDefined();
     expect(container.querySelector("script")).toBeNull();
     expect(mocks.getProjectIssue).toHaveBeenCalledWith("project-1", 1);
+  });
+
+  it("renders the connection, filters and issue table in Spanish", async () => {
+    renderIssues("/issues?project=project-1", "es");
+    expect(
+      await screen.findByRole("heading", { name: "Incidencias" }),
+    ).toBeDefined();
+    expect(screen.getByText("Conexión con GitHub")).toBeDefined();
+    expect(screen.getByText("Proyecto y repositorio")).toBeDefined();
+    expect(screen.getByText("Incidencias sincronizadas")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Sincronizar incidencias" }),
+    ).toBeDefined();
+    const title = await screen.findByRole("button", {
+      name: "Export CSV endpoint",
+    });
+    expect(screen.getByText("Mostrando 1–2 de 2")).toBeDefined();
+    expect(title.closest("td")?.getAttribute("data-label")).toBe("Título");
+    expect(screen.getAllByText("open").length).toBeGreaterThan(0);
+    expect(screen.getByText("CONNECTED")).toBeDefined();
   });
 
   it("shows a truthful empty state and runs an explicit sync", async () => {

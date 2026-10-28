@@ -21,7 +21,8 @@ import {
   type GitHubSyncState,
   type Project,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 import "./issues.css";
 
 const PAGE_SIZE = 25;
@@ -89,6 +90,7 @@ function laterDeadline(
 }
 
 export function Issues() {
+  const { t, formatDate, formatNumber } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get("project") ?? "";
   const issueNumber = searchParams.get("issue") ?? "";
@@ -158,9 +160,7 @@ export function Issues() {
         setConnectionState(nextConnection);
       } catch (cause) {
         if (active) {
-          setConnectionError(
-            message(cause, "Failed to load GitHub integration state."),
-          );
+          setConnectionError(message(cause, t("issues.error.loadState")));
         }
       } finally {
         if (active) {
@@ -173,7 +173,7 @@ export function Issues() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!projectId && projects.length > 0) {
@@ -234,9 +234,7 @@ export function Issues() {
       })
       .catch((cause) => {
         if (active) {
-          setIssuesError(
-            message(cause, "Failed to load the synchronized issue snapshot."),
-          );
+          setIssuesError(message(cause, t("issues.error.snapshot")));
         }
       })
       .finally(() => {
@@ -245,7 +243,7 @@ export function Issues() {
     return () => {
       active = false;
     };
-  }, [projectId, stateFilter, labelFilter, appliedQuery, offset, refresh]);
+  }, [projectId, stateFilter, labelFilter, appliedQuery, offset, refresh, t]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is an explicit reload token.
   useEffect(() => {
@@ -257,7 +255,7 @@ export function Issues() {
     const number = Number.parseInt(issueNumber, 10);
     if (!Number.isInteger(number) || number <= 0) {
       setDetail(null);
-      setDetailError("Issue number is invalid.");
+      setDetailError(t("issues.error.issueNumber"));
       return;
     }
     let active = true;
@@ -273,8 +271,8 @@ export function Issues() {
           setDetail(null);
           setDetailError(
             cause instanceof CoreApiError && cause.status === 404
-              ? "Issue is no longer in the synchronized snapshot."
-              : message(cause, "Failed to load the issue detail."),
+              ? t("issues.error.issueGone")
+              : message(cause, t("issues.error.detail")),
           );
         }
       })
@@ -284,7 +282,7 @@ export function Issues() {
     return () => {
       active = false;
     };
-  }, [projectId, issueNumber, refresh]);
+  }, [projectId, issueNumber, refresh, t]);
 
   function updateParams(mutate: (params: URLSearchParams) => void) {
     setSearchParams(
@@ -374,11 +372,13 @@ export function Issues() {
       setToken("");
       setConfirmDisconnect(false);
       setNotice(
-        `GitHub credential verified for ${next.connection.login ?? "the token"}. Repository access and inference are not implied.`,
+        t("issues.notice.connected", {
+          login: next.connection.login ?? t("common.unknown"),
+        }),
       );
       setRefresh((value) => value + 1);
     } catch (cause) {
-      setActionError(message(cause, "GitHub credential verification failed."));
+      setActionError(message(cause, t("issues.error.connect")));
     } finally {
       setBusy(null);
     }
@@ -394,12 +394,10 @@ export function Issues() {
       setConfirmDisconnect(false);
       setRepositories(null);
       setRepositoryPick("");
-      setNotice(
-        "GitHub connection revoked. The encrypted credential was cleared and synchronization is disabled.",
-      );
+      setNotice(t("issues.notice.disconnected"));
       setRefresh((value) => value + 1);
     } catch (cause) {
-      setActionError(message(cause, "GitHub disconnection failed."));
+      setActionError(message(cause, t("issues.error.disconnect")));
     } finally {
       setBusy(null);
     }
@@ -415,18 +413,16 @@ export function Issues() {
       if (next.rate_limited) {
         setNotice(
           next.next_allowed_at
-            ? `GitHub rate limit reached. Retry after ${formatTimestamp(next.next_allowed_at)}.`
+            ? t("issues.notice.rateLimited", {
+                date: formatDate(next.next_allowed_at),
+              })
             : next.detail,
         );
       } else if (next.repositories.length === 0) {
-        setNotice(
-          "GitHub returned no repositories visible to this credential.",
-        );
+        setNotice(t("issues.notice.noRepositories"));
       }
     } catch (cause) {
-      setActionError(
-        message(cause, "GitHub repositories could not be loaded."),
-      );
+      setActionError(message(cause, t("issues.error.repositories")));
     } finally {
       setBusy(null);
     }
@@ -459,11 +455,14 @@ export function Issues() {
       setLastSync(result.sync_state);
       setBindingOpen(false);
       setNotice(
-        `Bound ${result.binding.repo_full_name} at branch ${result.binding.default_branch}. Run a sync to import issues.`,
+        t("issues.notice.bound", {
+          repo: result.binding.repo_full_name,
+          branch: result.binding.default_branch,
+        }),
       );
       setRefresh((value) => value + 1);
     } catch (cause) {
-      setActionError(message(cause, "GitHub repository binding failed."));
+      setActionError(message(cause, t("issues.error.bind")));
     } finally {
       setBusy(null);
     }
@@ -480,13 +479,21 @@ export function Issues() {
       setRefresh((value) => value + 1);
       if (result.status === "OK") {
         setNotice(
-          `Sync completed: ${result.fetched} fetched, ${result.created} created, ${result.updated} updated, ${result.removed} removed.`,
+          t("issues.notice.syncCompleted", {
+            fetched: formatNumber(result.fetched),
+            created: formatNumber(result.created),
+            updated: formatNumber(result.updated),
+            removed: formatNumber(result.removed),
+          }),
         );
       } else {
-        setActionError(result.detail || `Sync finished with ${result.status}.`);
+        setActionError(
+          result.detail ||
+            t("issues.notice.syncStatus", { status: result.status }),
+        );
       }
     } catch (cause) {
-      setActionError(message(cause, "GitHub issue synchronization failed."));
+      setActionError(message(cause, t("issues.error.sync")));
       setRefresh((value) => value + 1);
     } finally {
       setBusy(null);
@@ -516,13 +523,13 @@ export function Issues() {
   return (
     <div className="issues-view">
       <PageHeader
-        title="Issues"
-        description="Synchronized GitHub issue snapshots for a bound Project. Issue text is untrusted and shown as plain text; Core never treats it as instructions."
+        title={t("issues.title")}
+        description={t("issues.description")}
         meta={
           <>
-            <span>Core-owned snapshots</span>
-            <span>Manual synchronization</span>
-            <span>No agent execution</span>
+            <span>{t("issues.meta.snapshots")}</span>
+            <span>{t("issues.meta.manual")}</span>
+            <span>{t("issues.meta.noExecution")}</span>
           </>
         }
         actions={
@@ -532,7 +539,7 @@ export function Issues() {
               onClick={() => setRefresh((value) => value + 1)}
               disabled={busy !== null}
             >
-              Refresh
+              {t("issues.refresh")}
             </Button>
             <Button
               variant="primary"
@@ -540,15 +547,17 @@ export function Issues() {
               disabled={!canSync}
               title={
                 backoffActive
-                  ? `GitHub rate-limit backoff until ${formatTimestamp(nextAllowed ?? "")}`
+                  ? t("issues.syncBackoffTitle", {
+                      date: formatDate(nextAllowed ?? ""),
+                    })
                   : binding === null
-                    ? "Bind a GitHub repository first"
+                    ? t("issues.syncBindFirst")
                     : connection?.configured
                       ? undefined
-                      : "Connect GitHub first"
+                      : t("issues.syncConnectFirst")
               }
             >
-              {busy === "sync" ? "Syncing…" : "Sync issues"}
+              {busy === "sync" ? t("issues.syncing") : t("issues.sync")}
             </Button>
           </>
         }
@@ -556,11 +565,11 @@ export function Issues() {
 
       {connectionError && (
         <ErrorState
-          title="GitHub integration unavailable"
+          title={t("issues.error.integrationUnavailable")}
           message={connectionError}
           action={
             <Button onClick={() => setRefresh((value) => value + 1)}>
-              Retry
+              {t("common.retry")}
             </Button>
           }
         />
@@ -578,7 +587,7 @@ export function Issues() {
 
       <Panel className="issues-panel">
         <div className="issues-panel-heading">
-          <h2>GitHub connection</h2>
+          <h2>{t("issues.connection.title")}</h2>
           {connection?.configured ? (
             <Badge tone="success">CONNECTED</Badge>
           ) : connection?.revoked_at ? (
@@ -588,61 +597,57 @@ export function Issues() {
           )}
         </div>
         {connectionLoading ? (
-          <LoadingState label="Loading GitHub connection…" />
+          <LoadingState label={t("issues.connection.loading")} />
         ) : (
           <>
             <p className="muted">
-              {connection?.detail ??
-                "Core stores the GitHub token encrypted and never returns it to Office."}
+              {connection?.detail ?? t("issues.connection.detailFallback")}
             </p>
             {connection?.login && (
               <dl className="issues-facts">
                 <div>
-                  <dt>Authenticated login</dt>
+                  <dt>{t("issues.connection.login")}</dt>
                   <dd>{connection.login}</dd>
                 </div>
                 <div>
-                  <dt>Token scopes</dt>
+                  <dt>{t("issues.connection.scopes")}</dt>
                   <dd>
                     {connection.scopes_reported
                       ? connection.scopes.length > 0
                         ? connection.scopes.join(", ")
-                        : "none reported"
-                      : "not reported by this token type"}
+                        : t("issues.connection.noneReported")
+                      : t("issues.connection.scopesUnreported")}
                   </dd>
                 </div>
                 <div>
-                  <dt>Verified at</dt>
-                  <dd>{formatTimestamp(connection.verified_at ?? "")}</dd>
+                  <dt>{t("issues.connection.verifiedAt")}</dt>
+                  <dd>{formatDate(connection.verified_at ?? "")}</dd>
                 </div>
                 <div>
-                  <dt>Credential fingerprint</dt>
+                  <dt>{t("issues.connection.fingerprint")}</dt>
                   <dd className="mono">
                     {connection.credential_fingerprint || "—"}
                   </dd>
                 </div>
                 <div>
-                  <dt>Revision</dt>
+                  <dt>{t("issues.connection.revision")}</dt>
                   <dd>{connection.revision}</dd>
                 </div>
               </dl>
             )}
-            <p className="issues-note">
-              A verified token proves authentication only. It does not prove
-              repository access, inference, quota or delivery authority.
-            </p>
+            <p className="issues-note">{t("issues.connection.note")}</p>
             {connection?.configured && (
               <details className="issues-details">
-                <summary>Replace token</summary>
+                <summary>{t("issues.connection.replace")}</summary>
                 <form className="issues-inline-form" onSubmit={onConnect}>
                   <Input
-                    label="GitHub token"
+                    label={t("issues.connection.token")}
                     type="password"
                     autoComplete="off"
                     spellCheck={false}
                     value={token}
                     onChange={(event) => setToken(event.target.value)}
-                    help="Stored encrypted by Core. Never written to browser storage and never returned by Core."
+                    help={t("issues.connection.replaceHelp")}
                     required
                   />
                   <Button
@@ -650,7 +655,9 @@ export function Issues() {
                     variant="primary"
                     disabled={busy !== null || token.trim() === ""}
                   >
-                    {busy === "connect" ? "Verifying…" : "Verify and save"}
+                    {busy === "connect"
+                      ? t("issues.connection.verifying")
+                      : t("issues.connection.verify")}
                   </Button>
                 </form>
               </details>
@@ -658,13 +665,13 @@ export function Issues() {
             {!connection?.configured && (
               <form className="issues-inline-form" onSubmit={onConnect}>
                 <Input
-                  label="GitHub token"
+                  label={t("issues.connection.token")}
                   type="password"
                   autoComplete="off"
                   spellCheck={false}
                   value={token}
                   onChange={(event) => setToken(event.target.value)}
-                  help="Use a fine-grained or classic token with repository Issues read access. Core verifies it against GitHub, stores it encrypted and never returns it."
+                  help={t("issues.connection.connectHelp")}
                   required
                 />
                 <Button
@@ -672,7 +679,9 @@ export function Issues() {
                   variant="primary"
                   disabled={busy !== null || token.trim() === ""}
                 >
-                  {busy === "connect" ? "Verifying…" : "Verify and save"}
+                  {busy === "connect"
+                    ? t("issues.connection.verifying")
+                    : t("issues.connection.verify")}
                 </Button>
               </form>
             )}
@@ -681,27 +690,24 @@ export function Issues() {
                 {confirmDisconnect ? (
                   <fieldset className="issues-confirm">
                     <legend className="issues-confirm-legend">
-                      Confirm GitHub disconnect
+                      {t("issues.connection.disconnectLegend")}
                     </legend>
-                    <p>
-                      Disconnecting clears the encrypted credential, disables
-                      the connection and stops every synchronization.
-                    </p>
+                    <p>{t("issues.connection.disconnectDescription")}</p>
                     <Button
                       variant="danger"
                       onClick={() => void onDisconnect()}
                       disabled={busy !== null}
                     >
                       {busy === "disconnect"
-                        ? "Disconnecting…"
-                        : "Confirm disconnect"}
+                        ? t("issues.connection.disconnecting")
+                        : t("issues.connection.confirmDisconnect")}
                     </Button>
                     <Button
                       variant="quiet"
                       onClick={() => setConfirmDisconnect(false)}
                       disabled={busy !== null}
                     >
-                      Cancel
+                      {t("issues.connection.cancel")}
                     </Button>
                   </fieldset>
                 ) : (
@@ -710,7 +716,7 @@ export function Issues() {
                     onClick={() => setConfirmDisconnect(true)}
                     disabled={busy !== null}
                   >
-                    Disconnect GitHub
+                    {t("issues.connection.disconnect")}
                   </Button>
                 )}
               </div>
@@ -718,13 +724,19 @@ export function Issues() {
             {connectionState && connectionState.audit.length > 0 && (
               <details className="issues-details">
                 <summary>
-                  Connection audit ({connectionState.audit.length})
+                  {t("issues.connection.audit", {
+                    count: formatNumber(connectionState.audit.length),
+                  })}
                 </summary>
                 <ul className="issues-audit">
                   {connectionState.audit.map((entry) => (
                     <li key={entry.audit_id}>
-                      <strong>{entry.action}</strong> revision {entry.revision}{" "}
-                      by {entry.actor} — {formatTimestamp(entry.created_at)}
+                      <strong>{entry.action}</strong>{" "}
+                      {t("issues.connection.auditEntry", {
+                        revision: entry.revision,
+                        actor: entry.actor,
+                        date: formatDate(entry.created_at),
+                      })}
                       {entry.detail ? ` — ${entry.detail}` : ""}
                     </li>
                   ))}
@@ -737,26 +749,26 @@ export function Issues() {
 
       <Panel className="issues-panel">
         <div className="issues-panel-heading">
-          <h2>Project and repository</h2>
+          <h2>{t("issues.project.title")}</h2>
           <Badge tone={binding ? "info" : "neutral"}>
             {binding ? "BOUND" : "UNBOUND"}
           </Badge>
         </div>
         {projectsLoading ? (
-          <LoadingState label="Loading Projects…" />
+          <LoadingState label={t("issues.project.loading")} />
         ) : projects.length === 0 ? (
           <EmptyState
-            title="No Projects are registered"
-            description="Register a Project before binding a GitHub repository."
+            title={t("issues.project.noneTitle")}
+            description={t("issues.project.noneDescription")}
           />
         ) : (
           <>
             <Select
-              label="Project"
+              label={t("issues.project.label")}
               value={projectId}
               onChange={(event) => selectProject(event.target.value)}
             >
-              <option value="">Select a Project</option>
+              <option value="">{t("issues.project.select")}</option>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.repository} ({shortId(project.id)})
@@ -766,30 +778,27 @@ export function Issues() {
             {binding ? (
               <dl className="issues-facts">
                 <div>
-                  <dt>Repository</dt>
+                  <dt>{t("issues.repository.name")}</dt>
                   <dd className="mono">{binding.repo_full_name}</dd>
                 </div>
                 <div>
-                  <dt>Default branch</dt>
+                  <dt>{t("issues.repository.branch")}</dt>
                   <dd className="mono">{binding.default_branch}</dd>
                 </div>
                 <div>
-                  <dt>Bound at</dt>
-                  <dd>{formatTimestamp(binding.bound_at)}</dd>
+                  <dt>{t("issues.repository.boundAt")}</dt>
+                  <dd>{formatDate(binding.bound_at)}</dd>
                 </div>
               </dl>
             ) : (
-              <p className="muted">
-                This Project has no GitHub repository binding. Binding does not
-                import issues until a sync runs.
-              </p>
+              <p className="muted">{t("issues.repository.unbound")}</p>
             )}
             {binding && !bindingOpen && (
               <Button
                 onClick={() => setBindingOpen(true)}
                 disabled={busy !== null}
               >
-                Change binding
+                {t("issues.repository.change")}
               </Button>
             )}
             {(!binding || bindingOpen) && (
@@ -802,12 +811,12 @@ export function Issues() {
                     title={
                       connection?.configured
                         ? undefined
-                        : "Connect GitHub to browse repositories"
+                        : t("issues.repository.connectFirst")
                     }
                   >
                     {busy === "repositories"
-                      ? "Loading repositories…"
-                      : "Browse GitHub repositories"}
+                      ? t("issues.repository.browsing")
+                      : t("issues.repository.browse")}
                   </Button>
                   {repositories?.rate_limited && (
                     <Badge tone="attention">RATE LIMITED</Badge>
@@ -815,43 +824,47 @@ export function Issues() {
                 </div>
                 {repositories && repositories.repositories.length > 0 && (
                   <Select
-                    label="Visible repository"
+                    label={t("issues.repository.visible")}
                     value={repositoryPick}
                     onChange={(event) => onPickRepository(event.target.value)}
-                    help="Private repositories are shown only when the token can access them."
+                    help={t("issues.repository.visibleHelp")}
                   >
-                    <option value="">Select a repository…</option>
+                    <option value="">
+                      {t("issues.repository.visiblePlaceholder")}
+                    </option>
                     {repositories.repositories.map((repository) => (
                       <option
                         key={repository.full_name}
                         value={repository.full_name}
                       >
                         {repository.full_name}
-                        {repository.private ? " (private)" : ""}
+                        {repository.private
+                          ? t("issues.repository.private")
+                          : ""}
                       </option>
                     ))}
                   </Select>
                 )}
                 <div className="issues-bind-fields">
                   <Input
-                    label="Owner"
+                    label={t("issues.repository.owner")}
                     value={bindingOwner}
                     onChange={(event) => setBindingOwner(event.target.value)}
-                    placeholder="owner"
+                    placeholder={t("issues.repository.ownerPlaceholder")}
                     required
                   />
                   <Input
-                    label="Repository"
+                    label={t("issues.repository.name")}
                     value={bindingRepo}
                     onChange={(event) => setBindingRepo(event.target.value)}
-                    placeholder="repository"
+                    placeholder={t("issues.repository.repoPlaceholder")}
                     required
                   />
                   <Input
-                    label="Default branch"
+                    label={t("issues.repository.branch")}
                     value={bindingBranch}
                     onChange={(event) => setBindingBranch(event.target.value)}
-                    placeholder="main"
+                    placeholder={t("issues.repository.branchPlaceholder")}
                     required
                   />
                 </div>
@@ -867,7 +880,9 @@ export function Issues() {
                       bindingBranch.trim() === ""
                     }
                   >
-                    {busy === "bind" ? "Binding…" : "Bind repository"}
+                    {busy === "bind"
+                      ? t("issues.repository.binding")
+                      : t("issues.repository.bind")}
                   </Button>
                   {binding && (
                     <Button
@@ -880,7 +895,7 @@ export function Issues() {
                       }}
                       disabled={busy !== null}
                     >
-                      Cancel
+                      {t("issues.connection.cancel")}
                     </Button>
                   )}
                 </div>
@@ -892,27 +907,37 @@ export function Issues() {
 
       <Panel className="issues-panel">
         <div className="issues-panel-heading">
-          <h2>Synchronized issues</h2>
+          <h2>{t("issues.list.title")}</h2>
           <Badge tone={statusBadge.tone}>{statusBadge.label}</Badge>
         </div>
         <div className="issues-sync-state">
           <span>
             {issues?.synced_at
-              ? `Last successful sync ${formatTimestamp(issues.synced_at)}`
-              : "Never synchronized"}
+              ? t("issues.list.lastSync", {
+                  date: formatDate(issues.synced_at),
+                })
+              : t("issues.list.neverSynced")}
           </span>
           {issues?.stale && <Badge tone="attention">STALE</Badge>}
           {issues?.truncated && (
             <Badge tone="attention">BOUNDED SNAPSHOT</Badge>
           )}
           {nextAllowed && (
-            <span>Rate limit retry after {formatTimestamp(nextAllowed)}</span>
+            <span>
+              {t("issues.list.retryAfter", {
+                date: formatDate(nextAllowed),
+              })}
+            </span>
           )}
           {backoffActive && <Badge tone="attention">BACKOFF ACTIVE</Badge>}
           {lastSync && (
             <span>
-              Last run: fetched {lastSync.fetched}, created {lastSync.created},
-              updated {lastSync.updated}, removed {lastSync.removed}
+              {t("issues.list.lastRun", {
+                fetched: formatNumber(lastSync.fetched),
+                created: formatNumber(lastSync.created),
+                updated: formatNumber(lastSync.updated),
+                removed: formatNumber(lastSync.removed),
+              })}
             </span>
           )}
         </div>
@@ -923,29 +948,25 @@ export function Issues() {
         )}
         {backoffActive && nextAllowed && (
           <p className="notice" role="status">
-            GitHub rate-limit backoff is active until{" "}
-            {formatTimestamp(nextAllowed)}. Synchronization is disabled for
-            every Project sharing this credential.
+            {t("issues.list.backoffNotice", {
+              date: formatDate(nextAllowed),
+            })}
           </p>
         )}
         {issues?.truncated && (
-          <p className="issues-note">
-            Only the first bounded issue pages are synchronized. Additional
-            GitHub issues are not displayed and deletion reconciliation is
-            suspended for this snapshot.
-          </p>
+          <p className="issues-note">{t("issues.list.truncatedNotice")}</p>
         )}
 
         {projectId === "" ? (
           <EmptyState
-            title="Select a Project"
-            description="Choose a Project to inspect its GitHub issue snapshot."
+            title={t("issues.list.selectProjectTitle")}
+            description={t("issues.list.selectProjectDescription")}
           />
         ) : (
           <>
             <form className="issues-filters" onSubmit={applyFilters}>
               <Select
-                label="State"
+                label={t("issues.filters.state")}
                 value={stateFilter}
                 onChange={(event) =>
                   selectState(event.target.value as IssueStateFilter)
@@ -953,60 +974,60 @@ export function Issues() {
               >
                 <option value="open">Open</option>
                 <option value="closed">Closed</option>
-                <option value="all">All states</option>
+                <option value="all">{t("issues.filters.allStates")}</option>
               </Select>
               <Input
-                label="Label"
+                label={t("issues.filters.label")}
                 value={labelInput}
                 onChange={(event) => setLabelInput(event.target.value)}
-                placeholder="exact label"
+                placeholder={t("issues.filters.labelPlaceholder")}
               />
               <Input
-                label="Search title or body"
+                label={t("issues.filters.search")}
                 value={queryInput}
                 onChange={(event) => setQueryInput(event.target.value)}
-                placeholder="text"
+                placeholder={t("issues.filters.searchPlaceholder")}
               />
               <div className="issues-filter-actions">
-                <Button type="submit">Apply filters</Button>
+                <Button type="submit">{t("issues.filters.apply")}</Button>
                 <Button variant="quiet" onClick={clearFilters}>
-                  Clear
+                  {t("issues.filters.clear")}
                 </Button>
               </div>
             </form>
 
             {issuesLoading ? (
-              <LoadingState label="Loading synchronized issues…" />
+              <LoadingState label={t("issues.list.loading")} />
             ) : issuesError ? (
               <ErrorState
-                title="Issue snapshot unavailable"
+                title={t("issues.list.unavailableTitle")}
                 message={issuesError}
                 action={
                   <Button onClick={() => setRefresh((value) => value + 1)}>
-                    Retry
+                    {t("common.retry")}
                   </Button>
                 }
               />
             ) : !binding ? (
               <EmptyState
-                title="No repository is bound"
-                description="Bind a GitHub repository above, then run a sync to import its issues."
+                title={t("issues.list.unboundTitle")}
+                description={t("issues.list.unboundDescription")}
               />
             ) : issues && issues.items.length === 0 ? (
               <EmptyState
                 title={
                   issues.synced_at === null
-                    ? "No issues have been synchronized"
+                    ? t("issues.list.emptyNeverTitle")
                     : labelFilter || appliedQuery || stateFilter !== "open"
-                      ? "No issues match these filters"
-                      : "GitHub reported no issues"
+                      ? t("issues.list.emptyFilteredTitle")
+                      : t("issues.list.emptyRepoTitle")
                 }
                 description={
                   issues.synced_at === null
-                    ? "Run Sync issues to fetch the first bounded snapshot for this repository."
+                    ? t("issues.list.emptyNeverDescription")
                     : stateFilter === "open" && !labelFilter && !appliedQuery
-                      ? "The last successful sync found no issues in this repository."
-                      : "Adjust the state, label or search filter."
+                      ? t("issues.list.emptyRepoDescription")
+                      : t("issues.list.emptyFilteredDescription")
                 }
                 action={
                   issues.synced_at === null && canSync ? (
@@ -1015,23 +1036,26 @@ export function Issues() {
                       onClick={() => void onSync()}
                       disabled={busy !== null}
                     >
-                      Sync issues
+                      {t("issues.sync")}
                     </Button>
                   ) : undefined
                 }
               />
             ) : issues ? (
               <>
-                <div className="issues-table-wrap">
-                  <table className="issues-table">
+                <div className="issues-table-wrap table-responsive">
+                  <table
+                    className="issues-table"
+                    aria-label={t("issues.table.label")}
+                  >
                     <thead>
                       <tr>
-                        <th scope="col">#</th>
-                        <th scope="col">Title</th>
-                        <th scope="col">State</th>
-                        <th scope="col">Labels</th>
-                        <th scope="col">Author</th>
-                        <th scope="col">Updated</th>
+                        <th scope="col">{t("issues.table.number")}</th>
+                        <th scope="col">{t("issues.table.title")}</th>
+                        <th scope="col">{t("issues.table.state")}</th>
+                        <th scope="col">{t("issues.table.labels")}</th>
+                        <th scope="col">{t("issues.table.author")}</th>
+                        <th scope="col">{t("issues.table.updated")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1044,8 +1068,13 @@ export function Issues() {
                               : undefined
                           }
                         >
-                          <td className="mono">{item.number}</td>
-                          <td>
+                          <td
+                            className="mono"
+                            data-label={t("issues.table.number")}
+                          >
+                            {item.number}
+                          </td>
+                          <td data-label={t("issues.table.title")}>
                             <button
                               type="button"
                               className="issues-title"
@@ -1054,8 +1083,10 @@ export function Issues() {
                               {item.title}
                             </button>
                           </td>
-                          <td>{issueStateBadge(item.state)}</td>
-                          <td>
+                          <td data-label={t("issues.table.state")}>
+                            {issueStateBadge(item.state)}
+                          </td>
+                          <td data-label={t("issues.table.labels")}>
                             {item.labels.length === 0 ? (
                               <span className="muted">—</span>
                             ) : (
@@ -1071,8 +1102,12 @@ export function Issues() {
                               </span>
                             )}
                           </td>
-                          <td>{item.author ?? "—"}</td>
-                          <td>{formatTimestamp(item.updated_at)}</td>
+                          <td data-label={t("issues.table.author")}>
+                            {item.author ?? "—"}
+                          </td>
+                          <td data-label={t("issues.table.updated")}>
+                            {formatDate(item.updated_at)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1080,21 +1115,25 @@ export function Issues() {
                 </div>
                 <div className="issues-pagination">
                   <span className="muted">
-                    Showing {showingFrom}–{showingTo} of {total}
+                    {t("issues.pagination.showing", {
+                      from: formatNumber(showingFrom),
+                      to: formatNumber(showingTo),
+                      total: formatNumber(total),
+                    })}
                   </span>
                   <Button
                     size="sm"
                     onClick={() => changeOffset(offset - PAGE_SIZE)}
                     disabled={offset === 0}
                   >
-                    Previous
+                    {t("issues.pagination.previous")}
                   </Button>
                   <Button
                     size="sm"
                     onClick={() => changeOffset(offset + PAGE_SIZE)}
                     disabled={showingTo >= total}
                   >
-                    Next
+                    {t("issues.pagination.next")}
                   </Button>
                 </div>
               </>
@@ -1106,18 +1145,20 @@ export function Issues() {
       {issueNumber !== "" && (
         <Panel className="issues-panel issues-detail">
           <div className="issues-panel-heading">
-            <h2>Issue detail</h2>
+            <h2>{t("issues.detail.title")}</h2>
             <Button variant="quiet" size="sm" onClick={closeIssue}>
-              Close
+              {t("issues.detail.close")}
             </Button>
           </div>
           {detailLoading ? (
-            <LoadingState label="Loading issue…" />
+            <LoadingState label={t("issues.detail.loading")} />
           ) : detailError ? (
             <ErrorState
-              title="Issue unavailable"
+              title={t("issues.detail.unavailableTitle")}
               message={detailError}
-              action={<Button onClick={closeIssue}>Close</Button>}
+              action={
+                <Button onClick={closeIssue}>{t("issues.detail.close")}</Button>
+              }
             />
           ) : detail ? (
             <>
@@ -1128,13 +1169,27 @@ export function Issues() {
                 {issueStateBadge(detail.state)}
               </div>
               <div className="issues-detail-meta">
-                <span>Author: {detail.author ?? "unknown"}</span>
-                <span>Updated {formatTimestamp(detail.updated_at)}</span>
+                <span>
+                  {t("issues.detail.author", {
+                    author: detail.author ?? t("common.unknown"),
+                  })}
+                </span>
+                <span>
+                  {t("issues.detail.updated", {
+                    date: formatDate(detail.updated_at),
+                  })}
+                </span>
                 {detail.closed_at && (
-                  <span>Closed {formatTimestamp(detail.closed_at)}</span>
+                  <span>
+                    {t("issues.detail.closed", {
+                      date: formatDate(detail.closed_at),
+                    })}
+                  </span>
                 )}
                 <span>
-                  {detail.comments} comments on GitHub (not synchronized)
+                  {t("issues.detail.comments", {
+                    count: formatNumber(detail.comments),
+                  })}
                 </span>
               </div>
               {detail.labels.length > 0 && (
@@ -1147,18 +1202,12 @@ export function Issues() {
                 </div>
               )}
               {detail.body_truncated && (
-                <p className="notice">
-                  The stored body was truncated at the Core bound. Read the full
-                  issue on GitHub.
-                </p>
+                <p className="notice">{t("issues.detail.truncated")}</p>
               )}
               <div className="issue-body">
-                {detail.body || "No description provided."}
+                {detail.body || t("issues.detail.noDescription")}
               </div>
-              <p className="issues-note">
-                Untrusted GitHub content shown as plain text. It is not an
-                instruction to Factory agents and it grants no authority.
-              </p>
+              <p className="issues-note">{t("issues.detail.untrusted")}</p>
               {isSafeHttpsUrl(detail.html_url) && (
                 <a
                   className="issues-external"
@@ -1166,7 +1215,7 @@ export function Issues() {
                   target="_blank"
                   rel="noreferrer noopener"
                 >
-                  Open issue on GitHub
+                  {t("issues.detail.open")}
                 </a>
               )}
             </>

@@ -236,6 +236,51 @@ try {
   await page.getByLabel("This device name").fill("Rust Office E2E");
   await page.getByRole("button", { name: "Enroll this device" }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
+  // Spanish shell smoke: global switch, document language, persisted locale,
+  // translated navigation, narrow drawer and document overflow. Switch back to
+  // English so the rest of the deterministic journey keeps its English oracles.
+  await page.getByLabel("Display language").selectOption("es");
+  await page.getByRole("heading", { name: "Inicio", level: 1 }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.lang), "es");
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem("factory-office-locale")),
+    "es",
+  );
+  await page
+    .locator(".sidebar-nav")
+    .getByRole("link", { name: "Campañas", exact: true })
+    .waitFor();
+  await page
+    .locator(".sidebar-nav")
+    .getByRole("link", { name: "Incidencias", exact: true })
+    .waitFor();
+  for (const width of [1440, 834, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Spanish Home must not overflow the document at ${width}px`,
+    );
+  }
+  await page
+    .getByRole("button", { name: "Mostrar u ocultar la navegación" })
+    .click();
+  await page
+    .locator(".sidebar-nav")
+    .getByRole("link", { name: "Campañas", exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "Cerrar el panel de navegación" })
+    .click();
+  await page.reload();
+  await page.getByRole("heading", { name: "Inicio", level: 1 }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.lang), "es");
+  await page.getByLabel("Idioma de visualización").selectOption("en");
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
   for (const width of [1440, 834, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     const viewport = await page.evaluate(() => ({
@@ -1155,6 +1200,41 @@ try {
     .getByText("ACCEPTED", { exact: true })
     .first()
     .waitFor({ timeout: 15000 });
+  // Spanish owned-view smoke at desktop and narrow widths. The Campaign flow
+  // above created real rows, so each route is checked after its table or floor
+  // rendered rather than only after the shell mounted.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByLabel("Display language").selectOption("es");
+  await page.getByRole("heading", { name: "Campañas", exact: true }).waitFor();
+  const spanishRoutes = [
+    ["#/campaigns", "Campañas", ".campaigns-workspace .table-responsive"],
+    ["#/issues", "Incidencias", ".issues-view"],
+    ["#/agents", "Oficina de agentes", ".agent-floor"],
+    ["#/actions", "Acciones", ".actions-workspace .table-responsive"],
+    ["#/lead", "Lead", ".lead-workspace .table-responsive"],
+  ];
+  for (const [route, heading, content] of spanishRoutes) {
+    await page.goto(`${viteUrl}/${route}`);
+    await page
+      .getByRole("heading", { name: heading, exact: true })
+      .first()
+      .waitFor();
+    await page.locator(content).first().waitFor({ timeout: 15000 });
+    for (const width of [834, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const viewport = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      assert.equal(
+        viewport.scrollWidth,
+        viewport.clientWidth,
+        `Spanish ${heading} must not overflow the document at ${width}px`,
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+
   assert.deepEqual(
     pageErrors,
     [],
