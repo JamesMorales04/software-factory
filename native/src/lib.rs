@@ -31,3 +31,5 @@ pub mod sse;
 pub mod telemetry;
 pub mod workspace;
 pub mod workspace_archive;
+
+pub mod device_pairing;
