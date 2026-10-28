@@ -12,6 +12,7 @@ import {
 } from "./coreApi";
 import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
+import { AgentOffice } from "./views/AgentOffice";
 import { CampaignDetail } from "./views/CampaignDetail";
 import { Campaigns } from "./views/Campaigns";
 import { DecisionInbox } from "./views/DecisionInbox";
@@ -198,6 +199,8 @@ export function App() {
         <Route path="/delegations" element={<Delegations />} />
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
+        <Route path="/agents" element={<AgentOffice />} />
+        <Route path="/agents/:participantId" element={<AgentOffice />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/workers" element={<Workers />} />
         <Route path="/runtime" element={<Runtime />} />

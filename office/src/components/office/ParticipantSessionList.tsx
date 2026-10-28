@@ -1,11 +1,28 @@
-import type { ProviderSession } from "../../coreApi";
+import type { ParticipantSession, ProviderSession } from "../../coreApi";
 import { formatCostMicros, formatTimestamp, shortId } from "../../format";
 import { EmptyState } from "../ui/Surface";
 import { StatusBadge } from "./StatusBadge";
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "CLEANED", "ORPHANED"]);
 
-function cleanupState(session: ProviderSession) {
+export type PresentedSession = ProviderSession | ParticipantSession;
+
+export function cleanupLabel(session: PresentedSession) {
+  if (session.cleanup === "RECORDED" && session.cleanup_receipt) {
+    return <code>{session.cleanup_receipt}</code>;
+  }
+  if (session.cleanup === "RECORDED") {
+    return <span className="muted">recorded (receipt withheld)</span>;
+  }
+  if (session.cleanup === "MISSING") {
+    return <span className="warning">no cleanup receipt</span>;
+  }
+  if (session.cleanup === "UNRECOGNIZED") {
+    return <span className="warning">unrecognized cleanup receipt</span>;
+  }
+  if (session.cleanup === "PENDING") {
+    return <span className="muted">not recorded yet</span>;
+  }
   if (session.cleanup_receipt) {
     return <code>{session.cleanup_receipt}</code>;
   }
@@ -21,7 +38,7 @@ export function ParticipantSessionList({
   emptyDescription = "No provider session is recorded for this scope.",
   showAttempt = true,
 }: {
-  sessions: ProviderSession[];
+  sessions: PresentedSession[];
   emptyTitle?: string;
   emptyDescription?: string;
   showAttempt?: boolean;
@@ -78,7 +95,7 @@ export function ParticipantSessionList({
               )}
               {session.error && <div className="error">{session.error}</div>}
             </td>
-            <td>{cleanupState(session)}</td>
+            <td>{cleanupLabel(session)}</td>
             <td className="muted">{formatTimestamp(session.updated_at)}</td>
           </tr>
         ))}

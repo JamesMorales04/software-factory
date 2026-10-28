@@ -4,10 +4,12 @@
 slice: semantic tokens, light/dark themes, comfortable/compact density, the
 application shell, shared button/field/badge/surface/tooltip/dialog primitives,
 command navigation and component tests. Operational Overview, Decision Inbox,
-Action detail, the tabbed Campaign workspace, the Runtime console and the
-provider Settings workspace are implemented against Core projections. Storybook, visual regression, the full accessibility audit, the
-interactive WorkGraph, a full code-diff viewer, Agent Office and board modules
-remain later slices. Nothing here says those modules exist.
+Action detail, the tabbed Campaign workspace, the Runtime console, the
+provider Settings workspace, Agent Office and the interactive WorkGraph are
+implemented against Core projections. Storybook, visual regression, the full
+accessibility audit, a full code-diff viewer, Issues and Docs remain later
+slices. Nothing here says those modules exist beyond their documented
+read-only projections.
 
 **Product job:** the primary workspace where the Product Owner manages
 engineering objectives, decisions, autonomous agents, evidence and multiple
@@ -125,7 +127,7 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 | CommandPalette | implemented commands only, keyboard-first, empty state |
 | Timeline / EventList | durable sequence, cursor/replay awareness, redacted detail, no fabricated activity |
 | Code/DiffViewer | monospace, line wrapping control, file headers, copyable identifiers, no unexpected HTML; current Campaign view exposes only a bounded diff summary |
-| WorkGraph | dependency edges, parallel lanes, blocked/active/retry/verification states, accessible table/timeline alternatives; current Campaign view is a table projection |
+| WorkGraph | deterministic dependency layout, parallel sibling lanes, exact recorded status plus explicitly derived ready/waiting/blocked states, keyboard node selection, accessible inspector and authoritative table alternative |
 | Board | keyboard move menu, drag with pointer, no drag-only path, explicit column semantics |
 | EmptyState | explains why, offers a real next action, no decorative illustration dependency |
 | Loading / Skeleton | bounded, no layout jump, cancellation-safe |
@@ -202,9 +204,10 @@ review.
 - Component tests: Vitest 5.0.5 + Testing Library 16.3.3 + jsdom 30.1.3.
 - Data tables: TanStack Table when sorting/filtering/virtualization justifies
   it; use native tables for simple read-only projections. Not installed yet.
-- WorkGraph: compare a custom SVG/CSS graph with React Flow at the actual 1–8
-  unit bound; choose the simpler accessible option with a table/timeline
-  alternative. Do not add React Flow by default.
+- WorkGraph: a custom CSS-positioned node canvas with an SVG edge layer is
+  implemented for the 1–8 unit bound, with keyboard movement and a table
+  alternative. React Flow is not installed. No scheduling progress is inferred
+  from graph position.
 - Storybook is a component workshop, not product acceptance; evaluate it in the
   design foundation or add it only when component isolation justifies the cost.
 - Playwright + axe for real browser acceptance; visual regression only when the

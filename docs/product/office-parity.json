@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-27T17:40:00Z",
+  "updated_at": "2026-10-27T20:30:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -20,7 +20,9 @@
         "/runs",
         "/workers",
         "/runtime",
-        "/settings"
+        "/settings",
+        "/agents",
+        "/agents/:participantId"
       ],
       "core_api": [
         "GET /health",
@@ -66,7 +68,9 @@
         "GET /office/decisions",
         "POST /model/calls/{id}/resolve",
         "GET /campaigns/{id}/candidates/{candidate_id}/diff",
-        "GET /model/calls/unresolved"
+        "GET /model/calls/unresolved",
+        "GET /office/participants",
+        "GET /provider/sessions/{session_record_id}/tool_events"
       ],
       "user_actions": [
         "register a Project",
@@ -79,7 +83,10 @@
         "inspect candidates, receipts, gate, sessions, cleanup and usage",
         "configure, test and revoke provider credentials",
         "enable or disable the semantic-review policy",
-        "inspect an Action specification, checks and related Core work"
+        "inspect an Action specification, checks and related Core work",
+        "inspect recorded participants in a visual floor, table and timeline with a shared inspector",
+        "follow a participant to its Campaign, WorkUnit, Run, Attempt, candidate and Gate evidence",
+        "inspect bounded, redacted provider tool events for an exact session generation"
       ],
       "states": [
         "loading",
@@ -89,14 +96,21 @@
         "pending-gate",
         "stale-snapshot",
         "destructive-confirmation",
-        "provider-unconfigured"
+        "provider-unconfigured",
+        "stale-observation",
+        "disconnected",
+        "not-exposed",
+        "withheld-detail"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
         "scripts/compose-office-smoke.mjs",
-        "scripts/compose-onboarding-smoke.mjs"
+        "scripts/compose-onboarding-smoke.mjs",
+        "office/src/views/AgentOffice.test.tsx",
+        "office/src/components/office/ParticipantSessionList.tsx",
+        "scripts/compose-agent-office-smoke.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, the Runtime console and the provider Settings workspace are implemented. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Agent Office, Issues and Docs are tracked as later Office slices and are not claimed here."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, the Runtime console, the provider Settings workspace and Agent Office are implemented. Agent Office projects only recorded Lead, Implementer, Verifier, Reviewer and Worker records; provider tool events reuse the durable provider_tool_events ledger with a bounded allowlisted read projection. Candidate diff metadata is a bounded read-only Core projection that does not return source bodies. Issues and Docs are tracked as later Office slices and are not claimed here."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -156,13 +170,17 @@
         "GET /quality/candidates/{id}/gate",
         "GET /provider/sessions",
         "GET /lead/requests/{id}",
-        "POST /campaigns/{id}/cancel"
+        "POST /campaigns/{id}/cancel",
+        "GET /office/participants",
+        "GET /provider/sessions/{session_record_id}/tool_events"
       ],
       "user_actions": [
         "inspect the Campaign objective lifecycle WorkGraph Runs Attempts sessions candidates evidence Gate budget and recovery",
         "deep-link directly to the WorkGraph Execution Candidates Evidence Gate Budget or Events tab",
         "load the bounded candidate Git diff summary for the recorded revision",
-        "cancel a Campaign after an explicit consequence confirmation"
+        "cancel a Campaign after an explicit consequence confirmation",
+        "inspect the interactive WorkGraph dependency layout and select a WorkUnit",
+        "follow a selected WorkUnit to its exact Run, Attempt, participant session, candidate, receipts and Gate"
       ],
       "states": [
         "loading",
@@ -172,13 +190,20 @@
         "stale-snapshot",
         "pending-gate",
         "diff-unavailable",
-        "cancellation-unconfirmed"
+        "cancellation-unconfirmed",
+        "graph-inconsistent",
+        "graph-stale",
+        "missing-candidate",
+        "missing-gate-evidence"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
-        "office/src/views/CampaignDetail.test.tsx"
+        "office/src/views/CampaignDetail.test.tsx",
+        "office/src/components/office/WorkGraph.test.tsx",
+        "office/src/components/office/workGraphLayout.test.ts",
+        "scripts/compose-agent-office-smoke.mjs"
       ],
-      "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The WorkGraph is a truthful table projection, not the future interactive graph. Candidate diff metadata is bounded to changed paths and diff stat; source bodies are not rendered. Agent Office and visual WorkGraph remain later slices."
+      "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The WorkGraph now includes a deterministic dependency layout, keyboard selection and a WorkUnit inspector while preserving the authoritative table. Graph presentation states are explicitly derived from recorded task status and dependencies; malformed data is surfaced, not repaired. Candidate diff metadata is bounded to changed paths and diff stat; source bodies are not rendered. Participant, tool-event and visual Office projections are provided by Agent Office."
     },
     "CAP-051": {
       "name": "Runtime operational console",
@@ -322,16 +347,6 @@
     }
   },
   "deferred": [
-    {
-      "module": "Visual Agent Office",
-      "planned_slice": "Slice 4",
-      "reason": "Requires a durable participant/session/tool-event projection; no invented activity."
-    },
-    {
-      "module": "WorkGraph visualization",
-      "planned_slice": "Slice 4",
-      "reason": "Current Campaign detail exposes a table projection; graph/timeline requires the same durable tasks and evidence."
-    },
     {
       "module": "Issues",
       "planned_slice": "Slice 5",

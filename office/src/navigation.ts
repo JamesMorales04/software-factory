@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  Bot,
   FolderGit2,
   Gauge,
   Inbox,
@@ -77,6 +78,13 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "runs attempts candidates gate quality",
       },
       {
+        to: "/agents",
+        label: "Agent Office",
+        icon: Bot,
+        keywords:
+          "participants agents sessions implementer lead verifier reviewer worker tool events",
+      },
+      {
         to: "/runs",
         label: "Runs",
         icon: Play,
@@ -114,6 +122,7 @@ export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 export function routeLabel(pathname: string): string {
   if (pathname.startsWith("/campaigns/")) return "Campaign detail";
   if (pathname.startsWith("/actions/")) return "Action detail";
+  if (pathname.startsWith("/agents/")) return "Agent Office participant";
   return (
     NAV_ITEMS.find((item) => item.to === pathname)?.label ?? "Factory Office"
   );

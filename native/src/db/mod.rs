@@ -746,10 +746,16 @@ pub use model_calls::{
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
 };
 mod lifecycle;
+pub mod participants;
+pub use participants::{
+    ParticipantEvidence, ParticipantPage, ParticipantPageInfo, ParticipantQuery, ParticipantRecord,
+    ParticipantRoute, ParticipantSession, ParticipantSource, ParticipantUsage,
+    ProviderSessionContext, ProviderToolEventProjection, ProviderToolEventView,
+};
 mod project_configs;
 mod provider_sessions;
-pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
 mod provider_settings;
+pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
 mod runtime_settings;
 pub use project_configs::NewProjectConfig;
 pub use runtime_settings::FactorySettings;

@@ -3901,6 +3901,150 @@ async fn provider_backed_campaign_reaches_accepted_gate_with_source_and_tools() 
     .await
     .unwrap();
     assert_eq!(gate["outcome"], "ACCEPTED");
+
+    let participants: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/office/participants?campaign_id={campaign_id}&role=IMPLEMENTER"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let participants = participants["participants"].as_array().unwrap();
+    assert_eq!(participants.len(), 1, "one implementer session expected");
+    let implementer = &participants[0];
+    assert_eq!(implementer["role"], "IMPLEMENTER");
+    assert_eq!(implementer["campaign_id"], campaign_id);
+    assert_eq!(implementer["attempt_generation"], 1);
+    assert_eq!(implementer["status"], "COMPLETED");
+    assert_eq!(implementer["observation"], "FINAL");
+    assert_eq!(implementer["session"]["state"], "COMPLETED");
+    assert_eq!(implementer["session"]["cleanup"], "RECORDED");
+    assert_eq!(implementer["evidence"]["candidate_id"], candidate_id);
+    assert_eq!(implementer["evidence"]["gate_outcome"], "ACCEPTED");
+    assert!(
+        implementer["evidence"]["verifier_receipt_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        implementer["evidence"]["reviewer_receipt_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    let session_record_id = implementer["session"]["session_record_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let isolation: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/office/participants?campaign_id=other-campaign"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(isolation["participants"].as_array().unwrap().len(), 0);
+
+    let tool_events: Value = operator(
+        &client,
+        reqwest::Method::GET,
+        format!("{base_url}/provider/sessions/{session_record_id}/tool_events?limit=2"),
+        None,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(tool_events["returned"], 2);
+    assert_eq!(tool_events["has_more"], true);
+    assert_eq!(
+        tool_events["session"]["participant_id"],
+        format!("implementer:{session_record_id}")
+    );
+    let first_page = tool_events["events"].as_array().unwrap();
+    assert!(first_page.iter().all(|event| event["sequence"].is_i64()));
+    assert!(
+        first_page
+            .iter()
+            .all(|event| event["call_ref"].as_str().is_some())
+    );
+    assert!(
+        first_page
+            .iter()
+            .all(|event| event["provenance"] == "provider_tool_events")
+    );
+    let after = tool_events["next_sequence"].as_i64().unwrap();
+    let mut all_events = first_page.clone();
+    let mut after_sequence = after;
+    for _ in 0..10 {
+        let page: Value = operator(
+            &client,
+            reqwest::Method::GET,
+            format!("{base_url}/provider/sessions/{session_record_id}/tool_events?after_sequence={after_sequence}&limit=100"),
+            None,
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+        let items = page["events"].as_array().unwrap();
+        all_events.extend(items.iter().cloned());
+        if !page["has_more"].as_bool().unwrap_or(false) {
+            break;
+        }
+        after_sequence = page["next_sequence"].as_i64().unwrap();
+    }
+    assert!(all_events.iter().any(|event| event["decision"] == "DENY"));
+    assert!(all_events.iter().any(|event| event["decision"] == "ALLOW"));
+    assert!(all_events.iter().any(|event| event["decision"] == "RESULT"));
+    let mut sequences: Vec<i64> = all_events
+        .iter()
+        .map(|event| event["sequence"].as_i64().unwrap())
+        .collect();
+    let original = sequences.clone();
+    sequences.sort_unstable();
+    sequences.dedup();
+    assert_eq!(
+        sequences, original,
+        "tool events must be monotonic without duplicates"
+    );
+    let serialized = serde_json::to_string(&all_events).unwrap();
+    assert!(!serialized.contains("ordinary-file-secret"));
+    assert!(!serialized.contains("ordinary-github-secret"));
+    assert!(!serialized.contains("SUPER_SECRET"));
+    assert!(!serialized.contains("real-upstream-credential"));
+    assert!(
+        all_events
+            .iter()
+            .any(|event| event["detail_state"] == "WITHHELD"),
+        "free-form provider denial detail must be withheld"
+    );
+    for bearer in [VERIFIER_TOKEN, REVIEWER_TOKEN] {
+        let response = client
+            .get(format!(
+                "{base_url}/office/participants?campaign_id={campaign_id}"
+            ))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = client
+            .get(format!(
+                "{base_url}/provider/sessions/{session_record_id}/tool_events"
+            ))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     let session_dir = std::fs::read_dir(&provider_session_root)
         .unwrap()
         .filter_map(Result::ok)

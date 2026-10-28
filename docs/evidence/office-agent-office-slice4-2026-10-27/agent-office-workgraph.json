@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "route": "/agents",
+  "participants": [
+    "implementer",
+    "verifier",
+    "reviewer",
+    "worker"
+  ],
+  "toolEvents": true,
+  "workGraphUnits": 0,
+  "widths": [
+    1440,
+    834,
+    390
+  ],
+  "evidence": "/tmp/factory-agent-office-smoke/agent-office-workgraph.png"
+}

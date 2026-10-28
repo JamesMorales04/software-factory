@@ -13,6 +13,8 @@ const SUCCESS = new Set([
   "ENABLED",
   "AUTHENTICATED",
   "CONFIGURED",
+  "CURRENT",
+  "REGISTERED",
 ]);
 
 const ATTENTION = new Set([
@@ -28,6 +30,9 @@ const ATTENTION = new Set([
   "DENIED",
   "UNSUPPORTED",
   "DETERMINISTIC_ONLY",
+  "STALE",
+  "DISCONNECTED",
+  "WAITING",
 ]);
 
 const DANGER = new Set([

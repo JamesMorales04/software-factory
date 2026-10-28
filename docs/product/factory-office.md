@@ -81,14 +81,20 @@ for Core health, registered Workers, filtered provider sessions, measured and
 unmeasured usage, model-call reservations, audited release, cleanup, telemetry
 and explicit unexposed services. Settings is a provider and policy workspace
 for route configuration, credential lifecycle, connection diagnostics, advanced
-limits, semantic-review policy and configuration audit. Agent Office, Issues,
-Docs and the interactive WorkGraph remain unimplemented.
+limits, semantic-review policy and configuration audit. Agent Office projects
+recorded Lead, Implementer, Verifier, Reviewer and Worker participants into a
+visual office, table and timeline with a Core-backed inspector and bounded
+provider tool events. Campaign Detail now includes an interactive,
+dependency-aware WorkGraph with a keyboard-accessible node inspector while
+retaining the authoritative table. Issues, Docs and a stable `/office`
+deep-link base remain unimplemented.
 
 Known gaps:
 
 - Project, Lead, Delegations, Campaign list, Runs and Workers still use the
   legacy compatibility surface; they are migrated by module.
-- The WorkGraph is a table projection, not an interactive graph.
+- The WorkGraph visualizes recorded dependencies; it does not infer scheduling
+  progress, and malformed graph data is surfaced rather than repaired.
 - Candidate diff metadata does not include file bodies; there is no code-diff
   viewer.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
@@ -96,15 +102,18 @@ Known gaps:
 - Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
 - Runtime shows Supervisor, nested Podman and broker state as not exposed; it
   does not infer their health.
-- No visual Agent Office or shared session inspector beyond the Campaign and
-  Runtime tables.
+- Agent Office is a read-only observability experience; no stop, model switch,
+  budget change or tool invocation is exposed.
+- Provider sessions remain bounded to the latest projection; very old sessions
+  are reached by Campaign scope or exact identity rather than a global sweep.
 - Provider connection tests read model discovery only; no live coding inference
   is authorized by this slice.
 - No issue board or repository docs/wiki.
 - Hash-only routes, no stable `/office` deep-link base.
 - The design foundation is implemented; Storybook, visual regression, full
   automated accessibility and the remaining graph/board/diff components are not.
-- Polling only; no cursor/replay stream in the browser.
+- Polling only; no cursor/replay stream in the browser. A disconnected Agent
+  Office preserves and labels the last authoritative snapshot.
 - Limited filters and keyboard alternatives for the remaining legacy
   operational views.
 
