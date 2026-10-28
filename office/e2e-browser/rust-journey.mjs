@@ -1115,7 +1115,7 @@ try {
     .waitFor();
 
   await page.getByRole("tab", { name: /WorkGraph/ }).click();
-  await page.getByRole("heading", { name: /WorkGraph \(1 units\)/ }).waitFor();
+  await page.getByRole("heading", { name: /WorkGraph \(1 unit/ }).waitFor();
   const workGraphNode = page
     .locator('[data-testid^="workgraph-node-"]')
     .first();

@@ -997,7 +997,7 @@ try {
       .waitFor();
     await page.getByRole("tab", { name: /WorkGraph/ }).click();
     await page
-      .getByRole("heading", { name: /WorkGraph \(1 units\)/ })
+      .getByRole("heading", { name: /WorkGraph \(1 unit/ })
       .waitFor();
     const workGraphNode = page.getByTestId("workgraph-node-unit-1");
     await workGraphNode.waitFor();
