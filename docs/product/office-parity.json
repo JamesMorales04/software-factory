@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-28T20:00:00Z",
+  "updated_at": "2026-10-28T20:40:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -159,11 +159,11 @@
         "search, filter and page synchronized issues and read an issue body as untrusted plain text",
         "configure a default-off Project issue-intake policy with explicit repository, author, label, profile, path, R0 and budget acknowledgement",
         "select exact synchronized issue snapshots manually and acknowledge a finite batch",
-        "reconcile an eligible acknowledged issue into an ordinary REVIEW_PLAN intake proposal without starting a Campaign or calling a provider",
+        "reconcile an eligible acknowledged issue into an ordinary REVIEW_PLAN intake proposal that still requires the separate unified-intake assessment and approval; reconciliation itself never starts a Campaign or calls a provider",
         "submit a Project-scoped unified intake request with an exact execution profile revision",
-        "explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
-        "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request",
-        "follow an approved intake Campaign through Worker claim, exact candidate, verifier and semantic-reviewer receipts, deterministic Quality Gate, changed files and restart persistence",
+        "for unified intake, explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
+        "for unified intake, assess and freeze a plan, approve the exact frozen plan hash, message before freeze or withdraw the request",
+        "follow an approved unified-intake Campaign through Worker claim, exact candidate, verifier and semantic-reviewer receipts, deterministic Quality Gate, changed files and restart persistence",
         "review actionable decisions with exact revision guards, approve an exact frozen intake plan, release ambiguous model reservations, withdraw a Lead request, cancel a Campaign, and keep informational events separate",
         "import an authorized public or private GitHub repository through the existing encrypted connection and Core-managed clone",
         "import a local repository only from the operator-approved managed root, with canonical-path and symlink-escape rejection",

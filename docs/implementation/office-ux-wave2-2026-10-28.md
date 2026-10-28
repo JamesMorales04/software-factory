@@ -290,10 +290,13 @@ campaign.
   exercising the legacy and unified-intake paths, exact receipts, Gate
   `ACCEPTED` and restart persistence with a deterministic fixture model. Later
   runs at `cf42718` and `b1042ce` failed reproducibly at the unified-intake
-  Worker (`Supervisor finalize failed: 409 Conflict` after a fixture
-  `run_command` child exited `1`). The native runtime code is identical to the
-  passing tree; this is recorded as **unresolved runtime reliability debt**.
-  Stable Compose acceptance at the final candidate is **NOT CLAIMED**. See
+  Worker (`Supervisor finalize failed: 409 Conflict`). Root cause: the Core
+  operation grant lived five seconds, while the fixture's frozen `run_command`
+  took about six; the Supervisor fence cancelled the still-valid workspace on
+  grant expiry. The grant lifetime is now bounded by the maximum execution
+  runtime, with the same 500 ms Core revalidation. Compose re-verification of
+  the fix is **PENDING**; stable Compose acceptance at the final candidate is
+  **NOT CLAIMED** until it passes. See
   [the Compose evidence](../evidence/office-ux-compose-2026-10-28.md).
 
 ### Honest limits

@@ -57,6 +57,12 @@ const SESSION_COOKIE: &str = "factory_session";
 const CSRF_COOKIE: &str = "factory_csrf";
 const CSRF_HEADER: &str = "x-factory-csrf";
 
+/// Operation grants must outlive the longest bounded workspace command. The
+/// Supervisor fence still revalidates the grant against Core (and therefore
+/// against the durable attempt/lease authorization) every 500 ms, so this is
+/// not a revocation bypass.
+const WORKSPACE_OPERATION_GRANT_MILLIS: i64 = 31 * 60 * 1000;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewProject {
@@ -3883,19 +3889,36 @@ async fn candidate_pull_request_context(
         .into_iter()
         .find(|action| action.id == campaign.action_id)
         .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
-    if !candidate
+    let root_spec_matches = candidate
         .action_spec_sha256
-        .eq_ignore_ascii_case(&action.spec_sha256)
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "candidate ActionSpec hash does not match the frozen Action",
-                "kind": "SPEC_MISMATCH",
-                "candidate_id": candidate.id,
-            })),
-        )
-            .into_response());
+        .eq_ignore_ascii_case(&action.spec_sha256);
+    if !root_spec_matches {
+        // A Lead WorkUnit candidate is bound to its exact Attempt spec; the
+        // Campaign also has a root ActionSpec. Accept either the legacy root
+        // match or the exact attempt spec, and revalidate Lead lineage.
+        let (attempt_action_id, attempt_spec_sha) =
+            match app.db.attempt_spec_identity(&candidate.attempt_id).await {
+                Ok(value) => value,
+                Err(error) => return Err(api_error(error)),
+            };
+        if attempt_action_id != action.id
+            || !candidate
+                .action_spec_sha256
+                .eq_ignore_ascii_case(&attempt_spec_sha)
+        {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "candidate ActionSpec hash does not match the exact execution spec",
+                    "kind": "SPEC_MISMATCH",
+                    "candidate_id": candidate.id,
+                })),
+            )
+                .into_response());
+        }
+        if let Err(error) = app.db.validate_attempt_lineage(&candidate.attempt_id).await {
+            return Err(api_error(error));
+        }
     }
     let project = app
         .db
@@ -4459,6 +4482,31 @@ async fn request_candidate_pull_request_review(
     .into_response()
 }
 
+fn merge_gate_denial(
+    gate: Option<&factory_native::db::GateRecord>,
+) -> Option<(StatusCode, serde_json::Value)> {
+    match gate {
+        Some(gate) if gate.outcome == GateOutcome::Accepted => None,
+        Some(gate) => Some((
+            StatusCode::CONFLICT,
+            json!({
+                "error": "candidate Quality Gate is not ACCEPTED",
+                "kind": "GATE_NOT_ACCEPTED",
+                "candidate_id": gate.candidate_id,
+                "outcome": gate.outcome,
+                "reasons": gate.reasons,
+            }),
+        )),
+        None => Some((
+            StatusCode::CONFLICT,
+            json!({
+                "error": "candidate has no Quality Gate decision",
+                "kind": "GATE_NOT_ACCEPTED",
+            }),
+        )),
+    }
+}
+
 async fn merge_candidate_pull_request(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -4512,6 +4560,15 @@ async fn merge_candidate_pull_request(
             })),
         )
             .into_response();
+    }
+    // GitHub checks are not the Core Quality Gate. Delivery must never merge a
+    // candidate that the authoritative Gate has not accepted.
+    let gate = match app.db.gate_for_candidate(&context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(error) => return api_error(error),
+    };
+    if let Some((status, body)) = merge_gate_denial(gate.as_ref()) {
+        return (status, Json(body)).into_response();
     }
     let credential = match load_github_credential(&app).await {
         Ok(credential) => credential,
@@ -7059,7 +7116,12 @@ async fn worker_workspace_operation(
     {
         Ok(authorization) => {
             let now_ms = chrono::Utc::now().timestamp_millis();
-            let expires_at_ms = now_ms.saturating_add(5_000);
+            // The grant is revalidated against Core every 500 ms by the
+            // Supervisor fence. A short signature lifetime made the fence
+            // cancel commands that legitimately outlived it (for example a
+            // six-second frozen check); it must cover the maximum execution
+            // runtime plus a bounded settlement margin.
+            let expires_at_ms = now_ms.saturating_add(WORKSPACE_OPERATION_GRANT_MILLIS);
             let claims = factory_native::attempt_grant::OperationGrantClaims {
                 attempt_id: authorization.attempt_id,
                 worker_id: authorization.worker_id,
@@ -14430,6 +14492,44 @@ mod tests {
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[test]
+        fn operation_grants_outlive_the_maximum_bounded_execution() {
+            let maximum_execution_ms =
+                factory_native::execution::MAX_EXECUTION_RUNTIME.as_millis() as i64;
+            assert!(
+                WORKSPACE_OPERATION_GRANT_MILLIS >= maximum_execution_ms + 60_000,
+                "a valid command must never outlive its operation grant"
+            );
+        }
+
+        #[test]
+        fn pull_request_merge_requires_an_accepted_core_gate() {
+            use factory_native::db::GateRecord;
+            use factory_native::quality::GateOutcome;
+
+            let accepted = GateRecord {
+                candidate_id: "candidate-1".into(),
+                outcome: GateOutcome::Accepted,
+                reasons: vec![],
+                decided_at: "2026-10-28T00:00:00Z".into(),
+            };
+            assert!(merge_gate_denial(Some(&accepted)).is_none());
+
+            let repair = GateRecord {
+                candidate_id: "candidate-1".into(),
+                outcome: GateOutcome::RepairRequired,
+                reasons: vec!["repair".into()],
+                decided_at: "2026-10-28T00:00:00Z".into(),
+            };
+            let (status, body) = merge_gate_denial(Some(&repair)).expect("repair must be denied");
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
+
+            let (status, body) = merge_gate_denial(None).expect("missing gate must be denied");
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["kind"], "GATE_NOT_ACCEPTED");
         }
     }
 }

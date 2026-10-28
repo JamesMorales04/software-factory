@@ -19,7 +19,7 @@ inference was used.
 | [40750678825](https://github.com/JamesMorales04/software-factory/actions/runs/40750678825) | `b4a15b6` | PASS | integrated Wave 2: legacy candidate `4a869af6…`; intake request `cce4f85e…`, Campaign `5bb3a2d6…`, attempt `f663d098…`, candidate `d89b6417…` at `50429082…`, verifier `32cbef7a…`, reviewer `cc8ea452…`, Gate `ACCEPTED`, restart persistence `true` |
 | [40752448629](https://github.com/JamesMorales04/software-factory/actions/runs/40752448629) | `cf42718` | CANCELLED | hung acceptance step; not evidence |
 | [40754605706](https://github.com/JamesMorales04/software-factory/actions/runs/40754605706) | `cf42718` | FAIL | intake attempt `9847e28f…` FAILED; Worker `Supervisor finalize failed: 409 Conflict` |
-| [40757937905](https://github.com/JamesMorales04/software-factory/actions/runs/40757937905) | `b1042ce` | FAIL | intake attempt `999611fa…` FAILED; child execution exit `1`, finalize `409` |
+| [40757937905](https://github.com/JamesMorales04/software-factory/actions/runs/40757937905) | `b1042ce` | FAIL | intake attempt `999611fa…` FAILED; intake child execution exited `0` after ~6 s, but its 5 s operation grant had expired and the Supervisor fence cancelled the workspace; finalize `409` |
 
 The `b4a15b6` tree contains the identical native runtime code used by
 `cf42718`/`b1042ce`; the later commits changed Office localization and the E2E
@@ -37,15 +37,24 @@ The unified-intake Campaign is assessed and approved, then its Worker fails
 before producing a candidate:
 
 - Worker log: `sandbox execution failed: Supervisor finalize failed: 409 Conflict`
-- runtime broker: a child execution for the intake workspace finishes with
-  `exit_code=Some(1)` before finalize
+- runtime broker: the intake child execution actually exits `0` after about six
+  seconds; the earlier `exit_code=Some(1)` child belonged to a different
+  workspace
 - Core projection: one intake Attempt `FAILED`, no candidate, no receipts
 
 The fixture provider writes `src/provider.txt`, then issues a frozen
-`run_command` grep. The workspace is not in the `Allocated` state expected by
-finalize when the provider turn ends. Root cause is not yet established; the
-Supervisor `finalize_workspace` contract only reports `Conflict`, so the exact
-state transition is not visible in the current logs.
+`run_command` grep that takes about six seconds. Core issued the operation grant
+with a five-second lifetime. The Supervisor operation fence polls Core every
+500 ms; once the grant expired it cancelled the still-valid workspace with
+`cancel_active`, leaving a cancellation marker, and the subsequent finalize
+returned `409 Conflict`. This is a real Core/Supervisor contract defect, not a
+model or fixture failure.
+
+The fix extends the signed operation grant to the maximum bounded execution
+runtime plus a settlement margin. The fence still revalidates the grant and the
+durable attempt/lease authorization with Core every 500 ms, so revocation is
+not weakened. The fix must be re-verified by a supported Compose run; this
+document does not claim that re-verification yet.
 
 ## What the passing runs exercised
 
