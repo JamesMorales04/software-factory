@@ -729,6 +729,10 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/settings/providers/{provider}/test",
             post(test_provider_connection),
         )
+        .route(
+            "/settings/providers/{provider}/models",
+            get(provider_models),
+        )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/projects", get(projects).post(register_project))
         .route(
@@ -879,6 +883,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route(
             "/settings/providers/{provider}/test",
             post(test_provider_connection),
+        )
+        .route(
+            "/settings/providers/{provider}/models",
+            get(provider_models),
         )
         .route("/settings/providers/{provider}/audit", get(provider_audit))
         .route("/worker/provider_profile", get(worker_provider_profile))
@@ -1054,7 +1062,8 @@ impl App {
                 return None;
             }
         };
-        if !settings.enabled || settings.kind != "opencode" {
+        let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind)?;
+        if !settings.enabled || !adapter.supports_chat_completions() {
             return None;
         }
         let credential =
@@ -1101,6 +1110,7 @@ impl App {
             evaluation_policy,
             global_policy,
             allow_loopback_http,
+            bound_role: None,
         };
         match factory_native::model_gateway::ModelGateway::new(config) {
             Ok(gateway) => Some(gateway),
@@ -1108,6 +1118,103 @@ impl App {
                 tracing::warn!(%error, "provider settings did not produce a valid model gateway");
                 None
             }
+        }
+    }
+
+    fn core_model_caps() -> Result<factory_native::model_routing::CoreModelCaps, String> {
+        factory_native::model_routing::CoreModelCaps::from_env()
+    }
+
+    /// Build the exact bounded gateway for a declared profile role. A missing
+    /// master key, provider, credential, adapter or model is a typed error; it
+    /// is never a silent fallback to the legacy default gateway.
+    async fn gateway_for_role(
+        &self,
+        role: factory_native::execution_profile::ExecutionRole,
+        route: &factory_native::execution_profile::ExecutionRoleRoute,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        use factory_native::model_routing::{RoleGatewayFactory, RouteError};
+        let caps = Self::core_model_caps().map_err(|detail| RouteError::Invalid {
+            provider: route.provider.clone(),
+            model: route.model.clone(),
+            detail,
+        })?;
+        let timeout = std::time::Duration::from_secs(
+            env_u64(
+                "FACTORY_MODEL_TIMEOUT_SECS",
+                factory_native::model_routing::DEFAULT_MODEL_TIMEOUT_SECS,
+            )
+            .map_err(|detail| RouteError::Invalid {
+                provider: route.provider.clone(),
+                model: route.model.clone(),
+                detail: detail.to_string(),
+            })?,
+        );
+        let allow_loopback_http =
+            env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        RoleGatewayFactory::new(
+            &self.db,
+            self.master_key.as_ref(),
+            caps,
+            timeout,
+            allow_loopback_http,
+        )
+        .for_role(role, route)
+        .await
+    }
+
+    /// Exact Lead gateway for a frozen intake request. Legacy, non-intake Lead
+    /// assessment keeps the deployment default gateway.
+    async fn intake_assess_gateway(
+        &self,
+        profile: &factory_native::db::ExecutionProfileRecord,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        self.gateway_for_role(
+            factory_native::execution_profile::ExecutionRole::Lead,
+            &profile.content.roles.lead,
+        )
+        .await
+    }
+
+    /// Resolve the semantic reviewer route from the exact Campaign that
+    /// produced the candidate. A Campaign without a frozen Execution Profile is
+    /// a legacy Campaign and keeps the deployment default gateway; a Campaign
+    /// with a frozen profile never falls back to a different model.
+    async fn semantic_reviewer_gateway(
+        &self,
+        candidate_id: &str,
+    ) -> Result<
+        factory_native::model_gateway::ModelGateway,
+        factory_native::model_routing::RouteError,
+    > {
+        use factory_native::model_routing::RouteError;
+        let frozen = self
+            .db
+            .frozen_profile_for_candidate(candidate_id)
+            .await
+            .map_err(|error| RouteError::Database(error.to_string()))?;
+        match frozen {
+            Some(profile) => {
+                self.gateway_for_role(
+                    factory_native::execution_profile::ExecutionRole::SemanticReviewer,
+                    &profile.content.roles.semantic_reviewer,
+                )
+                .await
+            }
+            None => self
+                .current_model_gateway()
+                .await
+                .ok_or(RouteError::Invalid {
+                    provider: String::new(),
+                    model: String::new(),
+                    detail: "the deployment default model gateway is not configured".into(),
+                }),
         }
     }
 }
@@ -1153,6 +1260,7 @@ fn model_gateway_from_env()
             evaluation_policy,
             global_policy,
             allow_loopback_http,
+            bound_role: None,
         },
     )?))
 }
@@ -1912,8 +2020,10 @@ async fn auth_rotate(
 fn provider_view(
     settings: Option<&factory_native::db::ProviderSettingsRecord>,
     catalog: &factory_native::provider_catalog::ProviderCatalogEntry,
+    discovery: Option<&factory_native::provider_catalog::ProviderModelCatalogEntry>,
 ) -> serde_json::Value {
     json!({
+        "modelDiscovery": discovery,
         "provider": catalog.provider,
         "kind": catalog.kind,
         "displayName": catalog.display_name,
@@ -1948,6 +2058,7 @@ async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap)
         Ok(stored) => stored,
         Err(error) => return api_error(error),
     };
+    let cache = app.db.provider_model_cache();
     let providers: Vec<serde_json::Value> = factory_native::provider_catalog::CATALOG
         .iter()
         .map(|catalog| {
@@ -1956,6 +2067,7 @@ async fn provider_settings_list(State(app): State<Arc<App>>, headers: HeaderMap)
                     .iter()
                     .find(|settings| settings.provider == catalog.provider),
                 catalog,
+                cache.entry(catalog.provider),
             )
         })
         .collect();
@@ -2074,12 +2186,18 @@ async fn update_provider_settings(
         input_micros_per_million: input.input_micros_per_million,
         output_micros_per_million: input.output_micros_per_million,
     };
+    let cache = app.db.provider_model_cache();
     match app
         .db
         .save_provider_settings(&write, "office-operator")
         .await
     {
-        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Ok(settings) => Json(provider_view(
+            Some(&settings),
+            catalog,
+            cache.entry(&provider),
+        ))
+        .into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -2099,12 +2217,18 @@ async fn revoke_provider_credential(
         )
             .into_response();
     };
+    let cache = app.db.provider_model_cache();
     match app
         .db
         .clear_provider_credential(&provider, "office-operator")
         .await
     {
-        Ok(settings) => Json(provider_view(Some(&settings), catalog)).into_response(),
+        Ok(settings) => Json(provider_view(
+            Some(&settings),
+            catalog,
+            cache.entry(&provider),
+        ))
+        .into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -2224,6 +2348,137 @@ async fn test_provider_connection(
         "model": settings.model,
         "modelAvailable": model_available,
         "detail": detail
+    }))
+    .into_response()
+}
+
+async fn provider_models(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(provider): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(catalog) = factory_native::provider_catalog::entry(&provider) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"unknown provider"})),
+        )
+            .into_response();
+    };
+    let settings = match app.db.provider_settings(&provider).await {
+        Ok(settings) => settings,
+        Err(factory_native::db::Error::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error":"provider is not configured",
+                    "code":"PROVIDER_NOT_CONFIGURED",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind);
+    let discovery_label = match adapter {
+        Some(adapter) => match adapter.model_discovery() {
+            factory_native::provider_adapter::ModelDiscoverySupport::OpenAiModelsEndpoint => {
+                "OPENAI_MODELS_ENDPOINT"
+            }
+            factory_native::provider_adapter::ModelDiscoverySupport::Unsupported(_) => {
+                "UNSUPPORTED"
+            }
+        },
+        None => "UNSUPPORTED",
+    };
+    let discovered_at = chrono::Utc::now().to_rfc3339();
+    let entry = match adapter {
+        Some(adapter)
+            if matches!(
+                adapter.model_discovery(),
+                factory_native::provider_adapter::ModelDiscoverySupport::OpenAiModelsEndpoint
+            ) =>
+        {
+            let Some(master_key) = app.master_key.as_ref() else {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error":"provider credential protection is not configured",
+                        "code":"CREDENTIAL_PROTECTION_UNAVAILABLE",
+                    })),
+                )
+                    .into_response();
+            };
+            let credential = match master_key
+                .decrypt(&settings.credential_ciphertext, &settings.credential_nonce)
+            {
+                Ok(credential) => match String::from_utf8(credential) {
+                    Ok(credential) => credential,
+                    Err(_) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error":"stored credential is not valid text"})),
+                        )
+                            .into_response();
+                    }
+                },
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": error})),
+                    )
+                        .into_response();
+                }
+            };
+            factory_native::telemetry::register_secret(&credential);
+            let allow_loopback_http =
+                env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+            factory_native::provider_catalog::discover_models(
+                &provider,
+                &settings.base_url,
+                &credential,
+                allow_loopback_http,
+                discovered_at,
+            )
+            .await
+        }
+        Some(_) => factory_native::provider_catalog::ProviderModelCatalogEntry {
+            provider: provider.clone(),
+            status: factory_native::provider_catalog::ProviderDiscoveryStatus::Unavailable,
+            models: Vec::new(),
+            detail: format!(
+                "the {} adapter exposes no supported model catalog",
+                catalog.display_name
+            ),
+            discovered_at,
+        },
+        None => factory_native::provider_catalog::ProviderModelCatalogEntry {
+            provider: provider.clone(),
+            status: factory_native::provider_catalog::ProviderDiscoveryStatus::Unavailable,
+            models: Vec::new(),
+            detail: format!("provider kind {} has no implemented adapter", settings.kind),
+            discovered_at,
+        },
+    };
+    app.db.record_provider_model_discovery(entry.clone());
+    let _ = app
+        .db
+        .record_provider_test(
+            &provider,
+            "office-operator",
+            &format!("model discovery: {:?} - {}", entry.status, entry.detail),
+        )
+        .await;
+    Json(json!({
+        "provider": entry.provider,
+        "status": entry.status,
+        "models": entry.models,
+        "detail": entry.detail,
+        "discoveredAt": entry.discovered_at,
+        "adapter": settings.kind,
+        "discovery": discovery_label,
     }))
     .into_response()
 }
@@ -6202,12 +6457,35 @@ async fn model_call(
         )
             .into_response();
     }
-    let Some(gateway) = app.current_model_gateway().await else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"model gateway is not configured"})),
-        )
-            .into_response();
+    let gateway = match role {
+        factory_native::db::ModelCallRole::SemanticReviewer => {
+            app.semantic_reviewer_gateway(&input.objective_id).await
+        }
+        factory_native::db::ModelCallRole::Evaluation => app
+            .current_model_gateway()
+            .await
+            .ok_or_else(|| factory_native::model_routing::RouteError::Invalid {
+                provider: String::new(),
+                model: String::new(),
+                detail: "the deployment default model gateway is not configured".into(),
+            }),
+        factory_native::db::ModelCallRole::Lead => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    };
+    let gateway = match gateway {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "MODEL_ROUTE_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
     };
     match gateway
         .call(
@@ -6253,19 +6531,19 @@ async fn model_call(
 
 fn reviewer_receipt_mechanism_allowed(
     semantic_review_enabled: bool,
-    gateway_configured: bool,
+    route_available: bool,
     mechanism: factory_native::db::ReviewMechanism,
 ) -> Result<(), &'static str> {
     if mechanism == factory_native::db::ReviewMechanism::Model {
         if !semantic_review_enabled {
             return Err("semantic review is disabled by the operator");
         }
-        if !gateway_configured {
-            return Err("semantic review requires a configured default model gateway");
+        if !route_available {
+            return Err("semantic review requires a routable semantic reviewer model route");
         }
         return Ok(());
     }
-    if semantic_review_enabled && gateway_configured {
+    if semantic_review_enabled && route_available {
         return Err("semantic review is enabled; reviewer must submit MODEL evidence");
     }
     Ok(())
@@ -6290,19 +6568,25 @@ async fn quality_receipt(State(app): State<Arc<App>>, headers: HeaderMap, body: 
             Ok(settings) => settings,
             Err(error) => return api_error(error),
         };
-        let gateway_configured = app.current_model_gateway().await.is_some();
+        let route = app.semantic_reviewer_gateway(&input.candidate_id).await;
+        let route_available = route.is_ok();
         if let Err(message) = reviewer_receipt_mechanism_allowed(
             settings.semantic_review_enabled,
-            gateway_configured,
+            route_available,
             input.mechanism,
         ) {
-            let status = if message == "semantic review requires a configured default model gateway"
-            {
-                StatusCode::SERVICE_UNAVAILABLE
-            } else {
-                StatusCode::FORBIDDEN
-            };
-            return (status, Json(json!({"error": message}))).into_response();
+            let status =
+                if message == "semantic review requires a routable semantic reviewer model route" {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::FORBIDDEN
+                };
+            let mut body = json!({"error": message});
+            if let Err(route_error) = &route {
+                body["routeCode"] = json!(route_error.code());
+                body["detail"] = json!(route_error.to_string());
+            }
+            return (status, Json(body)).into_response();
         }
     }
     let receipt = QualityReceiptInput {
@@ -7044,7 +7328,7 @@ async fn validate_intake_assess_authority(
     app: &App,
     record: &factory_native::db::IntakeRequestRecord,
     lead: &factory_native::db::LeadRequestRecord,
-) -> Result<(), Error> {
+) -> Result<factory_native::db::ExecutionProfileRecord, Error> {
     let profile =
         app.db
             .execution_profile(&record.profile_id)
@@ -7153,7 +7437,7 @@ async fn validate_intake_assess_authority(
             message: "the delegation has no matching explicit execution policy grant".into(),
         });
     }
-    Ok(())
+    Ok(profile)
 }
 
 fn build_intake_authorization(
@@ -7437,24 +7721,23 @@ async fn assess_intake_request(
             });
         }
     }
-    if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
-        return api_error(error);
-    }
-    let gateway = app.current_model_gateway().await;
-    let Some(gateway) = gateway else {
-        let error = if app.lead_fixture_assessor {
-            "the fixture assessor cannot derive executable checks for a draft Action; configure an authorized model gateway; the request was not assessed"
-        } else {
-            "no authorized model gateway is available for the bounded Lead assessment; the request was not assessed"
-        };
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": error,
-                "code": "ASSESSMENT_UNAVAILABLE",
-            })),
-        )
-            .into_response();
+    let profile = match validate_intake_assess_authority(&app, &record, &lead).await {
+        Ok(profile) => profile,
+        Err(error) => return api_error(error),
+    };
+    let gateway = match app.intake_assess_gateway(&profile).await {
+        Ok(gateway) => gateway,
+        Err(route_error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": route_error.to_string(),
+                    "code": "ASSESSMENT_UNAVAILABLE",
+                    "routeCode": route_error.code(),
+                })),
+            )
+                .into_response();
+        }
     };
     let action_spec = match app.db.intake_assessment_spec(&id).await {
         Ok(spec) => spec,
@@ -7785,6 +8068,63 @@ async fn create_execution_policy(
     }
 }
 
+/// Validate that the implementer route carried by a Campaign authorization can
+/// actually be dispatched by the Worker provider-session adapter for the
+/// configured connection. This is not a model gateway: Codex implements through
+/// the App Server and remains executable for that role.
+async fn validate_implementer_route(
+    app: &App,
+    provider: &str,
+    model: &str,
+) -> Result<(), factory_native::model_routing::RouteError> {
+    use factory_native::model_routing::RouteError;
+    let settings = app
+        .db
+        .provider_settings(provider)
+        .await
+        .map_err(|error| match error {
+            factory_native::db::Error::NotFound => RouteError::ProviderNotConfigured {
+                provider: provider.into(),
+            },
+            other => RouteError::Database(other.to_string()),
+        })?;
+    if !settings.enabled {
+        return Err(RouteError::ProviderDisabled {
+            provider: provider.into(),
+        });
+    }
+    let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind)
+        .ok_or_else(|| RouteError::AdapterUnsupported {
+            provider: provider.into(),
+            kind: settings.kind.clone(),
+            role: "implementer".into(),
+        })?;
+    if !adapter.supports_provider_session() {
+        return Err(RouteError::AdapterUnsupported {
+            provider: provider.into(),
+            kind: settings.kind.clone(),
+            role: "implementer".into(),
+        });
+    }
+    if settings.credential_ciphertext.is_empty() || settings.credential_nonce.is_empty() {
+        return Err(RouteError::CredentialUnavailable {
+            provider: provider.into(),
+        });
+    }
+    let models = factory_native::execution_profile::substantiated_models(
+        provider,
+        &settings.model,
+        &app.db.provider_model_cache(),
+    );
+    if !models.iter().any(|advertised| advertised == model) {
+        return Err(RouteError::ModelUnavailable {
+            provider: provider.into(),
+            model: model.into(),
+        });
+    }
+    Ok(())
+}
+
 async fn authorize_campaign(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -7793,6 +8133,19 @@ async fn authorize_campaign(
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if input.execution_mode == "TRUSTED_LOCAL_PROVIDER"
+        && let Err(error) = validate_implementer_route(&app, &input.provider, &input.model).await
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "IMPLEMENTER_ROUTE_UNAVAILABLE",
+                "routeCode": error.code(),
+            })),
+        )
+            .into_response();
     }
     let authorization = input.into_new();
     match app.db.authorize_campaign(&id, &authorization).await {
@@ -8807,6 +9160,13 @@ mod tests {
     }
 
     async fn test_app(path: &Path) -> Arc<App> {
+        test_app_with_master_key(path, None).await
+    }
+
+    async fn test_app_with_master_key(
+        path: &Path,
+        master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+    ) -> Arc<App> {
         Arc::new(App {
             db: Database::open(path).await.unwrap(),
             operator_token: "operator-token".into(),
@@ -8816,7 +9176,7 @@ mod tests {
             lead_fixture_assessor: false,
             lead_autonomous_start: false,
             model_gateway: None,
-            master_key: None,
+            master_key,
             github: factory_native::github::GitHubClient::production().unwrap(),
             github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
@@ -9271,6 +9631,7 @@ mod tests {
             "/core-api/settings/providers",
             "/core-api/settings/runtime",
             "/core-api/settings/providers/opencode/audit",
+            "/core-api/settings/providers/opencode/models",
             "/core-api/projects",
             "/core-api/projects/missing/config",
             "/core-api/execution-profiles",
@@ -10503,7 +10864,7 @@ mod tests {
         assert!(
             reviewer_receipt_mechanism_allowed(true, false, Model)
                 .unwrap_err()
-                .contains("configured default model gateway")
+                .contains("routable semantic reviewer model route")
         );
     }
 
@@ -10875,7 +11236,7 @@ mod tests {
         assert!(
             draft["warnings"]
                 .as_array()
-                .is_some_and(|warnings| warnings.len() >= 4)
+                .is_some_and(|warnings| warnings.len() >= 2)
         );
         assert!(
             draft["warnings"]
@@ -10883,15 +11244,6 @@ mod tests {
                 .is_some_and(|warnings| warnings.iter().any(|warning| warning
                     .as_str()
                     .is_some_and(|warning| warning.contains("not configured"))))
-        );
-        assert!(
-            draft["warnings"]
-                .as_array()
-                .is_some_and(|warnings| warnings.iter().any(|warning| warning
-                    .as_str()
-                    .is_some_and(
-                        |warning| warning.contains("role-specific routing is not applied")
-                    )))
         );
         let draft_id = draft["id"].as_str().unwrap().to_owned();
         let (status, _) = send(
@@ -10917,11 +11269,15 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{cross}");
         assert_eq!(cross["executable"], false);
         assert!(
-            cross["warnings"].as_array().is_some_and(|warnings| warnings
-                .iter()
-                .any(|warning| warning.as_str().is_some_and(|warning| warning.contains(
-                    "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
-                ))))
+            cross["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                    .as_str()
+                    .is_some_and(|warning| {
+                        warning.contains(
+                    "semanticReviewer route codex/gpt-6-luna cannot execute a one-shot model call"
+                )
+                    })))
         );
         let cross_id = cross["id"].as_str().unwrap().to_owned();
         let (status, _) = send(
@@ -11406,6 +11762,179 @@ mod tests {
         let _ = std::fs::remove_dir_all(repository);
     }
 
+    #[tokio::test]
+    async fn provider_model_discovery_is_authenticated_typed_and_real() {
+        use factory_native::db::ProviderSettingsWrite;
+        use std::io::Write;
+        use tower::ServiceExt;
+
+        unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+        let key_path = std::env::temp_dir().join(format!(
+            "factory-core-discovery-key-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let mut key_file = std::fs::File::create(&key_path).unwrap();
+        key_file.write_all("44".repeat(32).as_bytes()).unwrap();
+        drop(key_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let key =
+            factory_native::provider_secrets::ProviderSecretKey::from_file(&key_path).unwrap();
+        let _ = std::fs::remove_file(key_path);
+
+        let models = axum::Router::new().route(
+            "/v1/models",
+            axum::routing::get(|| async {
+                axum::Json(json!({
+                    "data": [{"id": "deepseek-v4.1-flash"}, {"id": "discovered-model"}]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, models).await.unwrap() });
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-discovery-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app_with_master_key(&path, Some(key.clone())).await;
+        let encrypted = key.encrypt(b"discovery-credential-123456").unwrap();
+        app.db
+            .save_provider_settings(
+                &ProviderSettingsWrite {
+                    provider: "opencode-go".into(),
+                    kind: "opencode".into(),
+                    model: "deepseek-v4.1-flash".into(),
+                    base_url: base_url.clone(),
+                    auth_mode: "api_key".into(),
+                    credential_ciphertext: encrypted.ciphertext,
+                    credential_nonce: encrypted.nonce,
+                    credential_fingerprint: encrypted.fingerprint,
+                    enabled: true,
+                    is_default: true,
+                    max_turns: 4,
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 12_000,
+                    max_cost_micros: 500_000,
+                    input_micros_per_million: 1_000,
+                    output_micros_per_million: 2_000,
+                },
+                "test-operator",
+            )
+            .await
+            .unwrap();
+        app.db
+            .save_provider_settings(
+                &ProviderSettingsWrite {
+                    provider: "codex".into(),
+                    kind: "codex".into(),
+                    model: "gpt-6-luna".into(),
+                    base_url: "https://api.openai.com/v1".into(),
+                    auth_mode: "api_key".into(),
+                    credential_ciphertext: "ciphertext".into(),
+                    credential_nonce: "nonce".into(),
+                    credential_fingerprint: "fingerprint".into(),
+                    enabled: false,
+                    is_default: false,
+                    max_turns: 4,
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 12_000,
+                    max_cost_micros: 500_000,
+                    input_micros_per_million: 1_000,
+                    output_micros_per_million: 2_000,
+                },
+                "test-operator",
+            )
+            .await
+            .unwrap();
+        let router = build_router(Arc::clone(&app));
+
+        let unauthorized = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/opencode-go/models")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/opencode-go/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let discovery: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(discovery["status"], "AVAILABLE");
+        assert_eq!(
+            discovery["models"],
+            json!(["deepseek-v4.1-flash", "discovered-model"])
+        );
+        assert_eq!(discovery["discovery"], "OPENAI_MODELS_ENDPOINT");
+        assert!(!String::from_utf8_lossy(&body).contains("discovery-credential"));
+        let cached = app.db.provider_model_cache();
+        assert_eq!(
+            cached.models("opencode-go"),
+            ["deepseek-v4.1-flash", "discovered-model"]
+        );
+
+        let codex = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/codex/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(codex.status(), StatusCode::OK);
+        let codex_body = axum::body::to_bytes(codex.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let codex_discovery: Value = serde_json::from_slice(&codex_body).unwrap();
+        assert_eq!(codex_discovery["status"], "UNAVAILABLE");
+        assert_eq!(codex_discovery["discovery"], "UNSUPPORTED");
+        assert_eq!(codex_discovery["models"], json!([]));
+        assert!(
+            codex_discovery["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("no supported model catalog"))
+        );
+        let unknown = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/settings/providers/unknown/models")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        app.db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
     mod intake_api {
         use super::*;
         use factory_native::db::{NewProjectConfig, ProviderSettingsWrite};
@@ -11537,12 +12066,27 @@ mod tests {
         }
 
         async fn setup() -> Fixture {
+            setup_with(
+                None,
+                "https://provider.example/v1",
+                "https://provider.example/v1",
+                profile_content(),
+            )
+            .await
+        }
+
+        async fn setup_with(
+            master_key: Option<&factory_native::provider_secrets::ProviderSecretKey>,
+            opencode_go_base_url: &str,
+            opencode_base_url: &str,
+            profile_content: factory_native::execution_profile::ExecutionProfileContent,
+        ) -> Fixture {
             let path = std::env::temp_dir().join(format!(
                 "factory-core-intake-{}.sqlite",
                 uuid::Uuid::new_v4()
             ));
             let repository = git_repository();
-            let app = test_app(&path).await;
+            let app = test_app_with_master_key(&path, master_key.cloned()).await;
             let project = app
                 .db
                 .register_project(&repository, "intake-project-key")
@@ -11562,21 +12106,56 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            for (provider, kind, model, is_default) in [
-                ("opencode-go", "opencode", "deepseek-v4.1-flash", true),
-                ("codex", "codex", "gpt-6-luna", false),
+            for (provider, kind, model, base_url, is_default) in [
+                (
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    opencode_go_base_url,
+                    true,
+                ),
+                (
+                    "codex",
+                    "codex",
+                    "gpt-6-luna",
+                    "https://provider.example/v1",
+                    false,
+                ),
+                (
+                    "opencode",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    opencode_base_url,
+                    false,
+                ),
             ] {
+                let encrypted = match master_key {
+                    Some(key) => {
+                        let value = format!("{provider}-credential-1234567890");
+                        let encrypted = key.encrypt(value.as_bytes()).unwrap();
+                        factory_native::provider_secrets::EncryptedCredential {
+                            ciphertext: encrypted.ciphertext,
+                            nonce: encrypted.nonce,
+                            fingerprint: encrypted.fingerprint,
+                        }
+                    }
+                    None => factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                };
                 app.db
                     .save_provider_settings(
                         &ProviderSettingsWrite {
                             provider: provider.into(),
                             kind: kind.into(),
                             model: model.into(),
-                            base_url: "https://provider.example/v1".into(),
+                            base_url: base_url.into(),
                             auth_mode: "api_key".into(),
-                            credential_ciphertext: "ciphertext".into(),
-                            credential_nonce: "nonce".into(),
-                            credential_fingerprint: "fingerprint".into(),
+                            credential_ciphertext: encrypted.ciphertext,
+                            credential_nonce: encrypted.nonce,
+                            credential_fingerprint: encrypted.fingerprint,
                             enabled: true,
                             is_default,
                             max_turns: 4,
@@ -11593,7 +12172,7 @@ mod tests {
             }
             let profile = app
                 .db
-                .create_execution_profile(&profile_content(), "owner")
+                .create_execution_profile(&profile_content, "owner")
                 .await
                 .unwrap();
             let router = build_router(Arc::clone(&app));
@@ -11614,10 +12193,20 @@ mod tests {
             uri: &str,
             body: Option<Value>,
         ) -> (StatusCode, Value) {
+            send_as(router, method, uri, "operator-token", body).await
+        }
+
+        async fn send_as(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            token: &str,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
             let mut builder = axum::http::Request::builder()
                 .method(method)
                 .uri(uri)
-                .header("authorization", "Bearer operator-token");
+                .header("authorization", format!("Bearer {token}"));
             let body = if let Some(body) = body {
                 builder = builder.header("content-type", "application/json");
                 axum::body::Body::from(body.to_string())
@@ -11763,6 +12352,183 @@ mod tests {
                 .intake_approval_context(intake_id)
                 .await
                 .unwrap()
+        }
+
+        fn master_key() -> factory_native::provider_secrets::ProviderSecretKey {
+            use std::io::Write;
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-intake-master-key-{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all("33".repeat(32).as_bytes()).unwrap();
+            drop(file);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let key =
+                factory_native::provider_secrets::ProviderSecretKey::from_file(&path).unwrap();
+            let _ = std::fs::remove_file(path);
+            key
+        }
+
+        async fn chat_upstream() -> (String, Arc<Mutex<usize>>) {
+            use axum::{Router, routing::post};
+            let hits = Arc::new(Mutex::new(0));
+            let state = hits.clone();
+            async fn chat(
+                axum::extract::State(hits): axum::extract::State<Arc<Mutex<usize>>>,
+            ) -> axum::Json<Value> {
+                *hits.lock().unwrap() += 1;
+                axum::Json(json!({
+                    "choices": [{"message": {"content": "{\"verdict\":\"approve\"}"}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+                }))
+            }
+            let app = Router::new()
+                .route("/chat/completions", post(chat))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            (url, hits)
+        }
+
+        #[tokio::test]
+        async fn semantic_review_uses_the_frozen_reviewer_route() {
+            // Only relaxes the HTTPS rule for loopback test upstreams; every
+            // payload and credential assertion below still runs.
+            unsafe { std::env::set_var("FACTORY_ALLOW_TEST_UPSTREAM", "1") };
+            let key = master_key();
+            let (lead_url, lead_hits) = chat_upstream().await;
+            let (review_url, review_hits) = chat_upstream().await;
+            let mut content = profile_content();
+            content.roles.semantic_reviewer = ExecutionRoleRoute {
+                provider: "opencode".into(),
+                model: "reviewer-model".into(),
+                reasoning: Some(ReasoningEffort::Medium),
+                max_input_tokens: 64_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 300_000,
+            };
+            let fixture = setup_with(Some(&key), &lead_url, &review_url, content).await;
+            fixture.app.db.record_provider_model_discovery(
+                factory_native::provider_catalog::ProviderModelCatalogEntry {
+                    provider: "opencode".into(),
+                    status: factory_native::provider_catalog::ProviderDiscoveryStatus::Available,
+                    models: vec!["reviewer-model".into()],
+                    detail: "test discovery".into(),
+                    discovered_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+
+            let enable = send(
+                &fixture.router,
+                "PUT",
+                "/settings/runtime",
+                Some(json!({
+                    "semanticReviewEnabled": true,
+                    "semanticReviewMaxOutputTokens": 8192,
+                })),
+            )
+            .await;
+            assert_eq!(enable.0, StatusCode::OK, "{}", enable.1);
+
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "reviewer-route-request").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id).await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "route test",
+                    "idempotency_key": "reviewer-route-approve",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+
+            let runs = fixture.app.db.runs().await.unwrap();
+            let run = runs
+                .iter()
+                .find(|run| run.campaign_id == campaign_id)
+                .unwrap();
+            let attempts = fixture.app.db.attempts().await.unwrap();
+            let attempt = attempts
+                .iter()
+                .find(|attempt| attempt.run_id == run.id)
+                .unwrap();
+            let pool = sqlx_sqlite::SqlitePool::connect_with(
+                sqlx_sqlite::SqliteConnectOptions::new()
+                    .filename(&fixture.path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at,
+                  integration,lineage_json)
+                 VALUES ('candidate-route',?1,?2,?3,?4,'worker-1',?5,0,'[]')",
+            )
+            .bind(attempt.id.clone())
+            .bind("a".repeat(64))
+            .bind("b".repeat(40))
+            .bind("c".repeat(40))
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let (status, call) = send_as(
+                &fixture.router,
+                "POST",
+                "/model/calls",
+                "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                Some(json!({
+                    "role": "semantic_reviewer",
+                    "principalId": "reviewer-1",
+                    "projectId": fixture.project_id,
+                    "objectiveId": "candidate-route",
+                    "scopeId": "candidate-route",
+                    "purpose": "semantic_review",
+                    "systemPrompt": "Return strict JSON only.",
+                    "userPrompt": "Review the candidate.",
+                    "maxOutputTokens": 2_000,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{call}");
+            assert_eq!(call["provider"], "opencode");
+            assert_eq!(call["model"], "reviewer-model");
+            assert_eq!(*review_hits.lock().unwrap(), 1);
+            assert_eq!(*lead_hits.lock().unwrap(), 0);
+
+            let frozen = fixture
+                .app
+                .db
+                .frozen_profile_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                frozen.content.roles.semantic_reviewer.model,
+                "reviewer-model"
+            );
+
+            pool.close().await;
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
         }
 
         #[tokio::test]

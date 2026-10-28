@@ -114,8 +114,15 @@ workspace derives its state from the authoritative Lead request, shows the
 frozen profile revision and plan hash, runs the bounded assessment, approves
 the exact frozen plan, appends pre-freeze operator messages and withdraws
 through the authoritative Lead boundary. It does not expose an intake-only
-terminal flag. Docs and a stable
-`/office` deep-link base remain unimplemented.
+terminal flag. Execution profiles resolve each model-backed role independently:
+the frozen Lead route runs intake assessment, the frozen Semantic Reviewer
+route runs candidate review, and the implementer route remains the Campaign
+authorization route. The profile editor and Provider Settings expose
+authenticated provider model discovery; an unavailable or unsupported catalog
+is shown as a typed state, and manual model IDs are labelled unverified
+non-executable drafts. A Codex App Server connection can implement a Campaign
+but cannot execute one-shot assessment or semantic review in this build. Docs
+and a stable `/office` deep-link base remain unimplemented.
 
 Known gaps:
 
@@ -125,6 +132,10 @@ Known gaps:
   progress, and malformed graph data is surfaced rather than repaired.
 - Candidate diff metadata does not include file bodies; there is no code-diff
   viewer.
+- Discovered-only model IDs are executable only while the current Core process
+  holds that provider discovery result; discovery is not persisted.
+- Codex one-shot assessment and semantic review remain unsupported by design;
+  a Codex route for those roles stays a non-executable draft.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
 - Decision Inbox actions are limited to Core operations with an exact decision revision: intake-plan approval, model-call resolution, Lead withdrawal and Campaign cancellation. Provider-session termination, Gate repair and full-scope Campaign authorization remain outside it; the Inbox links to the exact object and does not claim those mutations.

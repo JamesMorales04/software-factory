@@ -735,16 +735,17 @@ impl Database {
                 }
             }
             ModelCallRole::SemanticReviewer => {
-                let row: Option<(String, String, String, String, String, String)> =
+                let row: Option<(String, String, String, Option<String>, String)> =
                     sqlx::query_as::query_as(
-                        "SELECT ac.project_id,cd.implementer_id,
-                                COALESCE(ca.provider,''),COALESCE(ca.model,''),r.campaign_id,c.status
+                        "SELECT ac.project_id,cd.implementer_id,c.status,e.profile_revision_id,
+                                COALESCE(ca.provider,'') || '|' || COALESCE(ca.model,'')
                          FROM candidates cd
                          JOIN attempts a ON a.id=cd.attempt_id
                          JOIN runs r ON r.id=a.run_id
                          JOIN campaigns c ON c.id=r.campaign_id
                          JOIN actions ac ON ac.id=c.action_id
                          LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+                         LEFT JOIN lead_start_evidence e ON e.campaign_id=c.id
                          WHERE cd.id=?1",
                     )
                     .bind(&input.objective_id)
@@ -753,10 +754,9 @@ impl Database {
                 let Some((
                     project_id,
                     implementer_id,
-                    provider,
-                    model,
-                    _campaign_id,
                     campaign_status,
+                    profile_revision_id,
+                    legacy_route,
                 )) = row
                 else {
                     return Err(Error::NotFound);
@@ -774,9 +774,44 @@ impl Database {
                         "implementer cannot request an independent review".into(),
                     ));
                 }
-                if !provider.is_empty() && (provider != input.provider || model != input.model) {
+                // A Campaign started from a frozen Execution Profile must use
+                // the exact semanticReviewer route declared by that immutable
+                // revision. The Campaign authorization only carries the
+                // implementer route and is a legacy fallback, never a
+                // substitute for a frozen profile.
+                let route = match profile_revision_id {
+                    Some(revision_id) => {
+                        let row: Option<(String,)> = sqlx::query_as::query_as(
+                            "SELECT content_json FROM execution_profile_revisions
+                             WHERE revision_id=?1",
+                        )
+                        .bind(&revision_id)
+                        .fetch_optional(&mut *transaction)
+                        .await?;
+                        let Some((content_json,)) = row else {
+                            return Err(Error::Forbidden(
+                                "frozen execution profile revision is missing".into(),
+                            ));
+                        };
+                        let content: crate::execution_profile::ExecutionProfileContent =
+                            serde_json::from_str(&content_json).map_err(|_| {
+                                Error::Conflict("stored execution profile content is invalid")
+                            })?;
+                        (
+                            content.roles.semantic_reviewer.provider,
+                            content.roles.semantic_reviewer.model,
+                        )
+                    }
+                    None => {
+                        let (provider, model) = legacy_route.split_once('|').ok_or(
+                            Error::Forbidden("review model call has no frozen route".into()),
+                        )?;
+                        (provider.to_owned(), model.to_owned())
+                    }
+                };
+                if !route.0.is_empty() && (route.0 != input.provider || route.1 != input.model) {
                     return Err(Error::Forbidden(
-                        "review model call route differs from the campaign authorization".into(),
+                        "review model call route differs from the frozen reviewer route".into(),
                     ));
                 }
             }

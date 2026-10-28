@@ -456,13 +456,15 @@ async fn model_outcome(
     };
     let status = response.status();
     if !status.is_success() {
+        let detail = response.text().await.unwrap_or_default();
+        let detail = bounded(&factory_native::telemetry::redact(&detail), 300);
         return Ok(failed_model_outcome(
             &commit_sha,
             &tree_sha,
             candidate_id,
             ReceiptResult::NotTested,
             EvidenceKind::Unknown,
-            &format!("semantic model call failed with HTTP {status}"),
+            &format!("semantic model call failed with HTTP {status}: {detail}"),
             None,
         ));
     }

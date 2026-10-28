@@ -34,6 +34,9 @@ pub struct ModelGatewayConfig {
     pub evaluation_policy: ModelCallPolicy,
     pub global_policy: ModelCallPolicy,
     pub allow_loopback_http: bool,
+    /// A role-scoped gateway accepts only this role. The legacy default
+    /// gateway keeps `None`.
+    pub bound_role: Option<ModelCallRole>,
 }
 
 impl std::fmt::Debug for ModelGatewayConfig {
@@ -109,12 +112,34 @@ impl ModelGateway {
         &self.config.model
     }
 
+    pub fn bound_role(&self) -> Option<ModelCallRole> {
+        self.config.bound_role
+    }
+
+    /// The effective role policy after route, provider and Core intersection.
+    pub fn role_policy(&self, role: ModelCallRole) -> ModelCallPolicy {
+        match role {
+            ModelCallRole::Lead => self.config.lead_policy,
+            ModelCallRole::SemanticReviewer => self.config.reviewer_policy,
+            ModelCallRole::Evaluation => self.config.evaluation_policy,
+        }
+    }
+
     pub async fn call(
         &self,
         database: &Database,
         request: ModelCallRequest<'_>,
     ) -> Result<ModelCallResult, ModelGatewayError> {
         validate_request(&request)?;
+        if let Some(bound) = self.config.bound_role
+            && bound != request.role
+        {
+            return Err(ModelGatewayError::Invalid(format!(
+                "this gateway is bound to the {} role and cannot execute a {} request",
+                bound.as_str(),
+                request.role.as_str()
+            )));
+        }
         let request_sha256 = request_digest(&self.config, &request);
         let estimated_input_tokens = estimate_tokens(request.system_prompt, request.user_prompt);
         let estimated_cost_micros = estimate_cost(
@@ -122,11 +147,7 @@ impl ModelGateway {
             estimated_input_tokens,
             request.max_output_tokens,
         );
-        let policy = match request.role {
-            ModelCallRole::Lead => self.config.lead_policy,
-            ModelCallRole::SemanticReviewer => self.config.reviewer_policy,
-            ModelCallRole::Evaluation => self.config.evaluation_policy,
-        };
+        let policy = self.role_policy(request.role);
         let decision = database
             .authorize_model_call(&NewModelCallAuthorization {
                 role: request.role,
@@ -515,6 +536,7 @@ mod tests {
             evaluation_policy: policy(200_000, 8_192, 2_000_000),
             global_policy: policy(2_000_000, 100_000, 10_000_000),
             allow_loopback_http: true,
+            bound_role: None,
         }
     }
 
@@ -655,6 +677,7 @@ mod integration_tests {
                 max_cost_micros: 10_000_000,
             },
             allow_loopback_http: true,
+            bound_role: None,
         })
         .unwrap()
     }

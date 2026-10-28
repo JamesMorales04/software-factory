@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-28T18:10:00Z",
+  "updated_at": "2026-10-28T18:20:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -65,6 +65,7 @@
         "GET /settings/providers",
         "PUT /settings/providers/{provider}",
         "POST /settings/providers/{provider}/test",
+        "GET /settings/providers/{provider}/models",
         "DELETE /settings/providers/{provider}/credential",
         "GET /settings/runtime",
         "PUT /settings/runtime",
@@ -199,7 +200,7 @@
         "office/e2e-browser/intake-journey.mjs",
         "office/src/views/DecisionInbox.test.tsx"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Live provider inference, Compose acceptance for the intake path, aggregate token/cost accounting, role-specific routing beyond the single default gateway and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. The legacy Compose stack E2E passes. Docs remain a later slice. Decision Inbox now exposes only Core-backed actions with exact identity guards: approval of a frozen intake plan requires the exact plan hash/profile revision and explicit confirmation; ambiguous model reservations can be released; Lead withdrawal and Campaign cancellation require a reason and confirmation; every mutating action re-reads /office/decisions and aborts when the item revision changed or disappeared. Informational events remain separate and never render action controls. Full-scope Campaign authorization is not posted from the Inbox. Real browser acceptance for the new Inbox actions remains pending."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Exact per-role routing is implemented: the frozen profile Lead route serves intake assessment, the frozen Semantic Reviewer route serves candidate review through candidate → Campaign → start evidence, and the implementer route remains the Campaign authorization route. A Codex App Server connection is executable for implementation but not one-shot assessment/review. Discovered-only model IDs depend on the current Core process discovery cache. Live provider inference, Compose acceptance for the intake path, aggregate token/cost accounting and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. The legacy Compose stack E2E passes. Docs remain a later slice. Decision Inbox now exposes only Core-backed actions with exact identity guards: approval of a frozen intake plan requires the exact plan hash/profile revision and explicit confirmation; ambiguous model reservations can be released; Lead withdrawal and Campaign cancellation require a reason and confirmation; every mutating action re-reads /office/decisions and aborts when the item revision changed or disappeared. Informational events remain separate and never render action controls. Full-scope Campaign authorization is not posted from the Inbox. Real browser acceptance for the new Inbox actions remains pending."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -383,6 +384,7 @@
         "GET /settings/providers",
         "PUT /settings/providers/{provider}",
         "POST /settings/providers/{provider}/test",
+        "GET /settings/providers/{provider}/models",
         "DELETE /settings/providers/{provider}/credential",
         "GET /settings/providers/{provider}/audit",
         "GET /settings/runtime",
@@ -393,7 +395,7 @@
         "save or replace a provider credential without reading it back",
         "revoke a credential after explicit consequence confirmation",
         "set the default route and advanced token cost and rate limits",
-        "test provider model discovery without claiming coding inference",
+        "discover the real provider model catalog without claiming coding inference",
         "enable or disable semantic review policy and inspect configuration audit history"
       ],
       "states": [
@@ -408,13 +410,15 @@
         "connection-denied",
         "connection-unreachable",
         "connection-unsupported",
+        "model-discovery-unavailable",
+        "unverified-model",
         "not-tested"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
         "office/src/views/Settings.test.tsx"
       ],
-      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test reads the provider model list only and is not coding inference. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
+      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test and model discovery read provider metadata only and are not coding inference. `GET /settings/providers/{provider}/models` returns a typed AVAILABLE or UNAVAILABLE catalog with a bounded model list, no proxy and no redirects; Codex App Server discovery is UNAVAILABLE by design. Discovery is an in-memory Core cache and is not persisted. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",
@@ -438,6 +442,7 @@
         "GET /settings/providers",
         "PUT /settings/providers/{provider}",
         "POST /settings/providers/{provider}/test",
+        "GET /settings/providers/{provider}/models",
         "DELETE /settings/providers/{provider}/credential",
         "GET /projects",
         "POST /projects",

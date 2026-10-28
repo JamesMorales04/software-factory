@@ -215,3 +215,21 @@ Office typecheck/lint/test/build, and a Chromium layout diagnostic against a
 mock Core at 1440/390/320 px with zero horizontal overflow and zero console
 errors. Real Core/Compose browser acceptance and independent verification are
 `NOT_TESTED`; the mock-Core diagnostic is not acceptance evidence.
+### Lane R — role routing (implementation result, 2026-10-28)
+
+Exact per-role routing is implemented on
+`campaign/office-ux-routing-20261028`. The frozen Lead route serves intake
+assessment, the frozen Semantic Reviewer route is resolved from candidate →
+Campaign → immutable start evidence, and the implementer route remains the
+Campaign authorization route. Profiles are executable only when every role’s
+provider, credential, adapter and substantiated model resolve. Codex remains an
+implementer-only adapter; a Codex Lead/reviewer route is a truthful
+non-executable draft. Provider model discovery is a real authenticated
+`GET /settings/providers/{provider}/models` call with typed `UNAVAILABLE`
+outcomes and a process-local cache.
+
+Recorded evidence is limited to Rust module/API tests and Office component
+tests. No live provider call, Compose run or browser acceptance was performed
+for this lane; see
+[role routing](office-ux-role-routing-2026-10-28.md). Independent acceptance
+remains pending.

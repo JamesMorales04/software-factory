@@ -16,6 +16,7 @@ import {
   coreApi,
   type FactorySettings,
   type ProviderAudit,
+  type ProviderModelCatalogEntry,
   type ProviderTestResult,
   type ProviderView,
 } from "../coreApi";
@@ -76,6 +77,11 @@ function ProviderCard({
   const [audit, setAudit] = useState<ProviderAudit[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState(false);
+  const [catalog, setCatalog] = useState<ProviderModelCatalogEntry | null>(
+    provider.modelDiscovery,
+  );
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
 
   useEffect(() => {
     setModel(provider.model);
@@ -88,6 +94,7 @@ function ProviderCard({
     setMaxCost(provider.maxCostMicros);
     setInputRate(provider.inputMicrosPerMillion);
     setOutputRate(provider.outputMicrosPerMillion);
+    setCatalog(provider.modelDiscovery);
   }, [provider]);
 
   const refreshAudit = useCallback(async () => {
@@ -139,6 +146,25 @@ function ProviderCard({
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function discoverModels() {
+    setDiscoveryBusy(true);
+    setDiscoveryError(null);
+    try {
+      const result = await coreApi.listProviderModels(provider.provider);
+      setCatalog(result);
+      await onChanged();
+      await refreshAudit();
+    } catch (cause) {
+      setDiscoveryError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Model discovery failed.",
+      );
+    } finally {
+      setDiscoveryBusy(false);
     }
   }
 
@@ -259,6 +285,68 @@ function ProviderCard({
           status="NOT_TESTED"
           detail="No paid inference is authorized or proven by a /models response."
         />
+      </section>
+
+      <section aria-label="Model catalog">
+        <div className="section-heading">
+          <div>
+            <h3>Model catalog</h3>
+            <span className="muted">
+              A real provider catalog substantiates model IDs. It is discovery,
+              not proof of coding inference.
+            </span>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || discoveryBusy || !provider.configured}
+            onClick={() => void discoverModels()}
+          >
+            {discoveryBusy ? "Discovering…" : "Discover models"}
+          </Button>
+        </div>
+        {discoveryError && (
+          <p className="error" role="alert">
+            {discoveryError}
+          </p>
+        )}
+        {catalog === null ? (
+          <p className="muted">
+            No model discovery is recorded in this Core process.{" "}
+            {provider.configured
+              ? "Run discovery to read the provider catalog."
+              : "Configure the connection first."}
+          </p>
+        ) : (
+          <div>
+            <p>
+              <StatusBadge status={catalog.status} />{" "}
+              <span className="muted">
+                {catalog.detail} · {formatTimestamp(catalog.discoveredAt)}
+              </span>
+            </p>
+            {catalog.status === "AVAILABLE" && catalog.models.length > 0 ? (
+              <ul className="settings-model-catalog">
+                {catalog.models.map((discovered) => (
+                  <li key={discovered}>
+                    <code>{discovered}</code>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => setModel(discovered)}
+                    >
+                      Use
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">
+                No model IDs were returned. Core does not invent them.
+              </p>
+            )}
+          </div>
+        )}
       </section>
 
       {error && (

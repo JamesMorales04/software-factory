@@ -449,6 +449,11 @@ pub struct Database {
     /// async gate so callers never hold a blocking lock or a connection mutex
     /// across an await. Reads continue under WAL.
     write_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Process-local provider model discovery cache. It is not authoritative
+    /// state: it can only substantiate a model ID while the provider connection
+    /// is enabled, credentialed and has an implemented adapter. A poisoned or
+    /// empty cache fails closed.
+    provider_models: Arc<std::sync::RwLock<crate::provider_catalog::ProviderModelCache>>,
 }
 
 impl Database {
@@ -481,7 +486,31 @@ impl Database {
         Ok(Self {
             pool,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            provider_models: Arc::new(std::sync::RwLock::new(
+                crate::provider_catalog::ProviderModelCache::default(),
+            )),
         })
+    }
+
+    /// Snapshot the process-local provider model catalog. Cloning releases the
+    /// lock before any await so no blocking guard crosses an async boundary.
+    pub fn provider_model_cache(&self) -> crate::provider_catalog::ProviderModelCache {
+        match self.provider_models.read() {
+            Ok(cache) => cache.clone(),
+            Err(_) => crate::provider_catalog::ProviderModelCache::default(),
+        }
+    }
+
+    /// Record one bounded discovery outcome. An unavailable outcome replaces the
+    /// entry with an empty catalog, so stale model IDs never keep a route
+    /// executable after a failed rediscovery.
+    pub fn record_provider_model_discovery(
+        &self,
+        discovery: crate::provider_catalog::ProviderModelCatalogEntry,
+    ) {
+        if let Ok(mut cache) = self.provider_models.write() {
+            cache.record(discovery);
+        }
     }
 
     pub async fn close(&self) {

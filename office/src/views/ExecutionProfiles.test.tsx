@@ -1,7 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CoreApiError, type ExecutionProfile } from "../coreApi";
+import {
+  CoreApiError,
+  type ExecutionProfile,
+  type ProviderView,
+} from "../coreApi";
 import { ExecutionProfiles } from "./ExecutionProfiles";
 
 const mocks = vi.hoisted(() => ({
@@ -13,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   clearExecutionProfileDefault: vi.fn(),
   getProjectExecutionProfile: vi.fn(),
   listProjects: vi.fn(),
+  listProviders: vi.fn(),
+  listProviderModels: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => {
@@ -124,6 +130,75 @@ const draft: ExecutionProfile = {
   ],
 };
 
+const providerBase = {
+  provider: "opencode-go",
+  kind: "opencode",
+  displayName: "OpenCode Go",
+  defaultModel: "deepseek-v4.1-flash",
+  defaultBaseUrl: "https://opencode.ai/inference/go/openai/v1",
+  authModes: ["api_key"],
+  chatgptOauth: "NOT_APPLICABLE",
+  status: "SUPPORTED_TRUSTED_LOCAL",
+  note: "test connection",
+  configured: true,
+  enabled: true,
+  isDefault: true,
+  model: "deepseek-v4.1-flash",
+  baseUrl: "https://provider.example/v1",
+  credentialFingerprint: "fingerprint",
+  revision: 2,
+  updatedAt: "2026-10-27T10:00:00Z",
+  maxTurns: 4,
+  maxInputTokens: 100000,
+  maxOutputTokens: 12000,
+  maxCostMicros: 500000,
+  inputMicrosPerMillion: 1000,
+  outputMicrosPerMillion: 2000,
+  modelDiscovery: null,
+} satisfies ProviderView;
+
+const providers: ProviderView[] = [
+  {
+    ...providerBase,
+    provider: "opencode-go",
+    displayName: "OpenCode Go",
+    modelDiscovery: {
+      provider: "opencode-go",
+      status: "AVAILABLE",
+      models: ["deepseek-v4.1-flash", "reviewer-model"],
+      detail: "2 model(s) discovered",
+      discoveredAt: "2026-10-27T10:00:00Z",
+    },
+  },
+  {
+    ...providerBase,
+    provider: "opencode",
+    displayName: "OpenCode",
+    isDefault: false,
+    modelDiscovery: null,
+  },
+  {
+    ...providerBase,
+    provider: "codex",
+    kind: "codex",
+    displayName: "Codex App Server",
+    status: "DETERMINISTIC_ONLY",
+    note: "Codex App Server route",
+    configured: false,
+    enabled: false,
+    isDefault: false,
+    model: "gpt-6-luna",
+    modelDiscovery: {
+      provider: "codex",
+      status: "UNAVAILABLE",
+      models: [],
+      detail:
+        "the Codex App Server adapter has no OpenAI-compatible model catalog",
+      discoveredAt: "2026-10-27T10:00:00Z",
+    },
+  },
+];
+
 const project = {
   id: "project-1",
   repository: "/repo",
@@ -177,6 +252,31 @@ describe("ExecutionProfiles", () => {
       source: "GLOBAL_DEFAULT",
     });
     mocks.listProjects.mockReset().mockResolvedValue([project]);
+    mocks.listProviders.mockReset().mockResolvedValue({ providers });
+    mocks.listProviderModels
+      .mockReset()
+      .mockImplementation((provider: string) => {
+        const match = providers.find((entry) => entry.provider === provider);
+        if (match?.modelDiscovery) {
+          return Promise.resolve({
+            ...match.modelDiscovery,
+            adapter: match.kind,
+            discovery:
+              match.kind === "opencode"
+                ? "OPENAI_MODELS_ENDPOINT"
+                : "UNSUPPORTED",
+          });
+        }
+        return Promise.resolve({
+          provider,
+          status: "UNAVAILABLE",
+          models: [],
+          detail: "provider model endpoint is unavailable",
+          discoveredAt: "2026-10-27T10:00:00Z",
+          adapter: "opencode",
+          discovery: "OPENAI_MODELS_ENDPOINT",
+        });
+      });
     mockList([balanced, conservative]);
   });
 
@@ -289,6 +389,10 @@ describe("ExecutionProfiles", () => {
         "Balanced",
       ),
     );
+    expect(
+      (screen.getByLabelText("Semantic Reviewer model") as HTMLSelectElement)
+        .value,
+    ).toBe("deepseek-v4.1-flash");
   });
 
   it("sets global and project defaults with explicit scope", async () => {
@@ -318,6 +422,109 @@ describe("ExecutionProfiles", () => {
     expect(mocks.clearExecutionProfileDefault).not.toHaveBeenCalled();
   });
 
+  it("edits each role provider and selects a discovered model", async () => {
+    render(<ExecutionProfiles />);
+    await screen.findByRole("heading", {
+      name: "Execution profiles (2)",
+    });
+    await userEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    await waitFor(() =>
+      expect(mocks.listProviderModels).toHaveBeenCalledWith("opencode-go"),
+    );
+    const providerSelect = screen.getByLabelText(
+      "Semantic Reviewer provider",
+    ) as HTMLSelectElement;
+    expect(providerSelect.value).toBe("opencode-go");
+    expect(
+      Array.from(providerSelect.options).map((option) => option.value),
+    ).toEqual(expect.arrayContaining(["opencode-go", "opencode", "codex"]));
+
+    await userEvent.type(
+      screen.getByLabelText("Search Semantic Reviewer models"),
+      "reviewer",
+    );
+    const modelSelect = screen.getByLabelText(
+      "Semantic Reviewer model",
+    ) as HTMLSelectElement;
+    expect(
+      Array.from(modelSelect.options).map((option) => option.value),
+    ).toContain("reviewer-model");
+    await userEvent.selectOptions(modelSelect, "reviewer-model");
+    expect(modelSelect.value).toBe("reviewer-model");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save revision" }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateExecutionProfile).toHaveBeenCalledWith(
+        "profile-balanced",
+        expect.objectContaining({
+          roles: expect.objectContaining({
+            semanticReviewer: expect.objectContaining({
+              provider: "opencode-go",
+              model: "reviewer-model",
+            }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("shows an unavailable model catalog without inventing model IDs", async () => {
+    mockList([draft]);
+    render(<ExecutionProfiles />);
+    await screen.findByRole("heading", {
+      name: "Execution profiles (1)",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await waitFor(() =>
+      expect(mocks.listProviderModels).toHaveBeenCalledWith("codex"),
+    );
+    expect(
+      screen.getByText(
+        /Discovery unavailable: the Codex App Server adapter has no OpenAI-compatible model catalog/,
+      ),
+    ).toBeDefined();
+    const modelSelect = screen.getByLabelText(
+      "Semantic Reviewer model",
+    ) as HTMLSelectElement;
+    expect(
+      Array.from(modelSelect.options).map((option) => option.value),
+    ).not.toContain("invented-model");
+  });
+
+  it("offers a clearly labelled unverified manual model ID", async () => {
+    render(<ExecutionProfiles />);
+    await screen.findByRole("heading", {
+      name: "Execution profiles (2)",
+    });
+    await userEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    await userEvent.click(
+      screen.getByLabelText("Advanced: manual Lead model ID (unverified)"),
+    );
+    const manual = screen.getByLabelText("Lead manual model ID (unverified)");
+    await userEvent.clear(manual);
+    await userEvent.type(manual, "manual-model");
+    expect(
+      screen.getByText(
+        /Core keeps a profile non-executable until the provider advertises this exact model/,
+      ),
+    ).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save revision" }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateExecutionProfile).toHaveBeenCalledWith(
+        "profile-balanced",
+        expect.objectContaining({
+          roles: expect.objectContaining({
+            lead: expect.objectContaining({ model: "manual-model" }),
+          }),
+        }),
+      ),
+    );
+  });
+
   it("renders a non-executable draft warning and blocks default selection", async () => {
     mockList([draft]);
     render(<ExecutionProfiles />);
@@ -325,7 +532,9 @@ describe("ExecutionProfiles", () => {
       name: "Execution profiles (1)",
     });
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect(screen.getByText(/non-executable draft/)).toBeDefined();
+    expect(
+      screen.getAllByText(/non-executable draft/).length,
+    ).toBeGreaterThanOrEqual(1);
     expect(
       screen.getByText(/semanticReviewer route codex\/gpt-6-luna/),
     ).toBeDefined();

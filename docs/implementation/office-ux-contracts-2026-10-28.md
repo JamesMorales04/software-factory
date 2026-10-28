@@ -92,13 +92,19 @@ role only when a real separate model call exists. Do not add decorative roles.
 ```
 
 `executable` is true only when every required role route can actually be **applied**
-by Core, not merely when a provider connection is configured. At the current
-single-gateway baseline every role must match the active default gateway
-provider/model; a differing role is persisted as a non-executable declaration
-with a warning until exact role-specific routing is integrated end to end. A
-cross-provider profile is allowed only when Core can route each declared role;
-until then it is not executable and Core must reject an attempt to use it for
-that role. `warnings` must explain each false state.
+by Core, not merely when a provider connection is configured.
+
+**Amended 2026-10-28 by lane R.** Exact per-role routing is now implemented:
+each role resolves its own provider connection, credential, adapter and model.
+A profile may assign distinct providers/models to Lead, Implementer and
+Semantic Reviewer. A role is routable only when its provider is configured,
+enabled, credentialed, its adapter implements that role (OpenAI-compatible chat
+for Lead and semantic review; provider session for implementation) and Core can
+substantiate the model (configured model, baseline tested route or real
+discovery). A Codex App Server connection is executable for implementation but
+not for one-shot assessment or review. Unsubstantiated roles remain
+non-executable drafts and cannot become a default or reach a request.
+`warnings` must explain each false state.
 
 `GET /execution-profiles` returns:
 
@@ -166,11 +172,15 @@ The supported route registry is explicit. At the contract baseline it accepts:
 - `opencode` or `opencode-go` with `deepseek-v4.1-flash`, mode `build`;
 - `codex` with `gpt-6-luna`, mode `build`.
 
-The `opencode` and `opencode-go` providers are distinct connections. A route is
-executable only if that provider is configured, enabled and has a decryptable
-credential. Unknown providers/models are rejected; the UI may offer a clearly
-labelled manual model ID only as a non-executable draft, never as a working
-route. The registry may be extended only with tested adapter support.
+The `opencode` and `opencode-go` providers are distinct OpenAI-compatible
+connections. A route is executable only if that provider is configured,
+enabled, has a decryptable credential and an implemented adapter for the role,
+and the model is substantiated for that connection. The baseline registry is
+`deepseek-v4.1-flash` for `opencode`/`opencode-go` and `gpt-6-luna` for `codex`;
+additional model IDs become substantiated through authenticated provider model
+discovery. A manual model ID is saved only as a clearly labelled unverified,
+non-executable draft. Unknown providers are rejected. The registry may be
+extended only with tested adapter support.
 
 ## 3. Unified intake
 
