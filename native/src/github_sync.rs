@@ -599,6 +599,7 @@ mod tests {
                 owner: "acme",
                 repo: "widgets",
                 default_branch: "main",
+                repository_github_id: Some(1001),
             },
             "tester",
         )
@@ -610,6 +611,7 @@ mod tests {
                 owner: "acme",
                 repo: "other",
                 default_branch: "main",
+                repository_github_id: Some(1002),
             },
             "tester",
         )
@@ -1022,6 +1024,7 @@ mod tests {
                 owner: "acme",
                 repo: "renamed",
                 default_branch: "main",
+                repository_github_id: Some(1003),
             },
             "tester",
         )

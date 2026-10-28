@@ -1561,6 +1561,7 @@ export interface GitHubConnectionState {
 }
 
 export interface GitHubRepository {
+  id: number | null;
   full_name: string;
   private: boolean;
   default_branch: string;
@@ -1582,6 +1583,7 @@ export interface ProjectGitHubBinding {
   repo: string;
   repo_full_name: string;
   default_branch: string;
+  repository_github_id: number | null;
   bound_at: string;
   updated_at: string;
 }
@@ -1621,17 +1623,21 @@ export interface GitHubLabel {
 
 export interface GitHubIssueSummary {
   number: number;
+  github_id: number;
   title: string;
   state: "open" | "closed";
   state_reason: string | null;
   labels: GitHubLabel[];
   author: string | null;
+  author_id: number | null;
+  author_association: string | null;
   html_url: string;
   comments: number;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
   synced_at: string;
+  content_hash: string;
 }
 
 export interface GitHubIssueDetail extends GitHubIssueSummary {
@@ -1664,6 +1670,231 @@ export interface GitHubIssueFilters {
 export interface ProjectGitHubBindingResult {
   binding: ProjectGitHubBinding;
   sync_state: GitHubSyncState | null;
+}
+
+export interface IssueIntakePolicy {
+  id: string;
+  project_id: string;
+  revision: number;
+  enabled: boolean;
+  repository_full_name: string;
+  repository_github_id: number | null;
+  connection_revision: number;
+  required_labels: string[];
+  excluded_labels: string[];
+  author_ids: number[];
+  author_associations: string[];
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  allowed_paths: string[];
+  capabilities: string[];
+  max_risk_class: "R0";
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  max_attempts: number;
+  max_sessions: number;
+  max_turns: number;
+  max_wall_clock_secs: number;
+  expires_at: string;
+  acknowledged: boolean;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  content_hash: string;
+  created_at: string;
+}
+
+export interface IssueIntakeEligibility {
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface IssueIntakeBatchItem {
+  id: string;
+  batch_id: string;
+  project_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  issue_number: number;
+  github_issue_id: number;
+  content_hash: string;
+  issue_updated_at: string;
+  author_login: string | null;
+  author_id: number | null;
+  author_association: string | null;
+  labels: string[];
+  state: "PENDING" | "RECONCILED" | "INELIGIBLE" | "STALE" | "REVOKED";
+  eligibility_reasons: string[];
+  reserved_cost_micros: number;
+  intake_request_id: string | null;
+  queue_item_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueIntakeBatch {
+  id: string;
+  project_id: string;
+  policy_id: string;
+  policy_revision: number;
+  policy_hash: string;
+  delegation_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  connection_revision: number;
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  reserved_cost_micros: number;
+  reserved_issues: number;
+  status: "ACTIVE" | "REVOKED" | "EXPIRED" | "EXHAUSTED";
+  acknowledged: boolean;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  idempotency_key: string;
+  batch_hash: string;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
+export interface IssueIntakeQueueItem {
+  id: string;
+  project_id: string;
+  batch_id: string;
+  batch_item_id: string;
+  repository_full_name: string;
+  repository_github_id: number;
+  issue_number: number;
+  github_issue_id: number;
+  content_hash: string;
+  connection_revision: number;
+  policy_revision: number;
+  status:
+    | "PENDING"
+    | "LEASED"
+    | "RECONCILED"
+    | "BLOCKED"
+    | "STALE"
+    | "INELIGIBLE"
+    | "REVOKED";
+  lease_token: string | null;
+  lease_expires_at: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at: string | null;
+  reason: string | null;
+  reasons: string[];
+  intake_request_id: string | null;
+  lead_request_id: string | null;
+  action_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface IssueIntakeBatchState {
+  batch: IssueIntakeBatch;
+  items: Array<{
+    item: IssueIntakeBatchItem;
+    current_eligibility: IssueIntakeEligibility | null;
+  }>;
+  remaining_issues: number;
+  remaining_cost_micros: number;
+}
+
+export interface IssueIntakeAuditEntry {
+  audit_id: string;
+  project_id: string;
+  policy_id: string | null;
+  batch_id: string | null;
+  queue_item_id: string | null;
+  action: string;
+  actor: string;
+  principal_id: string;
+  reason: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface IssueIntakeState {
+  project_id: string;
+  enabled: boolean;
+  policy: IssueIntakePolicy | null;
+  policy_history: IssueIntakePolicy[];
+  batches: IssueIntakeBatchState[];
+  queue: IssueIntakeQueueItem[];
+  audit: IssueIntakeAuditEntry[];
+  binding: ProjectGitHubBinding | null;
+  connection_enabled: boolean;
+  connection_revision: number | null;
+  limits: {
+    max_batch_issues: number;
+    max_concurrent: number;
+    max_queue_attempts: number;
+    queue_lease_seconds: number;
+    autonomous_start: false;
+    campaign_start: false;
+    provider_calls: false;
+  };
+}
+
+export interface IssueIntakePolicyRequest {
+  repository_full_name: string;
+  repository_github_id: number;
+  required_labels: string[];
+  excluded_labels: string[];
+  author_ids: number[];
+  author_associations: string[];
+  execution_profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  allowed_paths: string[];
+  capabilities: string[];
+  max_issues: number;
+  max_concurrent: number;
+  max_cost_micros_per_issue: number;
+  max_total_cost_micros: number;
+  max_attempts: number;
+  max_sessions: number;
+  max_turns: number;
+  max_wall_clock_secs: number;
+  expires_at: string;
+  acknowledge: boolean;
+  reason: string;
+  idempotency_key: string;
+}
+
+export interface IssueIntakeBatchRequest {
+  policy_id: string;
+  expected_policy_revision: number;
+  expected_policy_hash: string;
+  items: Array<{
+    number: number;
+    github_issue_id: number;
+    content_hash: string;
+    updated_at: string;
+  }>;
+  max_total_cost_micros: number;
+  expires_at: string;
+  acknowledge: boolean;
+  reason: string;
+  idempotency_key: string;
 }
 
 export const coreApi = {
@@ -1979,7 +2210,12 @@ export const coreApi = {
   },
   bindProjectGitHub: (
     projectId: string,
-    input: { owner: string; repo: string; default_branch: string },
+    input: {
+      owner: string;
+      repo: string;
+      default_branch: string;
+      repository_github_id?: number | null;
+    },
   ) =>
     request<ProjectGitHubBindingResult>(
       `/projects/${encodeURIComponent(projectId)}/github`,
@@ -2009,6 +2245,44 @@ export const coreApi = {
   getProjectIssue: (projectId: string, number: number) =>
     request<GitHubIssueDetail>(
       `/projects/${encodeURIComponent(projectId)}/issues/${number}`,
+    ),
+  getIssueIntake: (projectId: string) =>
+    request<IssueIntakeState>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake`,
+    ),
+  configureIssueIntakePolicy: (
+    projectId: string,
+    input: IssueIntakePolicyRequest,
+  ) =>
+    request<{ policy: IssueIntakePolicy; created: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/policy`,
+      { method: "PUT", body: JSON.stringify(input) },
+    ),
+  disableIssueIntakePolicy: (
+    projectId: string,
+    input: { reason: string; idempotency_key: string },
+  ) =>
+    request<{ policy: IssueIntakePolicy; created: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/policy/disable`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  createIssueIntakeBatch: (projectId: string, input: IssueIntakeBatchRequest) =>
+    request<{
+      batch: IssueIntakeBatch;
+      items: IssueIntakeBatchItem[];
+      created: boolean;
+    }>(`/projects/${encodeURIComponent(projectId)}/issue-intake/batches`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  revokeIssueIntakeBatch: (
+    projectId: string,
+    batchId: string,
+    input: { reason: string },
+  ) =>
+    request<{ batch: IssueIntakeBatch }>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/batches/${encodeURIComponent(batchId)}/revoke`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   listParticipants: (filters: ParticipantFilters = {}) => {
     const params = new URLSearchParams();

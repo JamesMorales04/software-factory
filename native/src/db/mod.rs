@@ -227,6 +227,15 @@ pub const EVENT_KINDS: &[&str] = &[
     "github.project_bound",
     "intake.message_recorded",
     "intake.request_created",
+    "issue_intake.batch_acknowledged",
+    "issue_intake.batch_revoked",
+    "issue_intake.policy_configured",
+    "issue_intake.policy_disabled",
+    "issue_intake.policy_updated",
+    "issue_intake.queue_blocked",
+    "issue_intake.queue_recovered",
+    "issue_intake.queue_reconciled",
+    "issue_intake.queue_retry",
     "lead.approved",
     "lead.assessment_recorded",
     "lead.plan_completed",
@@ -471,6 +480,7 @@ impl Database {
             .connect_with(options)
             .await?;
         migrate!("../migrations").run(&pool).await?;
+        issue_intake::recover_issue_intake_leases_on_open(&pool).await?;
         // Fail closed if an unrelated/older schema was present and the
         // migrations could not establish the expected columns.
         sqlx::query::query(
@@ -795,6 +805,12 @@ pub use intake::{
     ExecutionPolicyGrantRecord, ExecutionPolicyGrantResult, IntakeApprovalContext,
     IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord, NewExecutionPolicyGrant,
 };
+mod issue_intake;
+pub use issue_intake::{
+    IssueIntakeBatchResult, IssueIntakeBatchState, IssueIntakeItemState, IssueIntakeLimits,
+    IssueIntakePolicyResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
+    NewIssueIntakePolicy,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,
@@ -818,6 +834,8 @@ mod quality;
 mod workers;
 
 mod device_pairing;
+#[cfg(test)]
+mod issue_intake_tests;
 #[cfg(test)]
 mod tests;
 pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEntry};

@@ -389,6 +389,72 @@ struct ExecutionPolicyRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakePolicyRequest {
+    repository_full_name: String,
+    repository_github_id: i64,
+    required_labels: Vec<String>,
+    excluded_labels: Vec<String>,
+    author_ids: Vec<i64>,
+    author_associations: Vec<String>,
+    execution_profile_id: String,
+    profile_revision_id: String,
+    profile_revision: u32,
+    profile_hash: String,
+    project_config_hash: String,
+    allowed_paths: Vec<String>,
+    capabilities: Vec<factory_native::lead::Capability>,
+    max_issues: u32,
+    max_concurrent: u32,
+    max_cost_micros_per_issue: u64,
+    max_total_cost_micros: u64,
+    max_attempts: u32,
+    max_sessions: u32,
+    max_turns: u32,
+    max_wall_clock_secs: u64,
+    expires_at: String,
+    acknowledge: bool,
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeDisableRequest {
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchItemRequest {
+    number: u64,
+    github_issue_id: i64,
+    content_hash: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchRequest {
+    policy_id: String,
+    expected_policy_revision: u32,
+    expected_policy_hash: String,
+    items: Vec<IssueIntakeBatchItemRequest>,
+    max_total_cost_micros: u64,
+    expires_at: String,
+    acknowledge: bool,
+    reason: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeBatchRevokeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ResolveModelCall {
     actor: String,
@@ -816,6 +882,7 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
+        .merge(issue_intake_routes())
         .with_state(Arc::clone(&app))
         .merge(factory_native::device_pairing::routes(app.db.clone()));
 
@@ -1029,6 +1096,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
+        .merge(issue_intake_routes())
         .with_state(app)
 }
 
@@ -2587,6 +2655,8 @@ struct ProjectGitHubInput {
     owner: String,
     repo: String,
     default_branch: String,
+    #[serde(default)]
+    repository_github_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -2887,6 +2957,7 @@ async fn bind_project_github(
                 owner: &input.owner,
                 repo: &input.repo,
                 default_branch: &input.default_branch,
+                repository_github_id: input.repository_github_id,
             },
             "office-operator",
         )
@@ -2996,6 +3067,224 @@ async fn project_issue(
     }
     match app.db.github_issue(&id, number).await {
         Ok(issue) => Json(issue).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn issue_intake_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/projects/{id}/issue-intake",
+            get(project_issue_intake_state),
+        )
+        .route(
+            "/projects/{id}/issue-intake/policy",
+            axum::routing::put(configure_project_issue_intake),
+        )
+        .route(
+            "/projects/{id}/issue-intake/policy/disable",
+            post(disable_project_issue_intake),
+        )
+        .route(
+            "/projects/{id}/issue-intake/batches",
+            post(create_project_issue_intake_batch),
+        )
+        .route(
+            "/projects/{id}/issue-intake/batches/{batch_id}/revoke",
+            post(revoke_project_issue_intake_batch),
+        )
+}
+
+async fn project_issue_intake_state(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.issue_intake_state(&id).await {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn configure_project_issue_intake(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakePolicyRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_issue_intake_policy(factory_native::db::NewIssueIntakePolicy {
+            project_id: &id,
+            repository_full_name: &input.repository_full_name,
+            repository_github_id: input.repository_github_id,
+            required_labels: &input.required_labels,
+            excluded_labels: &input.excluded_labels,
+            author_ids: &input.author_ids,
+            author_associations: &input.author_associations,
+            profile_id: &input.execution_profile_id,
+            profile_revision_id: &input.profile_revision_id,
+            profile_revision: input.profile_revision,
+            profile_hash: &input.profile_hash,
+            project_config_hash: &input.project_config_hash,
+            allowed_paths: &input.allowed_paths,
+            capabilities: &input.capabilities,
+            max_issues: input.max_issues,
+            max_concurrent: input.max_concurrent,
+            max_cost_micros_per_issue: input.max_cost_micros_per_issue,
+            max_total_cost_micros: input.max_total_cost_micros,
+            max_attempts: input.max_attempts,
+            max_sessions: input.max_sessions,
+            max_turns: input.max_turns,
+            max_wall_clock_secs: input.max_wall_clock_secs,
+            expires_at: &input.expires_at,
+            acknowledge: input.acknowledge,
+            reason: &input.reason,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({"policy": result.policy, "created": result.created})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn disable_project_issue_intake(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeDisableRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .disable_issue_intake_policy(
+            &id,
+            &input.reason,
+            &input.idempotency_key,
+            &principal_id,
+            device_label.as_deref(),
+        )
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({"policy": result.policy, "created": result.created})),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_project_issue_intake_batch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeBatchRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let items = input
+        .items
+        .iter()
+        .map(|item| factory_native::db::NewIssueIntakeBatchItem {
+            number: item.number,
+            github_issue_id: item.github_issue_id,
+            content_hash: &item.content_hash,
+            updated_at: &item.updated_at,
+        })
+        .collect::<Vec<_>>();
+    match app
+        .db
+        .create_issue_intake_batch(factory_native::db::NewIssueIntakeBatch {
+            project_id: &id,
+            policy_id: &input.policy_id,
+            expected_policy_revision: input.expected_policy_revision,
+            expected_policy_hash: &input.expected_policy_hash,
+            items: &items,
+            max_total_cost_micros: input.max_total_cost_micros,
+            expires_at: &input.expires_at,
+            acknowledge: input.acknowledge,
+            reason: &input.reason,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({
+                "batch": result.batch,
+                "items": result.items,
+                "created": result.created,
+            })),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn revoke_project_issue_intake_batch(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, batch_id)): AxumPath<(String, String)>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<IssueIntakeBatchRevokeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .revoke_issue_intake_batch(
+            &id,
+            &batch_id,
+            &input.reason,
+            &principal_id,
+            device_label.as_deref(),
+        )
+        .await
+    {
+        Ok(batch) => Json(json!({"batch": batch})).into_response(),
         Err(error) => api_error(error),
     }
 }

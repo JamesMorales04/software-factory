@@ -1,0 +1,128 @@
+.issue-intake-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.issue-intake-form,
+.issue-intake-batch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  background: var(--surface-muted);
+}
+
+.issue-intake-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.85rem;
+}
+
+.issue-intake-associations {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.8rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.issue-intake-associations legend {
+  padding: 0 0.3rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.issue-intake-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: end;
+}
+
+.issue-intake-selection {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+}
+
+.issue-intake-selection h3,
+.issue-intake-batches h3 {
+  margin: 0 0 0.3rem;
+}
+
+.issue-intake-batch {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.issue-intake-batch-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.issue-intake-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.issue-intake-items > li {
+  border-top: 1px dashed var(--border);
+  padding-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.issue-intake-item-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.issue-intake-reasons {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--status-danger-text, var(--text-muted));
+  font-size: 0.85rem;
+}
+
+.issue-intake-facts {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0;
+}
+
+.issue-intake-check {
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 640px) {
+  .issue-intake-selection {
+    flex-direction: column;
+  }
+
+  .issue-intake-batch-heading {
+    flex-direction: column;
+  }
+}

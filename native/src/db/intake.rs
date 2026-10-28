@@ -139,19 +139,19 @@ pub struct IntakeApprovalContext {
     pub budget: IntakeCampaignBudget,
 }
 
-struct ResolvedIntakeProfile {
-    profile_id: String,
-    revision_id: String,
-    revision: u32,
-    content_hash: String,
-    content: ExecutionProfileContent,
+pub(super) struct ResolvedIntakeProfile {
+    pub(super) profile_id: String,
+    pub(super) revision_id: String,
+    pub(super) revision: u32,
+    pub(super) content_hash: String,
+    pub(super) content: ExecutionProfileContent,
 }
 
-struct PreparedIntakeRequest {
-    submission_json: String,
-    submission_hash: String,
-    assessment_input_json: String,
-    lead_idempotency_key: String,
+pub(super) struct PreparedIntakeRequest {
+    pub(super) submission_json: String,
+    pub(super) submission_hash: String,
+    pub(super) assessment_input_json: String,
+    pub(super) lead_idempotency_key: String,
 }
 
 impl Database {
@@ -213,117 +213,16 @@ impl Database {
             &config,
         )
         .await?;
-        let draft = NewDraftLeadRequest {
-            project_id,
-            delegation_id: &grant.id,
-            objective,
-            project_config_hash: &config.config_hash,
-            assessment_input_json: &prepared.assessment_input_json,
-            idempotency_key: &prepared.lead_idempotency_key,
-        };
-        let prepared_lead = prepare_draft_lead_request(&draft)?;
-        let (lead, _) =
-            create_draft_lead_request_in_tx(&mut transaction, &draft, &prepared_lead).await?;
-        let now = Utc::now().to_rfc3339();
-        let record = IntakeRequestRecord {
-            id: Uuid::new_v4().to_string(),
-            project_id: project_id.into(),
-            objective: objective.into(),
-            mode,
-            profile_id: profile.profile_id.clone(),
-            profile_revision_id: profile.revision_id.clone(),
-            profile_revision: profile.revision,
-            profile_hash: profile.content_hash.clone(),
-            profile_name: profile.content.name.clone(),
-            action_id: lead.action_id.clone(),
-            delegation_id: grant.id.clone(),
-            lead_request_id: lead.id.clone(),
-            campaign_id: None,
-            submission_json: prepared.submission_json.clone(),
-            submission_hash: prepared.submission_hash.clone(),
-            idempotency_key: idempotency_key.into(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
-        sqlx::query::query(
-            "INSERT INTO intake_requests
-             (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
-              profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
-              submission_json,submission_hash,idempotency_key,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,?15,?16,?16)",
-        )
-        .bind(&record.id)
-        .bind(&record.project_id)
-        .bind(&record.objective)
-        .bind(mode.as_str())
-        .bind(&record.profile_id)
-        .bind(&record.profile_revision_id)
-        .bind(i64::from(record.profile_revision))
-        .bind(&record.profile_hash)
-        .bind(&record.profile_name)
-        .bind(&record.action_id)
-        .bind(&record.delegation_id)
-        .bind(&record.lead_request_id)
-        .bind(&record.submission_json)
-        .bind(&record.submission_hash)
-        .bind(&record.idempotency_key)
-        .bind(&record.created_at)
-        .execute(&mut *transaction)
-        .await?;
-        let context_json = serde_json::to_string(&serde_json::json!({
-            "schema":"factory-lead-execution-context-v1",
-            "projectId":project_id,
-            "profile":{
-                "id":profile.profile_id,
-                "revisionId":profile.revision_id,
-                "revision":profile.revision,
-                "contentHash":profile.content_hash,
-                "name":profile.content.name,
-                "content":profile.content,
-            },
-            "projectConfigHash":config.config_hash,
-            "delegationHash":grant.content_hash,
-        }))
-        .map_err(|_| Error::Invalid("lead execution context encoding"))?;
-        let context_hash = sha256_hex(context_json.as_bytes());
-        sqlx::query::query(
-            "INSERT INTO lead_execution_context
-             (request_id,project_id,profile_id,profile_revision_id,profile_revision,profile_hash,
-              profile_name,project_config_hash,delegation_hash,context_json,context_hash,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-        )
-        .bind(&lead.id)
-        .bind(project_id)
-        .bind(&record.profile_id)
-        .bind(&record.profile_revision_id)
-        .bind(i64::from(record.profile_revision))
-        .bind(&record.profile_hash)
-        .bind(&record.profile_name)
-        .bind(&config.config_hash)
-        .bind(&grant.content_hash)
-        .bind(&context_json)
-        .bind(&context_hash)
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
-            .bind(idempotency_key)
-            .bind("create_intake_request")
-            .bind(&record.submission_hash)
-            .bind(&record.id)
-            .execute(&mut *transaction)
-            .await?;
-        record_event(
+        let record = create_intake_request_in_tx(
             &mut transaction,
-            &record.id,
-            "intake.request_created",
-            &format!(
-                "project={} profile={} revision={} lead={}",
-                record.project_id,
-                record.profile_id,
-                record.profile_revision,
-                record.lead_request_id
-            ),
+            project_id,
+            objective,
+            mode,
+            idempotency_key,
+            profile,
+            &config,
+            &grant,
+            prepared,
         )
         .await?;
         transaction.commit().await?;
@@ -831,6 +730,134 @@ impl Database {
     }
 }
 
+/// Insert the ordinary intake request, draft Lead request, execution context
+/// and idempotency record inside an existing transaction. Callers own replay
+/// lookup and all authority resolution; this helper only persists a validated
+/// snapshot. It never creates a Campaign or dispatches a provider call.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn create_intake_request_in_tx(
+    transaction: &mut SqliteConnection,
+    project_id: &str,
+    objective: &str,
+    mode: IntakeMode,
+    idempotency_key: &str,
+    profile: ResolvedIntakeProfile,
+    config: &crate::lead::ProjectConfig,
+    grant: &StandingDelegation,
+    prepared: PreparedIntakeRequest,
+) -> Result<IntakeRequestRecord, Error> {
+    let draft = NewDraftLeadRequest {
+        project_id,
+        delegation_id: &grant.id,
+        objective,
+        project_config_hash: &config.config_hash,
+        assessment_input_json: &prepared.assessment_input_json,
+        idempotency_key: &prepared.lead_idempotency_key,
+    };
+    let prepared_lead = prepare_draft_lead_request(&draft)?;
+    let (lead, _) = create_draft_lead_request_in_tx(transaction, &draft, &prepared_lead).await?;
+    let now = Utc::now().to_rfc3339();
+    let record = IntakeRequestRecord {
+        id: Uuid::new_v4().to_string(),
+        project_id: project_id.into(),
+        objective: objective.into(),
+        mode,
+        profile_id: profile.profile_id.clone(),
+        profile_revision_id: profile.revision_id.clone(),
+        profile_revision: profile.revision,
+        profile_hash: profile.content_hash.clone(),
+        profile_name: profile.content.name.clone(),
+        action_id: lead.action_id.clone(),
+        delegation_id: grant.id.clone(),
+        lead_request_id: lead.id.clone(),
+        campaign_id: None,
+        submission_json: prepared.submission_json.clone(),
+        submission_hash: prepared.submission_hash.clone(),
+        idempotency_key: idempotency_key.into(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    sqlx::query::query(
+        "INSERT INTO intake_requests
+         (id,project_id,objective,mode,profile_id,profile_revision_id,profile_revision,
+          profile_hash,profile_name,action_id,delegation_id,lead_request_id,campaign_id,
+          submission_json,submission_hash,idempotency_key,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,?15,?16,?16)",
+    )
+    .bind(&record.id)
+    .bind(&record.project_id)
+    .bind(&record.objective)
+    .bind(mode.as_str())
+    .bind(&record.profile_id)
+    .bind(&record.profile_revision_id)
+    .bind(i64::from(record.profile_revision))
+    .bind(&record.profile_hash)
+    .bind(&record.profile_name)
+    .bind(&record.action_id)
+    .bind(&record.delegation_id)
+    .bind(&record.lead_request_id)
+    .bind(&record.submission_json)
+    .bind(&record.submission_hash)
+    .bind(&record.idempotency_key)
+    .bind(&record.created_at)
+    .execute(&mut *transaction)
+    .await?;
+    let context_json = serde_json::to_string(&serde_json::json!({
+        "schema":"factory-lead-execution-context-v1",
+        "projectId":project_id,
+        "profile":{
+            "id":profile.profile_id,
+            "revisionId":profile.revision_id,
+            "revision":profile.revision,
+            "contentHash":profile.content_hash,
+            "name":profile.content.name,
+            "content":profile.content,
+        },
+        "projectConfigHash":config.config_hash,
+        "delegationHash":grant.content_hash,
+    }))
+    .map_err(|_| Error::Invalid("lead execution context encoding"))?;
+    let context_hash = sha256_hex(context_json.as_bytes());
+    sqlx::query::query(
+        "INSERT INTO lead_execution_context
+         (request_id,project_id,profile_id,profile_revision_id,profile_revision,profile_hash,
+          profile_name,project_config_hash,delegation_hash,context_json,context_hash,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+    )
+    .bind(&lead.id)
+    .bind(project_id)
+    .bind(&record.profile_id)
+    .bind(&record.profile_revision_id)
+    .bind(i64::from(record.profile_revision))
+    .bind(&record.profile_hash)
+    .bind(&record.profile_name)
+    .bind(&config.config_hash)
+    .bind(&grant.content_hash)
+    .bind(&context_json)
+    .bind(&context_hash)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        .bind(idempotency_key)
+        .bind("create_intake_request")
+        .bind(&record.submission_hash)
+        .bind(&record.id)
+        .execute(&mut *transaction)
+        .await?;
+    record_event(
+        transaction,
+        &record.id,
+        "intake.request_created",
+        &format!(
+            "project={} profile={} revision={} lead={}",
+            record.project_id, record.profile_id, record.profile_revision, record.lead_request_id
+        ),
+    )
+    .await?;
+    Ok(record)
+}
+
 fn validate_intake_submission(
     project_id: &str,
     objective: &str,
@@ -853,7 +880,7 @@ fn validate_intake_submission(
     Ok(())
 }
 
-fn prepare_intake_request(
+pub(super) fn prepare_intake_request(
     project_id: &str,
     objective: &str,
     execution_profile_id: Option<&str>,
@@ -943,6 +970,67 @@ async fn resolve_intake_profile_in_tx(
         revision: current.revision,
         content_hash: content_hash.0,
         content: current.content,
+    })
+}
+
+/// Load and validate one exact immutable profile revision. This is used by
+/// issue-intake policy and batch acknowledgements: a later profile edit never
+/// silently substitutes a newer revision. Executability is re-evaluated against
+/// the current provider availability and fails closed.
+pub(super) async fn load_exact_intake_profile_in_tx(
+    connection: &mut SqliteConnection,
+    profile_id: &str,
+    revision_id: &str,
+    revision: u32,
+    content_hash: &str,
+) -> Result<ResolvedIntakeProfile, Error> {
+    let row = sqlx::query::query(
+        "SELECT content_json,content_hash,revision FROM execution_profile_revisions
+         WHERE revision_id=?1 AND profile_id=?2",
+    )
+    .bind(revision_id)
+    .bind(profile_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or(Error::IntakeConflict {
+        code: "EXECUTION_PROFILE_REQUIRED",
+        message: "the acknowledged execution profile revision no longer exists".into(),
+    })?;
+    let stored_hash: String = row.try_get("content_hash")?;
+    let stored_revision = u32::try_from(row.try_get::<i64, _>("revision")?)
+        .map_err(|_| Error::Conflict("stored execution profile revision is invalid"))?;
+    if stored_revision != revision || stored_hash != content_hash || !is_sha256(content_hash) {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_STALE",
+            message: "the acknowledged execution profile revision hash is stale".into(),
+        });
+    }
+    let content: ExecutionProfileContent =
+        serde_json::from_str(&row.try_get::<String, _>("content_json")?)
+            .map_err(|_| Error::Invalid("stored execution profile content encoding"))?;
+    if content.compute_content_hash() != content_hash {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_STALE",
+            message: "stored execution profile content does not match its hash".into(),
+        });
+    }
+    let availability = load_provider_availability(connection).await?;
+    let (executable, warnings) = evaluate_executability(&content, &availability);
+    if !executable {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: format!(
+                "the acknowledged execution profile is not executable: {}",
+                warnings.join("; ")
+            ),
+        });
+    }
+    Ok(ResolvedIntakeProfile {
+        profile_id: profile_id.into(),
+        revision_id: revision_id.into(),
+        revision,
+        content_hash: content_hash.into(),
+        content,
     })
 }
 
