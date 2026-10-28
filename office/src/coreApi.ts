@@ -834,6 +834,115 @@ export interface ProviderAudit {
   createdAt: string;
 }
 
+export type ExecutionProfileCategory =
+  | "BUDGET"
+  | "BALANCED"
+  | "QUALITY"
+  | "CUSTOM";
+
+export type ExecutionProfileRole = "lead" | "implementer" | "semanticReviewer";
+
+export type ExecutionReasoningEffort = "low" | "medium" | "high";
+
+export type ExecutionRiskClass = "R0" | "R1" | "R2" | "R3";
+
+export interface ExecutionRoleRoute {
+  provider: string;
+  model: string;
+  reasoning?: ExecutionReasoningEffort;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+}
+
+export interface ExecutionProfileRoles {
+  lead: ExecutionRoleRoute;
+  implementer: ExecutionRoleRoute;
+  semanticReviewer: ExecutionRoleRoute;
+}
+
+export interface ExecutionProfileBudgets {
+  maxAttempts: number;
+  maxSessions: number;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  deadlineSecs: number;
+}
+
+export interface ExecutionAutoStartPolicy {
+  enabled: boolean;
+  riskClasses: ExecutionRiskClass[];
+}
+
+export interface ExecutionProfile {
+  id: string;
+  name: string;
+  description: string;
+  category: ExecutionProfileCategory;
+  revision: number;
+  revisionId: string;
+  contentHash: string;
+  globalDefault: boolean;
+  projectDefaults: string[];
+  roles: ExecutionProfileRoles;
+  budgets: ExecutionProfileBudgets;
+  autoStart: ExecutionAutoStartPolicy;
+  executable: boolean;
+  warnings: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SupportedExecutionRoute {
+  provider: string;
+  model: string;
+}
+
+export interface ExecutionProfileList {
+  profiles: ExecutionProfile[];
+  supportedRoutes: SupportedExecutionRoute[];
+}
+
+export interface ExecutionProfileWrite {
+  name: string;
+  description: string;
+  category: ExecutionProfileCategory;
+  roles: ExecutionProfileRoles;
+  budgets: ExecutionProfileBudgets;
+  auto_start: {
+    enabled: boolean;
+    risk_classes: ExecutionRiskClass[];
+  };
+}
+
+export interface UpdateExecutionProfileRequest extends ExecutionProfileWrite {
+  expected_revision: number;
+}
+
+export interface ExecutionProfileDefaultRequest {
+  scope: "global" | "project";
+  project_id?: string;
+}
+
+export interface ExecutionProfileDefaultBinding {
+  profileId: string;
+  scope: "global" | "project";
+  projectId: string | null;
+  revisionId: string;
+  revision: number;
+}
+
+export interface ResolvedExecutionProfile {
+  projectId: string;
+  profileId: string;
+  revisionId: string;
+  revision: number;
+  contentHash: string;
+  source: "PROJECT_DEFAULT" | "GLOBAL_DEFAULT";
+}
+
 export interface NewDelegationRequest {
   delegation: {
     id: string;
@@ -1202,6 +1311,40 @@ export const coreApi = {
   providerAudit: (provider: string) =>
     request<{ audit: ProviderAudit[] }>(
       `/settings/providers/${encodeURIComponent(provider)}/audit`,
+    ),
+  listExecutionProfiles: () =>
+    request<ExecutionProfileList>("/execution-profiles"),
+  getExecutionProfile: (id: string) =>
+    request<ExecutionProfile>(`/execution-profiles/${encodeURIComponent(id)}`),
+  createExecutionProfile: (input: ExecutionProfileWrite) =>
+    request<ExecutionProfile>("/execution-profiles", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateExecutionProfile: (id: string, input: UpdateExecutionProfileRequest) =>
+    request<ExecutionProfile>(`/execution-profiles/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  setExecutionProfileDefault: (
+    id: string,
+    input: ExecutionProfileDefaultRequest,
+  ) =>
+    request<ExecutionProfileDefaultBinding>(
+      `/execution-profiles/${encodeURIComponent(id)}/default`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  clearExecutionProfileDefault: (
+    id: string,
+    input: ExecutionProfileDefaultRequest,
+  ) =>
+    request<void>(`/execution-profiles/${encodeURIComponent(id)}/default`, {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    }),
+  getProjectExecutionProfile: (projectId: string) =>
+    request<ResolvedExecutionProfile>(
+      `/projects/${encodeURIComponent(projectId)}/execution-profile`,
     ),
   createDelegation: (input: NewDelegationRequest) =>
     request<StandingDelegation>("/delegations", {

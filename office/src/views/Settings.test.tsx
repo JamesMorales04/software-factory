@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   testProvider: vi.fn(),
   revokeProviderCredential: vi.fn(),
   providerAudit: vi.fn(),
+  listExecutionProfiles: vi.fn(),
+  listProjects: vi.fn(),
+  getProjectExecutionProfile: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -96,6 +99,14 @@ describe("Settings", () => {
         },
       ],
     });
+    mocks.listExecutionProfiles.mockReset().mockResolvedValue({
+      profiles: [],
+      supportedRoutes: [
+        { provider: "opencode-go", model: "deepseek-v4.1-flash" },
+      ],
+    });
+    mocks.listProjects.mockReset().mockResolvedValue([]);
+    mocks.getProjectExecutionProfile.mockReset().mockResolvedValue(null);
   });
 
   it("separates configured route, connection test and proven inference", async () => {
@@ -164,6 +175,20 @@ describe("Settings", () => {
     await screen.findByRole("heading", { name: "Settings" });
     await userEvent.click(screen.getByText("Configuration audit (0)"));
     expect(screen.getByText(/unknown, not empty/)).toBeDefined();
+  });
+
+  it("deep-links to execution profiles without loading provider settings", async () => {
+    renderSettings("/settings?tab=profiles");
+    await screen.findByRole("heading", {
+      name: "Execution profiles (0)",
+    });
+    expect(
+      screen
+        .getByRole("tab", { name: "Execution profiles" })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(mocks.listExecutionProfiles).toHaveBeenCalled();
+    expect(mocks.listProviders).not.toHaveBeenCalled();
   });
 
   it("deep-links to runtime policy and saves it", async () => {
