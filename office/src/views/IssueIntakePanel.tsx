@@ -20,7 +20,8 @@ import {
   type ProjectConfig,
   type ProjectGitHubBinding,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 import "./issue-intake.css";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -134,6 +135,7 @@ export function IssueIntakePanel({
   onRefresh: () => void;
   onSelectionClear: () => void;
 }) {
+  const { t, formatDate } = useI18n();
   const [profiles, setProfiles] = useState<ExecutionProfile[]>([]);
   const [config, setConfig] = useState<ProjectConfig | null>(null);
   const [form, setForm] = useState(() => formFromPolicy(null));
@@ -226,25 +228,23 @@ export function IssueIntakePanel({
     setError(null);
     setNotice(null);
     if (!profile) {
-      setError("Select an executable execution profile.");
+      setError(t("issues.intake.error.profile"));
       return;
     }
     if (!policy && !form.acknowledge) {
-      setError("Acknowledge the exact policy before enabling issue intake.");
+      setError(t("issues.intake.error.acknowledgePolicy"));
       return;
     }
     if (!binding?.repository_github_id) {
-      setError(
-        "The Project binding has no immutable repository ID. Rebind from Browse GitHub repositories.",
-      );
+      setError(t("issues.intake.error.repositoryIdentity"));
       return;
     }
     if (!config) {
-      setError("Project configuration is unavailable.");
+      setError(t("issues.intake.error.configUnavailable"));
       return;
     }
     if (form.reason.trim() === "") {
-      setError("A reason is required for the audit record.");
+      setError(t("issues.intake.error.reason"));
       return;
     }
     setBusy("policy");
@@ -278,13 +278,11 @@ export function IssueIntakePanel({
         reason: form.reason,
         idempotency_key: newIdempotencyKey(),
       });
-      setNotice(
-        "Issue-intake policy revision acknowledged. Execution remains disabled; every batch and proposal is still explicit.",
-      );
+      setNotice(t("issues.intake.notice.policySaved"));
       setEditing(false);
       onRefresh();
     } catch (cause) {
-      setError(message(cause, "Issue-intake policy could not be saved."));
+      setError(message(cause, t("issues.intake.error.savePolicy")));
     } finally {
       setBusy(null);
     }
@@ -296,17 +294,15 @@ export function IssueIntakePanel({
     setNotice(null);
     try {
       await coreApi.disableIssueIntakePolicy(projectId, {
-        reason: disableReason.trim() || "operator disabled issue intake",
+        reason: disableReason.trim() || t("issues.intake.defaultDisableReason"),
         idempotency_key: newIdempotencyKey(),
       });
-      setNotice(
-        "Issue intake is disabled. Active batches and their delegations were revoked.",
-      );
+      setNotice(t("issues.intake.notice.disabled"));
       setConfirmDisable(false);
       setDisableReason("");
       onRefresh();
     } catch (cause) {
-      setError(message(cause, "Issue intake could not be disabled."));
+      setError(message(cause, t("issues.intake.error.disable")));
     } finally {
       setBusy(null);
     }
@@ -318,23 +314,21 @@ export function IssueIntakePanel({
     setNotice(null);
     if (!policy) return;
     if (selected.length === 0) {
-      setError("Select at least one exact issue snapshot.");
+      setError(t("issues.intake.error.noSelection"));
       return;
     }
     if (!batchAcknowledge) {
-      setError(
-        "Acknowledge the exact selected snapshots before creating a batch.",
-      );
+      setError(t("issues.intake.error.acknowledgeBatch"));
       return;
     }
     if (batchReason.trim() === "") {
-      setError("A reason is required for the batch acknowledgement.");
+      setError(t("issues.intake.error.batchReason"));
       return;
     }
     const budget = Number.parseInt(batchBudget, 10);
     if (!Number.isInteger(budget) || budget < estimatedBatchCost) {
       setError(
-        `The batch budget must cover the selected snapshots (minimum ${estimatedBatchCost} micros).`,
+        t("issues.intake.error.batchBudget", { minimum: estimatedBatchCost }),
       );
       return;
     }
@@ -357,7 +351,7 @@ export function IssueIntakePanel({
         idempotency_key: newIdempotencyKey(),
       });
       setNotice(
-        `Acknowledged ${selected.length} exact snapshot(s). Reconciliation still requires a separate operator action and never starts a Campaign.`,
+        t("issues.intake.notice.batchCreated", { count: selected.length }),
       );
       setBatchAcknowledge(false);
       setBatchReason("");
@@ -365,8 +359,11 @@ export function IssueIntakePanel({
       onRefresh();
     } catch (cause) {
       const code = cause instanceof CoreApiError ? cause.reason : null;
+      const detail = message(cause, t("issues.intake.error.batch"));
       setError(
-        `${message(cause, "Batch acknowledgement failed.")}${code ? ` (${code})` : ""}`,
+        code
+          ? t("issues.intake.error.withCode", { message: detail, code })
+          : detail,
       );
       onRefresh();
     } finally {
@@ -383,19 +380,32 @@ export function IssueIntakePanel({
       if (result.status === "RECONCILED") {
         setNotice(
           result.intake
-            ? `Proposal ${shortId(result.intake.id)} created as ${result.intake.mode}. No Campaign was started and no provider call was made.`
-            : "Queue item replayed from its committed proposal. No Campaign was started.",
+            ? t("issues.intake.notice.proposalCreated", {
+                id: shortId(result.intake.id),
+                mode: result.intake.mode,
+              })
+            : t("issues.intake.notice.proposalReplayed"),
         );
       } else {
         setError(
-          `Reconciliation ${result.status}${result.reasons.length > 0 ? `: ${result.reasons.join(", ")}` : ""}`,
+          result.reasons.length > 0
+            ? t("issues.intake.error.reconciliationReasons", {
+                status: result.status,
+                reasons: result.reasons.join(", "),
+              })
+            : t("issues.intake.error.reconciliation", {
+                status: result.status,
+              }),
         );
       }
       onRefresh();
     } catch (cause) {
       const code = cause instanceof CoreApiError ? cause.reason : null;
+      const detail = message(cause, t("issues.intake.error.dispatch"));
       setError(
-        `${message(cause, "Issue reconciliation failed before creating a proposal.")}${code ? ` (${code})` : ""}`,
+        code
+          ? t("issues.intake.error.withCode", { message: detail, code })
+          : detail,
       );
       onRefresh();
     } finally {
@@ -409,13 +419,13 @@ export function IssueIntakePanel({
     setNotice(null);
     try {
       await coreApi.revokeIssueIntakeBatch(projectId, batch.id, {
-        reason: revokeReason.trim() || "operator revoked issue batch",
+        reason: revokeReason.trim() || t("issues.intake.defaultRevokeReason"),
       });
-      setNotice("Batch revoked. Existing reservations are retained.");
+      setNotice(t("issues.intake.notice.batchRevoked"));
       setRevokeReason("");
       onRefresh();
     } catch (cause) {
-      setError(message(cause, "Batch could not be revoked."));
+      setError(message(cause, t("issues.intake.error.revoke")));
     } finally {
       setBusy(null);
     }
@@ -424,7 +434,7 @@ export function IssueIntakePanel({
   if (loading) {
     return (
       <Panel className="issues-panel">
-        <LoadingState label="Loading issue-intake policy…" />
+        <LoadingState label={t("issues.intake.loading")} />
       </Panel>
     );
   }
@@ -433,9 +443,9 @@ export function IssueIntakePanel({
     return (
       <Panel className="issues-panel">
         <ErrorState
-          title="Issue intake unavailable"
+          title={t("issues.intake.unavailableTitle")}
           message={loadError}
-          action={<Button onClick={onRefresh}>Retry</Button>}
+          action={<Button onClick={onRefresh}>{t("common.retry")}</Button>}
         />
       </Panel>
     );
@@ -444,19 +454,14 @@ export function IssueIntakePanel({
   return (
     <Panel className="issues-panel issue-intake-panel">
       <div className="issues-panel-heading">
-        <h2>Governed issue intake</h2>
+        <h2>{t("issues.intake.title")}</h2>
         {policy?.enabled ? (
-          <Badge tone="success">ENABLED</Badge>
+          <Badge tone="success">{t("issues.intake.badge.enabled")}</Badge>
         ) : (
-          <Badge tone="neutral">OFF</Badge>
+          <Badge tone="neutral">{t("issues.intake.badge.off")}</Badge>
         )}
       </div>
-      <p className="issues-note">
-        Default off. A policy acknowledges exact repository, author, label,
-        profile, path and budget bounds. A batch acknowledges exact issue
-        snapshots. Neither starts a Campaign: execution, approval and Worker
-        dispatch remain separate explicit operations.
-      </p>
+      <p className="issues-note">{t("issues.intake.description")}</p>
       {error && (
         <p className="error" role="alert">
           {error}
@@ -472,100 +477,107 @@ export function IssueIntakePanel({
         <>
           <dl className="issues-facts issue-intake-facts">
             <div>
-              <dt>Policy revision</dt>
+              <dt>{t("issues.intake.fact.policyRevision")}</dt>
               <dd>{policy.revision}</dd>
             </div>
             <div>
-              <dt>Repository</dt>
+              <dt>{t("issues.intake.fact.repository")}</dt>
               <dd className="mono">
-                {policy.repository_full_name} (ID {policy.repository_github_id})
+                {t("issues.intake.fact.repositoryValue", {
+                  name: policy.repository_full_name,
+                  id: policy.repository_github_id ?? "",
+                })}
               </dd>
             </div>
             <div>
-              <dt>Required labels</dt>
+              <dt>{t("issues.intake.fact.requiredLabels")}</dt>
               <dd>{policy.required_labels.join(", ") || "—"}</dd>
             </div>
             <div>
-              <dt>Excluded labels</dt>
+              <dt>{t("issues.intake.fact.excludedLabels")}</dt>
               <dd>{policy.excluded_labels.join(", ") || "—"}</dd>
             </div>
             <div>
-              <dt>Author IDs</dt>
+              <dt>{t("issues.intake.fact.authorIds")}</dt>
               <dd>{policy.author_ids.join(", ")}</dd>
             </div>
             <div>
-              <dt>Author association</dt>
+              <dt>{t("issues.intake.fact.authorAssociation")}</dt>
               <dd>{policy.author_associations.join(", ")}</dd>
             </div>
             <div>
-              <dt>Profile</dt>
+              <dt>{t("issues.intake.fact.profile")}</dt>
               <dd className="mono">
-                {shortId(policy.profile_id)} rev {policy.profile_revision}
+                {t("issues.intake.fact.profileValue", {
+                  id: shortId(policy.profile_id),
+                  revision: policy.profile_revision,
+                })}
               </dd>
             </div>
             <div>
-              <dt>Risk ceiling</dt>
+              <dt>{t("issues.intake.fact.riskCeiling")}</dt>
               <dd>{policy.max_risk_class}</dd>
             </div>
             <div>
-              <dt>Paths</dt>
+              <dt>{t("issues.intake.fact.paths")}</dt>
               <dd>{policy.allowed_paths.join(", ")}</dd>
             </div>
             <div>
-              <dt>Capabilities</dt>
+              <dt>{t("issues.intake.fact.capabilities")}</dt>
               <dd>{policy.capabilities.join(", ")}</dd>
             </div>
             <div>
-              <dt>Max issues / concurrency</dt>
+              <dt>{t("issues.intake.fact.maxIssues")}</dt>
               <dd>
                 {policy.max_issues} / {policy.max_concurrent}
               </dd>
             </div>
             <div>
-              <dt>Cost per issue / batch</dt>
+              <dt>{t("issues.intake.fact.cost")}</dt>
               <dd>
-                {policy.max_cost_micros_per_issue} /{" "}
-                {policy.max_total_cost_micros} micros
+                {t("issues.intake.fact.costValue", {
+                  perIssue: policy.max_cost_micros_per_issue,
+                  perBatch: policy.max_total_cost_micros,
+                })}
               </dd>
             </div>
             <div>
-              <dt>Expires</dt>
-              <dd>{formatTimestamp(policy.expires_at)}</dd>
+              <dt>{t("issues.intake.fact.expires")}</dt>
+              <dd>{formatDate(policy.expires_at)}</dd>
             </div>
             <div>
-              <dt>Auto-start</dt>
-              <dd>not granted by this policy</dd>
+              <dt>{t("issues.intake.fact.autoStart")}</dt>
+              <dd>{t("issues.intake.fact.autoStartValue")}</dd>
             </div>
           </dl>
-          <p className="issues-note">
-            Profile autoStart is ignored for issue intake. This policy only
-            permits deterministic reconciliation into ordinary proposals.
-          </p>
+          <p className="issues-note">{t("issues.intake.fact.autoStartNote")}</p>
           <div className="issues-actions">
             <Button onClick={() => setEditing(true)} disabled={busy !== null}>
-              Edit and re-acknowledge
+              {t("issues.intake.editPolicy")}
             </Button>
             {confirmDisable ? (
               <div className="issue-intake-inline">
                 <Input
-                  label="Disable reason"
+                  label={t("issues.intake.disableReason")}
                   value={disableReason}
                   onChange={(event) => setDisableReason(event.target.value)}
-                  placeholder="why issue intake is being disabled"
+                  placeholder={t("issues.intake.disableReasonPlaceholder")}
                 />
                 <Button
                   variant="danger"
                   onClick={() => void disablePolicy()}
                   disabled={busy !== null}
                 >
-                  {busy === "disable" ? "Disabling…" : "Confirm disable"}
+                  {busy === "disable"
+                    ? t("issues.intake.disabling")
+                    : t("issues.intake.confirmDisable")}
                 </Button>
                 <Button
                   variant="quiet"
                   onClick={() => setConfirmDisable(false)}
                   disabled={busy !== null}
                 >
-                  Cancel
+                  {t("issues.intake.cancel")}
                 </Button>
               </div>
             ) : (
@@ -574,7 +586,7 @@ export function IssueIntakePanel({
                 onClick={() => setConfirmDisable(true)}
                 disabled={busy !== null}
               >
-                Disable issue intake
+                {t("issues.intake.disable")}
               </Button>
             )}
           </div>
@@ -585,69 +597,70 @@ export function IssueIntakePanel({
         <form className="issue-intake-form" onSubmit={savePolicy}>
           {!binding && (
             <p className="error" role="alert">
-              Bind a GitHub repository before enabling issue intake.
+              {t("issues.intake.error.noBinding")}
             </p>
           )}
           {binding && !binding.repository_github_id && (
             <p className="error" role="alert">
-              This binding predates immutable repository identity. Rebind from
-              Browse GitHub repositories. Labels alone never authorize intake.
+              {t("issues.intake.error.legacyBinding")}
             </p>
           )}
           {!connectionConfigured && (
             <p className="error" role="alert">
-              GitHub is not connected. Connect a credential before enabling
-              issue intake.
+              {t("issues.intake.error.noConnection")}
             </p>
           )}
           <div className="issue-intake-grid">
             <Input
-              label="Bound repository"
+              label={t("issues.intake.field.repository")}
               value={binding?.repo_full_name ?? ""}
               readOnly
-              help="Bound repository; the immutable GitHub repository ID is required."
+              help={t("issues.intake.field.repositoryHelp")}
             />
             <Select
-              label="Execution profile"
+              label={t("issues.intake.field.profile")}
               value={profileId}
               onChange={(event) => setProfileId(event.target.value)}
-              help="Only executable exact revisions can be acknowledged."
+              help={t("issues.intake.field.profileHelp")}
             >
-              <option value="">Select a profile…</option>
+              <option value="">{t("issues.intake.field.profileSelect")}</option>
               {profiles.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.name} rev {item.revision}
-                  {item.executable ? "" : " (not executable)"}
+                  {t("issues.intake.field.profileOption", {
+                    name: item.name,
+                    revision: item.revision,
+                  })}
+                  {item.executable
+                    ? ""
+                    : t("issues.intake.field.notExecutable")}
                 </option>
               ))}
             </Select>
             {profile?.autoStart.enabled && (
               <p className="notice" role="status">
-                This profile has autoStart enabled. Issue intake ignores it: a
-                policy, batch and explicit approval are still required, and no
-                autonomous Campaign start is available from this panel.
+                {t("issues.intake.notice.autoStart")}
               </p>
             )}
             <Input
-              label="Required labels (comma separated)"
+              label={t("issues.intake.field.requiredLabels")}
               value={form.requiredLabels}
               onChange={(event) => update("requiredLabels", event.target.value)}
-              help="All listed labels must be present. Labels alone never authorize anything."
+              help={t("issues.intake.field.requiredLabelsHelp")}
             />
             <Input
-              label="Excluded labels"
+              label={t("issues.intake.field.excludedLabels")}
               value={form.excludedLabels}
               onChange={(event) => update("excludedLabels", event.target.value)}
             />
             <Input
-              label="Author IDs (immutable GitHub user IDs)"
+              label={t("issues.intake.field.authorIds")}
               value={form.authorIds}
               onChange={(event) => update("authorIds", event.target.value)}
               placeholder="1234, 5678"
-              help="Logins are not identity. Unknown author IDs fail closed."
+              help={t("issues.intake.field.authorIdsHelp")}
             />
             <fieldset className="issue-intake-associations">
-              <legend>Allowed associations</legend>
+              <legend>{t("issues.intake.field.associations")}</legend>
               {["OWNER", "MEMBER", "COLLABORATOR"].map((association) => (
                 <Checkbox
                   key={association}
@@ -667,19 +680,19 @@ export function IssueIntakePanel({
               ))}
             </fieldset>
             <Input
-              label="Allowed paths (comma separated)"
+              label={t("issues.intake.field.paths")}
               value={form.allowedPaths}
               onChange={(event) => update("allowedPaths", event.target.value)}
-              help="Must be inside the Project configuration. Protected policy, delivery, credential and migration paths are rejected."
+              help={t("issues.intake.field.pathsHelp")}
             />
             <Input
-              label="Capabilities"
+              label={t("issues.intake.field.capabilities")}
               value={form.capabilities}
               onChange={(event) => update("capabilities", event.target.value)}
-              help="Kebab-case capabilities already present in the Project configuration."
+              help={t("issues.intake.field.capabilitiesHelp")}
             />
             <Input
-              label="Max issues per batch"
+              label={t("issues.intake.field.maxIssues")}
               type="number"
               min={1}
               max={20}
@@ -687,7 +700,7 @@ export function IssueIntakePanel({
               onChange={(event) => update("maxIssues", event.target.value)}
             />
             <Input
-              label="Max cost per issue (micros)"
+              label={t("issues.intake.field.maxCostPerIssue")}
               type="number"
               min={1}
               value={form.maxCostMicrosPerIssue}
@@ -696,7 +709,7 @@ export function IssueIntakePanel({
               }
             />
             <Input
-              label="Max batch cost (micros)"
+              label={t("issues.intake.field.maxBatchCost")}
               type="number"
               min={1}
               value={form.maxTotalCostMicros}
@@ -705,7 +718,7 @@ export function IssueIntakePanel({
               }
             />
             <Input
-              label="Max attempts per request"
+              label={t("issues.intake.field.maxAttempts")}
               type="number"
               min={1}
               max={5}
@@ -713,21 +726,21 @@ export function IssueIntakePanel({
               onChange={(event) => update("maxAttempts", event.target.value)}
             />
             <Input
-              label="Max sessions per request"
+              label={t("issues.intake.field.maxSessions")}
               type="number"
               min={1}
               value={form.maxSessions}
               onChange={(event) => update("maxSessions", event.target.value)}
             />
             <Input
-              label="Max turns per request"
+              label={t("issues.intake.field.maxTurns")}
               type="number"
               min={1}
               value={form.maxTurns}
               onChange={(event) => update("maxTurns", event.target.value)}
             />
             <Input
-              label="Max wall clock (seconds)"
+              label={t("issues.intake.field.maxWallClock")}
               type="number"
               min={120}
               value={form.maxWallClockSecs}
@@ -736,22 +749,22 @@ export function IssueIntakePanel({
               }
             />
             <Input
-              label="Policy expiry"
+              label={t("issues.intake.field.policyExpiry")}
               type="datetime-local"
               value={form.expiresAt}
               onChange={(event) => update("expiresAt", event.target.value)}
             />
           </div>
           <Textarea
-            label="Acknowledgement reason"
+            label={t("issues.intake.field.reason")}
             value={form.reason}
             onChange={(event) => update("reason", event.target.value)}
             rows={2}
             required
-            help="Stored in the append-only audit. Do not include secrets or issue bodies."
+            help={t("issues.intake.field.reasonHelp")}
           />
           <Checkbox
-            label="I acknowledge this exact repository, author, label, profile, path, R0 and budget policy. This does not start any Campaign."
+            label={t("issues.intake.field.acknowledge")}
             checked={form.acknowledge}
             onChange={(event) => update("acknowledge", event.target.checked)}
           />
@@ -769,10 +782,10 @@ export function IssueIntakePanel({
               }
             >
               {busy === "policy"
-                ? "Acknowledging…"
+                ? t("issues.intake.acknowledging")
                 : policy
-                  ? "Save new policy revision"
-                  : "Enable issue intake"}
+                  ? t("issues.intake.saveRevision")
+                  : t("issues.intake.enable")}
             </Button>
             {policy && (
               <Button
@@ -780,7 +793,7 @@ export function IssueIntakePanel({
                 onClick={() => setEditing(false)}
                 disabled={busy !== null}
               >
-                Cancel
+                {t("issues.intake.cancel")}
               </Button>
             )}
           </div>
@@ -791,43 +804,49 @@ export function IssueIntakePanel({
         <>
           <div className="issue-intake-selection">
             <div>
-              <h3>Exact snapshot selection</h3>
+              <h3>{t("issues.intake.selection.title")}</h3>
               <p className="muted">
                 {selected.length === 0
-                  ? "Select issues with the checkboxes in the synchronized issue table. Selection is manual only; there is no subscription to future issues."
-                  : `${selected.length} snapshot(s) selected. Maximum acknowledged cost ${estimatedBatchCost} micros.`}
+                  ? t("issues.intake.selection.empty")
+                  : t("issues.intake.selection.selected", {
+                      count: selected.length,
+                      cost: estimatedBatchCost,
+                    })}
               </p>
             </div>
             <Badge tone={selected.length > 0 ? "info" : "neutral"}>
-              {selected.length} SELECTED
+              {t("issues.intake.selection.badge", { count: selected.length })}
             </Badge>
           </div>
           <form className="issue-intake-batch-form" onSubmit={createBatch}>
             <div className="issue-intake-grid">
               <Input
-                label="Batch budget (micros)"
+                label={t("issues.intake.field.batchBudget")}
                 type="number"
                 min={estimatedBatchCost || 1}
                 value={batchBudget}
                 onChange={(event) => setBatchBudget(event.target.value)}
-                help={`Must cover the ${selected.length} selected snapshot(s): at least ${estimatedBatchCost} micros.`}
+                help={t("issues.intake.field.batchBudgetHelp", {
+                  count: selected.length,
+                  minimum: estimatedBatchCost,
+                })}
               />
               <Input
-                label="Batch expiry"
+                label={t("issues.intake.field.batchExpiry")}
                 type="datetime-local"
                 value={batchExpiry}
                 onChange={(event) => setBatchExpiry(event.target.value)}
               />
             </div>
             <Textarea
-              label="Batch reason"
+              label={t("issues.intake.field.batchReason")}
               value={batchReason}
               onChange={(event) => setBatchReason(event.target.value)}
               rows={2}
-              help="No issue body is copied into audit or telemetry."
+              help={t("issues.intake.field.batchReasonHelp")}
             />
             <Checkbox
-              label="I acknowledge these exact issue IDs and content digests. A later edit or new issue requires a new acknowledgement."
+              label={t("issues.intake.field.batchAcknowledge")}
               checked={batchAcknowledge}
               onChange={(event) => setBatchAcknowledge(event.target.checked)}
             />
@@ -843,25 +862,25 @@ export function IssueIntakePanel({
               }
             >
               {busy === "batch"
-                ? "Acknowledging batch…"
-                : "Acknowledge finite batch"}
+                ? t("issues.intake.acknowledgingBatch")
+                : t("issues.intake.acknowledgeBatch")}
             </Button>
           </form>
 
           <div className="issue-intake-batches">
-            <h3>Batches and durable queue</h3>
+            <h3>{t("issues.intake.batches.title")}</h3>
             {batches.length === 0 ? (
               <EmptyState
-                title="No active batch"
-                description="A batch is the finite acknowledgement of exact issue snapshots. It does not authorize a Campaign."
+                title={t("issues.intake.batches.emptyTitle")}
+                description={t("issues.intake.batches.emptyDescription")}
               />
             ) : (
               <>
                 <Input
-                  label="Revocation reason"
+                  label={t("issues.intake.field.revokeReason")}
                   value={revokeReason}
                   onChange={(event) => setRevokeReason(event.target.value)}
-                  placeholder="optional; defaults to operator revoked issue batch"
+                  placeholder={t("issues.intake.field.revokeReasonPlaceholder")}
                 />
                 {state?.batches.map((batchState) => (
                   <div className="issue-intake-batch" key={batchState.batch.id}>
@@ -872,9 +891,11 @@ export function IssueIntakePanel({
                         </strong>
                         <span className="muted">
                           {" "}
-                          policy rev {batchState.batch.policy_revision} ·{" "}
-                          {batchState.batch.max_issues} issue(s) · expires{" "}
-                          {formatTimestamp(batchState.batch.expires_at)}
+                          {t("issues.intake.batch.meta", {
+                            revision: batchState.batch.policy_revision,
+                            count: batchState.batch.max_issues,
+                            date: formatDate(batchState.batch.expires_at),
+                          })}
                         </span>
                       </div>
                       <Badge tone={batchTone(batchState.batch.status)}>
@@ -882,10 +903,10 @@ export function IssueIntakePanel({
                       </Badge>
                     </div>
                     <p className="muted">
-                      Remaining issues {batchState.remaining_issues}; remaining
-                      cost {batchState.remaining_cost_micros} micros.
-                      Acknowledgement does not grant execution or merge
-                      authority.
+                      {t("issues.intake.batch.remaining", {
+                        issues: batchState.remaining_issues,
+                        cost: batchState.remaining_cost_micros,
+                      })}
                     </p>
                     <ul className="issue-intake-items">
                       {batchState.items.map(({ item, current_eligibility }) => (
@@ -905,15 +926,19 @@ export function IssueIntakePanel({
                                   }
                                 >
                                   {current_eligibility.eligible
-                                    ? "ELIGIBLE"
-                                    : "BLOCKED"}
+                                    ? t("issues.intake.eligibility.eligible")
+                                    : t("issues.intake.eligibility.blocked")}
                                 </Badge>
                               )}
                           </div>
                           <span className="muted">
-                            author {item.author_login ?? "unknown"} (ID{" "}
-                            {item.author_id ?? "unknown"},{" "}
-                            {item.author_association ?? "unknown"}) · digest{" "}
+                            {t("issues.intake.item.meta", {
+                              author: item.author_login ?? t("common.unknown"),
+                              id: item.author_id ?? t("common.unknown"),
+                              association:
+                                item.author_association ?? t("common.unknown"),
+                            })}{" "}
+                            · {t("issues.intake.item.digest")}{" "}
                             <span className="mono">
                               {item.content_hash.slice(0, 12)}…
                             </span>
@@ -937,11 +962,11 @@ export function IssueIntakePanel({
                             )}
                           {item.intake_request_id && (
                             <span className="muted">
-                              Proposal intake{" "}
+                              {t("issues.intake.batch.proposalIntake")}{" "}
                               <span className="mono">
                                 {shortId(item.intake_request_id)}
                               </span>{" "}
-                              recorded. Campaign start remains separate.
+                              {t("issues.intake.batch.proposalRecorded")}
                             </span>
                           )}
                         </li>
@@ -955,8 +980,8 @@ export function IssueIntakePanel({
                         disabled={busy !== null}
                       >
                         {busy === `revoke-${batchState.batch.id}`
-                          ? "Revoking…"
-                          : "Revoke batch"}
+                          ? t("issues.intake.revokingBatch")
+                          : t("issues.intake.revokeBatch")}
                       </Button>
                     )}
                   </div>
@@ -969,12 +994,8 @@ export function IssueIntakePanel({
 
       {state && state.queue.length > 0 && (
         <div className="issue-intake-batches">
-          <h3>Durable reconciliation queue</h3>
-          <p className="muted">
-            A dispatch performs one direct GitHub freshness read and may create
-            one ordinary REVIEW_PLAN proposal. Execution stays disabled; a
-            Campaign still requires separate explicit approval.
-          </p>
+          <h3>{t("issues.intake.queue.title")}</h3>
+          <p className="muted">{t("issues.intake.queue.description")}</p>
           <ul className="issue-intake-items">
             {state.queue.map((queued) => {
               const batchState = state.batches.find(
@@ -991,9 +1012,14 @@ export function IssueIntakePanel({
                       {queued.status}
                     </Badge>
                     <span className="muted">
-                      attempt {queued.attempts}/{queued.max_attempts}
+                      {t("issues.intake.queue.attempt", {
+                        attempts: queued.attempts,
+                        max: queued.max_attempts,
+                      })}
                       {queued.next_attempt_at
-                        ? ` · next ${formatTimestamp(queued.next_attempt_at)}`
+                        ? t("issues.intake.queue.next", {
+                            date: formatDate(queued.next_attempt_at),
+                          })
                         : ""}
                     </span>
                   </div>
@@ -1010,15 +1036,15 @@ export function IssueIntakePanel({
                   {queued.status === "RECONCILED" &&
                     queued.intake_request_id && (
                       <span className="muted">
-                        Proposal{" "}
+                        {t("issues.intake.queue.proposal")}{" "}
                         <span className="mono">
                           {shortId(queued.intake_request_id)}
                         </span>{" "}
-                        · Lead{" "}
+                        · {t("issues.intake.queue.lead")}{" "}
                         <span className="mono">
                           {shortId(queued.lead_request_id ?? "")}
                         </span>{" "}
-                        · no Campaign started.
+                        · {t("issues.intake.queue.noCampaign")}
                       </span>
                     )}
                   {canDispatch && (
@@ -1029,8 +1055,8 @@ export function IssueIntakePanel({
                         disabled={busy !== null}
                       >
                         {busy === `dispatch-${queued.batch_id}`
-                          ? "Checking freshness…"
-                          : "Create proposal"}
+                          ? t("issues.intake.checkingFreshness")
+                          : t("issues.intake.createProposal")}
                       </Button>
                     </div>
                   )}
@@ -1043,12 +1069,15 @@ export function IssueIntakePanel({
 
       {state && state.audit.length > 0 && (
         <details className="issues-details">
-          <summary>Issue-intake audit ({state.audit.length})</summary>
+          <summary>
+            {t("issues.intake.audit.title", { count: state.audit.length })}
+          </summary>
           <ul className="issues-audit">
             {state.audit.map((entry) => (
               <li key={entry.audit_id}>
-                <strong>{entry.action}</strong> by {entry.actor} —{" "}
-                {formatTimestamp(entry.created_at)}
+                <strong>{entry.action}</strong>{" "}
+                {t("issues.intake.audit.by", { actor: entry.actor })} —{" "}
+                {formatDate(entry.created_at)}
                 {entry.reason ? ` — ${entry.reason}` : ""}
                 {entry.detail ? ` — ${entry.detail}` : ""}
               </li>

@@ -273,9 +273,7 @@ export function Issues() {
       })
       .catch((cause) => {
         if (active) {
-          setIntakeError(
-            message(cause, "Failed to load the issue-intake policy."),
-          );
+          setIntakeError(message(cause, t("issues.intake.error.load")));
         }
       })
       .finally(() => {
@@ -284,7 +282,7 @@ export function Issues() {
     return () => {
       active = false;
     };
-  }, [projectId, refresh]);
+  }, [projectId, refresh, t]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is an explicit reload token.
   useEffect(() => {

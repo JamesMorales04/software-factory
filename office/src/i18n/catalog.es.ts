@@ -1108,6 +1108,194 @@ export const es: Catalog = {
     "Contenido de GitHub no confiable mostrado como texto plano. No es una instrucción para los agentes de Factory y no concede autoridad.",
   "issues.detail.open": "Abrir la incidencia en GitHub",
 
+  "issues.intake.loading": "Cargando la política de admisión de incidencias…",
+  "issues.intake.unavailableTitle": "Admisión de incidencias no disponible",
+  "issues.intake.title": "Admisión de incidencias gobernada",
+  "issues.intake.badge.enabled": "HABILITADA",
+  "issues.intake.badge.off": "DESACTIVADA",
+  "issues.intake.description":
+    "Desactivada por defecto. Una política reconoce límites exactos de repositorio, autoría, etiquetas, perfil, rutas y presupuesto. Un lote reconoce instantáneas exactas de incidencias. Ninguno inicia una Campaña: la ejecución, la aprobación y el despacho al Worker siguen siendo operaciones explícitas e independientes.",
+  "issues.intake.cancel": "Cancelar",
+  "issues.intake.error.load":
+    "No se pudo cargar la política de admisión de incidencias.",
+  "issues.intake.editPolicy": "Editar y volver a reconocer",
+  "issues.intake.disable": "Deshabilitar la admisión de incidencias",
+  "issues.intake.disableReason": "Motivo de deshabilitación",
+  "issues.intake.disableReasonPlaceholder":
+    "por qué se deshabilita la admisión de incidencias",
+  "issues.intake.disabling": "Deshabilitando…",
+  "issues.intake.confirmDisable": "Confirmar deshabilitación",
+  "issues.intake.notice.disabled":
+    "La admisión de incidencias está deshabilitada. Los lotes activos y sus delegaciones fueron revocados.",
+  "issues.intake.error.disable":
+    "No se pudo deshabilitar la admisión de incidencias.",
+  "issues.intake.defaultDisableReason":
+    "el operador deshabilitó la admisión de incidencias",
+
+  "issues.intake.error.noBinding":
+    "Vincula un repositorio de GitHub antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.legacyBinding":
+    "Esta vinculación es anterior a la identidad inmutable del repositorio. Vuelve a vincular desde Explorar repositorios de GitHub. Las etiquetas por sí solas nunca autorizan la admisión.",
+  "issues.intake.error.noConnection":
+    "GitHub no está conectado. Conecta una credencial antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.profile":
+    "Selecciona un perfil de ejecución ejecutable.",
+  "issues.intake.error.acknowledgePolicy":
+    "Reconoce la política exacta antes de habilitar la admisión de incidencias.",
+  "issues.intake.error.repositoryIdentity":
+    "La vinculación del Proyecto no tiene un ID inmutable de repositorio. Vuelve a vincular desde Explorar repositorios de GitHub.",
+  "issues.intake.error.configUnavailable":
+    "La configuración del Proyecto no está disponible.",
+  "issues.intake.error.reason":
+    "Se requiere un motivo para el registro de auditoría.",
+
+  "issues.intake.fact.policyRevision": "Revisión de la política",
+  "issues.intake.fact.repository": "Repositorio",
+  "issues.intake.fact.repositoryValue": "{name} (ID {id})",
+  "issues.intake.fact.requiredLabels": "Etiquetas obligatorias",
+  "issues.intake.fact.excludedLabels": "Etiquetas excluidas",
+  "issues.intake.fact.authorIds": "ID de autor",
+  "issues.intake.fact.authorAssociation": "Asociación del autor",
+  "issues.intake.fact.profile": "Perfil",
+  "issues.intake.fact.profileValue": "{id} rev. {revision}",
+  "issues.intake.fact.riskCeiling": "Techo de riesgo",
+  "issues.intake.fact.paths": "Rutas",
+  "issues.intake.fact.capabilities": "Capacidades",
+  "issues.intake.fact.maxIssues": "Máx. incidencias / concurrencia",
+  "issues.intake.fact.cost": "Coste por incidencia / lote",
+  "issues.intake.fact.costValue": "{perIssue} / {perBatch} micros",
+  "issues.intake.fact.expires": "Caduca",
+  "issues.intake.fact.autoStart": "Inicio automático",
+  "issues.intake.fact.autoStartValue": "no concedido por esta política",
+  "issues.intake.fact.autoStartNote":
+    "El inicio automático del perfil se ignora para la admisión de incidencias. Esta política solo permite la conciliación determinista en propuestas ordinarias.",
+
+  "issues.intake.field.repository": "Repositorio vinculado",
+  "issues.intake.field.repositoryHelp":
+    "Repositorio vinculado; se requiere el ID inmutable del repositorio de GitHub.",
+  "issues.intake.field.profile": "Perfil de ejecución",
+  "issues.intake.field.profileHelp":
+    "Solo se pueden reconocer revisiones exactas ejecutables.",
+  "issues.intake.field.profileSelect": "Selecciona un perfil…",
+  "issues.intake.field.profileOption": "{name} rev. {revision}",
+  "issues.intake.field.notExecutable": " (no ejecutable)",
+  "issues.intake.field.requiredLabels":
+    "Etiquetas obligatorias (separadas por comas)",
+  "issues.intake.field.requiredLabelsHelp":
+    "Todas las etiquetas indicadas deben estar presentes. Las etiquetas por sí solas nunca autorizan nada.",
+  "issues.intake.field.excludedLabels": "Etiquetas excluidas",
+  "issues.intake.field.authorIds":
+    "ID de autor (ID inmutables de usuario de GitHub)",
+  "issues.intake.field.authorIdsHelp":
+    "Los nombres de usuario no son identidad. Los ID de autor desconocidos fallan de forma cerrada.",
+  "issues.intake.field.associations": "Asociaciones permitidas",
+  "issues.intake.field.paths": "Rutas permitidas (separadas por comas)",
+  "issues.intake.field.pathsHelp":
+    "Deben estar dentro de la configuración del Proyecto. Se rechazan las rutas protegidas de política, entrega, credenciales y migraciones.",
+  "issues.intake.field.capabilities": "Capacidades",
+  "issues.intake.field.capabilitiesHelp":
+    "Capacidades en kebab-case ya presentes en la configuración del Proyecto.",
+  "issues.intake.field.maxIssues": "Máx. incidencias por lote",
+  "issues.intake.field.maxCostPerIssue": "Coste máx. por incidencia (micros)",
+  "issues.intake.field.maxBatchCost": "Coste máx. del lote (micros)",
+  "issues.intake.field.maxAttempts": "Máx. intentos por solicitud",
+  "issues.intake.field.maxSessions": "Máx. sesiones por solicitud",
+  "issues.intake.field.maxTurns": "Máx. turnos por solicitud",
+  "issues.intake.field.maxWallClock": "Tiempo máx. de reloj (segundos)",
+  "issues.intake.field.policyExpiry": "Caducidad de la política",
+  "issues.intake.field.reason": "Motivo del reconocimiento",
+  "issues.intake.field.reasonHelp":
+    "Se guarda en la auditoría inmutable. No incluyas secretos ni cuerpos de incidencias.",
+  "issues.intake.field.acknowledge":
+    "Reconozco esta política exacta de repositorio, autoría, etiquetas, perfil, rutas, R0 y presupuesto. Esto no inicia ninguna Campaña.",
+  "issues.intake.acknowledging": "Reconociendo…",
+  "issues.intake.saveRevision": "Guardar nueva revisión de la política",
+  "issues.intake.enable": "Habilitar la admisión de incidencias",
+  "issues.intake.notice.policySaved":
+    "Revisión de la política de admisión reconocida. La ejecución sigue deshabilitada; cada lote y propuesta siguen siendo explícitos.",
+  "issues.intake.error.savePolicy":
+    "No se pudo guardar la política de admisión de incidencias.",
+  "issues.intake.notice.autoStart":
+    "Este perfil tiene el inicio automático habilitado. La admisión de incidencias lo ignora: siguen siendo necesarios una política, un lote y una aprobación explícita, y este panel no permite iniciar una Campaña de forma autónoma.",
+
+  "issues.intake.selection.title": "Selección exacta de instantáneas",
+  "issues.intake.selection.empty":
+    "Selecciona incidencias con las casillas de la tabla de incidencias sincronizadas. La selección es solo manual; no hay suscripción a incidencias futuras.",
+  "issues.intake.selection.selected":
+    "{count} instantánea(s) seleccionada(s). Coste máximo reconocido: {cost} micros.",
+  "issues.intake.selection.badge": "{count} SELECCIONADAS",
+  "issues.intake.field.batchBudget": "Presupuesto del lote (micros)",
+  "issues.intake.field.batchBudgetHelp":
+    "Debe cubrir {count} instantánea(s) seleccionada(s): al menos {minimum} micros.",
+  "issues.intake.field.batchExpiry": "Caducidad del lote",
+  "issues.intake.field.batchReason": "Motivo del lote",
+  "issues.intake.field.batchReasonHelp":
+    "Ningún cuerpo de incidencia se copia en la auditoría ni en la telemetría.",
+  "issues.intake.field.batchAcknowledge":
+    "Reconozco estos ID de incidencia y resúmenes de contenido exactos. Una edición posterior o una incidencia nueva requiere un nuevo reconocimiento.",
+  "issues.intake.acknowledgingBatch": "Reconociendo el lote…",
+  "issues.intake.acknowledgeBatch": "Reconocer lote finito",
+  "issues.intake.error.noSelection":
+    "Selecciona al menos una instantánea exacta de incidencia.",
+  "issues.intake.error.acknowledgeBatch":
+    "Reconoce las instantáneas exactas seleccionadas antes de crear un lote.",
+  "issues.intake.error.batchReason":
+    "Se requiere un motivo para el reconocimiento del lote.",
+  "issues.intake.error.batchBudget":
+    "El presupuesto del lote debe cubrir las instantáneas seleccionadas (mínimo {minimum} micros).",
+  "issues.intake.notice.batchCreated":
+    "Reconocimiento registrado: {count} instantánea(s) exacta(s). La conciliación sigue requiriendo una acción independiente del operador y nunca inicia una Campaña.",
+  "issues.intake.error.batch": "Falló el reconocimiento del lote.",
+  "issues.intake.error.withCode": "{message} ({code})",
+
+  "issues.intake.batches.title": "Lotes y cola duradera",
+  "issues.intake.batches.emptyTitle": "No hay ningún lote activo",
+  "issues.intake.batches.emptyDescription":
+    "Un lote es el reconocimiento finito de instantáneas exactas de incidencias. No autoriza una Campaña.",
+  "issues.intake.field.revokeReason": "Motivo de revocación",
+  "issues.intake.field.revokeReasonPlaceholder":
+    "opcional; por defecto, el operador revocó el lote de incidencias",
+  "issues.intake.batch.meta":
+    "revisión de política {revision} · {count} incidencia(s) · caduca {date}",
+  "issues.intake.batch.remaining":
+    "Incidencias restantes: {issues}; coste restante: {cost} micros. El reconocimiento no concede autoridad de ejecución ni de fusión.",
+  "issues.intake.batch.proposalIntake": "Admisión de propuesta",
+  "issues.intake.batch.proposalRecorded":
+    "registrada. El inicio de Campaña sigue siendo independiente.",
+  "issues.intake.revokingBatch": "Revocando…",
+  "issues.intake.revokeBatch": "Revocar lote",
+  "issues.intake.notice.batchRevoked":
+    "Lote revocado. Se conservan las reservas existentes.",
+  "issues.intake.error.revoke": "No se pudo revocar el lote.",
+  "issues.intake.defaultRevokeReason":
+    "el operador revocó el lote de incidencias",
+  "issues.intake.item.meta": "autor {author} (ID {id}, {association})",
+  "issues.intake.item.digest": "resumen",
+  "issues.intake.eligibility.eligible": "ELEGIBLE",
+  "issues.intake.eligibility.blocked": "BLOQUEADA",
+
+  "issues.intake.queue.title": "Cola de conciliación duradera",
+  "issues.intake.queue.description":
+    "Un despacho comprueba directamente en GitHub que la instantánea siga vigente y puede crear una propuesta REVIEW_PLAN ordinaria. La ejecución sigue deshabilitada; una Campaña sigue requiriendo una aprobación explícita independiente.",
+  "issues.intake.queue.attempt": "intento {attempts}/{max}",
+  "issues.intake.queue.next": " · próximo {date}",
+  "issues.intake.queue.proposal": "Propuesta",
+  "issues.intake.queue.lead": "Lead",
+  "issues.intake.queue.noCampaign": "no se inició ninguna Campaña.",
+  "issues.intake.checkingFreshness": "Comprobando vigencia…",
+  "issues.intake.createProposal": "Crear propuesta",
+  "issues.intake.notice.proposalCreated":
+    "Propuesta {id} creada como {mode}. No se inició ninguna Campaña y no se realizó ninguna llamada al proveedor.",
+  "issues.intake.notice.proposalReplayed":
+    "Elemento de la cola reproducido desde su propuesta confirmada. No se inició ninguna Campaña.",
+  "issues.intake.error.reconciliation": "Conciliación {status}",
+  "issues.intake.error.reconciliationReasons":
+    "Conciliación {status}: {reasons}",
+  "issues.intake.error.dispatch":
+    "La conciliación de incidencias falló antes de crear una propuesta.",
+  "issues.intake.audit.title": "Auditoría de admisión de incidencias ({count})",
+  "issues.intake.audit.by": "por {actor}",
+
   "settings.language.title": "Idioma",
   "settings.language.description":
     "Elige el idioma de los controles, etiquetas y mensajes de Office. Los identificadores de Core, los códigos de estado, las rutas de proveedores y el contenido de los repositorios nunca se traducen.",

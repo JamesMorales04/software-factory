@@ -10,6 +10,7 @@ import {
   type ProjectConfig,
   type ProjectGitHubBinding,
 } from "../coreApi";
+import { I18nProvider } from "../i18n";
 import { IssueIntakePanel } from "./IssueIntakePanel";
 
 const mocks = vi.hoisted(() => ({
@@ -191,7 +192,7 @@ function state(overrides: Partial<IssueIntakeState> = {}): IssueIntakeState {
   };
 }
 
-function activeBatchState() {
+function activeBatchState(): IssueIntakeState["batches"][number] {
   return {
     batch: {
       id: "batch-1",
@@ -258,8 +259,42 @@ function activeBatchState() {
   };
 }
 
+function queuedItem(
+  overrides: Partial<IssueIntakeState["queue"][number]> = {},
+): IssueIntakeState["queue"][number] {
+  return {
+    id: "queue-1",
+    project_id: "project-1",
+    batch_id: "batch-1",
+    batch_item_id: "item-1",
+    repository_full_name: "acme/widgets",
+    repository_github_id: 42,
+    issue_number: 5,
+    github_issue_id: 55,
+    content_hash: issue.content_hash,
+    connection_revision: 2,
+    policy_revision: 1,
+    status: "PENDING",
+    lease_token: null,
+    lease_expires_at: null,
+    attempts: 0,
+    max_attempts: 3,
+    next_attempt_at: null,
+    reason: null,
+    reasons: [],
+    intake_request_id: null,
+    lead_request_id: null,
+    action_id: null,
+    created_at: "2026-10-27T10:00:00Z",
+    updated_at: "2026-10-27T10:00:00Z",
+    completed_at: null,
+    ...overrides,
+  };
+}
+
 function renderPanel(
   overrides: {
+    locale?: "en" | "es";
     state?: IssueIntakeState | null;
     selected?: GitHubIssueSummary[];
     onRefresh?: () => void;
@@ -268,21 +303,24 @@ function renderPanel(
   } = {},
 ) {
   return render(
-    <IssueIntakePanel
-      projectId="project-1"
-      binding={binding}
-      connectionConfigured
-      state={overrides.state === undefined ? state() : overrides.state}
-      loading={false}
-      loadError={overrides.loadError ?? null}
-      selected={overrides.selected ?? []}
-      onRefresh={overrides.onRefresh ?? (() => {})}
-      onSelectionClear={overrides.onSelectionClear ?? (() => {})}
-    />,
+    <I18nProvider initialLocale={overrides.locale ?? "en"}>
+      <IssueIntakePanel
+        projectId="project-1"
+        binding={binding}
+        connectionConfigured
+        state={overrides.state === undefined ? state() : overrides.state}
+        loading={false}
+        loadError={overrides.loadError ?? null}
+        selected={overrides.selected ?? []}
+        onRefresh={overrides.onRefresh ?? (() => {})}
+        onSelectionClear={overrides.onSelectionClear ?? (() => {})}
+      />
+    </I18nProvider>,
   );
 }
 
 beforeEach(() => {
+  localStorage.clear();
   mocks.listExecutionProfiles.mockReset().mockResolvedValue({
     profiles: [profile],
     supportedRoutes: [],
@@ -460,33 +498,7 @@ describe("IssueIntakePanel", () => {
 
   it("dispatches one exact queue item and reports that no Campaign started", async () => {
     const batchState = activeBatchState();
-    const queued = {
-      id: "queue-1",
-      project_id: "project-1",
-      batch_id: "batch-1",
-      batch_item_id: "item-1",
-      repository_full_name: "acme/widgets",
-      repository_github_id: 42,
-      issue_number: 5,
-      github_issue_id: 55,
-      content_hash: issue.content_hash,
-      connection_revision: 2,
-      policy_revision: 1,
-      status: "PENDING" as const,
-      lease_token: null,
-      lease_expires_at: null,
-      attempts: 0,
-      max_attempts: 3,
-      next_attempt_at: null,
-      reason: null,
-      reasons: [],
-      intake_request_id: null,
-      lead_request_id: null,
-      action_id: null,
-      created_at: "2026-10-27T10:00:00Z",
-      updated_at: "2026-10-27T10:00:00Z",
-      completed_at: null,
-    };
+    const queued = queuedItem();
     mocks.dispatchIssueIntake.mockResolvedValue({
       status: "RECONCILED",
       reasons: [],
@@ -546,5 +558,223 @@ describe("IssueIntakePanel", () => {
         expect.objectContaining({ reason: "owner disabled intake" }),
       ),
     );
+  });
+
+  it("revokes a batch with a Spanish default audit reason", async () => {
+    mocks.revokeIssueIntakeBatch.mockResolvedValue({
+      batch: { ...activeBatchState().batch, status: "REVOKED" },
+    });
+    renderPanel({
+      locale: "es",
+      state: state({ batches: [activeBatchState()] }),
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Revocar lote" }));
+    await waitFor(() =>
+      expect(mocks.revokeIssueIntakeBatch).toHaveBeenCalledWith(
+        "project-1",
+        "batch-1",
+        { reason: "el operador revocó el lote de incidencias" },
+      ),
+    );
+    expect(
+      await screen.findByText(
+        "Lote revocado. Se conservan las reservas existentes.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("renders the governed issue-intake policy form in Spanish", async () => {
+    renderPanel({
+      locale: "es",
+      state: state({ enabled: false, policy: null }),
+    });
+    expect(await screen.findByText("DESACTIVADA")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Admisión de incidencias gobernada",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText(/Desactivada por defecto/)).toBeTruthy();
+    expect(screen.getByLabelText("Perfil de ejecución")).toBeTruthy();
+    expect(
+      screen.getByLabelText("Etiquetas obligatorias (separadas por comas)"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Motivo del reconocimiento")).toBeTruthy();
+    expect(
+      screen.getByLabelText(/Reconozco esta política exacta/),
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(/Este perfil tiene el inicio automático/),
+    ).toBeTruthy();
+    const enable = screen.getByRole("button", {
+      name: "Habilitar la admisión de incidencias",
+    }) as HTMLButtonElement;
+    expect(enable.disabled).toBe(true);
+  });
+
+  it("enables the policy from the Spanish form and reports the revision", async () => {
+    const onRefresh = vi.fn();
+    mocks.configureIssueIntakePolicy.mockResolvedValue({
+      policy: { ...policy, revision: 2 },
+      created: false,
+    });
+    renderPanel({
+      locale: "es",
+      state: state({ enabled: false, policy: null }),
+      onRefresh,
+    });
+    await screen.findByText(/Este perfil tiene el inicio automático/);
+    await userEvent.type(
+      screen.getByLabelText("Motivo del reconocimiento"),
+      "política R0 deliberada y acotada",
+    );
+    await userEvent.click(
+      screen.getByLabelText(/Reconozco esta política exacta/),
+    );
+    const enable = screen.getByRole("button", {
+      name: "Habilitar la admisión de incidencias",
+    }) as HTMLButtonElement;
+    expect(enable.disabled).toBe(false);
+    await userEvent.click(enable);
+    await waitFor(() =>
+      expect(mocks.configureIssueIntakePolicy).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          repository_full_name: "acme/widgets",
+          reason: "política R0 deliberada y acotada",
+          acknowledge: true,
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText(/Revisión de la política de admisión reconocida/),
+    ).toBeTruthy();
+    expect(onRefresh).toHaveBeenCalled();
+  });
+
+  it("acknowledges a Spanish batch selection and clears only after success", async () => {
+    const onRefresh = vi.fn();
+    const onSelectionClear = vi.fn();
+    mocks.createIssueIntakeBatch.mockResolvedValue({
+      batch: { id: "batch-1" },
+      items: [],
+      created: true,
+    });
+    renderPanel({
+      locale: "es",
+      selected: [issue],
+      onRefresh,
+      onSelectionClear,
+    });
+    expect(
+      screen.getByText(
+        /1 instantánea\(s\) seleccionada\(s\)\. Coste máximo reconocido/,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("1 SELECCIONADAS")).toBeTruthy();
+    await userEvent.type(
+      screen.getByLabelText("Motivo del lote"),
+      "instantánea exacta seleccionada",
+    );
+    await userEvent.click(
+      screen.getByLabelText(/Reconozco estos ID de incidencia/),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Reconocer lote finito" }),
+    );
+    await waitFor(() =>
+      expect(mocks.createIssueIntakeBatch).toHaveBeenCalled(),
+    );
+    const [, request] = mocks.createIssueIntakeBatch.mock.calls[0];
+    expect(request.items).toEqual([
+      {
+        number: 5,
+        github_issue_id: 55,
+        content_hash: issue.content_hash,
+        updated_at: issue.updated_at,
+      },
+    ]);
+    expect(
+      await screen.findByText(/Reconocimiento registrado: 1 instantánea/),
+    ).toBeTruthy();
+    expect(onSelectionClear).toHaveBeenCalled();
+    expect(onRefresh).toHaveBeenCalled();
+  });
+
+  it("renders Spanish queue states while keeping Core codes raw", () => {
+    renderPanel({
+      locale: "es",
+      state: state({ batches: [activeBatchState()], queue: [queuedItem()] }),
+    });
+    expect(
+      screen.getByRole("heading", { name: "Cola de conciliación duradera" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/REVIEW_PLAN/)).toBeTruthy();
+    expect(screen.getByText("intento 0/3")).toBeTruthy();
+    expect(screen.getByText("ACTIVE")).toBeTruthy();
+    expect(screen.getAllByText("PENDING").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("button", { name: "Crear propuesta" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps eligibility reason codes raw in Spanish", () => {
+    const batchState = activeBatchState();
+    batchState.items[0].current_eligibility = {
+      eligible: false,
+      reasons: ["CONNECTION_REVISION_CHANGED"],
+    };
+    renderPanel({
+      locale: "es",
+      state: state({ batches: [batchState] }),
+    });
+    expect(screen.getByText("BLOQUEADA")).toBeTruthy();
+    expect(screen.getByText("CONNECTION_REVISION_CHANGED")).toBeTruthy();
+    expect(screen.getByText("PENDING")).toBeTruthy();
+  });
+
+  it("reports the Spanish create-proposal confirmation without translating the mode", async () => {
+    const batchState = activeBatchState();
+    const queued = queuedItem();
+    mocks.dispatchIssueIntake.mockResolvedValue({
+      status: "RECONCILED",
+      reasons: [],
+      queue: {
+        ...queued,
+        status: "RECONCILED",
+        intake_request_id: "intake-1",
+        lead_request_id: "lead-1",
+      },
+      intake: {
+        id: "intake-1",
+        lead_request_id: "lead-1",
+        action_id: "action-1",
+        objective: "Resolve issue",
+        mode: "REVIEW_PLAN",
+      },
+      campaign_started: false,
+      provider_calls: 0,
+    });
+    renderPanel({
+      locale: "es",
+      state: state({ batches: [batchState], queue: [queued] }),
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Crear propuesta" }),
+    );
+    await waitFor(() =>
+      expect(mocks.dispatchIssueIntake).toHaveBeenCalledWith(
+        "project-1",
+        "batch-1",
+      ),
+    );
+    expect(
+      await screen.findByText(
+        /Propuesta intake-1 creada como REVIEW_PLAN\. No se inició ninguna Campaña/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/no se realizó ninguna llamada al proveedor/),
+    ).toBeTruthy();
   });
 });
