@@ -2694,7 +2694,9 @@ async fn worker_provider_profile(
     Json(json!({
         "provider": settings.provider,
         "kind": settings.kind,
-        "model": settings.model,
+        // Return the exact authorized assignment model, not merely the
+        // connection default; both must be substantiated by the connection.
+        "model": query.model,
         "baseUrl": settings.base_url,
         "credential": credential,
         "maxTurns": settings.max_turns,
@@ -7130,12 +7132,18 @@ async fn worker_workspace_operation(
     {
         Ok(authorization) => {
             let now_ms = chrono::Utc::now().timestamp_millis();
-            // The grant is revalidated against Core every 500 ms by the
-            // Supervisor fence. A short signature lifetime made the fence
-            // cancel commands that legitimately outlived it (for example a
-            // six-second frozen check); it must cover the maximum execution
-            // runtime plus a bounded settlement margin.
-            let expires_at_ms = now_ms.saturating_add(WORKSPACE_OPERATION_GRANT_MILLIS);
+            // Long-running execute/run/integrate grants are revalidated against
+            // Core every 500 ms by the Supervisor fence. A short signature
+            // lifetime made that fence cancel commands that legitimately
+            // outlived it. Write/apply/finalize are quick, unfenced mutations
+            // and keep a short admission lifetime so revocation remains fresh.
+            let lifetime_ms = if matches!(input.operation.as_str(), "execute" | "run" | "integrate")
+            {
+                WORKSPACE_OPERATION_GRANT_MILLIS
+            } else {
+                5_000
+            };
+            let expires_at_ms = now_ms.saturating_add(lifetime_ms);
             let claims = factory_native::attempt_grant::OperationGrantClaims {
                 attempt_id: authorization.attempt_id,
                 worker_id: authorization.worker_id,
