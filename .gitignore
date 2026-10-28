@@ -21,3 +21,6 @@ __pycache__/
 /.lock
 /state.json
 /core/.playwright-cli/
+
+office/node_modules/
+office/e2e-browser/node_modules/
