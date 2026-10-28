@@ -335,6 +335,60 @@ struct WithdrawLeadRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewIntakeRequest {
+    project_id: String,
+    objective: String,
+    #[serde(default)]
+    execution_profile_id: Option<String>,
+    mode: factory_native::intake::IntakeMode,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize, Default)]
+struct IntakeListQuery {
+    state: Option<String>,
+    project_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveIntakeRequest {
+    expected_plan_hash: String,
+    rationale: String,
+    #[serde(default)]
+    principal_label: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntakeMessageRequest {
+    body: String,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelIntakeRequest {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionPolicyRequest {
+    execution_profile_id: String,
+    expected_revision: u32,
+    expected_revision_hash: String,
+    project_config_hash: String,
+    acknowledge: bool,
+    idempotency_key: String,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ResolveModelCall {
     actor: String,
@@ -740,6 +794,25 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/start", post(start_lead_request))
         .route("/lead/requests/{id}/approve", post(approve_lead_request))
         .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
+        .route(
+            "/intake/requests",
+            get(intake_requests).post(create_intake_request),
+        )
+        .route("/intake/requests/{id}", get(get_intake_request))
+        .route("/intake/requests/{id}/assess", post(assess_intake_request))
+        .route(
+            "/intake/requests/{id}/approve",
+            post(approve_intake_request),
+        )
+        .route(
+            "/intake/requests/{id}/message",
+            post(message_intake_request),
+        )
+        .route("/intake/requests/{id}/cancel", post(cancel_intake_request))
+        .route(
+            "/projects/{id}/execution-policy",
+            post(create_execution_policy),
+        )
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
@@ -930,6 +1003,25 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/start", post(start_lead_request))
         .route("/lead/requests/{id}/approve", post(approve_lead_request))
         .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
+        .route(
+            "/intake/requests",
+            get(intake_requests).post(create_intake_request),
+        )
+        .route("/intake/requests/{id}", get(get_intake_request))
+        .route("/intake/requests/{id}/assess", post(assess_intake_request))
+        .route(
+            "/intake/requests/{id}/approve",
+            post(approve_intake_request),
+        )
+        .route(
+            "/intake/requests/{id}/message",
+            post(message_intake_request),
+        )
+        .route("/intake/requests/{id}/cancel", post(cancel_intake_request))
+        .route(
+            "/projects/{id}/execution-policy",
+            post(create_execution_policy),
+        )
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -1371,11 +1463,15 @@ fn api_error(error: Error) -> Response {
         }
         Error::Conflict(_) | Error::Constraint(_) | Error::Withdrawn => StatusCode::CONFLICT,
         Error::AlreadyStarted { .. } => StatusCode::CONFLICT,
+        Error::IntakeConflict { .. } => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::IntakeConflict { code, message } = &error {
+        return (status, Json(json!({"error": message, "code": code}))).into_response();
+    }
     if let Error::AlreadyStarted {
         campaign_id,
         campaign_status,
@@ -3533,57 +3629,54 @@ async fn campaign_detail(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let campaign = match app.db.campaign(&id).await {
-        Ok(campaign) => campaign,
-        Err(error) => return api_error(error),
-    };
-    let authorization = app.db.campaign_authorization(&id).await.ok();
-    let tasks = match app.db.campaign_tasks(&id).await {
-        Ok(tasks) => tasks,
-        Err(error) => return api_error(error),
-    };
-    let runs = match app.db.runs().await {
-        Ok(runs) => runs
-            .into_iter()
-            .filter(|run| run.campaign_id == id)
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
+    match campaign_detail_projection(&app, &id).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+/// Shared Campaign detail projection used by the Campaign route and the
+/// unified-intake projection. It never infers a status beyond recorded rows.
+async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::Value, Error> {
+    let campaign = app.db.campaign(id).await?;
+    let authorization = app.db.campaign_authorization(id).await.ok();
+    let tasks = app.db.campaign_tasks(id).await?;
+    let runs = app
+        .db
+        .runs()
+        .await?
+        .into_iter()
+        .filter(|run| run.campaign_id == id)
+        .collect::<Vec<_>>();
     let run_ids: std::collections::BTreeSet<String> =
         runs.iter().map(|run| run.id.clone()).collect();
-    let attempts = match app.db.attempts().await {
-        Ok(attempts) => attempts
-            .into_iter()
-            .filter(|attempt| run_ids.contains(&attempt.run_id))
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
+    let attempts = app
+        .db
+        .attempts()
+        .await?
+        .into_iter()
+        .filter(|attempt| run_ids.contains(&attempt.run_id))
+        .collect::<Vec<_>>();
     let attempt_ids: std::collections::BTreeSet<String> =
         attempts.iter().map(|attempt| attempt.id.clone()).collect();
-    let candidates = match app.db.candidates().await {
-        Ok(candidates) => candidates
-            .into_iter()
-            .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
-            .collect::<Vec<_>>(),
-        Err(error) => return api_error(error),
-    };
-    let lead_requests = match app.db.lead_requests().await {
-        Ok(requests) => requests,
-        Err(error) => return api_error(error),
-    };
+    let candidates = app
+        .db
+        .candidates()
+        .await?
+        .into_iter()
+        .filter(|candidate| attempt_ids.contains(&candidate.attempt_id))
+        .collect::<Vec<_>>();
+    let lead_requests = app.db.lead_requests().await?;
     let related_requests = lead_requests
         .iter()
         .filter(|request| {
-            request.campaign_id.as_deref() == Some(id.as_str())
+            request.campaign_id.as_deref() == Some(id)
                 || tasks.iter().any(|task| task.request_id == request.id)
         })
         .collect::<Vec<_>>();
-    let events = match app.db.events().await {
-        Ok(events) => events,
-        Err(error) => return api_error(error),
-    };
+    let events = app.db.events().await?;
     let mut related_subjects: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::from([id.clone()]);
+        std::collections::BTreeSet::from([id.to_owned()]);
     for request in &related_requests {
         related_subjects.insert(request.id.clone());
         related_subjects.insert(request.delegation_id.clone());
@@ -3610,7 +3703,7 @@ async fn campaign_detail(
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
-    Json(json!({
+    Ok(json!({
         "campaign": campaign,
         "authorization": authorization,
         "tasks": tasks,
@@ -3619,7 +3712,6 @@ async fn campaign_detail(
         "candidates": candidates,
         "events": events
     }))
-    .into_response()
 }
 
 async fn candidate_diff(
@@ -5001,6 +5093,948 @@ async fn get_lead_request(
         "model_calls": model_calls
     }))
     .into_response()
+}
+
+fn intake_state_from_lead(
+    state: factory_native::lead::LeadRequestProjectionState,
+) -> factory_native::intake::IntakeState {
+    use factory_native::intake::IntakeState;
+    use factory_native::lead::LeadRequestProjectionState;
+    match state {
+        LeadRequestProjectionState::Submitted => IntakeState::Submitted,
+        LeadRequestProjectionState::Assessing => IntakeState::Assessing,
+        LeadRequestProjectionState::PlanReady => IntakeState::PlanReady,
+        LeadRequestProjectionState::AwaitingApproval => IntakeState::AwaitingApproval,
+        LeadRequestProjectionState::Executing => IntakeState::Executing,
+        LeadRequestProjectionState::Completed => IntakeState::Completed,
+        LeadRequestProjectionState::Blocked => IntakeState::Blocked,
+        LeadRequestProjectionState::Failed => IntakeState::Failed,
+        LeadRequestProjectionState::Withdrawn | LeadRequestProjectionState::Cancelled => {
+            IntakeState::Cancelled
+        }
+    }
+}
+
+fn intake_state_detail(
+    state: factory_native::intake::IntakeState,
+    lead: &factory_native::db::LeadRequestRecord,
+    withdrawal: Option<&factory_native::db::LeadWithdrawalRecord>,
+    campaign_status: Option<&str>,
+    gate_outcome: Option<&str>,
+) -> String {
+    use factory_native::intake::IntakeState;
+    match state {
+        IntakeState::Submitted => {
+            "Request recorded. Run the bounded assessment with the frozen profile Lead route."
+                .into()
+        }
+        IntakeState::Assessing => "Core is assessing the request with the frozen profile.".into(),
+        IntakeState::PlanReady => {
+            "A proposal is recorded. Complete the assessment to freeze the executable plan.".into()
+        }
+        IntakeState::AwaitingApproval => "Frozen plan ready for explicit operator approval.".into(),
+        IntakeState::Executing => {
+            "Campaign authorized. Campaign, Run and Quality Gate state remain authoritative.".into()
+        }
+        IntakeState::Completed => match gate_outcome {
+            Some(outcome) => format!("Quality Gate recorded {outcome} for the exact candidate."),
+            None => "Core reports the request as completed.".into(),
+        },
+        IntakeState::Blocked => withdrawal
+            .map(|withdrawal| format!("Withdrawn by operator: {}", withdrawal.reason))
+            .or_else(|| lead.failure_reason.clone())
+            .unwrap_or_else(|| "Core blocked the request.".into()),
+        IntakeState::Failed => lead
+            .failure_reason
+            .clone()
+            .unwrap_or_else(|| "Core recorded a failure.".into()),
+        IntakeState::Cancelled => withdrawal
+            .map(|withdrawal| format!("Withdrawn by operator: {}", withdrawal.reason))
+            .or_else(|| {
+                (campaign_status == Some("CANCELLED"))
+                    .then(|| "The Campaign was cancelled; Campaign state is authoritative.".into())
+            })
+            .unwrap_or_else(|| "The request was cancelled.".into()),
+    }
+}
+
+async fn intake_request_value(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    detail: bool,
+) -> Result<serde_json::Value, Error> {
+    let lead = app.db.lead_request(&record.lead_request_id).await?;
+    let projection = app.db.lead_request_projection(&lead.id).await?;
+    let state = intake_state_from_lead(projection);
+    let campaign_id = lead
+        .campaign_id
+        .clone()
+        .or_else(|| record.campaign_id.clone());
+    let (campaign_status, gate_outcome) = match &campaign_id {
+        Some(campaign_id) => match app.db.campaign_status_and_gate(campaign_id).await {
+            Ok((status, gate)) => (Some(status), gate),
+            Err(Error::NotFound) => (None, None),
+            Err(error) => return Err(error),
+        },
+        None => (None, None),
+    };
+    let withdrawal = app.db.lead_withdrawal(&lead.id).await?;
+    let authorization = app.db.intake_authorization_state(&record.id, state).await;
+    let state_detail = intake_state_detail(
+        state,
+        &lead,
+        withdrawal.as_ref(),
+        campaign_status.as_deref(),
+        gate_outcome.as_deref(),
+    );
+    let mut value = json!({
+        "id": record.id,
+        "projectId": record.project_id,
+        "objective": record.objective,
+        "mode": record.mode,
+        "state": state,
+        "stateDetail": state_detail,
+        "profile": {
+            "id": record.profile_id,
+            "revisionId": record.profile_revision_id,
+            "revision": record.profile_revision,
+            "name": record.profile_name,
+            "contentHash": record.profile_hash,
+        },
+        "actionId": record.action_id,
+        "delegationId": record.delegation_id,
+        "leadRequestId": record.lead_request_id,
+        "campaignId": campaign_id,
+        "authorization": authorization,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+    });
+    if detail {
+        let assessment = match app.db.lead_assessment(&lead.id).await {
+            Ok(record) => Some(
+                serde_json::from_str::<serde_json::Value>(&record.assessment_json)
+                    .map_err(|_| Error::Invalid("stored lead assessment encoding"))?,
+            ),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let proposal = match app.db.lead_proposal(&lead.id).await {
+            Ok(record) => Some(
+                serde_json::from_str::<serde_json::Value>(&record.proposal_json)
+                    .map_err(|_| Error::Invalid("stored lead proposal encoding"))?,
+            ),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let plan = match app.db.frozen_lead_plan(&lead.id).await {
+            Ok(plan) => Some(plan),
+            Err(Error::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let campaign = match &campaign_id {
+            Some(campaign_id) => Some(campaign_detail_projection(app, campaign_id).await?),
+            None => None,
+        };
+        let messages = app.db.intake_messages(&record.id).await?;
+        value["assessment"] = json!(assessment);
+        value["proposal"] = json!(proposal);
+        value["plan"] = json!(plan);
+        value["campaign"] = json!(campaign);
+        value["messages"] = json!(
+            messages
+                .into_iter()
+                .map(|message| json!({
+                    "id": message.id,
+                    "role": message.role,
+                    "body": message.body,
+                    "createdAt": message.created_at,
+                }))
+                .collect::<Vec<_>>()
+        );
+    } else {
+        if let Some(campaign_status) = campaign_status {
+            value["campaignStatus"] = json!(campaign_status);
+        }
+        if let Some(gate_outcome) = gate_outcome {
+            value["gateOutcome"] = json!(gate_outcome);
+        }
+    }
+    Ok(value)
+}
+
+async fn intake_policy_scope(
+    app: &App,
+    project_id: &str,
+    execution_profile_id: Option<&str>,
+) -> serde_json::Value {
+    let project = app.db.project_config(project_id).await.ok().map(|config| {
+        json!({
+            "id": config.project_id,
+            "configHash": config.config_hash,
+            "repository": config.repository,
+            "baseCommit": config.base_commit,
+            "allowedPaths": config.allowed_paths,
+            "capabilities": config.capabilities,
+            "qualityProfile": config.quality_profile,
+        })
+    });
+    let profile = match execution_profile_id {
+        Some(id) => app.db.execution_profile(id).await.ok(),
+        None => match app.db.resolve_project_execution_profile(project_id).await {
+            Ok(resolved) => app.db.execution_profile(&resolved.profile_id).await.ok(),
+            Err(_) => None,
+        },
+    }
+    .map(|profile| {
+        json!({
+            "id": profile.id,
+            "revisionId": profile.revision_id,
+            "revision": profile.revision,
+            "name": profile.content.name,
+            "contentHash": profile.content_hash,
+            "executable": profile.executable,
+            "warnings": profile.warnings,
+            "budgets": profile.content.budgets,
+            "autoStart": profile.content.auto_start,
+            "implementer": profile.content.roles.implementer,
+        })
+    });
+    json!({"project": project, "profile": profile})
+}
+
+async fn validate_intake_assess_authority(
+    app: &App,
+    record: &factory_native::db::IntakeRequestRecord,
+    lead: &factory_native::db::LeadRequestRecord,
+) -> Result<(), Error> {
+    let profile =
+        app.db
+            .execution_profile(&record.profile_id)
+            .await
+            .map_err(|error| match error {
+                Error::NotFound => Error::IntakeConflict {
+                    code: "EXECUTION_PROFILE_STALE",
+                    message: "the frozen execution profile no longer exists".into(),
+                },
+                other => other,
+            })?;
+    if profile.revision_id != record.profile_revision_id
+        || profile.content_hash != record.profile_hash
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_STALE",
+            message: "the execution profile has a newer revision; submit a new request to use it"
+                .into(),
+        });
+    }
+    if !profile.executable {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message: format!(
+                "the frozen execution profile is not executable: {}",
+                profile.warnings.join("; ")
+            ),
+        });
+    }
+    let config = app
+        .db
+        .project_config(&record.project_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "PROJECT_CONFIG_CHANGED",
+                message: "the Project configuration no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if !config.active || config.config_hash != lead.project_config_hash {
+        return Err(Error::IntakeConflict {
+            code: "PROJECT_CONFIG_CHANGED",
+            message: "the Project configuration or base changed after the request".into(),
+        });
+    }
+    let grant = app
+        .db
+        .standing_delegation(&record.delegation_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "EXECUTION_POLICY_REQUIRED",
+                message: "the execution policy delegation no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if grant.revoked_at.is_some() {
+        return Err(Error::IntakeConflict {
+            code: "DELEGATION_REVOKED",
+            message: "the execution policy delegation is revoked".into(),
+        });
+    }
+    if grant.expires_at <= chrono::Utc::now() {
+        return Err(Error::IntakeConflict {
+            code: "DELEGATION_EXPIRED",
+            message: "the execution policy delegation is expired".into(),
+        });
+    }
+    grant.validate(chrono::Utc::now())?;
+    if grant.autonomous_start
+        || !grant.autonomous_risk_classes.is_empty()
+        || grant.risk_classes != vec![factory_native::lead::RiskClass::R0]
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message: "the request is not bound to a non-autonomous R0 execution policy".into(),
+        });
+    }
+    let implementer = &profile.content.roles.implementer;
+    if grant.route.provider != implementer.provider
+        || grant.route.model != implementer.model
+        || grant.route.mode != "build"
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_SCOPE_CHANGED",
+            message: "the execution policy route differs from the frozen profile implementer route"
+                .into(),
+        });
+    }
+    if grant.allowed_paths != config.allowed_paths || grant.capabilities != config.capabilities {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_SCOPE_CHANGED",
+            message: "the Project scope changed after the execution policy grant".into(),
+        });
+    }
+    let policy = app.db.execution_policy_grant(&record.delegation_id).await?;
+    if policy.project_id != record.project_id
+        || policy.profile_revision_id != record.profile_revision_id
+        || policy.profile_hash != record.profile_hash
+        || policy.project_config_hash != config.config_hash
+        || !policy.acknowledged
+    {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message: "the delegation has no matching explicit execution policy grant".into(),
+        });
+    }
+    Ok(())
+}
+
+fn build_intake_authorization(
+    context: &factory_native::db::IntakeApprovalContext,
+    principal_label: Option<&str>,
+    principal_id: &str,
+    rationale: &str,
+) -> NewCampaignAuthorization {
+    let route = &context.profile.roles.implementer;
+    let execution_mode = if context.mechanism == "MODEL" {
+        "TRUSTED_LOCAL_PROVIDER"
+    } else {
+        "FIXTURE"
+    };
+    let allowed_tools = if execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+        vec!["run_command".to_string(), "write_file".to_string()]
+    } else {
+        Vec::new()
+    };
+    NewCampaignAuthorization {
+        authorization_id: format!("intake-{}", context.intake.id),
+        risk_class: "R0".into(),
+        execution_mode: execution_mode.into(),
+        actor: principal_label.unwrap_or(principal_id).to_owned(),
+        rationale: rationale.into(),
+        authorized_paths: context.action_spec.allowed_paths.clone(),
+        max_attempts: context.budget.max_attempts,
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        provider_mode: "build".into(),
+        delegation_id: context.grant.id.clone(),
+        max_sessions: context.budget.max_sessions,
+        max_turns: context.budget.max_turns,
+        max_input_tokens: context.budget.max_input_tokens,
+        max_output_tokens: context.budget.max_output_tokens,
+        max_cost_micros: context.budget.max_cost_micros,
+        deadline_secs: context.budget.deadline_secs,
+        allowed_tools,
+    }
+}
+
+async fn intake_requests(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<IntakeListQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let requested_state = match query.state.as_deref() {
+        None => None,
+        Some(value) => match value {
+            "SUBMITTED" => Some(factory_native::intake::IntakeState::Submitted),
+            "ASSESSING" => Some(factory_native::intake::IntakeState::Assessing),
+            "PLAN_READY" => Some(factory_native::intake::IntakeState::PlanReady),
+            "AWAITING_APPROVAL" => Some(factory_native::intake::IntakeState::AwaitingApproval),
+            "EXECUTING" => Some(factory_native::intake::IntakeState::Executing),
+            "BLOCKED" => Some(factory_native::intake::IntakeState::Blocked),
+            "FAILED" => Some(factory_native::intake::IntakeState::Failed),
+            "COMPLETED" => Some(factory_native::intake::IntakeState::Completed),
+            "CANCELLED" => Some(factory_native::intake::IntakeState::Cancelled),
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid intake state filter"})),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).min(10_000);
+    let records = match app.db.intake_requests().await {
+        Ok(records) => records,
+        Err(error) => return api_error(error),
+    };
+    let mut summaries = Vec::new();
+    for record in records {
+        if query
+            .project_id
+            .as_deref()
+            .is_some_and(|project_id| project_id != record.project_id)
+        {
+            continue;
+        }
+        let value = match intake_request_value(&app, &record, false).await {
+            Ok(value) => value,
+            Err(error) => return api_error(error),
+        };
+        if requested_state.is_some_and(|state| value["state"] != json!(state)) {
+            continue;
+        }
+        summaries.push(value);
+    }
+    let page: Vec<serde_json::Value> = summaries.into_iter().skip(offset).take(limit).collect();
+    Json(page).into_response()
+}
+
+async fn get_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<NewIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, _) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_intake_request(
+            &input.project_id,
+            &input.objective,
+            input.execution_profile_id.as_deref(),
+            input.mode,
+            &input.idempotency_key,
+            &principal_id,
+        )
+        .await
+    {
+        Ok((record, created)) => {
+            let value = match intake_request_value(&app, &record, true).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(value),
+            )
+                .into_response()
+        }
+        Err(Error::IntakeConflict {
+            code: "EXECUTION_POLICY_REQUIRED",
+            message,
+        }) => {
+            let scope = intake_policy_scope(
+                &app,
+                &input.project_id,
+                input.execution_profile_id.as_deref(),
+            )
+            .await;
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": message,
+                    "code": "EXECUTION_POLICY_REQUIRED",
+                    "authorization": {
+                        "required": true,
+                        "available": false,
+                        "reason": "EXECUTION_POLICY_REQUIRED",
+                    },
+                    "scope": scope,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn assess_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    let lead = match app.db.lead_request(&record.lead_request_id).await {
+        Ok(lead) => lead,
+        Err(error) => return api_error(error),
+    };
+    if let Some(campaign_id) = &lead.campaign_id {
+        let status = match app.db.campaign_status_and_gate(campaign_id).await {
+            Ok((status, _)) => status,
+            Err(error) => return api_error(error),
+        };
+        return api_error(Error::AlreadyStarted {
+            campaign_id: campaign_id.clone(),
+            campaign_status: status,
+        });
+    }
+    if app
+        .db
+        .lead_withdrawal(&lead.id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return api_error(Error::IntakeConflict {
+            code: "INTAKE_WITHDRAWN",
+            message: "the request was withdrawn; assessment and start are fenced".into(),
+        });
+    }
+    match lead.state {
+        LeadRequestState::Ready | LeadRequestState::Frozen => {
+            return match intake_request_value(&app, &record, true).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error(error),
+            };
+        }
+        LeadRequestState::Planned => {
+            if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
+                return api_error(error);
+            }
+            match app.db.lead_proposal(&lead.id).await {
+                Ok(_) => {}
+                Err(Error::NotFound) => {
+                    return api_error(Error::IntakeConflict {
+                        code: "ASSESSMENT_INCOMPLETE",
+                        message:
+                            "the assessment was recorded without a proposal; submit a new request"
+                                .into(),
+                    });
+                }
+                Err(error) => return api_error(error),
+            }
+            let (plan, _) = match app
+                .db
+                .freeze_lead_plan_to_ready(&lead.id, &format!("intake-assess:{id}:freeze"))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => return api_error(error),
+            };
+            let context = match app.db.intake_approval_context(&id).await {
+                Ok(context) => context,
+                Err(error) => return api_error(error),
+            };
+            if factory_native::intake::intersect_campaign_budget(
+                &context.profile,
+                &context.proposal,
+                &context.grant,
+                &context.intake.mode,
+            )
+            .is_err()
+            {
+                return api_error(Error::IntakeConflict {
+                    code: "AUTHORIZATION_UNAVAILABLE_BUDGET",
+                    message: "the frozen plan cannot be bounded for explicit implementation".into(),
+                });
+            }
+            let _ = plan;
+            return match intake_request_value(&app, &record, true).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error(error),
+            };
+        }
+        LeadRequestState::Submitted => {}
+        LeadRequestState::Assessing => {
+            return api_error(Error::IntakeConflict {
+                code: "ASSESSMENT_OUTCOME_UNKNOWN",
+                message: "an assessment is in progress or its upstream outcome is unknown; do not retry silently"
+                    .into(),
+            });
+        }
+        LeadRequestState::Running | LeadRequestState::Blocked | LeadRequestState::Failed => {
+            return api_error(Error::IntakeConflict {
+                code: "ASSESSMENT_NOT_AVAILABLE",
+                message: "the request is not in an assessable state".into(),
+            });
+        }
+    }
+    if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
+        return api_error(error);
+    }
+    let gateway = app.current_model_gateway().await;
+    let Some(gateway) = gateway else {
+        let error = if app.lead_fixture_assessor {
+            "the fixture assessor cannot derive executable checks for a draft Action; configure an authorized model gateway; the request was not assessed"
+        } else {
+            "no authorized model gateway is available for the bounded Lead assessment; the request was not assessed"
+        };
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": error,
+                "code": "ASSESSMENT_UNAVAILABLE",
+            })),
+        )
+            .into_response();
+    };
+    let action_spec = match app.db.intake_assessment_spec(&id).await {
+        Ok(spec) => spec,
+        Err(error) => return api_error(error),
+    };
+    let config = match app.db.project_config(&record.project_id).await {
+        Ok(config) => config,
+        Err(error) => return api_error(error),
+    };
+    let grant = match app.db.standing_delegation(&record.delegation_id).await {
+        Ok(grant) => grant,
+        Err(error) => return api_error(error),
+    };
+    let action_binding = factory_native::lead::ActionBinding {
+        id: record.action_id.clone(),
+        project_id: record.project_id.clone(),
+        status: factory_native::lead::ActionStatus::Pending,
+    };
+    if let Err(error) = app.db.begin_lead_assessment(&lead.id).await {
+        return api_error(error);
+    }
+    let (assessment, proposal) = match factory_native::lead_model::assess(
+        &gateway,
+        &app.db,
+        factory_native::lead_model::AssessmentRequest {
+            request_id: &lead.id,
+            project: &config,
+            action: &action_binding,
+            action_spec: &action_spec,
+            objective: &lead.objective,
+            grant: &grant,
+            now: chrono::Utc::now(),
+        },
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(factory_native::lead::LeadError::TransientAssessment(message)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": message,
+                    "code": "ASSESSMENT_TRANSIENT",
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            let _ = app
+                .db
+                .block_lead_request(&lead.id, &error.to_string())
+                .await;
+            return api_error(error.into());
+        }
+    };
+    let input = factory_native::lead::AssessmentInput {
+        project_id: record.project_id.clone(),
+        action_id: record.action_id.clone(),
+        request_id: lead.id.clone(),
+        objective: lead.objective.clone(),
+        allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".to_string()]),
+    };
+    if let Err(error) = app
+        .db
+        .record_lead_assessment(
+            &lead.id,
+            "MODEL",
+            &assessment,
+            &input,
+            &format!("intake-assess:{id}:assessment"),
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    if let Err(error) = app
+        .db
+        .record_lead_proposal(&lead.id, &proposal, &format!("intake-assess:{id}:proposal"))
+        .await
+    {
+        return api_error(error);
+    }
+    if let Err(error) = validate_intake_assess_authority(&app, &record, &lead).await {
+        let _ = app
+            .db
+            .block_lead_request(&lead.id, &error.to_string())
+            .await;
+        return api_error(error);
+    }
+    if let Err(error) = app
+        .db
+        .freeze_lead_plan_to_ready(&lead.id, &format!("intake-assess:{id}:freeze"))
+        .await
+    {
+        return api_error(error);
+    }
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn approve_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ApproveIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    if input.expected_plan_hash.len() != 64
+        || !input
+            .expected_plan_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"expected_plan_hash must be a SHA-256 hex digest"})),
+        )
+            .into_response();
+    }
+    let approval = match factory_native::db::AuthenticatedOperatorApproval::new(
+        &principal_id,
+        principal_label,
+        &input.rationale,
+    ) {
+        Ok(approval) => approval,
+        Err(error) => return api_error(error),
+    };
+    let context = match app.db.intake_start_context(&id).await {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
+    if context.plan.plan_hash != input.expected_plan_hash {
+        return api_error(Error::IntakeConflict {
+            code: "PLAN_HASH_MISMATCH",
+            message: "the expected plan hash does not identify the frozen plan".into(),
+        });
+    }
+    let expected = match factory_native::db::ExpectedStartBinding::new(
+        &context.lead.request_hash,
+        &context.plan.plan_hash,
+        &context.spec_sha256,
+        &context.lead.project_config_hash,
+        &context.grant.content_hash,
+        Some(&context.context.profile_revision_id),
+        Some(&context.context.profile_hash),
+    ) {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let authorization =
+        build_intake_authorization(&context, principal_label, &principal_id, &input.rationale);
+    let idempotency_key = input
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("intake-approve:{id}:{}", context.plan.plan_hash));
+    match app
+        .db
+        .start_lead_campaign(
+            &context.lead.id,
+            &idempotency_key,
+            factory_native::db::StartAuthority::Operator(approval),
+            Some(&expected),
+            Some(&authorization),
+        )
+        .await
+    {
+        Ok(result) => {
+            let record = match app.db.intake_request(&id).await {
+                Ok(record) => record,
+                Err(error) => return api_error(error),
+            };
+            let value = match intake_request_value(&app, &record, true).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+            (
+                if result.replayed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CREATED
+                },
+                Json(value),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn message_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<IntakeMessageRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (message, created) = match app
+        .db
+        .append_intake_message(&id, &input.body, &input.idempotency_key)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return api_error(error),
+    };
+    let _ = message;
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => (
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(value),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn cancel_intake_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<CancelIntakeRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let record = match app.db.intake_request(&id).await {
+        Ok(record) => record,
+        Err(error) => return api_error(error),
+    };
+    if let Err(error) = app
+        .db
+        .withdraw_lead_request(
+            &record.lead_request_id,
+            &principal_id,
+            device_label.as_deref(),
+            &input.reason,
+        )
+        .await
+    {
+        return api_error(error);
+    }
+    match intake_request_value(&app, &record, true).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn create_execution_policy(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ExecutionPolicyRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    match app
+        .db
+        .create_execution_policy_grant(factory_native::db::NewExecutionPolicyGrant {
+            project_id: &id,
+            profile_id: &input.execution_profile_id,
+            expected_revision: input.expected_revision,
+            expected_revision_hash: &input.expected_revision_hash,
+            project_config_hash: &input.project_config_hash,
+            acknowledge: input.acknowledge,
+            idempotency_key: &input.idempotency_key,
+            principal_id: &principal_id,
+            principal_label: device_label.as_deref(),
+        })
+        .await
+    {
+        Ok(result) => (
+            if result.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            Json(json!({
+                "grant": result.grant,
+                "delegation": result.delegation,
+                "usage": result.usage,
+                "replayed": !result.created,
+            })),
+        )
+            .into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn authorize_campaign(
@@ -6500,6 +7534,8 @@ mod tests {
             "/core-api/delegations",
             "/core-api/lead/requests",
             "/core-api/lead/requests/missing",
+            "/core-api/intake/requests",
+            "/core-api/intake/requests/missing",
             "/core-api/candidates",
             "/core-api/workers",
         ];
@@ -6549,6 +7585,12 @@ mod tests {
             ("POST", "/core-api/lead/requests/missing/start"),
             ("POST", "/core-api/lead/requests/missing/approve"),
             ("POST", "/core-api/lead/requests/missing/withdraw"),
+            ("POST", "/core-api/intake/requests"),
+            ("POST", "/core-api/intake/requests/missing/assess"),
+            ("POST", "/core-api/intake/requests/missing/approve"),
+            ("POST", "/core-api/intake/requests/missing/message"),
+            ("POST", "/core-api/intake/requests/missing/cancel"),
+            ("POST", "/core-api/projects/missing/execution-policy"),
             ("POST", "/core-api/model/calls/missing/resolve"),
             ("POST", "/core-api/auth/bootstrap"),
             ("POST", "/core-api/auth/device-challenges"),
@@ -8292,5 +9334,661 @@ mod tests {
         app.db.close().await;
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(repository);
+    }
+
+    mod intake_api {
+        use super::*;
+        use factory_native::db::{NewProjectConfig, ProviderSettingsWrite};
+        use factory_native::execution_profile::{
+            AutoStartPolicy, CampaignBudgets, ExecutionProfileCategory, ExecutionProfileRoles,
+            ExecutionRoleRoute, ReasoningEffort,
+        };
+        use factory_native::lead::{
+            ActionBinding, AssessmentInput, Capability, CheckKind, QualityProfile, SpecCheck,
+        };
+        use tower::ServiceExt;
+
+        fn route() -> ExecutionRoleRoute {
+            ExecutionRoleRoute {
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                reasoning: Some(ReasoningEffort::Medium),
+                max_input_tokens: 64_000,
+                max_output_tokens: 8_192,
+                max_cost_micros: 300_000,
+            }
+        }
+
+        fn profile_content() -> factory_native::execution_profile::ExecutionProfileContent {
+            factory_native::execution_profile::ExecutionProfileContent {
+                name: "Balanced".into(),
+                description: "test profile".into(),
+                category: ExecutionProfileCategory::Balanced,
+                roles: ExecutionProfileRoles {
+                    lead: route(),
+                    implementer: route(),
+                    semantic_reviewer: route(),
+                },
+                budgets: CampaignBudgets {
+                    max_attempts: 2,
+                    max_sessions: 3,
+                    max_turns: 4,
+                    max_input_tokens: 40_000,
+                    max_output_tokens: 12_000,
+                    max_cost_micros: 500_000,
+                    deadline_secs: 600,
+                },
+                auto_start: AutoStartPolicy {
+                    enabled: false,
+                    risk_classes: Vec::new(),
+                },
+            }
+        }
+
+        fn checks() -> Vec<SpecCheck> {
+            vec![
+                SpecCheck {
+                    id: "build".into(),
+                    kind: CheckKind::Build,
+                    description: "build".into(),
+                    command: vec!["cargo".into(), "build".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "test".into(),
+                    kind: CheckKind::Test,
+                    description: "test".into(),
+                    command: vec!["cargo".into(), "test".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "functional".into(),
+                    kind: CheckKind::Functional,
+                    description: "functional".into(),
+                    command: vec!["cargo".into(), "test".into(), "intake".into()],
+                    expect_exit: 0,
+                    timeout_secs: 120,
+                },
+                SpecCheck {
+                    id: "negative".into(),
+                    kind: CheckKind::Negative,
+                    description: "negative".into(),
+                    command: vec!["cargo".into(), "test".into(), "--bad".into()],
+                    expect_exit: 1,
+                    timeout_secs: 60,
+                },
+            ]
+        }
+
+        fn git_repository() -> PathBuf {
+            let repository = std::env::temp_dir()
+                .join(format!("factory-core-intake-repo-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&repository).unwrap();
+            for arguments in [
+                vec!["init", "-q"],
+                vec!["config", "user.name", "Fixture"],
+                vec!["config", "user.email", "fixture@example.invalid"],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+            for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            repository
+        }
+
+        struct Fixture {
+            path: PathBuf,
+            repository: PathBuf,
+            app: Arc<App>,
+            project_id: String,
+            config: factory_native::lead::ProjectConfig,
+            profile: factory_native::db::ExecutionProfileRecord,
+            router: Router,
+        }
+
+        async fn setup() -> Fixture {
+            let path = std::env::temp_dir().join(format!(
+                "factory-core-intake-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ));
+            let repository = git_repository();
+            let app = test_app(&path).await;
+            let project = app
+                .db
+                .register_project(&repository, "intake-project-key")
+                .await
+                .unwrap();
+            let config = app
+                .db
+                .update_project_config(
+                    &project.id,
+                    &NewProjectConfig {
+                        expected_revision: 1,
+                        allowed_paths: vec!["src".into()],
+                        capabilities: vec![Capability::RepositoryEdit],
+                        quality_profile: QualityProfile::Generic,
+                        active: true,
+                    },
+                )
+                .await
+                .unwrap();
+            for (provider, kind, model, is_default) in [
+                ("opencode-go", "opencode", "deepseek-v4.1-flash", true),
+                ("codex", "codex", "gpt-6-luna", false),
+            ] {
+                app.db
+                    .save_provider_settings(
+                        &ProviderSettingsWrite {
+                            provider: provider.into(),
+                            kind: kind.into(),
+                            model: model.into(),
+                            base_url: "https://provider.example/v1".into(),
+                            auth_mode: "api_key".into(),
+                            credential_ciphertext: "ciphertext".into(),
+                            credential_nonce: "nonce".into(),
+                            credential_fingerprint: "fingerprint".into(),
+                            enabled: true,
+                            is_default,
+                            max_turns: 4,
+                            max_input_tokens: 100_000,
+                            max_output_tokens: 12_000,
+                            max_cost_micros: 500_000,
+                            input_micros_per_million: 1_000,
+                            output_micros_per_million: 2_000,
+                        },
+                        "test-operator",
+                    )
+                    .await
+                    .unwrap();
+            }
+            let profile = app
+                .db
+                .create_execution_profile(&profile_content(), "owner")
+                .await
+                .unwrap();
+            let router = build_router(Arc::clone(&app));
+            Fixture {
+                path,
+                repository,
+                app,
+                project_id: project.id,
+                config,
+                profile,
+                router,
+            }
+        }
+
+        async fn send(
+            router: &Router,
+            method: &str,
+            uri: &str,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut builder = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-token");
+            let body = if let Some(body) = body {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(body.to_string())
+            } else {
+                axum::body::Body::empty()
+            };
+            let response = router
+                .clone()
+                .oneshot(builder.body(body).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            (status, value)
+        }
+
+        async fn enable_policy(fixture: &Fixture) -> (StatusCode, Value) {
+            send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/execution-policy", fixture.project_id),
+                Some(json!({
+                    "execution_profile_id": fixture.profile.id,
+                    "expected_revision": fixture.profile.revision,
+                    "expected_revision_hash": fixture.profile.content_hash,
+                    "project_config_hash": fixture.config.config_hash,
+                    "acknowledge": true,
+                    "idempotency_key": "policy-api-key",
+                })),
+            )
+            .await
+        }
+
+        async fn create_intake(fixture: &Fixture, key: &str) -> (StatusCode, Value) {
+            send(
+                &fixture.router,
+                "POST",
+                "/intake/requests",
+                Some(json!({
+                    "project_id": fixture.project_id,
+                    "objective": "Implement a bounded intake endpoint.",
+                    "execution_profile_id": fixture.profile.id,
+                    "mode": "REVIEW_PLAN",
+                    "idempotency_key": key,
+                })),
+            )
+            .await
+        }
+
+        async fn fixture_plan(
+            fixture: &Fixture,
+            intake_id: &str,
+        ) -> factory_native::db::IntakeApprovalContext {
+            let request = fixture.app.db.intake_request(intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&request.lead_request_id)
+                .await
+                .unwrap();
+            let config = fixture
+                .app
+                .db
+                .project_config(&request.project_id)
+                .await
+                .unwrap();
+            let grant = fixture
+                .app
+                .db
+                .standing_delegation(&request.delegation_id)
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .begin_lead_assessment(&lead.id)
+                .await
+                .unwrap();
+            let binding = ActionBinding {
+                id: lead.action_id.clone(),
+                project_id: lead.project_id.clone(),
+                status: factory_native::lead::ActionStatus::Pending,
+            };
+            let spec = factory_native::db::ActionSpec {
+                schema_version: 1,
+                project_id: lead.project_id.clone(),
+                repository: config.repository.clone(),
+                base_commit: config.base_commit.clone(),
+                objective: lead.objective.clone(),
+                objective_sha256: factory_native::device_session::sha256_hex(&lead.objective),
+                provider: grant.route.provider.clone(),
+                model: grant.route.model.clone(),
+                allowed_paths: config.allowed_paths.clone(),
+                checks: checks(),
+            };
+            let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
+                &lead.id,
+                &config,
+                &binding,
+                &spec,
+                &lead.objective,
+                &grant,
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            let input = AssessmentInput {
+                project_id: lead.project_id.clone(),
+                action_id: lead.action_id.clone(),
+                request_id: lead.id.clone(),
+                objective: lead.objective.clone(),
+                allowed_evidence_refs: std::collections::BTreeSet::from(
+                    ["repository-files".into()],
+                ),
+            };
+            fixture
+                .app
+                .db
+                .record_lead_assessment(&lead.id, "FIXTURE", &assessment, &input, "api-fixture-a")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .record_lead_proposal(&lead.id, &proposal, "api-fixture-p")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .freeze_lead_plan_to_ready(&lead.id, "api-fixture-f")
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .intake_approval_context(intake_id)
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn intake_api_requires_policy_and_reports_truthful_states() {
+            let fixture = setup().await;
+            let (status, body) = create_intake(&fixture, "request-api-1").await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["code"], "EXECUTION_POLICY_REQUIRED");
+            assert_eq!(
+                body["scope"]["profile"]["revisionId"],
+                fixture.profile.revision_id
+            );
+            assert_eq!(
+                body["scope"]["project"]["configHash"],
+                fixture.config.config_hash
+            );
+
+            let (status, policy) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED, "{policy}");
+            assert_eq!(policy["delegation"]["autonomousStart"], false);
+            assert_eq!(
+                policy["grant"]["profile_revision"],
+                fixture.profile.revision
+            );
+            let (status, replay) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(replay["delegation"]["id"], policy["delegation"]["id"]);
+
+            let (status, created) = create_intake(&fixture, "request-api-1").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created["state"], "SUBMITTED");
+            assert_eq!(
+                created["profile"]["revisionId"],
+                fixture.profile.revision_id
+            );
+            assert_eq!(created["authorization"]["reason"], "FROZEN_PLAN_REQUIRED");
+            assert!(created["assessment"].is_null());
+            assert!(created["plan"].is_null());
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+
+            let (status, list) = send(&fixture.router, "GET", "/intake/requests", None).await;
+            assert_eq!(status, StatusCode::OK);
+            let list = list.as_array().unwrap();
+            assert_eq!(list.len(), 1);
+            assert!(list[0].get("messages").is_none());
+            assert_eq!(list[0]["id"], intake_id);
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(detail["objective"], "Implement a bounded intake endpoint.");
+            assert_eq!(detail["profile"]["revision"], fixture.profile.revision);
+            assert_eq!(detail["messages"].as_array().unwrap().len(), 0);
+
+            let (status, with_message) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/message"),
+                Some(json!({
+                    "body": "Keep the API backward compatible.",
+                    "idempotency_key": "message-api-1",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{with_message}");
+            assert_eq!(with_message["messages"].as_array().unwrap().len(), 1);
+            assert_eq!(with_message["messages"][0]["role"], "operator");
+
+            let (status, unavailable) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(unavailable["code"], "ASSESSMENT_UNAVAILABLE");
+            let after_assess = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&after_assess.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                lead.state,
+                factory_native::lead::LeadRequestState::Submitted
+            );
+
+            let (status, cancelled) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{cancelled}");
+            assert_eq!(cancelled["state"], "CANCELLED");
+            assert_eq!(cancelled["authorization"]["reason"], "INTAKE_WITHDRAWN");
+            let (status, replayed) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(replayed["state"], "CANCELLED");
+            let (status, fenced) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(fenced["code"], "INTAKE_WITHDRAWN");
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_assessment_rejects_a_stale_profile_revision() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-stale").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let mut changed = profile_content();
+            changed.name = "Changed after request".into();
+            let updated = fixture
+                .app
+                .db
+                .update_execution_profile(
+                    &fixture.profile.id,
+                    fixture.profile.revision,
+                    &changed,
+                    "owner",
+                )
+                .await
+                .unwrap();
+            assert_ne!(updated.revision_id, fixture.profile.revision_id);
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/assess"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+            assert_eq!(stale["code"], "EXECUTION_PROFILE_STALE");
+            let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            assert_eq!(record.profile_revision_id, fixture.profile.revision_id);
+            let lead = fixture
+                .app
+                .db
+                .lead_request(&record.lead_request_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                lead.state,
+                factory_native::lead::LeadRequestState::Submitted
+            );
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_approval_is_exact_replayable_and_fenced_after_start() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-approve").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id).await;
+            let plan_hash = context.plan.plan_hash.clone();
+            let profile_revision = context.context.profile_revision;
+            let profile_hash = context.context.profile_hash.clone();
+
+            let approve_body = json!({
+                "expected_plan_hash": plan_hash,
+                "rationale": "Reviewed the frozen plan and budget.",
+                "idempotency_key": "approve-api-key",
+            });
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
+            assert!(approved["campaignId"].is_string());
+            assert_eq!(approved["plan"]["plan_hash"], plan_hash);
+            assert_eq!(approved["profile"]["revision"], profile_revision);
+            assert_eq!(approved["profile"]["contentHash"], profile_hash);
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let evidence = fixture
+                .app
+                .db
+                .lead_start_evidence(&context.lead.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                evidence.profile_revision_id.as_deref(),
+                Some(context.context.profile_revision_id.as_str())
+            );
+            assert_eq!(
+                evidence.profile_hash.as_deref(),
+                Some(profile_hash.as_str())
+            );
+
+            let (status, replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{replay}");
+            assert_eq!(replay["campaignId"], campaign_id);
+
+            let request = fixture.app.db.intake_request(&intake_id).await.unwrap();
+            fixture
+                .app
+                .db
+                .revoke_standing_delegation(&request.delegation_id, chrono::Utc::now())
+                .await
+                .unwrap();
+            let (status, observational_replay) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(approve_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{observational_replay}");
+            assert_eq!(observational_replay["campaignId"], campaign_id);
+            assert_eq!(observational_replay["state"], "CANCELLED");
+
+            let (status, wrong_plan) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": "0".repeat(64),
+                    "rationale": "wrong",
+                    "idempotency_key": "approve-wrong",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(wrong_plan["code"], "PLAN_HASH_MISMATCH");
+
+            let (status, second_key) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "rationale": "second",
+                    "idempotency_key": "approve-second",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(second_key["code"], "LEAD_ALREADY_STARTED");
+            assert_eq!(second_key["campaign_id"], campaign_id);
+
+            let (status, cancel) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/cancel"),
+                Some(json!({"reason": "stop"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(cancel["code"], "LEAD_ALREADY_STARTED");
+            assert_eq!(cancel["campaign_id"], campaign_id);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
     }
 }

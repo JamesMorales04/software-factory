@@ -26,6 +26,12 @@ pub struct AssessmentRequest<'a> {
 }
 
 fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadError> {
+    if request.grant.max_sessions < 2 {
+        return Err(LeadError::Budget(
+            "the execution policy needs at least an assessment and one implementation session"
+                .into(),
+        ));
+    }
     let schema =
         serde_json::to_string(&crate::model_output::lead_assessment_schema()).map_err(|error| {
             LeadError::Assessment(format!("cannot encode assessment schema: {error}"))
@@ -39,6 +45,10 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             acceptance_criteria.push(check.clone());
         }
     }
+    let checks_are_frozen = !request.action_spec.checks.is_empty();
+    let timeout_secs = request.grant.max_timeout_secs.min(300);
+    let max_wall_clock_secs = request.grant.max_wall_clock_secs;
+    let max_sessions = request.grant.max_sessions.min(2);
     let description: String = request.objective.chars().take(500).collect();
     let unit = serde_json::json!({
         "id": "unit-1",
@@ -85,32 +95,38 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
             "negativeCases": negative_cases,
             "qualityProfile": request.project.quality_profile,
             "riskClass": "R0",
-            "budget": {"maxAttempts": 1, "timeoutSecs": 300},
+            "budget": {"maxAttempts": 1, "timeoutSecs": timeout_secs},
             "route": request.grant.route,
             "maxRepairCycles": 0,
-            "maxWallClockSecs": 1800,
+            "maxWallClockSecs": max_wall_clock_secs,
             "maxParallel": 1,
-            "maxSessions": 2,
+            "maxSessions": max_sessions,
             "workUnits": [unit]
         }
     });
+    let checks_instruction = if checks_are_frozen {
+        "copy the acceptanceCriteria and negativeCases from the ActionSpec exactly;"
+    } else {
+        "the ActionSpec has no pre-frozen checks, so propose at least one acceptance criterion and one negative case with real, non-shell argv commands; negative checks must expect a nonzero exit;"
+    };
     Ok(format!(
         "You are the bounded Intelligent Lead. Return ONLY one JSON object that validates against the \
 JSON Schema below. Do not add prose, markdown, comments or unknown fields. \
 The example below is a valid shape for this request; copy its identities, route, qualityProfile, \
-checks, paths and capabilities exactly, and use your own judgment for intent, complexity, risks, \
-assumptions, uncertainty and the effort estimate. A change request must carry a real estimated \
-or unknown effort estimate. Objective: {objective}. Project: {project_id}. Action: {action_id}. \
-Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Allowed paths: {paths:?}. \
-Capabilities: {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is advisory; \
-Core validates and freezes it. Hard constraints: schemaRevision=1; echo projectId, actionId and \
-requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
+paths and capabilities exactly, and use your own judgment for intent, complexity, risks, \
+assumptions, uncertainty and the effort estimate. {checks_instruction} A change request must carry \
+a real estimated or unknown effort estimate. Objective: {objective}. Project: {project_id}. Action: \
+{action_id}. Request: {request_id}. Allowed evidence refs: [\"repository-files\"]. Allowed paths: \
+{paths:?}. Capabilities: {capabilities:?}. Route: {route:?}. ActionSpec: {spec}. Model output is \
+advisory; Core validates and freezes it. Hard constraints: schemaRevision=1; echo projectId, actionId \
+and requestId exactly; evidenceRefs must be [\"repository-files\"]; proposal.projectId, actionId, \
 baseRevision, projectConfigHash and objective must match the provided context exactly; proposal.class \
 must be one of {classes:?}; proposal.qualityProfile must be {quality:?}; riskClass must be \"R0\"; \
-budget.maxAttempts=1 and budget.timeoutSecs=300; route must be {route:?}; maxRepairCycles=0; \
-maxWallClockSecs=1800; maxParallel=1; maxSessions=2; workUnits must contain exactly one implementation \
-unit with id \"unit-1\" and the exact allowedPaths, capabilities, acceptanceCriteria and negativeCases \
-shown.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
+budget.maxAttempts=1 and budget.timeoutSecs={timeout_secs}; route must be {route:?}; maxRepairCycles=0; \
+maxWallClockSecs={max_wall_clock_secs}; maxParallel=1; maxSessions={max_sessions}; workUnits must \
+contain exactly one implementation unit with id \"unit-1\" and the exact allowedPaths and capabilities \
+shown; check ids must be unique.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
+        checks_instruction = checks_instruction,
         objective = request.objective,
         classes = request.grant.objective_classes,
         quality = request.project.quality_profile,
@@ -121,6 +137,9 @@ shown.\n\nJSON Schema:\n{schema}\n\nValid example shape:\n{example}",
         capabilities = request.project.capabilities,
         route = request.grant.route,
         spec = serde_json::to_string(request.action_spec).unwrap_or_default(),
+        timeout_secs = timeout_secs,
+        max_wall_clock_secs = max_wall_clock_secs,
+        max_sessions = max_sessions,
         schema = schema,
         example = example,
     ))
