@@ -27,43 +27,40 @@ export function DecisionInbox() {
   const hasLoaded = useRef(false);
   const noticeRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(
-    async (_background = false) => {
-      try {
-        const next = await coreApi.getDecisions();
-        hasLoaded.current = true;
-        setItems(next.items);
-        setAsOf(next.as_of);
-        setLastLoadedAt(new Date().toISOString());
-        setError(null);
-        setConnectionError(null);
-        setOffline(false);
-      } catch (cause) {
-        const message =
-          cause instanceof CoreApiError
-            ? cause.status === 401
-              ? t("decisions.error.unauthorized")
-              : cause.message
-            : t("decisions.connectionError");
-        setOffline(!(cause instanceof CoreApiError));
-        if (hasLoaded.current) {
-          setConnectionError(message);
-        } else {
-          setError(message);
-        }
+  const load = useCallback(async () => {
+    try {
+      const next = await coreApi.getDecisions();
+      hasLoaded.current = true;
+      setItems(next.items);
+      setAsOf(next.as_of);
+      setLastLoadedAt(new Date().toISOString());
+      setError(null);
+      setConnectionError(null);
+      setOffline(false);
+    } catch (cause) {
+      const message =
+        cause instanceof CoreApiError
+          ? cause.status === 401
+            ? t("decisions.error.unauthorized")
+            : cause.message
+          : t("decisions.connectionError");
+      setOffline(!(cause instanceof CoreApiError));
+      if (hasLoaded.current) {
+        setConnectionError(message);
+      } else {
+        setError(message);
       }
-    },
-    [t],
-  );
+    }
+  }, [t]);
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(true), 5000);
+    const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
   }, [load]);
 
   useEffect(() => {
-    const retry = () => void load(true);
+    const retry = () => void load();
     window.addEventListener("online", retry);
     return () => window.removeEventListener("online", retry);
   }, [load]);
@@ -93,7 +90,7 @@ export function DecisionInbox() {
   const onMutated = useCallback(
     async (message: string) => {
       setNotice(message);
-      await load(true);
+      await load();
     },
     [load],
   );
@@ -110,7 +107,7 @@ export function DecisionInbox() {
   async function refresh() {
     setRefreshing(true);
     try {
-      await load(false);
+      await load();
     } finally {
       setRefreshing(false);
     }

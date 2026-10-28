@@ -625,7 +625,7 @@ export function DecisionCard({
         <Badge tone={toneForDecision(item.severity)}>
           {t(severityKey(item.severity))}
         </Badge>
-        <h2>{item.title}</h2>
+        <h3>{item.title}</h3>
         <span className="muted">{formatDate(item.updated_at)}</span>
       </div>
       <p className="decision-card-detail">{item.detail}</p>
@@ -668,7 +668,7 @@ export function DecisionCard({
 
       {change && (
         <section className="decision-block" aria-labelledby={changeId}>
-          <h3 id={changeId}>{t("decisions.change")}</h3>
+          <h4 id={changeId}>{t("decisions.change")}</h4>
           <p>{change.summary}</p>
           <dl className="decision-inline-facts">
             {change.work_units !== undefined && (
@@ -705,10 +705,10 @@ export function DecisionCard({
 
       {impact && (
         <section className="decision-impact" aria-labelledby={impactId}>
-          <h3 id={impactId}>{t("decisions.impact")}</h3>
+          <h4 id={impactId}>{t("decisions.impact")}</h4>
           <div className="decision-impact-grid">
             <div className="decision-impact-section">
-              <h4>{t("decisions.budget")}</h4>
+              <h5>{t("decisions.budget")}</h5>
               {impact.budget ? (
                 <BudgetFacts budget={impact.budget} />
               ) : (
@@ -716,7 +716,7 @@ export function DecisionCard({
               )}
             </div>
             <div className="decision-impact-section">
-              <h4>{t("decisions.permissions")}</h4>
+              <h5>{t("decisions.permissions")}</h5>
               {impact.permissions ? (
                 <dl className="decision-fact-list">
                   {impact.permissions.execution_mode && (
