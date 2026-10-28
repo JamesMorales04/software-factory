@@ -7,18 +7,19 @@
 
 use super::*;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
 use crate::github::GitHubLabel;
+use crate::intake::IntakeMode;
 use crate::issue_intake::{
     AcknowledgedIssue, BatchFacts, IssueIntakeAuditRecord, IssueIntakeBatchItemRecord,
     IssueIntakeBatchRecord, IssueIntakeEligibility, IssueIntakePolicyRecord,
     IssueIntakeQueueItemRecord, IssueSnapshot, PolicyFacts, ProjectFacts, batch_content_hash,
-    evaluate_issue_intake_eligibility, expiry_within_policy, policy_content_hash,
+    evaluate_issue_intake_eligibility, expiry_within_policy, issue_objective, policy_content_hash,
     queue_item_id_for_batch_item, validate_policy_terms,
 };
 use crate::lead::{
@@ -26,9 +27,12 @@ use crate::lead::{
     StandingDelegation,
 };
 
-use super::delegations::create_standing_delegation_in_tx;
+use super::delegations::{create_standing_delegation_in_tx, load_delegation};
 use super::execution_profiles::load_current_content;
-use super::intake::load_exact_intake_profile_in_tx;
+use super::intake::{
+    create_intake_request_in_tx, load_exact_intake_profile_in_tx, load_intake_request,
+    prepare_intake_request,
+};
 use super::project_configs::load_project_config;
 
 const POLICY_HISTORY_LIMIT: i64 = 20;
@@ -136,6 +140,30 @@ pub struct IssueIntakeState {
     pub connection_enabled: bool,
     pub connection_revision: Option<u32>,
     pub limits: IssueIntakeLimits,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaimedIssueIntakeItem {
+    pub queue: IssueIntakeQueueItemRecord,
+    pub batch: IssueIntakeBatchRecord,
+    pub policy: IssueIntakePolicyRecord,
+    pub item: IssueIntakeBatchItemRecord,
+    pub binding: ProjectGitHubBinding,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IssueIntakeReconcileResult {
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub queue: IssueIntakeQueueItemRecord,
+    pub intake: Option<IntakeRequestRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueIntakeQueueFailure {
+    Transient,
+    Terminal,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -864,9 +892,10 @@ impl Database {
             revoked_at: None,
         };
         insert_batch(&mut transaction, &batch).await?;
-        for item in &items {
+        for item in &mut items {
             insert_batch_item(&mut transaction, item).await?;
             insert_queue_item_for_batch_item(&mut transaction, &batch, item).await?;
+            item.queue_item_id = Some(queue_item_id_for_batch_item(&item.id));
         }
         insert_issue_intake_audit(
             &mut transaction,
@@ -1012,7 +1041,9 @@ impl Database {
             .unwrap_or((false, None));
         Ok(IssueIntakeState {
             project_id: project_id.into(),
-            enabled: policy.as_ref().is_some_and(|policy| policy.enabled),
+            enabled: policy.as_ref().is_some_and(|policy| {
+                policy.enabled && deadline_in_future(&policy.expires_at, Utc::now())
+            }),
             policy,
             policy_history: history,
             batches,
@@ -1032,6 +1063,996 @@ impl Database {
             },
         })
     }
+
+    /// Lease one due queue item. There is no background scheduler: an
+    /// authenticated dispatch performs one fresh GitHub read and one
+    /// reconciliation attempt. Expired leases are recovered first.
+    pub async fn claim_issue_intake_queue_item(
+        &self,
+        project_id: &str,
+        batch_id: Option<&str>,
+        lease_seconds: i64,
+    ) -> Result<Option<ClaimedIssueIntakeItem>, Error> {
+        if !(5..=300).contains(&lease_seconds) {
+            return Err(Error::Invalid("issue intake queue lease"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        ensure_project_exists(&mut transaction, project_id).await?;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        recover_expired_leases_in_tx(&mut transaction, project_id, &now_text).await?;
+        let policy = load_policy_head(&mut transaction, project_id).await?;
+        if !policy.enabled {
+            return Err(intake_conflict(
+                "ISSUE_INTAKE_DISABLED",
+                "the Project issue-intake policy is disabled",
+            ));
+        }
+        if !deadline_in_future(&policy.expires_at, now) {
+            expire_active_batches_for_project(&mut transaction, project_id, "core", &now_text)
+                .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "ISSUE_POLICY_EXPIRED",
+                "the Project issue-intake policy is expired",
+            ));
+        }
+        let (connection_enabled, connection_revision) =
+            load_connection_generation(&mut transaction).await?;
+        if !connection_enabled || connection_revision != policy.connection_revision {
+            revoke_active_batches_for_project(
+                &mut transaction,
+                project_id,
+                "GITHUB_CONNECTION_CHANGED",
+                "core",
+                &now_text,
+            )
+            .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "GITHUB_CONNECTION_CHANGED",
+                "the GitHub connection was revoked or replaced; acknowledge a new policy and batch",
+            ));
+        }
+        let leased: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM issue_intake_queue
+             WHERE project_id=?1 AND status='LEASED'
+               AND (lease_expires_at IS NULL OR lease_expires_at > ?2)",
+        )
+        .bind(project_id)
+        .bind(&now_text)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if leased.0 > 0 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let queue_id: Option<(String,)> = match batch_id {
+            Some(batch_id) => {
+                sqlx::query_as::query_as(
+                    "SELECT q.id FROM issue_intake_queue q
+                 JOIN issue_intake_batches b ON b.id=q.batch_id
+                 WHERE q.project_id=?1 AND q.batch_id=?2 AND q.status='PENDING'
+                   AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= ?3)
+                   AND b.status='ACTIVE'
+                 ORDER BY q.created_at,q.id LIMIT 1",
+                )
+                .bind(project_id)
+                .bind(batch_id)
+                .bind(&now_text)
+                .fetch_optional(&mut *transaction)
+                .await?
+            }
+            None => {
+                sqlx::query_as::query_as(
+                    "SELECT q.id FROM issue_intake_queue q
+                 JOIN issue_intake_batches b ON b.id=q.batch_id
+                 WHERE q.project_id=?1 AND q.status='PENDING'
+                   AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= ?2)
+                   AND b.status='ACTIVE'
+                 ORDER BY q.created_at,q.id LIMIT 1",
+                )
+                .bind(project_id)
+                .bind(&now_text)
+                .fetch_optional(&mut *transaction)
+                .await?
+            }
+        };
+        let Some((queue_id,)) = queue_id else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        let queue = load_queue_item(&mut transaction, project_id, &queue_id).await?;
+        let batch = load_batch(&mut transaction, project_id, &queue.batch_id).await?;
+        if batch.policy_id != policy.id
+            || batch.policy_revision != policy.revision
+            || batch.policy_hash != policy.content_hash
+        {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "REVOKED",
+                &["POLICY_STALE".to_string()],
+                "the batch policy is no longer current",
+                &now_text,
+            )
+            .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "ISSUE_POLICY_STALE",
+                "the batch policy is no longer current; acknowledge a new batch",
+            ));
+        }
+        if batch.status != "ACTIVE" || !deadline_in_future(&batch.expires_at, now) {
+            if batch.status == "ACTIVE" {
+                expire_batch(&mut transaction, &batch, "core", &now_text).await?;
+            }
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "ISSUE_BATCH_EXPIRED",
+                "the issue batch is no longer active",
+            ));
+        }
+        let binding = load_binding(&mut transaction, project_id).await?;
+        if binding.repo_full_name != batch.repository_full_name
+            || binding.repository_github_id != Some(batch.repository_github_id)
+        {
+            revoke_batch(
+                &mut transaction,
+                &batch,
+                "repository binding changed",
+                "core",
+                &now_text,
+            )
+            .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "ISSUE_POLICY_REPOSITORY_MISMATCH",
+                "the Project repository binding changed after the batch was acknowledged",
+            ));
+        }
+        let item = load_batch_item(&mut transaction, project_id, &queue.batch_item_id).await?;
+        let lease_token = Uuid::new_v4().to_string();
+        let lease_expires = (now + Duration::seconds(lease_seconds)).to_rfc3339();
+        let updated = sqlx::query::query(
+            "UPDATE issue_intake_queue
+             SET status='LEASED',lease_token=?1,lease_expires_at=?2,
+                 attempts=attempts+1,reason='leased for explicit reconciliation',
+                 updated_at=?3
+             WHERE project_id=?4 AND id=?5 AND status='PENDING'",
+        )
+        .bind(&lease_token)
+        .bind(&lease_expires)
+        .bind(&now_text)
+        .bind(project_id)
+        .bind(&queue.id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let queue = load_queue_item(&mut transaction, project_id, &queue.id).await?;
+        transaction.commit().await?;
+        Ok(Some(ClaimedIssueIntakeItem {
+            queue,
+            batch,
+            policy,
+            item,
+            binding,
+            lease_token,
+        }))
+    }
+
+    /// Reconcile one leased queue item into an ordinary REVIEW_PLAN intake
+    /// proposal. The observation must be a direct GitHub read made immediately
+    /// before this call. No assessment, provider call or Campaign start occurs.
+    pub async fn reconcile_issue_intake_queue_item(
+        &self,
+        project_id: &str,
+        queue_id: &str,
+        lease_token: &str,
+        observed: &IssueSnapshot,
+        credential_revision: u32,
+    ) -> Result<IssueIntakeReconcileResult, Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let queue = load_queue_item(&mut transaction, project_id, queue_id).await?;
+        if let Some(intake_request_id) = &queue.intake_request_id {
+            let intake = load_intake_request(&mut transaction, intake_request_id).await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "RECONCILED".into(),
+                reasons: vec!["EXACT_REPLAY".into()],
+                queue,
+                intake: Some(intake),
+            });
+        }
+        if queue.status != "LEASED" || queue.lease_token.as_deref() != Some(lease_token) {
+            return Err(intake_conflict(
+                "ISSUE_QUEUE_LEASE_MISMATCH",
+                "the queue item is not leased by this dispatch",
+            ));
+        }
+        let now = Utc::now();
+        if queue
+            .lease_expires_at
+            .as_deref()
+            .is_none_or(|value| !deadline_in_future(value, now))
+        {
+            release_lease_in_tx(
+                &mut transaction,
+                &queue,
+                "ISSUE_QUEUE_LEASE_EXPIRED",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "ISSUE_QUEUE_LEASE_EXPIRED",
+                "the queue lease expired; dispatch again",
+            ));
+        }
+        let batch = load_batch(&mut transaction, project_id, &queue.batch_id).await?;
+        let item = load_batch_item(&mut transaction, project_id, &queue.batch_item_id).await?;
+        let policy = load_policy_head(&mut transaction, project_id).await?;
+        let (connection_enabled, connection_revision) =
+            load_connection_generation(&mut transaction).await?;
+        if !connection_enabled
+            || connection_revision != credential_revision
+            || connection_revision != policy.connection_revision
+            || connection_revision != batch.connection_revision
+        {
+            revoke_batch(
+                &mut transaction,
+                &batch,
+                "GitHub credential changed during reconciliation",
+                "core",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Err(intake_conflict(
+                "GITHUB_CONNECTION_CHANGED",
+                "the GitHub credential changed; the batch is revoked",
+            ));
+        }
+        if batch.policy_id != policy.id
+            || batch.policy_revision != policy.revision
+            || batch.policy_hash != policy.content_hash
+            || !policy.enabled
+        {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "REVOKED",
+                &["POLICY_STALE".to_string()],
+                "the batch policy is no longer current",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "REVOKED".into(),
+                reasons: vec!["POLICY_STALE".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        if batch.status != "ACTIVE" || !deadline_in_future(&batch.expires_at, now) {
+            if batch.status == "ACTIVE" {
+                expire_batch(&mut transaction, &batch, "core", &now.to_rfc3339()).await?;
+            }
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "EXPIRED".into(),
+                reasons: vec!["BATCH_EXPIRED".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        let binding = load_binding(&mut transaction, project_id).await?;
+        let config = load_project_config(&mut transaction, project_id).await?;
+        let profile = load_exact_intake_profile_in_tx(
+            &mut transaction,
+            &batch.profile_id,
+            &batch.profile_revision_id,
+            batch.profile_revision,
+            &batch.profile_hash,
+        )
+        .await;
+        let Ok(profile) = profile else {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "BLOCKED",
+                &["PROFILE_NOT_EXECUTABLE".to_string()],
+                "the acknowledged execution profile is no longer executable",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "BLOCKED".into(),
+                reasons: vec!["PROFILE_NOT_EXECUTABLE".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        };
+        let snapshot = load_issue_snapshot(
+            &mut transaction,
+            project_id,
+            &batch.repository_full_name,
+            item.issue_number,
+        )
+        .await?;
+        if snapshot.as_ref().is_none_or(|snapshot| {
+            snapshot.content_hash != item.content_hash
+                || snapshot.github_id != item.github_issue_id
+                || snapshot.updated_at != item.issue_updated_at
+        }) || observed.content_hash != item.content_hash
+            || observed.github_id != item.github_issue_id
+            || observed.number != item.issue_number
+            || observed.updated_at != item.issue_updated_at
+            || observed.project_id != project_id
+            || observed.repository_full_name != batch.repository_full_name
+            || observed.repository_github_id != Some(batch.repository_github_id)
+        {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "STALE",
+                &["SNAPSHOT_STALE".to_string()],
+                "the issue changed after acknowledgement; a new batch is required",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            sqlx::query::query(
+                "UPDATE issue_intake_batch_items
+                 SET state='STALE',eligibility_reasons_json=?1,updated_at=?2
+                 WHERE project_id=?3 AND id=?4 AND state='PENDING'",
+            )
+            .bind(json(&vec!["SNAPSHOT_STALE".to_string()])?)
+            .bind(now.to_rfc3339())
+            .bind(project_id)
+            .bind(&item.id)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "STALE".into(),
+                reasons: vec!["SNAPSHOT_STALE".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        let active_requests = active_project_requests(&mut transaction, project_id).await?;
+        let eligibility = current_batch_item_eligibility(
+            &mut transaction,
+            project_id,
+            &config,
+            Some(&binding),
+            Some((connection_enabled, connection_revision)),
+            Some(&policy),
+            Some(&policy.id),
+            &batch,
+            &item,
+            Some(&profile),
+            active_requests,
+        )
+        .await?;
+        if !eligibility.eligible {
+            let stale = eligibility
+                .reasons
+                .iter()
+                .any(|reason| reason == "SNAPSHOT_STALE");
+            let status = if stale { "STALE" } else { "INELIGIBLE" };
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                status,
+                &eligibility.reasons,
+                "deterministic issue-intake eligibility rejected the snapshot",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            sqlx::query::query(
+                "UPDATE issue_intake_batch_items
+                 SET state=?1,eligibility_reasons_json=?2,updated_at=?3
+                 WHERE project_id=?4 AND id=?5 AND state='PENDING'",
+            )
+            .bind(status)
+            .bind(json(&eligibility.reasons)?)
+            .bind(now.to_rfc3339())
+            .bind(project_id)
+            .bind(&item.id)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: status.into(),
+                reasons: eligibility.reasons,
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        let delegation = load_delegation(&mut transaction, &batch.delegation_id).await?;
+        if delegation.revoked_at.is_some()
+            || delegation.expires_at <= now
+            || delegation.autonomous_start
+            || !delegation.autonomous_risk_classes.is_empty()
+        {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "BLOCKED",
+                &["DELEGATION_NOT_ACTIVE".to_string()],
+                "the non-autonomous batch delegation is not active",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "BLOCKED".into(),
+                reasons: vec!["DELEGATION_NOT_ACTIVE".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        let objective = issue_objective(observed, &item.content_hash);
+        let prepared = prepare_intake_request(
+            project_id,
+            &objective,
+            Some(&batch.profile_id),
+            IntakeMode::ReviewPlan,
+            &batch.principal_id,
+        )?;
+        let idempotency_key = format!("issue-intake-proposal:{queue_id}");
+        if let Some(intake_id) = replay(
+            &mut transaction,
+            &idempotency_key,
+            "create_intake_request",
+            &prepared.submission_hash,
+        )
+        .await?
+        {
+            let intake = load_intake_request(&mut transaction, &intake_id).await?;
+            link_reconciled_queue(
+                &mut transaction,
+                project_id,
+                &queue,
+                &item,
+                &intake,
+                batch.max_cost_micros_per_issue,
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "RECONCILED".into(),
+                reasons: vec!["EXACT_REPLAY".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: Some(intake),
+            });
+        }
+        let reserved = sqlx::query::query(
+            "UPDATE issue_intake_batches
+             SET reserved_issues=reserved_issues+1,
+                 reserved_cost_micros=reserved_cost_micros+max_cost_micros_per_issue,
+                 updated_at=?1
+             WHERE id=?2 AND status='ACTIVE'
+               AND reserved_issues < max_issues
+               AND reserved_cost_micros + max_cost_micros_per_issue <= max_total_cost_micros",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&batch.id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if reserved != 1 {
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "BLOCKED",
+                &["BUDGET_EXHAUSTED".to_string()],
+                "the batch reservation capacity is exhausted",
+                &now.to_rfc3339(),
+            )
+            .await?;
+            transaction.commit().await?;
+            return Ok(IssueIntakeReconcileResult {
+                status: "BLOCKED".into(),
+                reasons: vec!["BUDGET_EXHAUSTED".into()],
+                queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                intake: None,
+            });
+        }
+        sqlx::query::query(
+            "UPDATE issue_intake_batch_items
+             SET reserved_cost_micros=?1,updated_at=?2
+             WHERE project_id=?3 AND id=?4",
+        )
+        .bind(batch.max_cost_micros_per_issue as i64)
+        .bind(now.to_rfc3339())
+        .bind(project_id)
+        .bind(&item.id)
+        .execute(&mut *transaction)
+        .await?;
+        let intake = create_intake_request_in_tx(
+            &mut transaction,
+            project_id,
+            &objective,
+            IntakeMode::ReviewPlan,
+            &idempotency_key,
+            profile,
+            &config,
+            &delegation,
+            prepared,
+        )
+        .await?;
+        link_reconciled_queue(
+            &mut transaction,
+            project_id,
+            &queue,
+            &item,
+            &intake,
+            batch.max_cost_micros_per_issue,
+            &now.to_rfc3339(),
+        )
+        .await?;
+        let actor = batch
+            .principal_label
+            .clone()
+            .unwrap_or(batch.principal_id.clone());
+        insert_issue_intake_audit(
+            &mut transaction,
+            project_id,
+            Some(&policy.id),
+            Some(&batch.id),
+            Some(&queue.id),
+            "queue_reconciled",
+            &actor,
+            &batch.principal_id,
+            "explicit reconciliation",
+            &format!(
+                "issue={} intake={} lead={} campaign_start=false provider_calls=false",
+                item.issue_number, intake.id, intake.lead_request_id
+            ),
+            &now.to_rfc3339(),
+        )
+        .await?;
+        record_event(
+            &mut transaction,
+            &queue.id,
+            "issue_intake.queue_reconciled",
+            &format!(
+                "project={project_id} issue={} intake={} campaign_start=false",
+                item.issue_number, intake.id
+            ),
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(IssueIntakeReconcileResult {
+            status: "RECONCILED".into(),
+            reasons: Vec::new(),
+            queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+            intake: Some(intake),
+        })
+    }
+
+    /// Release a failed direct read. Transient failures retry within the fixed
+    /// three-attempt bound; authentication, permission, identity and freshness
+    /// failures are terminal and require operator intervention.
+    pub async fn fail_issue_intake_queue_item(
+        &self,
+        project_id: &str,
+        queue_id: &str,
+        lease_token: &str,
+        kind: IssueIntakeQueueFailure,
+        reason: &str,
+    ) -> Result<IssueIntakeQueueItemRecord, Error> {
+        let reason = reason.chars().take(MAX_REASON_CHARS).collect::<String>();
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let queue = load_queue_item(&mut transaction, project_id, queue_id).await?;
+        if queue.intake_request_id.is_some() {
+            transaction.commit().await?;
+            return Ok(queue);
+        }
+        if queue.status != "LEASED" || queue.lease_token.as_deref() != Some(lease_token) {
+            transaction.commit().await?;
+            return Ok(queue);
+        }
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let retry =
+            kind == IssueIntakeQueueFailure::Transient && queue.attempts < queue.max_attempts;
+        if retry {
+            let backoff = match queue.attempts {
+                0 | 1 => 30,
+                _ => 120,
+            };
+            let next = (now + Duration::seconds(backoff)).to_rfc3339();
+            sqlx::query::query(
+                "UPDATE issue_intake_queue
+                 SET status='PENDING',lease_token=NULL,lease_expires_at=NULL,
+                     next_attempt_at=?1,reason=?2,updated_at=?3
+                 WHERE project_id=?4 AND id=?5",
+            )
+            .bind(&next)
+            .bind(&reason)
+            .bind(&now_text)
+            .bind(project_id)
+            .bind(&queue.id)
+            .execute(&mut *transaction)
+            .await?;
+            insert_issue_intake_audit(
+                &mut transaction,
+                project_id,
+                None,
+                Some(&queue.batch_id),
+                Some(&queue.id),
+                "queue_retry",
+                "core",
+                "core",
+                &reason,
+                &format!("attempt={} next={next}", queue.attempts),
+                &now_text,
+            )
+            .await?;
+            record_event(
+                &mut transaction,
+                &queue.id,
+                "issue_intake.queue_retry",
+                &format!("project={project_id} attempt={}", queue.attempts),
+            )
+            .await?;
+        } else {
+            let reasons = vec![reason.clone()];
+            mark_queue_terminal_in_tx(
+                &mut transaction,
+                &queue,
+                "BLOCKED",
+                &reasons,
+                &reason,
+                &now_text,
+            )
+            .await?;
+            sqlx::query::query(
+                "UPDATE issue_intake_batch_items
+                 SET state='INELIGIBLE',eligibility_reasons_json=?1,updated_at=?2
+                 WHERE project_id=?3 AND id=?4 AND state='PENDING'",
+            )
+            .bind(json(&reasons)?)
+            .bind(&now_text)
+            .bind(project_id)
+            .bind(&queue.batch_item_id)
+            .execute(&mut *transaction)
+            .await?;
+            insert_issue_intake_audit(
+                &mut transaction,
+                project_id,
+                None,
+                Some(&queue.batch_id),
+                Some(&queue.id),
+                "queue_blocked",
+                "core",
+                "core",
+                &reason,
+                "direct freshness read failed",
+                &now_text,
+            )
+            .await?;
+            record_event(
+                &mut transaction,
+                &queue.id,
+                "issue_intake.queue_blocked",
+                &format!("project={project_id} reason={reason}"),
+            )
+            .await?;
+        }
+        let updated = load_queue_item(&mut transaction, project_id, &queue.id).await?;
+        transaction.commit().await?;
+        Ok(updated)
+    }
+}
+
+async fn load_queue_item(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    queue_id: &str,
+) -> Result<IssueIntakeQueueItemRecord, Error> {
+    let row = sqlx::query::query("SELECT * FROM issue_intake_queue WHERE project_id=?1 AND id=?2")
+        .bind(project_id)
+        .bind(queue_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or(Error::NotFound)?;
+    queue_item_from_row(&row)
+}
+
+async fn load_queue_item_pool(
+    pool: &SqlitePool,
+    project_id: &str,
+    queue_id: &str,
+) -> Result<IssueIntakeQueueItemRecord, Error> {
+    let mut connection = pool.acquire().await?;
+    load_queue_item(&mut connection, project_id, queue_id).await
+}
+
+async fn load_batch_item(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    item_id: &str,
+) -> Result<IssueIntakeBatchItemRecord, Error> {
+    let row =
+        sqlx::query::query("SELECT * FROM issue_intake_batch_items WHERE project_id=?1 AND id=?2")
+            .bind(project_id)
+            .bind(item_id)
+            .fetch_optional(&mut *connection)
+            .await?
+            .ok_or(Error::NotFound)?;
+    batch_item_from_row(&row)
+}
+
+async fn recover_expired_leases_in_tx(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    now: &str,
+) -> Result<(), Error> {
+    let rows = sqlx::query::query(
+        "SELECT id,batch_id,batch_item_id,intake_request_id,attempts,max_attempts
+         FROM issue_intake_queue
+         WHERE project_id=?1 AND status='LEASED'
+           AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?2",
+    )
+    .bind(project_id)
+    .bind(now)
+    .fetch_all(&mut *connection)
+    .await?;
+    for row in rows {
+        let id: String = row.try_get("id")?;
+        let batch_id: String = row.try_get("batch_id")?;
+        let batch_item_id: String = row.try_get("batch_item_id")?;
+        let intake_request_id: Option<String> = row.try_get("intake_request_id")?;
+        let attempts: i64 = row.try_get("attempts")?;
+        let max_attempts: i64 = row.try_get("max_attempts")?;
+        let (status, reason) = if intake_request_id.is_some() {
+            ("RECONCILED", "committed proposal link recovered")
+        } else if attempts >= max_attempts {
+            ("BLOCKED", "lease expired with no remaining retry budget")
+        } else {
+            ("PENDING", "lease expired; retry is explicit")
+        };
+        sqlx::query::query(
+            "UPDATE issue_intake_queue
+             SET status=?1,lease_token=NULL,lease_expires_at=NULL,reason=?2,updated_at=?3
+             WHERE id=?4 AND status='LEASED'",
+        )
+        .bind(status)
+        .bind(reason)
+        .bind(now)
+        .bind(&id)
+        .execute(&mut *connection)
+        .await?;
+        if intake_request_id.is_some() {
+            sqlx::query::query(
+                "UPDATE issue_intake_batch_items SET state='RECONCILED',updated_at=?1
+                 WHERE id=?2 AND state='PENDING'",
+            )
+            .bind(now)
+            .bind(&batch_item_id)
+            .execute(&mut *connection)
+            .await?;
+        }
+        insert_issue_intake_audit(
+            connection,
+            project_id,
+            None,
+            Some(&batch_id),
+            Some(&id),
+            "queue_recovered",
+            "core",
+            "core",
+            "lease expiry recovery",
+            &format!("status={status}"),
+            now,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn release_lease_in_tx(
+    connection: &mut SqliteConnection,
+    queue: &IssueIntakeQueueItemRecord,
+    reason: &str,
+    now: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "UPDATE issue_intake_queue
+         SET status='PENDING',lease_token=NULL,lease_expires_at=NULL,reason=?1,updated_at=?2
+         WHERE id=?3 AND status='LEASED'",
+    )
+    .bind(reason)
+    .bind(now)
+    .bind(&queue.id)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn mark_queue_terminal_in_tx(
+    connection: &mut SqliteConnection,
+    queue: &IssueIntakeQueueItemRecord,
+    status: &str,
+    reasons: &[String],
+    reason: &str,
+    now: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "UPDATE issue_intake_queue
+         SET status=?1,lease_token=NULL,lease_expires_at=NULL,reason=?2,reasons_json=?3,
+             updated_at=?4,completed_at=?4
+         WHERE id=?5",
+    )
+    .bind(status)
+    .bind(reason)
+    .bind(json(&reasons.to_vec())?)
+    .bind(now)
+    .bind(&queue.id)
+    .execute(&mut *connection)
+    .await?;
+    let item_state = match status {
+        "STALE" => "STALE",
+        "REVOKED" => "REVOKED",
+        _ => "INELIGIBLE",
+    };
+    sqlx::query::query(
+        "UPDATE issue_intake_batch_items
+         SET state=?1,eligibility_reasons_json=?2,updated_at=?3
+         WHERE project_id=?4 AND id=?5 AND state='PENDING'",
+    )
+    .bind(item_state)
+    .bind(json(&reasons.to_vec())?)
+    .bind(now)
+    .bind(&queue.project_id)
+    .bind(&queue.batch_item_id)
+    .execute(&mut *connection)
+    .await?;
+    insert_issue_intake_audit(
+        connection,
+        &queue.project_id,
+        None,
+        Some(&queue.batch_id),
+        Some(&queue.id),
+        "queue_blocked",
+        "core",
+        "core",
+        reason,
+        &format!("status={status} reasons={}", reasons.join(",")),
+        now,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn link_reconciled_queue(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    queue: &IssueIntakeQueueItemRecord,
+    item: &IssueIntakeBatchItemRecord,
+    intake: &IntakeRequestRecord,
+    reserved_cost_micros: u64,
+    now: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "UPDATE issue_intake_queue
+         SET status='RECONCILED',lease_token=NULL,lease_expires_at=NULL,reason=NULL,
+             reasons_json='[]',intake_request_id=?1,lead_request_id=?2,action_id=?3,
+             updated_at=?4,completed_at=?4
+         WHERE project_id=?5 AND id=?6",
+    )
+    .bind(&intake.id)
+    .bind(&intake.lead_request_id)
+    .bind(&intake.action_id)
+    .bind(now)
+    .bind(project_id)
+    .bind(&queue.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "UPDATE issue_intake_batch_items
+         SET state='RECONCILED',intake_request_id=?1,
+             reserved_cost_micros=CASE WHEN reserved_cost_micros=0 THEN ?2
+                                      ELSE reserved_cost_micros END,
+             eligibility_reasons_json='[]',updated_at=?3
+         WHERE project_id=?4 AND id=?5",
+    )
+    .bind(&intake.id)
+    .bind(reserved_cost_micros as i64)
+    .bind(now)
+    .bind(project_id)
+    .bind(&item.id)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn expire_batch(
+    connection: &mut SqliteConnection,
+    batch: &IssueIntakeBatchRecord,
+    actor: &str,
+    now: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "UPDATE issue_intake_batches
+         SET status='EXPIRED',revoked_at=?1,updated_at=?1 WHERE id=?2 AND status='ACTIVE'",
+    )
+    .bind(now)
+    .bind(&batch.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "UPDATE issue_intake_batch_items
+         SET state='INELIGIBLE',eligibility_reasons_json=?1,updated_at=?2
+         WHERE batch_id=?3 AND state='PENDING'",
+    )
+    .bind(json(&vec!["BATCH_EXPIRED".to_string()])?)
+    .bind(now)
+    .bind(&batch.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "UPDATE issue_intake_queue
+         SET status='BLOCKED',lease_token=NULL,lease_expires_at=NULL,
+             reason='batch expired',reasons_json=?1,updated_at=?2,completed_at=?2
+         WHERE batch_id=?3 AND status IN ('PENDING','LEASED')",
+    )
+    .bind(json(&vec!["BATCH_EXPIRED".to_string()])?)
+    .bind(now)
+    .bind(&batch.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "UPDATE standing_delegations SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
+    )
+    .bind(now)
+    .bind(&batch.delegation_id)
+    .execute(&mut *connection)
+    .await?;
+    insert_issue_intake_audit(
+        connection,
+        &batch.project_id,
+        Some(&batch.policy_id),
+        Some(&batch.id),
+        None,
+        "batch_expired",
+        actor,
+        actor,
+        "batch reached its acknowledged expiry",
+        "autonomous_start=false",
+        now,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn expire_active_batches_for_project(
+    connection: &mut SqliteConnection,
+    project_id: &str,
+    actor: &str,
+    now: &str,
+) -> Result<(), Error> {
+    let batches = load_batches(connection, project_id).await?;
+    for batch in batches {
+        if batch.status == "ACTIVE" {
+            expire_batch(connection, &batch, actor, now).await?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_new_policy(input: &NewIssueIntakePolicy<'_>) -> Result<(), Error> {
@@ -1879,7 +2900,7 @@ async fn insert_queue_item_for_batch_item(
           status,lease_token,lease_expires_at,attempts,max_attempts,next_attempt_at,
           reason,reasons_json,intake_request_id,lead_request_id,action_id,created_at,
           updated_at,completed_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'PENDING',NULL,NULL,0,3,NULL,
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'PENDING',NULL,NULL,0,?13,NULL,
                  NULL,'[]',NULL,NULL,NULL,?12,?12,NULL)",
     )
     .bind(&queue_id)
@@ -1894,6 +2915,7 @@ async fn insert_queue_item_for_batch_item(
     .bind(i64::from(batch.connection_revision))
     .bind(i64::from(batch.policy_revision))
     .bind(&batch.created_at)
+    .bind(i64::from(crate::issue_intake::MAX_QUEUE_ATTEMPTS))
     .execute(&mut *connection)
     .await?;
     sqlx::query::query("UPDATE issue_intake_batch_items SET queue_item_id=?1 WHERE id=?2")

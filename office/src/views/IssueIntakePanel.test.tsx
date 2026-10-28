@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   disableIssueIntakePolicy: vi.fn(),
   createIssueIntakeBatch: vi.fn(),
   revokeIssueIntakeBatch: vi.fn(),
+  dispatchIssueIntake: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -190,6 +191,73 @@ function state(overrides: Partial<IssueIntakeState> = {}): IssueIntakeState {
   };
 }
 
+function activeBatchState() {
+  return {
+    batch: {
+      id: "batch-1",
+      project_id: "project-1",
+      policy_id: "policy-1",
+      policy_revision: 1,
+      policy_hash: "d".repeat(64),
+      delegation_id: "delegation-1",
+      repository_full_name: "acme/widgets",
+      repository_github_id: 42,
+      connection_revision: 2,
+      profile_id: "profile-1",
+      profile_revision_id: "revision-2",
+      profile_revision: 2,
+      profile_hash: "a".repeat(64),
+      project_config_hash: "c".repeat(64),
+      max_issues: 1,
+      max_concurrent: 1,
+      max_cost_micros_per_issue: 300_000,
+      max_total_cost_micros: 300_000,
+      reserved_cost_micros: 0,
+      reserved_issues: 0,
+      status: "ACTIVE" as const,
+      acknowledged: true,
+      principal_id: "operator-token",
+      principal_label: null,
+      reason: "batch",
+      idempotency_key: "key",
+      batch_hash: "f".repeat(64),
+      expires_at: "2026-11-27T10:00:00Z",
+      created_at: "2026-10-27T10:00:00Z",
+      updated_at: "2026-10-27T10:00:00Z",
+      revoked_at: null,
+    },
+    items: [
+      {
+        item: {
+          id: "item-1",
+          batch_id: "batch-1",
+          project_id: "project-1",
+          repository_full_name: "acme/widgets",
+          repository_github_id: 42,
+          issue_number: 5,
+          github_issue_id: 55,
+          content_hash: issue.content_hash,
+          issue_updated_at: issue.updated_at,
+          author_login: "octo",
+          author_id: 7,
+          author_association: "MEMBER",
+          labels: ["factory:r0"],
+          state: "PENDING" as const,
+          eligibility_reasons: [],
+          reserved_cost_micros: 0,
+          intake_request_id: null,
+          queue_item_id: "queue-1",
+          created_at: "2026-10-27T10:00:00Z",
+          updated_at: "2026-10-27T10:00:00Z",
+        },
+        current_eligibility: { eligible: true, reasons: [] },
+      },
+    ],
+    remaining_issues: 1,
+    remaining_cost_micros: 300_000,
+  };
+}
+
 function renderPanel(
   overrides: {
     state?: IssueIntakeState | null;
@@ -224,6 +292,7 @@ beforeEach(() => {
   mocks.disableIssueIntakePolicy.mockReset();
   mocks.createIssueIntakeBatch.mockReset();
   mocks.revokeIssueIntakeBatch.mockReset();
+  mocks.dispatchIssueIntake.mockReset();
 });
 
 describe("IssueIntakePanel", () => {
@@ -386,6 +455,72 @@ describe("IssueIntakePanel", () => {
     expect(
       screen.getByText(/a selected issue changed after the operator viewed it/),
     ).toBeTruthy();
+    expect(onRefresh).toHaveBeenCalled();
+  });
+
+  it("dispatches one exact queue item and reports that no Campaign started", async () => {
+    const batchState = activeBatchState();
+    const queued = {
+      id: "queue-1",
+      project_id: "project-1",
+      batch_id: "batch-1",
+      batch_item_id: "item-1",
+      repository_full_name: "acme/widgets",
+      repository_github_id: 42,
+      issue_number: 5,
+      github_issue_id: 55,
+      content_hash: issue.content_hash,
+      connection_revision: 2,
+      policy_revision: 1,
+      status: "PENDING" as const,
+      lease_token: null,
+      lease_expires_at: null,
+      attempts: 0,
+      max_attempts: 3,
+      next_attempt_at: null,
+      reason: null,
+      reasons: [],
+      intake_request_id: null,
+      lead_request_id: null,
+      action_id: null,
+      created_at: "2026-10-27T10:00:00Z",
+      updated_at: "2026-10-27T10:00:00Z",
+      completed_at: null,
+    };
+    mocks.dispatchIssueIntake.mockResolvedValue({
+      status: "RECONCILED",
+      reasons: [],
+      queue: {
+        ...queued,
+        status: "RECONCILED",
+        intake_request_id: "intake-1",
+        lead_request_id: "lead-1",
+      },
+      intake: {
+        id: "intake-1",
+        lead_request_id: "lead-1",
+        action_id: "action-1",
+        objective: "Resolve issue",
+        mode: "REVIEW_PLAN",
+      },
+      campaign_started: false,
+      provider_calls: 0,
+    });
+    const onRefresh = vi.fn();
+    renderPanel({
+      state: state({ batches: [batchState], queue: [queued] }),
+      onRefresh,
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Create proposal" }),
+    );
+    await waitFor(() =>
+      expect(mocks.dispatchIssueIntake).toHaveBeenCalledWith(
+        "project-1",
+        "batch-1",
+      ),
+    );
+    expect(await screen.findByText(/No Campaign was started/)).toBeTruthy();
     expect(onRefresh).toHaveBeenCalled();
   });
 

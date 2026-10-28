@@ -1537,7 +1537,7 @@ fn execution_policy_digest(input: &NewExecutionPolicyGrant<'_>) -> String {
     )
 }
 
-async fn load_intake_request(
+pub(super) async fn load_intake_request(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<IntakeRequestRecord, Error> {

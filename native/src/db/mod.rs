@@ -807,8 +807,9 @@ pub use intake::{
 };
 mod issue_intake;
 pub use issue_intake::{
-    IssueIntakeBatchResult, IssueIntakeBatchState, IssueIntakeItemState, IssueIntakeLimits,
-    IssueIntakePolicyResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
+    ClaimedIssueIntakeItem, IssueIntakeBatchResult, IssueIntakeBatchState, IssueIntakeItemState,
+    IssueIntakeLimits, IssueIntakePolicyResult, IssueIntakeQueueFailure,
+    IssueIntakeReconcileResult, IssueIntakeState, NewIssueIntakeBatch, NewIssueIntakeBatchItem,
     NewIssueIntakePolicy,
 };
 pub use model_calls::{

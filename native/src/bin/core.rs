@@ -454,6 +454,13 @@ struct IssueIntakeBatchRevokeRequest {
     reason: String,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct IssueIntakeDispatchRequest {
+    #[serde(default)]
+    batch_id: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ResolveModelCall {
@@ -3093,6 +3100,10 @@ fn issue_intake_routes() -> Router<Arc<App>> {
             "/projects/{id}/issue-intake/batches/{batch_id}/revoke",
             post(revoke_project_issue_intake_batch),
         )
+        .route(
+            "/projects/{id}/issue-intake/queue/dispatch",
+            post(dispatch_issue_intake_queue),
+        )
 }
 
 async fn project_issue_intake_state(
@@ -3286,6 +3297,194 @@ async fn revoke_project_issue_intake_batch(
     {
         Ok(batch) => Json(json!({"batch": batch})).into_response(),
         Err(error) => api_error(error),
+    }
+}
+
+fn github_read_failure_kind(
+    error: &factory_native::github::GitHubError,
+) -> factory_native::db::IssueIntakeQueueFailure {
+    use factory_native::github::GitHubError;
+    match error {
+        GitHubError::Unauthorized
+        | GitHubError::Forbidden(_)
+        | GitHubError::NotFound
+        | GitHubError::Redirected
+        | GitHubError::Invalid(_) => factory_native::db::IssueIntakeQueueFailure::Terminal,
+        GitHubError::RateLimited { .. }
+        | GitHubError::Upstream(_)
+        | GitHubError::InvalidResponse(_) => factory_native::db::IssueIntakeQueueFailure::Transient,
+    }
+}
+
+async fn dispatch_issue_intake_queue(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    input: Option<Json<IssueIntakeDispatchRequest>>,
+) -> Response {
+    let input = input.map(|Json(value)| value).unwrap_or_default();
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let _guard = match app.github_sync.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "a GitHub read is already running",
+                    "code": "GITHUB_READ_BUSY"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    match app.db.github_backoff_until().await {
+        Ok(Some(until)) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": format!("GitHub rate-limit backoff is active until {until}"),
+                    "kind": "RATE_LIMITED",
+                    "next_allowed_at": until,
+                    "code": "GITHUB_RATE_LIMITED"
+                })),
+            )
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
+    let claim = match app
+        .db
+        .claim_issue_intake_queue_item(
+            &id,
+            input.batch_id.as_deref(),
+            factory_native::issue_intake::QUEUE_LEASE_SECONDS,
+        )
+        .await
+    {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            return Json(json!({
+                "status": "IDLE",
+                "detail": "no due issue-intake queue item",
+                "campaign_started": false,
+                "provider_calls": 0,
+            }))
+            .into_response();
+        }
+        Err(error) => return api_error(error),
+    };
+    let issue = match app
+        .github
+        .get_issue(
+            credential.token(),
+            &claim.binding.owner,
+            &claim.binding.repo,
+            claim.queue.issue_number,
+        )
+        .await
+    {
+        Ok(issue) => issue,
+        Err(error) => {
+            if let factory_native::github::GitHubError::RateLimited {
+                next_allowed_at: Some(until),
+                ..
+            } = &error
+            {
+                let _ = app
+                    .db
+                    .set_github_rate_limit(credential.revision(), until)
+                    .await;
+            }
+            if matches!(
+                error,
+                factory_native::github::GitHubError::Unauthorized
+                    | factory_native::github::GitHubError::Forbidden(_)
+            ) {
+                let _ = app
+                    .db
+                    .revoke_issue_intake_batch(
+                        &id,
+                        &claim.batch.id,
+                        "GitHub denied the credential or repository scope",
+                        "core",
+                        None,
+                    )
+                    .await;
+            }
+            let _ = app
+                .db
+                .fail_issue_intake_queue_item(
+                    &id,
+                    &claim.queue.id,
+                    &claim.lease_token,
+                    github_read_failure_kind(&error),
+                    &error.detail(),
+                )
+                .await;
+            return github_upstream_error(error);
+        }
+    };
+    let observation = factory_native::issue_intake::IssueSnapshot::from_github_issue(
+        &id,
+        &claim.batch.repository_full_name,
+        Some(claim.batch.repository_github_id),
+        &issue,
+    );
+    match app
+        .db
+        .reconcile_issue_intake_queue_item(
+            &id,
+            &claim.queue.id,
+            &claim.lease_token,
+            &observation,
+            credential.revision(),
+        )
+        .await
+    {
+        Ok(result) => {
+            let status = if result.status == "RECONCILED" {
+                StatusCode::OK
+            } else {
+                StatusCode::CONFLICT
+            };
+            let mut body = json!({
+                "status": result.status,
+                "reasons": result.reasons,
+                "queue": result.queue,
+                "intake": result.intake,
+                "campaign_started": false,
+                "provider_calls": 0,
+            });
+            if status != StatusCode::OK {
+                body["error"] = json!(format!(
+                    "issue-intake reconciliation is {}: {}",
+                    result.status,
+                    result.reasons.join(", ")
+                ));
+                body["code"] = json!(result.status);
+            }
+            (status, Json(body)).into_response()
+        }
+        Err(error) => {
+            let _ = app
+                .db
+                .fail_issue_intake_queue_item(
+                    &id,
+                    &claim.queue.id,
+                    &claim.lease_token,
+                    factory_native::db::IssueIntakeQueueFailure::Transient,
+                    &error.to_string(),
+                )
+                .await;
+            api_error(error)
+        }
     }
 }
 
@@ -10384,6 +10583,179 @@ mod tests {
             assert_eq!(cancel["code"], "LEAD_ALREADY_STARTED");
             assert_eq!(cancel["campaign_id"], campaign_id);
 
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn issue_intake_api_is_authenticated_default_off_and_acknowledges_exact_snapshot() {
+            use factory_native::github::{GitHubIssue, GitHubLabel};
+
+            let fixture = setup().await;
+            let path = format!("/projects/{}/issue-intake", fixture.project_id);
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(&path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let (status, state) = send(&fixture.router, "GET", &path, None).await;
+            assert_eq!(status, StatusCode::OK, "{state}");
+            assert_eq!(state["enabled"], false);
+            assert!(state["policy"].is_null());
+            assert_eq!(state["limits"]["autonomous_start"], false);
+            assert_eq!(state["limits"]["campaign_start"], false);
+
+            fixture
+                .app
+                .db
+                .bind_project_github(
+                    &fixture.project_id,
+                    factory_native::db::NewProjectGitHubBinding {
+                        owner: "acme",
+                        repo: "widgets",
+                        default_branch: "main",
+                        repository_github_id: Some(42),
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            fixture
+                .app
+                .db
+                .save_github_connection(
+                    &factory_native::provider_secrets::EncryptedCredential {
+                        ciphertext: "ciphertext".into(),
+                        nonce: "nonce".into(),
+                        fingerprint: "fingerprint".into(),
+                    },
+                    "octo",
+                    &[],
+                    false,
+                    "test-operator",
+                )
+                .await
+                .unwrap();
+            let issue = GitHubIssue {
+                number: 5,
+                github_id: 55,
+                title: "Bounded issue".into(),
+                body: "Do a bounded task.".into(),
+                body_truncated: false,
+                state: "open".into(),
+                state_reason: None,
+                labels: vec![GitHubLabel {
+                    name: "factory:r0".into(),
+                    color: None,
+                }],
+                author: Some("octo".into()),
+                author_id: Some(7),
+                author_association: Some("MEMBER".into()),
+                html_url: "https://github.com/acme/widgets/issues/5".into(),
+                comments: 0,
+                created_at: "2026-10-01T00:00:00Z".into(),
+                updated_at: "2026-10-02T00:00:00Z".into(),
+                closed_at: None,
+            };
+            fixture
+                .app
+                .db
+                .record_github_sync_result(factory_native::db::GitHubSyncResultWrite {
+                    project_id: &fixture.project_id,
+                    repo_full_name: "acme/widgets",
+                    issues: std::slice::from_ref(&issue),
+                    page_etags: &[],
+                    etag: None,
+                    truncated: false,
+                    connection_revision: 1,
+                })
+                .await
+                .unwrap();
+            let policy_body = json!({
+                "repository_full_name": "acme/widgets",
+                "repository_github_id": 42,
+                "required_labels": ["factory:r0"],
+                "excluded_labels": ["factory:blocked"],
+                "author_ids": [7],
+                "author_associations": ["MEMBER"],
+                "execution_profile_id": fixture.profile.id,
+                "profile_revision_id": fixture.profile.revision_id,
+                "profile_revision": fixture.profile.revision,
+                "profile_hash": fixture.profile.content_hash,
+                "project_config_hash": fixture.config.config_hash,
+                "allowed_paths": ["src"],
+                "capabilities": ["repository-edit"],
+                "max_issues": 3,
+                "max_concurrent": 1,
+                "max_cost_micros_per_issue": 100000,
+                "max_total_cost_micros": 300000,
+                "max_attempts": 2,
+                "max_sessions": 3,
+                "max_turns": 4,
+                "max_wall_clock_secs": 600,
+                "expires_at": (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339(),
+                "acknowledge": true,
+                "reason": "API acknowledgement",
+                "idempotency_key": "issue-policy-api",
+            });
+            let (status, configured) = send(
+                &fixture.router,
+                "PUT",
+                &format!("/projects/{}/issue-intake/policy", fixture.project_id),
+                Some(policy_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{configured}");
+            assert_eq!(configured["policy"]["enabled"], true);
+            let batch_body = json!({
+                "policy_id": configured["policy"]["id"],
+                "expected_policy_revision": configured["policy"]["revision"],
+                "expected_policy_hash": configured["policy"]["content_hash"],
+                "items": [{
+                    "number": 5,
+                    "github_issue_id": 55,
+                    "content_hash": issue.content_hash(),
+                    "updated_at": issue.updated_at,
+                }],
+                "max_total_cost_micros": 100000,
+                "expires_at": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339(),
+                "acknowledge": true,
+                "reason": "API exact batch",
+                "idempotency_key": "issue-batch-api",
+            });
+            let (status, batch) = send(
+                &fixture.router,
+                "POST",
+                &format!("/projects/{}/issue-intake/batches", fixture.project_id),
+                Some(batch_body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{batch}");
+            assert_eq!(batch["batch"]["max_issues"], 1);
+            let (status, state) = send(&fixture.router, "GET", &path, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(state["queue"].as_array().unwrap().len(), 1);
+            assert_eq!(state["queue"][0]["status"], "PENDING");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .issue_intake_state(&fixture.project_id)
+                    .await
+                    .unwrap()
+                    .queue
+                    .len(),
+                1
+            );
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
             let _ = std::fs::remove_dir_all(fixture.repository);

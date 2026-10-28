@@ -674,12 +674,22 @@ pub fn issue_objective(issue: &IssueSnapshot, acknowledged_hash: &str) -> String
     );
     let footer = "\n--- END UNTRUSTED GITHUB ISSUE ---";
     let remaining = MAX_OBJECTIVE_CHARS
-        .saturating_sub(header.chars().count())
-        .saturating_sub(footer.chars().count());
-    if body.chars().count() > remaining {
-        body = body.chars().take(remaining).collect();
-    }
+        .saturating_sub(header.len())
+        .saturating_sub(footer.len());
+    body = truncate_utf8(&body, remaining);
     format!("{header}{body}{footer}")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -710,6 +720,10 @@ pub fn validate_policy_terms(
     if max_cost_micros_per_issue == 0
         || max_total_cost_micros == 0
         || max_cost_micros_per_issue > max_total_cost_micros
+        || max_cost_micros_per_issue > profile.budgets.max_cost_micros
+        || max_cost_micros_per_issue > i64::MAX as u64
+        || max_total_cost_micros > i64::MAX as u64
+        || max_wall_clock_secs > i64::MAX as u64
     {
         return Err("ISSUE_POLICY_BUDGET");
     }

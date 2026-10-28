@@ -1816,6 +1816,29 @@ export interface IssueIntakeBatchState {
   remaining_cost_micros: number;
 }
 
+export interface IssueIntakeDispatchResult {
+  status:
+    | "RECONCILED"
+    | "STALE"
+    | "INELIGIBLE"
+    | "BLOCKED"
+    | "REVOKED"
+    | "EXPIRED"
+    | "IDLE";
+  reasons: string[];
+  queue: IssueIntakeQueueItem;
+  intake: {
+    id: string;
+    lead_request_id: string;
+    action_id: string;
+    objective: string;
+    mode: "REVIEW_PLAN" | "AUTONOMOUS";
+  } | null;
+  campaign_started: false;
+  provider_calls: 0;
+  detail?: string;
+}
+
 export interface IssueIntakeAuditEntry {
   audit_id: string;
   project_id: string;
@@ -2283,6 +2306,14 @@ export const coreApi = {
     request<{ batch: IssueIntakeBatch }>(
       `/projects/${encodeURIComponent(projectId)}/issue-intake/batches/${encodeURIComponent(batchId)}/revoke`,
       { method: "POST", body: JSON.stringify(input) },
+    ),
+  dispatchIssueIntake: (projectId: string, batchId?: string) =>
+    request<IssueIntakeDispatchResult>(
+      `/projects/${encodeURIComponent(projectId)}/issue-intake/queue/dispatch`,
+      {
+        method: "POST",
+        body: JSON.stringify(batchId ? { batch_id: batchId } : {}),
+      },
     ),
   listParticipants: (filters: ParticipantFilters = {}) => {
     const params = new URLSearchParams();

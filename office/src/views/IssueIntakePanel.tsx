@@ -151,9 +151,7 @@ export function IssueIntakePanel({
   const [batchReason, setBatchReason] = useState("");
 
   const policy = state?.policy ?? null;
-  const activeBatches = state?.batches.filter(
-    (batch) => batch.batch.status === "ACTIVE",
-  );
+  const batches = state?.batches ?? [];
   const profile = profiles.find((item) => item.id === profileId) ?? null;
 
   useEffect(() => {
@@ -369,6 +367,35 @@ export function IssueIntakePanel({
       const code = cause instanceof CoreApiError ? cause.reason : null;
       setError(
         `${message(cause, "Batch acknowledgement failed.")}${code ? ` (${code})` : ""}`,
+      );
+      onRefresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function dispatchQueuedItem(batchId: string) {
+    setBusy(`dispatch-${batchId}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await coreApi.dispatchIssueIntake(projectId, batchId);
+      if (result.status === "RECONCILED") {
+        setNotice(
+          result.intake
+            ? `Proposal ${shortId(result.intake.id)} created as ${result.intake.mode}. No Campaign was started and no provider call was made.`
+            : "Queue item replayed from its committed proposal. No Campaign was started.",
+        );
+      } else {
+        setError(
+          `Reconciliation ${result.status}${result.reasons.length > 0 ? `: ${result.reasons.join(", ")}` : ""}`,
+        );
+      }
+      onRefresh();
+    } catch (cause) {
+      const code = cause instanceof CoreApiError ? cause.reason : null;
+      setError(
+        `${message(cause, "Issue reconciliation failed before creating a proposal.")}${code ? ` (${code})` : ""}`,
       );
       onRefresh();
     } finally {
@@ -594,6 +621,13 @@ export function IssueIntakePanel({
                 </option>
               ))}
             </Select>
+            {profile?.autoStart.enabled && (
+              <p className="notice" role="status">
+                This profile has autoStart enabled. Issue intake ignores it: a
+                policy, batch and explicit approval are still required, and no
+                autonomous Campaign start is available from this panel.
+              </p>
+            )}
             <Input
               label="Required labels (comma separated)"
               value={form.requiredLabels}
@@ -816,7 +850,7 @@ export function IssueIntakePanel({
 
           <div className="issue-intake-batches">
             <h3>Batches and durable queue</h3>
-            {!activeBatches || activeBatches.length === 0 ? (
+            {batches.length === 0 ? (
               <EmptyState
                 title="No active batch"
                 description="A batch is the finite acknowledgement of exact issue snapshots. It does not authorize a Campaign."
@@ -861,19 +895,20 @@ export function IssueIntakePanel({
                             <Badge tone={itemTone(item.state)}>
                               {item.state}
                             </Badge>
-                            {current_eligibility && (
-                              <Badge
-                                tone={
-                                  current_eligibility.eligible
-                                    ? "success"
-                                    : "danger"
-                                }
-                              >
-                                {current_eligibility.eligible
-                                  ? "ELIGIBLE"
-                                  : "BLOCKED"}
-                              </Badge>
-                            )}
+                            {current_eligibility &&
+                              item.state === "PENDING" && (
+                                <Badge
+                                  tone={
+                                    current_eligibility.eligible
+                                      ? "success"
+                                      : "danger"
+                                  }
+                                >
+                                  {current_eligibility.eligible
+                                    ? "ELIGIBLE"
+                                    : "BLOCKED"}
+                                </Badge>
+                              )}
                           </div>
                           <span className="muted">
                             author {item.author_login ?? "unknown"} (ID{" "}
@@ -884,9 +919,18 @@ export function IssueIntakePanel({
                             </span>
                           </span>
                           {current_eligibility &&
+                            item.state === "PENDING" &&
                             current_eligibility.reasons.length > 0 && (
                               <ul className="issue-intake-reasons">
                                 {current_eligibility.reasons.map((reason) => (
+                                  <li key={reason}>{reason}</li>
+                                ))}
+                              </ul>
+                            )}
+                          {item.state !== "PENDING" &&
+                            item.eligibility_reasons.length > 0 && (
+                              <ul className="issue-intake-reasons">
+                                {item.eligibility_reasons.map((reason) => (
                                   <li key={reason}>{reason}</li>
                                 ))}
                               </ul>
@@ -921,6 +965,80 @@ export function IssueIntakePanel({
             )}
           </div>
         </>
+      )}
+
+      {state && state.queue.length > 0 && (
+        <div className="issue-intake-batches">
+          <h3>Durable reconciliation queue</h3>
+          <p className="muted">
+            A dispatch performs one direct GitHub freshness read and may create
+            one ordinary REVIEW_PLAN proposal. Execution stays disabled; a
+            Campaign still requires separate explicit approval.
+          </p>
+          <ul className="issue-intake-items">
+            {state.queue.map((queued) => {
+              const batchState = state.batches.find(
+                (candidate) => candidate.batch.id === queued.batch_id,
+              );
+              const canDispatch =
+                queued.status === "PENDING" &&
+                batchState?.batch.status === "ACTIVE";
+              return (
+                <li key={queued.id}>
+                  <div className="issue-intake-item-heading">
+                    <span className="mono">#{queued.issue_number}</span>
+                    <Badge tone={itemTone(queued.status)}>
+                      {queued.status}
+                    </Badge>
+                    <span className="muted">
+                      attempt {queued.attempts}/{queued.max_attempts}
+                      {queued.next_attempt_at
+                        ? ` · next ${formatTimestamp(queued.next_attempt_at)}`
+                        : ""}
+                    </span>
+                  </div>
+                  {queued.reason && (
+                    <span className="muted">{queued.reason}</span>
+                  )}
+                  {queued.reasons.length > 0 && (
+                    <ul className="issue-intake-reasons">
+                      {queued.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {queued.status === "RECONCILED" &&
+                    queued.intake_request_id && (
+                      <span className="muted">
+                        Proposal{" "}
+                        <span className="mono">
+                          {shortId(queued.intake_request_id)}
+                        </span>{" "}
+                        · Lead{" "}
+                        <span className="mono">
+                          {shortId(queued.lead_request_id ?? "")}
+                        </span>{" "}
+                        · no Campaign started.
+                      </span>
+                    )}
+                  {canDispatch && (
+                    <div className="issues-actions">
+                      <Button
+                        size="sm"
+                        onClick={() => void dispatchQueuedItem(queued.batch_id)}
+                        disabled={busy !== null}
+                      >
+                        {busy === `dispatch-${queued.batch_id}`
+                          ? "Checking freshness…"
+                          : "Create proposal"}
+                      </Button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       {state && state.audit.length > 0 && (
