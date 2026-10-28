@@ -943,7 +943,10 @@ async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: N
                 )) || (*request.method() == Method::POST
                     && matches!(path, "/auth/bootstrap" | "/core-api/auth/bootstrap")) =>
             {
-                discard_invalid_session_cookie = true;
+                discard_invalid_session_cookie = matches!(
+                    *request.method(),
+                    Method::GET | Method::HEAD | Method::OPTIONS
+                );
                 None
             }
             Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -4987,6 +4990,7 @@ mod tests {
         )
         .unwrap();
         let reenrolled = router
+            .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
@@ -5007,7 +5011,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reenrolled.status(), StatusCode::OK);
+        let issued_cookies = reenrolled
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(issued_cookies.len(), 2);
+        assert!(issued_cookies.iter().any(|value| {
+            value.starts_with("factory_session=") && !value.contains("Max-Age=0")
+        }));
+        assert!(
+            issued_cookies.iter().any(|value| {
+                value.starts_with("factory_csrf=") && !value.contains("Max-Age=0")
+            })
+        );
+        let cookie_header = issued_cookies
+            .iter()
+            .map(|value| value.split(';').next().unwrap())
+            .collect::<Vec<_>>()
+            .join("; ");
         let body = axum::body::to_bytes(reenrolled.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], true);
+        let persisted = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/auth/session")
+                    .header("host", "localhost:8765")
+                    .header("cookie", cookie_header)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(persisted.into_body(), usize::MAX)
             .await
             .unwrap();
         let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
