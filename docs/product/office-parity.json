@@ -42,7 +42,6 @@
         "POST /lead/requests/{id}/freeze",
         "POST /lead/requests/{id}/start",
         "POST /lead/requests/{id}/withdraw",
-        "POST /lead/requests/{id}/approve",
         "GET /delegations",
         "POST /delegations",
         "GET /delegations/{id}",
