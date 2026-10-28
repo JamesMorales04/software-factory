@@ -18,16 +18,35 @@ const mocks = vi.hoisted(() => ({
   listIntakeRequests: vi.fn(),
   getOverview: vi.fn(),
   createIntakeRequest: vi.fn(),
+  enableExecutionPolicy: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
   coreApi: mocks,
   CoreApiError: class CoreApiError extends Error {
     readonly status: number;
-    constructor(status: number, message: string) {
+    readonly code: string | null;
+    readonly reason: string | null;
+    readonly body: unknown;
+    constructor(status: number, message: string, body?: unknown) {
       super(message);
       this.name = "CoreApiError";
       this.status = status;
+      this.body = body ?? null;
+      const record =
+        typeof body === "object" && body !== null
+          ? (body as Record<string, unknown>)
+          : null;
+      this.code =
+        record && typeof record.code === "string" ? record.code : null;
+      const authorization =
+        record && typeof record.authorization === "object"
+          ? (record.authorization as Record<string, unknown>)
+          : null;
+      this.reason =
+        authorization && typeof authorization.reason === "string"
+          ? authorization.reason
+          : this.code;
     }
   },
   newIdempotencyKey: () => "idem-test",
@@ -211,6 +230,12 @@ describe("Home", () => {
     mocks.listIntakeRequests.mockReset().mockResolvedValue([summary]);
     mocks.getOverview.mockReset().mockResolvedValue(overview);
     mocks.createIntakeRequest.mockReset().mockResolvedValue(projection);
+    mocks.enableExecutionPolicy.mockReset().mockResolvedValue({
+      grant: {},
+      delegation: {},
+      usage: {},
+      replayed: false,
+    });
   });
 
   it("renders the operator-first request surface with Core-backed status", async () => {
@@ -393,5 +418,89 @@ describe("Home", () => {
       await screen.findByText(/Unified request history is not available/),
     ).toBeDefined();
     expect(screen.queryByText("No requests yet")).toBeNull();
+  });
+
+  it("offers an explicit governed-execution grant and retries the same request", async () => {
+    mocks.createIntakeRequest
+      .mockRejectedValueOnce(
+        new CoreApiError(409, "execution policy required", {
+          code: "EXECUTION_POLICY_REQUIRED",
+          authorization: {
+            required: true,
+            available: false,
+            reason: "EXECUTION_POLICY_REQUIRED",
+          },
+          scope: {
+            project: {
+              id: "project-1",
+              configHash: "config-hash",
+              repository: "https://github.com/acme/factory.git",
+              baseCommit: "0123456789abcdef0123456789abcdef01234567",
+              allowedPaths: ["src"],
+              capabilities: ["repository-edit"],
+              qualityProfile: "generic",
+            },
+            profile: {
+              id: "profile-1",
+              revisionId: "revision-1",
+              revision: 3,
+              name: "Balanced",
+              contentHash: "profile-hash",
+              executable: true,
+              warnings: [],
+              budgets: profile.budgets,
+              autoStart: { enabled: false, riskClasses: [] },
+              implementer: roleRoute,
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(projection);
+    renderHome();
+    await screen.findByLabelText("What should the Factory do?");
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add a CSV export endpoint.",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Submit request" }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Enable governed execution",
+      }),
+    ).toBeDefined();
+    expect(screen.getByText(/Balanced r3/)).toBeDefined();
+    expect(screen.getByText(/repository-edit/)).toBeDefined();
+    const enable = screen.getByRole("button", {
+      name: "Enable governed execution",
+    });
+    expect((enable as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I authorize this bounded non-autonomous R0 execution policy/,
+      }),
+    );
+    expect((enable as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(enable);
+    await waitFor(() =>
+      expect(mocks.enableExecutionPolicy).toHaveBeenCalledWith("project-1", {
+        execution_profile_id: "profile-1",
+        expected_revision: 3,
+        expected_revision_hash: "profile-hash",
+        project_config_hash: "config-hash",
+        acknowledge: true,
+        idempotency_key: "idem-test",
+      }),
+    );
+    expect(await screen.findByText("Request workspace probe")).toBeDefined();
+    expect(mocks.createIntakeRequest).toHaveBeenCalledTimes(2);
+    expect(mocks.createIntakeRequest).toHaveBeenLastCalledWith({
+      project_id: "project-1",
+      objective: "Add a CSV export endpoint.",
+      execution_profile_id: "profile-1",
+      mode: "REVIEW_PLAN",
+      idempotency_key: "idem-test",
+    });
   });
 });

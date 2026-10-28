@@ -18,17 +18,34 @@ const mocks = vi.hoisted(() => ({
   approveIntakeRequest: vi.fn(),
   messageIntakeRequest: vi.fn(),
   cancelIntakeRequest: vi.fn(),
-  freezeLeadRequest: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
   coreApi: mocks,
   CoreApiError: class CoreApiError extends Error {
     readonly status: number;
-    constructor(status: number, message: string) {
+    readonly code: string | null;
+    readonly reason: string | null;
+    readonly body: unknown;
+    constructor(status: number, message: string, body?: unknown) {
       super(message);
       this.name = "CoreApiError";
       this.status = status;
+      this.body = body ?? null;
+      const record =
+        typeof body === "object" && body !== null
+          ? (body as Record<string, unknown>)
+          : null;
+      this.code =
+        record && typeof record.code === "string" ? record.code : null;
+      const authorization =
+        record && typeof record.authorization === "object"
+          ? (record.authorization as Record<string, unknown>)
+          : null;
+      this.reason =
+        authorization && typeof authorization.reason === "string"
+          ? authorization.reason
+          : this.code;
     }
   },
   newIdempotencyKey: () => "message-key",
@@ -189,7 +206,6 @@ describe("RequestWorkspace", () => {
     mocks.approveIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.messageIntakeRequest.mockReset().mockResolvedValue(awaiting);
     mocks.cancelIntakeRequest.mockReset().mockResolvedValue(awaiting);
-    mocks.freezeLeadRequest.mockReset().mockResolvedValue({});
   });
 
   it("renders the assessment, frozen plan, authorization state and messages", async () => {
@@ -227,7 +243,6 @@ describe("RequestWorkspace", () => {
     await waitFor(() =>
       expect(mocks.approveIntakeRequest).toHaveBeenCalledWith("request-1", {
         expected_plan_hash: "plan-hash",
-        actor: "office-operator",
         rationale: "Reviewed the frozen plan and budget.",
       }),
     );
@@ -287,24 +302,34 @@ describe("RequestWorkspace", () => {
     expect((await screen.findAllByText("Frozen")).length).toBeGreaterThan(0);
   });
 
-  it("freezes a proposed plan before approval is available", async () => {
+  it("completes the assessment and freezes the plan before approval", async () => {
     mocks.getIntakeRequest
       .mockResolvedValueOnce(planReady)
       .mockResolvedValue(awaiting);
     renderRequest();
     expect(await screen.findByText("Not frozen")).toBeDefined();
-    await userEvent.click(screen.getByRole("button", { name: "Freeze plan" }));
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Complete assessment and freeze plan",
+      }),
+    );
     await waitFor(() =>
-      expect(mocks.freezeLeadRequest).toHaveBeenCalledWith("lead-1"),
+      expect(mocks.assessIntakeRequest).toHaveBeenCalledWith("request-1"),
     );
     expect(await screen.findByText(/Core froze the plan/)).toBeDefined();
     expect((await screen.findAllByText("Frozen")).length).toBeGreaterThan(0);
   });
 
-  it("records a durable operator message and does not edit the frozen plan", async () => {
+  it("records a durable pre-freeze operator message", async () => {
+    const preFreeze = makeProjection({
+      state: "PLAN_READY",
+      plan: null,
+      messages: [],
+    });
     const withMessage = makeProjection({
+      state: "PLAN_READY",
+      plan: null,
       messages: [
-        ...awaiting.messages,
         {
           id: "message-2",
           role: "operator",
@@ -314,10 +339,10 @@ describe("RequestWorkspace", () => {
       ],
     });
     mocks.getIntakeRequest
-      .mockResolvedValueOnce(awaiting)
+      .mockResolvedValueOnce(preFreeze)
       .mockResolvedValue(withMessage);
     renderRequest();
-    await screen.findByText("Keep the API backward compatible.");
+    await screen.findByLabelText("Message the Factory");
     await userEvent.type(
       screen.getByLabelText("Message the Factory"),
       "Please add a negative test.",
@@ -336,6 +361,36 @@ describe("RequestWorkspace", () => {
       (screen.getByLabelText("Message the Factory") as HTMLTextAreaElement)
         .value,
     ).toBe("");
+  });
+
+  it("does not accept amendments through the message composer after freeze", async () => {
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    expect(screen.queryByLabelText("Message the Factory")).toBeNull();
+    expect(screen.getByText(/The executable plan is frozen/)).toBeDefined();
+  });
+
+  it("surfaces the authoritative Campaign when cancellation is fenced", async () => {
+    mocks.cancelIntakeRequest.mockRejectedValue(
+      new CoreApiError(409, "lead request already started", {
+        code: "LEAD_ALREADY_STARTED",
+        campaign_id: "campaign-9",
+        campaign_status: "AUTHORIZED",
+      }),
+    );
+    renderRequest();
+    await screen.findByText("Keep the API backward compatible.");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Cancel this request…" }),
+    );
+    await userEvent.type(screen.getByLabelText("Cancellation reason"), "stop");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Confirm cancellation" }),
+    );
+    expect(await screen.findByText(/A Campaign already started/)).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Open Campaign" }).getAttribute("href"),
+    ).toBe("/campaigns/campaign-9");
   });
 
   it("surfaces approval failure without clearing the operator rationale", async () => {
@@ -371,13 +426,19 @@ describe("RequestWorkspace", () => {
   it("keeps the last projection and pauses actions when a refresh fails", async () => {
     mocks.getIntakeRequest
       .mockResolvedValueOnce(
-        makeProjection({ state: "ASSESSING", stateDetail: null }),
+        makeProjection({
+          state: "SUBMITTED",
+          stateDetail: null,
+          assessment: null,
+          proposal: null,
+          plan: null,
+        }),
       )
       .mockRejectedValueOnce(new Error("Core unreachable"));
     renderRequest();
     await screen.findByText("Keep the API backward compatible.");
     await userEvent.click(
-      screen.getByRole("button", { name: "Refresh request" }),
+      screen.getByRole("button", { name: "Run assessment" }),
     );
     expect(
       await screen.findByText(/Core could not be refreshed: Core unreachable/),
@@ -386,7 +447,7 @@ describe("RequestWorkspace", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "Send message",
+          name: "Run assessment",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
