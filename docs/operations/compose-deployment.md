@@ -325,7 +325,11 @@ podman compose -f compose.yaml -f compose.tailscale.yaml down
 ```
 
 The node can be removed from the tailnet in the Tailscale admin console; remove
-`factory-tailscale-state` only after revoking that node. Real mobile-network
-access, authenticated HTTPS Serve and restart persistence remain **NOT_TESTED**
-until candidate-bound Podman and cross-network evidence is recorded. Do not
-infer them from Compose rendering or a browser mock.
+`factory-tailscale-state` only after revoking that node. Author-run evidence at
+candidate `e17eb80` covers authenticated HTTPS Serve through the real tailnet
+userspace path, Secure session cookies, denial of the control routes under both
+URL forms and path variants, and node identity persistence across restart; see
+[personal-access-tailscale-2026-10-28.json](../evidence/personal-access-tailscale-2026-10-28.json).
+Mobile-data access from a phone remains **USER_PENDING**; independent review
+and deployment remain **NOT_TESTED**. Do not infer them from Compose rendering
+or a browser mock.

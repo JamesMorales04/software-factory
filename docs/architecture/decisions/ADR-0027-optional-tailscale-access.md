@@ -9,8 +9,10 @@ amends: ADR-0024, ADR-0025
 # ADR-0027: Optional private Tailscale access to Office
 
 - **Status:** Proposed for developer-preview implementation. This ADR records
-  the topology choice; the optional path remains `NOT_TESTED` against an
-  authenticated tailnet and is not independently accepted.
+  the topology choice. Author-run evidence at candidate `e17eb80` covers an
+  authenticated tailnet HTTPS path, the restricted Office boundary, Secure
+  session cookies and node identity persistence across restart; independent
+  acceptance and mobile-data UAT remain pending.
 - **Security status:** `TRUSTED_LOCAL`. Tailscale supplies network
   connectivity only. Core remains the sole application authentication and
   authorization authority.
@@ -66,10 +68,12 @@ contains no credentials.
 - A tailnet member still needs an independent Factory device session. Tailnet
   membership does not enroll or authorize an Office user.
 - This container/network topology is packaging, not a new isolation claim.
-- Rootless Podman networking, persistence across restart, Serve behavior,
-  mobile-network reachability, absence of public Funnel exposure, and negative
-  unauthorized-service reachability require candidate-bound real evidence.
-  Until then those items are `NOT_TESTED`.
+- Rootless Podman networking, node identity persistence across restart, Serve
+  HTTPS, Secure session cookies, forged Host/Origin rejection and negative
+  control-route reachability passed in an author-run at candidate `e17eb80`.
+  Mobile-network reachability from a phone, independent acceptance and
+  deployment remain `USER_PENDING` or `NOT_TESTED`. Funnel remains explicitly
+  disabled and is not an offered capability.
 
 ## Alternatives considered
 

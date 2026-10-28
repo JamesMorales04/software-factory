@@ -2411,3 +2411,52 @@ capabilities:
   - The UI does not expose arbitrary provider payloads or credential values.
   blockers:
   - Real live inference and Product Owner review remain pending.
+
+- id: CAP-053
+  name: Private Tailscale Office access
+  category: Runtime
+  purpose: An owner reaches authenticated Office over private tailnet HTTPS without exposing the Core control API or requiring a public port
+  product_objective: Private remote access to the local-first Factory
+  decision_status: approved
+  implementation_status: in_progress
+  verification:
+    deterministic: verified
+    live_agent: not_tested
+    uat: not_tested
+    deployment: not_tested
+    isolation: not_tested
+  owner: Core
+  dependencies:
+  - CAP-011
+  - CAP-045
+  target_milestone: F1-S8
+  refs:
+    adr:
+    - docs/architecture/decisions/ADR-0027-optional-tailscale-access.md
+    contract:
+    - docs/operations/compose-deployment.md
+    - docs/architecture/assessments/tailscale-service.md
+    source:
+    - compose.tailscale.yaml
+    - deploy/tailscale/serve.json
+    - native/src/bin/core.rs
+    test:
+    - native/src/bin/core.rs
+    - .github/scripts/check-compose-policy.py
+    - .github/scripts/test_check_compose_policy.py
+  acceptance:
+    deterministic: The pinned official Tailscale service uses userspace networking, a persistent identity volume, private HTTPS Serve and a restricted Office listener; control routes and forged Host or Origin requests are denied.
+    real: An authenticated Office journey works over the enrolled tailnet HTTPS origin with Secure session cookies, while tailnet membership alone is unauthenticated and mobile-data reachability is confirmed by the owner.
+  evidence:
+    deterministic:
+    - docs/evidence/personal-access-tailscale-2026-10-28.json
+    live_agent: []
+    uat: []
+    deployment: []
+    isolation: []
+  limitations:
+  - Only Tailscale Serve is supported; public Funnel, host networking, privileged mode and a host Podman socket are forbidden.
+  - Tailnet device identity does not confer Factory operator authorization; a separate Core device session is required.
+  - The optional overlay does not start for the default local-only installation.
+  blockers:
+  - Mobile-data UAT, independent security review and deployment remain pending.

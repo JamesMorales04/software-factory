@@ -18,6 +18,6 @@
 | **Persistent state ownership** | Tailscale container exclusively writes its node state volume. It is separate from all Factory volumes. No Factory migration or deletion path touches it. |
 | **Remote Worker implications** | None. The service is an Office access path and does not enroll, dispatch or authorize Workers. |
 | **Required tests** | Static policy negatives for capabilities, devices, host ports, auth material and network membership; real rootless Podman boot/login; HTTPS Serve to Core; node identity persistence after restart; verify no public Funnel and no Core-adjacent service reachability; cross-network mobile access; cleanup/revocation. |
-| **Known risks** | Rootless Podman networking and interactive enrollment are unverified for this candidate; HTTPS certificate consent may require tailnet admin action; no resource or egress bounds; a compromised node has network access to Core's full API but cannot bypass Core sessions. |
+| **Known risks** | HTTPS certificate consent may require tailnet admin action; no resource or egress bounds; a compromised node has network access to Core's restricted Office listener but cannot bypass Core sessions. |
 | **Independent review** | PENDING |
-| **Decision status** | `PROPOSED`; real authenticated tailnet and mobile-network acceptance are `NOT_TESTED`. |
+| **Decision status** | `PROPOSED`; author-run authenticated tailnet HTTPS, restricted-boundary and restart evidence passed at candidate `e17eb80`. Mobile-network UAT and independent review remain `USER_PENDING` and `PENDING`. |
