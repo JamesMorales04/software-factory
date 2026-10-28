@@ -1,14 +1,26 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/Button";
-import { CoreApiError, coreApi, type DeviceClaim } from "../coreApi";
+import {
+  type AuthSession,
+  CoreApiError,
+  coreApi,
+  type DeviceClaim,
+  getAuthSession,
+} from "../coreApi";
 
-export function DevicePairClaim() {
+export function DevicePairClaim({
+  onAuthenticated,
+}: {
+  onAuthenticated?: (session: AuthSession) => void;
+}) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const challengeId = searchParams.get("challengeId") ?? "";
   const [deviceName, setDeviceName] = useState("");
   const [claim, setClaim] = useState<DeviceClaim | null>(null);
+  const [redirecting, setRedirecting] = useState(false);
+  const redirectingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,12 +38,25 @@ export function DevicePairClaim() {
     if (claim?.status !== "PENDING") return;
     let active = true;
     const timer = window.setInterval(() => {
+      if (redirectingRef.current) return;
       void coreApi
         .pollDeviceClaim(challengeId, claim.pollToken)
-        .then((result) => {
+        .then(async (result) => {
           if (!active) return;
           if (result.status === "APPROVED") {
-            window.location.assign("/#/");
+            redirectingRef.current = true;
+            setRedirecting(true);
+            for (let attempt = 0; attempt < 10; attempt += 1) {
+              const session = await getAuthSession().catch(() => null);
+              if (!active) return;
+              if (session?.authenticated) {
+                onAuthenticated?.(session);
+                navigate("/", { replace: true });
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            window.location.reload();
             return;
           }
           if (result.status === "REJECTED") {
@@ -41,6 +66,10 @@ export function DevicePairClaim() {
           } else if (result.status === "EXPIRED") {
             setClaim((current) =>
               current ? { ...current, status: "EXPIRED" } : current,
+            );
+          } else if (result.status === "CANCELLED") {
+            setClaim((current) =>
+              current ? { ...current, status: "CANCELLED" } : current,
             );
           }
         })
@@ -58,7 +87,7 @@ export function DevicePairClaim() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [challengeId, claim]);
+  }, [challengeId, claim, navigate, onAuthenticated]);
 
   const hasClaim = challengeId !== "";
 
@@ -115,6 +144,10 @@ export function DevicePairClaim() {
             request is not saved in browser storage.
           </p>
         </>
+      ) : redirecting || claim?.status === "APPROVED" ? (
+        <p className="muted" role="status" aria-live="polite">
+          Approval received. Opening Factory Office…
+        </p>
       ) : claim?.status === "REJECTED" ? (
         <p className="error" role="alert">
           The owner rejected this device request. Ask them to create a new
@@ -124,6 +157,11 @@ export function DevicePairClaim() {
         <p className="error" role="alert">
           This device request expired. Ask the owner to create a new pairing
           code.
+        </p>
+      ) : claim?.status === "CANCELLED" ? (
+        <p className="error" role="alert">
+          The owner cancelled this pairing request. Ask them to create a new
+          pairing code.
         </p>
       ) : (
         <>

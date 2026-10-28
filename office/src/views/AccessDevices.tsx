@@ -14,8 +14,27 @@ import {
   type DeviceChallenge,
   type DeviceSessionView,
   logoutAllDevices,
+  logoutCurrentDevice,
+  type SecurityAuditEntry,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
+
+const AUDIT_LABELS: Record<string, string> = {
+  created: "Session created",
+  rotated: "Session rotated",
+  revoked: "Session revoked",
+  revoked_all: "All sessions revoked",
+  claimed: "Pairing claimed",
+  approved: "Pairing approved",
+  rejected: "Pairing rejected",
+  cancelled: "Pairing cancelled",
+  consumed: "Pairing completed",
+  revocation_requested: "Revocation requested",
+};
+
+function auditLabel(action: string): string {
+  return AUDIT_LABELS[action] ?? action.replaceAll("_", " ");
+}
 
 function challengeUrl(
   access: AccessOverview,
@@ -93,6 +112,11 @@ function DeviceRow({
       <div className="access-device-main">
         <div className="access-device-title">
           <strong>{device.name}</strong>
+          {device.current && (
+            <span className="access-status access-status--current">
+              CURRENT
+            </span>
+          )}
           <span
             className={`access-status access-status--${device.status.toLowerCase()}`}
           >
@@ -122,6 +146,11 @@ function DeviceRow({
               />
             </label>
           </>
+        ) : device.status === "APPROVED" ? (
+          <p className="muted">
+            Approved. Waiting for the phone to finish the one-time exchange; the
+            approval expires if it is not picked up.
+          </p>
         ) : (
           <p className="muted">
             Last activity{" "}
@@ -163,18 +192,42 @@ function DeviceRow({
               Reject
             </Button>
           </>
+        ) : device.status === "APPROVED" ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() =>
+              void mutate(() => coreApi.cancelDeviceChallenge(device.id))
+            }
+          >
+            Cancel approval
+          </Button>
         ) : (
           <Button
             size="sm"
             variant="danger"
             disabled={busy}
             onClick={() => {
+              if (device.current) {
+                if (
+                  window.confirm(
+                    "Sign out this device? You will need to enroll it again.",
+                  )
+                ) {
+                  void mutate(async () => {
+                    await logoutCurrentDevice();
+                    window.location.reload();
+                  });
+                }
+                return;
+              }
               if (window.confirm(`Revoke ${device.name}'s device session?`)) {
                 void mutate(() => coreApi.revokeDevice(device.id));
               }
             }}
           >
-            Revoke
+            {device.current ? "Sign out" : "Revoke"}
           </Button>
         )}
       </div>
@@ -186,6 +239,7 @@ export function AccessDevices() {
   const [access, setAccess] = useState<AccessOverview | null>(null);
   const [devices, setDevices] = useState<DeviceSessionView[]>([]);
   const [challenge, setChallenge] = useState<DeviceChallenge | null>(null);
+  const [audit, setAudit] = useState<SecurityAuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,12 +247,14 @@ export function AccessDevices() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextAccess, nextDevices] = await Promise.all([
+      const [nextAccess, nextDevices, nextAudit] = await Promise.all([
         coreApi.getAccessOverview(),
         coreApi.listDeviceSessions(),
+        coreApi.getSecurityAudit(),
       ]);
       setAccess(nextAccess);
       setDevices(nextDevices.devices);
+      setAudit(nextAudit.entries);
       setError(null);
       setLoading(false);
     } catch (cause) {
@@ -222,6 +278,16 @@ export function AccessDevices() {
     [access, challenge],
   );
 
+  const sortedDevices = useMemo(() => {
+    const rank = (device: DeviceSessionView) => {
+      if (device.current) return 0;
+      if (device.status === "PENDING") return 1;
+      if (device.status === "CONNECTED") return 2;
+      return 3;
+    };
+    return [...devices].sort((left, right) => rank(left) - rank(right));
+  }, [devices]);
+
   async function pairDevice() {
     setBusy(true);
     setError(null);
@@ -240,6 +306,25 @@ export function AccessDevices() {
           : "Could not create a pairing challenge.",
       );
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelChallenge() {
+    if (!challenge) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await coreApi.cancelDeviceChallenge(challenge.challengeId);
+      setNotice("Pairing code cancelled. It cannot be claimed or approved.");
+    } catch (cause) {
+      setError(
+        cause instanceof CoreApiError
+          ? cause.message
+          : "Could not cancel the pairing code.",
+      );
+    } finally {
+      setChallenge(null);
       setBusy(false);
     }
   }
@@ -437,8 +522,12 @@ export function AccessDevices() {
                 access. Approval is required here before Core creates a phone
                 session.
               </p>
-              <Button size="sm" onClick={() => setChallenge(null)}>
-                Close pairing code
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={() => void cancelChallenge()}
+              >
+                Cancel pairing code
               </Button>
             </div>
           </div>
@@ -450,8 +539,41 @@ export function AccessDevices() {
           />
         ) : (
           <ul className="access-device-list">
-            {devices.map((device) => (
+            {sortedDevices.map((device) => (
               <DeviceRow key={device.id} device={device} onChanged={refresh} />
+            ))}
+          </ul>
+        )}
+      </Panel>
+      <Panel>
+        <div className="section-heading">
+          <div>
+            <h2>Security activity</h2>
+            <p className="muted">
+              Recent session and pairing events recorded by Core.
+            </p>
+          </div>
+        </div>
+        {audit.length === 0 ? (
+          <EmptyState
+            title="No security events yet"
+            description="Session creation, rotation, revocation and pairing decisions appear here."
+          />
+        ) : (
+          <ul className="access-audit">
+            {audit.slice(0, 20).map((entry) => (
+              <li
+                key={`${entry.occurredAt}-${entry.action}-${entry.deviceName ?? "unknown"}-${entry.actor}`}
+              >
+                <div>
+                  <strong>{auditLabel(entry.action)}</strong>
+                  <span>{entry.deviceName ?? "Unknown device"}</span>
+                </div>
+                <div className="access-audit-meta">
+                  <span className="muted">by {entry.actor}</span>
+                  <time>{formatTimestamp(entry.occurredAt)}</time>
+                </div>
+              </li>
             ))}
           </ul>
         )}

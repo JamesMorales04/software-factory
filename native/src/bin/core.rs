@@ -563,8 +563,8 @@ async fn shutdown_signal() {
 }
 
 fn build_router(app: Arc<App>) -> Router {
-    let api = api_router(Arc::clone(&app))
-        .merge(factory_native::device_pairing::routes(app.db.clone()));
+    let api =
+        api_router(Arc::clone(&app)).merge(factory_native::device_pairing::routes(app.db.clone()));
     let nested = api.clone();
     let mut router = Router::new().merge(api).nest("/core-api", nested);
     if let Ok(directory) = env::var("FACTORY_OFFICE_DIR") {
@@ -1070,22 +1070,22 @@ async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: N
         {
             Ok(Some(session)) => Some(session),
             Ok(None)
-                if (matches!(
+                if matches!(
                     *request.method(),
                     Method::GET | Method::HEAD | Method::OPTIONS
-                ) && matches!(
-                    path,
-                    "/auth/session"
-                        | "/core-api/auth/session"
-                        | "/setup/status"
-                        | "/core-api/setup/status"
-                )) || (*request.method() == Method::POST
-                    && matches!(path, "/auth/bootstrap" | "/core-api/auth/bootstrap")) =>
+                ) =>
             {
-                discard_invalid_session_cookie = matches!(
-                    *request.method(),
-                    Method::GET | Method::HEAD | Method::OPTIONS
-                );
+                // A stale or revoked cookie must not block the Office shell or
+                // public reads. Protected handlers still reject without an
+                // injected operator credential, and the browser is told to
+                // discard the invalid cookie so the app can show its gate.
+                discard_invalid_session_cookie = true;
+                None
+            }
+            Ok(None)
+                if *request.method() == Method::POST
+                    && matches!(path, "/auth/bootstrap" | "/core-api/auth/bootstrap") =>
+            {
                 None
             }
             Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -5346,6 +5346,9 @@ mod tests {
         let office_get_routes = [
             "/core-api/health",
             "/core-api/auth/session",
+            "/core-api/auth/access",
+            "/core-api/auth/devices",
+            "/core-api/auth/devices/audit",
             "/core-api/setup/status",
             "/core-api/settings/providers",
             "/core-api/settings/runtime",
@@ -5419,6 +5422,13 @@ mod tests {
             ("POST", "/core-api/lead/requests/missing/start"),
             ("POST", "/core-api/model/calls/missing/resolve"),
             ("POST", "/core-api/auth/bootstrap"),
+            ("POST", "/core-api/auth/device-challenges"),
+            ("POST", "/core-api/auth/device-challenges/missing/cancel"),
+            ("POST", "/core-api/auth/device-claims/missing"),
+            ("POST", "/core-api/auth/device-claims/missing/poll"),
+            ("POST", "/core-api/auth/devices/missing/approve"),
+            ("POST", "/core-api/auth/devices/missing/reject"),
+            ("DELETE", "/core-api/auth/devices/missing"),
             ("POST", "/core-api/auth/logout"),
             ("POST", "/core-api/auth/logout-all"),
             ("POST", "/core-api/auth/rotate"),
@@ -5524,6 +5534,251 @@ mod tests {
         drop(office_router);
         let _ = std::fs::remove_file(database_path);
         let _ = std::fs::remove_dir_all(office_directory);
+    }
+
+    #[tokio::test]
+    async fn office_access_listener_pairs_and_revokes_devices_with_operator_sessions() {
+        use tower::ServiceExt;
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-office-pairing-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let app = test_app(&path).await;
+        let owner = factory_native::device_session::issue_owner(
+            &app.db,
+            "Desktop",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap();
+        let session_cookie = format!("factory_session={}", owner.session_token);
+        let csrf_cookie = format!("factory_csrf={}", owner.csrf_token);
+        let both_cookies = format!("{session_cookie}; {csrf_cookie}");
+        let router = build_office_access_router(Arc::clone(&app), None);
+
+        let empty = || axum::body::Body::empty();
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/access")
+                    .header("host", "localhost:8768")
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let access = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/access")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.status(), StatusCode::OK);
+
+        let devices = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(devices.status(), StatusCode::OK);
+        let devices = axum::body::to_bytes(devices.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let devices: Value = serde_json::from_slice(&devices).unwrap();
+        assert_eq!(devices["devices"][0]["current"], true);
+
+        let challenge = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/core-api/auth/device-challenges")
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(challenge.status(), StatusCode::OK);
+        let challenge = axum::body::to_bytes(challenge.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let challenge: Value = serde_json::from_slice(&challenge).unwrap();
+        let challenge_id = challenge["challengeId"].as_str().unwrap().to_owned();
+        let verification_code = challenge["verificationCode"].as_str().unwrap().to_owned();
+
+        let claim = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/device-claims/{challenge_id}"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"deviceName":"Phone"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.status(), StatusCode::OK);
+        let claim = axum::body::to_bytes(claim.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let claim: Value = serde_json::from_slice(&claim).unwrap();
+        assert_eq!(claim["status"], "PENDING");
+        let poll_token = claim["pollToken"].as_str().unwrap().to_owned();
+
+        let approve = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/devices/{challenge_id}/approve"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"verificationCode": verification_code}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approve.status(), StatusCode::OK);
+
+        let poll = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/core-api/auth/device-claims/{challenge_id}/poll"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"pollToken": poll_token}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(poll.status(), StatusCode::OK);
+        let phone_cookie = poll
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .find(|value| value.starts_with("factory_session="))
+            .and_then(|value| value.split(';').next())
+            .unwrap()
+            .to_owned();
+        let poll_body = axum::body::to_bytes(poll.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let poll_body: Value = serde_json::from_slice(&poll_body).unwrap();
+        assert_eq!(poll_body["status"], "APPROVED");
+
+        let devices = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let devices = axum::body::to_bytes(devices.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let devices: Value = serde_json::from_slice(&devices).unwrap();
+        let phone = devices["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|device| device["name"] == "Phone")
+            .expect("phone session is listed");
+        assert_eq!(phone["current"], false);
+        let phone_id = phone["id"].as_str().unwrap().to_owned();
+
+        let revoke = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/core-api/auth/devices/{phone_id}"))
+                    .header("host", "localhost:8768")
+                    .header("origin", "http://localhost:8768")
+                    .header("cookie", &both_cookies)
+                    .header(CSRF_HEADER, &owner.csrf_token)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::NO_CONTENT);
+
+        let revoked = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &phone_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        let audit = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/auth/devices/audit")
+                    .header("host", "localhost:8768")
+                    .header("cookie", &session_cookie)
+                    .body(empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), StatusCode::OK);
+        let audit = axum::body::to_bytes(audit.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let audit = String::from_utf8(audit.to_vec()).unwrap();
+        assert!(audit.contains("approved"));
+        assert!(audit.contains("revoked"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

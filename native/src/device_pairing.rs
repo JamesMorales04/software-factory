@@ -54,9 +54,14 @@ pub fn routes(db: Database) -> Router {
     Router::new()
         .route("/auth/access", get(access_status))
         .route("/auth/device-challenges", post(create_challenge))
+        .route(
+            "/auth/device-challenges/{id}/cancel",
+            post(cancel_challenge),
+        )
         .route("/auth/device-claims/{id}", post(claim_device))
         .route("/auth/device-claims/{id}/poll", post(poll_claim))
         .route("/auth/devices", get(list_devices))
+        .route("/auth/devices/audit", get(audit_log))
         .route("/auth/devices/revoke-all", post(revoke_all_devices))
         .route("/auth/devices/{id}/approve", post(approve_device))
         .route("/auth/devices/{id}/reject", post(reject_device))
@@ -199,9 +204,9 @@ async fn list_devices(
     State(state): State<PairingState>,
     operator: Option<Extension<DeviceSessionRecord>>,
 ) -> Response {
-    if operator.is_none() {
+    let Some(Extension(operator)) = operator else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     let now = now_ms();
     let pairings = match state.db.list_device_pairings(now).await {
         Ok(value) => value,
@@ -214,10 +219,41 @@ async fn list_devices(
     let mut devices: Vec<serde_json::Value> = pairings.into_iter().map(device_view).collect();
     for session in sessions {
         if session.revoked_at_ms.is_none() && session.expires_at_ms > now {
-            devices.push(json!({"id":session.id,"name":session.name,"status":"CONNECTED","createdAt":session.created_at_ms,"lastActivityAt":session.last_activity_at_ms,"expiresAt":session.expires_at_ms}));
+            devices.push(json!({"id":session.id,"name":session.name,"status":"CONNECTED","current":session.id == operator.id,"createdAt":session.created_at_ms,"lastActivityAt":session.last_activity_at_ms,"expiresAt":session.expires_at_ms}));
         }
     }
     Json(json!({"devices":devices})).into_response()
+}
+
+async fn cancel_challenge(
+    State(state): State<PairingState>,
+    Path(id): Path<String>,
+    operator: Option<Extension<DeviceSessionRecord>>,
+) -> Response {
+    let Some(Extension(operator)) = operator else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match state
+        .db
+        .cancel_device_pairing(&id, &operator.id, now_ms())
+        .await
+    {
+        Ok(record) => Json(device_view(record)).into_response(),
+        Err(error) => db_error(error),
+    }
+}
+
+async fn audit_log(
+    State(state): State<PairingState>,
+    operator: Option<Extension<DeviceSessionRecord>>,
+) -> Response {
+    if operator.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.db.security_audit(50).await {
+        Ok(entries) => Json(json!({"entries": entries})).into_response(),
+        Err(error) => db_error(error),
+    }
 }
 fn device_view(record: DevicePairingRecord) -> serde_json::Value {
     let id = record.device_session_id.unwrap_or(record.id);
@@ -289,14 +325,16 @@ async fn revoke_device(
     let Some(Extension(operator)) = operator else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    match state
-        .db
-        .revoke_pairing_device(&id, &operator.id, now_ms())
-        .await
-    {
+    let now = now_ms();
+    match state.db.revoke_device_session(&id, &operator.id, now).await {
+        Ok(true) => return StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => {}
+        Err(error) => return db_error(error),
+    }
+    match state.db.revoke_pairing_device(&id, &operator.id, now).await {
         Ok(Some(session_id)) => match state
             .db
-            .revoke_device_session(&session_id, &operator.id, now_ms())
+            .revoke_device_session(&session_id, &operator.id, now)
             .await
         {
             Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -324,7 +362,10 @@ async fn revoke_all_devices(
     }
 }
 
-async fn access_status() -> Response {
+async fn access_status(operator: Option<Extension<DeviceSessionRecord>>) -> Response {
+    if operator.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let configured_origin = env::var("FACTORY_TAILSCALE_ORIGIN").ok();
     let tailscale = tailscale_status(configured_origin.as_deref(), TAILSCALE_HEALTH_URL).await;
     Json(json!({

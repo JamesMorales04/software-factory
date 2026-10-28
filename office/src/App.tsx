@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Button } from "./components/ui/Button";
@@ -124,6 +124,11 @@ export function App() {
   const [authActionError, setAuthActionError] = useState<string | null>(null);
   const location = useLocation();
 
+  const handlePairAuthenticated = useCallback((session: AuthSession) => {
+    setSetupRequired(false);
+    setAuthSession(session);
+  }, []);
+
   useLayoutEffect(() => {
     if (location.pathname !== "/pair" || !location.search) return;
     const cleanHash = window.location.hash.split("?")[0];
@@ -181,7 +186,8 @@ export function App() {
       />
     );
   }
-  if (location.pathname === "/pair") return <DevicePairClaim />;
+  if (location.pathname === "/pair")
+    return <DevicePairClaim onAuthenticated={handlePairAuthenticated} />;
   if (authSession === null) return null;
   if (!authSession.authenticated) {
     return (

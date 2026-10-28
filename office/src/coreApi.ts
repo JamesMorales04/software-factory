@@ -904,7 +904,8 @@ export interface AccessOverview {
 }
 
 export interface DeviceSessionView extends DeviceSession {
-  status: "PENDING" | "CONNECTED" | string;
+  status: "PENDING" | "CONNECTED" | "CANCELLED" | string;
+  current?: boolean;
   verificationCode?: string;
 }
 
@@ -917,15 +918,34 @@ export interface DeviceChallenge {
 export interface DeviceClaim {
   deviceId: string;
   verificationCode: string;
-  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | string;
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
   expiresAt: string | number;
   pollToken: string;
 }
 
 export interface DeviceClaimPoll {
-  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | string;
+  status:
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | string;
   verificationCode?: string;
   expiresAt?: string | number;
+}
+
+export interface SecurityAuditEntry {
+  action: string;
+  actor: string;
+  deviceName: string | null;
+  occurredAt: string | number;
 }
 
 let csrfToken: string | null = null;
@@ -1118,8 +1138,15 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  cancelDeviceChallenge: (challengeId: string) =>
+    accessRequest<DeviceSessionView>(
+      `/auth/device-challenges/${encodeURIComponent(challengeId)}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
   listDeviceSessions: () =>
     accessRequest<{ devices: DeviceSessionView[] }>("/auth/devices"),
+  getSecurityAudit: () =>
+    accessRequest<{ entries: SecurityAuditEntry[] }>("/auth/devices/audit"),
   approveDevice: (deviceId: string, verificationCode: string) =>
     accessRequest<DeviceSessionView>(
       `/auth/devices/${encodeURIComponent(deviceId)}/approve`,

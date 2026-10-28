@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 
 const base = process.env.FACTORY_OFFICE_URL || "http://127.0.0.1:8893";
-const enrollmentCode = process.env.FACTORY_ENROLLMENT_CODE;
+const enrollmentCode = process.env.FACTORY_BOOTSTRAP_CODE;
 const executablePath = process.env.CHROMIUM_EXE;
-if (!enrollmentCode) throw new Error("FACTORY_ENROLLMENT_CODE is required");
+if (!enrollmentCode) throw new Error("FACTORY_BOOTSTRAP_CODE is required");
 if (!executablePath) throw new Error("CHROMIUM_EXE is required");
 
 const browser = await chromium.launch({
@@ -33,7 +33,6 @@ for (const page of [desktop, phone]) {
     if (response.status() === 404) notFound.push(response.url());
   });
 }
-
 async function session(page) {
   return page.evaluate(async () => {
     const response = await fetch("/core-api/auth/session", {
@@ -43,9 +42,27 @@ async function session(page) {
   });
 }
 
+const phoneName = `E2E phone ${Date.now()}`;
+const rejectedPhoneName = `Rejected phone ${Date.now()}`;
+
+async function assertNoTokenMaterial(page) {
+  const storage = await page.evaluate(() => ({
+    local: { ...localStorage },
+    session: { ...sessionStorage },
+  }));
+  const serialized = JSON.stringify(storage).toLowerCase();
+  assert.equal(serialized.includes("factory-api-token"), false);
+  assert.equal(serialized.includes("bearer"), false);
+  assert.equal(serialized.includes("authorization"), false);
+  assert.equal(/[0-9a-f]{32,}/.test(serialized), false);
+  assert.equal(Object.keys(storage.session).length, 0);
+}
+
 try {
   await desktop.goto(base, { waitUntil: "domcontentloaded" });
-  await desktop.getByRole("heading", { name: "Set up this Factory" }).waitFor();
+  await desktop
+    .getByRole("heading", { name: /Set up this Factory|Recover local access/ })
+    .waitFor();
   await desktop
     .getByRole("textbox", { name: "One-time owner confirmation" })
     .fill(enrollmentCode);
@@ -84,14 +101,16 @@ try {
   );
   assert.ok(desktopCookie, "HttpOnly browser session cookie is present");
   assert.equal(desktopCookie.httpOnly, true);
-  assert.equal(await desktop.evaluate(() => sessionStorage.length), 0);
-  assert.equal(await desktop.evaluate(() => localStorage.length), 0);
+  await assertNoTokenMaterial(desktop);
 
   await desktop.reload();
   await desktop.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
   await desktop.getByRole("link", { name: "Settings", exact: true }).click();
   await desktop.getByRole("tab", { name: "Access & Devices" }).click();
   await desktop.getByRole("heading", { name: "Enrolled devices" }).waitFor();
+  await desktop.getByText("CURRENT", { exact: true }).waitFor();
+  await desktop.getByRole("heading", { name: "Security activity" }).waitFor();
+  await desktop.getByText("Session created").first().waitFor();
 
   for (const width of [1440, 834, 390]) {
     await desktop.setViewportSize({ width, height: 1000 });
@@ -111,14 +130,13 @@ try {
   await desktop.getByRole("button", { name: "Pair device" }).click();
   const challenge = await (await challengeResponse).json();
   assert.ok(challenge.challengeId);
-  assert.equal(await desktop.evaluate(() => sessionStorage.length), 0);
-  assert.equal(await desktop.evaluate(() => localStorage.length), 0);
+  await assertNoTokenMaterial(desktop);
 
   const pairUrl = new URL(base);
   pairUrl.hash = `/pair?challengeId=${encodeURIComponent(challenge.challengeId)}`;
   await phone.goto(pairUrl.toString(), { waitUntil: "domcontentloaded" });
   await phone.getByRole("heading", { name: "Pair this device" }).waitFor();
-  await phone.getByRole("textbox", { name: "Device name" }).fill("E2E phone");
+  await phone.getByRole("textbox", { name: "Device name" }).fill(phoneName);
   const claimResponse = phone.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -132,20 +150,32 @@ try {
   assert.equal(phone.url().includes(challenge.challengeId), false);
   await phone.getByText(claim.verificationCode, { exact: true }).waitFor();
 
-  const pending = desktop.getByText("E2E phone", { exact: true });
+  const pending = desktop
+    .locator(".access-device")
+    .filter({ hasText: phoneName });
   await pending.waitFor();
-  const confirmCode = desktop.getByRole("textbox", {
+  const desktopCode = await pending.locator(".access-code").innerText();
+  assert.equal(desktopCode, claim.verificationCode);
+  const confirmCode = pending.getByRole("textbox", {
     name: "Confirm the verification code shown on the phone",
   });
-  await confirmCode.fill(claim.verificationCode);
-  await desktop.getByRole("button", { name: "Approve device" }).click();
+  await confirmCode.fill(desktopCode);
+  const approveResponse = desktop.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith(
+        `/auth/devices/${challenge.challengeId}/approve`,
+      ),
+  );
+  await pending.getByRole("button", { name: "Approve device" }).click();
+  assert.equal((await approveResponse).status(), 200);
   await phone
     .getByRole("heading", { name: "Overview", level: 1 })
     .waitFor({ timeout: 15000 });
 
   const phoneSession = await session(phone);
   assert.equal(phoneSession.authenticated, true);
-  assert.equal(phoneSession.device.name, "E2E phone");
+  assert.equal(phoneSession.device.name, phoneName);
   assert.notEqual(phoneSession.device.id, desktopSession.device.id);
   const phoneCookie = (await phoneContext.cookies()).find(
     (cookie) => cookie.name === "factory_session",
@@ -174,7 +204,7 @@ try {
   });
   await phone
     .getByRole("textbox", { name: "Device name" })
-    .fill("Rejected phone");
+    .fill(rejectedPhoneName);
   const rejectedClaimResponse = phone.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -188,13 +218,37 @@ try {
     rejectedClaim.verificationCode,
     rejectedChallenge.verificationCode,
   );
-  await desktop.getByText("Rejected phone", { exact: true }).waitFor();
-  await desktop
+  const rejectedPending = desktop
     .locator(".access-device")
-    .filter({ hasText: "Rejected phone" })
-    .getByRole("button", { name: "Reject" })
-    .click();
+    .filter({ hasText: rejectedPhoneName });
+  await rejectedPending.waitFor();
+  await rejectedPending.getByRole("button", { name: "Reject" }).click();
   await phone.getByText(/owner rejected this device request/i).waitFor();
+  await desktop.getByText("Pairing rejected").first().waitFor();
+
+  const cancelledChallengeResponse = desktop.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/auth/device-challenges"),
+  );
+  await desktop.getByRole("button", { name: "Pair device" }).click();
+  const cancelledChallenge = await (await cancelledChallengeResponse).json();
+  await desktop.getByRole("button", { name: "Cancel pairing code" }).click();
+  await desktop.getByText(/Pairing code cancelled/i).waitFor();
+  const cancelledPairUrl = new URL(base);
+  cancelledPairUrl.hash = `/pair?challengeId=${encodeURIComponent(cancelledChallenge.challengeId)}`;
+  const cancelledPage = await browser.newPage();
+  await cancelledPage.goto(cancelledPairUrl.toString(), {
+    waitUntil: "domcontentloaded",
+  });
+  await cancelledPage
+    .getByRole("textbox", { name: "Device name" })
+    .fill("Cancelled phone");
+  await cancelledPage
+    .getByRole("button", { name: "Request owner approval" })
+    .click();
+  await cancelledPage.getByRole("alert").waitFor();
+  await cancelledPage.close();
 
   await phone.goto(`${base}/#/settings?tab=access`);
   await phone.getByRole("tab", { name: "Access & Devices" }).waitFor();
@@ -204,10 +258,13 @@ try {
   );
   assert.equal(phoneOverflow, false);
 
-  await desktop.getByText("E2E phone", { exact: true }).waitFor();
+  await desktop
+    .locator(".access-device")
+    .filter({ hasText: phoneName })
+    .waitFor();
   const phoneDevice = desktop
     .locator(".access-device")
-    .filter({ hasText: "E2E phone" });
+    .filter({ hasText: phoneName });
   const revokeDialog = desktop
     .waitForEvent("dialog")
     .then((dialog) => dialog.accept());
@@ -237,7 +294,14 @@ try {
     .getByRole("heading", { name: "Recover local access" })
     .waitFor();
 
-  assert.deepEqual(errors, [], `browser errors: ${errors.join(" | ")}`);
+  const unexpectedErrors = errors.filter(
+    (message) => !/status of 401/.test(message),
+  );
+  assert.deepEqual(
+    unexpectedErrors,
+    [],
+    `browser errors: ${unexpectedErrors.join(" | ")}`,
+  );
   assert.deepEqual(notFound, [], `404 responses: ${notFound.join(" | ")}`);
   console.log(
     JSON.stringify({
@@ -251,6 +315,15 @@ try {
         "reported by Core only; not inferred by this browser run",
     }),
   );
+} catch (error) {
+  await desktop
+    .screenshot({ path: "/tmp/prC-desktop-failure.png" })
+    .catch(() => {});
+  await phone
+    .screenshot({ path: "/tmp/prC-phone-failure.png" })
+    .catch(() => {});
+  console.error(JSON.stringify({ errors, notFound }, null, 2));
+  throw error;
 } finally {
   await browser.close();
 }

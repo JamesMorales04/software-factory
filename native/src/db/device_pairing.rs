@@ -43,6 +43,15 @@ pub struct DevicePairingPoll {
     pub expires_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityAuditEntry {
+    pub action: String,
+    pub actor: String,
+    pub device_name: Option<String>,
+    pub occurred_at_ms: i64,
+}
+
 impl super::Database {
     pub async fn create_device_pairing(
         &self,
@@ -137,7 +146,7 @@ impl super::Database {
         &self,
         now_ms: i64,
     ) -> Result<Vec<DevicePairingRecord>, Error> {
-        let rows = sqlx::query::query("SELECT * FROM device_pairing_challenges WHERE status IN ('PENDING','APPROVED','REJECTED') AND expires_at_ms>?1 ORDER BY created_at_ms DESC")
+        let rows = sqlx::query::query("SELECT * FROM device_pairing_challenges WHERE status IN ('PENDING','APPROVED') AND expires_at_ms>?1 ORDER BY created_at_ms DESC")
             .bind(now_ms).fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
@@ -151,15 +160,104 @@ impl super::Database {
         poll_token_sha256: &str,
         now_ms: i64,
     ) -> Result<DevicePairingPoll, Error> {
-        let row = sqlx::query::query("SELECT status,verification_code,device_name,expires_at_ms FROM device_pairing_challenges WHERE id=?1 AND poll_token_sha256=?2 AND expires_at_ms>?3 AND status IN ('PENDING','APPROVED','REJECTED')")
-            .bind(id).bind(poll_token_sha256).bind(now_ms).fetch_optional(&self.pool).await?;
-        row.map(|row| DevicePairingPoll {
-            status: row.get("status"),
-            verification_code: row.get("verification_code"),
-            device_name: row.get("device_name"),
-            expires_at_ms: row.get("expires_at_ms"),
+        let row = sqlx::query::query("SELECT status,verification_code,device_name,expires_at_ms FROM device_pairing_challenges WHERE id=?1 AND poll_token_sha256=?2 AND status IN ('PENDING','APPROVED','REJECTED','CANCELLED','EXPIRED')")
+            .bind(id).bind(poll_token_sha256).fetch_optional(&self.pool).await?;
+        row.map(|row| {
+            let status: String = row.get("status");
+            let expires_at_ms: i64 = row.get("expires_at_ms");
+            let status =
+                if matches!(status.as_str(), "PENDING" | "APPROVED") && expires_at_ms <= now_ms {
+                    "EXPIRED".to_owned()
+                } else {
+                    status
+                };
+            DevicePairingPoll {
+                status,
+                verification_code: row.get("verification_code"),
+                device_name: row.get("device_name"),
+                expires_at_ms,
+            }
         })
         .ok_or(Error::NotFound)
+    }
+
+    pub async fn cancel_device_pairing(
+        &self,
+        id: &str,
+        actor: &str,
+        now_ms: i64,
+    ) -> Result<DevicePairingRecord, Error> {
+        let _guard = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query::query(
+            "UPDATE device_pairing_challenges SET status='CANCELLED',decided_at_ms=?1
+             WHERE id=?2 AND status IN ('AVAILABLE','PENDING','APPROVED') AND expires_at_ms>?1",
+        )
+        .bind(now_ms)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            tx.rollback().await?;
+            return Err(Error::Conflict(
+                "pairing is no longer awaiting a decision or has expired",
+            ));
+        }
+        pairing_audit(&mut tx, id, "cancelled", actor, now_ms).await?;
+        let row = sqlx::query::query("SELECT * FROM device_pairing_challenges WHERE id=?1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let record = DevicePairingRecord::from_row(row);
+        tx.commit().await?;
+        Ok(record)
+    }
+
+    pub async fn security_audit(&self, limit: i64) -> Result<Vec<SecurityAuditEntry>, Error> {
+        let limit = limit.clamp(1, 100);
+        let mut entries = Vec::new();
+        let session_rows = sqlx::query::query(
+            "SELECT a.action, COALESCE(actor_s.device_name, a.actor) AS actor,
+                    subject_s.device_name AS device_name, a.recorded_at_ms AS occurred_at_ms
+             FROM device_session_audit a
+             LEFT JOIN device_sessions subject_s ON subject_s.id = a.session_id
+             LEFT JOIN device_sessions actor_s ON actor_s.id = a.actor
+             ORDER BY a.sequence DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in session_rows {
+            entries.push(SecurityAuditEntry {
+                action: row.get("action"),
+                actor: row.get("actor"),
+                device_name: row.get("device_name"),
+                occurred_at_ms: row.get("occurred_at_ms"),
+            });
+        }
+        let pairing_rows = sqlx::query::query(
+            "SELECT a.action, COALESCE(actor_s.device_name, a.actor) AS actor,
+                    c.device_name AS device_name, a.occurred_at_ms
+             FROM device_pairing_audit a
+             LEFT JOIN device_pairing_challenges c ON c.id = a.challenge_id
+             LEFT JOIN device_sessions actor_s ON actor_s.id = a.actor
+             ORDER BY a.sequence DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in pairing_rows {
+            entries.push(SecurityAuditEntry {
+                action: row.get("action"),
+                actor: row.get("actor"),
+                device_name: row.get("device_name"),
+                occurred_at_ms: row.get("occurred_at_ms"),
+            });
+        }
+        entries.sort_by(|left, right| right.occurred_at_ms.cmp(&left.occurred_at_ms));
+        entries.truncate(limit as usize);
+        Ok(entries)
     }
 
     pub async fn consume_device_pairing(
@@ -354,6 +452,63 @@ mod tests {
                 .await
                 .is_err()
         );
+        db.close().await;
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_expiry_are_terminal_and_audited() {
+        let (db, path) = database().await;
+        db.create_device_pairing("cancel", "123456", "owner", 100, 300_100)
+            .await
+            .expect("challenge persists");
+        db.claim_device_pairing("cancel", "poll", "Phone", 101)
+            .await
+            .expect("claim succeeds");
+        let cancelled = db
+            .cancel_device_pairing("cancel", "owner-session", 102)
+            .await
+            .expect("owner cancels");
+        assert_eq!(cancelled.status, "CANCELLED");
+        assert!(
+            db.decide_device_pairing("cancel", true, Some("123456"), "owner", 103)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            db.poll_device_pairing("cancel", "poll", 104)
+                .await
+                .expect("cancelled poll")
+                .status,
+            "CANCELLED"
+        );
+
+        db.create_device_pairing("expired", "654321", "owner", 100, 200)
+            .await
+            .expect("challenge persists");
+        db.claim_device_pairing("expired", "poll2", "Phone", 101)
+            .await
+            .expect("claim succeeds");
+        db.decide_device_pairing("expired", true, Some("654321"), "owner", 102)
+            .await
+            .expect("owner approves before expiry");
+        assert_eq!(
+            db.poll_device_pairing("expired", "poll2", 201)
+                .await
+                .expect("expired poll")
+                .status,
+            "EXPIRED"
+        );
+        assert!(
+            db.consume_device_pairing("expired", "poll2", 202)
+                .await
+                .is_err()
+        );
+
+        let audit = db.security_audit(20).await.expect("audit is readable");
+        assert!(audit.iter().any(|entry| entry.action == "cancelled"));
+        assert!(audit.iter().any(|entry| entry.action == "approved"));
+        assert!(audit.iter().any(|entry| entry.action == "claimed"));
         db.close().await;
         let _ = fs::remove_file(path);
     }

@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   approveDevice: vi.fn(),
   rejectDevice: vi.fn(),
   revokeDevice: vi.fn(),
+  getSecurityAudit: vi.fn(),
+  cancelDeviceChallenge: vi.fn(),
   logoutAllDevices: vi.fn(),
+  logoutCurrentDevice: vi.fn(),
 }));
 
 vi.mock("qrcode", () => ({
@@ -21,6 +24,7 @@ vi.mock("qrcode", () => ({
 vi.mock("../coreApi", () => ({
   coreApi: mocks,
   logoutAllDevices: mocks.logoutAllDevices,
+  logoutCurrentDevice: mocks.logoutCurrentDevice,
   CoreApiError: class CoreApiError extends Error {},
 }));
 
@@ -46,6 +50,12 @@ describe("Access & Devices", () => {
     mocks.approveDevice.mockReset().mockResolvedValue({ id: "pending-1" });
     mocks.rejectDevice.mockReset().mockResolvedValue({ id: "pending-1" });
     mocks.revokeDevice.mockReset().mockResolvedValue(undefined);
+    mocks.getSecurityAudit.mockReset().mockResolvedValue({ entries: [] });
+    mocks.cancelDeviceChallenge.mockReset().mockResolvedValue({
+      id: "challenge-public-id",
+      status: "CANCELLED",
+    });
+    mocks.logoutCurrentDevice.mockReset().mockResolvedValue(undefined);
   });
 
   it("shows configured remote access without claiming unknown connectivity", async () => {
@@ -135,11 +145,67 @@ describe("Access & Devices", () => {
   it("shows an explicit recovery error when Core access state cannot load", async () => {
     mocks.getAccessOverview.mockRejectedValue(new Error("offline"));
     mocks.listDeviceSessions.mockRejectedValue(new Error("offline"));
+    mocks.getSecurityAudit.mockRejectedValue(new Error("offline"));
     render(<AccessDevices />);
     expect(await screen.findByText("Something went wrong")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain(
       "Access status is unavailable",
     );
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  });
+
+  it("marks the current device and renders recent security activity", async () => {
+    mocks.listDeviceSessions.mockResolvedValue({
+      devices: [
+        {
+          id: "desktop-1",
+          name: "Desktop",
+          status: "CONNECTED",
+          current: true,
+          createdAt: "2026-10-27T21:00:00Z",
+          lastActivityAt: "2026-10-27T21:00:00Z",
+          expiresAt: "2026-11-27T22:00:00Z",
+        },
+      ],
+    });
+    mocks.getSecurityAudit.mockResolvedValue({
+      entries: [
+        {
+          action: "created",
+          actor: "owner-bootstrap",
+          deviceName: "Desktop",
+          occurredAt: "2026-10-27T21:00:00Z",
+        },
+        {
+          action: "approved",
+          actor: "Desktop",
+          deviceName: "Phone",
+          occurredAt: "2026-10-27T21:05:00Z",
+        },
+      ],
+    });
+    render(<AccessDevices />);
+    expect(await screen.findByText("CURRENT")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect(screen.getByText("Session created")).toBeTruthy();
+    expect(screen.getByText("Pairing approved")).toBeTruthy();
+    expect(screen.getByText("by owner-bootstrap")).toBeTruthy();
+  });
+
+  it("cancels an unclaimed pairing code instead of leaving it reusable", async () => {
+    const user = userEvent.setup();
+    render(<AccessDevices />);
+    await user.click(
+      await screen.findByRole("button", { name: "Pair device" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Cancel pairing code" }),
+    );
+    await waitFor(() =>
+      expect(mocks.cancelDeviceChallenge).toHaveBeenCalledWith(
+        "challenge-public-id",
+      ),
+    );
+    expect(screen.queryByText("Cancel pairing code")).toBeNull();
   });
 });

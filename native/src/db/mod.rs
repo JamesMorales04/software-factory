@@ -768,4 +768,4 @@ mod workers;
 mod device_pairing;
 #[cfg(test)]
 mod tests;
-pub use device_pairing::{DevicePairingPoll, DevicePairingRecord};
+pub use device_pairing::{DevicePairingPoll, DevicePairingRecord, SecurityAuditEntry};

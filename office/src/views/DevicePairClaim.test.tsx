@@ -86,4 +86,28 @@ describe("phone device pairing", () => {
     ).toBeTruthy();
     expect(mocks.pollDeviceClaim).not.toHaveBeenCalled();
   });
+
+  it("shows an owner cancellation as a terminal failure", async () => {
+    const user = userEvent.setup();
+    mocks.pollDeviceClaim.mockResolvedValue({ status: "CANCELLED" });
+    render(
+      <MemoryRouter initialEntries={["/pair?challengeId=public-challenge"]}>
+        <Routes>
+          <Route path="/pair" element={<DevicePairClaim />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Request owner approval" }),
+    );
+    expect(
+      await screen.findByText(
+        /owner cancelled this pairing request/i,
+        undefined,
+        {
+          timeout: 3000,
+        },
+      ),
+    ).toBeTruthy();
+  });
 });
