@@ -124,6 +124,17 @@ decision.
 Rows may only move to `PASS` with exact method, candidate SHA and observed
 output recorded in an evidence file. A component test is not journey acceptance.
 
+### Author-run regression evidence (not journey acceptance)
+
+At implementation `260851a` the author ran the updated Chromium journey against
+host Rust binaries + Vite with fixture assessment/provider. It exited 0 and
+recorded candidate `18faf441…` with gate `ACCEPTED`. This supports the integrated
+shell/navigation/localisation/legacy governed path, not the unified-intake
+journeys. Full limitations (no Compose, no live provider, no independent
+verifier, intentional pending-intake 404) are recorded in
+[office-ux-integration-2026-10-28.md](../evidence/office-ux-integration-2026-10-28.md).
+No acceptance-matrix row is moved to `PASS` by this author-run evidence.
+
 ## 8. Verification queue
 
 1. Lane-local: `cargo fmt --check`, targeted `cargo test`, `cargo clippy -D warnings`
@@ -159,3 +170,11 @@ running.
   request-scoped operator start, start evidence and withdrawal fencing. Intake
   remains blocked until that foundation is reviewed and merged into the campaign
   baseline.
+- 2026-10-28: Profiles, project files, EN/ES localization, operator-intent Home
+  and GitHub Issues were integrated on `campaign/office-ux-integration-20261028`
+  with the protected Core foundation. `cargo fmt`, workspace clippy, Office
+  typecheck/lint/121 tests/build and fresh migrations 1–28 pass. The updated real
+  Chromium legacy governed journey passed at implementation `260851a` (candidate
+  `18faf441…`, gate `ACCEPTED`). A Codex `gpt-6.1-sol` review then returned
+  **NOT_READY** on two Core authority gaps and one GitHub credential-generation
+  race; repairs are in progress and intake remains blocked on them.
