@@ -235,8 +235,19 @@ try {
   await page.getByLabel("One-time owner confirmation").fill(enrollmentCode);
   await page.getByLabel("This device name").fill("Rust Office E2E");
   await page.getByRole("button", { name: "Enroll this device" }).click();
-  await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
-  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
+  const overviewLink = page.getByRole("link", {
+    name: "Overview",
+    exact: true,
+  });
+  if (!(await overviewLink.isVisible())) {
+    await page.getByRole("button", { name: "Advanced", exact: true }).click();
+  }
+  await overviewLink.click();
+  await page
+    .getByRole("heading", { name: "Overview", exact: true, level: 1 })
+    .waitFor();
+  await page.getByRole("link", { name: "Decisions", exact: true }).click();
   await page
     .getByRole("heading", { name: "Decision Inbox", exact: true, level: 1 })
     .waitFor();
@@ -268,7 +279,7 @@ try {
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.getByTestId("campaign-action").selectOption({ index: 0 });
   await page.getByRole("button", { name: "Create Campaign" }).click();
-  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page.getByRole("link", { name: "Decisions", exact: true }).click();
   await page.getByText("Campaign awaiting authorization").waitFor();
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
@@ -591,6 +602,30 @@ try {
       ],
     }),
   });
+  const _providerAction = await api("/actions", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      objective: "Provider session fixture objective",
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      idempotency_key: "office-provider-action",
+      allowed_paths: ["src"],
+      checks: _leadAction.spec.checks,
+    }),
+  });
+  const _cancelAction = await api("/actions", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      objective: "Cancellation fixture objective",
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      idempotency_key: "office-cancel-action",
+      allowed_paths: ["src"],
+      checks: _leadAction.spec.checks,
+    }),
+  });
   const _leadDelegation = await api("/delegations", {
     method: "POST",
     body: JSON.stringify({
@@ -669,7 +704,7 @@ try {
     .first()
     .waitFor({ timeout: 15000 });
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -730,10 +765,23 @@ try {
     }),
   });
 
+  // This Action is intentionally not Lead-owned: the protected boundary now
+  // rejects a second Campaign for a Lead-owned Action. The provider-session
+  // fixture uses its own bounded Action so Agent Office can exercise a real
+  // Worker/Attempt without bypassing the Lead start guard.
+  await api(`/actions/${_providerAction.id}/classify`, {
+    method: "POST",
+    body: JSON.stringify({
+      risk_class: "R0",
+      actor: "office-e2e",
+      rationale: "deterministic provider-session fixture classification",
+      idempotency_key: "office-provider-classify",
+    }),
+  });
   const providerCampaign = await api("/campaigns", {
     method: "POST",
     body: JSON.stringify({
-      action_id: _leadAction.id,
+      action_id: _providerAction.id,
       idempotency_key: "office-provider-session-campaign",
     }),
   });
@@ -845,7 +893,7 @@ try {
     );
   }
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -994,7 +1042,7 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
 
-  await page.getByRole("link", { name: "Agent Office", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page
     .getByRole("heading", { name: "Agent Office", exact: true, level: 1 })
     .waitFor();
@@ -1018,10 +1066,19 @@ try {
     .waitFor();
   await page.getByTestId("workflow-projection").waitFor();
 
+  await api(`/actions/${_cancelAction.id}/classify`, {
+    method: "POST",
+    body: JSON.stringify({
+      risk_class: "R0",
+      actor: "office-e2e",
+      rationale: "deterministic cancellation fixture classification",
+      idempotency_key: "office-cancel-classify",
+    }),
+  });
   const cancelCampaign = await api("/campaigns", {
     method: "POST",
     body: JSON.stringify({
-      action_id: _leadAction.id,
+      action_id: _cancelAction.id,
       idempotency_key: "office-cancel-campaign",
     }),
   });
@@ -1067,8 +1124,12 @@ try {
   );
   // A missing gate is a normal pending projection. The UI intentionally probes
   // that endpoint and renders PENDING; all other 404s are broken resources.
+  // Unified intake is not merged into this integration candidate yet; Home
+  // renders its explicit unavailable state and the poll is expected to 404.
   const unexpectedNotFound = notFound.filter(
-    (url) => !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url),
+    (url) =>
+      !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url) &&
+      !/\/core-api\/intake\/requests(\?|$)/.test(url),
   );
   assert.deepEqual(
     unexpectedNotFound,
