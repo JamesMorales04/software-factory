@@ -236,9 +236,14 @@ try {
   await page.getByLabel("This device name").fill("Rust Office E2E");
   await page.getByRole("button", { name: "Enroll this device" }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
-  const overviewLink = page.getByRole("link", { name: "Overview", exact: true });
+  const overviewLink = page.getByRole("link", {
+    name: "Overview",
+    exact: true,
+  });
   if (!(await overviewLink.isVisible())) {
-    await page.getByRole("button", { name: "Advanced", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Advanced", exact: true })
+      .click();
   }
   await overviewLink.click();
   await page
