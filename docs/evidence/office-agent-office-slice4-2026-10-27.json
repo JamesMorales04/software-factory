@@ -4,7 +4,7 @@
   "status": "IMPLEMENTED_PENDING_INDEPENDENT_REVIEW",
   "result": "PASS",
   "candidate_sha": "c770746b1fcfccbc3d3a711f95f48e87895ced42",
-  "evidence_runs_at_sha": "0bddd0f4370cf883adfe475484c78b80551bf161",
+  "evidence_runs_at_sha": "19c871827b7ebc2102ae4405ea7ca8367cde18f0",
   "parent_sha": "9b7a60197ef230596b2de2eb757fd37d9a2a8522",
   "base_sha": "0a03c7cd2bd6e6af52395c760c1b81ebe187a548",
   "branch": "campaign/office-agent-slice4",
@@ -90,7 +90,7 @@
       "console_errors": 0,
       "unexpected_404s": 0,
       "unexpected_page_errors": 0,
-      "factory_candidate_commit": "e14d6862395fb3922969610720d27014884e4b9b"
+      "factory_candidate_commit": "f0e31cba9bbeef5eec3df569dd9e8ec3c9a59183"
     },
     "compose_e2e": {
       "command": "FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose bash scripts/compose-e2e.sh",
@@ -98,8 +98,8 @@
       "gate": "ACCEPTED",
       "restart_persistence": true,
       "paid_inference": false,
-      "factory_candidate_id": "0ca5d762-1e73-48da-b977-d063845a391a",
-      "factory_attempt_id": "bfe4741d-d7a4-44cd-a6d7-56e37267b0ec"
+      "factory_candidate_id": "f38472fc-ec5c-4833-aca4-b6f79901b71f",
+      "factory_attempt_id": "41daa35c-06f0-4b24-8821-b408dc2a09d3"
     },
     "compose_agent_office_smoke": {
       "command": "FACTORY_OFFICE_URL=http://127.0.0.1:8894 FACTORY_API_TOKEN=<operator> CHROMIUM_EXE=<chromium> FACTORY_BROWSER_NO_SANDBOX=1 node scripts/compose-agent-office-smoke.mjs",

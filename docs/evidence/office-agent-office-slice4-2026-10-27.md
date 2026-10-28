@@ -1,7 +1,7 @@
 # Agent Office and WorkGraph — Slice 4 evidence
 
 **Candidate:** `c770746b1fcfccbc3d3a711f95f48e87895ced42`
-**Evidence run head:** `0bddd0f4370cf883adfe475484c78b80551bf161`
+**Evidence run head:** `19c871827b7ebc2102ae4405ea7ca8367cde18f0`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
 **Status:** Implemented; independent review and Product Owner approval pending.
 **Paid inference:** none.
