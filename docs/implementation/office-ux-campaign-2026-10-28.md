@@ -178,3 +178,8 @@ running.
   `18faf441…`, gate `ACCEPTED`). A Codex `gpt-6.1-sol` review then returned
   **NOT_READY** on two Core authority gaps and one GitHub credential-generation
   race; repairs are in progress and intake remains blocked on them.
+- 2026-10-28: Core withdrawal/model-call fencing and Lead WorkGraph lineage
+  repairs merged; targeted tests and the Chromium journey rerun passed at
+  implementation `ae95af1` (candidate `7987095…`, gate `ACCEPTED`). GitHub
+  credential-generation, token-lifetime, ETag and rate-limit repairs remain in
+  progress; intake remains blocked on the final review.

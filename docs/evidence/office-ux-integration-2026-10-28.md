@@ -48,6 +48,20 @@ Result (exit 0):
 - A bounded retry for SQLite writer contention only where the mutation is
   idempotent.
 
+## Post-review repair rerun
+
+After the Codex review repairs for withdrawn assessment authorization and
+Lead WorkGraph lineage were merged, the same command was rerun at integration
+implementation `ae95af1`:
+
+```json
+{"ok":true,"candidate":"7987095171b98d1ce8228c38e5e1c4d17d61b437","gate":"ACCEPTED"}
+```
+
+The same limitations below apply. This rerun confirms the repair did not break
+the deterministic legacy journey; it does not close the GitHub credential
+findings or constitute independent acceptance.
+
 ## Known limitations
 
 - **Not independent.** The author ran this journey. An independent verifier and
