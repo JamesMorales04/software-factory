@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -133,7 +134,7 @@ class ComposePolicyTests(unittest.TestCase):
             lambda c: c["services"]["worker"].__setitem__(
                 "ports", [{"host_ip": "127.0.0.1", "published": "9999", "target": 9999}]
             ),
-            "only core may publish a port",
+            "published ports must match mode",
         )
 
     def test_rejects_privileged_runtime(self):
@@ -170,6 +171,96 @@ class ComposePolicyTests(unittest.TestCase):
             )
 
         self.assert_rejected(mutate, "host bind")
+
+
+    def test_tailscale_serve_config_is_private_https_only(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        serve_path = HERE.parents[1] / "deploy" / "tailscale" / "serve.json"
+        with serve_path.open(encoding="utf-8") as handle:
+            serve = json.load(handle)
+        self.assertEqual(serve["TCP"], {"443": {"HTTPS": True}})
+        self.assertEqual(
+            serve["Web"]["${TS_CERT_DOMAIN}:443"]["Handlers"]["/"],
+            {"Proxy": "http://core:8765"},
+        )
+        self.assertEqual(serve["AllowFunnel"], {"${TS_CERT_DOMAIN}:443": False})
+        self.assertNotIn("Funnel", serve)
+        checker = runpy.run_path(str(CHECKER))
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            serve["Funnel"] = {"443": True}
+            json.dump(serve, handle)
+            serve_path = Path(handle.name)
+        try:
+            errors = checker["tailscale_serve_config_errors"](serve_path)
+        finally:
+            serve_path.unlink()
+        self.assertIn("tailscale: Funnel must be explicitly disabled", errors)
+
+    def test_rejects_non_loopback_office_publication_in_tailscale_mode(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["ports"][0].__setitem__("host_ip", "0.0.0.0"),
+            "published ports must bind 127.0.0.1",
+        )
+
+    def test_rejects_unsafe_optional_tailscale_configuration(self):
+        if "tailscale" not in base_config()["services"]:
+            self.skipTest("optional Tailscale overlay is not present in this config")
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__("cap_add", ["NET_ADMIN"]),
+            "all capabilities must be dropped",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_USERSPACE", "false"),
+            "userspace networking is required",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_AUTHKEY", "unexpected"),
+            "authentication material must not be in Compose environment",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_EXTRA_ARGS", "--ssh"),
+            "extra Tailscale features and flags are forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"]["environment"].__setitem__("TS_STATE_DIR", "/tmp/state"),
+            "persistent node state path is required",
+        )
+        def move_state_volume(config):
+            state_volume = next(
+                volume
+                for volume in config["services"]["tailscale"]["volumes"]
+                if volume.get("source") == "factory-tailscale-state"
+            )
+            state_volume["target"] = "/tmp/state"
+
+        self.assert_rejected(
+            move_state_volume,
+            "node state must use its persistent writable volume",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__(
+                "ports",
+                [{"host_ip": "0.0.0.0", "published": "443", "target": 443}],
+            ),
+            "device and published-port grants are forbidden",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["tailscale"].__setitem__("networks", {"factory-control": {}}),
+            "must use only the isolated Office and uplink networks",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__("FACTORY_TRUSTED_ORIGINS", "https://*.ts.net"),
+            "one exact HTTPS MagicDNS origin",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["supervisor"]
+            .setdefault("networks", {})
+            .__setitem__("factory-office-private", {}),
+            "only Core and Tailscale may be members",
+        )
 
 
 if __name__ == "__main__":

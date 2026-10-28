@@ -79,6 +79,10 @@ jobs:
           docker compose -f compose.yaml config --format json > /tmp/compose.json
           python3 .github/scripts/check-compose-policy.py /tmp/compose.json
           COMPOSE_CONFIG_JSON=/tmp/compose.json python3 .github/scripts/test_check_compose_policy.py
+          FACTORY_TRUSTED_ORIGINS=https://factory-office.example.ts.net \
+            docker compose -f compose.yaml -f compose.tailscale.yaml config --format json > /tmp/compose-tailscale.json
+          python3 .github/scripts/check-compose-policy.py /tmp/compose-tailscale.json
+          COMPOSE_CONFIG_JSON=/tmp/compose-tailscale.json python3 .github/scripts/test_check_compose_policy.py
 
   container-dev:
     runs-on: ubuntu-latest

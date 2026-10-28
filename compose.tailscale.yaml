@@ -1,0 +1,47 @@
+# Optional private Office access through an independently authenticated
+# Tailscale node. Enable explicitly with both Compose files; never Funnel.
+services:
+  core:
+    environment:
+      FACTORY_TRUSTED_ORIGINS: ${FACTORY_TRUSTED_ORIGINS:?Set FACTORY_TRUSTED_ORIGINS to the exact https://<node>.<tailnet>.ts.net origin}
+    networks:
+      - factory-office-private
+
+  tailscale:
+    image: docker.io/tailscale/tailscale@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3
+    environment:
+      TS_AUTH_ONCE: "true"
+      TS_HOSTNAME: ${FACTORY_TAILSCALE_HOSTNAME:-factory-office}
+      TS_SERVE_CONFIG: /etc/factory/serve.json
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+      TS_ACCEPT_DNS: "false"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    init: true
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /run:rw,noexec,nosuid,size=64m
+    volumes:
+      - factory-tailscale-state:/var/lib/tailscale
+      - ./deploy/tailscale/serve.json:/etc/factory/serve.json:ro
+    networks:
+      - factory-office-private
+      - factory-tailscale-uplink
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    stop_grace_period: 30s
+
+volumes:
+  factory-tailscale-state:
+
+networks:
+  factory-office-private:
+    internal: true
+  factory-tailscale-uplink:
+    internal: false

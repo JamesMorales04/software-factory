@@ -264,3 +264,58 @@ multi-arch builds are **NOT_TESTED**. Do not claim Windows support.
 - Native ChatGPT-authenticated Codex.
 - Containerized Codex stdio transport.
 - SELinux/AppArmor, Windows, remote deployment and independent security review.
+
+## Optional private Tailscale access
+
+The base Compose command stays loopback-only and does not start Tailscale. To
+serve Office over private HTTPS from another tailnet device, first identify the
+exact MagicDNS HTTPS origin for the chosen tailnet. The default node name is
+`factory-office`; `FACTORY_TAILSCALE_HOSTNAME` can change it. The `FACTORY_TRUSTED_ORIGINS` value must be
+an exact origin such as `https://factory-office.<tailnet>.ts.net`.
+
+Create or update a local `.env` file (do not commit it) with the exact origin:
+
+```dotenv
+FACTORY_TRUSTED_ORIGINS=https://factory-office.<tailnet>.ts.net
+FACTORY_TAILSCALE_HOSTNAME=factory-office
+```
+
+Then start the optional overlay:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml up -d --build
+```
+
+On first start, inspect only the Tailscale service logs for its account approval
+URL and complete the one-time browser approval:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml logs -f tailscale
+```
+
+If the tailnet has not enabled HTTPS certificates, Tailscale may require an
+additional consent step in its administration UI. Once authenticated, open the
+exact HTTPS origin from a phone with the Tailscale app connected to the same
+tailnet. Core still requires a separately enrolled Factory device session;
+tailnet membership alone grants no Factory access.
+
+The overlay uses the pinned official Tailscale image, userspace networking,
+a persistent `factory-tailscale-state` volume, and private Tailscale Serve on
+HTTPS 443. It adds an internal network shared only by Core and Tailscale plus a
+separate uplink network containing only Tailscale. It does not mount a host
+runtime socket, join the Factory control/egress networks, publish its own host port,
+configure Funnel, or pass Factory/provider credentials to Tailscale. Core
+keeps its existing `127.0.0.1` publication for local access and recovery.
+
+To disable the overlay, stop it with the same two Compose files. This keeps the
+node identity volume:
+
+```sh
+podman compose -f compose.yaml -f compose.tailscale.yaml down
+```
+
+The node can be removed from the tailnet in the Tailscale admin console; remove
+`factory-tailscale-state` only after revoking that node. Real mobile-network
+access, authenticated HTTPS Serve and restart persistence remain **NOT_TESTED**
+until candidate-bound Podman and cross-network evidence is recorded. Do not
+infer them from Compose rendering or a browser mock.
