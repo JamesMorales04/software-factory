@@ -154,7 +154,25 @@ exact failing command and the next executable task here before reassigning.
 Do not overwrite uncommitted work. Do not claim that a stopped agent is still
 running.
 
-## 10. Change log
+## 10. Pull-request map (2026-10-28)
+
+All target `campaign/office-ux-baseline-20261028`, never `main`.
+
+| PR | Scope | State |
+|---|---|---|
+| #53 | EN/ES localization and responsive stable views | CI green; code integrated |
+| #54 | Operator-intent Home, request workspace, navigation | CI rerunning; UI code integrated; branch journey kept independent of i18n |
+| #55 | Bounded project file browser | CI green; code integrated |
+| #56 | Versioned execution profiles with applied-route executability | CI green; code integrated |
+| #57 | Protected operator start, deferred spec, withdrawal/WorkGraph repairs | CI green; code integrated |
+| #58 | GitHub Issues connection, sync, security repairs | CI green; code integrated |
+
+The integration branch also contains the unified-intake code from
+`campaign/office-ux-intake-20261028`; its three commits are not a separate PR
+because they depend on the six review units above. The integration branch is the
+temporary campaign aggregation point; it is not `main` and not a delivery claim.
+
+## 11. Change log
 
 - 2026-10-28: Preflight recorded; baseline created at `c8bf930`; contracts
   frozen; profiles, IA, i18n, files and GitHub Issues lanes assigned; intake
