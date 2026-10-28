@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   updateRuntimeSettings: vi.fn(),
   updateProvider: vi.fn(),
   testProvider: vi.fn(),
+  listProviderModels: vi.fn(),
   revokeProviderCredential: vi.fn(),
   providerAudit: vi.fn(),
   listExecutionProfiles: vi.fn(),
@@ -48,6 +49,7 @@ const provider: ProviderView = {
   maxCostMicros: 500000,
   inputMicrosPerMillion: 1000,
   outputMicrosPerMillion: 2000,
+  modelDiscovery: null,
 };
 
 function renderSettings(path = "/settings", locale?: Locale) {
@@ -90,6 +92,15 @@ describe("Settings", () => {
       model: "gpt-6-luna",
       modelAvailable: true,
       detail: "model endpoint reachable",
+    });
+    mocks.listProviderModels.mockReset().mockResolvedValue({
+      provider: "codex",
+      status: "AVAILABLE",
+      models: ["gpt-6-luna", "gpt-6-sol"],
+      detail: "2 model(s) discovered",
+      discoveredAt: "2026-10-27T10:00:00Z",
+      adapter: "codex",
+      discovery: "OPENAI_MODELS_ENDPOINT",
     });
     mocks.revokeProviderCredential.mockReset().mockResolvedValue({
       ...provider,
@@ -138,6 +149,24 @@ describe("Settings", () => {
     );
     await waitFor(() =>
       expect(screen.getAllByText("AUTHENTICATED").length).toBeGreaterThan(0),
+    );
+  });
+
+  it("discovers the real provider model catalog and can stage a model", async () => {
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    expect(screen.getByText(/No model discovery is recorded/)).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Discover models" }),
+    );
+    await waitFor(() =>
+      expect(mocks.listProviderModels).toHaveBeenCalledWith("codex"),
+    );
+    expect(screen.getByText(/2 model\(s\) discovered/)).toBeDefined();
+    expect(screen.getByText("gpt-6-sol")).toBeDefined();
+    await userEvent.click(screen.getAllByRole("button", { name: "Use" })[1]);
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe(
+      "gpt-6-sol",
     );
   });
 
@@ -220,7 +249,7 @@ describe("Settings", () => {
     expect(screen.getByText(/unknown, not empty/)).toBeDefined();
   });
 
-  it("deep-links to execution profiles without loading provider settings", async () => {
+  it("deep-links to execution profiles without rendering provider settings", async () => {
     renderSettings("/settings?tab=profiles");
     await screen.findByRole("heading", {
       name: "Execution profiles (0)",
@@ -231,7 +260,12 @@ describe("Settings", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
     expect(mocks.listExecutionProfiles).toHaveBeenCalled();
-    expect(mocks.listProviders).not.toHaveBeenCalled();
+    // The profile editor needs the non-secret provider catalog to build its
+    // role matrix, but the provider settings cards are not rendered here.
+    expect(screen.queryByText("Model catalog")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Discover models" }),
+    ).toBeNull();
   });
 
   it("deep-links to runtime policy and saves it", async () => {

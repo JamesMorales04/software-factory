@@ -994,6 +994,21 @@ export interface StartLeadCampaignResult {
   attempt: Attempt;
 }
 
+export type ProviderDiscoveryStatus = "AVAILABLE" | "UNAVAILABLE";
+
+export interface ProviderModelCatalogEntry {
+  provider: string;
+  status: ProviderDiscoveryStatus;
+  models: string[];
+  detail: string;
+  discoveredAt: string;
+}
+
+export interface ProviderModelDiscovery extends ProviderModelCatalogEntry {
+  adapter: string;
+  discovery: "OPENAI_MODELS_ENDPOINT" | "UNSUPPORTED";
+}
+
 export interface ProviderView {
   provider: string;
   kind: string;
@@ -1018,6 +1033,7 @@ export interface ProviderView {
   maxCostMicros: number;
   inputMicrosPerMillion: number;
   outputMicrosPerMillion: number;
+  modelDiscovery: ProviderModelCatalogEntry | null;
 }
 
 export interface UpdateProviderRequest {
@@ -1728,6 +1744,10 @@ export const coreApi = {
     request<ProviderTestResult>(
       `/settings/providers/${encodeURIComponent(provider)}/test`,
       { method: "POST" },
+    ),
+  listProviderModels: (provider: string) =>
+    request<ProviderModelDiscovery>(
+      `/settings/providers/${encodeURIComponent(provider)}/models`,
     ),
   revokeProviderCredential: (provider: string) =>
     request<ProviderView>(

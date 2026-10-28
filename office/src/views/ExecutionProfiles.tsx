@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Checkbox, Input, Select, Textarea } from "../components/ui/Field";
@@ -20,6 +20,8 @@ import {
   type ExecutionRiskClass,
   type ExecutionRoleRoute,
   type Project,
+  type ProviderModelDiscovery,
+  type ProviderView,
   type ResolvedExecutionProfile,
   type SupportedExecutionRoute,
 } from "../coreApi";
@@ -77,10 +79,6 @@ interface ProfileDraft {
   budgets: ExecutionProfileBudgets;
   autoStartEnabled: boolean;
   autoStartRiskClasses: ExecutionRiskClass[];
-}
-
-function routeValue(provider: string, model: string): string {
-  return `${provider}|${model}`;
 }
 
 function routeDefaults(
@@ -189,9 +187,86 @@ function draftToWrite(draft: ProfileDraft): ExecutionProfileWrite {
   };
 }
 
+type DiscoveryState = Record<
+  string,
+  ProviderModelDiscovery | "loading" | { error: string }
+>;
+
+function isDiscovery(
+  value: DiscoveryState[string] | undefined,
+): value is ProviderModelDiscovery {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    "models" in value
+  );
+}
+
+function discoveryError(
+  value: DiscoveryState[string] | undefined,
+): string | null {
+  if (typeof value === "object" && value !== null && "error" in value) {
+    return value.error;
+  }
+  return null;
+}
+
+function uniqueModels(models: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of models) {
+    if (model !== "" && !seen.has(model)) {
+      seen.add(model);
+      result.push(model);
+    }
+  }
+  return result;
+}
+
+function validateModelId(model: string): string | null {
+  if (model.trim() === "") return "Model ID is required.";
+  if (model.length > 128) return "Model ID must be at most 128 characters.";
+  if (model.trim() !== model || /\s/.test(model)) {
+    return "Model ID must not contain whitespace.";
+  }
+  return null;
+}
+
+function routeSupportWarning(
+  role: { id: ExecutionProfileRole; label: string },
+  provider: ProviderView | undefined,
+  model: string,
+  discoveredModels: string[],
+  baselineModels: string[],
+): string | null {
+  if (provider === undefined) {
+    return `The ${role.label} provider is not a configured Core connection; this profile stays a non-executable draft.`;
+  }
+  if (!provider.configured) {
+    return `The ${role.label} provider ${provider.provider} has no stored credential; this profile stays a non-executable draft.`;
+  }
+  if (!provider.enabled) {
+    return `The ${role.label} provider ${provider.provider} is disabled; this profile stays a non-executable draft.`;
+  }
+  if (role.id !== "implementer" && provider.kind !== "opencode") {
+    return `The ${role.label} route uses the ${provider.kind} App Server, which cannot execute one-shot model calls in this build; the Implementer route is unaffected.`;
+  }
+  const advertised = uniqueModels([
+    provider.model,
+    ...baselineModels,
+    ...discoveredModels,
+  ]);
+  if (model !== "" && !advertised.includes(model)) {
+    return `The ${role.label} model ${model} is not advertised by ${provider.provider}; run model discovery or select an advertised model.`;
+  }
+  return null;
+}
+
 function validateDraft(
   draft: ProfileDraft,
   routes: SupportedExecutionRoute[],
+  providers: ProviderView[],
 ): string | null {
   const name = draft.name.trim();
   if (name.length === 0) return "Name is required.";
@@ -202,14 +277,18 @@ function validateDraft(
   if (draft.autoStartEnabled && draft.autoStartRiskClasses.length === 0) {
     return "Select at least one risk class when autonomous start is enabled.";
   }
+  const providerIds =
+    providers.length > 0
+      ? providers.map((provider) => provider.provider)
+      : uniqueModels(routes.map((route) => route.provider));
   for (const role of ROLES) {
     const value = draft.roles[role.id];
-    const supported = routes.some(
-      (route) =>
-        route.provider === value.provider && route.model === value.model,
-    );
-    if (!supported) {
-      return `Select a Core-supported route for the ${role.label} role.`;
+    if (!providerIds.includes(value.provider)) {
+      return `Select a configured provider for the ${role.label} role.`;
+    }
+    const modelError = validateModelId(value.model);
+    if (modelError) {
+      return `${role.label}: ${modelError}`;
     }
     if (value.maxInputTokens < 1 || value.maxInputTokens > 1_000_000) {
       return `${role.label} max input tokens must be between 1 and 1,000,000.`;
@@ -255,7 +334,16 @@ function errorMessage(cause: unknown, fallback: string): string {
 export function ExecutionProfiles() {
   const [profiles, setProfiles] = useState<ExecutionProfile[]>([]);
   const [routes, setRoutes] = useState<SupportedExecutionRoute[]>([]);
+  const [providers, setProviders] = useState<ProviderView[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [discovery, setDiscovery] = useState<DiscoveryState>({});
+  const [modelFilters, setModelFilters] = useState<
+    Record<ExecutionProfileRole, string>
+  >({ lead: "", implementer: "", semanticReviewer: "" });
+  const [manualModel, setManualModel] = useState<
+    Record<ExecutionProfileRole, boolean>
+  >({ lead: false, implementer: false, semanticReviewer: false });
+  const requestedDiscovery = useRef(new Set<string>());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -273,18 +361,38 @@ export function ExecutionProfiles() {
 
   const load = useCallback(async () => {
     try {
-      const [list, projectList] = await Promise.all([
+      const [list, projectList, providerList] = await Promise.all([
         coreApi.listExecutionProfiles(),
         coreApi.listProjects(),
+        coreApi.listProviders(),
       ]);
       setProfiles(list.profiles);
       setRoutes(list.supportedRoutes);
+      setProviders(providerList.providers);
       setProjects(projectList);
       setLastLoadedAt(new Date().toISOString());
       setLoaded(true);
       setError(null);
     } catch (cause) {
       setError(errorMessage(cause, "Execution profiles could not be loaded."));
+    }
+  }, []);
+
+  const discoverProvider = useCallback(async (provider: string) => {
+    if (provider === "" || requestedDiscovery.current.has(provider)) return;
+    requestedDiscovery.current.add(provider);
+    setDiscovery((current) => ({ ...current, [provider]: "loading" }));
+    try {
+      const result = await coreApi.listProviderModels(provider);
+      setDiscovery((current) => ({ ...current, [provider]: result }));
+    } catch (cause) {
+      requestedDiscovery.current.delete(provider);
+      setDiscovery((current) => ({
+        ...current,
+        [provider]: {
+          error: errorMessage(cause, "Provider model discovery failed."),
+        },
+      }));
     }
   }, []);
 
@@ -330,6 +438,79 @@ export function ExecutionProfiles() {
     void refreshResolution();
   }, [refreshResolution]);
 
+  useEffect(() => {
+    if (!draft) return;
+    for (const role of ROLES) {
+      const provider = draft.roles[role.id].provider;
+      if (provider !== "") void discoverProvider(provider);
+    }
+  }, [draft, discoverProvider]);
+
+  function baselineModels(provider: string): string[] {
+    return routes
+      .filter((route) => route.provider === provider)
+      .map((route) => route.model);
+  }
+
+  function discoveredModels(provider: string): string[] {
+    const entry = discovery[provider];
+    return isDiscovery(entry) && entry.status === "AVAILABLE"
+      ? entry.models
+      : [];
+  }
+
+  function modelOptions(provider: string, current: string): string[] {
+    const configured = providers.find(
+      (candidate) => candidate.provider === provider,
+    );
+    return uniqueModels([
+      ...(configured?.model ? [configured.model] : []),
+      ...baselineModels(provider),
+      ...discoveredModels(provider),
+      ...(current !== "" ? [current] : []),
+    ]);
+  }
+
+  function providerOptions(): { value: string; label: string }[] {
+    if (providers.length > 0) {
+      return providers.map((provider) => ({
+        value: provider.provider,
+        label: `${provider.displayName} (${provider.provider})`,
+      }));
+    }
+    return uniqueModels(routes.map((route) => route.provider)).map(
+      (provider) => ({ value: provider, label: provider }),
+    );
+  }
+
+  function changeRoleProvider(role: ExecutionProfileRole, provider: string) {
+    const nextModel = modelOptions(provider, "")[0] ?? "";
+    setManualModel((current) => ({ ...current, [role]: false }));
+    setModelFilters((current) => ({ ...current, [role]: "" }));
+    updateRole(role, { provider, model: nextModel });
+    void discoverProvider(provider);
+  }
+
+  function draftWarnings(): string[] {
+    if (!draft) return [];
+    const warnings: string[] = [];
+    for (const role of ROLES) {
+      const value = draft.roles[role.id];
+      const provider = providers.find(
+        (candidate) => candidate.provider === value.provider,
+      );
+      const warning = routeSupportWarning(
+        role,
+        provider,
+        value.model,
+        discoveredModels(value.provider),
+        baselineModels(value.provider),
+      );
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
+  }
+
   function updateRole(role: ExecutionProfileRole, patch: Partial<RoleDraft>) {
     setDraft((current) => {
       if (!current) return current;
@@ -351,12 +532,22 @@ export function ExecutionProfiles() {
     );
   }
 
+  function resetRoleInputs() {
+    setModelFilters({ lead: "", implementer: "", semanticReviewer: "" });
+    setManualModel({
+      lead: false,
+      implementer: false,
+      semanticReviewer: false,
+    });
+  }
+
   function selectProfile(profile: ExecutionProfile) {
     setSelectedId(profile.id);
     setDraft(draftFromProfile(profile));
     setFormError(null);
     setStale(false);
     setNotice(null);
+    resetRoleInputs();
   }
 
   function startNewProfile() {
@@ -365,6 +556,7 @@ export function ExecutionProfiles() {
     setFormError(null);
     setStale(false);
     setNotice(null);
+    resetRoleInputs();
   }
 
   async function reloadCurrentRevision() {
@@ -392,7 +584,7 @@ export function ExecutionProfiles() {
     setFormError(null);
     setNotice(null);
     setError(null);
-    const validation = validateDraft(draft, routes);
+    const validation = validateDraft(draft, routes, providers);
     if (validation) {
       setFormError(validation);
       return;
@@ -539,7 +731,8 @@ export function ExecutionProfiles() {
 
         <p className="muted">
           Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"} ·{" "}
-          {routes.length} Core-supported route(s)
+          {routes.length} baseline tested route(s) · {providers.length} provider
+          connection(s)
         </p>
 
         {error && (
@@ -820,6 +1013,19 @@ export function ExecutionProfiles() {
                 {formError}
               </p>
             )}
+            {draftWarnings().length > 0 && (
+              <div className="ui-callout ui-callout--attention" role="status">
+                <p>
+                  This draft is not executable. Core refuses to bind or use a
+                  profile until every role route is substantiated.
+                </p>
+                <ul>
+                  {draftWarnings().map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="grid-2">
               <Input
@@ -872,18 +1078,34 @@ export function ExecutionProfiles() {
 
             <section aria-label="Role matrix">
               <div className="section-heading">
-                <h3>Role matrix</h3>
-                <span className="muted">
-                  Only the three model-backed roles exist. The deterministic
-                  Verifier is not a profile role.
-                </span>
+                <div>
+                  <h3>Role matrix</h3>
+                  <span className="muted">
+                    Each role resolves its own provider connection and model.
+                    The deterministic Verifier is not a profile role.
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => {
+                    requestedDiscovery.current.clear();
+                    for (const role of ROLES) {
+                      void discoverProvider(draft.roles[role.id].provider);
+                    }
+                  }}
+                >
+                  Refresh model catalog
+                </Button>
               </div>
               <div className="execution-profile-matrix">
                 <table>
                   <thead>
                     <tr>
                       <th scope="col">Role</th>
-                      <th scope="col">Supported route</th>
+                      <th scope="col">Provider</th>
+                      <th scope="col">Model</th>
                       <th scope="col">Reasoning</th>
                       <th scope="col">Max input</th>
                       <th scope="col">Max output</th>
@@ -893,23 +1115,24 @@ export function ExecutionProfiles() {
                   <tbody>
                     {ROLES.map((role) => {
                       const value = draft.roles[role.id];
-                      const currentValue = routeValue(
+                      const provider = providers.find(
+                        (candidate) => candidate.provider === value.provider,
+                      );
+                      const entry = discovery[value.provider];
+                      const error = discoveryError(entry);
+                      const filter = modelFilters[role.id].toLowerCase();
+                      const options = modelOptions(
                         value.provider,
                         value.model,
-                      );
-                      const options = routes.some(
-                        (route) =>
-                          routeValue(route.provider, route.model) ===
-                          currentValue,
-                      )
-                        ? routes
-                        : [
-                            {
-                              provider: value.provider,
-                              model: value.model,
-                            },
-                            ...routes,
-                          ];
+                      ).sort((left, right) => left.localeCompare(right));
+                      const filtered =
+                        filter === ""
+                          ? options
+                          : options.filter((model) =>
+                              model.toLowerCase().includes(filter),
+                            );
+                      const manual = manualModel[role.id];
+                      const configured = provider?.configured === true;
                       return (
                         <tr key={role.id}>
                           <th scope="row">
@@ -920,26 +1143,100 @@ export function ExecutionProfiles() {
                           </th>
                           <td>
                             <Select
-                              label={`${role.label} route`}
-                              value={currentValue}
-                              onChange={(event) => {
-                                const [provider, model] =
-                                  event.target.value.split("|");
-                                updateRole(role.id, { provider, model });
-                              }}
+                              label={`${role.label} provider`}
+                              value={value.provider}
+                              onChange={(event) =>
+                                changeRoleProvider(role.id, event.target.value)
+                              }
                             >
-                              {options.map((route) => (
-                                <option
-                                  key={routeValue(route.provider, route.model)}
-                                  value={routeValue(
-                                    route.provider,
-                                    route.model,
-                                  )}
-                                >
-                                  {route.provider} / {route.model}
+                              {providerOptions().map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
                                 </option>
                               ))}
+                              {!providerOptions().some(
+                                (option) => option.value === value.provider,
+                              ) && (
+                                <option value={value.provider}>
+                                  {value.provider} (not configured)
+                                </option>
+                              )}
                             </Select>
+                            <span className="execution-profile-role-note">
+                              {entry === "loading"
+                                ? "Discovering models…"
+                                : error
+                                  ? `Model catalog unavailable: ${error}`
+                                  : isDiscovery(entry)
+                                    ? entry.status === "AVAILABLE"
+                                      ? `${entry.models.length} model(s) discovered`
+                                      : `Discovery unavailable: ${entry.detail}`
+                                    : configured
+                                      ? "Model catalog not loaded"
+                                      : "Provider is not configured"}
+                            </span>
+                          </td>
+                          <td>
+                            {!manual && (
+                              <>
+                                <Input
+                                  label={`Search ${role.label} models`}
+                                  value={modelFilters[role.id]}
+                                  placeholder="Filter discovered models"
+                                  onChange={(event) =>
+                                    setModelFilters((current) => ({
+                                      ...current,
+                                      [role.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <Select
+                                  label={`${role.label} model`}
+                                  value={value.model}
+                                  onChange={(event) =>
+                                    updateRole(role.id, {
+                                      model: event.target.value,
+                                    })
+                                  }
+                                >
+                                  {filtered.length === 0 && (
+                                    <option value={value.model}>
+                                      {value.model === ""
+                                        ? "No advertised model"
+                                        : `${value.model} (unverified)`}
+                                    </option>
+                                  )}
+                                  {filtered.map((model) => (
+                                    <option key={model} value={model}>
+                                      {model}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </>
+                            )}
+                            {manual && (
+                              <Input
+                                label={`${role.label} manual model ID (unverified)`}
+                                value={value.model}
+                                placeholder="provider-model-id"
+                                help="Core keeps a profile non-executable until the provider advertises this exact model."
+                                onChange={(event) =>
+                                  updateRole(role.id, {
+                                    model: event.target.value,
+                                  })
+                                }
+                              />
+                            )}
+                            <Checkbox
+                              label={`Advanced: manual ${role.label} model ID (unverified)`}
+                              checked={manual}
+                              onChange={(event) =>
+                                setManualModel((current) => ({
+                                  ...current,
+                                  [role.id]: event.target.checked,
+                                }))
+                              }
+                            />
                           </td>
                           <td>
                             <Select
