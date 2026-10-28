@@ -64,8 +64,8 @@ const balanced: ExecutionProfile = {
       maxCostMicros: 500000,
     },
     semanticReviewer: {
-      provider: "codex",
-      model: "gpt-6-luna",
+      provider: "opencode-go",
+      model: "deepseek-v4.1-flash",
       reasoning: "medium",
       maxInputTokens: 400000,
       maxOutputTokens: 8192,
@@ -107,6 +107,17 @@ const draft: ExecutionProfile = {
   revisionId: "revision-draft",
   globalDefault: false,
   projectDefaults: [],
+  roles: {
+    ...balanced.roles,
+    semanticReviewer: {
+      provider: "codex",
+      model: "gpt-6-luna",
+      reasoning: "medium",
+      maxInputTokens: 400000,
+      maxOutputTokens: 8192,
+      maxCostMicros: 1000000,
+    },
+  },
   executable: false,
   warnings: [
     "semanticReviewer route codex/gpt-6-luna is declared but codex is not configured",
@@ -216,8 +227,8 @@ describe("ExecutionProfiles", () => {
               provider: "opencode-go",
             }),
             semanticReviewer: expect.objectContaining({
-              provider: "codex",
-              model: "gpt-6-luna",
+              provider: "opencode-go",
+              model: "deepseek-v4.1-flash",
             }),
           },
         }),

@@ -6459,7 +6459,7 @@ mod tests {
                 "roles": {
                     "lead": role("opencode-go", "deepseek-v4.1-flash"),
                     "implementer": role("opencode-go", "deepseek-v4.1-flash"),
-                    "semanticReviewer": role("codex", "gpt-6-luna")
+                    "semanticReviewer": role("opencode-go", "deepseek-v4.1-flash")
                 },
                 "budgets": {
                     "maxAttempts": 3,
@@ -6586,7 +6586,10 @@ mod tests {
         assert_eq!(created["warnings"].as_array().map(Vec::len), Some(0));
         assert_eq!(created["contentHash"].as_str().map(str::len), Some(64));
         assert_eq!(created["autoStart"]["enabled"], false);
-        assert_eq!(created["roles"]["semanticReviewer"]["provider"], "codex");
+        assert_eq!(
+            created["roles"]["semanticReviewer"]["provider"],
+            "opencode-go"
+        );
         let profile_id = created["id"].as_str().unwrap().to_owned();
 
         let (status, detail) = send(
@@ -6766,13 +6769,59 @@ mod tests {
         assert!(
             draft["warnings"]
                 .as_array()
-                .is_some_and(|warnings| warnings.len() == 2)
+                .is_some_and(|warnings| warnings.len() >= 4)
+        );
+        assert!(
+            draft["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                    .as_str()
+                    .is_some_and(|warning| warning.contains("not configured"))))
+        );
+        assert!(
+            draft["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                    .as_str()
+                    .is_some_and(
+                        |warning| warning.contains("role-specific routing is not applied")
+                    )))
         );
         let draft_id = draft["id"].as_str().unwrap().to_owned();
         let (status, _) = send(
             &router,
             "POST",
             &format!("/execution-profiles/{draft_id}/default"),
+            Some("operator-token"),
+            Some(json!({"scope": "global"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let mut cross = profile_body("Cross provider");
+        cross["roles"]["semanticReviewer"] = role("codex", "gpt-6-luna");
+        let (status, cross) = send(
+            &router,
+            "POST",
+            "/execution-profiles",
+            Some("operator-token"),
+            Some(cross),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{cross}");
+        assert_eq!(cross["executable"], false);
+        assert!(
+            cross["warnings"].as_array().is_some_and(|warnings| warnings
+                .iter()
+                .any(|warning| warning.as_str().is_some_and(|warning| warning.contains(
+                    "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
+                ))))
+        );
+        let cross_id = cross["id"].as_str().unwrap().to_owned();
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/execution-profiles/{cross_id}/default"),
             Some("operator-token"),
             Some(json!({"scope": "global"})),
         )

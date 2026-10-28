@@ -95,8 +95,7 @@ function routeDefaults(
 }
 
 function newDraft(routes: SupportedExecutionRoute[]): ProfileDraft {
-  const lead = routeDefaults(routes, "opencode-go");
-  const reviewer = routeDefaults(routes, "codex");
+  const defaultRoute = routeDefaults(routes, "opencode-go");
   const role = (
     route: { provider: string; model: string },
     maxInputTokens: number,
@@ -117,9 +116,9 @@ function newDraft(routes: SupportedExecutionRoute[]): ProfileDraft {
     description: "Default supported routes",
     category: "BALANCED",
     roles: {
-      lead: role(lead, 128_000, 8_192, 300_000),
-      implementer: role(lead, 40_000, 12_000, 500_000),
-      semanticReviewer: role(reviewer, 400_000, 8_192, 1_000_000),
+      lead: role(defaultRoute, 128_000, 8_192, 300_000),
+      implementer: role(defaultRoute, 40_000, 12_000, 500_000),
+      semanticReviewer: role(defaultRoute, 400_000, 8_192, 1_000_000),
     },
     budgets: {
       maxAttempts: 3,

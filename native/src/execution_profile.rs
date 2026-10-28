@@ -235,19 +235,64 @@ pub struct ProviderRouteAvailability {
     pub model: String,
     pub enabled: bool,
     pub has_credential: bool,
+    /// `provider_settings.is_default = 1`. The active default additionally
+    /// requires `enabled`.
+    pub is_default: bool,
 }
 
 /// Derive executability and truthful warnings. Every false state is explained.
+///
+/// This build has one active default model gateway and does not apply
+/// role-specific routing. A profile is therefore executable only when every
+/// declared role names the active default provider and model.
 pub fn evaluate_executability(
     content: &ExecutionProfileContent,
     availability: &[ProviderRouteAvailability],
 ) -> (bool, Vec<String>) {
     let mut warnings = Vec::new();
+    let active_default = availability
+        .iter()
+        .find(|entry| entry.is_default && entry.enabled);
+    if active_default.is_none() {
+        warnings.push(
+            "no active Core default model gateway is configured; execution profiles are not executable"
+                .into(),
+        );
+    }
     for (role, route) in content.roles.entries() {
-        let Some(provider) = availability
+        if let Some(provider) = availability
             .iter()
             .find(|entry| entry.provider == route.provider)
-        else {
+        {
+            if !provider.has_credential {
+                warnings.push(format!(
+                    "{} route {}/{} cannot run because {} has no stored credential",
+                    role.as_str(),
+                    route.provider,
+                    route.model,
+                    route.provider
+                ));
+            }
+            if !provider.enabled {
+                warnings.push(format!(
+                    "{} route {}/{} cannot run because {} is disabled",
+                    role.as_str(),
+                    route.provider,
+                    route.model,
+                    route.provider
+                ));
+            }
+            if provider.model != route.model {
+                warnings.push(format!(
+                    "{} route {}/{} does not match the configured {} model {}",
+                    role.as_str(),
+                    route.provider,
+                    route.model,
+                    route.provider,
+                    provider.model
+                ));
+            }
+        } else {
             warnings.push(format!(
                 "{} route {}/{} is declared but {} is not configured",
                 role.as_str(),
@@ -255,34 +300,17 @@ pub fn evaluate_executability(
                 route.model,
                 route.provider
             ));
-            continue;
-        };
-        if !provider.has_credential {
-            warnings.push(format!(
-                "{} route {}/{} cannot run because {} has no stored credential",
-                role.as_str(),
-                route.provider,
-                route.model,
-                route.provider
-            ));
         }
-        if !provider.enabled {
+        if let Some(default) = active_default
+            && (route.provider != default.provider || route.model != default.model)
+        {
             warnings.push(format!(
-                "{} route {}/{} cannot run because {} is disabled",
+                "{} route {}/{} differs from the active Core default gateway {}/{}; role-specific routing is not applied by this build",
                 role.as_str(),
                 route.provider,
                 route.model,
-                route.provider
-            ));
-        }
-        if provider.model != route.model {
-            warnings.push(format!(
-                "{} route {}/{} does not match the configured {} model {}",
-                role.as_str(),
-                route.provider,
-                route.model,
-                route.provider,
-                provider.model
+                default.provider,
+                default.model
             ));
         }
     }
@@ -540,32 +568,100 @@ mod tests {
     }
 
     #[test]
-    fn executability_explains_each_unavailable_route() {
+    fn executability_requires_every_role_on_the_active_default_gateway() {
+        let mut content = valid_content();
+        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[availability(
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                true,
+                true,
+                true,
+            )],
+        );
+        assert!(executable, "{warnings:?}");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn differing_role_route_is_not_executable_without_role_routing() {
         let content = valid_content();
         let (executable, warnings) = evaluate_executability(
             &content,
             &[
-                ProviderRouteAvailability {
-                    provider: "opencode-go".into(),
-                    model: "deepseek-v4.1-flash".into(),
-                    enabled: true,
-                    has_credential: true,
-                },
-                ProviderRouteAvailability {
-                    provider: "codex".into(),
-                    model: "gpt-6-luna".into(),
-                    enabled: false,
-                    has_credential: true,
-                },
+                availability("opencode-go", "deepseek-v4.1-flash", true, true, true),
+                availability("codex", "gpt-6-luna", true, true, false),
             ],
         );
         assert!(!executable);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("semanticReviewer"));
-        assert!(warnings[0].contains("disabled"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(
+            "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
+        ));
+        assert!(warnings[0].contains("role-specific routing is not applied"));
+    }
 
-        let (executable, warnings) = evaluate_executability(&content, &[]);
+    #[test]
+    fn missing_active_default_is_not_executable() {
+        let mut content = valid_content();
+        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[availability(
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                true,
+                true,
+                false,
+            )],
+        );
         assert!(!executable);
-        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("no active Core default model gateway"));
+    }
+
+    #[test]
+    fn disabled_default_gateway_is_not_executable() {
+        let mut content = valid_content();
+        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[availability(
+                "opencode-go",
+                "deepseek-v4.1-flash",
+                false,
+                true,
+                true,
+            )],
+        );
+        assert!(!executable);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("no active Core default model gateway"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is disabled"))
+        );
+    }
+
+    fn availability(
+        provider: &str,
+        model: &str,
+        enabled: bool,
+        has_credential: bool,
+        is_default: bool,
+    ) -> ProviderRouteAvailability {
+        ProviderRouteAvailability {
+            provider: provider.into(),
+            model: model.into(),
+            enabled,
+            has_credential,
+            is_default,
+        }
     }
 }

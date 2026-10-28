@@ -572,7 +572,7 @@ async fn load_provider_availability(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<ProviderRouteAvailability>, Error> {
     let rows = sqlx::query::query(
-        "SELECT provider,model,enabled,credential_ciphertext FROM provider_settings",
+        "SELECT provider,model,enabled,is_default,credential_ciphertext FROM provider_settings",
     )
     .fetch_all(&mut *connection)
     .await?;
@@ -585,6 +585,7 @@ async fn load_provider_availability(
                 has_credential: !row
                     .try_get::<String, _>("credential_ciphertext")?
                     .is_empty(),
+                is_default: row.try_get::<i64, _>("is_default")? != 0,
             })
         })
         .collect()
@@ -769,7 +770,7 @@ mod tests {
             roles: ExecutionProfileRoles {
                 lead: route("opencode-go", "deepseek-v4.1-flash"),
                 implementer: route("opencode-go", "deepseek-v4.1-flash"),
-                semantic_reviewer: route("codex", "gpt-6-luna"),
+                semantic_reviewer: route("opencode-go", "deepseek-v4.1-flash"),
             },
             budgets: CampaignBudgets {
                 max_attempts: 3,
@@ -993,16 +994,53 @@ mod tests {
             .await
             .unwrap();
         assert!(!draft.executable);
-        assert_eq!(draft.warnings.len(), 3);
+        assert_eq!(draft.warnings.len(), 4);
         assert!(
             draft
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("not configured"))
         );
+        assert!(
+            draft
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no active Core default model gateway"))
+        );
 
         let error = db
             .set_execution_profile_default(&draft.id, None, "owner")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Conflict("execution profile is not executable")
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn cross_provider_profile_is_non_executable_without_role_routing() {
+        let (path, db) = temp_db("factory-execution-profiles-routing").await;
+        configure_provider(&db, "opencode-go", "opencode", "deepseek-v4.1-flash").await;
+        configure_provider(&db, "codex", "codex", "gpt-6-luna").await;
+
+        let mut cross = content("Cross provider");
+        cross.roles.semantic_reviewer = route("codex", "gpt-6-luna");
+        let created = db.create_execution_profile(&cross, "owner").await.unwrap();
+        assert!(!created.executable);
+        assert!(created.warnings.iter().any(|warning| warning.contains(
+            "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
+        )));
+        assert!(
+            created
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("role-specific routing is not applied"))
+        );
+
+        let error = db
+            .set_execution_profile_default(&created.id, None, "owner")
             .await
             .unwrap_err();
         assert!(matches!(
