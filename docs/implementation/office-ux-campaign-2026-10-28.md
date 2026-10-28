@@ -199,4 +199,8 @@ running.
   acceptance; journeys 3 and 4 are recorded as PARTIAL. The journey is now
   `cargo xtask e2e intake` and runs in the containerized Chromium CI step; a
   second author run at `228db45` passed (request `1d3aaf1e…`, Campaign
-  `40412266…`).
+  `40412266…`). At `ecb55cd`, the final integrated regression passed both
+  `cargo xtask e2e office` (candidate `d048c633…`, gate `ACCEPTED`) and
+  `cargo xtask e2e intake`; workspace clippy, 334 lib tests, 21 Core-bin tests,
+  131 Office tests, build and migrations 1–30 are green. Local Compose remains
+  BLOCKED by the host buildah/btrfs limitation; independent review is pending.

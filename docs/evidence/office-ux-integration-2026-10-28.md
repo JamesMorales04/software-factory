@@ -78,6 +78,22 @@ This is partial journey 11/12 evidence. The shell/Home/Request are not fully
 translated, the new intake backend was still absent, and the QR pairing flow was
 not exercised in this run. It is not a full localization or mobile acceptance.
 
+## Final integrated regression
+
+At implementation `ecb55cde…` (after merging unified intake and the review
+repairs), `cargo xtask e2e office` passed:
+
+```json
+{"ok":true,"candidate":"d048c63312ea5373fbc8b4a7798bf7b2282aeb97","gate":"ACCEPTED"}
+```
+
+`cargo xtask e2e intake` also passed on the same code tree (the last executed
+harness run recorded request `1d3aaf1e…`, Campaign `40412266…`, profile revision
+`e47d6b8e…`, plan `aec35ca4…`; the exact evidence is in
+[office-ux-intake-2026-10-28.md](office-ux-intake-2026-10-28.md)). Both use
+deterministic model/provider substitutes; neither is live inference or
+independent acceptance.
+
 ## Local Compose attempt — BLOCKED
 
 A real `scripts/compose-e2e.sh` attempt on the integration source at `e738c2c`
