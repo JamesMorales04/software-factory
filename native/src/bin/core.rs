@@ -9,8 +9,9 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path as AxumPath, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Extension, Path as AxumPath, Query, Request, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
@@ -48,6 +49,10 @@ struct App {
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
 }
+
+const SESSION_COOKIE: &str = "factory_session";
+const CSRF_COOKIE: &str = "factory_csrf";
+const CSRF_HEADER: &str = "x-factory-csrf";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -355,6 +360,12 @@ struct QualityReceiptRequest {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match env::args().nth(1).as_deref() {
+        Some("issue-bootstrap-code") => return issue_bootstrap_code(false).await,
+        Some("issue-recovery-code") => return issue_bootstrap_code(true).await,
+        Some(_) => return Err("unknown factory-core command".into()),
+        None => {}
+    }
     tracing_subscriber::fmt()
         .with_env_filter("factory_native=info")
         .with_writer(factory_native::telemetry::RedactingMakeWriter)
@@ -460,6 +471,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BootstrapCodeRecord {
+    code_sha256: String,
+    expires_at_ms: i64,
+}
+
+async fn issue_bootstrap_code(recovery: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
+
+    let database = env::var("FACTORY_DATABASE").unwrap_or_else(|_| "factory-native.sqlite".into());
+    let db = Database::open(Path::new(&database)).await?;
+    let owner_available = db.owner_bootstrap_available().await?;
+    if !owner_available && !recovery {
+        println!("OWNER_ALREADY_ENROLLED");
+        db.close().await;
+        return Ok(());
+    }
+    if recovery {
+        db.reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
+            .await?;
+    }
+    let path = PathBuf::from(
+        env::var("FACTORY_ENROLLMENT_CODE_FILE").unwrap_or_else(|_| "/data/enrollment-code".into()),
+    );
+    let code = uuid::Uuid::new_v4().simple().to_string();
+    let expires_at_ms = chrono::Utc::now().timestamp_millis() + 5 * 60 * 1000;
+    let record = BootstrapCodeRecord {
+        code_sha256: factory_native::device_session::sha256_hex(&code),
+        expires_at_ms,
+    };
+    let serialized = serde_json::to_vec(&record)?;
+    let temporary = path.with_extension(format!("bootstrap-{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(&serialized)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, &path)?;
+    let used_marker = path.with_file_name("enrollment-used");
+    if used_marker.exists() {
+        std::fs::remove_file(used_marker)?;
+    }
+    println!("{code}");
+    db.close().await;
+    Ok(())
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -504,8 +566,12 @@ fn api_router(app: Arc<App>) -> Router {
             "/health",
             get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
         )
+        .route("/auth/bootstrap", post(auth_bootstrap))
+        .route("/auth/session", get(auth_session))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/logout-all", post(auth_logout_all))
+        .route("/auth/rotate", post(auth_rotate))
         .route("/setup/status", get(setup_status))
-        .route("/setup/enroll", post(setup_enroll))
         .route("/quality/pending", get(pending_quality))
         .route("/settings/providers", get(provider_settings_list))
         .route(
@@ -641,6 +707,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
+        .route_layer(from_fn_with_state(Arc::clone(&app), browser_auth))
         .with_state(app)
 }
 
@@ -810,6 +877,223 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
 }
 
+async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let session_token = match cookie_value(request.headers(), SESSION_COOKIE) {
+        Ok(token) => token,
+        Err(()) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let has_origin = request.headers().contains_key(header::ORIGIN);
+    let auth_route = path == "/auth"
+        || path.starts_with("/auth/")
+        || path == "/core-api/auth"
+        || path.starts_with("/core-api/auth/");
+    {
+        let trusted = trusted_origins();
+        let test_host_absent = cfg!(test) && !request.headers().contains_key(header::HOST);
+        if !test_host_absent && !request_host_allowed(request.headers(), &trusted) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        if let Some(origin) = request.headers().get(header::ORIGIN) {
+            let Ok(origin) = origin.to_str() else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            if !origin_allowed(origin, request.headers(), &trusted) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        } else if !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        ) && (auth_route || session_token.is_some())
+        {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+    let had_session = session_token.is_some();
+    if let Some(token) = session_token {
+        if request.headers().contains_key(header::AUTHORIZATION) {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        let session = match app
+            .db
+            .device_session_by_token_hash(
+                &factory_native::device_session::sha256_hex(&token),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await
+        {
+            Ok(Some(session)) => session,
+            Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+            Err(error) => return api_error(error),
+        };
+        if !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        ) {
+            let csrf_cookie = match cookie_value(request.headers(), CSRF_COOKIE) {
+                Ok(Some(value)) => value,
+                _ => return StatusCode::FORBIDDEN.into_response(),
+            };
+            let csrf_header = request
+                .headers()
+                .get(CSRF_HEADER)
+                .and_then(|value| value.to_str().ok());
+            if csrf_header != Some(csrf_cookie.as_str()) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            let matches = app
+                .db
+                .device_session_csrf_matches(
+                    &session.id,
+                    &factory_native::device_session::sha256_hex(&csrf_cookie),
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .await;
+            match matches {
+                Ok(true) => {}
+                Ok(false) => return StatusCode::FORBIDDEN.into_response(),
+                Err(error) => return api_error(error),
+            }
+        }
+        if let Err(error) = app
+            .db
+            .touch_device_session(&session.id, chrono::Utc::now().timestamp_millis())
+            .await
+        {
+            return api_error(error);
+        }
+        let authorization =
+            match axum::http::HeaderValue::from_str(&format!("Bearer {}", app.operator_token)) {
+                Ok(value) => value,
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
+        request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, authorization);
+        request.extensions_mut().insert(session);
+    }
+    let mut response = next.run(request).await;
+    if auth_route || has_origin || had_session {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            axum::http::HeaderValue::from_static("no-referrer"),
+        );
+    }
+    response
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Result<Option<String>, ()> {
+    let mut found = None;
+    for header_value in headers.get_all(header::COOKIE) {
+        let Ok(raw) = header_value.to_str() else {
+            return Err(());
+        };
+        for part in raw.split(';') {
+            let Some((key, value)) = part.trim().split_once('=') else {
+                continue;
+            };
+            if key == name {
+                if found.is_some()
+                    || value.is_empty()
+                    || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err(());
+                }
+                found = Some(value.to_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn trusted_origins() -> Vec<String> {
+    env::var("FACTORY_TRUSTED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]"
+}
+
+fn request_host_allowed(headers: &HeaderMap, trusted: &[String]) -> bool {
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Ok(authority) = host.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    if loopback_host(authority.host()) {
+        return true;
+    }
+    if authority.host() == "core" && authority.port_u16() == Some(8765) {
+        return true;
+    }
+    trusted.iter().any(|origin| {
+        origin.parse::<axum::http::Uri>().ok().is_some_and(|uri| {
+            uri.scheme_str() == Some("https")
+                && uri
+                    .authority()
+                    .is_some_and(|allowed| authority_matches(allowed, &authority, "https"))
+        })
+    })
+}
+
+fn origin_allowed(origin: &str, headers: &HeaderMap, trusted: &[String]) -> bool {
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    if uri.path() != "" && uri.path() != "/" || uri.query().is_some() {
+        return false;
+    }
+    let Some(scheme) = uri.scheme_str() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let request_host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<axum::http::uri::Authority>().ok());
+    let same_authority =
+        request_host.is_some_and(|host| authority_matches(&host, authority, scheme));
+    if !same_authority {
+        return false;
+    }
+    if scheme == "http" && loopback_host(authority.host()) {
+        return true;
+    }
+    scheme == "https" && trusted.iter().any(|allowed| allowed == origin)
+}
+
+fn authority_matches(
+    left: &axum::http::uri::Authority,
+    right: &axum::http::uri::Authority,
+    scheme: &str,
+) -> bool {
+    if !left.host().eq_ignore_ascii_case(right.host()) {
+        return false;
+    }
+    let default_port = match scheme {
+        "https" => 443,
+        "http" => 80,
+        _ => return false,
+    };
+    left.port_u16().unwrap_or(default_port) == right.port_u16().unwrap_or(default_port)
+}
+
 fn api_error(error: Error) -> Response {
     let status = match error {
         Error::Invalid(_) | Error::Repository(_) | Error::Delegation(_) => StatusCode::BAD_REQUEST,
@@ -823,9 +1107,11 @@ fn api_error(error: Error) -> Response {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EnrollmentRequest {
     code: String,
+    #[serde(default)]
+    device_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -987,10 +1273,7 @@ async fn pending_quality(
 }
 
 async fn setup_status(State(app): State<Arc<App>>) -> Response {
-    let required = app
-        .enrollment_code_file
-        .as_ref()
-        .is_some_and(|path| path.is_file());
+    let required = bootstrap_available(&app).await;
     Json(json!({
         "required": required,
         "version": "0.1.0"
@@ -998,8 +1281,41 @@ async fn setup_status(State(app): State<Arc<App>>) -> Response {
     .into_response()
 }
 
-async fn setup_enroll(
+async fn auth_session(
     State(app): State<Arc<App>>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+) -> Response {
+    if let Some(Extension(device)) = session {
+        return Json(json!({
+            "authenticated": true,
+            "device": device,
+        }))
+        .into_response();
+    }
+    let bootstrap_available = bootstrap_available(&app).await;
+    Json(json!({
+        "authenticated": false,
+        "bootstrapAvailable": bootstrap_available,
+    }))
+    .into_response()
+}
+
+async fn bootstrap_available(app: &App) -> bool {
+    let Some(path) = app.enrollment_code_file.as_ref() else {
+        return false;
+    };
+    if !matches!(app.db.owner_bootstrap_available().await, Ok(true)) {
+        return false;
+    }
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BootstrapCodeRecord>(&bytes).ok())
+        .is_some_and(|record| record.expires_at_ms > chrono::Utc::now().timestamp_millis())
+}
+
+async fn auth_bootstrap(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
     Json(input): Json<EnrollmentRequest>,
 ) -> Response {
     let Some(path) = app.enrollment_code_file.as_ref() else {
@@ -1016,6 +1332,9 @@ async fn setup_enroll(
         )
             .into_response();
     }
+    if !matches!(app.db.owner_bootstrap_available().await, Ok(true)) {
+        return StatusCode::CONFLICT.into_response();
+    }
     let now = chrono::Utc::now().timestamp_millis();
     {
         let Ok(state) = app.setup.lock() else {
@@ -1029,9 +1348,19 @@ async fn setup_enroll(
                 .into_response();
         }
     }
-    let expected = match std::fs::read_to_string(path) {
-        Ok(value) => value.trim().to_owned(),
-        Err(_) => {
+    let expected = match std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BootstrapCodeRecord>(&bytes).ok())
+    {
+        Some(record) if record.expires_at_ms > now => record.code_sha256,
+        Some(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"enrollment code has expired"})),
+            )
+                .into_response();
+        }
+        None => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({"error":"enrollment is not available"})),
@@ -1040,7 +1369,12 @@ async fn setup_enroll(
         }
     };
     let submitted = input.code.trim();
-    if expected.is_empty() || !constant_time_eq(submitted.as_bytes(), expected.as_bytes()) {
+    if expected.is_empty()
+        || !constant_time_eq(
+            factory_native::device_session::sha256_hex(submitted).as_bytes(),
+            expected.as_bytes(),
+        )
+    {
         if let Ok(mut state) = app.setup.lock() {
             state.failures = state.failures.saturating_add(1);
             if state.failures >= 8 {
@@ -1054,8 +1388,21 @@ async fn setup_enroll(
         )
             .into_response();
     }
+    let device_name = input.device_name.as_deref().unwrap_or("This device").trim();
+    if device_name.is_empty() || device_name.len() > 120 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let issued = match factory_native::device_session::issue_owner(&app.db, device_name, now).await
+    {
+        Ok(issued) => issued,
+        Err(error) => return api_error(error),
+    };
     if let Err(error) = std::fs::remove_file(path) {
         tracing::error!(%error, "enrollment code could not be invalidated");
+        let _ = app
+            .db
+            .revoke_device_session(&issued.session_id, "bootstrap-failed", now)
+            .await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error":"enrollment could not be completed"})),
@@ -1065,6 +1412,10 @@ async fn setup_enroll(
     let used = path.with_file_name("enrollment-used");
     if let Err(error) = std::fs::write(&used, b"used\n") {
         tracing::error!(%error, "enrollment completion marker could not be written");
+        let _ = app
+            .db
+            .revoke_device_session(&issued.session_id, "bootstrap-failed", now)
+            .await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error":"enrollment could not be completed"})),
@@ -1075,8 +1426,93 @@ async fn setup_enroll(
         state.failures = 0;
         state.blocked_until_ms = 0;
     }
-    factory_native::telemetry::register_secret(&app.operator_token);
-    Json(json!({"token": app.operator_token})).into_response()
+    factory_native::telemetry::register_secret(&issued.session_token);
+    factory_native::telemetry::register_secret(&issued.csrf_token);
+    let secure =
+        factory_native::device_session::secure_cookie_context(&headers, &trusted_origins());
+    let mut response = Json(json!({
+        "authenticated": true,
+        "device": issued.device,
+    }))
+    .into_response();
+    factory_native::device_session::set_cookies(&mut response, &issued, secure);
+    response
+}
+
+async fn auth_logout(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    match app
+        .db
+        .revoke_device_session(
+            &session.id,
+            &session.id,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+    {
+        Ok(_) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            factory_native::device_session::clear_cookies(
+                &mut response,
+                factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+            );
+            response
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn auth_logout_all(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    match app
+        .db
+        .revoke_all_device_sessions(&session.id, chrono::Utc::now().timestamp_millis())
+        .await
+    {
+        Ok(_) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            factory_native::device_session::clear_cookies(
+                &mut response,
+                factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+            );
+            response
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn auth_rotate(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Extension(session): Extension<factory_native::db::DeviceSessionRecord>,
+) -> Response {
+    let issued = match factory_native::device_session::rotate(
+        &app.db,
+        &session,
+        &session.id,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .await
+    {
+        Ok(Some(issued)) => issued,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => return api_error(error),
+    };
+    factory_native::telemetry::register_secret(&issued.session_token);
+    factory_native::telemetry::register_secret(&issued.csrf_token);
+    let mut response = Json(json!({"authenticated":true,"device":issued.device})).into_response();
+    factory_native::device_session::set_cookies(
+        &mut response,
+        &issued,
+        factory_native::device_session::secure_cookie_context(&headers, &trusted_origins()),
+    );
+    response
 }
 
 fn provider_view(
@@ -4265,6 +4701,222 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         })
+    }
+
+    #[tokio::test]
+    async fn browser_bootstrap_issues_cookie_session_and_enforces_csrf_and_revocation() {
+        use tower::ServiceExt;
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-browser-session-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let code_path = std::env::temp_dir().join(format!(
+            "factory-core-bootstrap-code-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let code = "one-time-owner-confirmation";
+        std::fs::write(
+            &code_path,
+            serde_json::to_vec(&BootstrapCodeRecord {
+                code_sha256: factory_native::device_session::sha256_hex(code),
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            db: Database::open(&database_path).await.unwrap(),
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: Some(code_path.clone()),
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"code":code,"deviceName":"Desktop"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies.iter().any(|value| value.contains("HttpOnly")));
+        let session_cookie = cookies
+            .iter()
+            .find(|value| value.starts_with("factory_session="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf_cookie = cookies
+            .iter()
+            .find(|value| value.starts_with("factory_csrf="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let status = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+
+        let unauthenticated = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let reviewer_route = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/review/config")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reviewer_route.status(), StatusCode::UNAUTHORIZED);
+        let bad_origin = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://attacker.example")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
+        let bad_host = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "attacker.example")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_host.status(), StatusCode::BAD_REQUEST);
+        let ambiguous_auth = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .header(
+                        "authorization",
+                        "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ambiguous_auth.status(), StatusCode::BAD_REQUEST);
+
+        let denied = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let csrf = csrf_cookie.split_once('=').unwrap().1;
+        let logout = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .header(CSRF_HEADER, csrf)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+        let revoked = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/projects")
+                    .header("host", "localhost:8765")
+                    .header("cookie", &session_cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_file(database_path);
+        let _ = std::fs::remove_file(code_path);
     }
 
     #[tokio::test]

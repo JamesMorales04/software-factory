@@ -2038,6 +2038,10 @@ capabilities:
     source:
     - compose.yaml
     - deploy/Containerfile
+    - native/src/device_session.rs
+    - native/src/db/device_sessions.rs
+    - native/src/bin/core.rs
+    - factory
     - native/src/bin/runtime_broker.rs
     test:
     - scripts/compose-e2e.sh

@@ -68,25 +68,33 @@ executables and Node, so its bundle is large (about 1.5 GiB on the tested host).
 
 ## First-run enrollment
 
-The stack starts unconfigured and safe: no provider inference is started. Core
-generates a one-time 160-bit enrollment code in the private data volume.
-
-Read it locally without editing a container file:
+Start and open Office with the host launcher:
 
 ```sh
-podman compose exec core cat /data/enrollment-code
+./factory open
 ```
 
-Open Office. The setup wizard asks for the code and returns the operator
-credential to that browser tab only. The code is rate-limited and removed on
-success; a completion marker prevents re-generation after restart. The
-long-lived operator token may be read later with:
+The launcher uses the installed Compose stack and a protected Core container
+operation to issue a random, single-use confirmation code that expires after
+five minutes. Enter it once in Office to enroll this browser. It is never put in
+a URL, request log or browser history. Core stores only the code digest and
+expiry, consumes the code on success, and issues a persistent HttpOnly device
+session. The session and CSRF cookies are SameSite=Strict; session tokens are
+stored only as SHA-256 digests. Browser mutations require exact Origin validation
+and a CSRF header. HTTPS origins receive Secure cookies. Local HTTP is accepted
+only on loopback.
+
+To recover after losing every enrolled device, run:
 
 ```sh
-podman compose exec core cat /config/operator.token
+./factory recover
 ```
 
-Provider secrets are never stored in browser storage, logs or telemetry.
+This protected local operation revokes all device sessions and issues a new
+five-minute confirmation code. The permanent operator credential remains an
+internal recovery/API mechanism and is not part of browser onboarding. Existing
+Projects, Campaigns, credentials and evidence are retained by the additive
+session migration.
 
 ## Configure providers and models
 

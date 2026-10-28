@@ -305,7 +305,11 @@
       ],
       "core_api": [
         "GET /setup/status",
-        "POST /setup/enroll",
+        "POST /auth/bootstrap",
+        "GET /auth/session",
+        "POST /auth/logout",
+        "POST /auth/logout-all",
+        "POST /auth/rotate",
         "GET /settings/providers",
         "PUT /settings/providers/{provider}",
         "POST /settings/providers/{provider}/test",
@@ -322,7 +326,9 @@
         "GET /quality/candidates/{id}/gate"
       ],
       "user_actions": [
-        "complete first-run enrollment with the one-time code",
+        "complete first-run enrollment with the protected local five-minute confirmation code",
+        "retain an HttpOnly browser session across reloads",
+        "recover locally by revoking sessions and issuing a new confirmation code",
         "save, test, revoke and audit provider credentials",
         "import an HTTPS Git Project and configure its scope",
         "create a typed Action and a scoped delegation",
