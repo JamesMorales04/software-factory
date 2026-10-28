@@ -91,11 +91,26 @@ role only when a real separate model call exists. Do not add decorative roles.
 }
 ```
 
-`executable` is true only when every required role route can actually be built
-from an enabled, configured provider. `warnings` must explain each false state.
-A cross-provider profile is allowed only when Core can route each declared role;
-until a role route is integrated end to end, the profile is not executable and
-Core must reject an attempt to use it for that role.
+`executable` is true only when every required role route can actually be **applied**
+by Core, not merely when a provider connection is configured. At the current
+single-gateway baseline every role must match the active default gateway
+provider/model; a differing role is persisted as a non-executable declaration
+with a warning until exact role-specific routing is integrated end to end. A
+cross-provider profile is allowed only when Core can route each declared role;
+until then it is not executable and Core must reject an attempt to use it for
+that role. `warnings` must explain each false state.
+
+`GET /execution-profiles` returns:
+
+```json
+{
+  "profiles": [ExecutionProfileProjection],
+  "supportedRoutes": [{ "provider": "opencode-go", "model": "deepseek-v4.1-flash" }]
+}
+```
+
+`GET /execution-profiles/{id}` returns the projection directly. Clients must not
+assume a bare array.
 
 Reasoning is an optional bounded string and must not be invented for providers
 that do not support it.
