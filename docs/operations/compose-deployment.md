@@ -293,11 +293,14 @@ URL and complete the one-time browser approval:
 podman compose -f compose.yaml -f compose.tailscale.yaml logs -f tailscale
 ```
 
-If the tailnet has not enabled HTTPS certificates, Tailscale may require an
-additional consent step in its administration UI. Once authenticated, open the
-exact HTTPS origin from a phone with the Tailscale app connected to the same
-tailnet. Core still requires a separately enrolled Factory device session;
-tailnet membership alone grants no Factory access.
+Before HTTPS Serve can issue a certificate, enable MagicDNS and HTTPS
+certificates on the tailnet's **DNS** page in the Tailscale administration
+console and accept its disclosure. Certificate Transparency makes the selected
+machine name and tailnet DNS name publicly visible; choose a non-sensitive
+machine name before enabling it. Once the node is authenticated and Serve is
+active, open the exact HTTPS origin from a phone with the Tailscale app
+connected to the same tailnet. Core still requires a separately enrolled
+Factory device session; tailnet membership alone grants no Factory access.
 
 The overlay uses the pinned official Tailscale image, userspace networking,
 a persistent `factory-tailscale-state` volume, and private Tailscale Serve on
