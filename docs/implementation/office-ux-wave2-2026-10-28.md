@@ -136,6 +136,11 @@ journeys are not substitutes for live certification.
 Codex Sol produced `office-ux-autonomy-contract-2026-10-28.md` (commit
 `271c821`, preserved on the baseline at `de7e2b7`). It keeps automatic
 execution blocked behind a protected ADR and finite preauthorization. GPT-6
-Luna is independently reviewing the contract. The implementation lane is
-restricted to default-off policy/batch/queue/proposal work until that review
-and the protected approval are satisfied.
+Luna independently reviewed the contract and found HIGH gaps in start-authority
+ownership, immutable issue/author/repository binding, enforced confinement,
+reservation accounting and revocation-to-provider fencing. Commits 1–2 remain
+safe only as default-off policy/acknowledgement/queue/advisory work. Commit 3
+(automatic start) is **blocked** pending a protected ADR amendment, owner
+approval, Core-owned envelope validation, enforced confinement, durable
+accounting and independent review. See
+[office-ux-autonomy-review-2026-10-28.md](office-ux-autonomy-review-2026-10-28.md).
