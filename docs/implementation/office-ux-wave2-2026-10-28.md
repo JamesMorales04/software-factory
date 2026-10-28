@@ -293,10 +293,11 @@ campaign.
   Worker (`Supervisor finalize failed: 409 Conflict`). Root cause: the Core
   operation grant lived five seconds, while the fixture's frozen `run_command`
   took about six; the Supervisor fence cancelled the still-valid workspace on
-  grant expiry. The grant lifetime is now bounded by the maximum execution
-  runtime, with the same 500 ms Core revalidation. Compose re-verification of
-  the fix is **PENDING**; stable Compose acceptance at the final candidate is
-  **NOT CLAIMED** until it passes. See
+  grant expiry. Long execute/run grants now cover the maximum execution runtime
+  with the same 500 ms Core revalidation; short write/apply/finalize grants stay
+  five seconds. Compose run `40763932432` passed at `7d0c67b`. A final
+  Worker-model/short-grant correction is being re-verified at the frozen
+  candidate. See
   [the Compose evidence](../evidence/office-ux-compose-2026-10-28.md).
 
 ### Honest limits
