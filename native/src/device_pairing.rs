@@ -1,6 +1,7 @@
 //! Short-lived device enrollment with operator approval and one independent session per device.
 use std::{
     env,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +22,8 @@ use uuid::Uuid;
 use crate::db::{Database, DevicePairingRecord, DeviceSessionRecord, Error};
 
 const CHALLENGE_LIFETIME_MS: i64 = 180_000;
+const TAILSCALE_HEALTH_URL: &str = "http://tailscale:9002/healthz";
+const TAILSCALE_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct PairingState {
@@ -322,11 +325,96 @@ async fn revoke_all_devices(
 }
 
 async fn access_status() -> Response {
-    let endpoint = env::var("FACTORY_TAILSCALE_ORIGIN")
-        .ok()
-        .filter(|v| valid_private_origin(v));
-    Json(json!({"local":{"status":"AVAILABLE"},"tailscale":{"enabled":endpoint.is_some(),"status":if endpoint.is_some(){"UNKNOWN"}else{"DISABLED"},"httpsEndpoint":endpoint,"error":null}})).into_response()
+    let configured_origin = env::var("FACTORY_TAILSCALE_ORIGIN").ok();
+    let tailscale = tailscale_status(configured_origin.as_deref(), TAILSCALE_HEALTH_URL).await;
+    Json(json!({
+        "local": {"status": "AVAILABLE"},
+        "tailscale": {
+            "enabled": tailscale.enabled,
+            "status": tailscale.status,
+            "httpsEndpoint": tailscale.https_endpoint,
+            "error": tailscale.error
+        }
+    }))
+    .into_response()
 }
+
+struct TailscaleStatus {
+    enabled: bool,
+    status: &'static str,
+    https_endpoint: Option<String>,
+    error: Option<String>,
+}
+
+async fn tailscale_status(configured_origin: Option<&str>, health_url: &str) -> TailscaleStatus {
+    let Some(configured_origin) = configured_origin.filter(|value| !value.trim().is_empty()) else {
+        return TailscaleStatus {
+            enabled: false,
+            status: "DISABLED",
+            https_endpoint: None,
+            error: None,
+        };
+    };
+    let https_endpoint =
+        valid_private_origin(configured_origin).then(|| configured_origin.to_owned());
+    let Some(https_endpoint) = https_endpoint else {
+        return TailscaleStatus {
+            enabled: true,
+            status: "UNKNOWN",
+            https_endpoint: None,
+            error: Some("configured Tailscale HTTPS origin is invalid".to_owned()),
+        };
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(TAILSCALE_HEALTH_TIMEOUT)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return TailscaleStatus {
+                enabled: true,
+                status: "UNKNOWN",
+                https_endpoint: Some(https_endpoint),
+                error: Some("could not initialize the Tailscale health check".to_owned()),
+            };
+        }
+    };
+    let probe_result = match client.get(health_url).send().await {
+        Ok(response) => Ok(response.status().as_u16()),
+        Err(_) => Err(()),
+    };
+    configured_tailscale_status(https_endpoint, probe_result)
+}
+
+fn configured_tailscale_status(
+    https_endpoint: String,
+    probe_result: Result<u16, ()>,
+) -> TailscaleStatus {
+    match probe_result {
+        Ok(200) => TailscaleStatus {
+            enabled: true,
+            status: "CONNECTED",
+            https_endpoint: Some(https_endpoint),
+            error: None,
+        },
+        Ok(code) => TailscaleStatus {
+            enabled: true,
+            status: "DISCONNECTED",
+            https_endpoint: Some(https_endpoint),
+            error: Some(format!("Tailscale health endpoint returned HTTP {code}")),
+        },
+        Err(()) => TailscaleStatus {
+            enabled: true,
+            status: "UNKNOWN",
+            https_endpoint: Some(https_endpoint),
+            error: Some("Tailscale health endpoint could not be reached".to_owned()),
+        },
+    }
+}
+
 fn valid_private_origin(value: &str) -> bool {
     reqwest::Url::parse(value).is_ok_and(|url| {
         url.scheme() == "https"
@@ -355,5 +443,56 @@ fn db_error(error: Error) -> Response {
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::{configured_tailscale_status, tailscale_status};
+
+    const PRIVATE_ORIGIN: &str = "https://factory.example.ts.net";
+
+    #[test]
+    fn configured_tailscale_is_connected_when_health_returns_200() {
+        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Ok(200));
+        assert!(status.enabled);
+        assert_eq!(status.status, "CONNECTED");
+        assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
+        assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn configured_tailscale_is_disconnected_when_health_returns_unavailable() {
+        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Ok(503));
+        assert!(status.enabled);
+        assert_eq!(status.status, "DISCONNECTED");
+        assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
+        assert_eq!(
+            status.error.as_deref(),
+            Some("Tailscale health endpoint returned HTTP 503")
+        );
+    }
+
+    #[test]
+    fn configured_tailscale_is_unknown_when_health_cannot_be_reached() {
+        let status = configured_tailscale_status(PRIVATE_ORIGIN.to_owned(), Err(()));
+
+        assert!(status.enabled);
+        assert_eq!(status.status, "UNKNOWN");
+        assert_eq!(status.https_endpoint.as_deref(), Some(PRIVATE_ORIGIN));
+        assert_eq!(
+            status.error.as_deref(),
+            Some("Tailscale health endpoint could not be reached")
+        );
+    }
+
+    #[tokio::test]
+    async fn unconfigured_tailscale_is_disabled_without_a_probe() {
+        let status = tailscale_status(None, "not a URL").await;
+
+        assert!(!status.enabled);
+        assert_eq!(status.status, "DISABLED");
+        assert!(status.https_endpoint.is_none());
+        assert!(status.error.is_none());
     }
 }
