@@ -1,7 +1,7 @@
 # Agent Office and WorkGraph — Slice 4 evidence
 
-**Candidate:** `4271d4851db3a39431b88b2c3c1f011587192ebf`
-**Evidence run head:** `19c871827b7ebc2102ae4405ea7ca8367cde18f0`
+**Candidate:** `2af7b68d504b21a33f47a5d586eef17bf4cefc72`
+**Evidence run head:** `e76602885dcfefc41da030dab79f065b86f2c7a5`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
 **Status:** Implemented; independent review and Product Owner approval pending.
 **Paid inference:** none.
@@ -50,13 +50,16 @@
 
 ## Post-evidence code fix
 
-Commit `4271d48` aligns the projection with the contract after independent
-review: Lead liveness is `NOT_EXPOSED`, deep-linked participants respect active
-filters, and duplicate authoritative WorkGraph rows remain in the table while
-the visual node set is canonical. It also scopes quality-receipt role filtering
-in SQL, advances tool-event cursors across malformed rows, and counts
-non-positive legacy tool sequences as discarded. Rust/Office tests and Clippy
-pass; full exact-head CI is rerun on the final PR head.
+Commits `4271d48` and `2af7b68` align the projection with the contract after
+independent review: Lead liveness is `NOT_EXPOSED`, deep-linked participants
+respect active filters, duplicate authoritative WorkGraph rows remain in the
+table, quality-receipt ordering matches the global participant order, and
+WorkGraph session selection prefers the latest generation. They also scope
+quality-receipt role filtering in SQL, advance tool-event cursors across
+malformed rows, and count non-positive legacy tool sequences as discarded.
+Host Chromium and Compose E2E were run at `e766028`; the later commits are
+read-projection/UI-ordering fixes covered by Rust/Office tests and Clippy, and
+full exact-head CI is rerun on the final PR head.
 
 ## Limitations
 
