@@ -1154,20 +1154,18 @@ export function ExecutionProfiles() {
                     ? "Save revision"
                     : "Create profile"}
               </Button>
-              {draft.id && (
-                <Button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    setDraft(null);
-                    setSelectedId(null);
-                    setStale(false);
-                    setFormError(null);
-                  }}
-                >
-                  Close editor
-                </Button>
-              )}
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setDraft(null);
+                  setSelectedId(null);
+                  setStale(false);
+                  setFormError(null);
+                }}
+              >
+                {draft.id ? "Close editor" : "Cancel"}
+              </Button>
             </div>
           </form>
         </Panel>
