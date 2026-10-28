@@ -86,6 +86,14 @@ request `73c2ca0a…`, Campaign `bf95d14c…`, candidate `f5cdd297…` at commit
 persistence. The harness change reflects the real product guard; Core was not
 loosened.
 
+## Legacy Office journey reconciliation
+
+The legacy `cargo xtask e2e office` journey was updated after the projects and
+routing merges to use the governed local-import tab under an approved root, the
+new candidate-diff label, and a stored fixture provider connection required by
+implementer-route validation. It passed at integration `8922bc6` with candidate
+`d92bd705…` and Gate `ACCEPTED`. The fixture provider connection is never called.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
