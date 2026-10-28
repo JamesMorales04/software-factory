@@ -4018,6 +4018,11 @@ async fn assess_lead_request(
         Ok(request) => request,
         Err(error) => return api_error(error),
     };
+    match app.db.lead_withdrawal(&id).await {
+        Ok(Some(_)) => return api_error(Error::Withdrawn),
+        Ok(None) => {}
+        Err(error) => return api_error(error),
+    }
     let config = match app.db.project_config(&request.project_id).await {
         Ok(config) => config,
         Err(error) => return api_error(error),
@@ -6645,8 +6650,62 @@ mod tests {
         )
         .unwrap();
         let campaign_id = approved["campaign"]["id"].as_str().unwrap().to_string();
+        let run_id = approved["run"]["id"].as_str().unwrap().to_string();
         assert_eq!(approved["evidence"]["principal_id"], "operator-token");
         assert_eq!(approved["evidence"]["mode"], "OPERATOR");
+        let runs_before = app
+            .db
+            .runs()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|run| run.campaign_id == campaign_id)
+            .count();
+        let attempts_before = app
+            .db
+            .attempts()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|attempt| attempt.run_id == run_id)
+            .count();
+        for (uri, label) in [
+            (format!("/campaigns/{campaign_id}/runs"), "generic run"),
+            (format!("/runs/{run_id}/attempts"), "generic attempt"),
+        ] {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{label} route must be fenced for a Lead Campaign"
+            );
+        }
+        assert_eq!(
+            app.db
+                .runs()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|run| run.campaign_id == campaign_id)
+                .count(),
+            runs_before
+        );
+        assert_eq!(
+            app.db
+                .attempts()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|attempt| attempt.run_id == run_id)
+                .count(),
+            attempts_before
+        );
 
         let request = axum::http::Request::builder()
             .method("POST")

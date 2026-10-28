@@ -188,7 +188,10 @@ impl Database {
     ) -> Result<ModelCallDecision, Error> {
         validate_model_call_authorization(input)?;
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        // Withdrawal uses the same immediate write transaction. Whichever
+        // commits first defines the outcome: a committed withdrawal makes this
+        // authorization fail before any reservation or upstream effect.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         self.validate_model_call_scope(&mut transaction, input)
             .await?;
         let now = Utc::now();
@@ -692,6 +695,9 @@ impl Database {
                 let Some((project_id, delegation_id, state, action_id)) = row else {
                     return Err(Error::NotFound);
                 };
+                if super::lead::withdrawal_in_tx(transaction, &input.objective_id).await? {
+                    return Err(Error::Withdrawn);
+                }
                 if project_id != input.project_id || scope_id_mismatch(&delegation_id, input) {
                     return Err(Error::Forbidden(
                         "Lead model call is not bound to the request delegation".into(),
