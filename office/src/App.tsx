@@ -19,6 +19,7 @@ import { DecisionInbox } from "./views/DecisionInbox";
 import { Delegations } from "./views/Delegations";
 import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Home } from "./views/Home";
+import { Issues } from "./views/Issues";
 import { Lead } from "./views/Lead";
 import { Overview } from "./views/Overview";
 import { ProjectFiles } from "./views/ProjectFiles";
@@ -236,6 +237,7 @@ export function App() {
         <Route path="/lead" element={<Lead />} />
         <Route path="/delegations" element={<Delegations />} />
         <Route path="/campaigns" element={<Campaigns />} />
+        <Route path="/issues" element={<Issues />} />
         <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="/agents" element={<AgentOffice />} />
         <Route path="/agents/:participantId" element={<AgentOffice />} />

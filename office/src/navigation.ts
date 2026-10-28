@@ -57,6 +57,12 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "runs attempts candidates gate quality",
       },
       {
+        to: "/issues",
+        label: "Issues",
+        icon: ListChecks,
+        keywords: "github issues sync repository labels triage backlog intake",
+      },
+      {
         to: "/inbox",
         label: "Decisions",
         icon: Inbox,
