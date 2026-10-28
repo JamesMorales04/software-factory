@@ -298,7 +298,25 @@ for _ in $(seq 1 300); do
   fi
   sleep 1
 done
-[[ "$INTAKE_GATE" == *'"outcome":"ACCEPTED"'* ]] || { log "intake gate did not accept: ${INTAKE_GATE:-none}"; exit 1; }
+if [[ "$INTAKE_GATE" != *'"outcome":"ACCEPTED"'* ]]; then
+  log "intake gate did not accept: ${INTAKE_GATE:-none}"
+  log "intake request projection: $(api GET "/intake/requests/$INTAKE_ID" 2>/dev/null | head -c 3000 || true)"
+  log "intake campaign projection: $(api GET "/campaigns/$INTAKE_CAMPAIGN_ID" 2>/dev/null | head -c 3000 || true)"
+  if [[ -n "$INTAKE_CANDIDATE_ID" ]]; then
+    log "intake receipts: $(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts" 2>/dev/null | head -c 3000 || true)"
+  fi
+  CORE="$(core_container || true)"
+  if [[ -n "$CORE" ]]; then
+    log "== Core log tail"
+    podman logs --tail 120 "$CORE" >&2 || true
+  fi
+  WORKER="$(podman ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' | grep '_worker_' | head -1 || true)"
+  if [[ -n "$WORKER" ]]; then
+    log "== Worker log tail"
+    podman logs --tail 80 "$WORKER" >&2 || true
+  fi
+  exit 1
+fi
 INTAKE_RECEIPTS="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts")"
 [[ "$INTAKE_RECEIPTS" == *'"role":"verifier"'* && "$INTAKE_RECEIPTS" == *'"role":"reviewer"'* ]] || {
   log "intake independent receipts are missing"; exit 1;
