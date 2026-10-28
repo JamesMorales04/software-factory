@@ -91,7 +91,16 @@ foundation: encrypted connection, Project repository binding, bounded sync and
 plain-text issue detail are implemented in the lane view; governed intake,
 board ordering, Action/Campaign relationships and issue writing remain
 unimplemented. The view is wired at `/issues`; real browser acceptance is
-pending. Docs and a stable `/office` deep-link base remain unimplemented.
+pending. Home is now a unified intake composer: a Project-scoped objective,
+exact execution profile revision and mode create a durable intake request, and
+a 409 `EXECUTION_POLICY_REQUIRED` surfaces an explicit "Enable governed
+execution" acknowledgement that creates a bounded, non-autonomous R0 policy
+before retrying the same request. The Request workspace derives its state from
+the authoritative Lead request, shows the frozen profile revision and plan
+hash, runs the bounded assessment, approves the exact frozen plan, appends
+pre-freeze operator messages and withdraws through the authoritative Lead
+boundary. It does not expose an intake-only terminal flag. Docs and a stable
+`/office` deep-link base remain unimplemented.
 
 Known gaps:
 
@@ -104,6 +113,19 @@ Known gaps:
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
 - Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
+- Unified intake assessment requires an authorized model gateway. Without one
+  Core returns a typed 503; it does not fabricate plan checks. A FIXTURE
+  assessment cannot derive executable checks for a draft Action by itself.
+- The execution-policy grant is conservative: R0 only, non-autonomous, no
+  repair cycles, one parallel unit, four requests and a 30-day expiry.
+  Aggregate token/cost/turn accounting across assessment plus implementation is
+  not implemented; approval intersects per-task profile/plan/delegation/Core
+  ceilings and records the limitation. Role-specific routing beyond the single
+  active default gateway is not implemented, so cross-provider profiles remain
+  non-executable.
+- A real browser acceptance run against Core/Compose for the unified intake
+  journey is pending; the current evidence is component tests plus Rust
+  DB/API tests.
 - Runtime shows Supervisor, nested Podman and broker state as not exposed; it
   does not infer their health.
 - Agent Office is a read-only observability experience; no stop, model switch,

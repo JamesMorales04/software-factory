@@ -16,6 +16,9 @@ use crate::lead::{
 };
 
 use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
+use super::intake::{
+    LeadExecutionContextRecord, load_execution_context, load_frozen_profile_content,
+};
 use super::lifecycle::load_campaign;
 use super::project_configs::load_project_config;
 
@@ -287,6 +290,179 @@ pub struct NewDraftLeadRequest<'a> {
     pub idempotency_key: &'a str,
 }
 
+/// Validated, canonicalized draft-request inputs shared by the public method
+/// and transaction-scoped intake creation.
+pub(super) struct PreparedDraftLeadRequest {
+    assessment_input_json: String,
+    assessment_sha256: String,
+    submission_digest: String,
+}
+
+pub(super) fn prepare_draft_lead_request(
+    input: &NewDraftLeadRequest<'_>,
+) -> Result<PreparedDraftLeadRequest, Error> {
+    if input.objective.trim().is_empty()
+        || input.objective.len() > 20_000
+        || input.idempotency_key.trim().is_empty()
+        || input.idempotency_key.len() > 256
+        || !is_sha256(input.project_config_hash)
+    {
+        return Err(Error::Invalid("draft lead request input"));
+    }
+    let assessment_value: serde_json::Value = serde_json::from_str(input.assessment_input_json)
+        .map_err(|_| Error::Invalid("assessment input JSON"))?;
+    if !assessment_value.is_object() {
+        return Err(Error::Invalid("assessment input must be a JSON object"));
+    }
+    let assessment_input_json = serde_json::to_string(&assessment_value)
+        .map_err(|_| Error::Invalid("assessment input encoding"))?;
+    if assessment_input_json.len() > 65_536 {
+        return Err(Error::Invalid("assessment input is too large"));
+    }
+    let assessment_sha256 = sha256_hex(assessment_input_json.as_bytes());
+    let submission_digest = sha256_hex(
+        serde_json::to_string(&(
+            "intake-lead-v1",
+            input.project_id,
+            input.delegation_id,
+            input.objective,
+            input.project_config_hash,
+            &assessment_sha256,
+        ))
+        .expect("intake lead digest serializes")
+        .as_bytes(),
+    );
+    Ok(PreparedDraftLeadRequest {
+        assessment_input_json,
+        assessment_sha256,
+        submission_digest,
+    })
+}
+
+/// Transaction-scoped draft Lead creation. Callers own the write transaction
+/// and must never nest the public database methods.
+pub(super) async fn create_draft_lead_request_in_tx(
+    connection: &mut SqliteConnection,
+    input: &NewDraftLeadRequest<'_>,
+    prepared: &PreparedDraftLeadRequest,
+) -> Result<(LeadRequestRecord, bool), Error> {
+    if let Some(id) = replay(
+        connection,
+        input.idempotency_key,
+        "create_draft_lead_request",
+        &prepared.submission_digest,
+    )
+    .await?
+    {
+        let existing = load_lead_request(connection, &id).await?;
+        return Ok((existing, false));
+    }
+    let project_config = load_project_config(connection, input.project_id).await?;
+    if !project_config.active || project_config.config_hash != input.project_config_hash {
+        return Err(Error::Forbidden(
+            "project configuration is inactive or the supplied config hash is stale".into(),
+        ));
+    }
+    let grant = load_delegation(connection, input.delegation_id).await?;
+    grant.validate(Utc::now())?;
+    if grant.project_id != input.project_id {
+        return Err(Error::Forbidden(
+            "delegation belongs to another project".into(),
+        ));
+    }
+    let action_id = Uuid::new_v4().to_string();
+    let objective_sha256 = sha256_hex(input.objective.as_bytes());
+    let created_at = Utc::now().to_rfc3339();
+    sqlx::query::query(
+        "INSERT INTO actions
+         (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+         VALUES (?1,?2,?3,?4,?5,'UNASSESSED','HUMAN_REQUIRED',?6,?7)",
+    )
+    .bind(&action_id)
+    .bind(input.project_id)
+    .bind(input.objective)
+    .bind(&grant.route.provider)
+    .bind(&grant.route.model)
+    .bind(&objective_sha256)
+    .bind(&created_at)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "INSERT INTO action_drafts(action_id,assessment_input_json,input_sha256,created_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(&action_id)
+    .bind(&prepared.assessment_input_json)
+    .bind(&prepared.assessment_sha256)
+    .bind(&created_at)
+    .execute(&mut *connection)
+    .await?;
+    reserve_usage_in_tx(connection, &grant, 1, 1, 0).await?;
+    let request_hash = sha256_hex(
+        serde_json::to_string(&(
+            input.project_id,
+            &action_id,
+            input.delegation_id,
+            input.objective,
+            input.project_config_hash,
+        ))
+        .expect("lead request digest serializes")
+        .as_bytes(),
+    );
+    let request = LeadRequestRecord {
+        id: Uuid::new_v4().to_string(),
+        project_id: input.project_id.into(),
+        action_id: action_id.clone(),
+        delegation_id: input.delegation_id.into(),
+        objective: input.objective.into(),
+        request_hash,
+        project_config_hash: input.project_config_hash.into(),
+        state: LeadRequestState::Submitted,
+        assessment_mechanism: None,
+        failure_reason: None,
+        campaign_id: None,
+        created_at: created_at.clone(),
+        updated_at: created_at,
+    };
+    sqlx::query::query(
+        "INSERT INTO lead_requests
+         (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,state,failure_reason,campaign_id,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,'SUBMITTED',NULL,NULL,?8,?8)",
+    )
+    .bind(&request.id)
+    .bind(&request.project_id)
+    .bind(&request.action_id)
+    .bind(&request.delegation_id)
+    .bind(&request.objective)
+    .bind(&request.request_hash)
+    .bind(&request.project_config_hash)
+    .bind(&request.created_at)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        .bind(input.idempotency_key)
+        .bind("create_draft_lead_request")
+        .bind(&prepared.submission_digest)
+        .bind(&request.id)
+        .execute(&mut *connection)
+        .await?;
+    record_event(
+        connection,
+        &action_id,
+        "action.created",
+        "assessment draft recorded; no executable ActionSpec",
+    )
+    .await?;
+    record_event(
+        connection,
+        &request.id,
+        "lead.request_created",
+        "assessment session reserved; no executable ActionSpec or Campaign start",
+    )
+    .await?;
+    Ok((request, true))
+}
+
 impl Database {
     pub async fn create_lead_request(
         &self,
@@ -433,156 +609,12 @@ impl Database {
         &self,
         input: NewDraftLeadRequest<'_>,
     ) -> Result<(LeadRequestRecord, bool), Error> {
-        if input.objective.trim().is_empty()
-            || input.objective.len() > 20_000
-            || input.idempotency_key.trim().is_empty()
-            || input.idempotency_key.len() > 256
-            || !is_sha256(input.project_config_hash)
-        {
-            return Err(Error::Invalid("draft lead request input"));
-        }
-        let assessment_value: serde_json::Value = serde_json::from_str(input.assessment_input_json)
-            .map_err(|_| Error::Invalid("assessment input JSON"))?;
-        if !assessment_value.is_object() {
-            return Err(Error::Invalid("assessment input must be a JSON object"));
-        }
-        let assessment_input_json = serde_json::to_string(&assessment_value)
-            .map_err(|_| Error::Invalid("assessment input encoding"))?;
-        if assessment_input_json.len() > 65_536 {
-            return Err(Error::Invalid("assessment input is too large"));
-        }
-        let assessment_sha256 = sha256_hex(assessment_input_json.as_bytes());
-        let submission_digest = sha256_hex(
-            serde_json::to_string(&(
-                "intake-lead-v1",
-                input.project_id,
-                input.delegation_id,
-                input.objective,
-                input.project_config_hash,
-                &assessment_sha256,
-            ))
-            .expect("intake lead digest serializes")
-            .as_bytes(),
-        );
+        let prepared = prepare_draft_lead_request(&input)?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        if let Some(id) = replay(
-            &mut transaction,
-            input.idempotency_key,
-            "create_draft_lead_request",
-            &submission_digest,
-        )
-        .await?
-        {
-            let existing = load_lead_request(&mut transaction, &id).await?;
-            transaction.commit().await?;
-            return Ok((existing, false));
-        }
-        let project_config = load_project_config(&mut transaction, input.project_id).await?;
-        if !project_config.active || project_config.config_hash != input.project_config_hash {
-            return Err(Error::Forbidden(
-                "project configuration is inactive or the supplied config hash is stale".into(),
-            ));
-        }
-        let grant = load_delegation(&mut transaction, input.delegation_id).await?;
-        grant.validate(Utc::now())?;
-        if grant.project_id != input.project_id {
-            return Err(Error::Forbidden(
-                "delegation belongs to another project".into(),
-            ));
-        }
-        let action_id = Uuid::new_v4().to_string();
-        let objective_sha256 = sha256_hex(input.objective.as_bytes());
-        let created_at = Utc::now().to_rfc3339();
-        sqlx::query::query(
-            "INSERT INTO actions
-             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
-             VALUES (?1,?2,?3,?4,?5,'UNASSESSED','HUMAN_REQUIRED',?6,?7)",
-        )
-        .bind(&action_id)
-        .bind(input.project_id)
-        .bind(input.objective)
-        .bind(&grant.route.provider)
-        .bind(&grant.route.model)
-        .bind(&objective_sha256)
-        .bind(&created_at)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query(
-            "INSERT INTO action_drafts(action_id,assessment_input_json,input_sha256,created_at)
-             VALUES (?1,?2,?3,?4)",
-        )
-        .bind(&action_id)
-        .bind(&assessment_input_json)
-        .bind(&assessment_sha256)
-        .bind(&created_at)
-        .execute(&mut *transaction)
-        .await?;
-        reserve_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
-        let request_hash = sha256_hex(
-            serde_json::to_string(&(
-                input.project_id,
-                &action_id,
-                input.delegation_id,
-                input.objective,
-                input.project_config_hash,
-            ))
-            .expect("lead request digest serializes")
-            .as_bytes(),
-        );
-        let request = LeadRequestRecord {
-            id: Uuid::new_v4().to_string(),
-            project_id: input.project_id.into(),
-            action_id: action_id.clone(),
-            delegation_id: input.delegation_id.into(),
-            objective: input.objective.into(),
-            request_hash,
-            project_config_hash: input.project_config_hash.into(),
-            state: LeadRequestState::Submitted,
-            assessment_mechanism: None,
-            failure_reason: None,
-            campaign_id: None,
-            created_at: created_at.clone(),
-            updated_at: created_at,
-        };
-        sqlx::query::query(
-            "INSERT INTO lead_requests
-             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,state,failure_reason,campaign_id,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'SUBMITTED',NULL,NULL,?8,?8)",
-        )
-        .bind(&request.id)
-        .bind(&request.project_id)
-        .bind(&request.action_id)
-        .bind(&request.delegation_id)
-        .bind(&request.objective)
-        .bind(&request.request_hash)
-        .bind(&request.project_config_hash)
-        .bind(&request.created_at)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
-            .bind(input.idempotency_key)
-            .bind("create_draft_lead_request")
-            .bind(&submission_digest)
-            .bind(&request.id)
-            .execute(&mut *transaction)
-            .await?;
-        record_event(
-            &mut transaction,
-            &action_id,
-            "action.created",
-            "assessment draft recorded; no executable ActionSpec",
-        )
-        .await?;
-        record_event(
-            &mut transaction,
-            &request.id,
-            "lead.request_created",
-            "assessment session reserved; no executable ActionSpec or Campaign start",
-        )
-        .await?;
+        let result = create_draft_lead_request_in_tx(&mut transaction, &input, &prepared).await?;
         transaction.commit().await?;
-        Ok((request, true))
+        Ok(result)
     }
 
     pub async fn action_draft(&self, action_id: &str) -> Result<ActionDraftRecord, Error> {
@@ -1378,6 +1410,8 @@ struct StartIdentity {
     plan_hash: String,
     config_hash: String,
     delegation_hash: String,
+    profile: Option<LeadExecutionContextRecord>,
+    profile_content: Option<crate::execution_profile::ExecutionProfileContent>,
 }
 
 async fn load_start_identity(
@@ -1407,6 +1441,22 @@ async fn load_start_identity(
             "frozen plan binding does not match the Lead request",
         ));
     }
+    let profile = load_execution_context(connection, &request.id).await?;
+    let profile_content = match &profile {
+        Some(context) => {
+            if context.project_id != request.project_id
+                || context.project_config_hash != request.project_config_hash
+                || context.delegation_hash != grant.content_hash
+                || sha256_hex(context.context_json.as_bytes()) != context.context_hash
+            {
+                return Err(Error::Invalid(
+                    "frozen execution context does not match the Lead request",
+                ));
+            }
+            Some(load_frozen_profile_content(connection, context).await?)
+        }
+        None => None,
+    };
     let request_hash = sha256_hex(
         serde_json::to_string(&(
             &request.project_id,
@@ -1448,6 +1498,8 @@ async fn load_start_identity(
         plan_hash: recomputed_plan_hash,
         config_hash: request.project_config_hash.clone(),
         delegation_hash,
+        profile,
+        profile_content,
     })
 }
 
@@ -1485,7 +1537,135 @@ fn expected_binding_matches(expected: &ExpectedStartBinding, identity: &StartIde
         && expected.spec_sha256 == identity.spec_sha256
         && expected.config_hash == identity.config_hash
         && expected.delegation_hash == identity.delegation_hash
-        && expected.profile_binding().is_none()
+        && match expected.profile_binding() {
+            None => identity.profile.is_none(),
+            Some((revision_id, hash)) => identity.profile.as_ref().is_some_and(|profile| {
+                profile.profile_revision_id == revision_id && profile.profile_hash == hash
+            }),
+        }
+}
+
+fn validate_profile_authorization(
+    input: &NewCampaignAuthorization,
+    profile: &crate::execution_profile::ExecutionProfileContent,
+    proposal: &LeadPlanProposal,
+    grant: &StandingDelegation,
+    action_spec: &ActionSpec,
+    mechanism: &str,
+) -> Result<(), Error> {
+    let expected_mode = match mechanism {
+        "MODEL" => "TRUSTED_LOCAL_PROVIDER",
+        "FIXTURE" => "FIXTURE",
+        _ => return Err(Error::Invalid("stored lead assessment mechanism")),
+    };
+    if input.execution_mode != expected_mode {
+        return Err(Error::Forbidden(
+            "authorization execution mode differs from the frozen assessment mechanism".into(),
+        ));
+    }
+    if input.risk_class != "R0" {
+        return Err(Error::Forbidden(
+            "operator approval is limited to R0 execution".into(),
+        ));
+    }
+    if input.delegation_id != grant.id {
+        return Err(Error::Forbidden(
+            "authorization delegation differs from the frozen request".into(),
+        ));
+    }
+    if grant.risk_classes != vec![crate::lead::RiskClass::R0]
+        || grant.autonomous_start
+        || !grant.autonomous_risk_classes.is_empty()
+        || grant.max_attempts > profile.budgets.max_attempts
+        || grant.max_sessions > profile.budgets.max_sessions
+        || u64::from(grant.max_timeout_secs) > profile.budgets.deadline_secs
+        || u64::from(grant.max_wall_clock_secs) > profile.budgets.deadline_secs
+        || grant.max_parallel != 1
+        || grant.max_repair_cycles != 0
+    {
+        return Err(Error::Forbidden(
+            "execution policy delegation exceeds the frozen profile authority".into(),
+        ));
+    }
+    if input.provider != profile.roles.implementer.provider
+        || input.model != profile.roles.implementer.model
+        || input.provider_mode != "build"
+    {
+        return Err(Error::Forbidden(
+            "authorization route differs from the frozen profile implementer route".into(),
+        ));
+    }
+    if input.max_attempts == 0
+        || input.max_attempts > profile.budgets.max_attempts
+        || input.max_attempts > proposal.budget.max_attempts
+        || input.max_attempts > grant.max_attempts
+        || input.max_attempts > 5
+    {
+        return Err(Error::Forbidden(
+            "authorization attempt budget exceeds the frozen profile, plan or delegation".into(),
+        ));
+    }
+    if input.max_sessions == 0
+        || input.max_sessions > profile.budgets.max_sessions
+        || input.max_sessions > proposal.max_sessions.saturating_sub(1)
+        || input.max_sessions > grant.max_sessions
+        || input.max_sessions > 2
+    {
+        return Err(Error::Forbidden(
+            "authorization session budget exceeds the frozen profile, plan or delegation".into(),
+        ));
+    }
+    if input.max_turns == 0 || input.max_turns > profile.budgets.max_turns || input.max_turns > 4 {
+        return Err(Error::Forbidden(
+            "authorization turn budget exceeds the frozen profile".into(),
+        ));
+    }
+    if input.max_input_tokens == 0 || input.max_input_tokens > profile.budgets.max_input_tokens {
+        return Err(Error::Forbidden(
+            "authorization input-token budget exceeds the frozen profile".into(),
+        ));
+    }
+    if input.max_output_tokens == 0 || input.max_output_tokens > profile.budgets.max_output_tokens {
+        return Err(Error::Forbidden(
+            "authorization output-token budget exceeds the frozen profile".into(),
+        ));
+    }
+    if input.max_cost_micros == 0 || input.max_cost_micros > profile.budgets.max_cost_micros {
+        return Err(Error::Forbidden(
+            "authorization cost budget exceeds the frozen profile".into(),
+        ));
+    }
+    if input.deadline_secs < 30
+        || input.deadline_secs > profile.budgets.deadline_secs
+        || input.deadline_secs > u64::from(proposal.max_wall_clock_secs)
+        || input.deadline_secs > u64::from(grant.max_wall_clock_secs)
+        || input.deadline_secs > 600
+    {
+        return Err(Error::Forbidden(
+            "authorization deadline exceeds the frozen profile, plan or delegation".into(),
+        ));
+    }
+    if input.authorized_paths.is_empty()
+        || input.authorized_paths.iter().any(|path| {
+            !crate::workspace::path_covered(path, &action_spec.allowed_paths)
+                || !crate::workspace::path_covered(path, &grant.allowed_paths)
+        })
+    {
+        return Err(Error::Forbidden(
+            "authorization paths exceed the frozen ActionSpec or delegation".into(),
+        ));
+    }
+    if input.execution_mode == "FIXTURE" && !input.allowed_tools.is_empty() {
+        return Err(Error::Forbidden(
+            "fixture authorization cannot grant provider tools".into(),
+        ));
+    }
+    if input.execution_mode == "TRUSTED_LOCAL_PROVIDER" && input.allowed_tools.is_empty() {
+        return Err(Error::Forbidden(
+            "provider authorization requires explicit bounded tools".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn evidence_matches_identity(evidence: &LeadStartEvidenceRecord, identity: &StartIdentity) -> bool {
@@ -1494,8 +1674,14 @@ fn evidence_matches_identity(evidence: &LeadStartEvidenceRecord, identity: &Star
         && evidence.spec_sha256 == identity.spec_sha256
         && evidence.config_hash == identity.config_hash
         && evidence.delegation_hash == identity.delegation_hash
-        && evidence.profile_revision_id.is_none()
-        && evidence.profile_hash.is_none()
+        && match &identity.profile {
+            None => evidence.profile_revision_id.is_none() && evidence.profile_hash.is_none(),
+            Some(profile) => {
+                evidence.profile_revision_id.as_deref()
+                    == Some(profile.profile_revision_id.as_str())
+                    && evidence.profile_hash.as_deref() == Some(profile.profile_hash.as_str())
+            }
+        }
 }
 
 fn evidence_authority_matches(
@@ -1607,6 +1793,20 @@ async fn start_lead_campaign_in_tx(
             .await?
             .map(|(mechanism,): (String,)| mechanism)
             .ok_or(Error::Conflict("lead request has no assessment"))?;
+    if mechanism == "MODEL"
+        && let Some(profile) = &identity.profile_content
+    {
+        let availability =
+            super::execution_profiles::load_provider_availability(connection).await?;
+        let (executable, warnings) =
+            crate::execution_profile::evaluate_executability(profile, &availability);
+        if !executable {
+            return Err(Error::Forbidden(format!(
+                "frozen execution profile is not executable: {}",
+                warnings.join("; ")
+            )));
+        }
+    }
     if !config.active
         || config.config_hash != request.project_config_hash
         || proposal.base_revision != config.base_commit
@@ -1665,16 +1865,43 @@ async fn start_lead_campaign_in_tx(
             "proposal objective differs from the original Lead request".into(),
         ));
     }
-    if let Some(expected) = expected {
-        if expected.profile_binding().is_some() {
+    match (
+        &identity.profile,
+        expected.and_then(ExpectedStartBinding::profile_binding),
+    ) {
+        (Some(_), None) => {
             return Err(Error::Forbidden(
-                "profile binding is unavailable: versioned profiles are not enforced in this build"
-                    .into(),
+                "this Lead request requires an exact frozen profile binding".into(),
             ));
         }
-        if !expected_binding_matches(expected, &identity) {
+        (None, Some(_)) => {
+            return Err(Error::Forbidden(
+                "this Lead request has no frozen execution profile context".into(),
+            ));
+        }
+        _ => {}
+    }
+    if matches!(authority, StartAuthority::Autonomous(_)) && identity.profile.is_some() {
+        return Err(Error::Forbidden(
+            "a unified-intake request can start only through explicit operator approval".into(),
+        ));
+    }
+    if let Some(expected) = expected
+        && !expected_binding_matches(expected, &identity)
+    {
+        return Err(Error::Conflict(
+            "expected Lead start binding is stale or changed",
+        ));
+    }
+    if let (Some(profile), Some(binding)) = (&identity.profile, expected) {
+        let Some((revision_id, hash)) = binding.profile_binding() else {
+            return Err(Error::Forbidden(
+                "this Lead request requires an exact frozen profile binding".into(),
+            ));
+        };
+        if profile.profile_revision_id != revision_id || profile.profile_hash != hash {
             return Err(Error::Conflict(
-                "expected Lead start binding is stale or changed",
+                "expected execution profile revision is stale or changed",
             ));
         }
     }
@@ -1763,31 +1990,45 @@ async fn start_lead_campaign_in_tx(
             input.clone()
         }
         "FIXTURE" => {
-            if authorization.is_some() {
-                return Err(Error::Invalid(
-                    "FIXTURE Lead start does not accept a provider authorization payload",
-                ));
-            }
-            NewCampaignAuthorization {
-                authorization_id: format!("lead-{}", request.id),
-                risk_class: "R0".into(),
-                execution_mode: "FIXTURE".into(),
-                actor: "lead-autonomous-start".into(),
-                rationale: format!(
-                    "autonomous R0 FIXTURE start for plan {} by delegation {}",
-                    identity.plan.plan_hash, grant.id
-                ),
-                authorized_paths: identity.action_spec.allowed_paths.clone(),
-                max_attempts: proposal.budget.max_attempts,
-                provider: proposal.route.provider.clone(),
-                model: proposal.route.model.clone(),
-                provider_mode: proposal.route.mode.clone(),
-                delegation_id: grant.id.clone(),
-                ..Default::default()
+            if let Some(input) = authorization {
+                if identity.profile.is_none() {
+                    return Err(Error::Invalid(
+                        "FIXTURE Lead start without a frozen profile does not accept an authorization payload",
+                    ));
+                }
+                input.clone()
+            } else {
+                NewCampaignAuthorization {
+                    authorization_id: format!("lead-{}", request.id),
+                    risk_class: "R0".into(),
+                    execution_mode: "FIXTURE".into(),
+                    actor: "lead-autonomous-start".into(),
+                    rationale: format!(
+                        "autonomous R0 FIXTURE start for plan {} by delegation {}",
+                        identity.plan.plan_hash, grant.id
+                    ),
+                    authorized_paths: identity.action_spec.allowed_paths.clone(),
+                    max_attempts: proposal.budget.max_attempts,
+                    provider: proposal.route.provider.clone(),
+                    model: proposal.route.model.clone(),
+                    provider_mode: proposal.route.mode.clone(),
+                    delegation_id: grant.id.clone(),
+                    ..Default::default()
+                }
             }
         }
         _ => return Err(Error::Invalid("stored lead assessment mechanism")),
     };
+    if let (Some(profile), Some(_context)) = (&identity.profile_content, &identity.profile) {
+        validate_profile_authorization(
+            &authorization_input,
+            profile,
+            proposal,
+            grant,
+            &identity.action_spec,
+            &mechanism,
+        )?;
+    }
     let (mode, principal_id, principal_label, rationale) = match authority {
         StartAuthority::Autonomous(_) => (
             "AUTONOMOUS",
@@ -1829,8 +2070,8 @@ async fn start_lead_campaign_in_tx(
                     .expect("ActionSpec serializes")
                     .as_bytes()
             ),
-            "profileRevisionId":Option::<String>::None,
-            "profileHash":Option::<String>::None,
+            "profileRevisionId":identity.profile.as_ref().map(|profile| profile.profile_revision_id.clone()),
+            "profileHash":identity.profile.as_ref().map(|profile| profile.profile_hash.clone()),
         }))
         .expect("lead start policy serializes")
         .as_bytes(),
@@ -1842,6 +2083,14 @@ async fn start_lead_campaign_in_tx(
         spec_sha256: &identity.spec_sha256,
         config_hash: &identity.config_hash,
         delegation_hash: &identity.delegation_hash,
+        profile_revision_id: identity
+            .profile
+            .as_ref()
+            .map(|profile| profile.profile_revision_id.as_str()),
+        profile_hash: identity
+            .profile
+            .as_ref()
+            .map(|profile| profile.profile_hash.as_str()),
         policy_hash: &policy_hash,
         authorization_digest: &submission_digest,
     });
@@ -1978,7 +2227,7 @@ async fn start_lead_campaign_in_tx(
          (request_id,campaign_id,mode,principal_id,principal_label,rationale,idempotency_key,
           request_hash,plan_hash,profile_revision_id,profile_hash,spec_sha256,config_hash,
           delegation_hash,policy_hash,authorization_digest,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,?10,?11,?12,?13,?14,?15)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
     )
     .bind(&request.id)
     .bind(&campaign.id)
@@ -1989,6 +2238,18 @@ async fn start_lead_campaign_in_tx(
     .bind(idempotency_key)
     .bind(&identity.request_hash)
     .bind(&identity.plan_hash)
+    .bind(
+        identity
+            .profile
+            .as_ref()
+            .map(|profile| profile.profile_revision_id.clone()),
+    )
+    .bind(
+        identity
+            .profile
+            .as_ref()
+            .map(|profile| profile.profile_hash.clone()),
+    )
     .bind(sha256_hex(
         serde_json::to_string(&identity.action_spec)
             .expect("ActionSpec serializes")
@@ -1999,6 +2260,29 @@ async fn start_lead_campaign_in_tx(
     .bind(&policy_hash)
     .bind(&submission_digest)
     .bind(&now)
+    .execute(&mut *connection)
+    .await?;
+    if let Some(profile) = &identity.profile {
+        sqlx::query::query(
+            "INSERT INTO campaign_execution_profile_bindings
+             (campaign_id,request_id,profile_revision_id,profile_revision,profile_hash,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+        )
+        .bind(&campaign.id)
+        .bind(&request.id)
+        .bind(&profile.profile_revision_id)
+        .bind(i64::from(profile.profile_revision))
+        .bind(&profile.profile_hash)
+        .bind(&now)
+        .execute(&mut *connection)
+        .await?;
+    }
+    sqlx::query::query(
+        "UPDATE intake_requests SET campaign_id=?1,updated_at=?2 WHERE lead_request_id=?3",
+    )
+    .bind(&campaign.id)
+    .bind(&now)
+    .bind(&request.id)
     .execute(&mut *connection)
     .await?;
     sqlx::query::query(
@@ -2142,25 +2426,38 @@ struct CampaignExecutionEnvelope<'a> {
     spec_sha256: &'a str,
     config_hash: &'a str,
     delegation_hash: &'a str,
+    profile_revision_id: Option<&'a str>,
+    profile_hash: Option<&'a str>,
     policy_hash: &'a str,
     authorization_digest: &'a str,
 }
 
 fn campaign_execution_envelope_hash(envelope: &CampaignExecutionEnvelope<'_>) -> String {
+    let mut value = serde_json::json!({
+        "schema": if envelope.profile_revision_id.is_some() {
+            "s4d-campaign-execution-binding-v2"
+        } else {
+            "s4d-campaign-execution-binding-v1"
+        },
+        "requestId":envelope.request_id,
+        "planId":envelope.plan_id,
+        "planHash":envelope.plan_hash,
+        "specSha256":envelope.spec_sha256,
+        "configHash":envelope.config_hash,
+        "delegationHash":envelope.delegation_hash,
+        "policyHash":envelope.policy_hash,
+        "authorizationDigest":envelope.authorization_digest,
+    });
+    if let (Some(revision_id), Some(profile_hash)) =
+        (envelope.profile_revision_id, envelope.profile_hash)
+    {
+        value["profileRevisionId"] = serde_json::json!(revision_id);
+        value["profileHash"] = serde_json::json!(profile_hash);
+    }
     sha256_hex(
-        serde_json::to_string(&serde_json::json!({
-            "schema":"s4d-campaign-execution-binding-v1",
-            "requestId":envelope.request_id,
-            "planId":envelope.plan_id,
-            "planHash":envelope.plan_hash,
-            "specSha256":envelope.spec_sha256,
-            "configHash":envelope.config_hash,
-            "delegationHash":envelope.delegation_hash,
-            "policyHash":envelope.policy_hash,
-            "authorizationDigest":envelope.authorization_digest,
-        }))
-        .expect("campaign execution binding serializes")
-        .as_bytes(),
+        serde_json::to_string(&value)
+            .expect("campaign execution binding serializes")
+            .as_bytes(),
     )
 }
 
@@ -2239,6 +2536,8 @@ async fn validate_campaign_execution_binding_in_tx(
         spec_sha256: &root_sha,
         config_hash: &evidence.config_hash,
         delegation_hash: &evidence.delegation_hash,
+        profile_revision_id: evidence.profile_revision_id.as_deref(),
+        profile_hash: evidence.profile_hash.as_deref(),
         policy_hash: &evidence.policy_hash,
         authorization_digest: &evidence.authorization_digest,
     });
@@ -2629,7 +2928,7 @@ fn parse_state(value: &str) -> Option<LeadRequestState> {
     }
 }
 
-async fn load_lead_request(
+pub(super) async fn load_lead_request(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<LeadRequestRecord, Error> {
@@ -2743,7 +3042,7 @@ async fn load_proposal(
     })
 }
 
-async fn load_frozen_plan_by_id(
+pub(super) async fn load_frozen_plan_by_id(
     connection: &mut SqliteConnection,
     id: &str,
 ) -> Result<FrozenLeadPlanRecord, Error> {
@@ -3358,7 +3657,7 @@ async fn ensure_integration(
     Ok(())
 }
 
-async fn load_action_binding(
+pub(super) async fn load_action_binding(
     connection: &mut SqliteConnection,
     action_id: &str,
 ) -> Result<ActionBinding, Error> {

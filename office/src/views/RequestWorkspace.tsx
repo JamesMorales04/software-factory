@@ -52,6 +52,7 @@ export function RequestWorkspace() {
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [fencedCampaignId, setFencedCampaignId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [rationale, setRationale] = useState("");
   const [approvedScope, setApprovedScope] = useState(false);
@@ -90,6 +91,7 @@ export function RequestWorkspace() {
     setLastLoadedAt(null);
     setActionError(null);
     setNotice(null);
+    setFencedCampaignId(null);
     setRationale("");
     setApprovedScope(false);
     setMessageBody("");
@@ -115,6 +117,27 @@ export function RequestWorkspace() {
       setNotice(success);
       return true;
     } catch (cause) {
+      if (
+        cause instanceof CoreApiError &&
+        cause.code === "LEAD_ALREADY_STARTED"
+      ) {
+        const body =
+          typeof cause.body === "object" && cause.body !== null
+            ? (cause.body as {
+                campaign_id?: unknown;
+                campaign_status?: unknown;
+              })
+            : null;
+        const campaignId =
+          typeof body?.campaign_id === "string" ? body.campaign_id : null;
+        setFencedCampaignId(campaignId);
+        setActionError(
+          campaignId
+            ? `A Campaign already started (${shortId(campaignId)}). Use the Campaign workspace for cancellation.`
+            : "A Campaign already started. Use the Campaign workspace for cancellation.",
+        );
+        return false;
+      }
       setActionError(
         errorMessage(cause, "The Core operation could not be completed."),
       );
@@ -145,12 +168,12 @@ export function RequestWorkspace() {
   }
 
   const terminal = isTerminalIntakeState(data.state);
-  const canMessage = !terminal;
+  const canMessage = !terminal && data.plan === null;
   const canCancel = !terminal && data.state !== "EXECUTING";
-  const authorizationPending = ![
-    "EXECUTING",
-    "COMPLETED",
-    "CANCELLED",
+  const authorizationPending = [
+    "AWAITING_APPROVAL",
+    "BLOCKED",
+    "FAILED",
   ].includes(data.state);
   const authorizationAvailable = data.authorization.available;
   const offline = connectionError !== null;
@@ -175,12 +198,12 @@ export function RequestWorkspace() {
     );
   }
 
-  async function freezePlan() {
+  async function completeAssessment() {
     if (!data) return;
     await runAction(
       "freeze",
       async () => {
-        await coreApi.freezeLeadRequest(data.leadRequestId);
+        await coreApi.assessIntakeRequest(data.id);
       },
       "Core froze the plan. Approval now requires the exact plan hash shown below.",
     );
@@ -198,7 +221,6 @@ export function RequestWorkspace() {
       async () => {
         await coreApi.approveIntakeRequest(data.id, {
           expected_plan_hash: planHash,
-          actor: "office-operator",
           rationale: rationale.trim(),
         });
       },
@@ -354,9 +376,17 @@ export function RequestWorkspace() {
       )}
 
       {actionError && (
-        <p className="ui-callout ui-callout--danger" role="alert">
-          {actionError}
-        </p>
+        <div className="ui-callout ui-callout--danger" role="alert">
+          <p>{actionError}</p>
+          {fencedCampaignId && (
+            <Link
+              className={buttonClass("secondary")}
+              to={`/campaigns/${encodeURIComponent(fencedCampaignId)}`}
+            >
+              Open Campaign
+            </Link>
+          )}
+        </div>
       )}
       {notice && (
         <p className="notice" role="status" aria-live="polite">
@@ -409,18 +439,18 @@ export function RequestWorkspace() {
                 (data.proposal ? (
                   <>
                     <p className="muted">
-                      Core proposed a plan but has not exposed a frozen plan
-                      hash. Freeze the existing Lead plan record before
-                      approval.
+                      Core proposed a plan but has not frozen its executable
+                      identity. Complete the assessment so Core derives and
+                      freezes the first ActionSpec before approval.
                     </p>
                     <Button
                       variant="primary"
-                      disabled={
-                        busy !== null || offline || data.leadRequestId === ""
-                      }
-                      onClick={() => void freezePlan()}
+                      disabled={busy !== null || offline}
+                      onClick={() => void completeAssessment()}
                     >
-                      {busy === "freeze" ? "Freezing…" : "Freeze plan"}
+                      {busy === "freeze"
+                        ? "Freezing…"
+                        : "Complete assessment and freeze plan"}
                     </Button>
                   </>
                 ) : (
@@ -583,8 +613,9 @@ export function RequestWorkspace() {
             <Panel className="request-panel">
               <h2>Cancelled request</h2>
               <p className="muted">
-                Core recorded an intake-only cancellation. An authorized
-                Campaign, if any, has its own cancellation state.
+                Core recorded an authoritative Lead-boundary withdrawal. An
+                authorized Campaign, if any, has its own cancellation state and
+                remains authoritative.
               </p>
             </Panel>
           )}
@@ -702,6 +733,11 @@ export function RequestWorkspace() {
                   </Button>
                 </div>
               </form>
+            ) : data.plan !== null ? (
+              <p className="muted">
+                The executable plan is frozen. Core does not accept amendments
+                here; start a new request to change the objective or plan.
+              </p>
             ) : (
               <p className="muted">
                 Core reports this request as terminal, so new messages are not
@@ -775,8 +811,8 @@ export function RequestWorkspace() {
             <Panel className="request-panel">
               <h2>Cancel request</h2>
               <p className="muted">
-                Records an intake-only cancellation. It does not cancel an
-                authorized Campaign.
+                Records an authoritative withdrawal at the Lead boundary. It
+                does not cancel an authorized Campaign.
               </p>
               <Button
                 variant="quiet"

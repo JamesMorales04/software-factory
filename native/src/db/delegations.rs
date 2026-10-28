@@ -37,83 +37,12 @@ impl Database {
             sealed.content_hash = sealed.compute_content_hash();
         }
         sealed.validate(Utc::now())?;
-        let content_json =
-            serde_json::to_string(&sealed).map_err(|_| Error::Invalid("delegation encoding"))?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        if let Some(id) = replay(
-            &mut transaction,
-            idempotency_key,
-            "create_standing_delegation",
-            &sealed.content_hash,
-        )
-        .await?
-        {
-            if id == sealed.id {
-                let existing = load_delegation(&mut transaction, &sealed.id).await?;
-                transaction.commit().await?;
-                return Ok((existing, false));
-            }
-            return Err(Error::Conflict(
-                "idempotency key belongs to another delegation",
-            ));
-        }
-        let project: Option<(String,)> =
-            sqlx::query_as::query_as("SELECT id FROM projects WHERE id=?1")
-                .bind(&sealed.project_id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-        if project.is_none() {
-            return Err(Error::NotFound);
-        }
-        let existing: Option<(String,)> =
-            sqlx::query_as::query_as("SELECT id FROM standing_delegations WHERE id=?1")
-                .bind(&sealed.id)
-                .fetch_optional(&mut *transaction)
-                .await?;
-        if existing.is_some() {
-            return Err(Error::Conflict(
-                "delegation id already exists with immutable content",
-            ));
-        }
-        sqlx::query::query(
-            "INSERT INTO standing_delegations
-             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8)",
-        )
-        .bind(&sealed.id)
-        .bind(&sealed.principal_id)
-        .bind(&sealed.audit_id)
-        .bind(&sealed.project_id)
-        .bind(sealed.revision)
-        .bind(&sealed.content_hash)
-        .bind(&content_json)
-        .bind(Utc::now().to_rfc3339())
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query(
-            "INSERT INTO delegation_usage (delegation_id,requests,sessions,attempts)
-             VALUES (?1,0,0,0)",
-        )
-        .bind(&sealed.id)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
-            .bind(idempotency_key)
-            .bind("create_standing_delegation")
-            .bind(&sealed.content_hash)
-            .bind(&sealed.id)
-            .execute(&mut *transaction)
-            .await?;
-        record_event(
-            &mut transaction,
-            &sealed.id,
-            "delegation.recorded",
-            "proposed grant; autonomous execution remains closed",
-        )
-        .await?;
+        let result =
+            create_standing_delegation_in_tx(&mut transaction, &sealed, idempotency_key).await?;
         transaction.commit().await?;
-        Ok((sealed, true))
+        Ok(result)
     }
 
     pub async fn standing_delegations(&self) -> Result<Vec<StandingDelegation>, Error> {
@@ -325,6 +254,90 @@ impl Database {
         transaction.commit().await?;
         Ok(usage)
     }
+}
+
+pub(super) async fn create_standing_delegation_in_tx(
+    connection: &mut SqliteConnection,
+    sealed: &StandingDelegation,
+    idempotency_key: &str,
+) -> Result<(StandingDelegation, bool), Error> {
+    if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
+        return Err(Error::Invalid("delegation idempotency key"));
+    }
+    sealed.validate(Utc::now())?;
+    if let Some(id) = replay(
+        connection,
+        idempotency_key,
+        "create_standing_delegation",
+        &sealed.content_hash,
+    )
+    .await?
+    {
+        if id == sealed.id {
+            let existing = load_delegation(connection, &sealed.id).await?;
+            return Ok((existing, false));
+        }
+        return Err(Error::Conflict(
+            "idempotency key belongs to another delegation",
+        ));
+    }
+    let project: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM projects WHERE id=?1")
+            .bind(&sealed.project_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if project.is_none() {
+        return Err(Error::NotFound);
+    }
+    let existing: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM standing_delegations WHERE id=?1")
+            .bind(&sealed.id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if existing.is_some() {
+        return Err(Error::Conflict(
+            "delegation id already exists with immutable content",
+        ));
+    }
+    let content_json =
+        serde_json::to_string(sealed).map_err(|_| Error::Invalid("delegation encoding"))?;
+    sqlx::query::query(
+        "INSERT INTO standing_delegations
+         (id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at,created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,NULL,?8)",
+    )
+    .bind(&sealed.id)
+    .bind(&sealed.principal_id)
+    .bind(&sealed.audit_id)
+    .bind(&sealed.project_id)
+    .bind(sealed.revision)
+    .bind(&sealed.content_hash)
+    .bind(&content_json)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "INSERT INTO delegation_usage (delegation_id,requests,sessions,attempts)
+         VALUES (?1,0,0,0)",
+    )
+    .bind(&sealed.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        .bind(idempotency_key)
+        .bind("create_standing_delegation")
+        .bind(&sealed.content_hash)
+        .bind(&sealed.id)
+        .execute(&mut *connection)
+        .await?;
+    record_event(
+        connection,
+        &sealed.id,
+        "delegation.recorded",
+        "proposed grant; autonomous execution remains closed",
+    )
+    .await?;
+    Ok((sealed.clone(), true))
 }
 
 pub(super) async fn reserve_usage_in_tx(

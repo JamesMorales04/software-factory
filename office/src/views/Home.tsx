@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Select, Textarea } from "../components/ui/Field";
+import { Checkbox, Select, Textarea } from "../components/ui/Field";
 import {
   EmptyState,
   LoadingState,
@@ -13,6 +13,7 @@ import {
   CoreApiError,
   coreApi,
   type ExecutionProfile,
+  type IntakeExecutionPolicyScope,
   type IntakeMode,
   type IntakeRequestSummary,
   type NewIntakeRequest,
@@ -43,6 +44,17 @@ function endpointUnavailable(cause: unknown): boolean {
     cause instanceof CoreApiError &&
     (cause.status === 404 || cause.status === 405 || cause.status === 501)
   );
+}
+
+function policyScopeFromError(
+  cause: CoreApiError,
+): IntakeExecutionPolicyScope | null {
+  const body =
+    typeof cause.body === "object" && cause.body !== null
+      ? (cause.body as { scope?: IntakeExecutionPolicyScope })
+      : null;
+  const scope = body?.scope;
+  return scope && typeof scope === "object" ? scope : null;
 }
 
 function projectName(projectId: string, projects: Project[] | null): string {
@@ -77,6 +89,14 @@ export function Home() {
   }>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [policySetup, setPolicySetup] = useState<{
+    pending: NewIntakeRequest;
+    scope: IntakeExecutionPolicyScope;
+    policyKey: string;
+  } | null>(null);
+  const [policyAcknowledged, setPolicyAcknowledged] = useState(false);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyError, setPolicyError] = useState<string | null>(null);
   const requestKey = useRef(newIdempotencyKey());
 
   const loadProjects = useCallback(async () => {
@@ -177,6 +197,49 @@ export function Home() {
   function resetRequestKey() {
     requestKey.current = newIdempotencyKey();
     setFormError(null);
+    setPolicySetup(null);
+    setPolicyAcknowledged(false);
+    setPolicyError(null);
+  }
+
+  async function submitRequest(input: NewIntakeRequest) {
+    setBusy(true);
+    setFormError(null);
+    setPolicyError(null);
+    try {
+      const created = await coreApi.createIntakeRequest(input);
+      setPolicySetup(null);
+      setPolicyAcknowledged(false);
+      navigate(`/requests/${encodeURIComponent(created.id)}`);
+    } catch (cause) {
+      if (
+        cause instanceof CoreApiError &&
+        cause.reason === "EXECUTION_POLICY_REQUIRED"
+      ) {
+        const scope = policyScopeFromError(cause);
+        if (scope) {
+          setPolicySetup({
+            pending: {
+              ...input,
+              ...(scope.profile === null
+                ? {}
+                : { execution_profile_id: scope.profile.id }),
+            },
+            scope,
+            policyKey: newIdempotencyKey(),
+          });
+          setPolicyAcknowledged(false);
+          return;
+        }
+      }
+      setFormError(
+        endpointUnavailable(cause)
+          ? "Unified request intake is not available from this Core build. The typed Office client is ready, but Core has not exposed /intake/requests."
+          : errorMessage(cause, "The request could not be submitted."),
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submit(event: React.FormEvent) {
@@ -204,8 +267,6 @@ export function Home() {
       return;
     }
 
-    setBusy(true);
-    setFormError(null);
     const input: NewIntakeRequest = {
       project_id: projectId,
       objective: trimmed,
@@ -213,17 +274,33 @@ export function Home() {
       mode,
       idempotency_key: requestKey.current,
     };
+    await submitRequest(input);
+  }
+
+  async function enablePolicy() {
+    if (!policySetup?.scope.profile || !policySetup.scope.project) return;
+    const { scope, pending, policyKey } = policySetup;
+    const profile = scope.profile;
+    const project = scope.project;
+    if (profile === null || project === null) return;
+    setPolicyBusy(true);
+    setPolicyError(null);
     try {
-      const created = await coreApi.createIntakeRequest(input);
-      navigate(`/requests/${encodeURIComponent(created.id)}`);
+      await coreApi.enableExecutionPolicy(pending.project_id, {
+        execution_profile_id: profile.id,
+        expected_revision: profile.revision,
+        expected_revision_hash: profile.contentHash,
+        project_config_hash: project.configHash,
+        acknowledge: true,
+        idempotency_key: policyKey,
+      });
+      await submitRequest(pending);
     } catch (cause) {
-      setFormError(
-        endpointUnavailable(cause)
-          ? "Unified request intake is not available from this Core build. The typed Office client is ready, but Core has not exposed /intake/requests."
-          : errorMessage(cause, "The request could not be submitted."),
+      setPolicyError(
+        errorMessage(cause, "The execution policy could not be enabled."),
       );
     } finally {
-      setBusy(false);
+      setPolicyBusy(false);
     }
   }
 
@@ -460,6 +537,123 @@ export function Home() {
                   )}
                 </fieldset>
 
+                {policySetup && (
+                  <div
+                    className="ui-callout ui-callout--attention home-policy"
+                    role="status"
+                  >
+                    <h3>Enable governed execution</h3>
+                    <p>
+                      Core requires an explicit, bounded execution policy for
+                      this Project and exact profile revision before it can
+                      create the Lead request. This grant is non-autonomous and
+                      limited to R0 work; it does not enable auto-start.
+                    </p>
+                    {policySetup.scope.profile && policySetup.scope.project ? (
+                      <dl className="request-facts">
+                        <div>
+                          <dt>Profile</dt>
+                          <dd>
+                            {policySetup.scope.profile.name} r
+                            {policySetup.scope.profile.revision} ·{" "}
+                            <code title={policySetup.scope.profile.contentHash}>
+                              {shortId(
+                                policySetup.scope.profile.contentHash,
+                                12,
+                              )}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Project</dt>
+                          <dd>
+                            {policySetup.scope.project.repository} ·{" "}
+                            <code title={policySetup.scope.project.configHash}>
+                              {shortId(
+                                policySetup.scope.project.configHash,
+                                12,
+                              )}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Allowed paths</dt>
+                          <dd>
+                            {policySetup.scope.project.allowedPaths.join(
+                              ", ",
+                            ) || "None"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Capabilities</dt>
+                          <dd>
+                            {policySetup.scope.project.capabilities.join(
+                              ", ",
+                            ) || "None"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Implementer route</dt>
+                          <dd>
+                            {policySetup.scope.profile.implementer.provider}/
+                            {policySetup.scope.profile.implementer.model}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Grant terms</dt>
+                          <dd>
+                            R0 only · non-autonomous · 30 days ·{" "}
+                            {policySetup.scope.profile.budgets.maxAttempts}{" "}
+                            attempts ·{" "}
+                            {policySetup.scope.profile.budgets.maxSessions}{" "}
+                            sessions
+                          </dd>
+                        </div>
+                      </dl>
+                    ) : (
+                      <p className="ui-callout ui-callout--danger">
+                        Core required an execution policy but did not return the
+                        exact profile and Project scope. Refresh the page and
+                        try again.
+                      </p>
+                    )}
+                    <Checkbox
+                      label="I authorize this bounded non-autonomous R0 execution policy for the exact Project configuration and profile revision shown."
+                      checked={policyAcknowledged}
+                      onChange={(event) =>
+                        setPolicyAcknowledged(event.target.checked)
+                      }
+                      disabled={
+                        policyBusy ||
+                        policySetup.scope.profile === null ||
+                        policySetup.scope.project === null
+                      }
+                    />
+                    {policyError && (
+                      <p className="ui-callout ui-callout--danger" role="alert">
+                        {policyError}
+                      </p>
+                    )}
+                    <div className="request-form-actions">
+                      <Button
+                        type="button"
+                        variant="primary"
+                        disabled={
+                          policyBusy ||
+                          !policyAcknowledged ||
+                          policySetup.scope.profile === null ||
+                          policySetup.scope.project === null
+                        }
+                        onClick={() => void enablePolicy()}
+                      >
+                        {policyBusy
+                          ? "Enabling governed execution…"
+                          : "Enable governed execution"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 {formError && (
                   <p className="ui-callout ui-callout--danger" role="alert">
                     {formError}
@@ -470,7 +664,9 @@ export function Home() {
                   <Button
                     type="submit"
                     variant="primary"
-                    disabled={busy || profileUnavailable}
+                    disabled={
+                      busy || profileUnavailable || policySetup !== null
+                    }
                   >
                     {busy ? "Submitting request…" : "Submit request"}
                   </Button>

@@ -865,8 +865,9 @@ export interface NewIntakeRequest {
 
 export interface ApproveIntakeRequest {
   expected_plan_hash: string;
-  actor: string;
   rationale: string;
+  principal_label?: string;
+  idempotency_key?: string;
 }
 
 export interface IntakeMessageRequest {
@@ -879,6 +880,65 @@ export interface IntakeRequestFilters {
   projectId?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface IntakeExecutionPolicyScope {
+  project: {
+    id: string;
+    configHash: string;
+    repository: string;
+    baseCommit: string;
+    allowedPaths: string[];
+    capabilities: string[];
+    qualityProfile: string;
+  } | null;
+  profile: {
+    id: string;
+    revisionId: string;
+    revision: number;
+    name: string;
+    contentHash: string;
+    executable: boolean;
+    warnings: string[];
+    budgets: ExecutionProfileBudgets;
+    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] };
+    implementer: ExecutionRoleRoute;
+  } | null;
+}
+
+export interface ExecutionPolicyRequest {
+  execution_profile_id: string;
+  expected_revision: number;
+  expected_revision_hash: string;
+  project_config_hash: string;
+  acknowledge: true;
+  idempotency_key: string;
+}
+
+export interface ExecutionPolicyGrant {
+  delegation_id: string;
+  project_id: string;
+  principal_id: string;
+  profile_id: string;
+  profile_revision_id: string;
+  profile_revision: number;
+  profile_hash: string;
+  project_config_hash: string;
+  acknowledged: boolean;
+  idempotency_key: string;
+  created_at: string;
+}
+
+export interface ExecutionPolicyResult {
+  grant: ExecutionPolicyGrant;
+  delegation: StandingDelegation;
+  usage: {
+    delegation_id: string;
+    requests: number;
+    sessions: number;
+    attempts: number;
+  };
+  replayed: boolean;
 }
 
 export interface NewCampaignRequest {
@@ -1228,9 +1288,18 @@ export async function bootstrapOwner(
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
   const body = (await response.json()) as AuthSession;
@@ -1264,9 +1333,18 @@ export async function getAuthSession(): Promise<AuthSession> {
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
   const session = (await response.json()) as AuthSession;
@@ -1302,9 +1380,18 @@ async function accessRequest<T>(
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -1323,9 +1410,18 @@ async function authPost(path: string): Promise<void> {
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
 }
@@ -1339,11 +1435,28 @@ export function newIdempotencyKey(): string {
 
 export class CoreApiError extends Error {
   readonly status: number;
+  readonly code: string | null;
+  readonly reason: string | null;
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "CoreApiError";
     this.status = status;
+    this.body = body ?? null;
+    const record =
+      typeof body === "object" && body !== null
+        ? (body as Record<string, unknown>)
+        : null;
+    this.code = record && typeof record.code === "string" ? record.code : null;
+    const authorization =
+      record && typeof record.authorization === "object"
+        ? (record.authorization as Record<string, unknown>)
+        : null;
+    this.reason =
+      authorization && typeof authorization.reason === "string"
+        ? authorization.reason
+        : this.code;
   }
 }
 
@@ -1378,9 +1491,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
+    let body: unknown = null;
+    if (text !== "") {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
     throw new CoreApiError(
       response.status,
       messageFromBody(response.status, text),
+      body,
     );
   }
   if (response.status === 204) {
@@ -1743,6 +1865,11 @@ export const coreApi = {
     request<IntakeRequestProjection>(
       `/intake/requests/${encodeURIComponent(id)}/cancel`,
       { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  enableExecutionPolicy: (projectId: string, input: ExecutionPolicyRequest) =>
+    request<ExecutionPolicyResult>(
+      `/projects/${encodeURIComponent(projectId)}/execution-policy`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   registerProject: (input: NewProjectRequest) =>
     request<Project>("/projects", {
