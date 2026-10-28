@@ -489,10 +489,6 @@ async fn issue_bootstrap_code(recovery: bool) -> Result<(), Box<dyn std::error::
         db.close().await;
         return Ok(());
     }
-    if recovery {
-        db.reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
-            .await?;
-    }
     let path = PathBuf::from(
         env::var("FACTORY_ENROLLMENT_CODE_FILE").unwrap_or_else(|_| "/data/enrollment-code".into()),
     );
@@ -503,7 +499,11 @@ async fn issue_bootstrap_code(recovery: bool) -> Result<(), Box<dyn std::error::
         expires_at_ms,
     };
     let serialized = serde_json::to_vec(&record)?;
-    let temporary = path.with_extension(format!("bootstrap-{}", std::process::id()));
+    let temporary = path.with_extension(format!(
+        "bootstrap-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -516,6 +516,10 @@ async fn issue_bootstrap_code(recovery: bool) -> Result<(), Box<dyn std::error::
     let used_marker = path.with_file_name("enrollment-used");
     if used_marker.exists() {
         std::fs::remove_file(used_marker)?;
+    }
+    if recovery {
+        db.reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
+            .await?;
     }
     println!("{code}");
     db.close().await;
@@ -888,8 +892,10 @@ async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: N
         || path.starts_with("/auth/")
         || path == "/core-api/auth"
         || path.starts_with("/core-api/auth/");
+    let trusted = trusted_origins();
+    let secure_cookie =
+        factory_native::device_session::secure_cookie_context(request.headers(), &trusted);
     {
-        let trusted = trusted_origins();
         let test_host_absent = cfg!(test) && !request.headers().contains_key(header::HOST);
         if !test_host_absent && !request_host_allowed(request.headers(), &trusted) {
             return StatusCode::BAD_REQUEST.into_response();
@@ -910,6 +916,7 @@ async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: N
         }
     }
     let had_session = session_token.is_some();
+    let mut discard_invalid_session_cookie = false;
     if let Some(token) = session_token {
         if request.headers().contains_key(header::AUTHORIZATION) {
             return StatusCode::BAD_REQUEST.into_response();
@@ -922,57 +929,80 @@ async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: N
             )
             .await
         {
-            Ok(Some(session)) => session,
+            Ok(Some(session)) => Some(session),
+            Ok(None)
+                if (matches!(
+                    *request.method(),
+                    Method::GET | Method::HEAD | Method::OPTIONS
+                ) && matches!(
+                    path,
+                    "/auth/session"
+                        | "/core-api/auth/session"
+                        | "/setup/status"
+                        | "/core-api/setup/status"
+                )) || (*request.method() == Method::POST
+                    && matches!(path, "/auth/bootstrap" | "/core-api/auth/bootstrap")) =>
+            {
+                discard_invalid_session_cookie = true;
+                None
+            }
             Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
             Err(error) => return api_error(error),
         };
-        if !matches!(
-            *request.method(),
-            Method::GET | Method::HEAD | Method::OPTIONS
-        ) {
-            let csrf_cookie = match cookie_value(request.headers(), CSRF_COOKIE) {
-                Ok(Some(value)) => value,
-                _ => return StatusCode::FORBIDDEN.into_response(),
-            };
-            let csrf_header = request
-                .headers()
-                .get(CSRF_HEADER)
-                .and_then(|value| value.to_str().ok());
-            if csrf_header != Some(csrf_cookie.as_str()) {
-                return StatusCode::FORBIDDEN.into_response();
+        if let Some(session) = session {
+            if !matches!(
+                *request.method(),
+                Method::GET | Method::HEAD | Method::OPTIONS
+            ) {
+                let csrf_cookie = match cookie_value(request.headers(), CSRF_COOKIE) {
+                    Ok(Some(value)) => value,
+                    _ => return StatusCode::FORBIDDEN.into_response(),
+                };
+                let csrf_header = request
+                    .headers()
+                    .get(CSRF_HEADER)
+                    .and_then(|value| value.to_str().ok());
+                if csrf_header != Some(csrf_cookie.as_str()) {
+                    return StatusCode::FORBIDDEN.into_response();
+                }
+                let matches = app
+                    .db
+                    .device_session_csrf_matches(
+                        &session.id,
+                        &factory_native::device_session::sha256_hex(&csrf_cookie),
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .await;
+                match matches {
+                    Ok(true) => {}
+                    Ok(false) => return StatusCode::FORBIDDEN.into_response(),
+                    Err(error) => return api_error(error),
+                }
             }
-            let matches = app
+            if let Err(error) = app
                 .db
-                .device_session_csrf_matches(
-                    &session.id,
-                    &factory_native::device_session::sha256_hex(&csrf_cookie),
-                    chrono::Utc::now().timestamp_millis(),
-                )
-                .await;
-            match matches {
-                Ok(true) => {}
-                Ok(false) => return StatusCode::FORBIDDEN.into_response(),
-                Err(error) => return api_error(error),
+                .touch_device_session(&session.id, chrono::Utc::now().timestamp_millis())
+                .await
+            {
+                return api_error(error);
             }
-        }
-        if let Err(error) = app
-            .db
-            .touch_device_session(&session.id, chrono::Utc::now().timestamp_millis())
-            .await
-        {
-            return api_error(error);
-        }
-        let authorization =
-            match axum::http::HeaderValue::from_str(&format!("Bearer {}", app.operator_token)) {
+            let authorization = match axum::http::HeaderValue::from_str(&format!(
+                "Bearer {}",
+                app.operator_token
+            )) {
                 Ok(value) => value,
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             };
-        request
-            .headers_mut()
-            .insert(header::AUTHORIZATION, authorization);
-        request.extensions_mut().insert(session);
+            request
+                .headers_mut()
+                .insert(header::AUTHORIZATION, authorization);
+            request.extensions_mut().insert(session);
+        }
     }
     let mut response = next.run(request).await;
+    if discard_invalid_session_cookie {
+        factory_native::device_session::clear_cookies(&mut response, secure_cookie);
+    }
     if auth_route || has_origin || had_session {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
@@ -4745,7 +4775,7 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
-        let router = build_router(app);
+        let router = build_router(app.clone());
         let response = router
             .clone()
             .oneshot(
@@ -4904,6 +4934,7 @@ mod tests {
             .unwrap();
         assert_eq!(logout.status(), StatusCode::NO_CONTENT);
         let revoked = router
+            .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/projects")
@@ -4915,6 +4946,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        let recovered = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/auth/session")
+                    .header("host", "localhost:8765")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        assert_eq!(
+            recovered
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            2
+        );
+        let body = axum::body::to_bytes(recovered.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], false);
+        app.db
+            .reset_owner_bootstrap("local-recovery", chrono::Utc::now().timestamp_millis())
+            .await
+            .unwrap();
+        let recovery_code = "one-time-recovery-confirmation";
+        std::fs::write(
+            &code_path,
+            serde_json::to_vec(&BootstrapCodeRecord {
+                code_sha256: factory_native::device_session::sha256_hex(recovery_code),
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let reenrolled = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/bootstrap")
+                    .header("host", "localhost:8765")
+                    .header("origin", "http://localhost:8765")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("{session_cookie}; {csrf_cookie}"))
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "code": recovery_code,
+                            "deviceName": "Recovered workstation"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reenrolled.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(reenrolled.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(session["authenticated"], true);
         let _ = std::fs::remove_file(database_path);
         let _ = std::fs::remove_file(code_path);
     }
