@@ -9,6 +9,7 @@ import {
   ReceiptModelProvenance,
   ReviewFindings,
 } from "../components/office/CandidateEvidence";
+import { CandidatePullRequest } from "../components/office/CandidatePullRequest";
 import { ParticipantSessionList } from "../components/office/ParticipantSessionList";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { WorkGraphPanel } from "../components/office/WorkGraph";
@@ -852,6 +853,14 @@ export function CampaignDetail() {
                     campaignId={campaign.id}
                     candidateId={candidate.id}
                   />
+                  {project && (
+                    <CandidatePullRequest
+                      campaignId={campaign.id}
+                      candidateId={candidate.id}
+                      projectId={project.id}
+                      candidateCommitSha={candidate.commit_sha}
+                    />
+                  )}
                   <div className="campaign-actions">
                     <Button size="sm" onClick={() => selectTab("evidence")}>
                       View evidence

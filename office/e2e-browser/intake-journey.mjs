@@ -363,7 +363,7 @@ try {
       idempotency_key: "intake-e2e-project",
     }),
   });
-  const config = await coreApi(`/projects/${project.id}/config`, {
+  await coreApi(`/projects/${project.id}/config`, {
     method: "PUT",
     body: JSON.stringify({
       expectedRevision: 1,

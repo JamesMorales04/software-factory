@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   getCandidateReceipts: vi.fn(),
   getLeadRequest: vi.fn(),
   cancelCampaign: vi.fn(),
+  getCandidateDiff: vi.fn(),
+  getProjectGitHub: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -105,6 +107,11 @@ describe("CampaignDetail", () => {
     mocks.getCandidateReceipts.mockReset();
     mocks.getLeadRequest.mockReset();
     mocks.cancelCampaign.mockReset();
+    mocks.getCandidateDiff.mockReset();
+    mocks.getProjectGitHub.mockReset().mockResolvedValue({
+      binding: null,
+      sync_state: null,
+    });
   });
 
   it("opens the Overview tab by default and separates lifecycle facts", async () => {
@@ -187,5 +194,87 @@ describe("CampaignDetail", () => {
       ),
     );
     expect(screen.getByTestId("workgraph-inspector")).toBeDefined();
+  });
+
+  it("mounts the bounded file diff and real PR inspection in the Candidates tab", async () => {
+    const candidate = {
+      id: "candidate-1",
+      attempt_id: "attempt-1",
+      action_spec_sha256: "spec",
+      commit_sha: "b".repeat(40),
+      tree_sha: "c".repeat(40),
+      implementer_id: "worker-1",
+      created_at: "2026-10-27T10:00:00Z",
+    };
+    mocks.getCampaignDetail.mockResolvedValue({
+      ...detail,
+      runs: [
+        {
+          id: "run-1",
+          campaign_id: "c1",
+          status: "SUCCEEDED",
+          created_at: "2026-10-27T10:00:00Z",
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-1",
+          run_id: "run-1",
+          status: "SUCCEEDED",
+          created_at: "2026-10-27T10:00:00Z",
+        },
+      ],
+      candidates: [candidate],
+    });
+    mocks.getCandidateDiff.mockResolvedValue({
+      candidate_id: candidate.id,
+      candidate: {
+        id: candidate.id,
+        attempt_id: candidate.attempt_id,
+        action_spec_sha256: candidate.action_spec_sha256,
+        commit_sha: candidate.commit_sha,
+        tree_sha: candidate.tree_sha,
+        implementer_id: candidate.implementer_id,
+        created_at: candidate.created_at,
+        integration: false,
+        lineage: [],
+      },
+      gate: null,
+      project_id: "p1",
+      campaign_id: "c1",
+      commit_sha: candidate.commit_sha,
+      tree_sha: candidate.tree_sha,
+      base_commit: "a".repeat(40),
+      base_tree_sha: "d".repeat(40),
+      changed_paths: ["src/main.rs"],
+      changed_paths_truncated: false,
+      diff_stat: "1 file changed, 1 insertion(+)",
+      files: [
+        {
+          path: "src/main.rs",
+          status: "MODIFIED",
+          oldMode: "100644",
+          newMode: "100644",
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          omitted: null,
+          patch: "diff --git a/src/main.rs b/src/main.rs\n+fn changed() {}\n",
+          patchTruncated: false,
+          patchBytes: 60,
+        },
+      ],
+      returned_files: 1,
+      files_truncated: false,
+      total_additions: 1,
+      total_deletions: 0,
+      patch_bytes: 60,
+      patch_truncated: false,
+      source: "Core read-only Git file diff",
+    });
+    renderCampaign("/campaigns/c1?tab=candidates");
+    await screen.findByTestId("candidate-diff");
+    expect(screen.getByTestId("candidate-pr")).toBeDefined();
+    expect(screen.getByText(/not bound to a GitHub repository/)).toBeDefined();
   });
 });
