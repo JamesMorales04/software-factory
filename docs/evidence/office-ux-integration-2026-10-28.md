@@ -62,6 +62,22 @@ The same limitations below apply. This rerun confirms the repair did not break
 the deterministic legacy journey; it does not close the GitHub credential
 findings or constitute independent acceptance.
 
+## Responsive and language rerun
+
+At implementation `7360c05` the journey additionally exercised:
+
+- Home document reflow and visible composer at 1440, 834, 390 and 320 px;
+- a real Settings language switch EN→ES→EN with `document.documentElement.lang`
+  updated and route/context preserved.
+
+```json
+{"ok":true,"candidate":"a7b689d0899d93d59e33fe08334e8224c8d3b75a","gate":"ACCEPTED"}
+```
+
+This is partial journey 11/12 evidence. The shell/Home/Request are not fully
+translated, the new intake backend was still absent, and the QR pairing flow was
+not exercised in this run. It is not a full localization or mobile acceptance.
+
 ## Known limitations
 
 - **Not independent.** The author ran this journey. An independent verifier and

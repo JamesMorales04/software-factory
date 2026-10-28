@@ -183,3 +183,8 @@ running.
   implementation `ae95af1` (candidate `7987095…`, gate `ACCEPTED`). GitHub
   credential-generation, token-lifetime, ETag and rate-limit repairs remain in
   progress; intake remains blocked on the final review.
+- 2026-10-28: Real Chromium at implementation `7360c05` additionally verified
+  Home reflow/composer at 1440/834/390/320 px and an EN→ES→EN Settings language
+  switch (candidate `a7b689d…`, gate `ACCEPTED`). This is partial journey 11/12
+  evidence only: the new intake is absent from that run, the shell/Home are not
+  fully translated and QR pairing was not exercised.
