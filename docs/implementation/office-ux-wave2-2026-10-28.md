@@ -167,6 +167,12 @@ Candidate `5e7f8657a3a4e6c63b37876a1ae0817a4cc9162f` on
 - Core restart and browser reload preserved the exact request, Campaign,
   candidate, receipts and Gate.
 
+The lifecycle was re-run after merging into `campaign/office-ux-wave2-integration-20261028`
+at implementation `bb2ce6b` and passed again (request `51d5d5e2…`, Campaign
+`92db9d55…`, candidate `d23f6db0…`, gate `ACCEPTED`, restart/reload
+persistence). This is still deterministic fixture evidence, not live inference
+or independent acceptance.
+
 The journey exposed and repaired one projection defect: intake **detail** now
 exposes authoritative `campaignStatus` and `gateOutcome` instead of only the list
 projection. Live provider inference, Compose, independent verification and

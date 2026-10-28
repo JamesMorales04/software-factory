@@ -56,6 +56,18 @@ Result (exit 0):
 {"ok":true,"request":"e1157165-1e6f-4dbe-880f-837b7b446d69","campaign":"4fd4de11-7462-489f-9089-69b2a100fd6e","profileRevision":"d5cdf397-35f9-4de7-b4da-12467cefab67","planHash":"9e10dc489ebcc987d3159d8d002b55288fe92f2d81d46773e07a8aa6b904d48a","mode":"DETERMINISTIC_FIXTURE","journey":"intake-full","profileContentHash":"b4d5a2d39a49e4042128d60561ea3e53525ffb9a2cdf90196fcf6ff9e798a729","actionId":"dccd91d6-588d-4e7e-8df5-6f3672a08ee2","delegationId":"d63ecb05-10e2-4e76-a449-4f55f4ecf687","leadRequestId":"1315fcee-cb12-42a1-b144-c4d8f2813f3f","taskId":"9b21d026-215d-4ff0-a2a4-3b48c43f6683","runId":"dc3f12f1-4906-4f09-9457-7d208ad59dc9","attemptId":"257b2a8d-a82d-484e-8902-a75b602d4b97","workerId":"intake-full-worker","candidateId":"d6a8d992-c1eb-4f4c-9e55-7ecc60122468","candidateCommit":"b12a38bbb46aed13d28d295b1d3a4149a4c986ca","candidateTree":"8b779507c6c5851674af8e505f1e5c9bf4a91e46","changedPaths":["src/provider.txt"],"verifierReceiptId":"549c65d0-d725-4a58-a4fa-3ffb1cc83c11","reviewerReceiptId":"fbca696f-916b-4e7a-9380-1307f86b95ac","reviewerMechanism":"MODEL","reviewerReservationId":"271d5dc8-fa6c-4130-9f3f-56fff4f9c69f","gate":"ACCEPTED","gateReasons":["independent executed evidence accepts exact candidate"],"campaignStatus":"AUTHORIZED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
 ```
 
+## Wave 2 integration rerun
+
+After merging the lifecycle lane into
+`campaign/office-ux-wave2-integration-20261028`, the same journey passed at
+implementation `bb2ce6b`:
+
+```json
+{"ok":true,"request":"51d5d5e2-affc-4d7b-b924-a772cadbae3d","campaign":"92db9d55-434a-4dc7-a97a-665c442d7b75","profileRevision":"37347a82-9ba5-4e8b-8b0d-c1454e3ee727","planHash":"c2565a5321e58cd6157519844c576c660b4cf1732148e57ff0d592a297086c91","mode":"DETERMINISTIC_FIXTURE","journey":"intake-full","candidateId":"d23f6db0-8f7e-4730-82a4-6841de1f178a","candidateCommit":"22894cae424f644a7a42bbe525be494f2623b263","gate":"ACCEPTED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
+```
+
+Same deterministic/fixture limits apply.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
