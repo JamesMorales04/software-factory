@@ -123,6 +123,15 @@ dedicated-project check. `scripts/compose-e2e.sh` now passes an explicit
 Branch `campaign/office-ux-compose-fix-20261028` at `770a200`; a fresh CI run is
 pending. This was a real isolation defect, not merely a test failure.
 
+### Live-provider local diagnostic
+`factory-provider-probe opencode /tmp/opencode/provider-probe-workspace` against
+the host OpenCode 2.2.0 failed with `provider protocol incompatibility: OpenCode
+startup exceeded 20 output lines`. The installed host OpenCode is not the pinned
+provider adapter version. Live local inference is therefore **BLOCKED** on a
+compatible containerized provider runtime plus an owner-supplied credential and
+fresh bounded spend authorization. The deterministic fake-model and fixture
+journeys are not substitutes for live certification.
+
 ### Autonomy design
 Codex Sol produced `office-ux-autonomy-contract-2026-10-28.md` (commit
 `271c821`, preserved on the baseline at `de7e2b7`). It keeps automatic
