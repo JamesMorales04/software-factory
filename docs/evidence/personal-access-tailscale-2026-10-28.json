@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-tailscale-author-run",
-  "implementation_sha": "63e2098ca2d6375c8de98b6259d3c2a6809bd658",
+  "implementation_sha": "b405908ed82fb31b53809f790fef46c8a3e4233f",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -84,8 +84,8 @@
   ],
   "rebase_provenance": {
     "tested_original_sha": "e17eb80649a910089c98c6fbf87826ed265de5bc",
-    "rebased_sha": "63e2098ca2d6375c8de98b6259d3c2a6809bd658",
-    "base_sha": "7c98c0014116571a8c13d9aa56444356d2fee434",
+    "rebased_sha": "b405908ed82fb31b53809f790fef46c8a3e4233f",
+    "base_sha": "bda12f0a3d6eda1a75715b917c03a30e807db0e6",
     "content_equivalent": true
   }
 }
