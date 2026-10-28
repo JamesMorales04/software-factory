@@ -566,10 +566,90 @@ export interface RecentAcceptedCandidate {
   outcome: GateOutcome;
 }
 
+export type DecisionActionKind =
+  | "resolve_model_call"
+  | "approve_intake_plan"
+  | "cancel_intake"
+  | "withdraw_lead"
+  | "cancel_campaign";
+
+/**
+ * A quick action exposed by Core's actionable decision projection. The browser
+ * never invents an action: each `kind` maps to an existing authenticated Core
+ * operation, and the exact identity fields are revalidated by Core.
+ */
 export interface DecisionAction {
-  kind: "resolve_model_call";
-  model_call_id: string;
+  kind: DecisionActionKind | string;
   label: string;
+  model_call_id?: string;
+  intake_id?: string;
+  lead_request_id?: string;
+  campaign_id?: string;
+  expected_plan_hash?: string;
+  expected_profile_revision_id?: string;
+  expected_profile_hash?: string;
+}
+
+export interface DecisionProject {
+  id: string;
+  repository?: string | null;
+  identity?: string | null;
+}
+
+export interface DecisionCampaign {
+  id: string;
+  status: string;
+  target: string;
+}
+
+export interface DecisionChange {
+  summary: string;
+  work_units?: number;
+  paths?: string[];
+  acceptance_criteria?: number;
+  negative_cases?: number;
+}
+
+export interface DecisionRisk {
+  class?: string | null;
+  summary: string;
+}
+
+export interface DecisionBudget {
+  max_attempts?: number;
+  max_sessions?: number;
+  max_turns?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  max_cost_micros?: number;
+  deadline_secs?: number;
+  max_repair_cycles?: number;
+  max_parallel?: number;
+  max_wall_clock_secs?: number;
+  timeout_secs?: number;
+  cost_micros?: number;
+  usage_known?: boolean;
+  note?: string;
+}
+
+export interface DecisionPermissions {
+  execution_mode?: string | null;
+  allowed_paths?: string[];
+  allowed_tools?: string[];
+  delegation_id?: string | null;
+  route?: ProviderRoute;
+}
+
+export interface DecisionImpact {
+  budget?: DecisionBudget | null;
+  permissions?: DecisionPermissions | null;
+  note?: string | null;
+}
+
+export interface DecisionEvidence {
+  label: string;
+  value: string;
+  reference?: string | null;
 }
 
 export interface DecisionItem {
@@ -582,6 +662,17 @@ export interface DecisionItem {
   target: string;
   subject_id: string;
   updated_at: string;
+  /** Exact Core projection revision used for optimistic concurrency checks. */
+  revision?: string;
+  project?: DecisionProject | null;
+  campaign?: DecisionCampaign | null;
+  change?: DecisionChange | null;
+  risk?: DecisionRisk | null;
+  impact?: DecisionImpact | null;
+  evidence?: DecisionEvidence[];
+  actions?: DecisionAction[];
+  blocked_reason?: string | null;
+  /** Legacy single-action projection retained for older fixtures. */
   action?: DecisionAction;
 }
 
@@ -688,6 +779,14 @@ export interface LeadRequestRecord {
   campaign_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface LeadWithdrawalRecord {
+  request_id: string;
+  principal_id: string;
+  principal_label: string | null;
+  reason: string;
+  created_at: string;
 }
 
 export interface LeadAssessmentRecord {
@@ -865,6 +964,9 @@ export interface NewIntakeRequest {
 
 export interface ApproveIntakeRequest {
   expected_plan_hash: string;
+  /** Exact frozen profile revision guard; Core rejects a stale revision. */
+  expected_profile_revision_id?: string;
+  expected_profile_hash?: string;
   rationale: string;
   principal_label?: string;
   idempotency_key?: string;
@@ -1845,6 +1947,11 @@ export const coreApi = {
           ? {}
           : { body: JSON.stringify(authorization) }),
       },
+    ),
+  withdrawLeadRequest: (id: string, reason: string) =>
+    request<LeadWithdrawalRecord>(
+      `/lead/requests/${encodeURIComponent(id)}/withdraw`,
+      { method: "POST", body: JSON.stringify({ reason }) },
     ),
   listIntakeRequests: (filters: IntakeRequestFilters = {}) => {
     const params = new URLSearchParams();

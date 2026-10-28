@@ -1,115 +1,133 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ModelCallResolution } from "../components/office/ModelCallResolution";
-import { Badge } from "../components/ui/Badge";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  DecisionCard,
+  type DecisionRevalidation,
+  type RevalidateDecision,
+} from "../components/office/DecisionCard";
 import { Button } from "../components/ui/Button";
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   PageHeader,
-  Panel,
 } from "../components/ui/Surface";
 import { CoreApiError, coreApi, type DecisionItem } from "../coreApi";
-import { type MessageKey, type Translate, useI18n } from "../i18n";
-
-const TARGET_LABEL_KEYS: Record<string, MessageKey> = {
-  "campaign.authorization": "decisions.target.campaigns",
-  "lead.ready": "decisions.target.lead",
-  "quality.gate": "decisions.target.campaign",
-  "run.failed": "decisions.target.campaign",
-  "model.usage-unresolved": "decisions.target.runtime",
-  "provider.unresolved-session": "decisions.target.runtime",
-  "action.human-required": "decisions.target.action",
-};
-
-function targetLabel(item: DecisionItem, t: Translate): string {
-  const key = TARGET_LABEL_KEYS[item.kind];
-  return key ? t(key) : t("decisions.target.default");
-}
-
-function toneForDecision(severity: DecisionItem["severity"]) {
-  if (severity === "critical") return "danger" as const;
-  if (severity === "attention") return "attention" as const;
-  return "info" as const;
-}
-
-function DecisionCard({
-  item,
-  onResolved,
-}: {
-  item: DecisionItem;
-  onResolved: () => Promise<void>;
-}) {
-  const { t, formatDate } = useI18n();
-  return (
-    <Panel className="decision-item">
-      <div className="decision-item-head">
-        <Badge tone={toneForDecision(item.severity)}>{item.severity}</Badge>
-        <h2>{item.title}</h2>
-        <span className="muted">{formatDate(item.updated_at)}</span>
-      </div>
-      <p>{item.detail}</p>
-      <div className="decision-item-actions">
-        <Link
-          className="ui-button ui-button--secondary ui-button--sm"
-          to={item.target}
-        >
-          {targetLabel(item, t)}
-        </Link>
-        <span className="muted">
-          {t("decisions.subject", { id: item.subject_id })}
-        </span>
-      </div>
-      {item.action?.kind === "resolve_model_call" && (
-        <ModelCallResolution
-          modelCallId={item.action.model_call_id ?? item.subject_id}
-          onResolved={onResolved}
-        />
-      )}
-    </Panel>
-  );
-}
+import { useI18n } from "../i18n";
 
 export function DecisionInbox() {
   const { t, formatDate } = useI18n();
   const [items, setItems] = useState<DecisionItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [asOf, setAsOf] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const hasLoaded = useRef(false);
+  const noticeRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const next = await coreApi.getDecisions();
-      setItems(next.items);
-      setAsOf(next.as_of);
-      setError(null);
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("decisions.error.load"),
-      );
-    }
-  }, [t]);
+  const load = useCallback(
+    async (_background = false) => {
+      try {
+        const next = await coreApi.getDecisions();
+        hasLoaded.current = true;
+        setItems(next.items);
+        setAsOf(next.as_of);
+        setLastLoadedAt(new Date().toISOString());
+        setError(null);
+        setConnectionError(null);
+        setOffline(false);
+      } catch (cause) {
+        const message =
+          cause instanceof CoreApiError
+            ? cause.status === 401
+              ? t("decisions.error.unauthorized")
+              : cause.message
+            : t("decisions.connectionError");
+        setOffline(!(cause instanceof CoreApiError));
+        if (hasLoaded.current) {
+          setConnectionError(message);
+        } else {
+          setError(message);
+        }
+      }
+    },
+    [t],
+  );
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 5000);
+    const timer = setInterval(() => void load(true), 5000);
     return () => clearInterval(timer);
   }, [load]);
 
-  if (error && !items) {
-    return (
-      <ErrorState
-        title={t("common.errorTitle")}
-        message={error}
-        action={
-          <Button onClick={() => void load()}>{t("common.retry")}</Button>
-        }
-      />
-    );
+  useEffect(() => {
+    const retry = () => void load(true);
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [load]);
+
+  useEffect(() => {
+    if (notice) noticeRef.current?.focus();
+  }, [notice]);
+
+  const revalidate = useCallback<RevalidateDecision>(
+    async (id, revision): Promise<DecisionRevalidation> => {
+      const next = await coreApi.getDecisions();
+      setItems(next.items);
+      setAsOf(next.as_of);
+      setLastLoadedAt(new Date().toISOString());
+      setConnectionError(null);
+      setOffline(false);
+      const current = next.items.find((item) => item.id === id);
+      if (!current) return { status: "missing" };
+      if (revision && current.revision !== revision) {
+        return { status: "changed", item: current };
+      }
+      return { status: "current", item: current };
+    },
+    [],
+  );
+
+  const onMutated = useCallback(
+    async (message: string) => {
+      setNotice(message);
+      await load(true);
+    },
+    [load],
+  );
+
+  const onStale = useCallback((message: string) => {
+    setNotice(message);
+  }, []);
+
+  const onOffline = useCallback(() => {
+    setOffline(true);
+    setConnectionError(t("decisions.connectionError"));
+  }, [t]);
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      await load(false);
+    } finally {
+      setRefreshing(false);
+    }
   }
-  if (!items) {
+
+  if (items === null) {
+    if (error) {
+      return (
+        <ErrorState
+          title={offline ? t("decisions.offlineTitle") : t("common.errorTitle")}
+          message={error}
+          action={
+            <Button onClick={() => void refresh()}>{t("common.retry")}</Button>
+          }
+        />
+      );
+    }
     return <LoadingState label={t("decisions.loading")} />;
   }
 
@@ -121,6 +139,15 @@ export function DecisionInbox() {
       <PageHeader
         title={t("decisions.title")}
         description={t("decisions.description")}
+        actions={
+          <Button
+            variant="secondary"
+            onClick={() => void refresh()}
+            disabled={refreshing}
+          >
+            {refreshing ? t("decisions.loading") : t("decisions.refresh")}
+          </Button>
+        }
         meta={
           <>
             <span>
@@ -136,10 +163,59 @@ export function DecisionInbox() {
               /
             </span>
             <span>{t("decisions.asOf", { date: formatDate(asOf) })}</span>
+            <span className="overview-meta-separator" aria-hidden="true">
+              /
+            </span>
+            <span>{offline ? t("decisions.stale") : t("decisions.live")}</span>
+            {lastLoadedAt && (
+              <span className="muted">
+                {t("decisions.lastLoaded", { date: formatDate(lastLoadedAt) })}
+              </span>
+            )}
           </>
         }
       />
-      {error && <p className="error">{error}</p>}
+
+      {connectionError && (
+        <div
+          className={`ui-callout ${
+            offline ? "ui-callout--attention" : "ui-callout--danger"
+          }`}
+          role="status"
+        >
+          <strong>
+            {offline ? t("decisions.offlineTitle") : t("decisions.error.load")}
+          </strong>{" "}
+          <span>{connectionError}</span>
+          {lastLoadedAt && (
+            <span>
+              {" "}
+              {t("decisions.lastLoaded", {
+                date: formatDate(lastLoadedAt),
+              })}
+            </span>
+          )}
+          {offline && <p>{t("decisions.offlineDetail")}</p>}
+          <Button size="sm" onClick={() => void refresh()}>
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
+
+      <div
+        ref={noticeRef}
+        className={
+          notice
+            ? "ui-callout ui-callout--info decision-status"
+            : "decision-status decision-status--empty"
+        }
+        role="status"
+        aria-live="polite"
+        tabIndex={-1}
+      >
+        {notice}
+      </div>
+
       <section
         className="decision-section"
         aria-labelledby="decision-actionable"
@@ -156,11 +232,20 @@ export function DecisionInbox() {
         ) : (
           <div className="decision-list">
             {actionable.map((item) => (
-              <DecisionCard key={item.id} item={item} onResolved={load} />
+              <DecisionCard
+                key={item.id}
+                item={item}
+                offline={offline}
+                revalidate={revalidate}
+                onMutated={onMutated}
+                onStale={onStale}
+                onOffline={onOffline}
+              />
             ))}
           </div>
         )}
       </section>
+
       <section
         className="decision-section"
         aria-labelledby="decision-awareness"
@@ -177,7 +262,15 @@ export function DecisionInbox() {
         ) : (
           <div className="decision-list">
             {awareness.map((item) => (
-              <DecisionCard key={item.id} item={item} onResolved={load} />
+              <DecisionCard
+                key={item.id}
+                item={item}
+                offline={offline}
+                revalidate={revalidate}
+                onMutated={onMutated}
+                onStale={onStale}
+                onOffline={onOffline}
+              />
             ))}
           </div>
         )}
