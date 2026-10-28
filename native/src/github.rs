@@ -13,7 +13,6 @@
 //! Issue bodies are untrusted text. This module stores them as opaque strings;
 //! it never executes or interprets them.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -25,7 +24,7 @@ pub const API_BASE: &str = "https://api.github.com";
 pub const MAX_ISSUE_PAGES: usize = 10;
 pub const MAX_ISSUE_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_ISSUE_TITLE_BYTES: usize = 512;
-const MAX_REPOSITORY_PAGES: usize = 2;
+const MAX_REPOSITORY_PAGES: usize = 1;
 const PER_PAGE: usize = 100;
 const MAX_REST_BODY_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -202,7 +201,7 @@ pub struct IssuePage {
     pub issues: Vec<GitHubIssue>,
     pub etag: Option<String>,
     pub not_modified: bool,
-    pub truncated: bool,
+    pub page_full: bool,
 }
 
 struct BoundedResponse {
@@ -351,78 +350,63 @@ impl GitHubClient {
         Ok(repositories)
     }
 
-    /// Fetch every bounded page of issues. Pull requests are excluded because
-    /// GitHub returns them from the issues endpoint.
-    pub async fn issues(
+    /// Fetch one bounded issue page. Pull requests are excluded because GitHub
+    /// returns them from the issues endpoint. Callers validate each page's
+    /// generation and ETag independently.
+    pub async fn issue_page(
         &self,
         token: &str,
         owner: &str,
         repo: &str,
+        page: usize,
         etag: Option<&str>,
     ) -> Result<IssuePage, GitHubError> {
         validate_token(token)?;
         validate_repo_coordinates(owner, repo)?;
-        let mut issues = Vec::new();
-        let mut seen = HashSet::new();
-        let mut response_etag = None;
-        let mut truncated = false;
-        for page in 1..=MAX_ISSUE_PAGES {
-            let mut request = self
-                .client
-                .get(format!("{}/repos/{owner}/{repo}/issues", self.base_url))
-                .query(&[
-                    ("state", "all".to_string()),
-                    ("per_page", PER_PAGE.to_string()),
-                    ("page", page.to_string()),
-                    ("sort", "updated".to_string()),
-                    ("direction", "desc".to_string()),
-                ]);
-            if page == 1
-                && let Some(value) = etag.filter(|value| !value.is_empty())
-            {
-                request = request.header(reqwest::header::IF_NONE_MATCH, value);
-            }
-            let response = self.execute(request, token).await?;
-            if page == 1 && response.status == reqwest::StatusCode::NOT_MODIFIED {
-                return Ok(IssuePage {
-                    issues,
-                    etag: etag.map(str::to_owned),
-                    not_modified: true,
-                    truncated: false,
-                });
-            }
-            if page == 1 {
-                response_etag = response
-                    .headers
-                    .get(reqwest::header::ETAG)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned);
-            }
-            let raw: Vec<RawIssue> = parse_json(&response.body, "issues")?;
-            let page_len = raw.len();
-            for item in raw {
-                if item.pull_request.is_some() {
-                    continue;
-                }
-                let Some(issue) = item.into_issue() else {
-                    continue;
-                };
-                if seen.insert(issue.number) {
-                    issues.push(issue);
-                }
-            }
-            if page_len < PER_PAGE {
-                break;
-            }
-            if page == MAX_ISSUE_PAGES {
-                truncated = true;
-            }
+        if page == 0 || page > MAX_ISSUE_PAGES {
+            return Err(GitHubError::Invalid(
+                "GitHub issue page is outside the supported bound".into(),
+            ));
         }
+        let mut request = self
+            .client
+            .get(format!("{}/repos/{owner}/{repo}/issues", self.base_url))
+            .query(&[
+                ("state", "all".to_string()),
+                ("per_page", PER_PAGE.to_string()),
+                ("page", page.to_string()),
+                ("sort", "updated".to_string()),
+                ("direction", "desc".to_string()),
+            ]);
+        if let Some(value) = etag.filter(|value| !value.is_empty()) {
+            request = request.header(reqwest::header::IF_NONE_MATCH, value);
+        }
+        let response = self.execute(request, token).await?;
+        if response.status == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(IssuePage {
+                issues: Vec::new(),
+                etag: etag.map(str::to_owned),
+                not_modified: true,
+                page_full: false,
+            });
+        }
+        let response_etag = response
+            .headers
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| bounded(value, 512));
+        let raw: Vec<RawIssue> = parse_json(&response.body, "issues")?;
+        let page_full = raw.len() == PER_PAGE;
+        let issues = raw
+            .into_iter()
+            .filter(|item| item.pull_request.is_none())
+            .filter_map(RawIssue::into_issue)
+            .collect();
         Ok(IssuePage {
             issues,
             etag: response_etag,
             not_modified: false,
-            truncated,
+            page_full,
         })
     }
 
@@ -484,7 +468,7 @@ impl GitHubClient {
     }
 }
 
-fn validate_token(token: &str) -> Result<(), GitHubError> {
+pub fn validate_token(token: &str) -> Result<(), GitHubError> {
     if token.len() < 16
         || token.len() > MAX_TOKEN_BYTES
         || !token.bytes().all(|byte| byte.is_ascii_graphic())
@@ -1068,10 +1052,13 @@ mod tests {
     async fn paginates_bounded_issues_excludes_pull_requests_and_reuses_etag() {
         let (url, fake) = issue_server(true).await;
         let client = GitHubClient::with_base_url(&url, true).unwrap();
-        let first = client.issues(TOKEN, "acme", "widgets", None).await.unwrap();
-        assert_eq!(first.issues.len(), 100);
+        let first = client
+            .issue_page(TOKEN, "acme", "widgets", 1, None)
+            .await
+            .unwrap();
+        assert_eq!(first.issues.len(), 99);
         assert!(!first.not_modified);
-        assert!(!first.truncated);
+        assert!(first.page_full);
         assert_eq!(first.etag.as_deref(), Some("\"etag-1\""));
         assert!(!first.issues.iter().any(|issue| issue.number == 999));
         assert!(
@@ -1080,6 +1067,13 @@ mod tests {
                 .iter()
                 .all(|issue| issue.labels[0].name == "bug")
         );
+        let second_page = client
+            .issue_page(TOKEN, "acme", "widgets", 2, None)
+            .await
+            .unwrap();
+        assert_eq!(second_page.issues.len(), 1);
+        assert!(!second_page.page_full);
+        assert!(!second_page.not_modified);
         assert_eq!(
             fake.token_seen
                 .lock()
@@ -1091,7 +1085,7 @@ mod tests {
             Some("Bearer ghp_test_token_1234567890")
         );
         let second = client
-            .issues(TOKEN, "acme", "widgets", first.etag.as_deref())
+            .issue_page(TOKEN, "acme", "widgets", 1, first.etag.as_deref())
             .await
             .unwrap();
         assert!(second.not_modified);

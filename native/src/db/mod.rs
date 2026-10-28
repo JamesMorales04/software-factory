@@ -42,6 +42,10 @@ pub enum Error {
     Validation(String),
     #[error("record not found")]
     NotFound,
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]
@@ -770,8 +774,8 @@ pub use execution_profiles::{
 mod github;
 pub use github::{
     GitHubConnectionAudit, GitHubConnectionRecord, GitHubIssueDetail, GitHubIssueFilters,
-    GitHubIssueList, GitHubIssueSummary, GitHubSyncStateRecord, NewProjectGitHubBinding,
-    ProjectGitHubBinding,
+    GitHubIssueList, GitHubIssueSummary, GitHubSyncFailureWrite, GitHubSyncResultWrite,
+    GitHubSyncStateRecord, NewProjectGitHubBinding, ProjectGitHubBinding,
 };
 mod lead;
 mod model_calls;

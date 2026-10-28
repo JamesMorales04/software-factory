@@ -90,8 +90,8 @@ retaining the authoritative table. Issues has a read-only GitHub snapshot
 foundation: encrypted connection, Project repository binding, bounded sync and
 plain-text issue detail are implemented in the lane view; governed intake,
 board ordering, Action/Campaign relationships and issue writing remain
-unimplemented. The view is exported and awaiting App/navigation route wiring.
-Docs and a stable `/office` deep-link base remain unimplemented.
+unimplemented. The view is wired at `/issues`; real browser acceptance is
+pending. Docs and a stable `/office` deep-link base remain unimplemented.
 
 Known gaps:
 

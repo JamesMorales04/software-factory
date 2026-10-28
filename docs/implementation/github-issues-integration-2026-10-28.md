@@ -39,19 +39,20 @@ never writes SQLite and never grants authority. Issue title/body/label text is
 untrusted data. It is stored as bounded text, rendered as plain React text, and
 never passed to a model, agent, shell or instruction interpreter.
 
-## Schema — migration `0028_github_integrations.sql`
+## Schema — migrations `0028_github_integrations.sql` and `0029_github_generation_backoff.sql`
 
 Migration `0026` and `0027` are reserved by the execution-profile and intake
-lanes, so this lane allocates `0028`. `sqlx` versioned migrations preserve
-existing data; the new tables are additive.
+lanes, so this lane allocates `0028` and its hardening migration `0029`. `sqlx`
+versioned migrations preserve existing data; the new tables are additive.
 
 | Table | Purpose |
 |---|---|
-| `github_connections` | singleton connection: login, scopes, AES-256-GCM ciphertext/nonce/fingerprint, enabled, revision, verification/revocation times |
+| `github_connections` | singleton connection: login, scopes, AES-256-GCM ciphertext/nonce/fingerprint, enabled, revision, verification/revocation times, credential-wide rate-limit deadline |
 | `github_connection_audit` | bounded (last 200 rows) configure/revoke audit without credential material |
 | `project_github_bindings` | one `owner/repo` + default branch per Project |
 | `github_issues` | bounded snapshots keyed by `(project_id, repo_full_name, number)` with sync mark and content hash |
-| `github_sync_state` | per-Project status, ETag, last success/attempt, rate-limit reset, counts, stale/truncated |
+| `github_sync_state` | per-Project status, last success/attempt, rate-limit reset, counts, stale/truncated |
+| `github_issue_page_etags` | one ETag per bounded issue page for independent conditional validation |
 
 No table contains a plaintext token. `github_issues.body` is capped at 64 KiB
 and records `body_truncated`.
@@ -92,28 +93,42 @@ Status mapping:
   base URL from Office or a request body;
 - 20 s request timeout, no proxy, redirects disabled;
 - maximum 10 issue pages × 100 items, maximum 16 MiB per response, 64 KiB body,
-  512-byte title, 50 labels, 100 repositories over 2 pages;
-- ETag/`If-None-Match` on the first page; `304` is a successful no-change sync;
+  512-byte title, 50 labels, 100 repositories per bounded listing;
+- independent ETag/`If-None-Match` per issue page; all `304` pages mark the
+  snapshot unchanged, while a mixed `304`/`200` pass triggers one unconditional
+  bounded rescan before reconciliation;
 - pull requests returned by the issues endpoint are excluded;
 - field-level normalization, HTTPS-only detail links and GitHub label colors;
 - errors never include response bodies or credentials.
 
-## Synchronization
+## Synchronization and credential fencing
 
 `native/src/github_sync.rs` performs one synchronization:
 
-1. refuse when the connection is disabled/revoked;
-2. load the Project binding and previous ETag;
-3. fetch up to the bounded page limit;
-4. on `not_modified`, refresh `last_synced_at` and keep the snapshot;
-5. otherwise upsert every issue with a new sync mark, then delete rows not
-   present **only when all pages were fetched**; a truncated sync suspends
+1. require the exact current connection revision and an expired credential-wide
+   rate-limit deadline;
+2. load the Project binding and the per-page ETags;
+3. conditionally fetch pages, checking the connection revision before and after
+   every upstream request;
+4. if every page is `304`, refresh `last_synced_at` and keep the snapshot;
+5. if conditional pages are mixed, perform one unconditional bounded rescan so
+   a later-page deletion is reconciled even when page one is unchanged;
+6. otherwise upsert every issue with a new sync mark, then delete rows not
+   present **only when the scan was complete**; a truncated scan suspends
    deletion reconciliation;
-6. record counts, ETag, success/attempt times and stale flag.
+7. persist counts, per-page ETags, success/attempt times and stale flag behind a
+   transaction that compares the original credential revision.
 
-A rebind during an in-flight sync conflicts rather than writing issues under the
-old repository. A revocation during an in-flight sync is rejected inside the
-write transaction, so it cannot resurrect a revoked connection.
+A decrypted credential is carried as a generation-bound `GitHubCredential`.
+The plaintext is zeroized on drop and registered only in the scoped redaction
+registry; the registration is removed when the credential guard drops. A
+revocation or replacement during a page request aborts the scan before the
+page is used or another page is requested. A stale repository-list response is
+suppressed after a generation change. Credential-wide backoff is persisted on
+the connection, checked before every sync/repository request, and exposed to
+every Project sharing the token. A rebind during an in-flight sync conflicts
+rather than writing issues under the old repository; page ETags are removed on
+rebind.
 
 ## Office
 
@@ -133,9 +148,11 @@ write transaction, so it cannot resurrect a revoked connection.
   reported issues; loading, error and rate-limit states.
 
 Token input is `type="password"`, cleared after verification and never written
-to browser storage.
+to browser storage. Sync is disabled while the credential-wide
+`next_allowed_at` deadline is in the future; the view shows the deadline and
+re-enables after it expires.
 
-**Route wiring (integration owner):**
+**Route wiring (integrated by the campaign integration owner):**
 
 ```tsx
 // office/src/App.tsx
@@ -153,7 +170,8 @@ import { Issues } from "./views/Issues";
 }
 ```
 
-`App.tsx` and `navigation.ts` were intentionally not edited by this lane.
+This lane did not edit `App.tsx` or `navigation.ts`; the integration owner
+added both in the stacked route-wiring commit.
 
 ## Verification performed
 
@@ -161,22 +179,26 @@ Deterministic, in this worktree:
 
 ```text
 cargo fmt --all -- --check
-cargo test -p factory-native --lib                 # 282 passed, 2 ignored
-cargo test -p factory-native --lib github          # 14 passed
-cargo test -p factory-native --bin factory-core    # 14 passed
+cargo test -p factory-native --lib                 # 289 passed, 2 ignored
+cargo test -p factory-native --lib github          # 19 passed
+cargo test -p factory-native --bin factory-core    # 15 passed
 cargo clippy -p factory-native --all-targets -- -D warnings
 npm --prefix office run typecheck
 npm --prefix office run lint
-npm --prefix office run test                       # 16 files, 72 tests passed
-npm --prefix office run test -- --run src/views/Issues.test.tsx   # 6 passed
+npm --prefix office run test                       # 73 tests passed
+npm --prefix office run test -- --run src/views/Issues.test.tsx   # 7 passed
 npm --prefix office run build
 ```
 
 The fake-GitHub tests cover authenticated private-repository listing,
-401/403/404, 403/429 rate limits, pagination, pull-request exclusion, ETag/304,
-redirect refusal, token redaction, duplicate sync, closure/deletion
-reconciliation, stale snapshots, revocation (including in-flight rejection),
-cross-Project identity isolation, label/search filters and wildcard escaping.
+401/403/404, 403/429 rate limits, independent page pagination, pull-request
+exclusion, per-page ETag/304, mixed conditional/unconditional reconciliation of
+a later-page deletion, redirect refusal, token redaction, duplicate sync,
+closure/deletion reconciliation, stale snapshots, credential-wide backoff
+(including zero upstream calls before expiry and cross-Project visibility),
+in-flight revocation/replacement at a page boundary (no publish, no later page),
+stale repository-list suppression, scoped redaction removal, cross-Project
+identity isolation, label/search filters and wildcard escaping.
 
 A local API smoke (fake GitHub on `127.0.0.1:19090`, Core on
 `127.0.0.1:18765`, no real GitHub credential) exercised:
@@ -197,6 +219,13 @@ A local API smoke (fake GitHub on `127.0.0.1:19090`, Core on
   database and from every API response;
 - unauthenticated `GET /integrations/github` → `401`.
 
+A second local smoke used a fake upstream returning `429` with
+`Retry-After: 60`: the first sync recorded `RATE_LIMITED` and a deadline, the
+second sync returned `429` with the upstream issue counter still at 1, the
+repository listing returned `rate_limited: true` with its upstream counter at
+0, and the connection row held the shared deadline. The stored credential was
+not present in any response or table.
+
 **NOT_TESTED:** a real authorized GitHub API call. No developer `gh` token was
 read or used in product code. Real browser acceptance and Compose E2E for the
 `/issues` route are also pending integration wiring and authorization.
@@ -205,9 +234,11 @@ read or used in product code. Real browser acceptance and Compose E2E for the
 
 - GitHub API behavior for Fine-grained tokens and enterprise restrictions is
   covered only by fake-server tests until a real authorized call is recorded.
-- ETag handling conditions on page 1 only; issue deletion on later pages is
-  reconciled by the complete-scan marker, and a truncated scan intentionally
-  suspends deletion.
+- The scoped redaction registry is bounded at 64 transient secrets; GitHub
+  credential registration fails closed with `503` if exhausted. Memory
+  zeroization covers the owned `SecretValue` and scoped registry copy; copies
+  made inside `reqwest`/the kernel are outside this module's control.
 - The Office view is read-only for GitHub issue content; governed intake,
   board ordering and Action/Campaign relationships remain future work.
-- No independent security review or Codex review has run on this lane.
+- Independent Codex/security re-review of this repaired candidate remains
+  pending.

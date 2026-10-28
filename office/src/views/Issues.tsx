@@ -70,6 +70,24 @@ function isSafeHttpsUrl(value: string): boolean {
   return value.startsWith("https://");
 }
 
+function laterDeadline(
+  first: string | null | undefined,
+  second: string | null | undefined,
+): string | null {
+  const candidates = [first, second].filter(
+    (value): value is string => typeof value === "string" && value !== "",
+  );
+  let latest: { value: string; millis: number } | null = null;
+  for (const value of candidates) {
+    const millis = Date.parse(value);
+    if (!Number.isFinite(millis)) continue;
+    if (latest === null || millis > latest.millis) {
+      latest = { value, millis };
+    }
+  }
+  return latest?.value ?? null;
+}
+
 export function Issues() {
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get("project") ?? "";
@@ -112,10 +130,16 @@ export function Issues() {
   const [labelInput, setLabelInput] = useState(labelFilter);
   const [queryInput, setQueryInput] = useState(appliedQuery);
   const [refresh, setRefresh] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     setLabelInput(labelFilter);
   }, [labelFilter]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     setQueryInput(appliedQuery);
@@ -463,6 +487,7 @@ export function Issues() {
       }
     } catch (cause) {
       setActionError(message(cause, "GitHub issue synchronization failed."));
+      setRefresh((value) => value + 1);
     } finally {
       setBusy(null);
     }
@@ -471,13 +496,19 @@ export function Issues() {
   const connection = connectionState?.connection ?? null;
   const syncStatus = lastSync?.status ?? issues?.sync_status ?? "NEVER_SYNCED";
   const statusBadge = syncBadge(syncStatus);
-  const nextAllowed =
-    lastSync?.next_allowed_at ?? issues?.next_allowed_at ?? null;
+  const nextAllowed = laterDeadline(
+    lastSync?.next_allowed_at,
+    issues?.next_allowed_at,
+  );
+  const backoffActive = nextAllowed
+    ? new Date(nextAllowed).getTime() > nowMs
+    : false;
   const canSync =
     projectId !== "" &&
     binding !== null &&
     connection?.configured === true &&
-    busy === null;
+    busy === null &&
+    !backoffActive;
   const total = issues?.total ?? 0;
   const showingFrom = total === 0 ? 0 : offset + 1;
   const showingTo = Math.min(offset + PAGE_SIZE, total);
@@ -508,11 +539,13 @@ export function Issues() {
               onClick={() => void onSync()}
               disabled={!canSync}
               title={
-                binding === null
-                  ? "Bind a GitHub repository first"
-                  : connection?.configured
-                    ? undefined
-                    : "Connect GitHub first"
+                backoffActive
+                  ? `GitHub rate-limit backoff until ${formatTimestamp(nextAllowed ?? "")}`
+                  : binding === null
+                    ? "Bind a GitHub repository first"
+                    : connection?.configured
+                      ? undefined
+                      : "Connect GitHub first"
               }
             >
               {busy === "sync" ? "Syncing…" : "Sync issues"}
@@ -875,6 +908,7 @@ export function Issues() {
           {nextAllowed && (
             <span>Rate limit retry after {formatTimestamp(nextAllowed)}</span>
           )}
+          {backoffActive && <Badge tone="attention">BACKOFF ACTIVE</Badge>}
           {lastSync && (
             <span>
               Last run: fetched {lastSync.fetched}, created {lastSync.created},
@@ -885,6 +919,13 @@ export function Issues() {
         {issues?.last_error && (
           <p className="error" role="alert">
             {issues.last_error}
+          </p>
+        )}
+        {backoffActive && nextAllowed && (
+          <p className="notice" role="status">
+            GitHub rate-limit backoff is active until{" "}
+            {formatTimestamp(nextAllowed)}. Synchronization is disabled for
+            every Project sharing this credential.
           </p>
         )}
         {issues?.truncated && (
