@@ -160,17 +160,19 @@ All target `campaign/office-ux-baseline-20261028`, never `main`.
 
 | PR | Scope | State |
 |---|---|---|
-| #53 | EN/ES localization and responsive stable views | CI green; code integrated |
-| #54 | Operator-intent Home, request workspace, navigation | CI rerunning; UI code integrated; branch journey kept independent of i18n |
-| #55 | Bounded project file browser | CI green; code integrated |
-| #56 | Versioned execution profiles with applied-route executability | CI green; code integrated |
-| #57 | Protected operator start, deferred spec, withdrawal/WorkGraph repairs | CI green; code integrated |
-| #58 | GitHub Issues connection, sync, security repairs | CI green; code integrated |
+| #53 | EN/ES localization and responsive stable views | Merged into baseline |
+| #54 | Operator-intent Home, request workspace, navigation | Closed as superseded; code + journey included in baseline |
+| #55 | Bounded project file browser | Merged into baseline |
+| #56 | Versioned execution profiles with applied-route executability | Merged into baseline |
+| #57 | Protected operator start, deferred spec, withdrawal/WorkGraph repairs | Closed as superseded; code included in baseline |
+| #58 | GitHub Issues connection, sync, security repairs | Closed as superseded; code included in baseline |
 
 The integration branch also contains the unified-intake code from
 `campaign/office-ux-intake-20261028`; its three commits are not a separate PR
-because they depend on the six review units above. The integration branch is the
-temporary campaign aggregation point; it is not `main` and not a delivery claim.
+because they depend on the six review units above. The integration branch was
+fast-forwarded into `campaign/office-ux-baseline-20261028` at `e6c2184`; it is
+not `main` and not a delivery claim. The protected access PRs #36/#37/#38
+remain draft, unmerged and unchanged.
 
 ## 11. Change log
 
