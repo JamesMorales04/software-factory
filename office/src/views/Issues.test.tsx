@@ -325,6 +325,48 @@ describe("Issues", () => {
     expect(mocks.listProjectIssues).toHaveBeenCalled();
   });
 
+  it("disables sync during a shared rate-limit backoff and re-enables after it", async () => {
+    mocks.listProjectIssues.mockResolvedValue(
+      issueList({
+        stale: true,
+        sync_status: "RATE_LIMITED",
+        next_allowed_at: "2099-01-01T00:00:00Z",
+        last_error:
+          "GitHub rate limit is exhausted until 2099-01-01T00:00:00Z.",
+      }),
+    );
+    const { unmount } = renderIssues();
+    expect(await screen.findByText("BACKOFF ACTIVE")).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Sync issues",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      screen.getByText(/Synchronization is disabled for every Project/),
+    ).toBeDefined();
+    unmount();
+
+    mocks.listProjectIssues.mockResolvedValue(
+      issueList({
+        stale: false,
+        sync_status: "RATE_LIMITED",
+        next_allowed_at: "2000-01-01T00:00:00Z",
+      }),
+    );
+    renderIssues();
+    await screen.findByText("Export CSV endpoint");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Sync issues",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
+
   it("selects a visible private repository into the binding form", async () => {
     const repos: GitHubRepositoryList = {
       repositories: [

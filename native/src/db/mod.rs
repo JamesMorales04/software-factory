@@ -40,6 +40,10 @@ pub enum Error {
     Invalid(&'static str),
     #[error("record not found")]
     NotFound,
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]
@@ -747,8 +751,8 @@ pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
 mod github;
 pub use github::{
     GitHubConnectionAudit, GitHubConnectionRecord, GitHubIssueDetail, GitHubIssueFilters,
-    GitHubIssueList, GitHubIssueSummary, GitHubSyncStateRecord, NewProjectGitHubBinding,
-    ProjectGitHubBinding,
+    GitHubIssueList, GitHubIssueSummary, GitHubSyncFailureWrite, GitHubSyncResultWrite,
+    GitHubSyncStateRecord, NewProjectGitHubBinding, ProjectGitHubBinding,
 };
 mod lead;
 mod model_calls;

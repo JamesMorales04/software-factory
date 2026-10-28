@@ -159,6 +159,26 @@ pub struct GitHubIssueList {
     pub binding: Option<ProjectGitHubBinding>,
 }
 
+pub struct GitHubSyncResultWrite<'a> {
+    pub project_id: &'a str,
+    pub repo_full_name: &'a str,
+    pub issues: &'a [GitHubIssue],
+    pub page_etags: &'a [(u32, String)],
+    pub etag: Option<&'a str>,
+    pub truncated: bool,
+    pub connection_revision: u32,
+}
+
+pub struct GitHubSyncFailureWrite<'a> {
+    pub project_id: &'a str,
+    pub repo_full_name: &'a str,
+    pub status: &'a str,
+    pub detail: &'a str,
+    pub status_code: Option<u16>,
+    pub next_allowed_at: Option<&'a str>,
+    pub connection_revision: u32,
+}
+
 impl super::Database {
     pub async fn save_github_connection(
         &self,
@@ -198,8 +218,9 @@ impl super::Database {
         sqlx::query::query(
             "INSERT INTO github_connections
              (id,login,scopes_json,scopes_reported,credential_ciphertext,credential_nonce,
-              credential_fingerprint,enabled,revision,verified_at,revoked_at,created_at,updated_at)
-             VALUES ('default',?1,?2,?3,?4,?5,?6,1,?7,?8,NULL,?9,?10)
+              credential_fingerprint,enabled,revision,verified_at,revoked_at,
+              rate_limited_until,created_at,updated_at)
+             VALUES ('default',?1,?2,?3,?4,?5,?6,1,?7,?8,NULL,NULL,?9,?10)
              ON CONFLICT(id) DO UPDATE SET
                login=excluded.login, scopes_json=excluded.scopes_json,
                scopes_reported=excluded.scopes_reported,
@@ -207,7 +228,8 @@ impl super::Database {
                credential_nonce=excluded.credential_nonce,
                credential_fingerprint=excluded.credential_fingerprint,
                enabled=1, revision=excluded.revision, verified_at=excluded.verified_at,
-               revoked_at=NULL, updated_at=excluded.updated_at",
+               revoked_at=NULL, rate_limited_until=NULL,
+               updated_at=excluded.updated_at",
         )
         .bind(login)
         .bind(&scopes_json)
@@ -267,7 +289,8 @@ impl super::Database {
         sqlx::query::query(
             "UPDATE github_connections
              SET credential_ciphertext='', credential_nonce='', credential_fingerprint='',
-                 enabled=0, revision=?1, revoked_at=?2, updated_at=?2
+                 enabled=0, revision=?1, revoked_at=?2, rate_limited_until=NULL,
+                 updated_at=?2
              WHERE id='default'",
         )
         .bind(revision)
@@ -305,6 +328,102 @@ impl super::Database {
     pub async fn github_connection(&self) -> Result<GitHubConnectionRecord, Error> {
         let mut connection = self.pool.acquire().await?;
         load_github_connection(&mut connection).await
+    }
+
+    /// Reject a request whose decrypted credential no longer matches the
+    /// current connection generation.
+    pub async fn require_github_connection_revision(
+        &self,
+        expected_revision: u32,
+    ) -> Result<(), Error> {
+        let record = self.github_connection().await?;
+        if !record.enabled || record.credential_ciphertext.is_empty() {
+            return Err(Error::Forbidden(
+                "GitHub connection is revoked; synchronization is disabled".into(),
+            ));
+        }
+        if record.revision != expected_revision {
+            return Err(Error::Conflict(
+                "GitHub connection changed during synchronization",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Active credential-wide GitHub backoff. GitHub rate limits apply to the
+    /// token, not to a single Project.
+    pub async fn github_backoff_until(&self) -> Result<Option<String>, Error> {
+        let row: Option<(Option<String>,)> = sqlx::query_as::query_as(
+            "SELECT rate_limited_until FROM github_connections WHERE id='default'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((Some(value),)) = row else {
+            return Ok(None);
+        };
+        let deadline = chrono::DateTime::parse_from_rfc3339(&value).map_err(|_| {
+            Error::Unavailable("stored GitHub rate-limit deadline is invalid".into())
+        })?;
+        if deadline > Utc::now() {
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persist a credential-wide backoff for a repository listing. The write
+    /// is fenced by the credential generation that produced the rate limit.
+    pub async fn set_github_rate_limit(
+        &self,
+        expected_revision: u32,
+        until: &str,
+    ) -> Result<(), Error> {
+        chrono::DateTime::parse_from_rfc3339(until)
+            .map_err(|_| Error::Invalid("GitHub rate-limit deadline"))?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        ensure_connection_generation(&mut transaction, expected_revision).await?;
+        let updated = sqlx::query::query(
+            "UPDATE github_connections SET
+               rate_limited_until=CASE
+                 WHEN rate_limited_until IS NULL OR rate_limited_until < ?1 THEN ?1
+                 ELSE rate_limited_until END,
+               updated_at=?2
+             WHERE id='default' AND revision=?3",
+        )
+        .bind(until)
+        .bind(Utc::now().to_rfc3339())
+        .bind(i64::from(expected_revision))
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(Error::Conflict(
+                "GitHub connection changed during synchronization",
+            ));
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn github_issue_page_etags(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(u32, String)>, Error> {
+        let rows: Vec<(i64, String)> = sqlx::query_as::query_as(
+            "SELECT page,etag FROM github_issue_page_etags
+             WHERE project_id=?1 ORDER BY page",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(page, etag)| {
+                u32::try_from(page)
+                    .map(|page| (page, etag))
+                    .map_err(|_| Error::Invalid("GitHub issue page"))
+            })
+            .collect()
     }
 
     pub async fn github_connection_audit(
@@ -396,6 +515,10 @@ impl super::Database {
             .bind(&repo_full_name)
             .execute(&mut *transaction)
             .await?;
+            sqlx::query::query("DELETE FROM github_issue_page_etags WHERE project_id=?1")
+                .bind(project_id)
+                .execute(&mut *transaction)
+                .await?;
             sqlx::query::query(
                 "INSERT INTO github_sync_state
                  (project_id,repo_full_name,status,detail,etag,last_synced_at,last_attempt_at,
@@ -459,15 +582,20 @@ impl super::Database {
     /// `truncated` means additional pages exist, so absent rows are preserved.
     pub async fn record_github_sync_result(
         &self,
-        project_id: &str,
-        repo_full_name: &str,
-        issues: &[GitHubIssue],
-        etag: Option<&str>,
-        truncated: bool,
+        input: GitHubSyncResultWrite<'_>,
     ) -> Result<GitHubSyncStateRecord, Error> {
+        let GitHubSyncResultWrite {
+            project_id,
+            repo_full_name,
+            issues,
+            page_etags,
+            etag,
+            truncated,
+            connection_revision,
+        } = input;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        ensure_connection_enabled(&mut transaction).await?;
+        ensure_connection_generation(&mut transaction, connection_revision).await?;
         ensure_binding_matches(&mut transaction, project_id, repo_full_name).await?;
         let rows = sqlx::query::query(
             "SELECT number FROM github_issues WHERE project_id=?1 AND repo_full_name=?2",
@@ -553,6 +681,21 @@ impl super::Database {
         .bind(repo_full_name)
         .fetch_one(&mut *transaction)
         .await?;
+        sqlx::query::query("DELETE FROM github_issue_page_etags WHERE project_id=?1")
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await?;
+        for (page, page_etag) in page_etags {
+            sqlx::query::query(
+                "INSERT INTO github_issue_page_etags(project_id,page,etag)
+                 VALUES (?1,?2,?3)",
+            )
+            .bind(project_id)
+            .bind(i64::from(*page))
+            .bind(page_etag)
+            .execute(&mut *transaction)
+            .await?;
+        }
         sqlx::query::query(
             "UPDATE github_sync_state SET
                status='OK', detail='', etag=?1, last_synced_at=?2, last_attempt_at=?2,
@@ -593,10 +736,11 @@ impl super::Database {
         &self,
         project_id: &str,
         repo_full_name: &str,
+        connection_revision: u32,
     ) -> Result<GitHubSyncStateRecord, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        ensure_connection_enabled(&mut transaction).await?;
+        ensure_connection_generation(&mut transaction, connection_revision).await?;
         ensure_binding_matches(&mut transaction, project_id, repo_full_name).await?;
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
@@ -618,22 +762,36 @@ impl super::Database {
 
     pub async fn record_github_sync_failure(
         &self,
-        project_id: &str,
-        repo_full_name: &str,
-        status: &str,
-        detail: &str,
-        status_code: Option<u16>,
-        next_allowed_at: Option<&str>,
+        input: GitHubSyncFailureWrite<'_>,
     ) -> Result<GitHubSyncStateRecord, Error> {
+        let GitHubSyncFailureWrite {
+            project_id,
+            repo_full_name,
+            status,
+            detail,
+            status_code,
+            next_allowed_at,
+            connection_revision,
+        } = input;
         if !matches!(status, "RATE_LIMITED" | "DENIED" | "NOT_FOUND" | "ERROR") {
             return Err(Error::Invalid("GitHub sync status"));
         }
         let detail = bounded_text(detail, MAX_SYNC_DETAIL_BYTES);
+        let now = Utc::now();
+        let next_allowed_at = if status == "RATE_LIMITED" {
+            Some(
+                next_allowed_at
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| default_rate_limit_deadline(now)),
+            )
+        } else {
+            None
+        };
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        ensure_connection_enabled(&mut transaction).await?;
+        ensure_connection_generation(&mut transaction, connection_revision).await?;
         ensure_binding_matches(&mut transaction, project_id, repo_full_name).await?;
-        let now = Utc::now().to_rfc3339();
+        let now = now.to_rfc3339();
         sqlx::query::query(
             "UPDATE github_sync_state SET
                status=?1, detail=?2, last_attempt_at=?3, next_allowed_at=?4,
@@ -643,12 +801,27 @@ impl super::Database {
         .bind(status)
         .bind(&detail)
         .bind(&now)
-        .bind(next_allowed_at)
+        .bind(next_allowed_at.as_deref())
         .bind(status_code.map(i64::from))
         .bind(project_id)
         .bind(repo_full_name)
         .execute(&mut *transaction)
         .await?;
+        if let Some(deadline) = next_allowed_at.as_deref() {
+            sqlx::query::query(
+                "UPDATE github_connections SET
+                   rate_limited_until=CASE
+                     WHEN rate_limited_until IS NULL OR rate_limited_until < ?1 THEN ?1
+                     ELSE rate_limited_until END,
+                   updated_at=?2
+                 WHERE id='default' AND revision=?3",
+            )
+            .bind(deadline)
+            .bind(&now)
+            .bind(i64::from(connection_revision))
+            .execute(&mut *transaction)
+            .await?;
+        }
         let state = load_github_sync_state(&mut transaction, project_id).await?;
         transaction.commit().await?;
         Ok(state)
@@ -684,6 +857,7 @@ impl super::Database {
             .github_sync_state(project_id)
             .await
             .unwrap_or_else(|_| empty_sync_state(project_id, &binding.repo_full_name));
+        let shared_backoff = self.github_backoff_until().await?;
         let mut where_clause = String::from("project_id=?1 AND repo_full_name=?2");
         let mut parameter = 3;
         let mut state_parameter = None;
@@ -762,7 +936,7 @@ impl super::Database {
             } else {
                 None
             },
-            next_allowed_at: state.next_allowed_at.clone(),
+            next_allowed_at: shared_backoff.or_else(|| state.next_allowed_at.clone()),
             truncated: state.truncated,
             binding: Some(binding),
         })
@@ -819,14 +993,25 @@ fn validate_issue_filters(filters: &GitHubIssueFilters) -> Result<(), Error> {
     Ok(())
 }
 
-async fn ensure_connection_enabled(transaction: &mut SqliteConnection) -> Result<(), Error> {
-    let row: Option<(i64, String)> = sqlx::query_as::query_as(
-        "SELECT enabled,credential_ciphertext FROM github_connections WHERE id='default'",
+async fn ensure_connection_generation(
+    transaction: &mut SqliteConnection,
+    expected_revision: u32,
+) -> Result<(), Error> {
+    let row: Option<(i64, i64, String)> = sqlx::query_as::query_as(
+        "SELECT revision,enabled,credential_ciphertext
+         FROM github_connections WHERE id='default'",
     )
     .fetch_optional(&mut *transaction)
     .await?;
     match row {
-        Some((1, ciphertext)) if !ciphertext.is_empty() => Ok(()),
+        Some((revision, 1, ciphertext))
+            if !ciphertext.is_empty() && revision == i64::from(expected_revision) =>
+        {
+            Ok(())
+        }
+        Some((_, 1, ciphertext)) if !ciphertext.is_empty() => Err(Error::Conflict(
+            "GitHub connection changed during synchronization",
+        )),
         Some(_) => Err(Error::Forbidden(
             "GitHub connection is revoked; synchronization is disabled".into(),
         )),
@@ -834,6 +1019,10 @@ async fn ensure_connection_enabled(transaction: &mut SqliteConnection) -> Result
             "GitHub connection is not configured".into(),
         )),
     }
+}
+
+fn default_rate_limit_deadline(now: chrono::DateTime<Utc>) -> String {
+    (now + chrono::Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 async fn ensure_binding_matches(
@@ -1074,5 +1263,26 @@ impl super::Database {
         .execute(&self.pool)
         .await
         .expect("insert test project");
+    }
+
+    pub(crate) async fn clear_github_page_etags(&self, project_id: &str) {
+        sqlx::query::query("DELETE FROM github_issue_page_etags WHERE project_id=?1")
+            .bind(project_id)
+            .execute(&self.pool)
+            .await
+            .expect("clear test page etags");
+    }
+
+    pub(crate) async fn clear_github_rate_limit(&self, expected_revision: u32) {
+        let updated = sqlx::query::query(
+            "UPDATE github_connections SET rate_limited_until=NULL
+             WHERE id='default' AND revision=?1",
+        )
+        .bind(i64::from(expected_revision))
+        .execute(&self.pool)
+        .await
+        .expect("clear test rate limit")
+        .rows_affected();
+        assert_eq!(updated, 1);
     }
 }

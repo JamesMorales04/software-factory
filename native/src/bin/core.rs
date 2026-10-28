@@ -1278,7 +1278,8 @@ fn api_error(error: Error) -> Response {
         Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
-        Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
+        Error::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+        Error::Busy | Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, Json(json!({"error":error.to_string()}))).into_response()
@@ -2344,10 +2345,13 @@ fn github_upstream_error(error: factory_native::github::GitHubError) -> Response
     (status, Json(body)).into_response()
 }
 
-/// Decrypt the stored GitHub token for one request. The plaintext is never
-/// returned to Office, persisted or logged; it is registered for telemetry
-/// redaction and dropped after the request.
-async fn load_github_token(app: &App) -> Result<String, Response> {
+/// Decrypt the stored GitHub token for one request. The plaintext is owned by
+/// a zeroizing `SecretValue` and registered in the scoped redaction registry
+/// for exactly this credential's lifetime. It is never returned to Office,
+/// persisted or logged.
+async fn load_github_credential(
+    app: &App,
+) -> Result<factory_native::github_sync::GitHubCredential, Response> {
     let record = match app.db.github_connection().await {
         Ok(record) => record,
         Err(Error::NotFound) => {
@@ -2386,7 +2390,7 @@ async fn load_github_token(app: &App) -> Result<String, Response> {
                     .into_response());
             }
         };
-    let token = match String::from_utf8(credential) {
+    let token = match factory_native::telemetry::SecretValue::from_utf8(credential) {
         Ok(token) => token,
         Err(_) => {
             return Err((
@@ -2396,8 +2400,10 @@ async fn load_github_token(app: &App) -> Result<String, Response> {
                 .into_response());
         }
     };
-    factory_native::telemetry::register_secret(&token);
-    Ok(token)
+    match factory_native::github_sync::GitHubCredential::new(record.revision, token) {
+        Ok(credential) => Ok(credential),
+        Err(error) => Err(api_error(error)),
+    }
 }
 
 async fn get_github_connection(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -2418,7 +2424,10 @@ async fn put_github_connection(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    factory_native::telemetry::register_secret(&input.token);
+    let token = factory_native::telemetry::SecretValue::from_string(input.token);
+    if let Err(error) = factory_native::github::validate_token(token.expose()) {
+        return github_upstream_error(error);
+    }
     let Some(master_key) = app.master_key.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2426,11 +2435,21 @@ async fn put_github_connection(
         )
             .into_response();
     };
-    let user = match app.github.authenticated_user(&input.token).await {
+    let user = match app.github.authenticated_user(token.expose()).await {
         Ok(user) => user,
         Err(error) => return github_upstream_error(error),
     };
-    let encrypted = match master_key.encrypt(input.token.as_bytes()) {
+    let _redaction = match factory_native::telemetry::ScopedSecret::register(token.expose()) {
+        Some(redaction) => redaction,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "GitHub credential redaction capacity is exhausted"})),
+            )
+                .into_response();
+        }
+    };
+    let encrypted = match master_key.encrypt(token.expose().as_bytes()) {
         Ok(encrypted) => encrypted,
         Err(_) => {
             return (
@@ -2488,37 +2507,35 @@ async fn github_repositories(
         )
             .into_response();
     }
-    let token = match load_github_token(&app).await {
-        Ok(token) => token,
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
         Err(response) => return response,
     };
     let fetched_at = chrono::Utc::now().to_rfc3339();
-    match app.github.repositories(&token, Some(&query)).await {
-        Ok(repositories) => Json(json!({
-            "repositories": repositories,
-            "fetched_at": fetched_at,
-            "rate_limited": false,
-            "next_allowed_at": null,
-            "detail": "",
-        }))
-        .into_response(),
-        Err(error)
-            if matches!(
-                &error,
-                factory_native::github::GitHubError::RateLimited { .. }
-            ) =>
-        {
-            Json(json!({
-                "repositories": [],
-                "fetched_at": fetched_at,
-                "rate_limited": true,
-                "next_allowed_at": error.next_allowed_at(),
-                "detail": error.detail(),
-            }))
-            .into_response()
+    let listing = match factory_native::github_sync::list_repositories(
+        &app.db,
+        &app.github,
+        &credential,
+        &query,
+    )
+    .await
+    {
+        Ok(listing) => listing,
+        Err(factory_native::github_sync::RepositoryListError::Database(error)) => {
+            return api_error(error);
         }
-        Err(error) => github_upstream_error(error),
-    }
+        Err(factory_native::github_sync::RepositoryListError::Upstream(error)) => {
+            return github_upstream_error(error);
+        }
+    };
+    Json(json!({
+        "repositories": listing.repositories,
+        "fetched_at": fetched_at,
+        "rate_limited": listing.rate_limited,
+        "next_allowed_at": listing.next_allowed_at,
+        "detail": listing.detail,
+    }))
+    .into_response()
 }
 
 async fn bind_project_github(
@@ -2578,8 +2595,8 @@ async fn sync_project_issues(
         }
         Err(error) => return api_error(error),
     }
-    let token = match load_github_token(&app).await {
-        Ok(token) => token,
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
         Err(response) => return response,
     };
     let _guard = match app.github_sync.try_lock() {
@@ -2592,7 +2609,8 @@ async fn sync_project_issues(
                 .into_response();
         }
     };
-    match factory_native::github_sync::sync_project_issues(&app.db, &app.github, &token, &id).await
+    match factory_native::github_sync::sync_project_issues(&app.db, &app.github, &credential, &id)
+        .await
     {
         Ok(state) => Json(state).into_response(),
         Err(error) => api_error(error),
@@ -4865,6 +4883,18 @@ mod tests {
         assert_eq!(
             github_connection_view(Some(&revoked))["configured"],
             serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn github_rate_limit_and_redaction_capacity_map_to_retryable_statuses() {
+        assert_eq!(
+            api_error(Error::RateLimited("until 2026-10-28T12:00:00Z".into())).status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            api_error(Error::Unavailable("redaction capacity".into())).status(),
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
