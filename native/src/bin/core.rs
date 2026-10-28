@@ -15,17 +15,18 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, delete, get, post},
 };
-use factory_native::lead::{LeadRequestState, StandingDelegation};
+use factory_native::lead::{LeadPlanProposal, LeadRequestState, StandingDelegation};
 use factory_native::quality::{EvidenceKind, GateOutcome, ReceiptResult};
 use factory_native::{
     attempt_grant::AttemptGrantClaims,
     db::{
-        Database, Error, NewCampaignAuthorization, NewCandidate, NewIntegratedCandidate,
-        NewProjectConfig, QualityReceiptInput, QualityRole, WorkerAssignment, WorkerReport,
+        Action, Campaign, Database, Error, NewCampaignAuthorization, NewCandidate,
+        NewIntegratedCandidate, NewProjectConfig, Project, QualityReceiptInput, QualityRole,
+        WorkerAssignment, WorkerReport,
     },
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 struct SetupState {
     failures: u32,
@@ -357,6 +358,13 @@ struct IntakeListQuery {
 #[serde(deny_unknown_fields)]
 struct ApproveIntakeRequest {
     expected_plan_hash: String,
+    /// Optional optimistic-concurrency guard for the exact frozen profile
+    /// revision. The plan hash already binds the frozen context; when supplied,
+    /// Core rejects a stale revision instead of starting from an older view.
+    #[serde(default)]
+    expected_profile_revision_id: Option<String>,
+    #[serde(default)]
+    expected_profile_hash: Option<String>,
     rationale: String,
     #[serde(default)]
     principal_label: Option<String>,
@@ -3125,6 +3133,880 @@ fn decision_rank(severity: &str) -> u8 {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum DecisionAction {
+    ResolveModelCall {
+        label: String,
+        model_call_id: String,
+    },
+    ApproveIntakePlan {
+        label: String,
+        intake_id: String,
+        expected_plan_hash: String,
+        expected_profile_revision_id: String,
+        expected_profile_hash: String,
+    },
+    CancelIntake {
+        label: String,
+        intake_id: String,
+    },
+    WithdrawLead {
+        label: String,
+        lead_request_id: String,
+    },
+    CancelCampaign {
+        label: String,
+        campaign_id: String,
+    },
+}
+
+fn decision_revision(parts: &[&str]) -> String {
+    factory_native::device_session::sha256_hex(&parts.join("\u{1f}"))
+}
+
+fn decision_evidence(label: &str, value: impl Into<String>) -> Value {
+    json!({"label": label, "value": value.into()})
+}
+
+fn decision_project(project_id: Option<&str>, projects: &BTreeMap<&str, &Project>) -> Value {
+    match project_id.and_then(|project_id| projects.get(project_id).copied()) {
+        Some(project) => json!({
+            "id": project.id,
+            "repository": project.repository,
+            "identity": project.identity,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn decision_campaign(campaign: Option<&Campaign>) -> Value {
+    match campaign {
+        Some(campaign) => json!({
+            "id": campaign.id,
+            "status": campaign.status,
+            "target": format!("/campaigns/{}", campaign.id),
+        }),
+        None => Value::Null,
+    }
+}
+
+fn decision_budget_from_intake(budget: &factory_native::intake::IntakeCampaignBudget) -> Value {
+    json!({
+        "max_attempts": budget.max_attempts,
+        "max_sessions": budget.max_sessions,
+        "max_turns": budget.max_turns,
+        "max_input_tokens": budget.max_input_tokens,
+        "max_output_tokens": budget.max_output_tokens,
+        "max_cost_micros": budget.max_cost_micros,
+        "deadline_secs": budget.deadline_secs,
+    })
+}
+
+fn decision_budget_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    json!({
+        "max_attempts": proposal.budget.max_attempts,
+        "max_sessions": proposal.max_sessions,
+        "max_repair_cycles": proposal.max_repair_cycles,
+        "max_parallel": proposal.max_parallel,
+        "max_wall_clock_secs": proposal.max_wall_clock_secs,
+        "timeout_secs": proposal.budget.timeout_secs,
+    })
+}
+
+fn decision_change_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    let paths: BTreeSet<&str> = proposal
+        .work_units
+        .iter()
+        .flat_map(|unit| unit.allowed_paths.iter().map(String::as_str))
+        .collect();
+    json!({
+        "summary": proposal.objective,
+        "work_units": proposal.work_units.len(),
+        "paths": paths,
+        "acceptance_criteria": proposal.acceptance_criteria.len(),
+        "negative_cases": proposal.negative_cases.len(),
+    })
+}
+
+fn decision_permissions_from_proposal(proposal: &LeadPlanProposal) -> Value {
+    let paths: BTreeSet<&str> = proposal
+        .work_units
+        .iter()
+        .flat_map(|unit| unit.allowed_paths.iter().map(String::as_str))
+        .collect();
+    json!({
+        "execution_mode": Value::Null,
+        "allowed_paths": paths,
+        "allowed_tools": Vec::<String>::new(),
+        "delegation_id": Value::Null,
+        "route": {
+            "provider": proposal.route.provider,
+            "model": proposal.route.model,
+            "mode": proposal.route.mode,
+        },
+    })
+}
+
+fn intake_execution_mode(mechanism: &str) -> &'static str {
+    if mechanism == "MODEL" {
+        "TRUSTED_LOCAL_PROVIDER"
+    } else {
+        "FIXTURE"
+    }
+}
+
+fn intake_allowed_tools(mechanism: &str) -> Vec<String> {
+    if mechanism == "MODEL" {
+        vec!["run_command".into(), "write_file".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn decision_permissions_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
+    json!({
+        "execution_mode": intake_execution_mode(&context.mechanism),
+        "allowed_paths": context.action_spec.allowed_paths,
+        "allowed_tools": intake_allowed_tools(&context.mechanism),
+        "delegation_id": context.grant.id,
+        "route": {
+            "provider": context.profile.roles.implementer.provider,
+            "model": context.profile.roles.implementer.model,
+            "mode": "build",
+        },
+    })
+}
+
+fn decision_proposal(proposal_json: Option<&str>) -> Option<LeadPlanProposal> {
+    proposal_json.and_then(|proposal_json| serde_json::from_str(proposal_json).ok())
+}
+
+struct DecisionProjection<'a> {
+    app: &'a App,
+    campaign_by_id: BTreeMap<&'a str, &'a Campaign>,
+    action_by_id: BTreeMap<&'a str, &'a Action>,
+    project_by_id: BTreeMap<&'a str, &'a Project>,
+    run_campaign: BTreeMap<String, String>,
+    attempt_campaign: BTreeMap<String, String>,
+}
+
+impl<'a> DecisionProjection<'a> {
+    async fn intake_items(
+        &self,
+        intake_requests: &[factory_native::db::IntakeRequestRecord],
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for record in intake_requests {
+            let projection = match self
+                .app
+                .db
+                .lead_request_projection(&record.lead_request_id)
+                .await
+            {
+                Ok(projection) => projection,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            if projection != factory_native::lead::LeadRequestProjectionState::AwaitingApproval {
+                continue;
+            }
+            let lead = match self.app.db.lead_request(&record.lead_request_id).await {
+                Ok(lead) => lead,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            let plan = match self.app.db.frozen_lead_plan(&lead.id).await {
+                Ok(plan) => plan,
+                Err(Error::NotFound) => continue,
+                Err(error) => return Err(error),
+            };
+            let proposal_record = self.app.db.lead_proposal(&lead.id).await.ok();
+            let proposal = decision_proposal(
+                proposal_record
+                    .as_ref()
+                    .map(|record| record.proposal_json.as_str()),
+            );
+            let action = self.action_by_id.get(record.action_id.as_str()).copied();
+            let authorization = self
+                .app
+                .db
+                .intake_authorization_state(
+                    &record.id,
+                    factory_native::intake::IntakeState::AwaitingApproval,
+                )
+                .await;
+            let mut blocked_reason = authorization.reason.clone();
+            let context = if authorization.available {
+                match self.app.db.intake_approval_context(&record.id).await {
+                    Ok(context) => Some(context),
+                    Err(Error::IntakeConflict { code, .. }) => {
+                        blocked_reason = Some(code.to_owned());
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
+            let plan_hash = context
+                .as_ref()
+                .map(|context| context.plan.plan_hash.clone())
+                .unwrap_or_else(|| plan.plan_hash.clone());
+            let profile_revision_id = context
+                .as_ref()
+                .map(|context| context.context.profile_revision_id.clone())
+                .unwrap_or_else(|| record.profile_revision_id.clone());
+            let profile_hash = context
+                .as_ref()
+                .map(|context| context.context.profile_hash.clone())
+                .unwrap_or_else(|| record.profile_hash.clone());
+            let profile_revision = context
+                .as_ref()
+                .map(|context| context.context.profile_revision)
+                .unwrap_or(record.profile_revision);
+            let profile_name = context
+                .as_ref()
+                .map(|context| context.context.profile_name.clone())
+                .unwrap_or_else(|| record.profile_name.clone());
+            let config_hash = context
+                .as_ref()
+                .map(|context| context.lead.project_config_hash.clone())
+                .unwrap_or_else(|| lead.project_config_hash.clone());
+            let delegation_hash = context
+                .as_ref()
+                .map(|context| context.grant.content_hash.clone())
+                .unwrap_or_else(|| plan.delegation_hash.clone());
+            let action_spec_sha256 = context
+                .as_ref()
+                .map(|context| context.spec_sha256.clone())
+                .or_else(|| action.map(|action| action.spec_sha256.clone()));
+            let budget = context
+                .as_ref()
+                .map(|context| decision_budget_from_intake(&context.budget))
+                .or_else(|| proposal.as_ref().map(decision_budget_from_proposal))
+                .unwrap_or(Value::Null);
+            let permissions = context
+                .as_ref()
+                .map(decision_permissions_from_intake)
+                .or_else(|| proposal.as_ref().map(decision_permissions_from_proposal))
+                .unwrap_or(Value::Null);
+            let change = proposal
+                .as_ref()
+                .map(decision_change_from_proposal)
+                .unwrap_or_else(|| json!({"summary": record.objective}));
+            let risk = match &proposal {
+                Some(proposal) => json!({
+                    "class": format!("{:?}", proposal.risk_class),
+                    "summary": if proposal.risks.is_empty() {
+                        format!("Frozen plan risk class {:?}.", proposal.risk_class)
+                    } else {
+                        proposal.risks.join("; ")
+                    },
+                }),
+                None => json!({
+                    "class": Value::Null,
+                    "summary": "The frozen risk classification is not recorded.",
+                }),
+            };
+            let mut evidence = vec![
+                decision_evidence("Frozen plan", plan_hash.clone()),
+                decision_evidence(
+                    "Profile revision",
+                    format!("r{profile_revision} · {profile_name} · {profile_revision_id}"),
+                ),
+                decision_evidence("Profile hash", profile_hash.clone()),
+                decision_evidence("Project config", config_hash.clone()),
+                decision_evidence("Delegation", record.delegation_id.clone()),
+                decision_evidence("Delegation hash", delegation_hash),
+                decision_evidence(
+                    "Assessment",
+                    lead.assessment_mechanism
+                        .clone()
+                        .unwrap_or_else(|| "not recorded".into()),
+                ),
+            ];
+            if let Some(action_spec_sha256) = action_spec_sha256 {
+                evidence.push(decision_evidence("Action spec", action_spec_sha256));
+            }
+            let mut decision_actions = Vec::new();
+            if context.is_some() {
+                decision_actions.push(DecisionAction::ApproveIntakePlan {
+                    label: "Approve frozen plan".into(),
+                    intake_id: record.id.clone(),
+                    expected_plan_hash: plan_hash.clone(),
+                    expected_profile_revision_id: profile_revision_id.clone(),
+                    expected_profile_hash: profile_hash.clone(),
+                });
+            }
+            decision_actions.push(DecisionAction::CancelIntake {
+                label: "Cancel request".into(),
+                intake_id: record.id.clone(),
+            });
+            items.push(json!({
+                "id": format!("intake-approval:{}", record.id),
+                "kind": "intake.plan-approval",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Frozen plan awaiting approval",
+                "detail": if context.is_some() {
+                    "The frozen plan is ready for exact operator approval. Core revalidates the plan hash, profile revision, scope, route, budget and policy before starting."
+                } else {
+                    "The frozen plan is recorded, but Core cannot derive an authorization for this exact revision. Resolve the reported authority conflict before approval."
+                },
+                "target": format!("/requests/{}", record.id),
+                "subject_id": record.id,
+                "updated_at": lead.updated_at,
+                "revision": decision_revision(&[
+                    "intake.plan-approval",
+                    &record.id,
+                    &plan_hash,
+                    &profile_revision_id,
+                    &profile_hash,
+                    if context.is_some() { "available" } else { "blocked" },
+                ]),
+                "project": decision_project(Some(record.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": budget,
+                    "permissions": permissions,
+                    "note": "Approval starts a Campaign under the exact frozen plan and budget; the Inbox cannot widen either.",
+                },
+                "evidence": evidence,
+                "blocked_reason": blocked_reason,
+                "actions": decision_actions,
+            }));
+        }
+        Ok(items)
+    }
+
+    fn campaign_items(&self, campaigns: &[Campaign]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for campaign in campaigns
+            .iter()
+            .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
+        {
+            let action = self.action_by_id.get(campaign.action_id.as_str()).copied();
+            let change = action
+                .map(|action| {
+                    json!({
+                        "summary": action.objective,
+                        "paths": action.spec.allowed_paths,
+                        "acceptance_criteria": action.spec.checks.len(),
+                    })
+                })
+                .unwrap_or_else(|| json!({"summary": "Action specification unavailable"}));
+            let risk = action
+                .map(|action| {
+                    json!({
+                        "class": action.risk,
+                        "summary": "Action risk classification. Review the complete authorization scope before authorizing.",
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "class": Value::Null,
+                        "summary": "Risk classification is not recorded.",
+                    })
+                });
+            let mut evidence = vec![
+                decision_evidence("Campaign status", campaign.status.clone()),
+                decision_evidence("Recorded", campaign.created_at.clone()),
+            ];
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+                evidence.push(decision_evidence("Action risk", action.risk.clone()));
+            }
+            items.push(json!({
+                "id": format!("campaign-authorization:{}", campaign.id),
+                "kind": "campaign.authorization",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Campaign awaiting authorization",
+                "detail": format!("Campaign {} is blocked pending a full-scope authorization decision. The Inbox does not post a partial scope; review the exact Campaign and authorize through its complete scope.", campaign.id),
+                "target": format!("/campaigns/{}", campaign.id),
+                "subject_id": campaign.id,
+                "updated_at": campaign.created_at,
+                "revision": decision_revision(&[
+                    "campaign.authorization",
+                    &campaign.id,
+                    &campaign.status,
+                    &campaign.created_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(Some(campaign)),
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "No Campaign authorization is recorded, so no budget or execution permission is reserved. Full scope and delegation must be reviewed before authorizing.",
+                },
+                "evidence": evidence,
+                "blocked_reason": "FULL_SCOPE_AUTHORIZATION_REQUIRED",
+                "actions": vec![DecisionAction::CancelCampaign {
+                    label: "Cancel Campaign".into(),
+                    campaign_id: campaign.id.clone(),
+                }],
+            }));
+        }
+        items
+    }
+
+    async fn lead_items(
+        &self,
+        lead_requests: &[factory_native::db::LeadRequestRecord],
+        intake_lead_ids: &BTreeSet<&str>,
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for request in lead_requests
+            .iter()
+            .filter(|request| request.state == LeadRequestState::Ready)
+        {
+            if intake_lead_ids.contains(request.id.as_str()) {
+                continue;
+            }
+            let plan = self.app.db.frozen_lead_plan(&request.id).await.ok();
+            let proposal_record = self.app.db.lead_proposal(&request.id).await.ok();
+            let proposal = decision_proposal(
+                proposal_record
+                    .as_ref()
+                    .map(|record| record.proposal_json.as_str()),
+            );
+            let action = self.action_by_id.get(request.action_id.as_str()).copied();
+            let change = proposal
+                .as_ref()
+                .map(decision_change_from_proposal)
+                .unwrap_or_else(|| json!({"summary": request.objective}));
+            let risk = match &proposal {
+                Some(proposal) => json!({
+                    "class": format!("{:?}", proposal.risk_class),
+                    "summary": if proposal.risks.is_empty() {
+                        format!("Frozen plan risk class {:?}.", proposal.risk_class)
+                    } else {
+                        proposal.risks.join("; ")
+                    },
+                }),
+                None => json!({
+                    "class": Value::Null,
+                    "summary": "The frozen risk classification is not recorded.",
+                }),
+            };
+            let budget = proposal
+                .as_ref()
+                .map(decision_budget_from_proposal)
+                .unwrap_or(Value::Null);
+            let permissions = proposal
+                .as_ref()
+                .map(decision_permissions_from_proposal)
+                .unwrap_or(Value::Null);
+            let mut evidence = vec![
+                decision_evidence("Request", request.request_hash.clone()),
+                decision_evidence("Project config", request.project_config_hash.clone()),
+                decision_evidence("Delegation", request.delegation_id.clone()),
+                decision_evidence(
+                    "Assessment",
+                    request
+                        .assessment_mechanism
+                        .clone()
+                        .unwrap_or_else(|| "not recorded".into()),
+                ),
+            ];
+            if let Some(plan) = &plan {
+                evidence.push(decision_evidence("Frozen plan", plan.plan_hash.clone()));
+                evidence.push(decision_evidence(
+                    "Delegation hash",
+                    plan.delegation_hash.clone(),
+                ));
+            }
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+            }
+            let blocked_reason = if plan.is_none() {
+                Some("FROZEN_PLAN_MISSING")
+            } else if proposal.is_none() {
+                Some("PROPOSAL_MISSING")
+            } else {
+                None
+            };
+            items.push(json!({
+                "id": format!("lead-ready:{}", request.id),
+                "kind": "lead.ready",
+                "severity": "attention",
+                "actionable": true,
+                "title": "Frozen Lead plan ready",
+                "detail": "The frozen Lead plan is ready. Start requires the complete frozen binding and explicit authority in the Lead workspace; the Inbox does not post a partial approval.",
+                "target": "/lead",
+                "subject_id": request.id,
+                "updated_at": request.updated_at,
+                "revision": decision_revision(&[
+                    "lead.ready",
+                    &request.id,
+                    &request.request_hash,
+                    plan.as_ref().map(|plan| plan.plan_hash.as_str()).unwrap_or(""),
+                    &request.updated_at,
+                ]),
+                "project": decision_project(Some(request.project_id.as_str()), &self.project_by_id),
+                "campaign": decision_campaign(
+                    request
+                        .campaign_id
+                        .as_deref()
+                        .and_then(|campaign_id| self.campaign_by_id.get(campaign_id).copied()),
+                ),
+                "change": change,
+                "risk": risk,
+                "impact": {
+                    "budget": budget,
+                    "permissions": permissions,
+                    "note": "Starting the frozen plan creates a Campaign and consumes the recorded plan budget. Review the exact binding in Lead.",
+                },
+                "evidence": evidence,
+                "blocked_reason": blocked_reason,
+                "actions": vec![DecisionAction::WithdrawLead {
+                    label: "Withdraw request".into(),
+                    lead_request_id: request.id.clone(),
+                }],
+            }));
+        }
+        Ok(items)
+    }
+
+    async fn gate_items(
+        &self,
+        candidates: &[factory_native::db::CandidateRecord],
+    ) -> Result<Vec<Value>, Error> {
+        let mut items = Vec::new();
+        for candidate in candidates {
+            let Some(gate) = self.app.db.gate_for_candidate(&candidate.id).await? else {
+                continue;
+            };
+            let needs_attention = matches!(
+                gate.outcome,
+                GateOutcome::RepairRequired
+                    | GateOutcome::Blocked
+                    | GateOutcome::HumanRequired
+                    | GateOutcome::NotTested
+            );
+            if !needs_attention {
+                continue;
+            }
+            let campaign_id = self
+                .attempt_campaign
+                .get(&candidate.attempt_id)
+                .cloned()
+                .unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            let target = if campaign_id.is_empty() {
+                "/campaigns".to_owned()
+            } else {
+                format!("/campaigns/{campaign_id}?tab=gate")
+            };
+            let outcome = match gate.outcome {
+                GateOutcome::Accepted => "ACCEPTED",
+                GateOutcome::RepairRequired => "REPAIR_REQUIRED",
+                GateOutcome::Blocked => "BLOCKED",
+                GateOutcome::HumanRequired => "HUMAN_REQUIRED",
+                GateOutcome::NotTested => "NOT_TESTED",
+            };
+            let risk = action
+                .map(|action| {
+                    json!({
+                        "class": action.risk,
+                        "summary": "The gate outcome is bound to the exact candidate and does not grant delivery authority.",
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "class": Value::Null,
+                        "summary": "Action risk is not recorded.",
+                    })
+                });
+            let mut evidence = vec![
+                decision_evidence("Gate outcome", outcome),
+                decision_evidence(
+                    "Reasons",
+                    if gate.reasons.is_empty() {
+                        "No reason recorded".to_owned()
+                    } else {
+                        gate.reasons.join("; ")
+                    },
+                ),
+                decision_evidence("Candidate commit", candidate.commit_sha.clone()),
+                decision_evidence("Candidate tree", candidate.tree_sha.clone()),
+                decision_evidence("Decided", gate.decided_at.clone()),
+            ];
+            if let Some(action) = action {
+                evidence.push(decision_evidence("Action spec", action.spec_sha256.clone()));
+            }
+            items.push(json!({
+                "id": format!("candidate-gate:{}", candidate.id),
+                "kind": "quality.gate",
+                "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
+                "actionable": true,
+                "title": format!("Quality Gate: {outcome}"),
+                "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, gate.reasons.join("; ")),
+                "target": target,
+                "subject_id": candidate.id,
+                "updated_at": gate.decided_at,
+                "revision": decision_revision(&[
+                    "quality.gate",
+                    &candidate.id,
+                    outcome,
+                    &gate.decided_at,
+                    &candidate.commit_sha,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Candidate {} at commit {}.", candidate.id, candidate.commit_sha),
+                    "paths": [],
+                },
+                "risk": risk,
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "A gate outcome does not reserve budget. Repair requires a new authorized attempt or Campaign cancellation; no Inbox mutation is exposed.",
+                },
+                "evidence": evidence,
+                "blocked_reason": "GATE_REVIEW_REQUIRED",
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        Ok(items)
+    }
+
+    fn model_call_items(&self, model_calls: &[factory_native::db::ModelCallRecord]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for call in model_calls {
+            items.push(json!({
+                "id": format!("model-call:{}", call.reservation_id),
+                "kind": "model.usage-unresolved",
+                "severity": "critical",
+                "actionable": true,
+                "title": "Unresolved model reservation",
+                "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
+                "target": "/runtime",
+                "subject_id": call.reservation_id,
+                "updated_at": call.updated_at,
+                "revision": decision_revision(&[
+                    "model.usage-unresolved",
+                    &call.reservation_id,
+                    &call.state,
+                    &call.updated_at,
+                    if call.usage_known { "measured" } else { "unmeasured" },
+                ]),
+                "project": decision_project(Some(call.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": {
+                    "summary": format!("Reservation {} for {}.", call.reservation_id, call.purpose),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "The reservation is unresolved and is not measured spend.",
+                },
+                "impact": {
+                    "budget": {
+                        "max_cost_micros": call.max_cost_micros,
+                        "cost_micros": call.cost_micros,
+                        "usage_known": call.usage_known,
+                    },
+                    "permissions": Value::Null,
+                    "note": "Releasing the reservation does not measure usage or spend; it only returns the reserved capacity.",
+                },
+                "evidence": [
+                    decision_evidence("Provider", format!("{}/{}", call.provider, call.model)),
+                    decision_evidence("State", call.state.clone()),
+                    decision_evidence("Request", call.request_sha256.clone()),
+                    decision_evidence("Created", call.created_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": vec![DecisionAction::ResolveModelCall {
+                    label: "Release reservation".into(),
+                    model_call_id: call.reservation_id.clone(),
+                }],
+            }));
+        }
+        items
+    }
+
+    fn session_items(&self, sessions: &[factory_native::db::ProviderSessionRecord]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for session in sessions.iter().filter(|session| {
+            matches!(
+                session.state.as_str(),
+                "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
+            )
+        }) {
+            let campaign_id = self
+                .attempt_campaign
+                .get(&session.attempt_id)
+                .cloned()
+                .unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            items.push(json!({
+                "id": format!("provider-session:{}", session.session_record_id),
+                "kind": "provider.unresolved-session",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Provider session requires monitoring",
+                "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
+                "target": "/runtime",
+                "subject_id": session.session_record_id,
+                "updated_at": session.updated_at,
+                "revision": decision_revision(&[
+                    "provider.unresolved-session",
+                    &session.session_record_id,
+                    &session.state,
+                    &session.updated_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Provider session {} is {}.", session.session_record_id, session.state),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "External termination may be unconfirmed; Core state is authoritative.",
+                },
+                "impact": {
+                    "budget": {
+                        "cost_micros": session.cost_micros,
+                        "usage_known": session.usage_known,
+                    },
+                    "permissions": Value::Null,
+                    "note": "Monitoring only. No Inbox mutation is exposed.",
+                },
+                "evidence": [
+                    decision_evidence("Attempt", session.attempt_id.clone()),
+                    decision_evidence("State", session.state.clone()),
+                    decision_evidence("Provider", format!("{}/{}", session.provider, session.model)),
+                    decision_evidence("Updated", session.updated_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+
+    fn run_items(&self, runs: &[factory_native::db::Run]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for run in runs
+            .iter()
+            .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
+        {
+            let campaign_id = self.run_campaign.get(&run.id).cloned().unwrap_or_default();
+            let campaign_record = self.campaign_by_id.get(campaign_id.as_str()).copied();
+            let action = campaign_record
+                .and_then(|campaign| self.action_by_id.get(campaign.action_id.as_str()).copied());
+            items.push(json!({
+                "id": format!("run:{}", run.id),
+                "kind": "run.failed",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Run failed",
+                "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign_id.is_empty() { "unknown" } else { &campaign_id }, run.status),
+                "target": if campaign_id.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign_id}") },
+                "subject_id": run.id,
+                "updated_at": run.created_at,
+                "revision": decision_revision(&[
+                    "run.failed",
+                    &run.id,
+                    &run.status,
+                    &run.created_at,
+                ]),
+                "project": decision_project(
+                    action.map(|action| action.project_id.as_str()),
+                    &self.project_by_id,
+                ),
+                "campaign": decision_campaign(campaign_record),
+                "change": {
+                    "summary": format!("Run {} is {}.", run.id, run.status),
+                },
+                "risk": {
+                    "class": Value::Null,
+                    "summary": "A failed Run does not change the Campaign authorization or budget by itself.",
+                },
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "Monitoring only. Inspect the Campaign for the recorded failure.",
+                },
+                "evidence": [
+                    decision_evidence("Run", run.id.clone()),
+                    decision_evidence("State", run.status.clone()),
+                    decision_evidence("Created", run.created_at.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+
+    fn action_items(&self, actions: &[Action]) -> Vec<Value> {
+        let mut items = Vec::new();
+        for action in actions
+            .iter()
+            .filter(|action| action.status == "HUMAN_REQUIRED")
+        {
+            items.push(json!({
+                "id": format!("action:{}", action.id),
+                "kind": "action.human-required",
+                "severity": "attention",
+                "actionable": false,
+                "title": "Action is HUMAN_REQUIRED",
+                "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
+                "target": format!("/actions/{}", action.id),
+                "subject_id": action.id,
+                "updated_at": action.created_at,
+                "revision": decision_revision(&[
+                    "action.human-required",
+                    &action.id,
+                    &action.status,
+                    &action.created_at,
+                ]),
+                "project": decision_project(Some(action.project_id.as_str()), &self.project_by_id),
+                "campaign": Value::Null,
+                "change": {
+                    "summary": action.objective.clone(),
+                },
+                "risk": {
+                    "class": action.risk.clone(),
+                    "summary": "The Action requires a human decision; Core does not expose an Inbox mutation.",
+                },
+                "impact": {
+                    "budget": Value::Null,
+                    "permissions": Value::Null,
+                    "note": "No Inbox mutation is exposed. Inspect the Action workspace.",
+                },
+                "evidence": [
+                    decision_evidence("Action status", action.status.clone()),
+                    decision_evidence("Action spec", action.spec_sha256.clone()),
+                ],
+                "blocked_reason": Value::Null,
+                "actions": Vec::<DecisionAction>::new(),
+            }));
+        }
+        items
+    }
+}
+
 async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
     let campaigns = app.db.campaigns().await?;
     let runs = app.db.runs().await?;
@@ -3134,157 +4016,43 @@ async fn build_decisions(app: &App) -> Result<Vec<serde_json::Value>, Error> {
     let sessions = app.db.provider_sessions().await?;
     let model_calls = app.db.unresolved_model_calls().await?;
     let actions = app.db.actions().await?;
+    let projects = app.db.projects().await?;
+    let intake_requests = app.db.intake_requests().await?;
     let (run_campaign, attempt_campaign) = campaign_map(&runs, &attempts);
+    let projection = DecisionProjection {
+        app,
+        campaign_by_id: campaigns
+            .iter()
+            .map(|campaign| (campaign.id.as_str(), campaign))
+            .collect(),
+        action_by_id: actions
+            .iter()
+            .map(|action| (action.id.as_str(), action))
+            .collect(),
+        project_by_id: projects
+            .iter()
+            .map(|project| (project.id.as_str(), project))
+            .collect(),
+        run_campaign,
+        attempt_campaign,
+    };
+    let intake_lead_ids: BTreeSet<&str> = intake_requests
+        .iter()
+        .map(|request| request.lead_request_id.as_str())
+        .collect();
     let mut items = Vec::new();
-
-    for campaign in campaigns
-        .iter()
-        .filter(|campaign| campaign.status == "BLOCKED_AUTHORIZATION")
-    {
-        items.push(json!({
-            "id": format!("campaign-authorization:{}", campaign.id),
-            "kind": "campaign.authorization",
-            "severity": "attention",
-            "actionable": true,
-            "title": "Campaign awaiting authorization",
-            "detail": format!("Campaign {} is blocked pending an explicit authorization decision.", campaign.id),
-            "target": "/campaigns",
-            "subject_id": campaign.id,
-            "updated_at": campaign.created_at,
-        }));
-    }
-
-    for request in lead_requests
-        .iter()
-        .filter(|request| request.state == LeadRequestState::Ready)
-    {
-        items.push(json!({
-            "id": format!("lead-ready:{}", request.id),
-            "kind": "lead.ready",
-            "severity": "attention",
-            "actionable": true,
-            "title": "Frozen Lead plan ready",
-            "detail": format!("Lead request {} has a frozen plan and needs an explicit start decision.", request.id),
-            "target": "/lead",
-            "subject_id": request.id,
-            "updated_at": request.updated_at,
-        }));
-    }
-
-    for candidate in &candidates {
-        let Some(gate) = app.db.gate_for_candidate(&candidate.id).await? else {
-            continue;
-        };
-        let needs_attention = matches!(
-            gate.outcome,
-            GateOutcome::RepairRequired
-                | GateOutcome::Blocked
-                | GateOutcome::HumanRequired
-                | GateOutcome::NotTested
-        );
-        if !needs_attention {
-            continue;
-        }
-        let campaign = attempt_campaign
-            .get(&candidate.attempt_id)
-            .cloned()
-            .unwrap_or_default();
-        let target = if campaign.is_empty() {
-            "/campaigns".to_owned()
-        } else {
-            format!("/campaigns/{campaign}")
-        };
-        items.push(json!({
-            "id": format!("candidate-gate:{}", candidate.id),
-            "kind": "quality.gate",
-            "severity": if matches!(gate.outcome, GateOutcome::HumanRequired | GateOutcome::Blocked) { "critical" } else { "attention" },
-            "actionable": true,
-            "title": format!("Quality Gate: {}", match gate.outcome {
-                GateOutcome::Accepted => "ACCEPTED",
-                GateOutcome::RepairRequired => "REPAIR_REQUIRED",
-                GateOutcome::Blocked => "BLOCKED",
-                GateOutcome::HumanRequired => "HUMAN_REQUIRED",
-                GateOutcome::NotTested => "NOT_TESTED",
-            }),
-            "detail": format!("Candidate {} for Campaign {} needs operator attention. {}", candidate.id, if campaign.is_empty() { "unknown" } else { &campaign }, gate.reasons.join("; ")),
-            "target": target,
-            "subject_id": candidate.id,
-            "updated_at": gate.decided_at,
-        }));
-    }
-
-    for call in &model_calls {
-        items.push(json!({
-            "id": format!("model-call:{}", call.reservation_id),
-            "kind": "model.usage-unresolved",
-            "severity": "critical",
-            "actionable": true,
-            "title": "Unresolved model reservation",
-            "detail": format!("{} model call {} is {}. The reservation remains unavailable for reuse until an operator releases it; it is not measured spend.", call.provider, call.reservation_id, call.state),
-            "target": "/runtime",
-            "subject_id": call.reservation_id,
-            "updated_at": call.updated_at,
-            "action": {
-                "kind": "resolve_model_call",
-                "model_call_id": call.reservation_id,
-                "label": "Release reservation"
-            }
-        }));
-    }
-
-    for session in sessions.iter().filter(|session| {
-        matches!(
-            session.state.as_str(),
-            "INTENT" | "ACTIVE" | "CANCEL_REQUESTED" | "ORPHANED"
-        )
-    }) {
-        items.push(json!({
-            "id": format!("provider-session:{}", session.session_record_id),
-            "kind": "provider.unresolved-session",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Provider session requires monitoring",
-            "detail": format!("Provider session {} for Attempt {} is {}. External termination may be unconfirmed.", session.session_record_id, session.attempt_id, session.state),
-            "target": "/runtime",
-            "subject_id": session.session_record_id,
-            "updated_at": session.updated_at,
-        }));
-    }
-
-    for run in runs
-        .iter()
-        .filter(|run| matches!(run.status.as_str(), "FAILED" | "REJECTED"))
-    {
-        let campaign = run_campaign.get(&run.id).cloned().unwrap_or_default();
-        items.push(json!({
-            "id": format!("run:{}", run.id),
-            "kind": "run.failed",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Run failed",
-            "detail": format!("Run {} for Campaign {} is {}.", run.id, if campaign.is_empty() { "unknown" } else { &campaign }, run.status),
-            "target": if campaign.is_empty() { "/campaigns".to_owned() } else { format!("/campaigns/{campaign}") },
-            "subject_id": run.id,
-            "updated_at": run.created_at,
-        }));
-    }
-
-    for action in actions
-        .iter()
-        .filter(|action| action.status == "HUMAN_REQUIRED")
-    {
-        items.push(json!({
-            "id": format!("action:{}", action.id),
-            "kind": "action.human-required",
-            "severity": "attention",
-            "actionable": false,
-            "title": "Action is HUMAN_REQUIRED",
-            "detail": format!("Action {} needs review outside the Inbox; no Inbox mutation is exposed.", action.id),
-            "target": format!("/actions/{}", action.id),
-            "subject_id": action.id,
-            "updated_at": action.created_at,
-        }));
-    }
+    items.extend(projection.intake_items(&intake_requests).await?);
+    items.extend(projection.campaign_items(&campaigns));
+    items.extend(
+        projection
+            .lead_items(&lead_requests, &intake_lead_ids)
+            .await?,
+    );
+    items.extend(projection.gate_items(&candidates).await?);
+    items.extend(projection.model_call_items(&model_calls));
+    items.extend(projection.session_items(&sessions));
+    items.extend(projection.run_items(&runs));
+    items.extend(projection.action_items(&actions));
 
     let mut seen = BTreeSet::new();
     items.retain(|item| {
@@ -5450,16 +6218,8 @@ fn build_intake_authorization(
     rationale: &str,
 ) -> NewCampaignAuthorization {
     let route = &context.profile.roles.implementer;
-    let execution_mode = if context.mechanism == "MODEL" {
-        "TRUSTED_LOCAL_PROVIDER"
-    } else {
-        "FIXTURE"
-    };
-    let allowed_tools = if execution_mode == "TRUSTED_LOCAL_PROVIDER" {
-        vec!["run_command".to_string(), "write_file".to_string()]
-    } else {
-        Vec::new()
-    };
+    let execution_mode = intake_execution_mode(&context.mechanism);
+    let allowed_tools = intake_allowed_tools(&context.mechanism);
     NewCampaignAuthorization {
         authorization_id: format!("intake-{}", context.intake.id),
         risk_class: "R0".into(),
@@ -5893,6 +6653,24 @@ async fn approve_intake_request(
         return api_error(Error::IntakeConflict {
             code: "PLAN_HASH_MISMATCH",
             message: "the expected plan hash does not identify the frozen plan".into(),
+        });
+    }
+    if let Some(expected_profile_revision_id) = &input.expected_profile_revision_id
+        && expected_profile_revision_id != &context.context.profile_revision_id
+    {
+        return api_error(Error::IntakeConflict {
+            code: "PROFILE_REVISION_MISMATCH",
+            message: "the expected profile revision does not identify the frozen execution context"
+                .into(),
+        });
+    }
+    if let Some(expected_profile_hash) = &input.expected_profile_hash
+        && expected_profile_hash != &context.context.profile_hash
+    {
+        return api_error(Error::IntakeConflict {
+            code: "PROFILE_HASH_MISMATCH",
+            message: "the expected profile hash does not identify the frozen execution context"
+                .into(),
         });
     }
     let expected = match factory_native::db::ExpectedStartBinding::new(
@@ -10094,6 +10872,102 @@ mod tests {
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(cancel["code"], "LEAD_ALREADY_STARTED");
             assert_eq!(cancel["campaign_id"], campaign_id);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn decisions_project_an_exact_intake_action_and_reject_a_stale_profile_guard() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-decisions").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id).await;
+            let plan_hash = context.plan.plan_hash.clone();
+            let profile_revision_id = context.context.profile_revision_id.clone();
+            let profile_hash = context.context.profile_hash.clone();
+
+            let (status, decisions) = send(&fixture.router, "GET", "/office/decisions", None).await;
+            assert_eq!(status, StatusCode::OK, "{decisions}");
+            let item = decisions["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == "intake.plan-approval")
+                .expect("intake approval item");
+            assert_eq!(item["actionable"], true);
+            assert_eq!(item["subject_id"], intake_id);
+            assert_eq!(item["target"], format!("/requests/{intake_id}"));
+            assert!(item["revision"].is_string());
+            assert_eq!(item["project"]["id"], fixture.project_id);
+            assert_eq!(
+                item["impact"]["budget"]["max_attempts"],
+                context.budget.max_attempts
+            );
+            let approve = item["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|action| action["kind"] == "approve_intake_plan")
+                .expect("approve action");
+            assert_eq!(
+                approve["expected_plan_hash"].as_str(),
+                Some(plan_hash.as_str())
+            );
+            assert_eq!(
+                approve["expected_profile_revision_id"].as_str(),
+                Some(profile_revision_id.as_str())
+            );
+            assert_eq!(
+                approve["expected_profile_hash"].as_str(),
+                Some(profile_hash.as_str())
+            );
+
+            let (status, stale) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "expected_profile_revision_id": "stale-revision",
+                    "expected_profile_hash": profile_hash,
+                    "rationale": "stale guard",
+                    "idempotency_key": "approve-stale-guard",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+            assert_eq!(stale["code"], "PROFILE_REVISION_MISMATCH");
+            assert_eq!(
+                fixture
+                    .app
+                    .db
+                    .intake_request(&intake_id)
+                    .await
+                    .unwrap()
+                    .campaign_id,
+                None
+            );
+
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": plan_hash,
+                    "expected_profile_revision_id": profile_revision_id,
+                    "expected_profile_hash": profile_hash,
+                    "rationale": "exact guard approved",
+                    "idempotency_key": "approve-exact-guard",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            assert_eq!(approved["state"], "EXECUTING");
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);
