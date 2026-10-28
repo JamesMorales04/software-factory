@@ -665,7 +665,11 @@ async fn execute_provider_assignment(
     }
     let configured_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
     let sandbox_mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
-    let provider_profile = if sandbox_mode == "container"
+    // An explicit deterministic fixture kind is test-only and must not be
+    // silently upgraded to a stored live provider profile.
+    let fixture_override = configured_kind == "fixture";
+    let provider_profile = if !fixture_override
+        && sandbox_mode == "container"
         && matches!(assignment.provider.as_str(), "opencode" | "opencode-go")
     {
         let profile = client

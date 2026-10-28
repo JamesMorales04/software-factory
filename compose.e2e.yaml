@@ -1,10 +1,13 @@
 # Deterministic Compose acceptance override. This is a test harness, not part
-# of the installed product: a local dumb-HTTP Git fixture and an explicit
-# insecure-Git opt-in for the disposable test repository.
+# of the installed product: a local dumb-HTTP Git fixture, a deterministic
+# OpenAI-compatible model fixture for Lead assessment and semantic review, and
+# explicit test-only insecure-Git/plain-HTTP opt-ins for disposable services.
 services:
   core:
     environment:
       FACTORY_ALLOW_INSECURE_GIT: "1"
+      FACTORY_ALLOW_TEST_UPSTREAM: "1"
+      FACTORY_TEST_UPSTREAM_HOSTS: "model-fixture"
   git-fixture:
     image: docker.io/library/python:3.12-alpine
     command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]
@@ -12,4 +15,36 @@ services:
       - ${FACTORY_E2E_GIT_DIR:?FACTORY_E2E_GIT_DIR is required}:/srv:ro
     networks:
       - factory-egress
+    restart: "no"
+  model-fixture:
+    image: docker.io/library/python:3.12-alpine
+    command: ["python3", "/app/compose-model-fixture.py"]
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    volumes:
+      - ${FACTORY_E2E_MODEL_DIR:?FACTORY_E2E_MODEL_DIR is required}:/context:ro
+      - ./scripts/fixtures/compose-model-fixture.py:/app/compose-model-fixture.py:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      FACTORY_MODEL_CONTEXT: /context/context.json
+    networks:
+      - factory-control
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     restart: "no"

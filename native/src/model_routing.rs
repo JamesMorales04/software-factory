@@ -147,6 +147,7 @@ pub struct RoleGatewayFactory<'a> {
     caps: CoreModelCaps,
     timeout: Duration,
     allow_loopback_http: bool,
+    test_upstream_hosts: Vec<String>,
 }
 
 impl<'a> RoleGatewayFactory<'a> {
@@ -156,6 +157,7 @@ impl<'a> RoleGatewayFactory<'a> {
         caps: CoreModelCaps,
         timeout: Duration,
         allow_loopback_http: bool,
+        test_upstream_hosts: Vec<String>,
     ) -> Self {
         Self {
             database,
@@ -163,6 +165,7 @@ impl<'a> RoleGatewayFactory<'a> {
             caps,
             timeout: timeout.min(Duration::from_secs(MAX_MODEL_TIMEOUT_SECS)),
             allow_loopback_http,
+            test_upstream_hosts,
         }
     }
 
@@ -284,6 +287,7 @@ impl<'a> RoleGatewayFactory<'a> {
             evaluation_policy: policy,
             global_policy: self.caps.global,
             allow_loopback_http: self.allow_loopback_http,
+            test_upstream_hosts: self.test_upstream_hosts.clone(),
             bound_role: Some(call_role),
         };
         ModelGateway::new(config).map_err(|error| match error {
@@ -566,8 +570,14 @@ mod integration_tests {
             true,
         )
         .await;
-        let factory =
-            RoleGatewayFactory::new(&db, Some(&key), caps(), Duration::from_secs(5), true);
+        let factory = RoleGatewayFactory::new(
+            &db,
+            Some(&key),
+            caps(),
+            Duration::from_secs(5),
+            true,
+            Vec::new(),
+        );
 
         let lead = factory
             .for_role(
@@ -662,8 +672,14 @@ mod integration_tests {
             true,
         )
         .await;
-        let factory =
-            RoleGatewayFactory::new(&db, Some(&key), caps(), Duration::from_secs(5), true);
+        let factory = RoleGatewayFactory::new(
+            &db,
+            Some(&key),
+            caps(),
+            Duration::from_secs(5),
+            true,
+            Vec::new(),
+        );
 
         assert!(matches!(
             factory
@@ -695,8 +711,14 @@ mod integration_tests {
             true,
         )
         .await;
-        let factory_two =
-            RoleGatewayFactory::new(&db_two, Some(&key), caps(), Duration::from_secs(5), true);
+        let factory_two = RoleGatewayFactory::new(
+            &db_two,
+            Some(&key),
+            caps(),
+            Duration::from_secs(5),
+            true,
+            Vec::new(),
+        );
         assert!(matches!(
             factory_two
                 .for_role(
@@ -716,12 +738,19 @@ mod integration_tests {
             Err(RouteError::NotAGatewayRole { .. })
         ));
         assert!(matches!(
-            RoleGatewayFactory::new(&db_two, None, caps(), Duration::from_secs(5), true)
-                .for_role(
-                    ExecutionRole::Lead,
-                    &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
-                )
-                .await,
+            RoleGatewayFactory::new(
+                &db_two,
+                None,
+                caps(),
+                Duration::from_secs(5),
+                true,
+                Vec::new()
+            )
+            .for_role(
+                ExecutionRole::Lead,
+                &route("opencode-go", "deepseek-v4.1-flash", 8_192, 300_000),
+            )
+            .await,
             Err(RouteError::CredentialUnavailable { .. })
         ));
         // A different master key cannot decrypt the stored credential. The
@@ -733,7 +762,8 @@ mod integration_tests {
                 Some(&wrong_key),
                 caps(),
                 Duration::from_secs(5),
-                true
+                true,
+                Vec::new()
             )
             .for_role(
                 ExecutionRole::Lead,

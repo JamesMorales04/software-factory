@@ -1100,6 +1100,7 @@ impl App {
         factory_native::telemetry::register_secret(&credential);
         let allow_loopback_http =
             env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+        let test_upstream_hosts = test_upstream_hosts();
         let mut lead_policy =
             policy_from_env("FACTORY_LEAD_MODEL", 128_000, 8_192, 300_000).ok()?;
         let mut reviewer_policy =
@@ -1134,6 +1135,7 @@ impl App {
             global_policy,
             allow_loopback_http,
             bound_role: None,
+            test_upstream_hosts,
         };
         match factory_native::model_gateway::ModelGateway::new(config) {
             Ok(gateway) => Some(gateway),
@@ -1184,6 +1186,7 @@ impl App {
             caps,
             timeout,
             allow_loopback_http,
+            test_upstream_hosts(),
         )
         .for_role(role, route)
         .await
@@ -1269,6 +1272,7 @@ fn model_gateway_from_env()
     let evaluation_policy = policy_from_env("FACTORY_EVALUATION_MODEL", 400_000, 8_192, 2_000_000)?;
     let global_policy = policy_from_env("FACTORY_MODEL_GLOBAL", 2_000_000, 100_000, 10_000_000)?;
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    let test_upstream_hosts = test_upstream_hosts();
     Ok(Some(factory_native::model_gateway::ModelGateway::new(
         factory_native::model_gateway::ModelGatewayConfig {
             base_url: url,
@@ -1284,8 +1288,18 @@ fn model_gateway_from_env()
             global_policy,
             allow_loopback_http,
             bound_role: None,
+            test_upstream_hosts,
         },
     )?))
+}
+
+fn test_upstream_hosts() -> Vec<String> {
+    if env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() != Some("1") {
+        return Vec::new();
+    }
+    factory_native::provider_catalog::parse_test_upstream_hosts(
+        env::var("FACTORY_TEST_UPSTREAM_HOSTS").ok().as_deref(),
+    )
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64, Box<dyn std::error::Error>> {
@@ -2114,11 +2128,13 @@ async fn update_provider_settings(
             .into_response();
     };
     let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    let test_upstream_hosts = test_upstream_hosts();
     if let Err(error) = factory_native::provider_catalog::validate_model(&input.model)
         .and_then(|()| {
             factory_native::provider_catalog::validate_base_url(
                 &input.base_url,
                 allow_loopback_http,
+                &test_upstream_hosts,
             )
         })
         .and_then(|()| {
@@ -2463,6 +2479,7 @@ async fn provider_models(
                 &settings.base_url,
                 &credential,
                 allow_loopback_http,
+                test_upstream_hosts(),
                 discovered_at,
             )
             .await
