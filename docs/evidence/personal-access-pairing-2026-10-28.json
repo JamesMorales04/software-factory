@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-pairing-author-run",
-  "implementation_sha": "9afbb6f3620895c2815a91475b05b00d3b10b23a",
+  "implementation_sha": "69d993fae5da85d46bd7d16092a2eec86b523078",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -64,5 +64,11 @@
     "The phone session cookie is HttpOnly and SameSite=Strict. The CSRF token is a separate readable SameSite cookie used only in the x-factory-csrf header.",
     "Revocation is immediate for protected API access. An invalid session cookie does not block the public Office shell; it is cleared so the app can show its recovery gate.",
     "No pairing code, poll token, session cookie, CSRF value or operator credential is recorded in this evidence."
-  ]
+  ],
+  "rebase_provenance": {
+    "tested_original_sha": "9afbb6f3620895c2815a91475b05b00d3b10b23a",
+    "rebased_sha": "69d993fae5da85d46bd7d16092a2eec86b523078",
+    "base_sha": "302534203f567b9e25f41d04fc5a37aab0e78c3f",
+    "content_equivalent": true
+  }
 }
