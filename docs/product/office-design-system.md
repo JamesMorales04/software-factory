@@ -7,8 +7,9 @@ command navigation and component tests. Operational Overview, Decision Inbox,
 Action detail, the tabbed Campaign workspace, the Runtime console, the
 provider Settings workspace, Agent Office and the interactive WorkGraph are
 implemented against Core projections. Storybook, visual regression, the full
-accessibility audit, a full code-diff viewer, Issues and Docs remain later
-slices. Nothing here says those modules exist beyond their documented
+accessibility audit, Issues and Docs remain later slices. The Campaign
+workspace now exposes a bounded candidate file diff and GitHub PR inspection;
+real browser and live GitHub acceptance remain open. Nothing here says those modules exist beyond their documented
 read-only projections.
 
 **Product job:** the primary workspace where the Product Owner manages
@@ -126,7 +127,7 @@ shape. `ACCEPTED`, `PASS`, `TRUSTED_LOCAL`, `UNKNOWN`, `NOT_TESTED`,
 | Callout / InlineAlert | info/attention/danger; action; `aria-live` for asynchronous changes |
 | CommandPalette | implemented commands only, keyboard-first, empty state |
 | Timeline / EventList | durable sequence, cursor/replay awareness, redacted detail, no fabricated activity |
-| Code/DiffViewer | monospace, line wrapping control, file headers, copyable identifiers, no unexpected HTML; current Campaign view exposes only a bounded diff summary |
+| Code/DiffViewer | monospace, line wrapping control, file headers, copyable identifiers, no unexpected HTML; the Campaign view exposes a bounded per-file unified diff with explicit binary, large, non-file, truncated and unavailable states |
 | WorkGraph | deterministic dependency layout, parallel sibling lanes, exact recorded status plus explicitly derived ready/waiting/blocked states, keyboard node selection, accessible inspector and authoritative table alternative |
 | Board | keyboard move menu, drag with pointer, no drag-only path, explicit column semantics |
 | EmptyState | explains why, offers a real next action, no decorative illustration dependency |

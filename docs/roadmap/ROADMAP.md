@@ -172,8 +172,8 @@ Decision: `proposed`
 
 ### Capabilities
 
-- CAP-024 — GitHub PR delivery (proposed, not_implemented)
-- CAP-025 — CI and review reconciliation (proposed, not_implemented)
+- CAP-024 — GitHub PR delivery (proposed, in_progress)
+- CAP-025 — CI and review reconciliation (proposed, in_progress)
 - CAP-026 — Conditional R0 merge (proposed, not_implemented)
 
 ### Deliverables

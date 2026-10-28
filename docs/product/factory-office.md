@@ -81,8 +81,14 @@ available limitation instead of inventing a mutation. Action Detail shows the fr
 checks and related Core records. Campaign Detail is a tabbed operational
 workspace with separate lifecycle, WorkGraph, execution/participant,
 candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
-views. Candidate revisions expose a bounded Core diff summary of changed paths
-and diff stat; file bodies are not returned. Runtime is an operational console
+views. Candidate revisions expose a bounded Core file diff from the exact
+frozen base to the exact candidate commit/tree, including per-file status,
+additions/deletions and unified patches with explicit binary, large, non-file,
+truncated and unavailable states. The same workspace can read a bound GitHub
+pull request, its checks, comments and bounded PR diff, request review, open a
+PR only when the remote head matches the candidate commit, and merge only with
+explicit confirmation after a fresh PR/check read. GitHub credentials remain
+server-side; real GitHub acceptance remains open. Runtime is an operational console
 for Core health, registered Workers, filtered provider sessions, measured and
 unmeasured usage, model-call reservations, audited release, cleanup, telemetry
 and explicit unexposed services. Settings is a provider and policy workspace

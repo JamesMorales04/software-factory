@@ -1,5 +1,6 @@
 pub mod attempt_grant;
 pub mod browser;
+pub mod candidate_diff;
 pub mod db;
 pub mod device_session;
 pub mod evaluation;

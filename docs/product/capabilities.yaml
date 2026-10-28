@@ -1290,9 +1290,9 @@ capabilities:
   purpose: Create and reconcile exact-candidate pull requests
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1305,28 +1305,39 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.tsx
+    test:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.test.tsx
   acceptance:
     deterministic: Applicable github pr delivery contract, negative and regression checks pass on an exact candidate.
     real: Exercise github pr delivery in a genuine authorized project journey and independently verify the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Pull request creation requires an already pushed head branch that resolves exactly to the candidate commit; Core does not push branches.
+  - Pull request number entry is operator-supplied; no PR is inferred from a candidate.
+  - Real GitHub API and permission behavior is NOT_TESTED; fake-upstream tests only cover deterministic response handling.
+  blockers:
+  - Authorized disposable GitHub repository, live credential and pushed candidate branch are required for real acceptance.
 - id: CAP-025
   name: CI and review reconciliation
   category: Delivery
   purpose: Observe exact-head checks review and branch protection
   product_objective: Governed delivery
   decision_status: proposed
-  implementation_status: not_implemented
+  implementation_status: in_progress
   verification:
-    deterministic: not_tested
+    deterministic: verified
     live_agent: not_tested
     uat: not_tested
     deployment: not_tested
@@ -1338,21 +1349,32 @@ capabilities:
   refs:
     adr: []
     contract: []
-    source: []
-    test: []
+    source:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.tsx
+    test:
+    - native/src/github.rs
+    - native/src/bin/core.rs
+    - office/src/components/office/CandidatePullRequest.test.tsx
   acceptance:
     deterministic: Applicable ci and review reconciliation contract, negative and regression checks pass on an exact
       candidate.
     real: Exercise ci and review reconciliation in a genuine authorized project journey and independently verify
       the outcome.
   evidence:
-    deterministic: []
+    deterministic:
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
-  limitations: []
-  blockers: []
+  limitations:
+  - Check runs, commit statuses, PR state and mergeability are read live from GitHub and bounded; Core does not duplicate GitHub's branch-protection policy engine.
+  - A check list that is truncated or not bound to the PR head blocks merge.
+  - Real GitHub checks, review state and branch protection are NOT_TESTED.
+  blockers:
+  - Live GitHub repository, checks and protection rules are required for real acceptance.
 - id: CAP-026
   name: Conditional R0 merge
   category: Delivery
@@ -2294,35 +2316,44 @@ capabilities:
     - docs/product/factory-office.md
     source:
     - native/src/bin/core.rs
+    - native/src/candidate_diff.rs
+    - native/src/github.rs
     - office/src/views/CampaignDetail.tsx
     - office/src/components/office/CandidateEvidence.tsx
     - office/src/components/office/ParticipantSessionList.tsx
     - office/src/components/office/CandidateDiff.tsx
+    - office/src/components/office/CandidatePullRequest.tsx
     - office/src/components/office/WorkGraph.tsx
     - office/src/components/office/workGraphLayout.ts
     test:
     - office/src/views/CampaignDetail.test.tsx
+    - office/src/components/office/CandidateDiff.test.tsx
+    - office/src/components/office/CandidateDiff.styles.test.ts
+    - office/src/components/office/CandidatePullRequest.test.tsx
     - office/src/components/office/WorkGraph.test.tsx
     - office/src/components/office/workGraphLayout.test.ts
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff metadata requires operator authentication and returns only bounded paths/stat.
+    deterministic: The tabbed Campaign workspace typechecks, lints, passes component tests and builds; the WorkGraph derives only recorded dependency facts, surfaces malformed data and preserves the authoritative table; candidate diff and GitHub PR routes require operator authentication; the diff projection returns only bounded, safe-path file patches with exact base/candidate/Gate identity; the PR projection uses the encrypted Core connection and fake-upstream tests cover checks, comments, review requests, typed permission blocks and pinned-head merge without auto-merge.
     real: An authenticated Chromium journey opens a Campaign from the list, selects a WorkUnit in the visual graph and exact inspector, persists the WorkUnit selection across reload, inspects Budget, Candidates, Evidence, Gate and Events, and observes the accepted Gate only after independent evidence.
   evidence:
     deterministic:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
     - docs/evidence/office-agent-office-slice4-2026-10-27.json
+    - docs/evidence/office-campaign-diff-pr-2026-10-28.json
     live_agent: []
     uat: []
     deployment: []
     isolation: []
   limitations:
   - The WorkGraph visualizes recorded dependencies; position is derived dependency depth, not scheduling progress.
-  - Candidate diff projection exposes changed paths and diff stat only; file bodies are not returned to the browser.
+  - Candidate diff projection is bounded and omits binary, oversized, symlink/gitlink, non-UTF-8 and budget-exhausted patches; it never executes the candidate.
+  - GitHub pull request operations require a Project repository binding and an already pushed head branch; Core does not create or push branches.
+  - Real GitHub API permissions, branch protection and a live merge are NOT_TESTED; the fake-upstream tests do not certify live behavior.
   - Campaign authorization and Gate repair remain on their existing module controls.
   - Malformed graph data is surfaced as an inconsistency and never repaired in the browser.
   blockers:
-  - Real browser acceptance and Product Owner review remain pending.
+  - Real browser acceptance, real GitHub acceptance and Product Owner review remain pending.
 
 - id: CAP-051
   name: Runtime operational console

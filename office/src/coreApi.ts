@@ -385,14 +385,236 @@ export interface ProviderToolEventProjection {
   note: string;
 }
 
+export type CandidateFileStatus = "ADDED" | "MODIFIED" | "DELETED";
+export type CandidateDiffOmission =
+  | "BINARY"
+  | "TOO_LARGE"
+  | "NOT_A_FILE"
+  | "NON_UTF8"
+  | "BUDGET";
+
+export interface CandidateFileDiff {
+  path: string;
+  status: CandidateFileStatus;
+  oldMode: string;
+  newMode: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  omitted: CandidateDiffOmission | null;
+  patch?: string;
+  patchTruncated: boolean;
+  patchBytes: number;
+}
+
+export interface CandidateDiffCandidateIdentity {
+  id: string;
+  attempt_id: string;
+  action_spec_sha256: string;
+  commit_sha: string;
+  tree_sha: string;
+  implementer_id: string;
+  created_at: string;
+  integration: boolean;
+  lineage: string[];
+}
+
+export interface CandidateGateIdentity {
+  candidate_id: string;
+  outcome: string;
+  reasons: string[];
+  decided_at: string;
+}
+
 export interface CandidateDiffSummary {
   candidate_id: string;
+  candidate: CandidateDiffCandidateIdentity;
+  gate: CandidateGateIdentity | null;
+  project_id: string;
+  campaign_id: string;
   commit_sha: string;
   tree_sha: string;
   base_commit: string;
+  base_tree_sha: string;
   changed_paths: string[];
   changed_paths_truncated: boolean;
   diff_stat: string;
+  files: CandidateFileDiff[];
+  returned_files: number;
+  files_truncated: boolean;
+  total_additions: number;
+  total_deletions: number;
+  patch_bytes: number;
+  patch_truncated: boolean;
+  source: string;
+}
+
+export interface CandidatePullRequest {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  draft: boolean;
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  baseSha: string;
+  author: string | null;
+  htmlUrl: string;
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  comments: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CandidateCheckRun {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string;
+  app: string | null;
+  detailsUrl: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface CandidateStatusContext {
+  context: string;
+  state: string;
+  description: string;
+  targetUrl: string;
+}
+
+export interface CandidatePullRequestChecks {
+  headSha: string;
+  state: "SUCCESS" | "PENDING" | "FAILURE" | "NO_CHECKS" | string;
+  detail: string;
+  ready: boolean;
+  checkRuns: CandidateCheckRun[];
+  checkRunsTruncated: boolean;
+  combinedStatus: string;
+  statuses: CandidateStatusContext[];
+  statusesTruncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestComment {
+  id: number;
+  kind: "issue" | "review" | string;
+  author: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  path: string | null;
+  line: number | null;
+  htmlUrl: string;
+  createdAt: string;
+}
+
+export interface CandidatePullRequestCommentList {
+  comments: CandidatePullRequestComment[];
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestDiff {
+  patch: string;
+  bytes: number;
+  truncated: boolean;
+  fetchedAt: string;
+}
+
+export interface CandidatePullRequestStatus {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  candidate_tree_sha: string;
+  project_id: string;
+  gate: CandidateGateIdentity | null;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  checks: CandidatePullRequestChecks;
+  head_matches_candidate: boolean;
+  merge_ready: boolean;
+  merge_blocked_reasons: string[];
+  checked_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestDiffResult {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  project_id: string;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  diff: CandidatePullRequestDiff;
+  head_matches_candidate: boolean;
+  source: string;
+}
+
+export interface CandidatePullRequestCommentsResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  binding: ProjectGitHubBinding;
+  pull_request_number: number;
+  comments: CandidatePullRequestCommentList;
+  source: string;
+}
+
+export interface CandidatePullRequestCommentResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  comment: CandidatePullRequestComment;
+  recorded_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestReviewResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  reviewers: string[];
+  requested_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestMergeResult {
+  campaign_id: string;
+  candidate_id: string;
+  project_id: string;
+  pull_request_number: number;
+  expected_head_sha: string;
+  merged: boolean;
+  merge_commit_sha: string;
+  message: string;
+  merged_at: string;
+  source: string;
+}
+
+export interface CandidatePullRequestBindingResult {
+  binding: ProjectGitHubBinding | null;
+  sync_state: GitHubSyncState | null;
+}
+
+export interface CandidatePullRequestOpenResult {
+  campaign_id: string;
+  candidate_id: string;
+  candidate_commit_sha: string;
+  project_id: string;
+  gate: CandidateGateIdentity | null;
+  binding: ProjectGitHubBinding;
+  pull_request: CandidatePullRequest;
+  head_sha: string;
+  base: string;
+  opened_at: string;
   source: string;
 }
 
@@ -2016,6 +2238,85 @@ export const coreApi = {
   getCandidateDiff: (campaignId: string, candidateId: string) =>
     request<CandidateDiffSummary>(
       `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/diff`,
+    ),
+  getProjectGitHub: (projectId: string) =>
+    request<CandidatePullRequestBindingResult>(
+      `/projects/${encodeURIComponent(projectId)}/github`,
+    ),
+  getCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestStatus>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request?number=${encodeURIComponent(String(number))}`,
+    ),
+  getCandidatePullRequestDiff: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestDiffResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/diff?number=${encodeURIComponent(String(number))}`,
+    ),
+  getCandidatePullRequestComments: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+  ) =>
+    request<CandidatePullRequestCommentsResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/comments?number=${encodeURIComponent(String(number))}`,
+    ),
+  openCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      title: string;
+      body?: string;
+      head: string;
+      base?: string;
+      draft?: boolean;
+    },
+  ) =>
+    request<CandidatePullRequestOpenResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  commentOnCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+    body: string,
+  ) =>
+    request<CandidatePullRequestCommentResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/comments`,
+      { method: "POST", body: JSON.stringify({ number, body }) },
+    ),
+  requestCandidatePullRequestReview: (
+    campaignId: string,
+    candidateId: string,
+    number: number,
+    reviewers: string[],
+  ) =>
+    request<CandidatePullRequestReviewResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/review`,
+      { method: "POST", body: JSON.stringify({ number, reviewers }) },
+    ),
+  mergeCandidatePullRequest: (
+    campaignId: string,
+    candidateId: string,
+    input: {
+      number: number;
+      expected_head_sha: string;
+      merge_method: "merge" | "squash" | "rebase";
+      confirmed: boolean;
+      commit_title?: string;
+      commit_message?: string;
+    },
+  ) =>
+    request<CandidatePullRequestMergeResult>(
+      `/campaigns/${encodeURIComponent(campaignId)}/candidates/${encodeURIComponent(candidateId)}/pull-request/merge`,
+      { method: "POST", body: JSON.stringify(input) },
     ),
   createCampaign: (input: NewCampaignRequest) =>
     request<Campaign>("/campaigns", {
