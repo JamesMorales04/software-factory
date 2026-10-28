@@ -60,7 +60,48 @@ pub fn validate_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn validate_base_url(base_url: &str, allow_loopback_http: bool) -> Result<(), String> {
+/// Parse the explicit test-only plain-HTTP host allowlist. The caller must have
+/// checked `FACTORY_ALLOW_TEST_UPSTREAM=1`; an unset or malformed entry is
+/// ignored rather than widening the allowlist.
+pub fn parse_test_upstream_hosts(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|host| {
+            !host.is_empty()
+                && host.len() <= 253
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
+        })
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+pub fn test_upstream_host_allowed(
+    host: Option<&str>,
+    allow_test_http: bool,
+    test_hosts: &[String],
+) -> bool {
+    if !allow_test_http {
+        return false;
+    }
+    let Some(host) = host else {
+        return false;
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1")
+        || test_hosts.iter().any(|allowed| allowed == &host)
+}
+
+pub fn validate_base_url(
+    base_url: &str,
+    allow_test_http: bool,
+    test_hosts: &[String],
+) -> Result<(), String> {
     let url = reqwest::Url::parse(base_url).map_err(|_| "base URL is invalid")?;
     if url.username() != ""
         || url.password().is_some()
@@ -72,9 +113,7 @@ pub fn validate_base_url(base_url: &str, allow_loopback_http: bool) -> Result<()
     }
     match url.scheme() {
         "https" => {}
-        "http"
-            if allow_loopback_http && matches!(url.host_str(), Some("127.0.0.1" | "localhost")) => {
-        }
+        "http" if test_upstream_host_allowed(url.host_str(), allow_test_http, test_hosts) => {}
         _ => return Err("base URL must use HTTPS".into()),
     }
     if base_url.len() > 512 {
@@ -119,11 +158,26 @@ mod tests {
 
     #[test]
     fn urls_and_models_are_strict() {
-        assert!(validate_base_url("https://opencode.ai/inference/go/openai/v1", false).is_ok());
-        assert!(validate_base_url("http://opencode.ai/v1", false).is_err());
-        assert!(validate_base_url("https://user:pass@opencode.ai/v1", false).is_err());
-        assert!(validate_base_url("http://127.0.0.1:9999/v1", true).is_ok());
+        assert!(
+            validate_base_url("https://opencode.ai/inference/go/openai/v1", false, &[]).is_ok()
+        );
+        assert!(validate_base_url("http://opencode.ai/v1", false, &[]).is_err());
+        assert!(validate_base_url("https://user:pass@opencode.ai/v1", false, &[]).is_err());
+        assert!(validate_base_url("http://127.0.0.1:9999/v1", true, &[]).is_ok());
         assert!(validate_model("deepseek-v4.1-flash").is_ok());
         assert!(validate_model("bad model").is_err());
+    }
+
+    #[test]
+    fn test_upstream_allowlist_is_narrow_and_requires_the_flag() {
+        let hosts = parse_test_upstream_hosts(Some("model-fixture, other-service"));
+        assert_eq!(hosts, vec!["model-fixture", "other-service"]);
+        assert!(validate_base_url("http://model-fixture:8080/v1", true, &hosts).is_ok());
+        assert!(validate_base_url("http://model-fixture:8080/v1", false, &hosts).is_err());
+        assert!(validate_base_url("http://unlisted:8080/v1", true, &hosts).is_err());
+        assert!(validate_base_url("http://model-fixture:8080/v1", true, &[]).is_err());
+        assert!(validate_base_url("http://127.0.0.1:8080/v1", true, &[]).is_ok());
+        assert!(validate_base_url("https://model-fixture:8080/v1", false, &[]).is_ok());
+        assert!(parse_test_upstream_hosts(Some("bad host,also bad")).is_empty());
     }
 }

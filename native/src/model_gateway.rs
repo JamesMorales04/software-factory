@@ -34,6 +34,10 @@ pub struct ModelGatewayConfig {
     pub evaluation_policy: ModelCallPolicy,
     pub global_policy: ModelCallPolicy,
     pub allow_loopback_http: bool,
+    /// Explicit test-only plain-HTTP hosts from
+    /// `FACTORY_TEST_UPSTREAM_HOSTS`. Ignored unless
+    /// `allow_loopback_http`/`FACTORY_ALLOW_TEST_UPSTREAM=1` is set.
+    pub test_upstream_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for ModelGatewayConfig {
@@ -325,8 +329,13 @@ fn validate_config(config: &ModelGatewayConfig) -> Result<(), ModelGatewayError>
             "model upstream must be an origin with a bounded fixed base path".into(),
         ));
     }
-    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
-    if url.scheme() != "https" && !(config.allow_loopback_http && loopback) {
+    if url.scheme() != "https"
+        && !crate::provider_catalog::test_upstream_host_allowed(
+            url.host_str(),
+            config.allow_loopback_http,
+            &config.test_upstream_hosts,
+        )
+    {
         return Err(ModelGatewayError::Invalid(
             "model upstream must use HTTPS outside loopback tests".into(),
         ));
@@ -515,7 +524,24 @@ mod tests {
             evaluation_policy: policy(200_000, 8_192, 2_000_000),
             global_policy: policy(2_000_000, 100_000, 10_000_000),
             allow_loopback_http: true,
+            test_upstream_hosts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn accepts_only_explicitly_allowed_test_upstream_hosts() {
+        let mut allowed = config("http://model-fixture:8080/v1");
+        allowed.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(allowed).is_ok());
+
+        let mut other = config("http://other-service:8080/v1");
+        other.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(other).is_err());
+
+        let mut disabled = config("http://model-fixture:8080/v1");
+        disabled.allow_loopback_http = false;
+        disabled.test_upstream_hosts = vec!["model-fixture".into()];
+        assert!(ModelGateway::new(disabled).is_err());
     }
 
     #[test]
@@ -655,6 +681,7 @@ mod integration_tests {
                 max_cost_micros: 10_000_000,
             },
             allow_loopback_http: true,
+            test_upstream_hosts: Vec::new(),
         })
         .unwrap()
     }

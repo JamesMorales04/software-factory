@@ -6400,6 +6400,7 @@ mod tests {
                 evaluation_policy: policy,
                 global_policy: policy,
                 allow_loopback_http: true,
+                test_upstream_hosts: Vec::new(),
             })
             .unwrap();
         let action = db.action(&action_id).await.unwrap();
