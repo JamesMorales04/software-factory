@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-28T12:00:00Z",
+  "updated_at": "2026-10-28T13:00:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -25,7 +25,8 @@
         "/pair",
         "/agents",
         "/agents/:participantId",
-        "/issues"
+        "/issues",
+        "/projects/:projectId"
       ],
       "core_api": [
         "GET /health",
@@ -108,7 +109,12 @@
         "POST /intake/requests/{id}/assess",
         "POST /intake/requests/{id}/approve",
         "POST /intake/requests/{id}/message",
-        "POST /intake/requests/{id}/cancel"
+        "POST /intake/requests/{id}/cancel",
+        "GET /projects/import/options",
+        "POST /projects/import/github",
+        "GET /projects/{id}/summary",
+        "GET /projects/{id}/discovery",
+        "POST /projects/{id}/discovery"
       ],
       "user_actions": [
         "register a Project",
@@ -132,7 +138,13 @@
         "search, filter and page synchronized issues and read an issue body as untrusted plain text",
         "submit a Project-scoped unified intake request with an exact execution profile revision",
         "explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
-        "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request"
+        "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request",
+        "import an authorized public or private GitHub repository through the existing encrypted connection and Core-managed clone",
+        "import a local repository only from the operator-approved managed root, with canonical-path and symlink-escape rejection",
+        "register a Project with a human-friendly name and explicit source identity",
+        "search authorized GitHub repositories and inspect owner/repository, visibility, default branch, permissions and connection health",
+        "open a Project summary with source, origin, frozen base revision, last activity, active Campaigns, pending decisions, connection health, capabilities and technical details",
+        "scan bounded repository manifests at the frozen base commit and review advisory toolchains, capabilities and safe check suggestions before explicitly applying capabilities"
       ],
       "states": [
         "loading",
@@ -162,7 +174,14 @@
         "assessment-unavailable",
         "plan-frozen-amendment-refused",
         "withdrawal-fenced-after-start",
-        "authorization-reason"
+        "authorization-reason",
+        "github-fine-grained-limits",
+        "local-import-disabled",
+        "local-path-rejected",
+        "duplicate-project-source",
+        "not-scanned",
+        "discovery-stale",
+        "project-source-unknown"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
@@ -176,9 +195,14 @@
         "office/e2e-browser/personal-access.mjs",
         "office/src/views/Issues.test.tsx",
         "office/src/views/Home.test.tsx",
-        "office/src/views/RequestWorkspace.test.tsx"
+        "office/src/views/RequestWorkspace.test.tsx",
+        "office/src/views/Projects.test.tsx",
+        "office/src/views/ProjectDetail.test.tsx",
+        "native/src/project_import.rs",
+        "native/src/github.rs",
+        "native/src/db/projects.rs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. Aggregate token/cost accounting across assessment plus implementation, role-specific routing beyond the single default gateway, and a real browser acceptance run remain unimplemented; these are displayed as explicit limits, not inferred state. Docs remain a later slice."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. Aggregate token/cost accounting across assessment plus implementation, role-specific routing beyond the single default gateway, and a real browser acceptance run remain unimplemented; these are displayed as explicit limits, not inferred state. Docs remain a later slice. Project onboarding now covers authorized GitHub repository listing and import through the existing encrypted connection, approved-root local import, human Project identity, a Core-backed summary and evidence-based manifest discovery. GitHub App/OAuth installation onboarding is not implemented; fine-grained tokens do not report OAuth scopes, and Office states no installation-wide access. Discovery evidence is advisory and never grants capabilities or check authority."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
