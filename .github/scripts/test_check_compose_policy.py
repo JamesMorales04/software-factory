@@ -279,6 +279,12 @@ class ComposePolicyTests(unittest.TestCase):
             "one exact HTTPS MagicDNS origin",
         )
         self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_TAILSCALE_ORIGIN", "https://other-host.tail4a7adf.ts.net"
+            ),
+            "trusted and status origins must match",
+        )
+        self.assert_rejected(
             lambda c: c["services"]["supervisor"]
             .setdefault("networks", {})
             .__setitem__("factory-office-private", {}),

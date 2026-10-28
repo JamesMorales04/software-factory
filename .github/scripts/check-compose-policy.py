@@ -386,6 +386,9 @@ def main(path: str) -> int:
         trusted_origin = str(
             services["core"].get("environment", {}).get("FACTORY_TRUSTED_ORIGINS", "")
         )
+        tailscale_origin = str(
+            services["core"].get("environment", {}).get("FACTORY_TAILSCALE_ORIGIN", "")
+        )
         parsed_origin = urlsplit(trusted_origin)
         hostname = str(environment.get("TS_HOSTNAME", ""))
         try:
@@ -406,10 +409,10 @@ def main(path: str) -> int:
             and "*" not in trusted_origin
             and parsed_origin.hostname.split(".")[0] == hostname
         )
-        if not valid_origin:
+        if not valid_origin or tailscale_origin != trusted_origin:
             fail(
-                "core: Tailscale origin must be one exact HTTPS MagicDNS origin "
-                "for TS_HOSTNAME"
+                "core: trusted and status origins must match one exact HTTPS "
+                "MagicDNS origin for TS_HOSTNAME"
             )
         if "factory-tailscale-state" not in named_volumes:
             fail("tailscale: persistent node state volume is required")
