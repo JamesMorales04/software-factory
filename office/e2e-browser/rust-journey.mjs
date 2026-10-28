@@ -236,6 +236,19 @@ try {
   await page.getByLabel("This device name").fill("Rust Office E2E");
   await page.getByRole("button", { name: "Enroll this device" }).click();
   await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
+  for (const width of [1440, 834, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewport = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    assert.equal(
+      viewport.scrollWidth,
+      viewport.clientWidth,
+      `Home must not overflow the document at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const overviewLink = page.getByRole("link", {
     name: "Overview",
     exact: true,
@@ -261,6 +274,18 @@ try {
   await page.getByTestId("project-repository").fill(repository);
   await page.getByRole("button", { name: "Register Project" }).click();
   await page.getByText(repository).first().waitFor();
+
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
+  for (const width of [1440, 834, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(
+      await page.getByLabel("What should the Factory do?").isVisible(),
+      true,
+      `Home composer must remain visible at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   await page.getByRole("link", { name: "Actions", exact: true }).click();
   await page.getByRole("heading", { name: "Actions", exact: true }).waitFor();
@@ -544,6 +569,19 @@ try {
     );
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator(".settings-language-select").selectOption("es");
+  assert.equal(
+    await page.evaluate(() => document.documentElement.lang),
+    "es",
+    "language switch must update the document language",
+  );
+  await page.getByRole("heading", { name: "Idioma" }).waitFor();
+  await page.locator(".settings-language-select").selectOption("en");
+  assert.equal(
+    await page.evaluate(() => document.documentElement.lang),
+    "en",
+    "language switch must restore English",
+  );
 
   const _projects = await api("/projects");
   const _leadProject = _projects[0];
