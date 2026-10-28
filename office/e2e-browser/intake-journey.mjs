@@ -508,6 +508,9 @@ function coreEnvironment() {
     FACTORY_VERIFIER_TOKEN: verifier,
     FACTORY_REVIEWER_TOKEN: reviewer,
     FACTORY_MASTER_KEY_FILE: masterKeyFile,
+    // Managed project registration is permitted only inside the operator
+    // approved root. The fixture repository lives under this temp root.
+    FACTORY_PROJECTS_ROOT: process.env.FACTORY_PROJECTS_ROOT?.trim() || temp,
     FACTORY_MODEL_URL: modelUrl,
     FACTORY_MODEL_TOKEN:
       liveConfig?.modelToken ?? "fake-model-token-0123456789abcdef",
