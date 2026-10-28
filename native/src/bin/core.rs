@@ -3317,6 +3317,19 @@ async fn candidate_pull_request_comments(
         Ok(credential) => credential,
         Err(response) => return response,
     };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
     let comments = match app
         .github
         .pull_request_comments(
@@ -3336,10 +3349,50 @@ async fn candidate_pull_request_comments(
         "project_id": context.project.id,
         "binding": context.binding,
         "pull_request_number": number,
+        "pull_request": pull_request,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
         "comments": comments,
         "source": "GitHub pull request comments read through Core; bodies are untrusted text",
     }))
     .into_response()
+}
+
+async fn require_candidate_pull_request_head(
+    app: &App,
+    credential: &factory_native::github_sync::GitHubCredential,
+    context: &CandidatePullRequestContext,
+    number: u64,
+) -> Result<factory_native::github::GitHubPullRequest, Response> {
+    let pull_request = app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+        .map_err(github_upstream_error)?;
+    if !pull_request
+        .head_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "pull request head does not match the recorded candidate commit",
+                "kind": "HEAD_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "observed_head_sha": pull_request.head_sha,
+                "number": number,
+            })),
+        )
+            .into_response());
+    }
+    Ok(pull_request)
 }
 
 async fn open_candidate_pull_request(
@@ -3486,6 +3539,11 @@ async fn comment_on_candidate_pull_request(
         Ok(credential) => credential,
         Err(response) => return response,
     };
+    if let Err(response) =
+        require_candidate_pull_request_head(&app, &credential, &context, input.number).await
+    {
+        return response;
+    }
     let comment = match app
         .github
         .create_pull_request_comment(
@@ -3529,6 +3587,11 @@ async fn request_candidate_pull_request_review(
         Ok(credential) => credential,
         Err(response) => return response,
     };
+    if let Err(response) =
+        require_candidate_pull_request_head(&app, &credential, &context, input.number).await
+    {
+        return response;
+    }
     let reviewers = match app
         .github
         .request_pull_request_reviewers(
