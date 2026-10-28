@@ -53,6 +53,8 @@ pub enum Error {
         campaign_id: String,
         campaign_status: String,
     },
+    #[error("intake conflict {code}: {message}")]
+    IntakeConflict { code: &'static str, message: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -214,10 +216,13 @@ pub const EVENT_KINDS: &[&str] = &[
     "delegation.released",
     "delegation.reserved",
     "delegation.revoked",
+    "execution_policy.granted",
     "github.connection_configured",
     "github.connection_revoked",
     "github.issues_synced",
     "github.project_bound",
+    "intake.message_recorded",
+    "intake.request_created",
     "lead.approved",
     "lead.assessment_recorded",
     "lead.plan_completed",
@@ -777,8 +782,14 @@ mod lead;
 mod model_calls;
 pub use lead::{
     ActionDraftRecord, AuthenticatedOperatorApproval, CampaignExecutionBindingRecord,
-    ExpectedStartBinding, LeadStartEvidenceRecord, LeadStartResult, LeadTaskRecord,
-    LeadWithdrawalRecord, NewDraftLeadRequest, StartAuthority, ValidatedAutonomyContext,
+    ExpectedStartBinding, LeadRequestRecord, LeadStartEvidenceRecord, LeadStartResult,
+    LeadTaskRecord, LeadWithdrawalRecord, NewDraftLeadRequest, StartAuthority,
+    ValidatedAutonomyContext,
+};
+mod intake;
+pub use intake::{
+    ExecutionPolicyGrantRecord, ExecutionPolicyGrantResult, IntakeApprovalContext,
+    IntakeMessageRecord, IntakeRequestRecord, LeadExecutionContextRecord, NewExecutionPolicyGrant,
 };
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,

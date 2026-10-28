@@ -453,10 +453,10 @@ impl Database {
     }
 }
 
-struct CurrentContent {
-    revision: u32,
-    revision_id: String,
-    content: ExecutionProfileContent,
+pub(super) struct CurrentContent {
+    pub(super) revision: u32,
+    pub(super) revision_id: String,
+    pub(super) content: ExecutionProfileContent,
 }
 
 async fn load_execution_profile(
@@ -538,7 +538,7 @@ fn build_record(
     })
 }
 
-async fn load_current_content(
+pub(super) async fn load_current_content(
     connection: &mut SqliteConnection,
     profile_id: &str,
 ) -> Result<CurrentContent, Error> {
@@ -568,7 +568,7 @@ async fn load_current_content(
     })
 }
 
-async fn load_provider_availability(
+pub(super) async fn load_provider_availability(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<ProviderRouteAvailability>, Error> {
     let rows = sqlx::query::query(
@@ -610,7 +610,7 @@ async fn load_defaults(
         .collect()
 }
 
-async fn load_bound_profile(
+pub(super) async fn load_bound_profile(
     connection: &mut SqliteConnection,
     scope: &str,
     project_id: Option<&str>,
@@ -648,7 +648,7 @@ async fn ensure_project(connection: &mut SqliteConnection, project_id: &str) -> 
     project.map(|_| ()).ok_or(Error::NotFound)
 }
 
-async fn insert_audit(
+pub(super) async fn insert_audit(
     connection: &mut SqliteConnection,
     profile_id: &str,
     revision: Option<u32>,
