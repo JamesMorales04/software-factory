@@ -58,7 +58,7 @@ implements Core. Integration is gated on the contract, not on a verbal summary.
 | Baseline/integration | `campaign/office-ux-baseline-20261028` | `sf-office-ux/baseline` | Director | #39 | Active |
 | C profiles | `campaign/office-ux-profiles-20261028` | `sf-office-ux/profiles` | OpenCode | #40 | Assigned |
 | A IA/Home | `campaign/office-ux-ia-20261028` | `sf-office-ux/ia` | OpenCode | #41 | Assigned |
-| B intake | `campaign/office-ux-intake-20261028` | `sf-office-ux/intake` | OpenCode | #42 | Blocked on C foundation |
+| B intake | `campaign/office-ux-intake-20261028` | `sf-office-ux/intake` | OpenCode | #42 | Blocked: review blockers + design |
 | J i18n | `campaign/office-ux-i18n-20261028` | `sf-office-ux/i18n` | OpenCode | #43 | Assigned |
 | K files | `campaign/office-ux-files-20261028` | `sf-office-ux/files` | OpenCode | #44 | Assigned |
 | QA | continuous | `sf-office-ux/qa` | OpenCode/Codex | #39 | Prepared |
@@ -144,5 +144,11 @@ running.
 ## 10. Change log
 
 - 2026-10-28: Preflight recorded; baseline created at `c8bf930`; contracts
-  frozen; profiles, IA, i18n and files lanes assigned; intake blocked on the
-  profiles foundation. No product feature is claimed complete.
+  frozen; profiles, IA, i18n, files and GitHub Issues lanes assigned; intake
+  blocked on the profiles foundation. No product feature is claimed complete.
+- 2026-10-28: Independent Codex `gpt-6.1-sol` review at `9f341db` found eight
+  contract/authority blockers. Intake launch paused; a second bounded Codex
+  design task covers explicit-approval start, draft-to-frozen spec lineage,
+  profile-binding, budget intersection, cancellation fencing and atomic replay.
+  The review is evidence of review, not implementation approval. Findings are
+  recorded in `office-ux-contracts-2026-10-28.md` §3.5.

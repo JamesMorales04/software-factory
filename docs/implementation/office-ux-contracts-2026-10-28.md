@@ -288,6 +288,50 @@ existing Campaign cancellation operation remains authoritative.
 - Frozen profile revision and plan identity are stored in the intake row and in
   the Campaign authorization.
 
+## 3.5 Known blockers (independent review, 2026-10-28)
+
+A read-only `gpt-6.1-sol` review of this contract against the actual code found
+the following. **Intake must not be implemented as originally written until
+these are resolved and re-reviewed.**
+
+1. **Explicit approval cannot compose the existing Lead start unchanged.** The
+   current start requires an autonomous delegation and the autonomous-start
+   policy. A non-autonomous delegation cannot start after explicit operator
+   approval. A shared start operation needs an explicit-approval entry condition
+   that is at least as strong as, and separate from, standing autonomy.
+2. **An empty Action spec has no supported transition to a frozen executable
+   spec.** `action_specs` is immutable and start requires exact plan/spec
+   equality. Intake cannot create an empty Action and later mutate it. A
+   deliberate draft-to-frozen spec lineage is required.
+3. **A recorded "proposed delegation" is not an enforced authority state.**
+   Existing consumers accept any active non-autonomous delegation. Automatic
+   issuance from profile configuration could mint usable bounds or replenish
+   cumulative ceilings. Proposal bounds must stay outside executable grants
+   until authorized, or the state must be enforced by every consumer.
+4. **Profile and plan concurrency guards are incomplete.** The frozen plan hash
+   binds proposal/delegation/config but not the profile revision; campaign
+   authorization stores neither. Start must validate an expected plan hash and
+   the exact profile/spec/config/delegation bindings inside its transaction.
+5. **Independent role routing is not implemented.** One gateway serves Lead and
+   semantic review; a profile cannot be `executable: true` merely because a
+   provider is configured. Exact per-role gateway construction, Lead/implementer
+   separation and candidate-to-profile reviewer lookup must exist first.
+6. **Budget composition is underspecified.** Per-call and whole-Campaign limits
+   must be defined, including the assessment session, deadline intersection and
+   model-call reservations. Profiles may never raise Core/provider policy caps.
+7. **Cancellation needs fencing.** An intake-only `CANCELLED` flag leaves a
+   READY Lead request executable through the existing endpoint and can hide a
+   started Campaign. Cancellation and approval/start must serialize.
+8. **Atomic creation/replay needs transaction-scoped operations.** Existing
+   creation methods take the write lock and own transactions; calling them
+   consecutively is not atomic. Freeze/READY is split across commits and replay
+   checks lifecycle before replay. Extract shared transaction-scoped operations
+   and add upgrade/concurrency/replay tests.
+
+The concrete design is tracked in the campaign ledger. Until it is recorded and
+re-reviewed, the intake endpoints and the Home approval action remain
+provisional UI states only.
+
 ## 4. Integration rules
 
 - Shared files (`native/src/bin/core.rs`, `native/src/lib.rs`,
