@@ -241,9 +241,7 @@ try {
     exact: true,
   });
   if (!(await overviewLink.isVisible())) {
-    await page
-      .getByRole("button", { name: "Advanced", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Advanced", exact: true }).click();
   }
   await overviewLink.click();
   await page
