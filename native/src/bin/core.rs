@@ -5404,6 +5404,54 @@ mod tests {
                 "Office route was not registered: {uri}"
             );
         }
+        let office_write_routes = [
+            ("PUT", "/core-api/settings/runtime"),
+            ("PUT", "/core-api/settings/providers/opencode"),
+            ("POST", "/core-api/settings/providers/unknown/test"),
+            ("DELETE", "/core-api/settings/providers/unknown/credential"),
+            ("POST", "/core-api/projects"),
+            ("PUT", "/core-api/projects/missing/config"),
+            ("POST", "/core-api/actions"),
+            ("POST", "/core-api/campaigns"),
+            ("POST", "/core-api/campaigns/missing/cancel"),
+            ("POST", "/core-api/campaigns/missing/authorize"),
+            ("POST", "/core-api/campaigns/missing/runs"),
+            ("POST", "/core-api/runs/missing/attempts"),
+            ("POST", "/core-api/delegations"),
+            ("POST", "/core-api/delegations/missing"),
+            ("POST", "/core-api/lead/requests"),
+            ("POST", "/core-api/lead/requests/missing/assess"),
+            ("POST", "/core-api/lead/requests/missing/freeze"),
+            ("POST", "/core-api/lead/requests/missing/start"),
+            ("POST", "/core-api/model/calls/missing/resolve"),
+            ("POST", "/core-api/auth/bootstrap"),
+            ("POST", "/core-api/auth/logout"),
+            ("POST", "/core-api/auth/logout-all"),
+            ("POST", "/core-api/auth/rotate"),
+        ];
+        for (method, uri) in office_write_routes {
+            let response = api_only_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .header("authorization", "Bearer operator-token")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response
+                    .headers()
+                    .get("x-factory-office-route-miss")
+                    .is_none(),
+                "Office route was not registered: {method} {uri}"
+            );
+        }
 
         let denied = [
             (
