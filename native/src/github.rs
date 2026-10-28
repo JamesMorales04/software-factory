@@ -888,6 +888,16 @@ impl GitHubClient {
                 "merge commit message exceeds 64 KiB".into(),
             ));
         }
+        let mut body = serde_json::json!({
+            "sha": input.expected_head_sha,
+            "merge_method": input.merge_method,
+        });
+        if let Some(title) = input.commit_title {
+            body["commit_title"] = serde_json::json!(clean_single_line(title));
+        }
+        if let Some(message) = input.commit_message {
+            body["commit_message"] = serde_json::json!(clean_body(message));
+        }
         let response = self
             .client
             .put(format!(
@@ -898,12 +908,7 @@ impl GitHubClient {
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .header("x-github-api-version", "2022-11-28")
             .header(reqwest::header::USER_AGENT, USER_AGENT)
-            .json(&serde_json::json!({
-                "sha": input.expected_head_sha,
-                "merge_method": input.merge_method,
-                "commit_title": input.commit_title.map(clean_single_line),
-                "commit_message": input.commit_message.map(clean_body),
-            }))
+            .json(&body)
             .send()
             .await
             .map_err(|error| GitHubError::Upstream(safe_transport_error(&error)))?;
