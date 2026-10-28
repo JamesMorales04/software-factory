@@ -16,7 +16,11 @@ fi
 GIT_DIR="$(mktemp -d /tmp/factory-compose-e2e-git.XXXXXXXX)"
 COOKIE_JAR="$(mktemp /tmp/factory-compose-e2e-cookie.XXXXXXXX)"
 chmod 600 "$COOKIE_JAR"
-COMPOSE=(podman compose -f compose.yaml -f compose.e2e.yaml)
+# compose.yaml declares `name: software-factory`; COMPOSE_PROJECT_NAME alone is
+# not enough to isolate this disposable acceptance run. Force the project name
+# on every invocation so test volumes/containers can never collide with the
+# owner's installed stack.
+COMPOSE=(podman compose -p "$PROJECT" -f compose.yaml -f compose.e2e.yaml)
 export COMPOSE_PROJECT_NAME="$PROJECT"
 export FACTORY_PORT="$PORT"
 export FACTORY_E2E_GIT_DIR="$GIT_DIR/server"
@@ -107,7 +111,14 @@ compose down -v >/dev/null 2>&1 || true
 compose up -d --build
 
 CORE="$(core_container)"
-[[ -n "$CORE" ]] || { log "Core container was not created"; exit 1; }
+if [[ -z "$CORE" ]]; then
+  log "Core container was not created"
+  podman ps -a \
+    --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Names}} {{.Status}}' >&2 || true
+  podman ps -a --format '{{.Names}} {{.Status}}' | head -20 >&2 || true
+  exit 1
+fi
 wait_for "$BASE/health" 300
 wait_for "http://127.0.0.1:${PORT}/core-api/health" 60
 log "== waiting for Supervisor, runtime engine and Worker readiness"
