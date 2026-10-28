@@ -1234,6 +1234,63 @@ pub enum LeadRequestState {
     Failed,
 }
 
+/// Derived Office-facing disposition. This is a read projection over
+/// authoritative records, not another persisted lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum LeadRequestProjectionState {
+    Submitted,
+    Assessing,
+    PlanReady,
+    AwaitingApproval,
+    Executing,
+    Completed,
+    Blocked,
+    Failed,
+    Withdrawn,
+    Cancelled,
+}
+
+/// Projection precedence: Campaign/gate outcome, then the withdrawal fact, then
+/// the Lead request's own progress. A withdrawal never hides a started
+/// Campaign, and a completed gate is not overwritten by later operator intent.
+pub fn project_lead_request_state(
+    state: LeadRequestState,
+    campaign_status: Option<&str>,
+    gate_outcome: Option<&str>,
+    withdrawn: bool,
+) -> LeadRequestProjectionState {
+    if campaign_status == Some("CANCELLED") {
+        return LeadRequestProjectionState::Cancelled;
+    }
+    if campaign_status == Some("FAILED") {
+        return LeadRequestProjectionState::Failed;
+    }
+    if gate_outcome == Some("ACCEPTED") {
+        return LeadRequestProjectionState::Completed;
+    }
+    if gate_outcome == Some("BLOCKED") {
+        return LeadRequestProjectionState::Blocked;
+    }
+    if campaign_status == Some("AUTHORIZED") {
+        return LeadRequestProjectionState::Executing;
+    }
+    if withdrawn {
+        return LeadRequestProjectionState::Withdrawn;
+    }
+    match state {
+        LeadRequestState::Submitted => LeadRequestProjectionState::Submitted,
+        LeadRequestState::Assessing => LeadRequestProjectionState::Assessing,
+        LeadRequestState::Planned => LeadRequestProjectionState::PlanReady,
+        LeadRequestState::Frozen | LeadRequestState::Ready => {
+            LeadRequestProjectionState::AwaitingApproval
+        }
+        LeadRequestState::Running => LeadRequestProjectionState::Executing,
+        LeadRequestState::Blocked => LeadRequestProjectionState::Blocked,
+        LeadRequestState::Failed => LeadRequestProjectionState::Failed,
+    }
+}
+
 impl LeadRequestState {
     pub fn can_transition(self, next: Self) -> bool {
         use LeadRequestState::*;
@@ -1493,6 +1550,40 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-10-23T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn lead_projection_precedence_is_campaign_then_withdrawal_then_state() {
+        use LeadRequestProjectionState as P;
+        use LeadRequestState as L;
+        assert_eq!(
+            project_lead_request_state(L::Failed, Some("AUTHORIZED"), None, true),
+            P::Executing
+        );
+        assert_eq!(
+            project_lead_request_state(L::Running, Some("CANCELLED"), None, false),
+            P::Cancelled
+        );
+        assert_eq!(
+            project_lead_request_state(L::Running, Some("FAILED"), None, false),
+            P::Failed
+        );
+        assert_eq!(
+            project_lead_request_state(L::Running, Some("AUTHORIZED"), Some("ACCEPTED"), false),
+            P::Completed
+        );
+        assert_eq!(
+            project_lead_request_state(L::Ready, None, None, true),
+            P::Withdrawn
+        );
+        assert_eq!(
+            project_lead_request_state(L::Frozen, None, None, false),
+            P::AwaitingApproval
+        );
+        assert_eq!(
+            project_lead_request_state(L::Planned, None, None, false),
+            P::PlanReady
+        );
     }
 
     fn project() -> ProjectBinding {

@@ -1269,12 +1269,29 @@ fn authority_matches(
 fn api_error(error: Error) -> Response {
     let status = match error {
         Error::Invalid(_) | Error::Repository(_) | Error::Delegation(_) => StatusCode::BAD_REQUEST,
-        Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
+        Error::Conflict(_) | Error::Constraint(_) | Error::Withdrawn => StatusCode::CONFLICT,
+        Error::AlreadyStarted { .. } => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::AlreadyStarted {
+        campaign_id,
+        campaign_status,
+    } = &error
+    {
+        return (
+            status,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "LEAD_ALREADY_STARTED",
+                "campaign_id": campaign_id,
+                "campaign_status": campaign_status,
+            })),
+        )
+            .into_response();
+    }
     (status, Json(json!({"error":error.to_string()}))).into_response()
 }
 
@@ -4118,12 +4135,12 @@ async fn freeze_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let plan = match app.db.freeze_lead_plan(&id, &format!("freeze:{id}")).await {
-        Ok(plan) => plan,
-        Err(error) => return api_error(error),
-    };
-    let request = match app.db.mark_lead_ready(&id).await {
-        Ok(request) => request,
+    let (plan, request) = match app
+        .db
+        .freeze_lead_plan_to_ready(&id, &format!("freeze:{id}"))
+        .await
+    {
+        Ok(result) => result,
         Err(error) => return api_error(error),
     };
     (
@@ -4142,13 +4159,12 @@ async fn start_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !app.lead_autonomous_start {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"autonomous start policy is not activated"})),
-        )
-            .into_response();
-    }
+    let autonomy = match factory_native::db::ValidatedAutonomyContext::from_deployment_policy(
+        app.lead_autonomous_start,
+    ) {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
     let authorization = if body.is_empty() {
         None
     } else {
@@ -4165,12 +4181,23 @@ async fn start_lead_request(
     };
     match app
         .db
-        .start_lead_campaign(&id, &format!("start:{id}"), authorization.as_ref())
+        .start_lead_campaign(
+            &id,
+            &format!("start:{id}"),
+            factory_native::db::StartAuthority::Autonomous(autonomy),
+            None,
+            authorization.as_ref(),
+        )
         .await
     {
-        Ok((campaign, run, attempt)) => (
+        Ok(result) => (
             StatusCode::CREATED,
-            Json(json!({"campaign":campaign,"run":run,"attempt":attempt})),
+            Json(json!({
+                "campaign":result.campaign,
+                "run":result.run,
+                "attempt":result.attempt,
+                "replayed":result.replayed
+            })),
         )
             .into_response(),
         Err(error) => api_error(error),
