@@ -206,6 +206,8 @@ impl Database {
 
     pub async fn candidate_inspection(&self, id: &str) -> Result<CandidateInspection, Error> {
         let candidate = self.candidate(id).await?;
+        let mut connection = self.pool.acquire().await?;
+        super::lead::validate_lead_attempt_lineage(&mut connection, &candidate.attempt_id).await?;
         let row = sqlx::query::query(
             "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,

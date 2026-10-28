@@ -1835,25 +1835,16 @@ async fn start_lead_campaign_in_tx(
         .expect("lead start policy serializes")
         .as_bytes(),
     );
-    let envelope_hash = sha256_hex(
-        serde_json::to_string(&serde_json::json!({
-            "schema":"s4d-campaign-execution-binding-v1",
-            "requestId":request.id,
-            "planId":identity.plan.id,
-            "planHash":identity.plan_hash,
-            "specSha256":sha256_hex(
-                serde_json::to_string(&identity.action_spec)
-                    .expect("ActionSpec serializes")
-                    .as_bytes()
-            ),
-            "configHash":identity.config_hash,
-            "delegationHash":identity.delegation_hash,
-            "policyHash":policy_hash,
-            "authorizationDigest":submission_digest,
-        }))
-        .expect("campaign execution binding serializes")
-        .as_bytes(),
-    );
+    let envelope_hash = campaign_execution_envelope_hash(&CampaignExecutionEnvelope {
+        request_id: &request.id,
+        plan_id: &identity.plan.id,
+        plan_hash: &identity.plan_hash,
+        spec_sha256: &identity.spec_sha256,
+        config_hash: &identity.config_hash,
+        delegation_hash: &identity.delegation_hash,
+        policy_hash: &policy_hash,
+        authorization_digest: &submission_digest,
+    });
 
     let now = Utc::now().to_rfc3339();
     let mut campaign = Campaign {
@@ -2142,6 +2133,183 @@ async fn load_withdrawal(
         reason: row.try_get("reason")?,
         created_at: row.try_get("created_at")?,
     }))
+}
+
+struct CampaignExecutionEnvelope<'a> {
+    request_id: &'a str,
+    plan_id: &'a str,
+    plan_hash: &'a str,
+    spec_sha256: &'a str,
+    config_hash: &'a str,
+    delegation_hash: &'a str,
+    policy_hash: &'a str,
+    authorization_digest: &'a str,
+}
+
+fn campaign_execution_envelope_hash(envelope: &CampaignExecutionEnvelope<'_>) -> String {
+    sha256_hex(
+        serde_json::to_string(&serde_json::json!({
+            "schema":"s4d-campaign-execution-binding-v1",
+            "requestId":envelope.request_id,
+            "planId":envelope.plan_id,
+            "planHash":envelope.plan_hash,
+            "specSha256":envelope.spec_sha256,
+            "configHash":envelope.config_hash,
+            "delegationHash":envelope.delegation_hash,
+            "policyHash":envelope.policy_hash,
+            "authorizationDigest":envelope.authorization_digest,
+        }))
+        .expect("campaign execution binding serializes")
+        .as_bytes(),
+    )
+}
+
+/// Validate the immutable Campaign → request → frozen plan → root ActionSpec
+/// envelope for every Campaign that has an execution binding. Campaigns without
+/// a binding (legacy or non-Lead flows) are unchanged.
+async fn validate_campaign_execution_binding_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<(), Error> {
+    let Some(binding) = load_campaign_execution_binding(connection, campaign_id).await? else {
+        return Ok(());
+    };
+    let evidence = load_start_evidence(connection, &binding.request_id)
+        .await?
+        .ok_or_else(|| {
+            Error::Forbidden("Campaign execution binding has no start evidence".into())
+        })?;
+    if evidence.campaign_id != campaign_id {
+        return Err(Error::Forbidden(
+            "Campaign execution binding evidence names another Campaign".into(),
+        ));
+    }
+    let plan = load_frozen_plan_by_id(connection, &binding.plan_id).await?;
+    if plan.request_id != binding.request_id
+        || evidence.plan_hash != plan.plan_hash
+        || plan.plan_hash.is_empty()
+        || plan.config_hash != evidence.config_hash
+        || plan.delegation_hash != evidence.delegation_hash
+    {
+        return Err(Error::Forbidden(
+            "Campaign execution binding differs from its frozen plan".into(),
+        ));
+    }
+    let lead: Option<(String, String, Option<String>)> = sqlx::query_as::query_as(
+        "SELECT lr.id,lr.action_id,lr.campaign_id
+         FROM campaigns c JOIN lead_requests lr ON lr.action_id=c.action_id
+         WHERE c.id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((request_id, action_id, bound_campaign)) = lead else {
+        return Err(Error::Forbidden(
+            "Campaign execution binding has no Lead request".into(),
+        ));
+    };
+    if request_id != binding.request_id || bound_campaign.as_deref() != Some(campaign_id) {
+        return Err(Error::Forbidden(
+            "Campaign execution binding differs from the Lead request".into(),
+        ));
+    }
+    let root: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
+    )
+    .bind(&action_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((root_json, root_sha)) = root else {
+        return Err(Error::Forbidden(
+            "Campaign has no frozen root ActionSpec".into(),
+        ));
+    };
+    if sha256_hex(root_json.as_bytes()) != root_sha
+        || binding.spec_sha256 != root_sha
+        || evidence.spec_sha256 != root_sha
+    {
+        return Err(Error::Forbidden(
+            "Campaign root ActionSpec lineage mismatch".into(),
+        ));
+    }
+    let expected = campaign_execution_envelope_hash(&CampaignExecutionEnvelope {
+        request_id: &binding.request_id,
+        plan_id: &binding.plan_id,
+        plan_hash: &plan.plan_hash,
+        spec_sha256: &root_sha,
+        config_hash: &evidence.config_hash,
+        delegation_hash: &evidence.delegation_hash,
+        policy_hash: &evidence.policy_hash,
+        authorization_digest: &evidence.authorization_digest,
+    });
+    if binding.envelope_hash != expected {
+        return Err(Error::Forbidden(
+            "Campaign execution envelope hash mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A bound Lead Campaign may dispatch only attempts created by the shared
+/// WorkGraph scheduler and linked to a Lead task or integration. Legacy and
+/// non-Lead Campaigns without a binding keep their existing dispatch path.
+pub(super) async fn validate_lead_attempt_lineage(
+    connection: &mut SqliteConnection,
+    attempt_id: &str,
+) -> Result<(), Error> {
+    let row: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT r.campaign_id,c.action_id
+         FROM attempts a
+         JOIN runs r ON r.id=a.run_id
+         JOIN campaigns c ON c.id=r.campaign_id
+         WHERE a.id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let (campaign_id, campaign_action_id) = row.ok_or(Error::NotFound)?;
+    let binding: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT campaign_id FROM campaign_execution_bindings WHERE campaign_id=?1",
+    )
+    .bind(&campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if binding.is_none() {
+        return Ok(());
+    }
+    validate_campaign_execution_binding_in_tx(connection, &campaign_id).await?;
+    let linked: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT attempt_id FROM lead_tasks WHERE attempt_id=?1 AND campaign_id=?2
+         UNION ALL
+         SELECT attempt_id FROM lead_integrations WHERE attempt_id=?1 AND campaign_id=?2
+         LIMIT 1",
+    )
+    .bind(attempt_id)
+    .bind(&campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if linked.is_none() {
+        return Err(Error::Forbidden(
+            "Lead Campaign Attempt is not part of the frozen WorkGraph".into(),
+        ));
+    }
+    let spec: Option<(String, String, String)> = sqlx::query_as::query_as(
+        "SELECT action_id,spec_json,spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((action_id, spec_json, spec_sha256)) = spec else {
+        return Err(Error::Forbidden(
+            "Lead Campaign Attempt has no exact execution spec".into(),
+        ));
+    };
+    if action_id != campaign_action_id || sha256_hex(spec_json.as_bytes()) != spec_sha256 {
+        return Err(Error::Forbidden(
+            "Lead Campaign Attempt spec lineage mismatch".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn load_campaign_execution_binding(
@@ -2495,7 +2663,7 @@ async fn load_lead_request(
     })
 }
 
-async fn withdrawal_in_tx(
+pub(super) async fn withdrawal_in_tx(
     connection: &mut SqliteConnection,
     request_id: &str,
 ) -> Result<bool, Error> {
@@ -3767,6 +3935,32 @@ mod tests {
             ValidatedAutonomyContext::from_deployment_policy(true)
                 .expect("test autonomy policy is enabled"),
         )
+    }
+
+    fn lead_model_call_authorization(
+        request_id: &str,
+        grant: &StandingDelegation,
+    ) -> NewModelCallAuthorization {
+        NewModelCallAuthorization {
+            role: ModelCallRole::Lead,
+            principal_id: grant.principal_id.clone(),
+            project_id: grant.project_id.clone(),
+            objective_id: request_id.into(),
+            scope_id: grant.id.clone(),
+            provider: grant.route.provider.clone(),
+            model: grant.route.model.clone(),
+            purpose: "lead_assessment".into(),
+            request_sha256: "a".repeat(64),
+            estimated_input_tokens: 100,
+            requested_output_tokens: 100,
+            estimated_cost_micros: 100,
+            policy: ModelCallPolicy {
+                max_input_tokens: 1_000,
+                max_output_tokens: 1_000,
+                max_cost_micros: 10_000,
+            },
+            global_policy: None,
+        }
     }
 
     async fn count_rows(db: &Database, sql: &str) -> i64 {
@@ -5829,6 +6023,321 @@ mod tests {
             if withdraw.is_ok() { 1 } else { 0 }
         );
         second.close().await;
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn withdrawn_assessing_request_cannot_authorize_or_send_a_paid_lead_call() {
+        let (path, db, _) = fixture().await;
+        let action_id = action(&db).await;
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action_id,
+                "grant",
+                "Implement the feature.",
+                &config.config_hash,
+                "withdrawn-assessing-request",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        db.withdraw_lead_request(
+            &request.id,
+            "device:operator",
+            Some("Alice"),
+            "objective withdrawn during assessment",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.lead_request(&request.id).await.unwrap().state,
+            LeadRequestState::Assessing
+        );
+
+        let grant = db.standing_delegation("grant").await.unwrap();
+        let input = lead_model_call_authorization(&request.id, &grant);
+        let error = db.authorize_model_call(&input).await.unwrap_err();
+        assert!(matches!(error, Error::Withdrawn), "{error:?}");
+        assert_eq!(
+            count_rows(&db, "SELECT COUNT(*) FROM model_call_reservations").await,
+            0
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let server = tokio::spawn(async move {
+            if listener.accept().await.is_ok() {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let policy = input.policy;
+        let gateway =
+            crate::model_gateway::ModelGateway::new(crate::model_gateway::ModelGatewayConfig {
+                base_url: format!("http://{addr}"),
+                credential: "test-credential-1234567890".into(),
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                timeout: std::time::Duration::from_millis(1_000),
+                input_micros_per_million: 100,
+                output_micros_per_million: 100,
+                lead_policy: policy,
+                reviewer_policy: policy,
+                evaluation_policy: policy,
+                global_policy: policy,
+                allow_loopback_http: true,
+            })
+            .unwrap();
+        let action = db.action(&action_id).await.unwrap();
+        let binding = ActionBinding {
+            id: action.id.clone(),
+            project_id: "project".into(),
+            status: crate::lead::ActionStatus::Pending,
+        };
+        let assessed = crate::lead_model::assess(
+            &gateway,
+            &db,
+            crate::lead_model::AssessmentRequest {
+                request_id: &request.id,
+                project: &config,
+                action: &binding,
+                action_spec: &action.spec,
+                objective: &request.objective,
+                grant: &grant,
+                now: Utc::now(),
+            },
+        )
+        .await;
+        assert!(assessed.is_err(), "withdrawn assessment must not succeed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "withdrawn assessment made an upstream request"
+        );
+        assert_eq!(
+            count_rows(&db, "SELECT COUNT(*) FROM model_call_reservations").await,
+            0
+        );
+        server.abort();
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn lead_model_authorization_and_withdrawal_serialize_across_databases() {
+        let (path, db, _) = fixture().await;
+        let second = Database::open(&path).await.unwrap();
+        let action_id = action(&db).await;
+        let config = db.project_config("project").await.unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                "project",
+                &action_id,
+                "grant",
+                "Implement the feature.",
+                &config.config_hash,
+                "racing-assessing-request",
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let grant = db.standing_delegation("grant").await.unwrap();
+        let input = lead_model_call_authorization(&request.id, &grant);
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let auth_barrier = barrier.clone();
+        let auth_db = db.clone();
+        let auth_input = input.clone();
+        let authorize = tokio::spawn(async move {
+            auth_barrier.wait().await;
+            auth_db.authorize_model_call(&auth_input).await
+        });
+        let withdraw_barrier = barrier.clone();
+        let withdraw_db = second.clone();
+        let withdraw_request = request.id.clone();
+        let withdraw = tokio::spawn(async move {
+            withdraw_barrier.wait().await;
+            withdraw_db
+                .withdraw_lead_request(
+                    &withdraw_request,
+                    "device:operator",
+                    Some("Alice"),
+                    "withdraw during authorization race",
+                )
+                .await
+        });
+        let authorize = authorize.await.unwrap();
+        let withdraw = withdraw.await.unwrap();
+        assert!(
+            withdraw.is_ok(),
+            "withdrawal after authorization is valid: {withdraw:?}"
+        );
+        let reservations = count_rows(&db, "SELECT COUNT(*) FROM model_call_reservations").await;
+        match authorize {
+            Ok(ModelCallDecision::Reserved(_)) => {
+                assert_eq!(
+                    reservations, 1,
+                    "authorization that committed first owns a reservation"
+                );
+            }
+            Err(Error::Withdrawn) => {
+                assert_eq!(
+                    reservations, 0,
+                    "a committed withdrawal must create no reservation"
+                );
+            }
+            other => panic!("unexpected serialized authorization result: {other:?}"),
+        }
+        second.close().await;
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn generic_run_attempt_routes_and_unlinked_worker_attempts_are_rejected_for_lead_campaigns()
+     {
+        let (path, db, _) = fixture().await;
+        let ready = draft_ready_lead(&db, "generic-paths").await;
+        let expected = expected_binding(&ready);
+        let started = db
+            .start_lead_campaign(
+                &ready.request.id,
+                "generic-paths-start",
+                operator_authority("device:operator", Some("Alice"), "approved WorkGraph"),
+                Some(&expected),
+                None,
+            )
+            .await
+            .unwrap();
+        let (runs_before,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM runs WHERE campaign_id=?1")
+                .bind(&started.campaign.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let (attempts_before,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM attempts WHERE run_id IN
+             (SELECT id FROM runs WHERE campaign_id=?1)",
+        )
+        .bind(&started.campaign.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            db.create_run(&started.campaign.id, "generic-run-key").await,
+            Err(Error::Forbidden(_))
+        ));
+        assert!(matches!(
+            db.create_attempt(&started.run.id, "generic-attempt-key")
+                .await,
+            Err(Error::Forbidden(_))
+        ));
+        let (runs_after,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM runs WHERE campaign_id=?1")
+                .bind(&started.campaign.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let (attempts_after,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM attempts WHERE run_id IN
+             (SELECT id FROM runs WHERE campaign_id=?1)",
+        )
+        .bind(&started.campaign.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(runs_after, runs_before);
+        assert_eq!(attempts_after, attempts_before);
+        assert_eq!(runs_before, 1);
+        assert_eq!(attempts_before, 1);
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "UPDATE attempts SET status='COMPLETED' WHERE run_id IN (
+            SELECT id FROM runs WHERE campaign_id=?1)",
+        )
+        .bind(&started.campaign.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO runs(id,campaign_id,status,created_at)
+             VALUES ('forged-generic-run',?1,'QUEUED',?2)",
+        )
+        .bind(&started.campaign.id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at)
+             VALUES ('forged-generic-attempt','forged-generic-run','QUEUED',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let (root_spec_sha,): (String,) =
+            sqlx::query_as::query_as("SELECT spec_sha256 FROM action_specs WHERE action_id=?1")
+                .bind(&ready.request.action_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempt_specs(attempt_id,action_id,base_commit,spec_json,spec_sha256)
+             SELECT 'forged-generic-attempt',s.action_id,p.base_commit,s.spec_json,s.spec_sha256
+             FROM action_specs s
+             JOIN actions a ON a.id=s.action_id
+             JOIN projects p ON p.id=a.project_id
+             WHERE s.action_id=?1",
+        )
+        .bind(&ready.request.action_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let now_ms = Utc::now().timestamp_millis().saturating_add(1_000);
+        let error = db
+            .claim_assignment("forged-worker", now_ms, 5_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        assert_eq!(
+            count_rows(
+                &db,
+                "SELECT COUNT(*) FROM worker_leases WHERE attempt_id='forged-generic-attempt'"
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            count_rows(
+                &db,
+                "SELECT COUNT(*) FROM attempts WHERE id='forged-generic-attempt' AND status='QUEUED'"
+            )
+            .await,
+            1
+        );
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('forged-generic-candidate','forged-generic-attempt',?1,?2,?3,'worker',?4)",
+        )
+        .bind(&root_spec_sha)
+        .bind("1".repeat(40))
+        .bind("2".repeat(40))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let error = db
+            .candidate_inspection("forged-generic-candidate")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -240,6 +240,8 @@ impl Database {
         lease: &WorkerLease,
         attempt_id: &str,
     ) -> Result<WorkerAssignment, Error> {
+        let mut connection = self.pool.acquire().await?;
+        super::lead::validate_lead_attempt_lineage(&mut connection, attempt_id).await?;
         let row = sqlx::query::query(
             "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
@@ -425,6 +427,7 @@ impl Database {
             transaction.commit().await?;
             return Ok(None);
         };
+        super::lead::validate_lead_attempt_lineage(&mut transaction, &attempt_id).await?;
         let prior: Option<(String, i64)> = sqlx::query_as::query_as(
             "SELECT worker_id,generation FROM worker_leases WHERE attempt_id=?1",
         )
