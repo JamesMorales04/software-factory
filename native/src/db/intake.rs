@@ -202,9 +202,13 @@ impl Database {
                 message: "the Project configuration is inactive".into(),
             });
         }
-        let profile =
-            resolve_intake_profile_in_tx(&mut transaction, project_id, execution_profile_id)
-                .await?;
+        let profile = resolve_intake_profile_in_tx(
+            &mut transaction,
+            &self.provider_model_cache(),
+            project_id,
+            execution_profile_id,
+        )
+        .await?;
         let grant = find_matching_execution_policy_grant_in_tx(
             &mut transaction,
             project_id,
@@ -567,7 +571,8 @@ impl Database {
                 message: "the acknowledged profile revision hash is stale".into(),
             });
         }
-        let availability = load_provider_availability(&mut transaction).await?;
+        let availability =
+            load_provider_availability(&mut transaction, &self.provider_model_cache()).await?;
         let (executable, warnings) = evaluate_executability(&current.content, &availability);
         if !executable {
             return Err(Error::IntakeConflict {
@@ -774,7 +779,13 @@ impl Database {
         intake_id: &str,
     ) -> Result<IntakeApprovalContext, Error> {
         let mut connection = self.pool.acquire().await?;
-        load_intake_approval_context(&mut connection, intake_id, false).await
+        load_intake_approval_context(
+            &mut connection,
+            &self.provider_model_cache(),
+            intake_id,
+            false,
+        )
+        .await
     }
 
     /// Approval context for an idempotent start replay. Exact replay is
@@ -786,7 +797,13 @@ impl Database {
         intake_id: &str,
     ) -> Result<IntakeApprovalContext, Error> {
         let mut connection = self.pool.acquire().await?;
-        load_intake_approval_context(&mut connection, intake_id, true).await
+        load_intake_approval_context(
+            &mut connection,
+            &self.provider_model_cache(),
+            intake_id,
+            true,
+        )
+        .await
     }
 
     /// Truthful authorization state for the request projection. It reports a
@@ -887,6 +904,7 @@ fn prepare_intake_request(
 
 async fn resolve_intake_profile_in_tx(
     connection: &mut SqliteConnection,
+    cache: &crate::provider_catalog::ProviderModelCache,
     project_id: &str,
     execution_profile_id: Option<&str>,
 ) -> Result<ResolvedIntakeProfile, Error> {
@@ -926,7 +944,7 @@ async fn resolve_intake_profile_in_tx(
             "stored execution profile hash is inconsistent",
         ));
     }
-    let availability = load_provider_availability(connection).await?;
+    let availability = load_provider_availability(connection, cache).await?;
     let (executable, warnings) = evaluate_executability(&current.content, &availability);
     if !executable {
         return Err(Error::IntakeConflict {
@@ -1058,6 +1076,7 @@ async fn find_reusable_execution_policy_grant_in_tx(
 
 async fn load_intake_approval_context(
     connection: &mut SqliteConnection,
+    cache: &crate::provider_catalog::ProviderModelCache,
     intake_id: &str,
     allow_started: bool,
 ) -> Result<IntakeApprovalContext, Error> {
@@ -1264,7 +1283,7 @@ async fn load_intake_approval_context(
         return Err(Error::Invalid("stored lead assessment mechanism"));
     }
     if !allow_started && mechanism.0 == "MODEL" {
-        let availability = load_provider_availability(connection).await?;
+        let availability = load_provider_availability(connection, cache).await?;
         let (executable, warnings) = evaluate_executability(&profile, &availability);
         if !executable {
             return Err(Error::IntakeConflict {

@@ -213,8 +213,9 @@ impl Database {
     }
 
     pub async fn execution_profile(&self, id: &str) -> Result<ExecutionProfileRecord, Error> {
+        let cache = self.provider_model_cache();
         let mut connection = self.pool.acquire().await?;
-        load_execution_profile(&mut connection, id).await
+        load_execution_profile(&mut connection, id, &cache).await
     }
 
     pub async fn execution_profiles(&self) -> Result<Vec<ExecutionProfileRecord>, Error> {
@@ -229,7 +230,8 @@ impl Database {
         )
         .fetch_all(&mut *connection)
         .await?;
-        let availability = load_provider_availability(&mut connection).await?;
+        let availability =
+            load_provider_availability(&mut connection, &self.provider_model_cache()).await?;
         let defaults = load_defaults(&mut connection).await?;
         let mut profiles = Vec::with_capacity(rows.len());
         for row in rows.iter() {
@@ -276,7 +278,8 @@ impl Database {
             ensure_project(&mut transaction, project_id).await?;
         }
         let current = load_current_content(&mut transaction, profile_id).await?;
-        let availability = load_provider_availability(&mut transaction).await?;
+        let availability =
+            load_provider_availability(&mut transaction, &self.provider_model_cache()).await?;
         let (executable, _) = evaluate_executability(&current.content, &availability);
         if !executable {
             return Err(Error::Conflict("execution profile is not executable"));
@@ -407,7 +410,9 @@ impl Database {
         } else {
             return Err(Error::NotFound);
         };
-        let profile = load_execution_profile(&mut connection, &profile_id).await?;
+        let profile =
+            load_execution_profile(&mut connection, &profile_id, &self.provider_model_cache())
+                .await?;
         Ok(ResolvedExecutionProfile {
             project_id: project_id.to_owned(),
             profile_id: profile.id,
@@ -459,9 +464,93 @@ pub(super) struct CurrentContent {
     pub(super) content: ExecutionProfileContent,
 }
 
+/// Immutable profile revision frozen into a Campaign at start. It is resolved
+/// from Core-owned start evidence, never from the profile's current revision.
+#[derive(Debug, Clone)]
+pub struct CampaignFrozenProfile {
+    pub campaign_id: String,
+    pub profile_id: String,
+    pub revision_id: String,
+    pub revision: u32,
+    pub content_hash: String,
+    pub content: ExecutionProfileContent,
+}
+
+impl Database {
+    /// Resolve the exact profile revision frozen into a Campaign. `Ok(None)`
+    /// means the Campaign has no frozen profile (a legacy Campaign authorized
+    /// without an Execution Profile).
+    pub async fn frozen_profile_for_campaign(
+        &self,
+        campaign_id: &str,
+    ) -> Result<Option<CampaignFrozenProfile>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        let row = sqlx::query::query(
+            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash
+             FROM lead_start_evidence e
+             JOIN execution_profile_revisions r ON r.revision_id=e.profile_revision_id
+             WHERE e.campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        row.map(frozen_profile_from_row).transpose()
+    }
+
+    /// Resolve the exact profile revision for the Campaign that produced a
+    /// candidate. The lineage is candidate -> attempt -> run -> Campaign ->
+    /// immutable start evidence -> profile revision. No current-profile lookup
+    /// and no default fallback is involved.
+    pub async fn frozen_profile_for_candidate(
+        &self,
+        candidate_id: &str,
+    ) -> Result<Option<CampaignFrozenProfile>, Error> {
+        let mut connection = self.pool.acquire().await?;
+        let row = sqlx::query::query(
+            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash
+             FROM candidates cd
+             JOIN attempts a ON a.id=cd.attempt_id
+             JOIN runs ru ON ru.id=a.run_id
+             JOIN lead_start_evidence e ON e.campaign_id=ru.campaign_id
+             JOIN execution_profile_revisions r ON r.revision_id=e.profile_revision_id
+             WHERE cd.id=?1",
+        )
+        .bind(candidate_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        row.map(frozen_profile_from_row).transpose()
+    }
+}
+
+fn frozen_profile_from_row(row: SqliteRow) -> Result<CampaignFrozenProfile, Error> {
+    let revision = u32::try_from(row.try_get::<i64, _>("revision")?)
+        .map_err(|_| Error::Conflict("stored execution profile revision is invalid"))?;
+    let content_json: String = row.try_get("content_json")?;
+    let content_hash: String = row.try_get("content_hash")?;
+    let content: ExecutionProfileContent = serde_json::from_str(&content_json)
+        .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
+    content
+        .validate()
+        .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
+    if content.compute_content_hash() != content_hash {
+        return Err(Error::Conflict(
+            "stored execution profile hash is inconsistent",
+        ));
+    }
+    Ok(CampaignFrozenProfile {
+        campaign_id: row.try_get("campaign_id")?,
+        profile_id: row.try_get("profile_id")?,
+        revision_id: row.try_get("revision_id")?,
+        revision,
+        content_hash,
+        content,
+    })
+}
+
 async fn load_execution_profile(
     connection: &mut SqliteConnection,
     id: &str,
+    cache: &crate::provider_catalog::ProviderModelCache,
 ) -> Result<ExecutionProfileRecord, Error> {
     let row = sqlx::query::query(
         "SELECT p.id,p.current_revision,p.content_hash AS profile_hash,
@@ -476,7 +565,7 @@ async fn load_execution_profile(
     .await?
     .ok_or(Error::NotFound)?;
     let profile = profile_from_row(&row)?;
-    let availability = load_provider_availability(connection).await?;
+    let availability = load_provider_availability(connection, cache).await?;
     let defaults = load_defaults(connection).await?;
     let mut project_defaults = defaults
         .iter()
@@ -570,17 +659,23 @@ pub(super) async fn load_current_content(
 
 pub(super) async fn load_provider_availability(
     connection: &mut SqliteConnection,
+    cache: &crate::provider_catalog::ProviderModelCache,
 ) -> Result<Vec<ProviderRouteAvailability>, Error> {
     let rows = sqlx::query::query(
-        "SELECT provider,model,enabled,is_default,credential_ciphertext FROM provider_settings",
+        "SELECT provider,kind,model,enabled,is_default,credential_ciphertext FROM provider_settings",
     )
     .fetch_all(&mut *connection)
     .await?;
     rows.iter()
         .map(|row| {
+            let provider: String = row.try_get("provider")?;
+            let model: String = row.try_get("model")?;
+            let models = crate::execution_profile::substantiated_models(&provider, &model, cache);
             Ok(ProviderRouteAvailability {
-                provider: row.try_get("provider")?,
-                model: row.try_get("model")?,
+                kind: row.try_get("kind")?,
+                provider,
+                model,
+                models,
                 enabled: row.try_get::<i64, _>("enabled")? != 0,
                 has_credential: !row
                     .try_get::<String, _>("credential_ciphertext")?
@@ -994,18 +1089,12 @@ mod tests {
             .await
             .unwrap();
         assert!(!draft.executable);
-        assert_eq!(draft.warnings.len(), 4);
+        assert_eq!(draft.warnings.len(), 3);
         assert!(
             draft
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("not configured"))
-        );
-        assert!(
-            draft
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("no active Core default model gateway"))
+                .all(|warning| warning.contains("not configured"))
         );
 
         let error = db
@@ -1020,7 +1109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_provider_profile_is_non_executable_without_role_routing() {
+    async fn codex_reviewer_route_is_rejected_as_a_draft_not_a_working_route() {
         let (path, db) = temp_db("factory-execution-profiles-routing").await;
         configure_provider(&db, "opencode-go", "opencode", "deepseek-v4.1-flash").await;
         configure_provider(&db, "codex", "codex", "gpt-6-luna").await;
@@ -1030,13 +1119,13 @@ mod tests {
         let created = db.create_execution_profile(&cross, "owner").await.unwrap();
         assert!(!created.executable);
         assert!(created.warnings.iter().any(|warning| warning.contains(
-            "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
+            "semanticReviewer route codex/gpt-6-luna cannot execute a one-shot model call"
         )));
         assert!(
             created
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("role-specific routing is not applied"))
+                .any(|warning| warning.contains("not an OpenAI-compatible model gateway"))
         );
 
         let error = db
@@ -1047,6 +1136,46 @@ mod tests {
             error,
             Error::Conflict("execution profile is not executable")
         ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn discovered_model_makes_a_role_route_executable() {
+        let (path, db) = temp_db("factory-execution-profiles-discovered").await;
+        configure_provider(&db, "opencode-go", "opencode", "deepseek-v4.1-flash").await;
+        let mut content = content("Discovered");
+        content.roles.semantic_reviewer = route("opencode-go", "reviewer-model");
+        let draft = db
+            .create_execution_profile(&content, "owner")
+            .await
+            .unwrap();
+        assert!(!draft.executable);
+        assert!(
+            draft
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("is not advertised by opencode-go"))
+        );
+
+        db.record_provider_model_discovery(crate::provider_catalog::ProviderModelCatalogEntry {
+            provider: "opencode-go".into(),
+            status: crate::provider_catalog::ProviderDiscoveryStatus::Available,
+            models: vec!["reviewer-model".into()],
+            detail: "test discovery".into(),
+            discovered_at: "2026-10-28T00:00:00Z".into(),
+        });
+        let reloaded = db.execution_profile(&draft.id).await.unwrap();
+        assert!(reloaded.executable, "{:?}", reloaded.warnings);
+
+        db.record_provider_model_discovery(crate::provider_catalog::ProviderModelCatalogEntry {
+            provider: "opencode-go".into(),
+            status: crate::provider_catalog::ProviderDiscoveryStatus::Unavailable,
+            models: Vec::new(),
+            detail: "HTTP 500".into(),
+            discovered_at: "2026-10-28T00:01:00Z".into(),
+        });
+        let stale = db.execution_profile(&draft.id).await.unwrap();
+        assert!(!stale.executable);
         let _ = std::fs::remove_file(path);
     }
 

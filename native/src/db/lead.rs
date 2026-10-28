@@ -1021,6 +1021,7 @@ impl Database {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let result = start_lead_campaign_in_tx(
             &mut transaction,
+            &self.provider_model_cache(),
             request_id,
             idempotency_key,
             &authority,
@@ -1712,6 +1713,7 @@ fn evidence_authority_matches(
 
 async fn start_lead_campaign_in_tx(
     connection: &mut SqliteConnection,
+    cache: &crate::provider_catalog::ProviderModelCache,
     request_id: &str,
     idempotency_key: &str,
     authority: &StartAuthority,
@@ -1808,7 +1810,7 @@ async fn start_lead_campaign_in_tx(
         && let Some(profile) = &identity.profile_content
     {
         let availability =
-            super::execution_profiles::load_provider_availability(connection).await?;
+            super::execution_profiles::load_provider_availability(connection, cache).await?;
         let (executable, warnings) =
             crate::execution_profile::evaluate_executability(profile, &availability);
         if !executable {
@@ -6400,6 +6402,7 @@ mod tests {
                 evaluation_policy: policy,
                 global_policy: policy,
                 allow_loopback_http: true,
+                bound_role: None,
             })
             .unwrap();
         let action = db.action(&action_id).await.unwrap();

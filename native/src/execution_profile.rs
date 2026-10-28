@@ -7,9 +7,11 @@
 //!
 //! Decision mechanisms: route support, field bounds, revision identity and
 //! executability are `DETERMINISTIC`. No model can create, validate or widen a
-//! profile. Executability is derived from Core-owned provider settings; a
-//! profile whose declared routes are unsupported is rejected instead of being
-//! silently coerced to another model.
+//! profile. Executability is derived from Core-owned provider settings, the
+//! implemented provider adapter and the models Core can substantiate for that
+//! connection (configured model, tested registry routes and real discovery).
+//! A profile whose declared roles are not all routable stays a non-executable
+//! draft instead of being silently coerced to another model.
 
 use std::collections::BTreeSet;
 
@@ -18,6 +20,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::lead::RiskClass;
+use crate::provider_adapter::ProviderAdapter;
+use crate::provider_catalog;
 
 pub const MAX_NAME_CHARS: usize = 80;
 pub const MAX_DESCRIPTION_CHARS: usize = 500;
@@ -112,8 +116,10 @@ pub struct SupportedExecutionRoute {
     pub model: &'static str,
 }
 
-/// Explicit supported-route registry. `opencode` and `opencode-go` are
-/// distinct provider connections. Extend this only with a tested adapter.
+/// Baseline tested-route registry. `opencode` and `opencode-go` are distinct
+/// provider connections. These routes are always substantiated for their
+/// provider; additional model IDs become routable only through Core-owned
+/// provider model discovery. Extend the registry only with a tested adapter.
 pub const SUPPORTED_ROUTES: &[SupportedExecutionRoute] = &[
     SupportedExecutionRoute {
         provider: "opencode",
@@ -228,71 +234,69 @@ impl ExecutionProfileContent {
 }
 
 /// Core-owned provider facts used to derive executability. The DB layer reads
-/// these from `provider_settings`; the domain only interprets them.
+/// these from `provider_settings` and the process-local discovery cache; the
+/// domain only interprets them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRouteAvailability {
     pub provider: String,
+    pub kind: String,
+    /// The model selected for worker provider sessions and the legacy default
+    /// gateway. It is one substantiated model, not the only one.
     pub model: String,
+    /// Every model ID Core can currently substantiate for this connection:
+    /// the configured model, baseline tested registry routes and real discovery
+    /// results. A model outside this set is not routable.
+    pub models: Vec<String>,
     pub enabled: bool,
     pub has_credential: bool,
-    /// `provider_settings.is_default = 1`. The active default additionally
-    /// requires `enabled`.
+    /// `provider_settings.is_default = 1`.
     pub is_default: bool,
+}
+
+/// Merge the configured model, tested registry routes and discovered models for
+/// one provider connection, preserving first-seen order.
+pub fn substantiated_models(
+    provider: &str,
+    configured_model: &str,
+    cache: &provider_catalog::ProviderModelCache,
+) -> Vec<String> {
+    let mut models = Vec::new();
+    let mut push = |model: &str| {
+        if !model.is_empty() && !models.iter().any(|seen: &String| seen == model) {
+            models.push(model.to_owned());
+        }
+    };
+    push(configured_model);
+    for route in SUPPORTED_ROUTES
+        .iter()
+        .filter(|route| route.provider == provider)
+    {
+        push(route.model);
+    }
+    for model in cache.models(provider) {
+        push(model);
+    }
+    models
 }
 
 /// Derive executability and truthful warnings. Every false state is explained.
 ///
-/// This build has one active default model gateway and does not apply
-/// role-specific routing. A profile is therefore executable only when every
-/// declared role names the active default provider and model.
+/// A role is routable only when its provider connection exists, is enabled,
+/// has a stored credential, the adapter implements the role transport, and the
+/// model is substantiated for that connection. Lead assessment and semantic
+/// review need the OpenAI-compatible chat adapter; implementation needs the
+/// Worker provider-session adapter. A Codex App Server connection is executable
+/// for implementation but not for one-shot assessment or review in this build.
 pub fn evaluate_executability(
     content: &ExecutionProfileContent,
     availability: &[ProviderRouteAvailability],
 ) -> (bool, Vec<String>) {
     let mut warnings = Vec::new();
-    let active_default = availability
-        .iter()
-        .find(|entry| entry.is_default && entry.enabled);
-    if active_default.is_none() {
-        warnings.push(
-            "no active Core default model gateway is configured; execution profiles are not executable"
-                .into(),
-        );
-    }
     for (role, route) in content.roles.entries() {
-        if let Some(provider) = availability
+        let Some(provider) = availability
             .iter()
             .find(|entry| entry.provider == route.provider)
-        {
-            if !provider.has_credential {
-                warnings.push(format!(
-                    "{} route {}/{} cannot run because {} has no stored credential",
-                    role.as_str(),
-                    route.provider,
-                    route.model,
-                    route.provider
-                ));
-            }
-            if !provider.enabled {
-                warnings.push(format!(
-                    "{} route {}/{} cannot run because {} is disabled",
-                    role.as_str(),
-                    route.provider,
-                    route.model,
-                    route.provider
-                ));
-            }
-            if provider.model != route.model {
-                warnings.push(format!(
-                    "{} route {}/{} does not match the configured {} model {}",
-                    role.as_str(),
-                    route.provider,
-                    route.model,
-                    route.provider,
-                    provider.model
-                ));
-            }
-        } else {
+        else {
             warnings.push(format!(
                 "{} route {}/{} is declared but {} is not configured",
                 role.as_str(),
@@ -300,17 +304,63 @@ pub fn evaluate_executability(
                 route.model,
                 route.provider
             ));
-        }
-        if let Some(default) = active_default
-            && (route.provider != default.provider || route.model != default.model)
-        {
+            continue;
+        };
+        if !provider.has_credential {
             warnings.push(format!(
-                "{} route {}/{} differs from the active Core default gateway {}/{}; role-specific routing is not applied by this build",
+                "{} route {}/{} cannot run because {} has no stored credential",
                 role.as_str(),
                 route.provider,
                 route.model,
-                default.provider,
-                default.model
+                route.provider
+            ));
+        }
+        if !provider.enabled {
+            warnings.push(format!(
+                "{} route {}/{} cannot run because {} is disabled",
+                role.as_str(),
+                route.provider,
+                route.model,
+                route.provider
+            ));
+        }
+        match ProviderAdapter::from_kind(&provider.kind) {
+            None => warnings.push(format!(
+                "{} route {}/{} cannot run because provider kind {} has no implemented adapter",
+                role.as_str(),
+                route.provider,
+                route.model,
+                provider.kind
+            )),
+            Some(adapter) if role == ExecutionRole::Implementer => {
+                if !adapter.supports_provider_session() {
+                    warnings.push(format!(
+                        "implementer route {}/{} cannot run because the {} adapter has no provider session",
+                        route.provider,
+                        route.model,
+                        provider.kind
+                    ));
+                }
+            }
+            Some(adapter) => {
+                if !adapter.supports_chat_completions() {
+                    warnings.push(format!(
+                        "{} route {}/{} cannot execute a one-shot model call in this build: the {} adapter is a Worker App Server, not an OpenAI-compatible model gateway",
+                        role.as_str(),
+                        route.provider,
+                        route.model,
+                        provider.kind
+                    ));
+                }
+            }
+        }
+        if !provider.models.iter().any(|model| model == &route.model) {
+            warnings.push(format!(
+                "{} route {}/{} model is not advertised by {}; run provider model discovery or select a supported model",
+                role.as_str(),
+                route.provider,
+                route.model,
+                route.provider
             ));
         }
     }
@@ -351,17 +401,21 @@ fn validate_route(
     role: ExecutionRole,
     route: &ExecutionRoleRoute,
 ) -> Result<(), ExecutionProfileError> {
-    let supported = SUPPORTED_ROUTES
-        .iter()
-        .any(|supported| supported.provider == route.provider && supported.model == route.model);
-    if !supported {
+    if provider_catalog::entry(&route.provider).is_none() {
         return Err(ExecutionProfileError::UnsupportedRoute(format!(
-            "{} route {}/{} is not in the supported registry",
+            "{} route provider {:?} is not a configured Core provider connection",
+            role.as_str(),
+            route.provider
+        )));
+    }
+    provider_catalog::validate_model(&route.model).map_err(|message| {
+        ExecutionProfileError::UnsupportedRoute(format!(
+            "{} route {}/{} model is invalid: {message}",
             role.as_str(),
             route.provider,
             route.model
-        )));
-    }
+        ))
+    })?;
     if !(1..=MAX_ROLE_INPUT_TOKENS).contains(&route.max_input_tokens) {
         return Err(ExecutionProfileError::Invalid(format!(
             "{}.maxInputTokens must be between 1 and {MAX_ROLE_INPUT_TOKENS}",
@@ -526,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_provider_and_model_are_rejected_not_coerced() {
+    fn unknown_provider_is_rejected_but_an_unadvertised_model_stays_a_draft() {
         let mut content = valid_content();
         content.roles.lead = route("unknown-provider", "deepseek-v4.1-flash");
         assert!(matches!(
@@ -535,11 +589,31 @@ mod tests {
         ));
 
         let mut content = valid_content();
+        content.roles.lead = route("opencode-go", "not advertised");
+        assert!(content.validate().is_err());
+
+        let mut content = valid_content();
         content.roles.semantic_reviewer = route("codex", "gpt-6-luna-typo");
-        assert!(matches!(
-            content.validate(),
-            Err(ExecutionProfileError::UnsupportedRoute(_))
-        ));
+        content.validate().unwrap();
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[
+                availability(
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    &["deepseek-v4.1-flash"],
+                ),
+                availability("codex", "codex", "gpt-6-luna", &["gpt-6-luna"]),
+            ],
+        );
+        assert!(!executable);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is not advertised by codex")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -568,17 +642,41 @@ mod tests {
     }
 
     #[test]
-    fn executability_requires_every_role_on_the_active_default_gateway() {
+    fn distinct_role_routes_are_executable_with_their_own_adapters() {
         let mut content = valid_content();
-        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+        content.roles.semantic_reviewer = route("opencode", "deepseek-v4.1-flash");
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[
+                availability(
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    &["deepseek-v4.1-flash"],
+                ),
+                availability(
+                    "opencode",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    &["deepseek-v4.1-flash"],
+                ),
+            ],
+        );
+        assert!(executable, "{warnings:?}");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn one_provider_can_route_different_discovered_models_per_role() {
+        let mut content = valid_content();
+        content.roles.semantic_reviewer = route("opencode-go", "reviewer-model");
         let (executable, warnings) = evaluate_executability(
             &content,
             &[availability(
                 "opencode-go",
+                "opencode",
                 "deepseek-v4.1-flash",
-                true,
-                true,
-                true,
+                &["deepseek-v4.1-flash", "reviewer-model"],
             )],
         );
         assert!(executable, "{warnings:?}");
@@ -586,82 +684,134 @@ mod tests {
     }
 
     #[test]
-    fn differing_role_route_is_not_executable_without_role_routing() {
-        let content = valid_content();
+    fn codex_is_not_a_one_shot_gateway_but_can_implement() {
+        let mut content = valid_content();
+        content.roles.lead = route("codex", "gpt-6-luna");
         let (executable, warnings) = evaluate_executability(
             &content,
             &[
-                availability("opencode-go", "deepseek-v4.1-flash", true, true, true),
-                availability("codex", "gpt-6-luna", true, true, false),
+                availability(
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    &["deepseek-v4.1-flash"],
+                ),
+                availability("codex", "codex", "gpt-6-luna", &["gpt-6-luna"]),
             ],
-        );
-        assert!(!executable);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains(
-            "semanticReviewer route codex/gpt-6-luna differs from the active Core default gateway opencode-go/deepseek-v4.1-flash"
-        ));
-        assert!(warnings[0].contains("role-specific routing is not applied"));
-    }
-
-    #[test]
-    fn missing_active_default_is_not_executable() {
-        let mut content = valid_content();
-        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
-        let (executable, warnings) = evaluate_executability(
-            &content,
-            &[availability(
-                "opencode-go",
-                "deepseek-v4.1-flash",
-                true,
-                true,
-                false,
-            )],
-        );
-        assert!(!executable);
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("no active Core default model gateway"));
-    }
-
-    #[test]
-    fn disabled_default_gateway_is_not_executable() {
-        let mut content = valid_content();
-        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
-        let (executable, warnings) = evaluate_executability(
-            &content,
-            &[availability(
-                "opencode-go",
-                "deepseek-v4.1-flash",
-                false,
-                true,
-                true,
-            )],
         );
         assert!(!executable);
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("no active Core default model gateway"))
+                .any(|warning| warning.contains("not an OpenAI-compatible model gateway")),
+            "{warnings:?}"
         );
+
+        let mut permitted = valid_content();
+        permitted.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+        permitted.roles.implementer = route("codex", "gpt-6-luna");
+        let (executable, warnings) = evaluate_executability(
+            &permitted,
+            &[
+                availability(
+                    "opencode-go",
+                    "opencode",
+                    "deepseek-v4.1-flash",
+                    &["deepseek-v4.1-flash"],
+                ),
+                availability("codex", "codex", "gpt-6-luna", &["gpt-6-luna"]),
+            ],
+        );
+        assert!(executable, "{warnings:?}");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn missing_disabled_or_credentialless_providers_are_not_executable() {
+        let mut content = valid_content();
+        content.roles.semantic_reviewer = route("opencode-go", "deepseek-v4.1-flash");
+
+        let (executable, warnings) = evaluate_executability(
+            &content,
+            &[availability(
+                "opencode-go",
+                "opencode",
+                "deepseek-v4.1-flash",
+                &["deepseek-v4.1-flash"],
+            )],
+        );
+        assert!(executable, "{warnings:?}");
+
+        let (executable, warnings) = evaluate_executability(&content, &[]);
+        assert!(!executable);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| warning.contains("is not configured"))
+        );
+
+        let mut provider = availability(
+            "opencode-go",
+            "opencode",
+            "deepseek-v4.1-flash",
+            &["deepseek-v4.1-flash"],
+        );
+        provider.enabled = false;
+        provider.has_credential = false;
+        let (executable, warnings) = evaluate_executability(&content, &[provider]);
+        assert!(!executable);
         assert!(
             warnings
                 .iter()
                 .any(|warning| warning.contains("is disabled"))
         );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("has no stored credential"))
+        );
+    }
+
+    #[test]
+    fn substantiated_models_merge_the_registry_with_discovery() {
+        let mut cache = provider_catalog::ProviderModelCache::default();
+        cache.record(provider_catalog::ProviderModelCatalogEntry {
+            provider: "opencode-go".into(),
+            status: provider_catalog::ProviderDiscoveryStatus::Available,
+            models: vec!["discovered-model".into(), "deepseek-v4.1-flash".into()],
+            detail: "ok".into(),
+            discovered_at: "2026-10-28T00:00:00Z".into(),
+        });
+        let models = substantiated_models("opencode-go", "configured-model", &cache);
+        assert_eq!(
+            models,
+            [
+                "configured-model",
+                "deepseek-v4.1-flash",
+                "discovered-model"
+            ]
+        );
+        assert_eq!(
+            substantiated_models("opencode", "deepseek-v4.1-flash", &cache),
+            ["deepseek-v4.1-flash"]
+        );
     }
 
     fn availability(
         provider: &str,
+        kind: &str,
         model: &str,
-        enabled: bool,
-        has_credential: bool,
-        is_default: bool,
+        models: &[&str],
     ) -> ProviderRouteAvailability {
         ProviderRouteAvailability {
             provider: provider.into(),
+            kind: kind.into(),
             model: model.into(),
-            enabled,
-            has_credential,
-            is_default,
+            models: models.iter().map(|model| (*model).to_owned()).collect(),
+            enabled: true,
+            has_credential: true,
+            is_default: false,
         }
     }
 }
