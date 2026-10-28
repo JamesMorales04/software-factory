@@ -249,3 +249,65 @@ receipts and deterministic Gate `ACCEPTED`, followed by `compose down`/`up`
 persistence. The model and coding provider are deterministic fixtures; live
 inference and Compose Office/Chromium acceptance remain `NOT_TESTED`. See
 [the Compose evidence](../evidence/office-ux-compose-intake-2026-10-28.md).
+
+## 10. Final Wave 2 integration state (2026-10-28)
+
+All seven implementation lanes are merged into
+`campaign/office-ux-wave2-integration-20261028`. The runtime/UI code candidate is
+`b1042ce` (Wave 2 UI and runtime; later commits may add documentation only).
+`main` remains `d587252` on the remote and has not been merged or pushed by this
+campaign.
+
+| Lane | Merge | Result |
+|---|---|---|
+| Full lifecycle | `bb2ce6b` | real Core/Worker/verifier/reviewer/Gate journey in Chromium |
+| Localization | `7e41b98` + `52cd5c0` | EN/ES owned surfaces, persisted locale, 320 px layouts |
+| Per-role routing | `53cee86` | frozen Lead/Reviewer routes, implementer route validation, discovery |
+| Projects | `b80813c` | GitHub/local onboarding, summary, bounded capability discovery |
+| Decisions | `907ac3b` | actionable inbox, exact-plan guards, safe typed actions |
+| Diff/PR | `6bc2018` | bounded file bodies, checks/comments/review/authorized merge |
+| Compose intake | `8922bc6` | deterministic E2E model fixture and Compose intake lifecycle |
+| Governed intake | `31dc545` | default-off policy, finite batches, durable queue, proposals; execution disabled |
+
+### Final verification actually run
+
+- `cargo fmt --all -- --check` — PASS.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — PASS.
+- `cargo test -p factory-native --lib` — **388 passed**, 2 ignored.
+- `cargo test -p factory-native --bin factory-core` — **28 passed**.
+- `cargo xtask governance` — architecture PASS, repository hygiene PASS.
+- Office `typecheck`, `lint`, `build` — PASS; `npm test` — **200 passed / 30
+  files**; EN/ES catalogs have **2,440 keys each** with identical key sets and
+  placeholders.
+- `cargo xtask e2e intake-full` at `cf42718` — PASS, request
+  `c2126918…`, Campaign `dcbd5560…`, candidate `eedc42e3…` at commit
+  `cc3d5943…`, verifier/reviewer receipts, Gate `ACCEPTED`, Core restart and
+  browser reload persistence.
+- `cargo xtask e2e office` at `cf42718` — PASS, candidate `5d9508a8…`, Gate
+  `ACCEPTED`; `cargo xtask e2e intake` — PASS.
+- Supported Compose CI — **one PASS** at `b4a15b6` (run `40750678825`)
+  exercising the legacy and unified-intake paths, exact receipts, Gate
+  `ACCEPTED` and restart persistence with a deterministic fixture model. Later
+  runs at `cf42718` and `b1042ce` failed reproducibly at the unified-intake
+  Worker (`Supervisor finalize failed: 409 Conflict` after a fixture
+  `run_command` child exited `1`). The native runtime code is identical to the
+  passing tree; this is recorded as **unresolved runtime reliability debt**.
+  Stable Compose acceptance at the final candidate is **NOT CLAIMED**. See
+  [the Compose evidence](../evidence/office-ux-compose-2026-10-28.md).
+
+### Honest limits
+
+- **Live provider inference is BLOCKED / NOT_TESTED.** No paid credential or
+  fresh bounded authorization envelope was supplied. The pinned containerized
+  provider route is not certified by this campaign.
+- Compose Office/Chromium acceptance is **NOT_TESTED**; Compose verified Core
+  API projections.
+- Independent verifier/reviewer acceptance and Product Owner authorization are
+  **PENDING**. Author-run journeys and CI are not independent acceptance.
+- Automatic issue start remains **blocked** (protected ADR-0029 amendment, owner
+  approval, Core-owned envelope validation, enforced confinement, durable
+  accounting, revocation fencing and independent review).
+- Real GitHub PR/check/merge effects, live GitHub issue sync and real
+  provider/model discovery remain **NOT_TESTED**.
+- Docs workspace/editing and a second scheduler remain out of scope/later.
