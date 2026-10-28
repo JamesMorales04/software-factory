@@ -404,7 +404,7 @@ export function Home() {
                     setProfileId(event.target.value);
                     resetRequestKey();
                   }}
-                  help="Profiles bind provider/model routes, budgets and optional auto-start. Core freezes the exact revision."
+                  help="Profiles bind provider/model routes, budgets and limits. Core freezes the exact revision; every intake still requires explicit operator approval."
                   disabled={profiles === null}
                 >
                   <option value="">
@@ -597,7 +597,12 @@ export function Home() {
                               policySetup.scope.profile.grantTerms
                                 .maxTimeoutSecsPerRequest
                             }
-                            s timeout
+                            s timeout ·{" "}
+                            {
+                              policySetup.scope.profile.grantTerms
+                                .maxWallClockSecsPerRequest
+                            }
+                            s wall clock
                           </dd>
                         </div>
                         <div>
