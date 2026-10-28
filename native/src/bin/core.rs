@@ -563,7 +563,8 @@ async fn shutdown_signal() {
 }
 
 fn build_router(app: Arc<App>) -> Router {
-    let api = api_router(Arc::clone(&app));
+    let api = api_router(Arc::clone(&app))
+        .merge(factory_native::device_pairing::routes(app.db.clone()));
     let nested = api.clone();
     let mut router = Router::new().merge(api).nest("/core-api", nested);
     if let Ok(directory) = env::var("FACTORY_OFFICE_DIR") {
@@ -679,7 +680,7 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .with_state(Arc::clone(&app))
-        .merge(office_pairing_routes(app.db.clone()));
+        .merge(factory_native::device_pairing::routes(app.db.clone()));
 
     api.route("/worker", any(office_route_not_found))
         .route("/worker/{*path}", any(office_route_not_found))
@@ -701,13 +702,6 @@ async fn office_api_route_not_found() -> Response {
         axum::http::HeaderValue::from_static("true"),
     );
     response
-}
-
-/// PR C adds only its intended public claim/poll and operator-managed access routes here.
-/// The outer Office listener middleware supplies Host/Origin/CSRF checks and the operator
-/// session extension; claim and poll handlers must continue to work without that extension.
-fn office_pairing_routes(_db: Database) -> Router {
-    Router::new()
 }
 
 fn api_router(app: Arc<App>) -> Router {

@@ -239,7 +239,7 @@ async fn pairing_audit(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use sqlx::query_scalar::query_scalar;
     use std::{fs, path::PathBuf};
     use uuid::Uuid;
 
@@ -296,7 +296,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let audit: i64 = sqlx::query::query_scalar(
+        let audit: i64 = query_scalar(
             "SELECT COUNT(*) FROM device_pairing_audit WHERE challenge_id='challenge'",
         )
         .fetch_one(&db.pool)

@@ -68,16 +68,10 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn secret() -> Result<String, Response> {
+fn secret() -> Option<String> {
     let mut bytes = [0u8; 32];
-    SystemRandom::new().fill(&mut bytes).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "secure randomness unavailable",
-        )
-            .into_response()
-    })?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    SystemRandom::new().fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 fn valid_secret(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -123,8 +117,14 @@ async fn claim_device(
     Json(input): Json<ClaimInput>,
 ) -> Response {
     let poll_token = match secret() {
-        Ok(v) => v,
-        Err(r) => return r,
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "secure randomness unavailable",
+            )
+                .into_response();
+        }
     };
     match state
         .db
