@@ -43,6 +43,20 @@ the harness) passed:
 {"ok":true,"request":"1d3aaf1e-4cdc-4f06-961b-7a91dd66e6d0","campaign":"40412266-f02a-494c-aeb5-a3dfa21a3461","profileRevision":"e47d6b8e-a491-4cf3-b476-e196571f8f11","planHash":"aec35ca4eb702696b5a59b6fb6c1a97ed811ebaf3f9bf764abf36cf07bfaac05","mode":"DETERMINISTIC_FAKE_MODEL"}
 ```
 
+## Post-review repair rerun
+
+After capping the derived authorization by the implementer route limits and
+removing the misleading autonomous composer option, the intake journey passed
+at implementation `40272e3`:
+
+```json
+{"ok":true,"request":"c1cb92f5-24b9-4565-814f-fed98898bda4","campaign":"940d2e04-b40e-4582-91c3-5453d92f9776","profileRevision":"1d873ce1-3d13-44cc-bfbf-3558117d53b5","planHash":"15989274a6dff54aa7a38e3ff7332ec919876382504d100cccb08a58a79cc702","mode":"DETERMINISTIC_FAKE_MODEL"}
+```
+
+The policy panel now displays Core-derived per-request and cumulative grant
+terms; Home submits `REVIEW_PLAN` only and states that every intake requires
+explicit operator approval.
+
 ## What was exercised
 
 - Real Rust Core with SQLite migrations through `0030`, real device-session

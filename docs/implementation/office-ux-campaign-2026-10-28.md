@@ -109,8 +109,8 @@ decision.
 |---|---|---|---|---|
 | 1 | First use: owner bootstrap, provider config, project registration | Compose + Chromium (candidate-bound) | — | NOT_TESTED |
 | 2 | Private GitHub import | Authorized connector + Chromium | — | NOT_TESTED |
-| 3 | Simple request without manual Actions/delegations | Core integration + Chromium, deterministic fake model | `040e6be` | PARTIAL — request/policy via Home UI PASS; provider/profile setup via API; not independent |
-| 4 | Assessment, plan, authorization, execution | Core integration + deterministic fake model | `040e6be` | PARTIAL — assessment/freeze/operator approval/Campaign start PASS; execution/verification NOT_TESTED |
+| 3 | Simple request without manual Actions/delegations | Core integration + Chromium, deterministic fake model | `40272e3` | PARTIAL — request/policy via Home UI PASS; provider/profile setup via API; not independent |
+| 4 | Assessment, plan, authorization, execution | Core integration + deterministic fake model | `40272e3` | PARTIAL — assessment/freeze/operator approval/Campaign start PASS; execution/verification NOT_TESTED |
 | 5 | Monitoring of tasks/agents/candidate/evidence | Browser against real Core | — | NOT_TESTED |
 | 6 | Decision Inbox intervention | Browser + Core operation | — | NOT_TESTED |
 | 7 | Review diff, PR, checks, authorized delivery | Browser + GitHub sandbox | — | NOT_TESTED |
@@ -217,8 +217,10 @@ temporary campaign aggregation point; it is not `main` and not a delivery claim.
   acceptance; journeys 3 and 4 are recorded as PARTIAL. The journey is now
   `cargo xtask e2e intake` and runs in the containerized Chromium CI step; a
   second author run at `228db45` passed (request `1d3aaf1e…`, Campaign
-  `40412266…`). At `ecb55cd`, the final integrated regression passed both
-  `cargo xtask e2e office` (candidate `d048c633…`, gate `ACCEPTED`) and
-  `cargo xtask e2e intake`; workspace clippy, 334 lib tests, 21 Core-bin tests,
-  131 Office tests, build and migrations 1–30 are green. Local Compose remains
+  `40412266…`). At `40272e3`, the final integrated regression passed both
+  `cargo xtask e2e office` (candidate `dc9d5639…`, gate `ACCEPTED`) and
+  `cargo xtask e2e intake` (request `c1cb92f5…`, Campaign `940d2e04…`);
+  workspace clippy, 336 lib tests, 21 Core-bin tests, 130 Office tests, build
+  and migrations 1–30 are green. The final route-cap/approval-copy repair is
+  included. Local Compose remains
   BLOCKED by the host buildah/btrfs limitation; independent review is pending.

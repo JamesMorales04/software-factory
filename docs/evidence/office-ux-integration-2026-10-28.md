@@ -87,6 +87,13 @@ repairs), `cargo xtask e2e office` passed:
 {"ok":true,"candidate":"d048c63312ea5373fbc8b4a7798bf7b2282aeb97","gate":"ACCEPTED"}
 ```
 
+After the final route-cap/approval-copy repair, `cargo xtask e2e office` again
+passed at implementation `40272e3`:
+
+```json
+{"ok":true,"candidate":"dc9d56394e97598a736581e75b80d1785a828bdf","gate":"ACCEPTED"}
+```
+
 `cargo xtask e2e intake` also passed on the same code tree (the last executed
 harness run recorded request `1d3aaf1e…`, Campaign `40412266…`, profile revision
 `e47d6b8e…`, plan `aec35ca4…`; the exact evidence is in
