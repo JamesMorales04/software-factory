@@ -258,4 +258,21 @@ describe("WorkGraphPanel", () => {
     ).toBeDefined();
     expect(screen.getByTestId("workgraph-table")).toBeDefined();
   });
+
+  it("preserves duplicate authoritative tasks in the table while reporting them", () => {
+    render(
+      <Harness
+        tasks={[
+          task("duplicate", 0, "PENDING", [], { task_id: "task-first" }),
+          task("duplicate", 1, "RUNNING", [], { task_id: "task-second" }),
+        ]}
+      />,
+    );
+    const table = screen.getByTestId("workgraph-table");
+    expect(within(table).getAllByRole("row")).toHaveLength(3);
+    expect(within(table).getByText("task-second")).toBeDefined();
+    expect(
+      within(table).getAllByText("INCONSISTENT", { exact: false }).length,
+    ).toBeGreaterThan(0);
+  });
 });

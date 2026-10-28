@@ -564,29 +564,38 @@ export function WorkGraphPanel({
             </tr>
           </thead>
           <tbody>
-            {layout.nodes.map((node) => {
-              const task = node.task;
+            {layout.tableRows.map((row) => {
+              const task = row.task;
               const gate = task.candidate_id
                 ? (gates[task.candidate_id] ?? null)
                 : null;
               const selected = task.unit_id === selectedUnitId;
+              const duplicateUnit =
+                layout.tableRows.filter(
+                  (candidate) => candidate.task.unit_id === task.unit_id,
+                ).length > 1;
               return (
                 <tr
-                  key={task.unit_id}
+                  key={task.task_id}
                   className={cn(selected && "is-selected")}
                   aria-current={selected ? "true" : undefined}
                 >
                   <td>{task.sequence + 1}</td>
                   <th scope="row">
                     <code>{task.unit_id}</code>
+                    {(duplicateUnit || !row.graphNode) && (
+                      <div className="muted">
+                        task <code>{shortId(task.task_id, 12)}</code>
+                      </div>
+                    )}
                   </th>
                   <td>
                     <StatusBadge status={task.status} />
                   </td>
                   <td>
                     <StatusBadge
-                      status={node.state}
-                      label={presentationLabel(node.state)}
+                      status={row.state}
+                      label={presentationLabel(row.state)}
                     />
                   </td>
                   <td>{task.depends_on.join(", ") || "none"}</td>

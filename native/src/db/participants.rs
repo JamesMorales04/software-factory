@@ -789,7 +789,7 @@ impl Database {
                 observation: if matches!(state.as_str(), "BLOCKED" | "FAILED") {
                     "FINAL".into()
                 } else if status_known {
-                    "CURRENT".into()
+                    "NOT_EXPOSED".into()
                 } else {
                     "UNKNOWN".into()
                 },
@@ -799,7 +799,7 @@ impl Database {
                 evidence: None,
                 model_call_count: Some(to_u64(model_call_count)?),
                 model_call_state,
-                observation_note: "A Lead request is a Core-recorded planning or assessment operation. It does not establish a continuously running agent session.".into(),
+                observation_note: "A Lead request is a Core-recorded planning or assessment operation. It does not establish a continuously running agent session or a live lease; liveness is NOT EXPOSED.".into(),
                 recorded_at: row.try_get("created_at")?,
                 last_observed_at,
             });
@@ -1502,6 +1502,7 @@ mod tests {
         assert_eq!(lead.role, "LEAD");
         assert!(lead.session.is_none());
         assert_eq!(lead.status, "READY");
+        assert_eq!(lead.observation, "NOT_EXPOSED");
         assert_eq!(lead.model_call_count, Some(1));
         assert_eq!(lead.requested_route.as_ref().unwrap().provider, "opencode");
         assert_eq!(lead.usage.as_ref().unwrap().total_tokens, 15);

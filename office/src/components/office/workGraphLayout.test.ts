@@ -149,12 +149,15 @@ describe("buildWorkGraphLayout", () => {
 
     const duplicate = buildWorkGraphLayout([
       task("a", 0, "PENDING"),
-      task("a", 1, "RUNNING"),
+      task("a", 1, "RUNNING", [], { task_id: "task-a-duplicate" }),
     ]);
     expect(
       duplicate.issues.some((issue) => issue.kind === "DUPLICATE_UNIT"),
     ).toBe(true);
     expect(duplicate.nodes).toHaveLength(1);
+    expect(duplicate.tableRows).toHaveLength(2);
+    expect(duplicate.tableRows[1].state).toBe("INCONSISTENT");
+    expect(duplicate.tableRows[1].graphNode).toBe(false);
 
     const unknown = buildWorkGraphLayout([task("a", 0, "MYSTERY")]);
     expect(unknown.nodes[0].state).toBe("UNKNOWN");

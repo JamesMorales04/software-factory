@@ -140,7 +140,9 @@ Rules:
 - `observation` is `CURRENT` for a live lease, `STALE` for an unresolved
   session without a matching live lease, `FINAL` for a terminal recorded
   lifecycle, `NOT_EXPOSED` when Core does not record liveness, and `UNKNOWN`
-  otherwise. `STALE` is not proof that an external session stopped.
+  otherwise. Lead requests have no session or lease, so their observation is
+  `NOT EXPOSED` except for terminal `BLOCKED`/`FAILED` states, which are
+  `FINAL`. `STALE` is not proof that an external session stopped.
 - `requested_route` is the frozen session/model-call binding. `observed_route`
   is populated only for recorded model-review receipts; a provider session
   projection does not claim an observed route unless Core records one.
@@ -267,7 +269,9 @@ the accessible authoritative alternative.
   labelled as derived and never presented as scheduling progress.
 - Missing dependencies, self-dependencies, cycles, duplicate units, unknown
   statuses and sequence/dependency contradictions are surfaced as issues. The
-  UI does not repair, omit or silently reorder them.
+  UI does not repair, omit or silently reorder them. The authoritative table
+  renders every recorded task row, including duplicate-unit/task rows, and
+  identifies non-canonical rows; only the visual node set is canonical.
 - Node selection is keyboard accessible. Arrow keys move between nodes; Enter
   or Space selects. Selection is stored as `?tab=workgraph&unit=<unit_id>` so
   reload and browser history restore the exact context.

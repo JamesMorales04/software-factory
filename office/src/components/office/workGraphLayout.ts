@@ -47,8 +47,15 @@ export interface WorkGraphIssue {
   unitId?: string;
 }
 
+export interface WorkGraphTableRow {
+  task: LeadTask;
+  state: WorkGraphPresentationState;
+  graphNode: boolean;
+}
+
 export interface WorkGraphLayout {
   nodes: WorkGraphNode[];
+  tableRows: WorkGraphTableRow[];
   edges: WorkGraphEdge[];
   issues: WorkGraphIssue[];
   width: number;
@@ -284,10 +291,21 @@ export function buildWorkGraphLayout(tasks: LeadTask[]): WorkGraphLayout {
     }
   }
 
+  const nodeByTaskId = new Map(nodes.map((node) => [node.task.task_id, node]));
+  const tableRows: WorkGraphTableRow[] = ordered.map((task) => {
+    const node = nodeByTaskId.get(task.task_id);
+    return {
+      task,
+      state: node?.state ?? "INCONSISTENT",
+      graphNode: node !== undefined,
+    };
+  });
+
   const maxLayer = nodes.reduce((max, node) => Math.max(max, node.layer), 0);
   const maxRow = nodes.reduce((max, node) => Math.max(max, node.row), 0);
   return {
     nodes,
+    tableRows,
     edges,
     issues,
     width:

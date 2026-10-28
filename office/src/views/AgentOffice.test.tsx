@@ -408,4 +408,39 @@ describe("AgentOffice", () => {
     expect(screen.getByText("No recorded participants")).toBeDefined();
     expect(screen.queryByTestId("agent-floor")).toBeNull();
   });
+
+  it("does not inject a deep-linked participant outside the active filters", async () => {
+    mocks.listParticipants.mockImplementation(
+      (filters: { participantId?: string; campaignId?: string }) => {
+        if (filters.participantId) {
+          return Promise.resolve({
+            ...page,
+            participants: [],
+            page: { ...page.page, returned: 0 },
+          });
+        }
+        return Promise.resolve({
+          ...page,
+          participants: [],
+          page: { ...page.page, returned: 0 },
+        });
+      },
+    );
+    renderOffice(
+      "/agents/implementer%3Asession-1?campaign=campaign-2&role=IMPLEMENTER",
+    );
+    await screen.findByRole("heading", { name: "Agent Office" });
+    expect(screen.getByText("Participant not found")).toBeDefined();
+    await waitFor(() =>
+      expect(mocks.listParticipants).toHaveBeenCalledWith(
+        expect.objectContaining({
+          participantId: "implementer:session-1",
+          campaignId: "campaign-2",
+          role: "IMPLEMENTER",
+          limit: 1,
+        }),
+      ),
+    );
+    expect(screen.queryByTestId("participant-inspector")).toBeNull();
+  });
 });

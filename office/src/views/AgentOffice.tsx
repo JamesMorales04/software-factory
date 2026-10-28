@@ -148,6 +148,11 @@ export function AgentOffice() {
     ) {
       const single = await coreApi.listParticipants({
         participantId,
+        role: role || undefined,
+        status: status || undefined,
+        provider: provider || undefined,
+        campaignId: campaignId || undefined,
+        projectId: projectId || undefined,
         limit: 1,
       });
       extra = single.participants[0] ?? null;
