@@ -175,6 +175,22 @@ or independent acceptance.
 
 The journey exposed and repaired one projection defect: intake **detail** now
 exposes authoritative `campaignStatus` and `gateOutcome` instead of only the list
-projection. Live provider inference, Compose, independent verification and
-delivery remain `NOT_TESTED`; see
+projection. Live provider inference, independent verification and delivery
+remain `NOT_TESTED`; see
 [the candidate-bound evidence](../evidence/office-ux-intake-lifecycle-2026-10-28.md).
+
+### Lane L follow-up — Compose intake (2026-10-28)
+
+Candidate `056c50248e0b74a84be2070e6e148df5348c9e36` extends the supported
+Compose acceptance with a deterministic E2E-only model fixture and the full
+intake lifecycle. The `Compose end-to-end (manual)` workflow run
+[`40742928074`](https://github.com/JamesMorales04/software-factory/actions/runs/40742928074)
+passed for that exact SHA. It exercised request
+`bfafdc1b-8d2a-4e7c-833a-dfa8b761d72a`, Campaign
+`7464a25e-ecae-4688-85da-8d003c8f58e2`, candidate
+`be2c44cd-eb84-4089-b235-b0d0603231ec` at commit
+`777de0cb5df42219686dba6574500e417468916b`, independent verifier/reviewer
+receipts and deterministic Gate `ACCEPTED`, followed by `compose down`/`up`
+persistence. The model and coding provider are deterministic fixtures; live
+inference and Compose Office/Chromium acceptance remain `NOT_TESTED`. See
+[the Compose evidence](../evidence/office-ux-compose-intake-2026-10-28.md).
