@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-auth-author-run",
-  "implementation_sha": "4d27a1d3687a9beda8e04845d93a432ac62b5e87",
+  "implementation_sha": "97e6e0d62566fc230809180f3205997098d2f1cb",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -68,6 +68,11 @@
         "provider_settings": 1,
         "provider_sessions": 12
       }
+    },
+    {
+      "name": "existing containerized Chromium Office journey",
+      "pass": true,
+      "detail": "cargo xtask e2e office passed against real Core, Supervisor, Worker, Vite Office and Chromium after replacing the removed operator-token form with one-time owner enrollment; deterministic candidate 04488f7f03cd6bac8d90904de093fea2c23e2e8f reached ACCEPTED"
     }
   ],
   "not_tested": [
