@@ -21,6 +21,7 @@ import { DevicePairClaim } from "./views/DevicePairClaim";
 import { Home } from "./views/Home";
 import { Lead } from "./views/Lead";
 import { Overview } from "./views/Overview";
+import { ProjectFiles } from "./views/ProjectFiles";
 import { Projects } from "./views/Projects";
 import { RequestWorkspace } from "./views/RequestWorkspace";
 import { Runs } from "./views/Runs";
@@ -229,6 +230,7 @@ export function App() {
         <Route path="/overview" element={<Overview />} />
         <Route path="/inbox" element={<DecisionInbox />} />
         <Route path="/projects" element={<Projects />} />
+        <Route path="/projects/:projectId/files" element={<ProjectFiles />} />
         <Route path="/actions" element={<Actions />} />
         <Route path="/actions/:actionId" element={<ActionDetail />} />
         <Route path="/lead" element={<Lead />} />

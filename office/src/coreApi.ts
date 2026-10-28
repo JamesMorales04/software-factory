@@ -647,69 +647,6 @@ export interface ProviderRoute {
   mode: string;
 }
 
-export type ExecutionProfileCategory =
-  | "BUDGET"
-  | "BALANCED"
-  | "QUALITY"
-  | "CUSTOM";
-
-export interface ExecutionRoleAssignment {
-  provider: string;
-  model: string;
-  reasoning?: string | null;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
-}
-
-export interface ExecutionProfileRoles {
-  lead?: ExecutionRoleAssignment;
-  implementer?: ExecutionRoleAssignment;
-  semanticReviewer?: ExecutionRoleAssignment;
-}
-
-export interface ExecutionProfileBudgets {
-  maxAttempts: number;
-  maxSessions: number;
-  maxTurns: number;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
-  deadlineSecs: number;
-}
-
-export interface ExecutionProfileAutoStart {
-  enabled: boolean;
-  riskClasses: string[];
-}
-
-export interface ExecutionProfile {
-  id: string;
-  name: string;
-  description: string;
-  category: ExecutionProfileCategory;
-  revision: number;
-  revisionId: string;
-  contentHash: string;
-  globalDefault: boolean;
-  projectDefaults: string[];
-  roles: ExecutionProfileRoles;
-  budgets: ExecutionProfileBudgets;
-  autoStart: ExecutionProfileAutoStart;
-  executable: boolean;
-  warnings: string[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ProjectExecutionProfile {
-  projectId: string;
-  profileId: string;
-  revisionId: string;
-  revision: number;
-  source: "PROJECT_DEFAULT" | "GLOBAL_DEFAULT";
-}
-
 export interface StandingDelegation {
   id: string;
   principalId: string;
@@ -1497,16 +1434,6 @@ export const coreApi = {
     ),
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
-  listExecutionProfiles: async () => {
-    const response = await request<{ profiles: ExecutionProfile[] }>(
-      "/execution-profiles",
-    );
-    return response.profiles;
-  },
-  getProjectExecutionProfile: (projectId: string) =>
-    request<ProjectExecutionProfile>(
-      `/projects/${encodeURIComponent(projectId)}/execution-profile`,
-    ),
   listProviders: () =>
     request<{ providers: ProviderView[] }>("/settings/providers"),
   getRuntimeSettings: () => request<FactorySettings>("/settings/runtime"),

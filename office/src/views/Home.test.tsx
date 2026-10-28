@@ -40,6 +40,15 @@ const project: Project = {
   created_at: "2026-10-27T10:00:00Z",
 };
 
+const roleRoute = {
+  provider: "opencode-go",
+  model: "deepseek-v4.1-flash",
+  reasoning: "medium" as const,
+  maxInputTokens: 40000,
+  maxOutputTokens: 12000,
+  maxCostMicros: 500000,
+};
+
 const profile: ExecutionProfile = {
   id: "profile-1",
   name: "Balanced",
@@ -50,7 +59,11 @@ const profile: ExecutionProfile = {
   contentHash: "profile-hash",
   globalDefault: true,
   projectDefaults: [],
-  roles: {},
+  roles: {
+    lead: roleRoute,
+    implementer: roleRoute,
+    semanticReviewer: roleRoute,
+  },
   budgets: {
     maxAttempts: 3,
     maxSessions: 2,
@@ -192,7 +205,9 @@ function renderHome() {
 describe("Home", () => {
   beforeEach(() => {
     mocks.listProjects.mockReset().mockResolvedValue([project]);
-    mocks.listExecutionProfiles.mockReset().mockResolvedValue([profile]);
+    mocks.listExecutionProfiles
+      .mockReset()
+      .mockResolvedValue({ profiles: [profile], supportedRoutes: [] });
     mocks.listIntakeRequests.mockReset().mockResolvedValue([summary]);
     mocks.getOverview.mockReset().mockResolvedValue(overview);
     mocks.createIntakeRequest.mockReset().mockResolvedValue(projection);

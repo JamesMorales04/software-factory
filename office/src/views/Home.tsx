@@ -101,7 +101,7 @@ export function Home() {
     setProfilesError(null);
     setProfilesUnavailable(false);
     try {
-      const next = await coreApi.listExecutionProfiles();
+      const { profiles: next } = await coreApi.listExecutionProfiles();
       setProfiles(next);
       setProfileId((current) =>
         current !== "" && next.some((profile) => profile.id === current)
