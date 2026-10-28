@@ -242,6 +242,7 @@ milestones:
   - automatic independent verifier and reviewer
   capability_ids:
   - CAP-045
+  - CAP-053
   exclusions:
   - SEC-01 isolation certification
   - production or Windows support claim
