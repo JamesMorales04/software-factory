@@ -68,10 +68,16 @@ Detail, Runs, Workers, Runtime and Settings. It uses Core snapshots and
 polling; it does not claim SSE/live streaming. Overview projects authoritative
 Core counts, Quality Gate outcomes, measured and unmeasured spend, accepted
 candidates, decisions, runtime health and recent events. Decision Inbox
-aggregates blocked authorizations, frozen Lead plans, Gate repair/human-review
-states, unresolved model usage, unresolved provider sessions and failed work;
-only model-call resolution invokes a Core operation, while other items link to
-their existing authoritative module. Action Detail shows the frozen spec,
+separates action-required items from informational events and aggregates
+blocked authorizations, frozen intake/Lead plans, Gate repair/human-review
+states, unresolved model usage, unresolved provider sessions and failed work.
+Its Core-backed actions are exact and confirmation-gated: approve an intake
+plan only with the frozen plan hash and profile revision, release an ambiguous
+model reservation, withdraw a frozen Lead request, or cancel a Campaign. Every
+action re-reads `/office/decisions` and refuses a changed or vanished item.
+Full-scope Campaign authorization and Gate repair are not posted from the
+Inbox; it links to the exact Campaign or Gate evidence and records the
+available limitation instead of inventing a mutation. Action Detail shows the frozen spec,
 checks and related Core records. Campaign Detail is a tabbed operational
 workspace with separate lifecycle, WorkGraph, execution/participant,
 candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
@@ -115,7 +121,7 @@ Known gaps:
   viewer.
 - Campaign authorization labels can remain `AUTHORIZED` after a terminal Run;
   the Run and gate are authoritative and must be displayed separately.
-- Decision Inbox actions are limited to Core model-call resolution and navigation; provider-session termination and Gate repair remain outside it.
+- Decision Inbox actions are limited to Core operations with an exact decision revision: intake-plan approval, model-call resolution, Lead withdrawal and Campaign cancellation. Provider-session termination, Gate repair and full-scope Campaign authorization remain outside it; the Inbox links to the exact object and does not claim those mutations.
 - Unified intake assessment requires an authorized model gateway. Without one
   Core returns a typed 503; it does not fabricate plan checks. A FIXTURE
   assessment cannot derive executable checks for a draft Action by itself.
