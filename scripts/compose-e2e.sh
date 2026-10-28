@@ -287,7 +287,9 @@ INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; pri
 log "== waiting for the intake candidate, receipts and deterministic gate"
 INTAKE_CANDIDATE_ID=""
 INTAKE_GATE=""
-for _ in $(seq 1 300); do
+# Under loaded CI runners the reviewer can take several minutes; keep the
+# bounded wait comfortably above observed completion while still failing closed.
+for _ in $(seq 1 600); do
   INTAKE_CANDIDATE_ID="$(api GET /candidates \
     | python3 -c 'import json,sys; target=sys.argv[1]; print(next((c["id"] for c in json.load(sys.stdin) if c["attempt_id"]==target), ""))' "$INTAKE_ATTEMPT_ID")"
   if [[ -n "$INTAKE_CANDIDATE_ID" ]]; then
