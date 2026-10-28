@@ -1,0 +1,148 @@
+# Factory Office UX campaign — execution ledger (2026-10-28)
+
+**Campaign:** [issue #39](https://github.com/JamesMorales04/software-factory/issues/39)
+**Status:** ACTIVE. This ledger records planned and observed state; it is not
+acceptance evidence.
+**Baseline:** `campaign/office-ux-baseline-20261028`.
+
+## 1. Entry gate
+
+| Item | Recorded state |
+|---|---|
+| Authoritative `main` | `d58725266d132fafb96a79970ff292acc876feb8` |
+| PR #36 | `bda12f0`, draft, checks pass, no independent review, unmerged |
+| PR #37 | `715349f`, draft, checks pass, no independent review, unmerged |
+| PR #38 | `c8bf930`, draft, checks pass, no independent review, unmerged |
+| Integration baseline | `c8bf930` on `campaign/office-ux-baseline-20261028` |
+| Main contains access features? | **No.** The campaign does not claim otherwise. |
+| Protected-branch changes | None. The three PR branches are unchanged. |
+| Merge decision | Pending Product Owner authorization and independent review |
+
+New PRs target the integration baseline, not `main`, until the access stack is
+integrated. Retargeting requires rebase/revalidation against the then-current
+`main`.
+
+## 2. Runtime and coordination
+
+| Item | Observed |
+|---|---|
+| OpenCode | 2.2.0; `opencode-go/deepseek-v4.1-flash` verified with live prompt `MODEL_OK` |
+| Codex | 0.165.0, ChatGPT auth; `gpt-6.1-sol`, `gpt-6-luna` present |
+| GitHub | `gh` authenticated as `JamesMorales04` with `repo`/`workflow` scopes |
+| Host | 16 CPU, 31 GiB RAM, rootless Podman 6.1.4 |
+| Worktree root | `/home/james/Escritorio/Development/sf-office-ux` |
+| Resource rule | At most 3 concurrent Rust builds / 2 browser suites; heavy Compose gates serialized |
+
+## 3. Workstream DAG
+
+```
+profiles (C) ──> intake (B) ──> IA request workspace (A)
+     │                 │
+     └──> assessment routing (E)
+files (K) ─────────────────────────────> docs workspace (K2)
+i18n infra (J) ──> full translation sweep (J2)
+projects/GitHub (F/G) ──> issues sync (L) ──> autonomous intake (M)
+campaign diff (I) ──> PR operations (I2)
+decisions (H) ──> delivery authorization (H2)
+QA (N) runs alongside every lane
+```
+
+`A` may implement the Home/request UI against the contract in
+[office-ux-contracts-2026-10-28.md](office-ux-contracts-2026-10-28.md) while `B`
+implements Core. Integration is gated on the contract, not on a verbal summary.
+
+## 4. Lane map and initial assignments
+
+| Lane | Branch | Worktree | Owner runtime | Issue | State |
+|---|---|---|---|---|---|
+| Baseline/integration | `campaign/office-ux-baseline-20261028` | `sf-office-ux/baseline` | Director | #39 | Active |
+| C profiles | `campaign/office-ux-profiles-20261028` | `sf-office-ux/profiles` | OpenCode | #40 | Assigned |
+| A IA/Home | `campaign/office-ux-ia-20261028` | `sf-office-ux/ia` | OpenCode | #41 | Assigned |
+| B intake | `campaign/office-ux-intake-20261028` | `sf-office-ux/intake` | OpenCode | #42 | Blocked on C foundation |
+| J i18n | `campaign/office-ux-i18n-20261028` | `sf-office-ux/i18n` | OpenCode | #43 | Assigned |
+| K files | `campaign/office-ux-files-20261028` | `sf-office-ux/files` | OpenCode | #44 | Assigned |
+| QA | continuous | `sf-office-ux/qa` | OpenCode/Codex | #39 | Prepared |
+
+## 5. Shared-file ownership
+
+The integration owner (Campaign Director) owns final resolution of:
+
+- `native/src/bin/core.rs` route registration and App state;
+- `native/src/lib.rs` and `native/src/db/mod.rs` module registration;
+- migration ordering and numbering;
+- `office/src/coreApi.ts` client surface, `office/src/App.tsx`,
+  `office/src/navigation.ts`, shared CSS entrypoints;
+- `docs/product/office-parity.json`, capability registry and roadmap updates.
+
+Lane writers must not rewrite another lane's worktree or force-push a shared
+branch. Each lane commits small, reviewable changes and reports exact tests.
+
+## 6. Architecture decisions frozen for this wave
+
+1. **No second lifecycle.** Intake derives state from Lead request, Campaign and
+   Quality Gate records. It stores only operator intent, messages and a
+   cancellation flag.
+2. **No second authorization path.** Approval composes the existing Lead start /
+   Campaign authorization operations. Profile values are frozen into the
+   authorization; the model never supplies them.
+3. **Profiles are configuration, not grants.** Role routes must be executable
+   against configured providers; unsupported combinations fail closed.
+4. **Deterministic Verifier stays outside profiles.** Only model-backed roles
+   receive model assignments.
+5. **No silent fallback.** A missing profile route, provider credential or model
+   gateway is an explicit typed unavailable state.
+6. **Empty Action spec is allowed at intake.** The Lead proposal supplies the
+   concrete plan and checks; the existing Lead/Campaign validation remains the
+   authority.
+7. **No compatible shims.** New endpoints and types are used directly by the new
+   UI. Existing legacy views remain reachable but are not duplicated.
+
+## 7. Acceptance matrix
+
+Result vocabulary: `NOT_TESTED`, `FAIL`, `BLOCKED`, `UNKNOWN`, `DISCONNECTED`,
+`PASS` (for the exact method/candidate), `ACCEPTED` only for a Core Quality Gate
+decision.
+
+| # | Journey | Method planned | Candidate | Result |
+|---|---|---|---|---|
+| 1 | First use: owner bootstrap, provider config, project registration | Compose + Chromium (candidate-bound) | — | NOT_TESTED |
+| 2 | Private GitHub import | Authorized connector + Chromium | — | NOT_TESTED |
+| 3 | Simple request without manual Actions/delegations | Core integration + Chromium | — | NOT_TESTED |
+| 4 | Assessment, plan, authorization, execution | Core integration + fake provider / authorized live route | — | NOT_TESTED |
+| 5 | Monitoring of tasks/agents/candidate/evidence | Browser against real Core | — | NOT_TESTED |
+| 6 | Decision Inbox intervention | Browser + Core operation | — | NOT_TESTED |
+| 7 | Review diff, PR, checks, authorized delivery | Browser + GitHub sandbox | — | NOT_TESTED |
+| 8 | Documentation browse/render; governed edit | Browser + repository projection | — | NOT_TESTED |
+| 9 | GitHub issue sync and campaign link | Mock server + authorized repo | — | NOT_TESTED |
+| 10 | Bounded autonomous intake; adversarial rejection | Integration/negative tests | — | NOT_TESTED |
+| 11 | EN/ES switch preserving context | Browser + component tests | — | NOT_TESTED |
+| 12 | Mobile 390/320 essential journeys incl. QR pairing | Chromium viewports | — | NOT_TESTED |
+| 13 | Restart/recreate persistence | Compose restart | — | NOT_TESTED |
+
+Rows may only move to `PASS` with exact method, candidate SHA and observed
+output recorded in an evidence file. A component test is not journey acceptance.
+
+## 8. Verification queue
+
+1. Lane-local: `cargo fmt --check`, targeted `cargo test`, `cargo clippy -D warnings`
+   where the lane touches Rust; `npm --prefix office run typecheck|lint|test|build`.
+2. Integration candidate: full `cargo test --workspace`, architecture checker,
+   repository hygiene, Office build/tests, migration from a clean database.
+3. Browser/Compose: `cargo xtask e2e office`, then the campaign journeys at
+   1440/834/390/320. Compose E2E is serialized.
+4. Independent review: Codex `gpt-6.1-sol` for architecture/authorization and
+   `gpt-6-luna` for the final diff. Reviewer must inspect the actual diff.
+5. Protected merge: Product Owner authorization; never self-merge the campaign.
+
+## 9. Resume state
+
+If a lane stops, preserve its worktree and branch. Record the last commit, the
+exact failing command and the next executable task here before reassigning.
+Do not overwrite uncommitted work. Do not claim that a stopped agent is still
+running.
+
+## 10. Change log
+
+- 2026-10-28: Preflight recorded; baseline created at `c8bf930`; contracts
+  frozen; profiles, IA, i18n and files lanes assigned; intake blocked on the
+  profiles foundation. No product feature is claimed complete.
