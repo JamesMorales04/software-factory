@@ -103,8 +103,14 @@ export function Home() {
     try {
       const next = await coreApi.listExecutionProfiles();
       setProfiles(next);
+      setProfileId((current) =>
+        current !== "" && next.some((profile) => profile.id === current)
+          ? current
+          : "",
+      );
     } catch (cause) {
       setProfiles([]);
+      setProfileId("");
       if (endpointUnavailable(cause)) {
         setProfilesUnavailable(true);
       } else {
@@ -136,6 +142,8 @@ export function Home() {
     } catch (cause) {
       if (endpointUnavailable(cause)) {
         setRecentUnavailable(true);
+        setRecentRequests(null);
+        setRecentError(null);
       } else {
         setRecentError(
           errorMessage(cause, "Recent requests could not be loaded."),
