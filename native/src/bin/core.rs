@@ -2562,10 +2562,33 @@ fn github_integration_routes() -> Router<Arc<App>> {
             "/integrations/github/repositories",
             get(github_repositories),
         )
-        .route("/projects/{id}/github", post(bind_project_github))
+        .route(
+            "/projects/{id}/github",
+            get(get_project_github).post(bind_project_github),
+        )
         .route("/projects/{id}/issues/sync", post(sync_project_issues))
         .route("/projects/{id}/issues", get(project_issues))
         .route("/projects/{id}/issues/{number}", get(project_issue))
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request",
+            get(candidate_pull_request).post(open_candidate_pull_request),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/diff",
+            get(candidate_pull_request_diff),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/comments",
+            get(candidate_pull_request_comments).post(comment_on_candidate_pull_request),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/review",
+            post(request_candidate_pull_request_review),
+        )
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/pull-request/merge",
+            post(merge_candidate_pull_request),
+        )
 }
 
 #[derive(Deserialize)]
@@ -2668,6 +2691,10 @@ fn github_upstream_error(error: factory_native::github::GitHubError) -> Response
         factory_native::github::GitHubError::Forbidden(_) => StatusCode::FORBIDDEN,
         factory_native::github::GitHubError::NotFound => StatusCode::NOT_FOUND,
         factory_native::github::GitHubError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+        factory_native::github::GitHubError::Rejected { status_code, .. } => {
+            StatusCode::from_u16(*status_code).unwrap_or(StatusCode::BAD_REQUEST)
+        }
+        factory_native::github::GitHubError::MergeBlocked { .. } => StatusCode::CONFLICT,
         _ => StatusCode::BAD_GATEWAY,
     };
     let mut body = json!({"error": error.detail(), "kind": error.kind()});
@@ -2901,6 +2928,779 @@ async fn bind_project_github(
         Err(error) => return api_error(error),
     };
     Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+async fn get_project_github(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let binding = match app.db.project_github_binding(&id).await {
+        Ok(binding) => Some(binding),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestQuery {
+    #[serde(default)]
+    number: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenCandidatePullRequestInput {
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    head: String,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    draft: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestCommentInput {
+    number: u64,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestReviewInput {
+    number: u64,
+    reviewers: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidatePullRequestMergeInput {
+    number: u64,
+    expected_head_sha: String,
+    merge_method: String,
+    confirmed: bool,
+    #[serde(default)]
+    commit_title: Option<String>,
+    #[serde(default)]
+    commit_message: Option<String>,
+}
+
+struct CandidatePullRequestContext {
+    campaign: factory_native::db::Campaign,
+    candidate: factory_native::db::CandidateRecord,
+    project: factory_native::db::Project,
+    binding: factory_native::db::ProjectGitHubBinding,
+}
+
+async fn candidate_pull_request_context(
+    app: &App,
+    campaign_id: &str,
+    candidate_id: &str,
+) -> Result<CandidatePullRequestContext, Response> {
+    let campaign = app.db.campaign(campaign_id).await.map_err(api_error)?;
+    let candidate = app
+        .db
+        .candidate(candidate_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => StatusCode::NOT_FOUND.into_response(),
+            error => api_error(error),
+        })?;
+    let attempts = app.db.attempts().await.map_err(api_error)?;
+    let attempt = attempts
+        .into_iter()
+        .find(|attempt| attempt.id == candidate.attempt_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    let runs = app.db.runs().await.map_err(api_error)?;
+    let run = runs
+        .into_iter()
+        .find(|run| run.id == attempt.run_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    if run.campaign_id != campaign.id {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    let actions = app.db.actions().await.map_err(api_error)?;
+    let action = actions
+        .into_iter()
+        .find(|action| action.id == campaign.action_id)
+        .ok_or_else(|| StatusCode::NOT_FOUND.into_response())?;
+    if !candidate
+        .action_spec_sha256
+        .eq_ignore_ascii_case(&action.spec_sha256)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "candidate ActionSpec hash does not match the frozen Action",
+                "kind": "SPEC_MISMATCH",
+                "candidate_id": candidate.id,
+            })),
+        )
+            .into_response());
+    }
+    let project = app
+        .db
+        .project(&action.project_id)
+        .await
+        .map_err(api_error)?;
+    let binding = match app.db.project_github_binding(&project.id).await {
+        Ok(binding) => binding,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "Project is not bound to a GitHub repository",
+                    "kind": "NOT_BOUND",
+                    "project_id": project.id,
+                })),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    Ok(CandidatePullRequestContext {
+        campaign,
+        candidate,
+        project,
+        binding,
+    })
+}
+
+fn pull_request_number(query: CandidatePullRequestQuery) -> Option<u64> {
+    query
+        .number
+        .filter(|number| (1..=i64::MAX as u64).contains(number))
+}
+
+fn invalid_pull_request_number() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "a positive pull request number is required",
+            "kind": "INVALID_REQUEST",
+        })),
+    )
+        .into_response()
+}
+
+async fn candidate_gate_identity(
+    app: &App,
+    candidate_id: &str,
+) -> Result<Option<serde_json::Value>, Response> {
+    match app.db.gate_for_candidate(candidate_id).await {
+        Ok(Some(gate)) => Ok(Some(json!({
+            "candidate_id": gate.candidate_id,
+            "outcome": gate.outcome,
+            "reasons": gate.reasons,
+            "decided_at": gate.decided_at,
+        }))),
+        Ok(None) => Ok(None),
+        Err(error) => Err(api_error(error)),
+    }
+}
+
+fn pull_request_blockers(
+    pull_request: &factory_native::github::GitHubPullRequest,
+    checks: &factory_native::github::GitHubPullRequestChecks,
+    candidate_commit_sha: &str,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if pull_request.state != "open" {
+        blockers.push(format!(
+            "pull request is {} rather than open",
+            pull_request.state
+        ));
+    }
+    if pull_request.merged {
+        blockers.push("pull request is already merged".into());
+    }
+    if !pull_request
+        .head_sha
+        .eq_ignore_ascii_case(candidate_commit_sha)
+    {
+        blockers.push(format!(
+            "pull request head {} does not match candidate commit {candidate_commit_sha}",
+            pull_request.head_sha
+        ));
+    }
+    if pull_request.mergeable != Some(true) {
+        blockers.push(match pull_request.mergeable {
+            Some(false) => "GitHub reports the pull request as not mergeable".into(),
+            None => "GitHub has not computed mergeability yet; read again".into(),
+            Some(true) => unreachable!(),
+        });
+    }
+    if pull_request.mergeable_state != "clean" {
+        blockers.push(format!(
+            "GitHub merge state is {} (branch protection or required checks are not satisfied)",
+            pull_request.mergeable_state
+        ));
+    }
+    if !checks.ready {
+        blockers.push(format!("checks are {}: {}", checks.state, checks.detail));
+    }
+    if !checks.head_sha.eq_ignore_ascii_case(&pull_request.head_sha) {
+        blockers.push("check status is not bound to the pull request head".into());
+    }
+    blockers
+}
+
+async fn candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let checks = match app
+        .github
+        .pull_request_checks(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &pull_request.head_sha,
+        )
+        .await
+    {
+        Ok(checks) => checks,
+        Err(error) => return github_upstream_error(error),
+    };
+    let gate = match candidate_gate_identity(&app, &context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(response) => return response,
+    };
+    let blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "candidate_tree_sha": context.candidate.tree_sha,
+        "project_id": context.project.id,
+        "gate": gate,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "checks": checks,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
+        "merge_ready": blockers.is_empty(),
+        "merge_blocked_reasons": blockers,
+        "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "GitHub REST read through Core; branch protection and required checks remain GitHub-authoritative",
+    }))
+    .into_response()
+}
+
+async fn candidate_pull_request_diff(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let diff = match app
+        .github
+        .pull_request_diff(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(diff) => diff,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "project_id": context.project.id,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "diff": diff,
+        "head_matches_candidate": pull_request
+            .head_sha
+            .eq_ignore_ascii_case(&context.candidate.commit_sha),
+        "source": "GitHub pull request diff read through Core with a bounded body",
+    }))
+    .into_response()
+}
+
+async fn candidate_pull_request_comments(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Query(query): Query<CandidatePullRequestQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(number) = pull_request_number(query) else {
+        return invalid_pull_request_number();
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let comments = match app
+        .github
+        .pull_request_comments(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            number,
+        )
+        .await
+    {
+        Ok(comments) => comments,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "binding": context.binding,
+        "pull_request_number": number,
+        "comments": comments,
+        "source": "GitHub pull request comments read through Core; bodies are untrusted text",
+    }))
+    .into_response()
+}
+
+async fn open_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<OpenCandidatePullRequestInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let branch = match app
+        .github
+        .branch_commit(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &input.head,
+        )
+        .await
+    {
+        Ok(branch) => branch,
+        Err(factory_native::github::GitHubError::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "GitHub does not expose the requested head branch",
+                    "kind": "HEAD_NOT_FOUND",
+                    "candidate_id": context.candidate.id,
+                    "head": input.head,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return github_upstream_error(error),
+    };
+    if !branch
+        .commit_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "GitHub head branch does not resolve to the exact candidate commit",
+                "kind": "HEAD_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "observed_head_sha": branch.commit_sha,
+                "head": branch.name,
+            })),
+        )
+            .into_response();
+    }
+    let open = match app
+        .github
+        .open_pull_requests_for_head(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &input.head,
+        )
+        .await
+    {
+        Ok(open) => open,
+        Err(error) => return github_upstream_error(error),
+    };
+    if let Some(existing) = open.first() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "an open pull request already uses this head branch",
+                "kind": "PR_ALREADY_OPEN",
+                "candidate_id": context.candidate.id,
+                "number": existing.number,
+                "html_url": existing.html_url,
+            })),
+        )
+            .into_response();
+    }
+    let base = input
+        .base
+        .unwrap_or_else(|| context.binding.default_branch.clone());
+    let pull_request = match app
+        .github
+        .create_pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            factory_native::github::NewPullRequest {
+                title: &input.title,
+                body: input.body.as_deref().unwrap_or(""),
+                head: &input.head,
+                base: &base,
+                draft: input.draft.unwrap_or(false),
+            },
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let gate = match candidate_gate_identity(&app, &context.candidate.id).await {
+        Ok(gate) => gate,
+        Err(response) => return response,
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "candidate_commit_sha": context.candidate.commit_sha,
+        "project_id": context.project.id,
+        "gate": gate,
+        "binding": context.binding,
+        "pull_request": pull_request,
+        "head_sha": branch.commit_sha,
+        "base": base,
+        "opened_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "pull request opened through the encrypted Core GitHub connection after exact branch identity verification",
+    }))
+    .into_response()
+}
+
+async fn comment_on_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestCommentInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let comment = match app
+        .github
+        .create_pull_request_comment(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+            &input.body,
+        )
+        .await
+    {
+        Ok(comment) => comment,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "comment": comment,
+        "recorded_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "comment posted through the encrypted Core GitHub connection",
+    }))
+    .into_response()
+}
+
+async fn request_candidate_pull_request_review(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestReviewInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let reviewers = match app
+        .github
+        .request_pull_request_reviewers(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+            &input.reviewers,
+        )
+        .await
+    {
+        Ok(reviewers) => reviewers,
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "reviewers": reviewers,
+        "requested_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "review request sent through the encrypted Core GitHub connection; no approval is inferred",
+    }))
+    .into_response()
+}
+
+async fn merge_candidate_pull_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((campaign_id, candidate_id)): AxumPath<(String, String)>,
+    Json(input): Json<CandidatePullRequestMergeInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !input.confirmed {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "explicit operator confirmation is required for merge",
+                "kind": "CONFIRMATION_REQUIRED",
+            })),
+        )
+            .into_response();
+    }
+    let merge_method = match input.merge_method.as_str() {
+        "merge" => factory_native::github::GitHubMergeMethod::Merge,
+        "squash" => factory_native::github::GitHubMergeMethod::Squash,
+        "rebase" => factory_native::github::GitHubMergeMethod::Rebase,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "merge method must be merge, squash or rebase",
+                    "kind": "INVALID_REQUEST",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let context = match candidate_pull_request_context(&app, &campaign_id, &candidate_id).await {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if !input
+        .expected_head_sha
+        .eq_ignore_ascii_case(&context.candidate.commit_sha)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "expected head SHA does not match the recorded candidate commit",
+                "kind": "CANDIDATE_MISMATCH",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "expected_head_sha": input.expected_head_sha,
+            })),
+        )
+            .into_response();
+    }
+    let credential = match load_github_credential(&app).await {
+        Ok(credential) => credential,
+        Err(response) => return response,
+    };
+    let pull_request = match app
+        .github
+        .pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            input.number,
+        )
+        .await
+    {
+        Ok(pull_request) => pull_request,
+        Err(error) => return github_upstream_error(error),
+    };
+    let checks = match app
+        .github
+        .pull_request_checks(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            &pull_request.head_sha,
+        )
+        .await
+    {
+        Ok(checks) => checks,
+        Err(error) => return github_upstream_error(error),
+    };
+    let blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    if !blockers.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "merge is blocked by a fresh pull request and check read",
+                "kind": "MERGE_BLOCKED",
+                "candidate_id": context.candidate.id,
+                "candidate_commit_sha": context.candidate.commit_sha,
+                "pull_request": pull_request,
+                "checks": checks,
+                "blockers": blockers,
+                "checked_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })),
+        )
+            .into_response();
+    }
+    let outcome = match app
+        .github
+        .merge_pull_request(
+            credential.token(),
+            &context.binding.owner,
+            &context.binding.repo,
+            factory_native::github::MergePullRequest {
+                number: input.number,
+                expected_head_sha: &context.candidate.commit_sha,
+                merge_method,
+                commit_title: input.commit_title.as_deref(),
+                commit_message: input.commit_message.as_deref(),
+            },
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error @ factory_native::github::GitHubError::MergeBlocked { .. }) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": error.detail(),
+                    "kind": "MERGE_BLOCKED",
+                    "candidate_id": context.candidate.id,
+                    "candidate_commit_sha": context.candidate.commit_sha,
+                    "pull_request_number": input.number,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return github_upstream_error(error),
+    };
+    Json(json!({
+        "campaign_id": context.campaign.id,
+        "candidate_id": context.candidate.id,
+        "project_id": context.project.id,
+        "pull_request_number": input.number,
+        "expected_head_sha": context.candidate.commit_sha,
+        "merged": outcome.merged,
+        "merge_commit_sha": outcome.merge_commit_sha,
+        "message": outcome.message,
+        "merged_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "source": "merge performed through the encrypted Core GitHub connection only after a fresh pull request and check read with the exact expected head pinned",
+    }))
+    .into_response()
 }
 
 async fn sync_project_issues(
@@ -3781,6 +4581,28 @@ async fn candidate_diff(
     let Some(action) = action else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if !candidate
+        .action_spec_sha256
+        .eq_ignore_ascii_case(&action.spec_sha256)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "candidate ActionSpec hash does not match the frozen Action",
+                "candidate_id": candidate.id,
+                "kind": "SPEC_MISMATCH",
+            })),
+        )
+            .into_response();
+    }
+    let project = match app.db.project(&action.project_id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let gate = match app.db.gate_for_candidate(&candidate.id).await {
+        Ok(gate) => gate,
+        Err(error) => return api_error(error),
+    };
     let tasks = match app.db.campaign_tasks(&campaign.id).await {
         Ok(tasks) => tasks,
         Err(error) => return api_error(error),
@@ -3790,40 +4612,98 @@ async fn candidate_diff(
         .find(|task| task.candidate_id.as_deref() == Some(candidate.id.as_str()))
         .map(|task| task.base_commit.clone())
         .unwrap_or_else(|| action.spec.base_commit.clone());
-    let repository = Path::new(&action.spec.repository);
-    let changed_paths = match factory_native::workspace::changed_paths(
+    let repository = Path::new(&project.repository);
+    let projection = match factory_native::candidate_diff::project_candidate_diff(
+        &project.id,
         repository,
+        &project.identity,
         &base_commit,
         &candidate.commit_sha,
+        &candidate.tree_sha,
     ) {
-        Ok(paths) => paths,
-        Err(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "candidate diff summary is unavailable for the recorded revision",
-                    "candidate_id": candidate.id,
-                })),
-            )
-                .into_response();
-        }
+        Ok(projection) => projection,
+        Err(error) => return candidate_diff_error(error, &candidate.id),
     };
     let diff_stat =
         factory_native::workspace::diff_stat(repository, &base_commit, &candidate.commit_sha)
             .unwrap_or_else(|_| "diff stat unavailable".to_owned());
-    let changed_paths_truncated = changed_paths.len() > 200;
-    let changed_paths = changed_paths.into_iter().take(200).collect::<Vec<_>>();
+    let changed_paths = projection
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
     Json(json!({
         "candidate_id": candidate.id,
+        "candidate": {
+            "id": candidate.id,
+            "attempt_id": candidate.attempt_id,
+            "action_spec_sha256": candidate.action_spec_sha256,
+            "commit_sha": candidate.commit_sha,
+            "tree_sha": candidate.tree_sha,
+            "implementer_id": candidate.implementer_id,
+            "created_at": candidate.created_at,
+            "integration": candidate.integration,
+            "lineage": candidate.lineage,
+        },
+        "gate": gate.map(|gate| json!({
+            "candidate_id": gate.candidate_id,
+            "outcome": gate.outcome,
+            "reasons": gate.reasons,
+            "decided_at": gate.decided_at,
+        })),
+        "project_id": project.id,
+        "campaign_id": campaign.id,
         "commit_sha": candidate.commit_sha,
         "tree_sha": candidate.tree_sha,
-        "base_commit": base_commit,
+        "base_commit": projection.base.commit,
+        "base_tree_sha": projection.base.tree,
         "changed_paths": changed_paths,
-        "changed_paths_truncated": changed_paths_truncated,
+        "changed_paths_truncated": projection.files_truncated,
         "diff_stat": diff_stat,
-        "source": "Core read-only Git diff summary; file bodies are not exposed",
+        "files": projection.files,
+        "returned_files": projection.returned_files,
+        "files_truncated": projection.files_truncated,
+        "total_additions": projection.total_additions,
+        "total_deletions": projection.total_deletions,
+        "patch_bytes": projection.patch_bytes,
+        "patch_truncated": projection.patch_truncated,
+        "source": projection.provenance,
     }))
     .into_response()
+}
+
+fn candidate_diff_error(
+    error: factory_native::candidate_diff::CandidateDiffError,
+    candidate_id: &str,
+) -> Response {
+    use factory_native::candidate_diff::CandidateDiffError;
+    let (status, kind, detail) = match &error {
+        CandidateDiffError::Invalid(message) => (
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+            Some(message.clone()),
+        ),
+        CandidateDiffError::NotFound => (StatusCode::CONFLICT, "REVISION_UNAVAILABLE", None),
+        CandidateDiffError::Stale => (StatusCode::CONFLICT, "STALE_IDENTITY", None),
+        CandidateDiffError::IdentityMismatch(message) => (
+            StatusCode::CONFLICT,
+            "IDENTITY_MISMATCH",
+            Some(message.clone()),
+        ),
+        CandidateDiffError::Git { .. } | CandidateDiffError::Io(_) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "UNAVAILABLE", None)
+        }
+    };
+    (
+        status,
+        Json(json!({
+            "error": "candidate diff projection is unavailable for the recorded revision",
+            "kind": kind,
+            "detail": detail,
+            "candidate_id": candidate_id,
+        })),
+    )
+        .into_response()
 }
 
 async fn cancel_campaign(
@@ -6705,12 +7585,16 @@ mod tests {
             "/office/overview",
             "/office/decisions",
             "/campaigns/missing/candidates/missing/diff",
+            "/campaigns/missing/candidates/missing/pull-request?number=1",
+            "/campaigns/missing/candidates/missing/pull-request/diff?number=1",
+            "/campaigns/missing/candidates/missing/pull-request/comments?number=1",
             "/model/calls/unresolved",
             "/provider/turn_reservations/budget",
             "/integrations/github",
             "/integrations/github/repositories",
             "/projects/missing/issues",
             "/projects/missing/issues/1",
+            "/projects/missing/github",
         ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
@@ -8500,6 +9384,258 @@ mod tests {
         assert_eq!(refs["baseCommit"], base_commit);
         assert_eq!(refs["head"], "main");
         assert_eq!(refs["refs"][0]["commit"], base_commit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn campaign_diff_and_pr_routes_bind_exact_candidate_and_project_binding() {
+        use sqlx::connection::Connection as SqlxConnection;
+        use sqlx_sqlite::{SqliteConnectOptions, SqliteConnection};
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-campaign-diff-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = root.join("repo");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(repository.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "base"]);
+        let base_commit = git(&["rev-parse", "HEAD"]);
+
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "project-key")
+            .await
+            .unwrap();
+        let action = db
+            .create_action_with_spec(
+                &project.id,
+                "Inspect the candidate.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "campaign-diff-action",
+                factory_native::db::ActionSpecInput {
+                    allowed_paths: &[],
+                    checks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        std::fs::write(
+            repository.join("src/main.rs"),
+            "fn main() {\n    println!(\"changed\");\n}\n",
+        )
+        .unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "candidate"]);
+        let candidate_commit = git(&["rev-parse", "HEAD"]);
+        let candidate_tree = git(&["rev-parse", &format!("{candidate_commit}^{{tree}}")]);
+        db.bind_project_github(
+            &project.id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: "acme",
+                repo: "widgets",
+                default_branch: "main",
+            },
+            "tester",
+        )
+        .await
+        .unwrap();
+        let options = SqliteConnectOptions::new().filename(&path);
+        let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+        for statement in [
+            "INSERT INTO campaigns(id,action_id,status,created_at) VALUES ('campaign-diff','<action>','AUTHORIZED','2026-10-28T10:00:00Z')",
+            "INSERT INTO runs(id,campaign_id,status,created_at) VALUES ('run-diff','campaign-diff','SUCCEEDED','2026-10-28T10:00:00Z')",
+            "INSERT INTO attempts(id,run_id,status,created_at,sandbox_ready) VALUES ('attempt-diff','run-diff','SUCCEEDED','2026-10-28T10:00:00Z',1)",
+            "INSERT INTO candidates(id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at) VALUES ('candidate-diff','attempt-diff','<spec>','<commit>','<tree>','worker-1','2026-10-28T10:01:00Z')",
+        ] {
+            let statement = statement
+                .replace("<action>", &action.id)
+                .replace("<spec>", &action.spec_sha256)
+                .replace("<commit>", &candidate_commit)
+                .replace("<tree>", &candidate_tree);
+            sqlx::query::query(&statement)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        drop(connection);
+
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+        let authorized = |method: &str, uri: &str, body: Option<Value>| {
+            let builder = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .header("content-type", "application/json");
+            builder
+                .body(match body {
+                    Some(body) => axum::body::Body::from(body.to_string()),
+                    None => axum::body::Body::empty(),
+                })
+                .unwrap()
+        };
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/diff",
+                None,
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let diff: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(diff["base_commit"], base_commit);
+        assert_eq!(diff["commit_sha"], candidate_commit);
+        assert_eq!(diff["candidate"]["commit_sha"], candidate_commit);
+        assert_eq!(diff["gate"], Value::Null);
+        assert_eq!(diff["files"][0]["path"], "src/main.rs");
+        assert_eq!(diff["files"][0]["status"], "MODIFIED");
+        assert_eq!(diff["files"][0]["additions"], 3);
+        assert_eq!(diff["files"][0]["deletions"], 1);
+        assert!(
+            diff["files"][0]["patch"]
+                .as_str()
+                .unwrap()
+                .contains("+    println!(\"changed\");")
+        );
+        assert_eq!(diff["returned_files"], 1);
+        assert_eq!(diff["files_truncated"], false);
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                &format!("/projects/{}/github", project.id),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let binding: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(binding["binding"]["repo_full_name"], "acme/widgets");
+        assert_eq!(binding["binding"]["default_branch"], "main");
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "GET",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request?number=42",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let missing: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["error"], "GitHub is not connected");
+
+        let response = router
+            .clone()
+            .oneshot(authorized(
+                "POST",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request/merge",
+                Some(json!({
+                    "number": 42,
+                    "expected_head_sha": candidate_commit,
+                    "merge_method": "squash",
+                    "confirmed": false,
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let unconfirmed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(unconfirmed["kind"], "CONFIRMATION_REQUIRED");
+
+        let response = router
+            .oneshot(authorized(
+                "POST",
+                "/campaigns/campaign-diff/candidates/candidate-diff/pull-request/merge",
+                Some(json!({
+                    "number": 42,
+                    "expected_head_sha": "c".repeat(40),
+                    "merge_method": "squash",
+                    "confirmed": true,
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let mismatch: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(mismatch["kind"], "CANDIDATE_MISMATCH");
+        assert_eq!(mismatch["candidate_commit_sha"], candidate_commit);
 
         let _ = std::fs::remove_dir_all(root);
     }
