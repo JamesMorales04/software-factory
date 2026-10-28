@@ -1326,8 +1326,12 @@ export const coreApi = {
     ),
   health: () => request<Health>("/health"),
   listProjects: () => request<Project[]>("/projects"),
-  listExecutionProfiles: () =>
-    request<ExecutionProfile[]>("/execution-profiles"),
+  listExecutionProfiles: async () => {
+    const response = await request<{ profiles: ExecutionProfile[] }>(
+      "/execution-profiles",
+    );
+    return response.profiles;
+  },
   getProjectExecutionProfile: (projectId: string) =>
     request<ProjectExecutionProfile>(
       `/projects/${encodeURIComponent(projectId)}/execution-profile`,
