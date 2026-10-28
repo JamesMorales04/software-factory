@@ -2053,6 +2053,7 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/container-native-compose-2026-10-26.json
+    - docs/evidence/personal-access-auth-2026-10-28.json
     live_agent:
     - docs/evidence/container-native-live-uat-certification-manifest.json
     uat: []
