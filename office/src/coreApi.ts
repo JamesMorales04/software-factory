@@ -880,9 +880,9 @@ export interface SetupStatus {
 export interface DeviceSession {
   id: string;
   name: string;
-  createdAt: string;
-  lastActivityAt: string;
-  expiresAt: string;
+  createdAt: string | number;
+  lastActivityAt: string | number;
+  expiresAt: string | number;
 }
 
 export interface AuthSession {
@@ -911,15 +911,21 @@ export interface DeviceSessionView extends DeviceSession {
 export interface DeviceChallenge {
   challengeId: string;
   verificationCode: string;
-  expiresAt: string;
+  expiresAt: string | number;
 }
 
 export interface DeviceClaim {
   deviceId: string;
   verificationCode: string;
   status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | string;
-  expiresAt: string;
+  expiresAt: string | number;
   pollToken: string;
+}
+
+export interface DeviceClaimPoll {
+  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | string;
+  verificationCode?: string;
+  expiresAt?: string | number;
 }
 
 let csrfToken: string | null = null;
@@ -1024,12 +1030,7 @@ async function accessRequest<T>(
     );
   }
   if (response.status === 204) return undefined as T;
-  const body = (await response.json()) as T;
-  if (path.endsWith("/poll")) {
-    const session = body as AuthSession;
-    if (session.authenticated) setAuthSession(session);
-  }
-  return body;
+  return (await response.json()) as T;
 }
 
 async function authPost(path: string): Promise<void> {
@@ -1142,7 +1143,7 @@ export const coreApi = {
       },
     ),
   pollDeviceClaim: (challengeId: string, pollToken: string) =>
-    accessRequest<AuthSession>(
+    accessRequest<DeviceClaimPoll>(
       `/auth/device-claims/${encodeURIComponent(challengeId)}/poll`,
       { method: "POST", body: JSON.stringify({ pollToken }) },
     ),

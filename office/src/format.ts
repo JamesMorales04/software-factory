@@ -1,4 +1,4 @@
-export function formatTimestamp(value: string): string {
+export function formatTimestamp(value: string | number): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
 }

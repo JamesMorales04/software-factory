@@ -30,7 +30,7 @@ export function DevicePairClaim() {
         .pollDeviceClaim(challengeId, claim.pollToken)
         .then((result) => {
           if (!active) return;
-          if (result.authenticated) {
+          if (result.status === "APPROVED") {
             window.location.assign("/#/");
             return;
           }
