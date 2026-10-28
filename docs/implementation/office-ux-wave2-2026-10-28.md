@@ -301,6 +301,19 @@ campaign.
   restart persistence `true`). See
   [the Compose evidence](../evidence/office-ux-compose-2026-10-28.md).
 
+### Independent review (2026-10-28)
+
+Codex GPT-6.1-Sol returned **BLOCK for campaign completion** with one remaining
+implementation blocker: there is no single durable request/Campaign budget
+envelope shared by Lead assessment, semantic review and implementation. All
+other High/Medium findings were repaired and re-checked. Codex GPT-6-Luna
+returned **APPROVE WITH CONDITIONS**; its parity/overclaim condition is closed.
+Neither reviewer performed independent runtime acceptance, live inference or
+GitHub write/merge. See
+[the independent review record](office-ux-wave2-independent-review-2026-10-28.md).
+GitHub reports `main` is **not protected** (HTTP 404); no promotion is possible
+without owner authorization and the required protected review.
+
 ### Honest limits
 
 - **Live provider inference is BLOCKED / NOT_TESTED.** No paid credential or
