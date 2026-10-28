@@ -64,6 +64,7 @@ const summary: ProjectSummary = {
       repo: "widgets",
       repo_full_name: "acme/widgets",
       default_branch: "main",
+      repository_github_id: null,
       bound_at: "2026-10-27T10:00:00Z",
       updated_at: "2026-10-27T10:00:00Z",
     },

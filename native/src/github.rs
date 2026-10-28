@@ -167,6 +167,7 @@ pub struct AuthenticatedUser {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GitHubRepository {
+    pub id: Option<i64>,
     pub full_name: String,
     pub private: bool,
     pub default_branch: String,
@@ -213,6 +214,8 @@ pub struct GitHubIssue {
     pub state_reason: Option<String>,
     pub labels: Vec<GitHubLabel>,
     pub author: Option<String>,
+    pub author_id: Option<i64>,
+    pub author_association: Option<String>,
     pub html_url: String,
     pub comments: u32,
     pub created_at: String,
@@ -224,6 +227,7 @@ impl GitHubIssue {
     pub fn content_hash(&self) -> String {
         let payload = serde_json::json!({
             "number": self.number,
+            "github_id": self.github_id,
             "title": self.title,
             "body": self.body,
             "body_truncated": self.body_truncated,
@@ -231,6 +235,8 @@ impl GitHubIssue {
             "state_reason": self.state_reason,
             "labels": self.labels,
             "author": self.author,
+            "author_id": self.author_id,
+            "author_association": self.author_association,
             "html_url": self.html_url,
             "comments": self.comments,
             "created_at": self.created_at,
@@ -510,6 +516,7 @@ impl GitHubClient {
                     continue;
                 }
                 repositories.push(GitHubRepository {
+                    id: item.id.filter(|id| *id > 0),
                     full_name: item.full_name,
                     private: item.private,
                     default_branch,
@@ -1094,6 +1101,38 @@ impl GitHubClient {
         })
     }
 
+    /// Fetch one exact issue for the pre-proposal freshness check. Pull
+    /// requests are refused because they are not eligible issue intake.
+    pub async fn get_issue(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<GitHubIssue, GitHubError> {
+        validate_token(token)?;
+        validate_repo_coordinates(owner, repo)?;
+        if number == 0 || number > i64::MAX as u64 {
+            return Err(GitHubError::Invalid(
+                "GitHub issue number is outside the supported bound".into(),
+            ));
+        }
+        let request = self
+            .client
+            .get(format!(
+                "{}/repos/{owner}/{repo}/issues/{number}",
+                self.base_url
+            ))
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json");
+        let response = self.execute(request, token).await?;
+        let raw: RawIssue = parse_json(&response.body, "issue")?;
+        if raw.pull_request.is_some() {
+            return Err(GitHubError::NotFound);
+        }
+        raw.into_issue()
+            .ok_or_else(|| GitHubError::InvalidResponse("issue fields were invalid".into()))
+    }
+
     async fn execute(
         &self,
         request: reqwest::RequestBuilder,
@@ -1403,11 +1442,15 @@ fn clean_body(value: &str) -> String {
 
 #[derive(serde::Deserialize)]
 struct RawUser {
+    #[serde(default)]
+    id: Option<i64>,
     login: String,
 }
 
 #[derive(serde::Deserialize)]
 struct RawRepository {
+    #[serde(default)]
+    id: Option<i64>,
     full_name: String,
     #[serde(default)]
     private: bool,
@@ -1477,6 +1520,8 @@ struct RawIssue {
     #[serde(default)]
     user: Option<RawUser>,
     #[serde(default)]
+    author_association: Option<String>,
+    #[serde(default)]
     html_url: String,
     #[serde(default)]
     comments: u32,
@@ -1512,6 +1557,15 @@ impl RawIssue {
         let updated_at = normalize_timestamp(&self.updated_at)?;
         let closed_at = self.closed_at.as_deref().and_then(normalize_timestamp);
         let (body, body_truncated) = bounded_body(self.body.as_deref().unwrap_or(""));
+        let author_id = self
+            .user
+            .as_ref()
+            .and_then(|user| user.id)
+            .filter(|id| *id > 0);
+        let author = self
+            .user
+            .map(|user| bounded(&clean_single_line(&user.login), 255))
+            .filter(|login| !login.is_empty());
         let labels = self
             .labels
             .into_iter()
@@ -1540,10 +1594,12 @@ impl RawIssue {
                 .map(|reason| bounded(&clean_single_line(&reason), 64))
                 .filter(|reason| !reason.is_empty()),
             labels,
-            author: self
-                .user
-                .map(|user| bounded(&clean_single_line(&user.login), 255))
-                .filter(|login| !login.is_empty()),
+            author,
+            author_id,
+            author_association: self
+                .author_association
+                .map(|association| bounded(&clean_single_line(&association), 64))
+                .filter(|association| !association.is_empty()),
             html_url: safe_https_url(&self.html_url),
             comments: self.comments,
             created_at,
@@ -2099,7 +2155,8 @@ mod tests {
             "body": format!("Body {number}"),
             "state": "open",
             "labels": [{"name": "bug", "color": "ff0000"}],
-            "user": {"login": "octo"},
+            "user": {"id": 7, "login": "octo"},
+            "author_association": "MEMBER",
             "html_url": format!("https://github.com/acme/widgets/issues/{number}"),
             "comments": 0,
             "created_at": "2026-10-01T00:00:00Z",
@@ -2113,6 +2170,31 @@ mod tests {
         honor_etag: bool,
         seen_if_none_match: Arc<Mutex<Vec<Option<String>>>>,
         token_seen: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    async fn single_issue_handler(
+        State(fake): State<IssueFake>,
+        axum::extract::Path((_owner, _repo, number)): axum::extract::Path<(String, String, u64)>,
+    ) -> Response {
+        fake.token_seen.lock().unwrap().push(
+            axum::http::HeaderMap::new()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        );
+        if number == 999 {
+            return axum::Json(serde_json::json!({
+                "id": 10999,
+                "number": 999,
+                "title": "PR",
+                "state": "open",
+                "pull_request": {"url": "https://api.github.com/pulls/999"},
+                "created_at": "2026-10-01T00:00:00Z",
+                "updated_at": "2026-10-02T00:00:00Z"
+            }))
+            .into_response();
+        }
+        axum::Json(issue(number)).into_response()
     }
 
     async fn issue_handler(
@@ -2173,6 +2255,10 @@ mod tests {
         };
         let app = Router::new()
             .route("/repos/{owner}/{repo}/issues", get(issue_handler))
+            .route(
+                "/repos/{owner}/{repo}/issues/{number}",
+                get(single_issue_handler),
+            )
             .with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -2194,6 +2280,22 @@ mod tests {
             last_auth.lock().unwrap().as_deref(),
             Some("Bearer ghp_test_token_1234567890")
         );
+    }
+
+    #[tokio::test]
+    async fn fetches_one_exact_issue_and_refuses_pull_requests() {
+        let (url, _fake) = issue_server(true).await;
+        let client = GitHubClient::with_base_url(&url, true).unwrap();
+        let issue = client.get_issue(TOKEN, "acme", "widgets", 5).await.unwrap();
+        assert_eq!(issue.number, 5);
+        assert_eq!(issue.author_id, Some(7));
+        assert_eq!(issue.author_association.as_deref(), Some("MEMBER"));
+        assert_eq!(issue.content_hash().len(), 64);
+        let error = client
+            .get_issue(TOKEN, "acme", "widgets", 999)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, GitHubError::NotFound));
     }
 
     #[tokio::test]

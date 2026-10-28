@@ -19,10 +19,12 @@ import {
   type GitHubIssueSummary,
   type GitHubRepositoryList,
   type GitHubSyncState,
+  type IssueIntakeState,
   type Project,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { IssueIntakePanel } from "./IssueIntakePanel";
 import "./issues.css";
 
 const PAGE_SIZE = 25;
@@ -116,6 +118,12 @@ export function Issues() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<GitHubSyncState | null>(null);
+  const [intake, setIntake] = useState<IssueIntakeState | null>(null);
+  const [intakeLoading, setIntakeLoading] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
+  const [selectedIssues, setSelectedIssues] = useState<
+    Record<number, GitHubIssueSummary>
+  >({});
   const [repositories, setRepositories] = useState<GitHubRepositoryList | null>(
     null,
   );
@@ -191,6 +199,9 @@ export function Issues() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: projectId is an invalidation key for Project-scoped UI state.
   useEffect(() => {
     setLastSync(null);
+    setIntake(null);
+    setIntakeError(null);
+    setSelectedIssues({});
     setIssues(null);
     setIssuesError(null);
     setRepositories(null);
@@ -244,6 +255,36 @@ export function Issues() {
       active = false;
     };
   }, [projectId, stateFilter, labelFilter, appliedQuery, offset, refresh, t]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is an explicit reload token.
+  useEffect(() => {
+    if (!projectId) {
+      setIntake(null);
+      setIntakeError(null);
+      return;
+    }
+    let active = true;
+    setIntakeLoading(true);
+    setIntakeError(null);
+    coreApi
+      .getIssueIntake(projectId)
+      .then((next) => {
+        if (active) setIntake(next);
+      })
+      .catch((cause) => {
+        if (active) {
+          setIntakeError(
+            message(cause, "Failed to load the issue-intake policy."),
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setIntakeLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId, refresh]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is an explicit reload token.
   useEffect(() => {
@@ -447,10 +488,14 @@ export function Issues() {
     setActionError(null);
     setNotice(null);
     try {
+      const selectedRepository = repositories?.repositories.find(
+        (repository) => repository.full_name === repositoryPick,
+      );
       const result = await coreApi.bindProjectGitHub(projectId, {
         owner: bindingOwner.trim(),
         repo: bindingRepo.trim(),
         default_branch: bindingBranch.trim(),
+        repository_github_id: selectedRepository?.id ?? null,
       });
       setLastSync(result.sync_state);
       setBindingOpen(false);
@@ -516,6 +561,17 @@ export function Issues() {
     connection?.configured === true &&
     busy === null &&
     !backoffActive;
+  function toggleIssueSelection(issue: GitHubIssueSummary) {
+    setSelectedIssues((current) => {
+      const next = { ...current };
+      if (next[issue.number]) delete next[issue.number];
+      else next[issue.number] = issue;
+      return next;
+    });
+  }
+
+  const selectedList = Object.values(selectedIssues);
+  const intakeEnabled = intake?.policy?.enabled === true;
   const total = issues?.total ?? 0;
   const showingFrom = total === 0 ? 0 : offset + 1;
   const showingTo = Math.min(offset + PAGE_SIZE, total);
@@ -1050,6 +1106,11 @@ export function Issues() {
                   >
                     <thead>
                       <tr>
+                        {intakeEnabled && (
+                          <th scope="col" className="issue-intake-check">
+                            {t("issues.intake.select")}
+                          </th>
+                        )}
                         <th scope="col">{t("issues.table.number")}</th>
                         <th scope="col">{t("issues.table.title")}</th>
                         <th scope="col">{t("issues.table.state")}</th>
@@ -1068,6 +1129,20 @@ export function Issues() {
                               : undefined
                           }
                         >
+                          {intakeEnabled && (
+                            <td className="issue-intake-check">
+                              <input
+                                type="checkbox"
+                                aria-label={t("issues.intake.selectIssue", {
+                                  number: item.number,
+                                })}
+                                checked={
+                                  selectedIssues[item.number] !== undefined
+                                }
+                                onChange={() => toggleIssueSelection(item)}
+                              />
+                            </td>
+                          )}
                           <td
                             className="mono"
                             data-label={t("issues.table.number")}
@@ -1141,6 +1216,20 @@ export function Issues() {
           </>
         )}
       </Panel>
+
+      {projectId !== "" && (
+        <IssueIntakePanel
+          projectId={projectId}
+          binding={binding}
+          connectionConfigured={connection?.configured === true}
+          state={intake}
+          loading={intakeLoading}
+          loadError={intakeError}
+          selected={selectedList}
+          onRefresh={() => setRefresh((value) => value + 1)}
+          onSelectionClear={() => setSelectedIssues({})}
+        />
+      )}
 
       {issueNumber !== "" && (
         <Panel className="issues-panel issues-detail">

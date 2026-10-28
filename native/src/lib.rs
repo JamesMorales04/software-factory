@@ -9,6 +9,7 @@ pub mod execution_profile;
 pub mod github;
 pub mod github_sync;
 pub mod intake;
+pub mod issue_intake;
 pub mod lead;
 pub mod lead_model;
 pub mod model_gateway;

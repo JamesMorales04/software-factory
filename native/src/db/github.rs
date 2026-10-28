@@ -69,6 +69,7 @@ pub struct ProjectGitHubBinding {
     pub repo: String,
     pub repo_full_name: String,
     pub default_branch: String,
+    pub repository_github_id: Option<i64>,
     pub bound_at: String,
     pub updated_at: String,
 }
@@ -78,6 +79,7 @@ pub struct NewProjectGitHubBinding<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
     pub default_branch: &'a str,
+    pub repository_github_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -104,22 +106,27 @@ pub struct GitHubSyncStateRecord {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GitHubIssueSummary {
     pub number: u64,
+    pub github_id: i64,
     pub title: String,
     pub state: String,
     pub state_reason: Option<String>,
     pub labels: Vec<GitHubLabel>,
     pub author: Option<String>,
+    pub author_id: Option<i64>,
+    pub author_association: Option<String>,
     pub html_url: String,
     pub comments: u32,
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
     pub synced_at: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GitHubIssueDetail {
     pub number: u64,
+    pub github_id: i64,
     pub title: String,
     pub body: String,
     pub body_truncated: bool,
@@ -127,12 +134,15 @@ pub struct GitHubIssueDetail {
     pub state_reason: Option<String>,
     pub labels: Vec<GitHubLabel>,
     pub author: Option<String>,
+    pub author_id: Option<i64>,
+    pub author_association: Option<String>,
     pub html_url: String,
     pub comments: u32,
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
     pub synced_at: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -490,12 +500,14 @@ impl super::Database {
         .unwrap_or_else(|| now.clone());
         sqlx::query::query(
             "INSERT INTO project_github_bindings
-             (project_id,owner,repo,repo_full_name,default_branch,bound_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             (project_id,owner,repo,repo_full_name,default_branch,repository_github_id,
+              bound_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(project_id) DO UPDATE SET
                owner=excluded.owner, repo=excluded.repo,
                repo_full_name=excluded.repo_full_name,
                default_branch=excluded.default_branch,
+               repository_github_id=excluded.repository_github_id,
                updated_at=excluded.updated_at",
         )
         .bind(project_id)
@@ -503,6 +515,7 @@ impl super::Database {
         .bind(input.repo)
         .bind(&repo_full_name)
         .bind(input.default_branch)
+        .bind(input.repository_github_id.filter(|id| *id > 0))
         .bind(&bound_at)
         .bind(&now)
         .execute(&mut *transaction)
@@ -608,6 +621,12 @@ impl super::Database {
             .iter()
             .filter_map(|row| row.try_get::<i64, _>("number").ok())
             .collect();
+        let repository_github_id: Option<i64> = sqlx::query_scalar::query_scalar(
+            "SELECT repository_github_id FROM project_github_bindings WHERE project_id=?1",
+        )
+        .bind(project_id)
+        .fetch_one(&mut *transaction)
+        .await?;
         let now = Utc::now().to_rfc3339();
         let sync_mark = Uuid::new_v4().to_string();
         let mut created = 0u32;
@@ -625,18 +644,24 @@ impl super::Database {
             sqlx::query::query(
                 "INSERT INTO github_issues
                  (project_id,repo_full_name,number,github_id,title,body,body_truncated,state,
-                  state_reason,labels_json,author,html_url,comments,created_at,updated_at,
-                  closed_at,synced_at,sync_mark,content_hash)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                  state_reason,labels_json,author,author_id,author_association,html_url,comments,
+                  created_at,updated_at,closed_at,synced_at,sync_mark,content_hash,
+                  repository_github_id,is_pull_request)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,
+                         ?19,?20,?21,?22,0)
                  ON CONFLICT(project_id,repo_full_name,number) DO UPDATE SET
                    github_id=excluded.github_id, title=excluded.title, body=excluded.body,
                    body_truncated=excluded.body_truncated, state=excluded.state,
                    state_reason=excluded.state_reason, labels_json=excluded.labels_json,
-                   author=excluded.author, html_url=excluded.html_url,
+                   author=excluded.author, author_id=excluded.author_id,
+                   author_association=excluded.author_association,
+                   html_url=excluded.html_url,
                    comments=excluded.comments, created_at=excluded.created_at,
                    updated_at=excluded.updated_at, closed_at=excluded.closed_at,
                    synced_at=excluded.synced_at, sync_mark=excluded.sync_mark,
-                   content_hash=excluded.content_hash",
+                   content_hash=excluded.content_hash,
+                   repository_github_id=excluded.repository_github_id,
+                   is_pull_request=0",
             )
             .bind(project_id)
             .bind(repo_full_name)
@@ -649,6 +674,8 @@ impl super::Database {
             .bind(&issue.state_reason)
             .bind(&labels)
             .bind(&issue.author)
+            .bind(issue.author_id)
+            .bind(&issue.author_association)
             .bind(&issue.html_url)
             .bind(i64::from(issue.comments))
             .bind(&issue.created_at)
@@ -657,6 +684,7 @@ impl super::Database {
             .bind(&now)
             .bind(&sync_mark)
             .bind(issue.content_hash())
+            .bind(repository_github_id)
             .execute(&mut *transaction)
             .await?;
         }
@@ -884,8 +912,9 @@ impl super::Database {
             parameter += 1;
         }
         let list_sql = format!(
-            "SELECT number,title,state,state_reason,labels_json,author,html_url,comments,
-                    created_at,updated_at,closed_at,synced_at
+            "SELECT number,github_id,title,state,state_reason,labels_json,author,author_id,
+                    author_association,html_url,comments,created_at,updated_at,closed_at,
+                    synced_at,content_hash
              FROM github_issues WHERE {where_clause}
              ORDER BY updated_at DESC, number DESC LIMIT ?{parameter} OFFSET ?{}",
             parameter + 1
@@ -953,8 +982,9 @@ impl super::Database {
         let binding = self.project_github_binding(project_id).await?;
         let number = number as i64;
         let row = sqlx::query::query(
-            "SELECT number,title,body,body_truncated,state,state_reason,labels_json,author,
-                    html_url,comments,created_at,updated_at,closed_at,synced_at
+            "SELECT number,github_id,title,body,body_truncated,state,state_reason,labels_json,
+                    author,author_id,author_association,html_url,comments,created_at,updated_at,
+                    closed_at,synced_at,content_hash
              FROM github_issues
              WHERE project_id=?1 AND repo_full_name=?2 AND number=?3",
         )
@@ -1110,7 +1140,8 @@ async fn load_project_github_binding(
     project_id: &str,
 ) -> Result<ProjectGitHubBinding, Error> {
     let row = sqlx::query::query(
-        "SELECT project_id,owner,repo,repo_full_name,default_branch,bound_at,updated_at
+        "SELECT project_id,owner,repo,repo_full_name,default_branch,repository_github_id,
+                bound_at,updated_at
          FROM project_github_bindings WHERE project_id=?1",
     )
     .bind(project_id)
@@ -1123,6 +1154,7 @@ async fn load_project_github_binding(
         repo: row.try_get("repo")?,
         repo_full_name: row.try_get("repo_full_name")?,
         default_branch: row.try_get("default_branch")?,
+        repository_github_id: row.try_get("repository_github_id")?,
         bound_at: row.try_get("bound_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -1194,23 +1226,28 @@ fn empty_sync_state(project_id: &str, repo_full_name: &str) -> GitHubSyncStateRe
 fn issue_summary_from_row(row: &SqliteRow) -> Result<GitHubIssueSummary, Error> {
     Ok(GitHubIssueSummary {
         number: row.try_get::<i64, _>("number")? as u64,
+        github_id: row.try_get("github_id")?,
         title: row.try_get("title")?,
         state: row.try_get("state")?,
         state_reason: row.try_get("state_reason")?,
         labels: parse_labels(row.try_get("labels_json")?)?,
         author: row.try_get("author")?,
+        author_id: row.try_get("author_id")?,
+        author_association: row.try_get("author_association")?,
         html_url: row.try_get("html_url")?,
         comments: row.try_get::<i64, _>("comments")? as u32,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         closed_at: row.try_get("closed_at")?,
         synced_at: row.try_get("synced_at")?,
+        content_hash: row.try_get("content_hash")?,
     })
 }
 
 fn issue_detail_from_row(row: &SqliteRow) -> Result<GitHubIssueDetail, Error> {
     Ok(GitHubIssueDetail {
         number: row.try_get::<i64, _>("number")? as u64,
+        github_id: row.try_get("github_id")?,
         title: row.try_get("title")?,
         body: row.try_get("body")?,
         body_truncated: row.try_get("body_truncated")?,
@@ -1218,12 +1255,15 @@ fn issue_detail_from_row(row: &SqliteRow) -> Result<GitHubIssueDetail, Error> {
         state_reason: row.try_get("state_reason")?,
         labels: parse_labels(row.try_get("labels_json")?)?,
         author: row.try_get("author")?,
+        author_id: row.try_get("author_id")?,
+        author_association: row.try_get("author_association")?,
         html_url: row.try_get("html_url")?,
         comments: row.try_get::<i64, _>("comments")? as u32,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         closed_at: row.try_get("closed_at")?,
         synced_at: row.try_get("synced_at")?,
+        content_hash: row.try_get("content_hash")?,
     })
 }
 

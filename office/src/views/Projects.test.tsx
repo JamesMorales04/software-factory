@@ -79,6 +79,7 @@ const connectedOptions: ProjectImportOptions = {
 const privateRepository: GitHubRepositoryList = {
   repositories: [
     {
+      id: 42,
       full_name: "acme/private-widgets",
       private: true,
       default_branch: "develop",

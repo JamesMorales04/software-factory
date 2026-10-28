@@ -1082,6 +1082,8 @@ export const es: Catalog = {
   "issues.list.emptyRepoDescription":
     "La última sincronización correcta no encontró incidencias en este repositorio.",
   "issues.table.label": "Incidencias sincronizadas",
+  "issues.intake.select": "Seleccionar",
+  "issues.intake.selectIssue": "Seleccionar incidencia n.º {number}",
   "issues.table.number": "#",
   "issues.table.title": "Título",
   "issues.table.state": "Estado",

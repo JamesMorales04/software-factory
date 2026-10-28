@@ -9,6 +9,7 @@ import {
   type GitHubIssueList,
   type GitHubRepositoryList,
   type GitHubSyncState,
+  type IssueIntakeState,
   type Project,
   type ProjectGitHubBinding,
 } from "../coreApi";
@@ -25,6 +26,13 @@ const mocks = vi.hoisted(() => ({
   syncProjectIssues: vi.fn(),
   listProjectIssues: vi.fn(),
   getProjectIssue: vi.fn(),
+  getIssueIntake: vi.fn(),
+  listExecutionProfiles: vi.fn(),
+  getProjectConfig: vi.fn(),
+  configureIssueIntakePolicy: vi.fn(),
+  disableIssueIntakePolicy: vi.fn(),
+  createIssueIntakeBatch: vi.fn(),
+  revokeIssueIntakeBatch: vi.fn(),
 }));
 
 vi.mock("../coreApi", () => ({
@@ -53,6 +61,7 @@ const binding: ProjectGitHubBinding = {
   repo: "widgets",
   repo_full_name: "acme/widgets",
   default_branch: "main",
+  repository_github_id: 42,
   bound_at: "2026-10-27T11:00:00Z",
   updated_at: "2026-10-27T11:00:00Z",
 };
@@ -95,36 +104,66 @@ const syncState: GitHubSyncState = {
   updated_at: "2026-10-27T12:00:00Z",
 };
 
+const intakeOff: IssueIntakeState = {
+  project_id: "project-1",
+  enabled: false,
+  policy: null,
+  policy_history: [],
+  batches: [],
+  queue: [],
+  audit: [],
+  binding,
+  connection_enabled: true,
+  connection_revision: 2,
+  limits: {
+    max_batch_issues: 20,
+    max_concurrent: 1,
+    max_queue_attempts: 3,
+    queue_lease_seconds: 45,
+    autonomous_start: false,
+    campaign_start: false,
+    provider_calls: false,
+  },
+};
+
 function issueList(overrides: Partial<GitHubIssueList> = {}): GitHubIssueList {
   return {
     items: [
       {
         number: 1,
+        github_id: 101,
         title: "Export CSV endpoint",
         state: "open",
         state_reason: null,
         labels: [{ name: "enhancement", color: "00ff00" }],
         author: "octo",
+        author_id: 7,
+        author_association: "MEMBER",
         html_url: "https://github.com/acme/widgets/issues/1",
         comments: 3,
         created_at: "2026-10-26T10:00:00Z",
         updated_at: "2026-10-27T09:00:00Z",
         closed_at: null,
         synced_at: "2026-10-27T12:00:00Z",
+        content_hash: "a".repeat(64),
       },
       {
         number: 2,
+        github_id: 102,
         title: "Flaky integration test",
         state: "open",
         state_reason: null,
         labels: [{ name: "bug", color: "ff0000" }],
         author: "maintainer",
+        author_id: 8,
+        author_association: "OWNER",
         html_url: "https://github.com/acme/widgets/issues/2",
         comments: 0,
         created_at: "2026-10-25T10:00:00Z",
         updated_at: "2026-10-26T09:00:00Z",
         closed_at: null,
         synced_at: "2026-10-27T12:00:00Z",
+        content_hash: "b".repeat(64),
       },
     ],
     total: 2,
@@ -172,6 +211,23 @@ beforeEach(() => {
   mocks.syncProjectIssues.mockReset().mockResolvedValue(syncState);
   mocks.listProjectIssues.mockReset().mockResolvedValue(issueList());
   mocks.getProjectIssue.mockReset().mockResolvedValue(detail);
+  mocks.getIssueIntake.mockReset().mockResolvedValue(intakeOff);
+  mocks.listExecutionProfiles.mockReset().mockResolvedValue({
+    profiles: [],
+    supportedRoutes: [],
+  });
+  mocks.getProjectConfig.mockReset().mockResolvedValue({
+    projectId: "project-1",
+    revision: 1,
+    configHash: "c".repeat(64),
+    repository: "https://github.com/acme/widgets.git",
+    baseCommit: "0123456789abcdef0123456789abcdef01234567",
+    allowedPaths: ["src"],
+    capabilities: ["repository-edit"],
+    qualityProfile: "GENERIC",
+    active: true,
+    updatedAt: "2026-10-27T10:00:00Z",
+  });
 });
 
 describe("Issues", () => {
@@ -399,6 +455,7 @@ describe("Issues", () => {
     const repos: GitHubRepositoryList = {
       repositories: [
         {
+          id: 77,
           full_name: "acme/private-widgets",
           private: true,
           default_branch: "develop",

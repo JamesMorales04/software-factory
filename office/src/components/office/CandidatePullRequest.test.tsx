@@ -40,6 +40,7 @@ const binding: ProjectGitHubBinding = {
   repo: "widgets",
   repo_full_name: "acme/widgets",
   default_branch: "main",
+  repository_github_id: null,
   bound_at: "2026-10-28T09:00:00Z",
   updated_at: "2026-10-28T09:00:00Z",
 };

@@ -1048,6 +1048,8 @@ export const en = {
   "issues.list.emptyRepoDescription":
     "The last successful sync found no issues in this repository.",
   "issues.table.label": "Synchronized issues",
+  "issues.intake.select": "Select",
+  "issues.intake.selectIssue": "Select issue #{number}",
   "issues.table.number": "#",
   "issues.table.title": "Title",
   "issues.table.state": "State",
