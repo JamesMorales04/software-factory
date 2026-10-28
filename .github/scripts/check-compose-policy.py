@@ -75,7 +75,7 @@ def tailscale_serve_config_errors(path: Path) -> list[str]:
     domain = "${TS_CERT_DOMAIN}:443"
     if serve.get("TCP") != {"443": {"HTTPS": True}}:
         errors.append("tailscale: Serve must expose HTTPS 443 only")
-    expected_web = {domain: {"Handlers": {"/": {"Proxy": "http://core:8765"}}}}
+    expected_web = {domain: {"Handlers": {"/": {"Proxy": "http://core:8768"}}}}
     if serve.get("Web") != expected_web:
         errors.append("tailscale: Serve must proxy only to Core on its private network")
     if serve.get("AllowFunnel") != {domain: False} or "Funnel" in serve:
@@ -366,6 +366,8 @@ def main(path: str) -> int:
         expected_core_networks = EXPECTED_NETWORKS["core"] | {"factory-office-private"}
         if set(services["core"].get("networks", {})) != expected_core_networks:
             fail("core: Tailscale mode must expose only its dedicated Office network")
+        if services["core"].get("environment", {}).get("FACTORY_OFFICE_ACCESS_BIND") != "0.0.0.0:8768":
+            fail("core: Tailscale mode must enable the restricted Office listener")
         if any(
             value is not None
             for value in (services["core"].get("networks") or {}).values()

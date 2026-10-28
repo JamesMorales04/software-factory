@@ -182,7 +182,7 @@ class ComposePolicyTests(unittest.TestCase):
         self.assertEqual(serve["TCP"], {"443": {"HTTPS": True}})
         self.assertEqual(
             serve["Web"]["${TS_CERT_DOMAIN}:443"]["Handlers"]["/"],
-            {"Proxy": "http://core:8765"},
+            {"Proxy": "http://core:8768"},
         )
         self.assertEqual(serve["AllowFunnel"], {"${TS_CERT_DOMAIN}:443": False})
         self.assertNotIn("Funnel", serve)
@@ -283,6 +283,12 @@ class ComposePolicyTests(unittest.TestCase):
                 "FACTORY_TAILSCALE_ORIGIN", "https://other-host.tail4a7adf.ts.net"
             ),
             "trusted and status origins must match",
+        )
+        self.assert_rejected(
+            lambda c: c["services"]["core"]["environment"].__setitem__(
+                "FACTORY_OFFICE_ACCESS_BIND", "0.0.0.0:8765"
+            ),
+            "restricted Office listener",
         )
         self.assert_rejected(
             lambda c: c["services"]["supervisor"]

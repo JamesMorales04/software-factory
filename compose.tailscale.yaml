@@ -5,6 +5,7 @@ services:
     environment:
       FACTORY_TRUSTED_ORIGINS: ${FACTORY_TRUSTED_ORIGINS:?Set FACTORY_TRUSTED_ORIGINS to the exact https://<node>.<tailnet>.ts.net origin}
       FACTORY_TAILSCALE_ORIGIN: ${FACTORY_TRUSTED_ORIGINS:?Set FACTORY_TRUSTED_ORIGINS to the exact https://<node>.<tailnet>.ts.net origin}
+      FACTORY_OFFICE_ACCESS_BIND: 0.0.0.0:8768
     networks:
       - factory-office-private
 

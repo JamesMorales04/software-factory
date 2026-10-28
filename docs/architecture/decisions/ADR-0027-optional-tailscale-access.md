@@ -37,7 +37,11 @@ The placement analysis is recorded in the
 Tailscale service joins two dedicated networks only:
 
 - `factory-office-private` is internal and contains only Core and Tailscale.
-  Tailscale Serve proxies HTTPS to Core's Office/API listener on this network.
+  Tailscale Serve proxies HTTPS to Core's dedicated restricted Office listener
+  on port 8768 on this network. That listener serves Office assets and an
+  explicit operator/auth route allowlist; Worker, Supervisor, verifier,
+  reviewer, and Quality Gate authority endpoints are absent even when their
+  role tokens are supplied.
 - `factory-tailscale-uplink` provides outbound tailnet connectivity and has no
   other Factory service members.
 

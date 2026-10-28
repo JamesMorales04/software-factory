@@ -309,6 +309,9 @@ separate uplink network containing only Tailscale. It does not mount a host
 runtime socket, join the Factory control/egress networks, publish its own host port,
 configure Funnel, or pass Factory/provider credentials to Tailscale. Core
 keeps its existing `127.0.0.1` publication for local access and recovery.
+Tailscale Serve forwards only to Core's restricted Office listener on container
+port 8768. The listener omits Worker, Supervisor, verifier, reviewer, and
+Quality Gate role/control routes; the port is not published on the host.
 The container exposes only Tailscale's sanitized `/healthz` process status on
 its private network interfaces for Core's Access & Devices projection. Metrics
 are disabled and the health port has no host publication; the network contains
