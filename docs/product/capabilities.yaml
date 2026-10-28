@@ -279,6 +279,7 @@ milestones:
   - CAP-050
   - CAP-051
   - CAP-052
+  - CAP-054
   exclusions:
   - Generic SaaS dashboard scope
   - invented backend capability or decorative actions

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-pairing-author-run",
-  "implementation_sha": "69d993fae5da85d46bd7d16092a2eec86b523078",
+  "implementation_sha": "51b46aa96102c8581f1dfbc3771e2db6e76c453b",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -67,8 +67,8 @@
   ],
   "rebase_provenance": {
     "tested_original_sha": "9afbb6f3620895c2815a91475b05b00d3b10b23a",
-    "rebased_sha": "69d993fae5da85d46bd7d16092a2eec86b523078",
-    "base_sha": "302534203f567b9e25f41d04fc5a37aab0e78c3f",
+    "rebased_sha": "51b46aa96102c8581f1dfbc3771e2db6e76c453b",
+    "base_sha": "d08ccd3bbdb796f6519f17ee0073d9d5e9b9478d",
     "content_equivalent": true
   }
 }
