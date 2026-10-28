@@ -108,6 +108,19 @@ the full lifecycle passed again at integration `6819442`:
 `cargo xtask e2e intake` passed. Still deterministic-fixture evidence, not live
 inference or independent acceptance.
 
+## Frozen Wave 2 candidate rerun
+
+At `cf42718` (all lanes merged, including the localized issue-intake panel),
+the full lifecycle passed again:
+
+```json
+{"ok":true,"request":"c2126918-e7da-4cee-bc8c-7d349e5d416a","campaign":"dcbd5560-f565-454a-93e3-ec724fea5398","profileRevision":"cc76f330-dad2-4f9b-af95-1f4c9ca0b011","planHash":"b983f69253480ec6bb59e9c7e3c4796da2e90373d0019b3ac23a41c09cc85521","mode":"DETERMINISTIC_FIXTURE","candidateId":"eedc42e3-f03b-4684-b647-48ac3f102208","candidateCommit":"cc3d594304df647db2e674f0ef1b4b80fd31dd9e","gate":"ACCEPTED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
+```
+
+The legacy Office journey also passed at this SHA (candidate
+`5d9508a81dd0f5102a0f47c8baf36f4ff6f091e5`, Gate `ACCEPTED`). This remains
+deterministic, author-run evidence; independent acceptance is a separate step.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
