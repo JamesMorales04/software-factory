@@ -6,6 +6,7 @@ import {
   CoreApiError,
   coreApi,
 } from "../../coreApi";
+import { useI18n } from "../../i18n";
 import { Button } from "../ui/Button";
 import { EmptyState, LoadingState } from "../ui/Surface";
 
@@ -15,27 +16,33 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function omissionLabel(file: CandidateFileDiff): string | null {
+function omissionLabel(
+  file: CandidateFileDiff,
+  t: ReturnType<typeof useI18n>["t"],
+): string | null {
   switch (file.omitted) {
     case "BINARY":
-      return "Binary file; Core does not render a text patch.";
+      return t("diff.omitted.binaryDescription");
     case "TOO_LARGE":
-      return "File exceeds Core's 512 KiB text bound; no patch is rendered.";
+      return t("diff.omitted.tooLargeDescription");
     case "NOT_A_FILE":
-      return "Symlink or gitlink; Core does not follow it.";
+      return t("diff.omitted.notAFileDescription");
     case "NON_UTF8":
-      return "Patch is not valid UTF-8; Core does not guess an encoding.";
+      return t("diff.omitted.nonUtf8Description");
     case "BUDGET":
-      return "Patch omitted because the total diff byte budget was reached.";
+      return t("diff.omitted.budgetDescription");
     default:
       return null;
   }
 }
 
-function statusLabel(status: CandidateFileDiff["status"]): string {
-  if (status === "ADDED") return "added";
-  if (status === "DELETED") return "deleted";
-  return "modified";
+function statusLabel(
+  status: CandidateFileDiff["status"],
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (status === "ADDED") return t("diff.status.added");
+  if (status === "DELETED") return t("diff.status.deleted");
+  return t("diff.status.modified");
 }
 
 function CopyButton({
@@ -47,6 +54,7 @@ function CopyButton({
   value: string;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [state, setState] = useState<"idle" | "copied" | "unavailable">("idle");
 
   async function copy() {
@@ -76,12 +84,10 @@ function CopyButton({
         ) : (
           <Copy size={14} aria-hidden="true" />
         )}
-        {state === "copied" ? "Copied" : "Copy"}
+        {state === "copied" ? t("diff.copy.copied") : t("diff.copy.copy")}
       </Button>
       <span className="muted" role="status" aria-live="polite">
-        {state === "unavailable"
-          ? "Clipboard unavailable in this browser context."
-          : ""}
+        {state === "unavailable" ? t("diff.copy.unavailable") : ""}
       </span>
     </span>
   );
@@ -108,6 +114,7 @@ function RevisionFact({
 }
 
 function DiffCode({ file, wrap }: { file: CandidateFileDiff; wrap: boolean }) {
+  const { t } = useI18n();
   const lines = useMemo(() => {
     const patch = file.patch ?? "";
     const projected: { text: string; offset: number }[] = [];
@@ -122,7 +129,7 @@ function DiffCode({ file, wrap }: { file: CandidateFileDiff; wrap: boolean }) {
   return (
     <section
       className={`diff-code-shell${wrap ? " diff-code-shell--wrap" : ""}`}
-      aria-label={`Unified diff for ${file.path}`}
+      aria-label={t("diff.unifiedAria", { path: file.path })}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable diff region must be focusable so its overflow can be scrolled from the keyboard.
       tabIndex={0}
     >
@@ -172,6 +179,7 @@ export function CandidateDiff({
   campaignId: string;
   candidateId: string;
 }) {
+  const { t } = useI18n();
   const [data, setData] = useState<CandidateDiffSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<string | null>(null);
@@ -204,12 +212,12 @@ export function CandidateDiff({
             : null;
         setErrorKind(body && typeof body.kind === "string" ? body.kind : null);
       } else {
-        setError("Failed to load the candidate diff.");
+        setError(t("diff.error.fallback"));
       }
     } finally {
       setBusy(false);
     }
-  }, [campaignId, candidateId]);
+  }, [campaignId, candidateId, t]);
 
   useEffect(() => {
     void load();
@@ -218,80 +226,82 @@ export function CandidateDiff({
   const selected =
     data?.files.find((file) => file.path === selectedPath) ?? null;
 
-  if (busy && !data)
-    return <LoadingState label="Loading candidate file diff…" />;
+  if (busy && !data) return <LoadingState label={t("diff.loading")} />;
   if (error) {
     return (
       <div className="ui-callout ui-callout--danger" role="alert">
-        <strong>Diff unavailable.</strong> {error}
+        <strong>{t("diff.error.title")}</strong> {error}
         {errorKind && <span className="muted"> ({errorKind})</span>}{" "}
         <Button size="sm" onClick={() => void load()}>
-          Retry
+          {t("common.retry")}
         </Button>
       </div>
     );
   }
-  if (!data) return <LoadingState label="Loading candidate file diff…" />;
+  if (!data) return <LoadingState label={t("diff.loading")} />;
 
   const omittedFiles = data.files.filter((file) => file.omitted).length;
-  const gateLabel = data.gate ? data.gate.outcome : "No Gate decision recorded";
+  const gateLabel = data.gate ? data.gate.outcome : t("diff.gate.noneRecorded");
 
   return (
     <div className="candidate-diff" data-testid="candidate-diff">
       <div className="diff-heading">
         <div>
           <h3>
-            <FileDiff size={17} aria-hidden="true" /> Changed files
+            <FileDiff size={17} aria-hidden="true" /> {t("diff.title")}
           </h3>
-          <p className="muted">
-            Exact frozen base to exact Candidate commit. Core reads Git objects;
-            it does not execute the Candidate.
-          </p>
+          <p className="muted">{t("diff.description")}</p>
         </div>
-        <section className="diff-totals" aria-label="Diff totals">
+        <section className="diff-totals" aria-label={t("diff.totals.aria")}>
           <span>
             <strong>{data.returned_files}</strong>{" "}
             {data.files_truncated
-              ? "shown"
+              ? t("diff.totals.shown")
               : data.returned_files === 1
-                ? "file"
-                : "files"}
+                ? t("diff.totals.file")
+                : t("diff.totals.files")}
           </span>
           <span className="diff-add">+{data.total_additions}</span>
           <span className="diff-del">−{data.total_deletions}</span>
-          <span className="muted">{formatBytes(data.patch_bytes)} patch</span>
+          <span className="muted">
+            {t("diff.totals.patch", {
+              size: formatBytes(data.patch_bytes),
+            })}
+          </span>
         </section>
       </div>
 
       <dl className="diff-revisions">
         <RevisionFact
-          label="Base commit"
+          label={t("diff.revision.base")}
           value={data.base_commit}
-          copyLabel="Copy base commit SHA"
+          copyLabel={t("diff.revision.copyBase")}
         />
         <RevisionFact
-          label="Candidate commit"
+          label={t("diff.revision.candidate")}
           value={data.commit_sha}
-          copyLabel="Copy candidate commit SHA"
+          copyLabel={t("diff.revision.copyCandidate")}
         />
         <RevisionFact
-          label="Candidate tree"
+          label={t("diff.revision.tree")}
           value={data.tree_sha}
-          copyLabel="Copy candidate tree SHA"
+          copyLabel={t("diff.revision.copyTree")}
         />
         <div className="diff-revision-fact">
-          <dt>Candidate</dt>
+          <dt>{t("diff.revision.candidateLabel")}</dt>
           <dd>
             <code title={data.candidate.id}>
               {data.candidate.id.slice(0, 12)}
             </code>{" "}
             <span className="muted">
-              implementer {data.candidate.implementer_id || "not recorded"}
+              {t("diff.revision.implementer", {
+                id: data.candidate.implementer_id || t("common.notRecorded"),
+              })}
             </span>
           </dd>
         </div>
         <div className="diff-revision-fact">
-          <dt>Gate identity</dt>
+          <dt>{t("diff.revision.gateIdentity")}</dt>
           <dd>
             <span
               className={`diff-gate diff-gate--${data.gate ? data.gate.outcome.toLowerCase() : "none"}`}
@@ -310,30 +320,31 @@ export function CandidateDiff({
 
       {data.files_truncated && (
         <div className="ui-callout ui-callout--attention" role="status">
-          Core returned only the first {data.returned_files} changed files. The
-          path list is truncated at the Core bound; no missing file is inferred.
+          {t("diff.truncated.files", { count: data.returned_files })}
         </div>
       )}
       {data.patch_truncated && (
         <div className="ui-callout ui-callout--attention" role="status">
-          At least one patch was truncated at Core's byte bound. The truncated
-          text is labelled per file.
+          {t("diff.truncated.patch")}
         </div>
       )}
 
       <p className="diff-stat">
-        <span className="muted">Git diff stat: </span>
-        <code>{data.diff_stat || "no diff stat recorded"}</code>
+        <span className="muted">{t("diff.gitStat")} </span>
+        <code>{data.diff_stat || t("diff.noDiffStat")}</code>
       </p>
 
       {data.files.length === 0 ? (
         <EmptyState
-          title="No changed files"
-          description="Core resolved both revisions but the candidate tree has no file difference from the recorded base."
+          title={t("diff.empty.title")}
+          description={t("diff.empty.description")}
         />
       ) : (
         <div className="diff-workspace">
-          <section className="diff-file-list" aria-label="Changed files">
+          <section
+            className="diff-file-list"
+            aria-label={t("diff.fileList.aria")}
+          >
             {data.files.map((file) => (
               <button
                 type="button"
@@ -345,7 +356,7 @@ export function CandidateDiff({
                 <span
                   className={`diff-status diff-status--${file.status.toLowerCase()}`}
                 >
-                  {statusLabel(file.status)}
+                  {statusLabel(file.status, t)}
                 </span>
                 <code className="diff-file-path">{file.path}</code>
                 <span className="diff-file-counts">
@@ -355,14 +366,14 @@ export function CandidateDiff({
                 {file.omitted && (
                   <span className="diff-omitted">
                     {file.omitted === "BINARY"
-                      ? "binary"
+                      ? t("diff.omitted.binary")
                       : file.omitted === "TOO_LARGE"
-                        ? "large"
+                        ? t("diff.omitted.large")
                         : file.omitted === "NOT_A_FILE"
-                          ? "not a file"
+                          ? t("diff.omitted.notAFile")
                           : file.omitted === "NON_UTF8"
-                            ? "non-UTF-8"
-                            : "budget"}
+                            ? t("diff.omitted.nonUtf8")
+                            : t("diff.omitted.budget")}
                   </span>
                 )}
               </button>
@@ -378,9 +389,12 @@ export function CandidateDiff({
                       <code>{selected.path}</code>
                     </h4>
                     <p className="muted">
-                      {statusLabel(selected.status)} · +{selected.additions} / −
-                      {selected.deletions} · mode {selected.oldMode} →{" "}
-                      {selected.newMode}
+                      {statusLabel(selected.status, t)} · +{selected.additions}{" "}
+                      / −{selected.deletions} ·{" "}
+                      {t("diff.viewer.mode", {
+                        oldMode: selected.oldMode,
+                        newMode: selected.newMode,
+                      })}
                     </p>
                   </div>
                   <div className="diff-viewer-actions">
@@ -390,11 +404,14 @@ export function CandidateDiff({
                         checked={wrap}
                         onChange={(event) => setWrap(event.target.checked)}
                       />
-                      <WrapText size={14} aria-hidden="true" /> Wrap lines
+                      <WrapText size={14} aria-hidden="true" />{" "}
+                      {t("diff.viewer.wrap")}
                     </label>
                     {selected.patch && (
                       <CopyButton
-                        label={`Copy patch for ${selected.path}`}
+                        label={t("diff.viewer.copyPatch", {
+                          path: selected.path,
+                        })}
                         value={selected.patch}
                       />
                     )}
@@ -404,24 +421,23 @@ export function CandidateDiff({
                   <>
                     {selected.patchTruncated && (
                       <p className="warning" role="status">
-                        Patch truncated at Core's byte bound. Only the shown
-                        lines are rendered.
+                        {t("diff.viewer.patchTruncated")}
                       </p>
                     )}
                     <DiffCode file={selected} wrap={wrap} />
                   </>
                 ) : (
                   <div className="diff-omitted-panel" role="status">
-                    <strong>No text patch.</strong>{" "}
-                    {omissionLabel(selected) ??
-                      "Core returned no patch for this file."}
+                    <strong>{t("diff.viewer.noPatchTitle")}</strong>{" "}
+                    {omissionLabel(selected, t) ??
+                      t("diff.viewer.noPatchDescription")}
                   </div>
                 )}
               </>
             ) : (
               <EmptyState
-                title="Select a changed file"
-                description="Choose a file from the changed-file list to read its bounded unified patch."
+                title={t("diff.select.title")}
+                description={t("diff.select.description")}
               />
             )}
           </div>
@@ -431,7 +447,7 @@ export function CandidateDiff({
       <p className="muted diff-provenance">
         {data.source}
         {omittedFiles > 0
-          ? ` · ${omittedFiles} file${omittedFiles === 1 ? "" : "s"} omitted a patch body`
+          ? ` · ${t("diff.provenance.omitted", { count: omittedFiles })}`
           : ""}
       </p>
     </div>

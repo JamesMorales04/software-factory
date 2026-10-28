@@ -7,6 +7,7 @@ import {
   type StandingDelegation,
 } from "../coreApi";
 import { formatTimestamp, shortId } from "../format";
+import { useI18n } from "../i18n";
 
 function split(value: string): string[] {
   return value
@@ -16,6 +17,7 @@ function split(value: string): string[] {
 }
 
 export function Delegations() {
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [delegations, setDelegations] = useState<StandingDelegation[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -67,7 +69,7 @@ export function Delegations() {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load delegations.",
+            : t("delegations.error.load"),
         );
       }
     });
@@ -78,7 +80,7 @@ export function Delegations() {
       active = false;
       clearInterval(timer);
     };
-  }, [load]);
+  }, [load, t]);
 
   async function onCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -86,13 +88,13 @@ export function Delegations() {
     setError(null);
     setNotice(null);
     try {
-      if (!projectId) throw new Error("Select a Project.");
+      if (!projectId) throw new Error(t("delegations.validation.project"));
       const id =
         newDelegationId.trim() ||
         `office-${new Date().toISOString().replace(/[:.]/g, "-")}`;
       const allowedPaths = split(paths);
       if (allowedPaths.length === 0)
-        throw new Error("At least one path is required.");
+        throw new Error(t("delegations.validation.paths"));
       const expiresAt = new Date(
         Date.now() + 24 * 60 * 60 * 1000,
       ).toISOString();
@@ -126,13 +128,16 @@ export function Delegations() {
       });
       key.current = newIdempotencyKey();
       setNotice(
-        `Delegation ${shortId(delegation.id)} created with revision ${delegation.revision}.`,
+        t("delegations.notice.created", {
+          id: shortId(delegation.id),
+          revision: delegation.revision,
+        }),
       );
       setNewDelegationId("");
       await load();
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Delegation creation failed.",
+        cause instanceof Error ? cause.message : t("delegations.error.create"),
       );
     } finally {
       setBusy(false);
@@ -140,16 +145,18 @@ export function Delegations() {
   }
 
   async function revoke(id: string) {
-    if (!window.confirm(`Revoke delegation ${id}?`)) return;
+    if (!window.confirm(t("delegations.confirm.revoke", { id }))) return;
     setBusy(true);
     setError(null);
     try {
       await coreApi.revokeDelegation(id);
-      setNotice(`Delegation ${shortId(id)} revoked.`);
+      setNotice(t("delegations.notice.revoked", { id: shortId(id) }));
       await load();
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError ? cause.message : "Revocation failed.",
+        cause instanceof CoreApiError
+          ? cause.message
+          : t("delegations.error.revoke"),
       );
     } finally {
       setBusy(false);
@@ -157,19 +164,16 @@ export function Delegations() {
   }
 
   return (
-    <div>
-      <h2>Delegations</h2>
-      <p className="muted">
-        A delegation is a scoped, revocable grant. It does not start work by
-        itself and autonomous execution defaults to disabled.
-      </p>
+    <div className="delegations-workspace">
+      <h2>{t("delegations.title")}</h2>
+      <p className="muted">{t("delegations.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
       <form className="create" onSubmit={(event) => void onCreate(event)}>
-        <h3>New delegation</h3>
+        <h3>{t("delegations.form.title")}</h3>
         <div className="grid-2">
           <label>
-            Project
+            {t("delegations.form.project")}
             <select
               value={projectId}
               onChange={(event) => setProjectId(event.target.value)}
@@ -182,15 +186,15 @@ export function Delegations() {
             </select>
           </label>
           <label>
-            Delegation ID (blank for generated)
+            {t("delegations.form.id")}
             <input
               value={newDelegationId}
               onChange={(event) => setNewDelegationId(event.target.value)}
-              placeholder="generated when blank"
+              placeholder={t("delegations.form.idPlaceholder")}
             />
           </label>
           <label>
-            Provider
+            {t("delegations.form.provider")}
             <select
               value={provider}
               onChange={(event) => setProvider(event.target.value)}
@@ -201,7 +205,7 @@ export function Delegations() {
             </select>
           </label>
           <label>
-            Model
+            {t("delegations.form.model")}
             <input
               value={model}
               onChange={(event) => setModel(event.target.value)}
@@ -209,7 +213,7 @@ export function Delegations() {
             />
           </label>
           <label>
-            Mode
+            {t("delegations.form.mode")}
             <input
               value={mode}
               onChange={(event) => setMode(event.target.value)}
@@ -217,7 +221,7 @@ export function Delegations() {
             />
           </label>
           <label>
-            Allowed paths (comma separated)
+            {t("delegations.form.paths")}
             <input
               value={paths}
               onChange={(event) => setPaths(event.target.value)}
@@ -225,83 +229,99 @@ export function Delegations() {
             />
           </label>
         </div>
-        <p className="muted">
-          Limits: 2 attempts, 16 sessions, 4 requests, 32 cumulative attempts,
-          300s per attempt, 24h expiry. R0/R1 only; R2/R3 require protected
-          approval.
-        </p>
+        <p className="muted">{t("delegations.form.limits")}</p>
         <button type="submit" disabled={busy || !projectId}>
-          {busy ? "Creating…" : "Create delegation"}
+          {busy ? t("delegations.form.creating") : t("delegations.form.create")}
         </button>
       </form>
 
-      <h3>Delegations ({delegations.length})</h3>
+      <h3>{t("delegations.list.title", { count: delegations.length })}</h3>
       {delegations.length === 0 ? (
-        <p className="muted">No delegations.</p>
+        <p className="muted">{t("delegations.list.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Project</th>
-              <th>Route</th>
-              <th>Paths</th>
-              <th>State</th>
-              <th>Usage</th>
-              <th>Expires</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {delegations.map((delegation) => (
-              <tr key={delegation.id}>
-                <td>
-                  <code>{delegation.id}</code>
-                </td>
-                <td>
-                  <code>{shortId(delegation.projectId)}</code>
-                </td>
-                <td>
-                  <code>
-                    {delegation.route.provider}/{delegation.route.model}
-                  </code>
-                  <div className="muted">{delegation.route.mode}</div>
-                </td>
-                <td>{delegation.allowedPaths.join(", ")}</td>
-                <td>
-                  <span
-                    className={`pill ${delegation.revokedAt ? "blocked" : "accepted"}`}
-                  >
-                    {delegation.revokedAt ? "REVOKED" : "ACTIVE"}
+        <div className="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>{t("delegations.table.id")}</th>
+                <th>{t("delegations.table.project")}</th>
+                <th>{t("delegations.table.route")}</th>
+                <th>{t("delegations.table.paths")}</th>
+                <th>{t("delegations.table.state")}</th>
+                <th>{t("delegations.table.usage")}</th>
+                <th>{t("delegations.table.expires")}</th>
+                <th>
+                  <span className="ui-visually-hidden">
+                    {t("delegations.table.actions")}
                   </span>
-                  {delegation.autonomousStart && (
-                    <span className="pill blocked">autonomous</span>
-                  )}
-                </td>
-                <td className="muted">
-                  {usage[delegation.id]
-                    ? `${usage[delegation.id].requests} req · ${usage[delegation.id].sessions} sess · ${usage[delegation.id].attempts} att`
-                    : "—"}
-                </td>
-                <td className="muted">
-                  {formatTimestamp(delegation.expiresAt)}
-                </td>
-                <td>
-                  {!delegation.revokedAt && (
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={busy}
-                      onClick={() => void revoke(delegation.id)}
-                    >
-                      Revoke
-                    </button>
-                  )}
-                </td>
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {delegations.map((delegation) => (
+                <tr key={delegation.id}>
+                  <td data-label={t("delegations.table.id")}>
+                    <code>{delegation.id}</code>
+                  </td>
+                  <td data-label={t("delegations.table.project")}>
+                    <code>{shortId(delegation.projectId)}</code>
+                  </td>
+                  <td data-label={t("delegations.table.route")}>
+                    <code>
+                      {delegation.route.provider}/{delegation.route.model}
+                    </code>
+                    <div className="muted">{delegation.route.mode}</div>
+                  </td>
+                  <td data-label={t("delegations.table.paths")}>
+                    {delegation.allowedPaths.join(", ")}
+                  </td>
+                  <td data-label={t("delegations.table.state")}>
+                    <span
+                      className={`pill ${delegation.revokedAt ? "blocked" : "accepted"}`}
+                    >
+                      {delegation.revokedAt ? "REVOKED" : "ACTIVE"}
+                    </span>
+                    {delegation.autonomousStart && (
+                      <span className="pill blocked">
+                        {t("delegations.table.autonomous")}
+                      </span>
+                    )}
+                  </td>
+                  <td
+                    className="muted"
+                    data-label={t("delegations.table.usage")}
+                  >
+                    {usage[delegation.id]
+                      ? t("delegations.table.usageValue", {
+                          requests: usage[delegation.id].requests,
+                          sessions: usage[delegation.id].sessions,
+                          attempts: usage[delegation.id].attempts,
+                        })
+                      : "—"}
+                  </td>
+                  <td
+                    className="muted"
+                    data-label={t("delegations.table.expires")}
+                  >
+                    {formatTimestamp(delegation.expiresAt)}
+                  </td>
+                  <td data-label={t("delegations.table.actions")}>
+                    {!delegation.revokedAt && (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => void revoke(delegation.id)}
+                      >
+                        {t("delegations.table.revoke")}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

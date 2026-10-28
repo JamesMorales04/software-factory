@@ -5,6 +5,7 @@ import type {
   CandidatePullRequestStatus,
   ProjectGitHubBinding,
 } from "../../coreApi";
+import { I18nProvider } from "../../i18n";
 import { CandidatePullRequest } from "./CandidatePullRequest";
 
 const mocks = vi.hoisted(() => ({
@@ -351,5 +352,43 @@ describe("CandidatePullRequest", () => {
       "candidate-1",
       expect.objectContaining({ head: "candidate/office-ux" }),
     );
+  });
+
+  it("renders Spanish PR, check, review and merge chrome while keeping GitHub data raw", async () => {
+    render(
+      <I18nProvider initialLocale="es">
+        <CandidatePullRequest
+          campaignId="campaign-1"
+          candidateId="candidate-1"
+          projectId="project-1"
+          candidateCommitSha={HEAD}
+        />
+      </I18nProvider>,
+    );
+    await screen.findByText("acme/widgets");
+    await userEvent.type(screen.getByLabelText("Número de pull request"), "42");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Leer PR y comprobaciones" }),
+    );
+    expect(await screen.findByTestId("pr-status")).toBeDefined();
+    expect(
+      screen.getByRole("heading", { name: "Comprobaciones" }),
+    ).toBeDefined();
+    expect(screen.getByText("coincide con el Candidato")).toBeDefined();
+    expect(screen.getByText("candidate/office-ux")).toBeDefined();
+    expect(screen.getByText("test")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Fusionar pull request" }),
+    ).toBeDefined();
+    expect(
+      screen.getByLabelText(
+        "Confirmo explícitamente esta fusión del head esperado exacto.",
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Comentarios" })).toBeDefined();
+    expect(screen.getByLabelText("Añadir un comentario")).toBeDefined();
+    expect(
+      screen.getByRole("heading", { name: "Solicitar revisión" }),
+    ).toBeDefined();
   });
 });

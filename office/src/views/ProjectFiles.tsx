@@ -34,6 +34,7 @@ import {
   type ProjectTreeProjection,
 } from "../coreApi";
 import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 const MAX_RENDERED_LINES = 5_000;
 
@@ -72,11 +73,14 @@ function entryIcon(entry: ProjectTreeEntry) {
   return <FileText size={16} aria-hidden="true" />;
 }
 
-function entryKindLabel(kind: ProjectTreeEntry["kind"]): string {
-  if (kind === "DIRECTORY") return "directory";
-  if (kind === "SYMLINK") return "symbolic link";
-  if (kind === "SUBMODULE") return "submodule";
-  return "file";
+function entryKindLabel(
+  kind: ProjectTreeEntry["kind"],
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (kind === "DIRECTORY") return t("projectFiles.kind.directory");
+  if (kind === "SYMLINK") return t("projectFiles.kind.symlink");
+  if (kind === "SUBMODULE") return t("projectFiles.kind.submodule");
+  return t("projectFiles.kind.file");
 }
 
 function pathSegments(path: string): { name: string; path: string }[] {
@@ -88,13 +92,14 @@ function pathSegments(path: string): { name: string; path: string }[] {
 }
 
 function CodeViewer({ content, path }: { content: string; path: string }) {
+  const { t } = useI18n();
   const lines = splitLines(content);
   const visible = lines.slice(0, MAX_RENDERED_LINES);
   let lineNumber = 0;
   return (
     <section
       className="project-code"
-      aria-label={`${path} content`}
+      aria-label={t("projectFiles.codeAria", { path })}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable code region must be focusable so its overflow can be scrolled from the keyboard.
       tabIndex={0}
     >
@@ -115,9 +120,10 @@ function CodeViewer({ content, path }: { content: string; path: string }) {
       </div>
       {lines.length > MAX_RENDERED_LINES && (
         <p className="project-code-note">
-          Showing the first {MAX_RENDERED_LINES.toLocaleString()} of{" "}
-          {lines.length.toLocaleString()} lines. The full file is not rendered
-          in Office.
+          {t("projectFiles.codeTruncated", {
+            shown: MAX_RENDERED_LINES.toLocaleString(),
+            total: lines.length.toLocaleString(),
+          })}
         </p>
       )}
     </section>
@@ -125,6 +131,7 @@ function CodeViewer({ content, path }: { content: string; path: string }) {
 }
 
 export function ProjectFiles() {
+  const { t } = useI18n();
   const { projectId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedRef = (searchParams.get("ref") ?? "").trim();
@@ -179,9 +186,7 @@ export function ProjectFiles() {
         if (!active) return;
         if (isStale(cause)) setStale(true);
         else
-          setProjectError(
-            errorMessage(cause, "The registered Project could not be loaded."),
-          );
+          setProjectError(errorMessage(cause, t("projectFiles.error.project")));
       } finally {
         if (active) setLoadingProject(false);
       }
@@ -190,7 +195,7 @@ export function ProjectFiles() {
     return () => {
       active = false;
     };
-  }, [projectId]);
+  }, [projectId, t]);
 
   useEffect(() => {
     if (!project || !refs || !effectiveRef) return;
@@ -214,8 +219,8 @@ export function ProjectFiles() {
             errorMessage(
               cause,
               directoryPath === ""
-                ? "The repository root could not be read."
-                : "This directory could not be read.",
+                ? t("projectFiles.error.root")
+                : t("projectFiles.error.directory"),
             ),
           );
       })
@@ -225,7 +230,7 @@ export function ProjectFiles() {
     return () => {
       active = false;
     };
-  }, [project, refs, effectiveRef, directoryPath]);
+  }, [project, refs, effectiveRef, directoryPath, t]);
 
   useEffect(() => {
     if (!project || !refs || !filePath || !effectiveRef) {
@@ -246,13 +251,7 @@ export function ProjectFiles() {
       .catch((cause) => {
         if (!active) return;
         if (isStale(cause)) setStale(true);
-        else
-          setFileError(
-            errorMessage(
-              cause,
-              "This file could not be read at this revision.",
-            ),
-          );
+        else setFileError(errorMessage(cause, t("projectFiles.error.file")));
       })
       .finally(() => {
         if (active) setLoadingFile(false);
@@ -260,7 +259,7 @@ export function ProjectFiles() {
     return () => {
       active = false;
     };
-  }, [project, refs, effectiveRef, filePath]);
+  }, [project, refs, effectiveRef, filePath, t]);
 
   const branchNames = useMemo(() => {
     if (!refs) return [];
@@ -276,7 +275,7 @@ export function ProjectFiles() {
     const base = project.base_commit.toLowerCase();
     options.push({
       value: base,
-      label: `Frozen base · ${shortId(base, 10)}`,
+      label: t("projectFiles.ref.frozenBase", { id: shortId(base, 10) }),
     });
     seen.add(base);
     for (const ref of refs?.refs ?? []) {
@@ -291,11 +290,13 @@ export function ProjectFiles() {
     if (effectiveRef && !seen.has(effectiveRef)) {
       options.push({
         value: effectiveRef,
-        label: `Commit · ${shortId(effectiveRef, 10)}`,
+        label: t("projectFiles.ref.commit", {
+          id: shortId(effectiveRef, 10),
+        }),
       });
     }
     return options;
-  }, [project, refs, effectiveRef]);
+  }, [project, refs, effectiveRef, t]);
 
   const visibleEntries = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -347,9 +348,11 @@ export function ProjectFiles() {
   if (missing) {
     return (
       <EmptyState
-        title="Project not found"
-        description={`No registered Project ${projectId || "identifier"} is recorded in Core.`}
-        action={<Link to="/projects">Back to Projects</Link>}
+        title={t("projectFiles.notFoundTitle")}
+        description={t("projectFiles.notFoundDescription", {
+          id: projectId || t("projectFiles.identifierFallback"),
+        })}
+        action={<Link to="/projects">{t("projectFiles.back")}</Link>}
       />
     );
   }
@@ -357,78 +360,85 @@ export function ProjectFiles() {
   if (stale) {
     return (
       <ErrorState
-        title="Repository binding is stale"
-        message="Core revalidated the registered repository and it no longer matches the Project's frozen identity or expected commit. Office will not read files from an unverified repository."
-        action={<Link to="/projects">Back to Projects</Link>}
+        title={t("projectFiles.staleTitle")}
+        message={t("projectFiles.staleDescription")}
+        action={<Link to="/projects">{t("projectFiles.back")}</Link>}
       />
     );
   }
 
-  if (loadingProject)
-    return <LoadingState label="Loading Project repository…" />;
+  if (loadingProject) return <LoadingState label={t("projectFiles.loading")} />;
 
   if (projectError && !project) {
     return (
       <ErrorState
-        title="Project repository unavailable"
+        title={t("projectFiles.unavailableTitle")}
         message={projectError}
-        action={<Button onClick={() => window.location.reload()}>Retry</Button>}
+        action={
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
+        }
       />
     );
   }
 
   if (!project || !refs)
-    return <LoadingState label="Loading Project repository…" />;
+    return <LoadingState label={t("projectFiles.loading")} />;
 
   const selectedEntry = tree?.entries.find((entry) => entry.path === filePath);
   const baseRevision = project.base_commit.toLowerCase() === effectiveRef;
   const segments = pathSegments(directoryPath);
 
   return (
-    <div>
+    <div className="project-files-workspace">
       <PageHeader
-        title="Project files"
-        description="Read-only projection of the registered Project repository. Office reads exact Git objects; it never writes files, follows symlinks or stores a second documentation copy."
+        title={t("projectFiles.title")}
+        description={t("projectFiles.description")}
         meta={
           <>
             <Badge tone="accent" className="project-revision-badge">
-              Revision {shortId(effectiveRef, 10)}
+              {t("projectFiles.meta.revision", {
+                id: shortId(effectiveRef, 10),
+              })}
             </Badge>
-            {baseRevision && <Badge tone="success">Frozen base</Badge>}
+            {baseRevision && (
+              <Badge tone="success">{t("projectFiles.meta.frozenBase")}</Badge>
+            )}
             {branchNames.map((name) => (
               <Badge tone="info" key={name}>
                 {name}
               </Badge>
             ))}
             <span title={effectiveRef}>
-              Commit <code>{shortId(effectiveRef, 12)}</code>
+              {t("projectFiles.meta.commit")}{" "}
+              <code>{shortId(effectiveRef, 12)}</code>
             </span>
             <span>
-              Repository identity{" "}
+              {t("projectFiles.meta.identity")}{" "}
               <code title={project.identity ?? undefined}>
                 {project.identity
                   ? shortId(project.identity, 12)
-                  : "not recorded"}
+                  : t("common.notRecorded")}
               </code>
             </span>
           </>
         }
         actions={
           <Link className="ui-button ui-button--secondary" to="/projects">
-            Back to Projects
+            {t("projectFiles.back")}
           </Link>
         }
       />
 
       {invalidRevision && (
         <p className="ui-callout ui-callout--attention" role="status">
-          The <code>ref</code> parameter is not a full 40- or 64-character Git
-          commit ID, so Office is showing the frozen base revision instead.
+          {t("projectFiles.invalidRevision")}
         </p>
       )}
 
       <Panel className="project-files-controls">
-        <nav aria-label="Repository breadcrumb">
+        <nav aria-label={t("projectFiles.breadcrumb")}>
           <ol className="project-breadcrumb">
             <li>
               <button
@@ -437,7 +447,7 @@ export function ProjectFiles() {
                 onClick={() => navigate({ path: "", file: "" })}
                 aria-current={directoryPath === "" ? "page" : undefined}
               >
-                Repository
+                {t("projectFiles.repository")}
               </button>
             </li>
             {segments.map((segment, index) => (
@@ -469,7 +479,7 @@ export function ProjectFiles() {
         </nav>
         <div className="project-files-toolbar">
           <label className="ui-field project-ref-select">
-            <span className="ui-field-label">Revision</span>
+            <span className="ui-field-label">{t("projectFiles.revision")}</span>
             <select
               className="ui-select"
               value={effectiveRef}
@@ -489,7 +499,9 @@ export function ProjectFiles() {
             </select>
           </label>
           <label className="ui-field project-filter">
-            <span className="ui-field-label">Filter this directory</span>
+            <span className="ui-field-label">
+              {t("projectFiles.filter.label")}
+            </span>
             <span className="project-filter-control">
               <Search size={15} aria-hidden="true" />
               <input
@@ -497,7 +509,7 @@ export function ProjectFiles() {
                 type="search"
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
-                placeholder="Filter by name or path"
+                placeholder={t("projectFiles.filter.placeholder")}
                 aria-describedby="project-filter-count"
               />
             </span>
@@ -508,9 +520,13 @@ export function ProjectFiles() {
       <div className="project-files-browser">
         <Panel className="project-files-tree" data-testid="project-files-tree">
           <div className="section-heading">
-            <h2>Repository tree</h2>
+            <h2>{t("projectFiles.tree.title")}</h2>
             <span className="muted">
-              {tree ? `${tree.entries.length} entries` : "—"}
+              {tree
+                ? t("projectFiles.tree.entries", {
+                    count: tree.entries.length,
+                  })
+                : "—"}
             </span>
           </div>
           {directoryPath !== "" && (
@@ -524,16 +540,21 @@ export function ProjectFiles() {
                 })
               }
             >
-              <ChevronLeft size={14} aria-hidden="true" /> Parent directory
+              <ChevronLeft size={14} aria-hidden="true" />{" "}
+              {t("projectFiles.tree.parent")}
             </Button>
           )}
-          {loadingTree && <LoadingState label="Reading directory…" />}
+          {loadingTree && (
+            <LoadingState label={t("projectFiles.tree.loading")} />
+          )}
           {treeError && (
             <ErrorState
-              title="Directory unavailable"
+              title={t("projectFiles.tree.errorTitle")}
               message={treeError}
               action={
-                <Button onClick={() => window.location.reload()}>Retry</Button>
+                <Button onClick={() => window.location.reload()}>
+                  {t("common.retry")}
+                </Button>
               }
             />
           )}
@@ -544,33 +565,36 @@ export function ProjectFiles() {
                 className="project-filter-count"
                 aria-live="polite"
               >
-                Showing {visibleEntries.length} of {tree.entries.length} entries
-                {filter.trim() ? ` matching “${filter.trim()}”` : ""}.
+                {t("projectFiles.tree.count", {
+                  shown: visibleEntries.length,
+                  total: tree.entries.length,
+                  filter: filter.trim(),
+                })}
               </p>
               {tree.truncated && (
                 <p className="ui-callout ui-callout--attention" role="status">
-                  This directory has more entries than Core returns in one
-                  bounded page. Open a more specific directory.
+                  {t("projectFiles.tree.truncated")}
                 </p>
               )}
               {tree.skippedEntries > 0 && (
                 <p className="ui-callout ui-callout--attention" role="status">
-                  {tree.skippedEntries} entries with unsupported names are
-                  hidden.
+                  {t("projectFiles.tree.skipped", {
+                    count: tree.skippedEntries,
+                  })}
                 </p>
               )}
               {tree.entries.length === 0 ? (
                 <EmptyState
-                  title="Empty directory"
-                  description="This directory is tracked but contains no entries at the selected revision."
+                  title={t("projectFiles.tree.emptyTitle")}
+                  description={t("projectFiles.tree.emptyDescription")}
                 />
               ) : visibleEntries.length === 0 ? (
                 <EmptyState
-                  title="No matching entries"
-                  description="Change the filter or clear it to see this directory again."
+                  title={t("projectFiles.tree.noMatchTitle")}
+                  description={t("projectFiles.tree.noMatchDescription")}
                   action={
                     <Button size="sm" onClick={() => setFilter("")}>
-                      Clear filter
+                      {t("projectFiles.tree.clearFilter")}
                     </Button>
                   }
                 />
@@ -590,7 +614,15 @@ export function ProjectFiles() {
                         }
                         data-project-entry
                         aria-current={selected ? "true" : undefined}
-                        aria-label={`${isDirectory ? "Open directory" : "Open file"} ${entry.path}`}
+                        aria-label={
+                          isDirectory
+                            ? t("projectFiles.entry.openDirectory", {
+                                path: entry.path,
+                              })
+                            : t("projectFiles.entry.openFile", {
+                                path: entry.path,
+                              })
+                        }
                         title={entry.path}
                         onKeyDown={(event) => onEntryKeyDown(event, index)}
                         onClick={() => {
@@ -605,7 +637,9 @@ export function ProjectFiles() {
                         {entryIcon(entry)}
                         <span className="project-entry-name">{entry.name}</span>
                         <span className="project-entry-meta">
-                          {isDirectory ? "directory" : formatBytes(entry.size)}
+                          {isDirectory
+                            ? t("projectFiles.kind.directory")
+                            : formatBytes(entry.size)}
                         </span>
                       </button>
                     );
@@ -621,21 +655,23 @@ export function ProjectFiles() {
           className="project-files-viewer"
           data-testid="project-file-viewer"
         >
-          {loadingFile && <LoadingState label="Reading file…" />}
+          {loadingFile && (
+            <LoadingState label={t("projectFiles.file.loading")} />
+          )}
           {fileError && (
             <ErrorState
-              title="File unavailable"
+              title={t("projectFiles.file.errorTitle")}
               message={fileError}
               action={
                 <div className="project-file-error-actions">
                   <Button onClick={() => window.location.reload()}>
-                    Retry
+                    {t("common.retry")}
                   </Button>
                   <Button
                     variant="quiet"
                     onClick={() => navigate({ file: "" })}
                   >
-                    Back to directory
+                    {t("projectFiles.file.backToDirectory")}
                   </Button>
                 </div>
               }
@@ -643,14 +679,14 @@ export function ProjectFiles() {
           )}
           {!loadingFile && !fileError && !filePath && (
             <EmptyState
-              title="Select a file"
-              description="Choose a file from the repository tree to read its bounded, read-only projection. Directories open in place and support keyboard navigation."
+              title={t("projectFiles.file.selectTitle")}
+              description={t("projectFiles.file.selectDescription")}
             />
           )}
           {!loadingFile && !fileError && filePath && !file && !treeError && (
             <EmptyState
-              title="File not selected"
-              description="The selected path is not available in the current directory projection."
+              title={t("projectFiles.file.notSelectedTitle")}
+              description={t("projectFiles.file.notSelectedDescription")}
             />
           )}
           {!loadingFile && !fileError && file && (
@@ -658,75 +694,80 @@ export function ProjectFiles() {
               <div className="section-heading project-file-heading">
                 <h2>{file.name}</h2>
                 <div className="project-file-badges">
-                  <Badge>{entryKindLabel(file.kind)}</Badge>
+                  <Badge>{entryKindLabel(file.kind, t)}</Badge>
                   {file.omitted === "BINARY" && (
-                    <Badge tone="attention">Binary</Badge>
+                    <Badge tone="attention">
+                      {t("projectFiles.file.binary")}
+                    </Badge>
                   )}
                   {file.omitted === "TOO_LARGE" && (
-                    <Badge tone="attention">Large file</Badge>
+                    <Badge tone="attention">
+                      {t("projectFiles.file.large")}
+                    </Badge>
                   )}
                   {file.omitted === "NOT_A_FILE" && (
-                    <Badge tone="attention">Not followed</Badge>
+                    <Badge tone="attention">
+                      {t("projectFiles.file.notFollowed")}
+                    </Badge>
                   )}
                   {isMarkdownPath(file.path) && (
-                    <Badge tone="info">Markdown</Badge>
+                    <Badge tone="info">{t("projectFiles.file.markdown")}</Badge>
                   )}
                 </div>
               </div>
               <dl className="detail project-file-meta">
-                <dt>Path</dt>
+                <dt>{t("projectFiles.file.path")}</dt>
                 <dd>
                   <code>{file.path}</code>
                 </dd>
-                <dt>Revision</dt>
+                <dt>{t("projectFiles.file.revision")}</dt>
                 <dd>
                   <code title={file.revision.commit}>
                     {shortId(file.revision.commit, 12)}
                   </code>
                 </dd>
-                <dt>Blob</dt>
+                <dt>{t("projectFiles.file.blob")}</dt>
                 <dd>
                   <code title={file.objectId}>
                     {shortId(file.objectId, 12)}
                   </code>
                 </dd>
-                <dt>Mode</dt>
+                <dt>{t("projectFiles.file.mode")}</dt>
                 <dd>
                   <code>{file.mode}</code>
                 </dd>
-                <dt>Size</dt>
+                <dt>{t("projectFiles.file.size")}</dt>
                 <dd>{formatBytes(file.size)}</dd>
-                <dt>Lines</dt>
+                <dt>{t("projectFiles.file.lines")}</dt>
                 <dd>{file.lineCount ?? "—"}</dd>
-                <dt>Provenance</dt>
+                <dt>{t("projectFiles.file.provenance")}</dt>
                 <dd>{file.provenance}</dd>
               </dl>
 
               {file.omitted === "TOO_LARGE" && (
                 <p className="ui-callout ui-callout--attention" role="status">
-                  This file is {formatBytes(file.size)} and exceeds the 512 KiB
-                  Office projection limit. Its metadata is shown; content is not
-                  available in the browser.
+                  {t("projectFiles.file.tooLarge", {
+                    size: formatBytes(file.size),
+                  })}
                 </p>
               )}
               {file.omitted === "BINARY" && (
                 <p className="ui-callout ui-callout--attention" role="status">
-                  Binary or non-UTF-8 content is not rendered. Office shows only
-                  the exact Git metadata for this blob.
+                  {t("projectFiles.file.binaryDescription")}
                 </p>
               )}
               {file.omitted === "NOT_A_FILE" && (
                 <p className="ui-callout ui-callout--attention" role="status">
                   {file.kind === "SYMLINK"
-                    ? "This entry is a symbolic link. Office does not follow repository symlinks."
-                    : "This entry is a submodule or gitlink. Office does not inspect submodule contents."}
+                    ? t("projectFiles.file.symlinkDescription")
+                    : t("projectFiles.file.submoduleDescription")}
                 </p>
               )}
 
               {file.content === "" && (
                 <EmptyState
-                  title="Empty file"
-                  description="This file is tracked but has no content at the selected revision."
+                  title={t("projectFiles.file.emptyTitle")}
+                  description={t("projectFiles.file.emptyDescription")}
                 />
               )}
 
@@ -735,7 +776,7 @@ export function ProjectFiles() {
                   {isMarkdownPath(file.path) && (
                     <fieldset className="project-view-toggle">
                       <legend className="ui-visually-hidden">
-                        Documentation rendering
+                        {t("projectFiles.file.rendering")}
                       </legend>
                       <Button
                         size="sm"
@@ -745,7 +786,7 @@ export function ProjectFiles() {
                         aria-pressed={markdownMode === "preview"}
                         onClick={() => setMarkdownMode("preview")}
                       >
-                        Preview
+                        {t("projectFiles.file.preview")}
                       </Button>
                       <Button
                         size="sm"
@@ -755,16 +796,14 @@ export function ProjectFiles() {
                         aria-pressed={markdownMode === "source"}
                         onClick={() => setMarkdownMode("source")}
                       >
-                        Source
+                        {t("projectFiles.file.source")}
                       </Button>
                     </fieldset>
                   )}
                   {isMarkdownPath(file.path) && markdownMode === "preview" ? (
                     <>
                       <p className="project-markdown-note">
-                        Safe Markdown subset. Raw HTML is shown as text and is
-                        never executed; relative and script links are not
-                        followed.
+                        {t("projectFiles.file.markdownNote")}
                       </p>
                       <Markdown source={file.content} />
                     </>
@@ -779,8 +818,10 @@ export function ProjectFiles() {
       </div>
       {selectedEntry && file && (
         <p className="project-selection-note">
-          Selected <code>{selectedEntry.path}</code> from the{" "}
-          {shortId(file.revision.commit, 12)} revision.
+          {t("projectFiles.selectedNote", {
+            path: selectedEntry.path,
+            revision: shortId(file.revision.commit, 12),
+          })}
         </p>
       )}
     </div>

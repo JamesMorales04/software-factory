@@ -45,6 +45,11 @@ export interface WorkGraphIssue {
   kind: WorkGraphIssueKind;
   message: string;
   unitId?: string;
+  dependency?: string;
+  taskId?: string;
+  status?: string;
+  sequence?: number;
+  dependencySequence?: number;
 }
 
 export interface WorkGraphTableRow {
@@ -88,6 +93,7 @@ function presentationState(
       kind: "UNKNOWN_STATUS",
       message: `WorkUnit ${task.unit_id} has an unrecognized recorded status ${task.status}.`,
       unitId: task.unit_id,
+      status: task.status,
     });
     return "UNKNOWN";
   }
@@ -156,6 +162,7 @@ export function buildWorkGraphLayout(tasks: LeadTask[]): WorkGraphLayout {
         kind: "DUPLICATE_TASK",
         message: `Task ${task.task_id} is recorded more than once.`,
         unitId: task.unit_id,
+        taskId: task.task_id,
       });
       continue;
     }
@@ -189,6 +196,7 @@ export function buildWorkGraphLayout(tasks: LeadTask[]): WorkGraphLayout {
           kind: "MISSING_DEPENDENCY",
           message: `WorkUnit ${unit} depends on ${dependency}, which is not part of this Campaign projection.`,
           unitId: unit,
+          dependency,
         });
         continue;
       }
@@ -197,6 +205,9 @@ export function buildWorkGraphLayout(tasks: LeadTask[]): WorkGraphLayout {
           kind: "SEQUENCE_ORDER",
           message: `WorkUnit ${unit} (sequence ${task.sequence}) depends on ${dependency} (sequence ${dependencyTask.sequence}); the recorded sequence does not follow the dependency.`,
           unitId: unit,
+          dependency,
+          sequence: task.sequence,
+          dependencySequence: dependencyTask.sequence,
         });
       }
       existing.push(dependency);
@@ -326,26 +337,4 @@ export function buildWorkGraphLayout(tasks: LeadTask[]): WorkGraphLayout {
     layerCount: maxLayer + 1,
     hasCycle,
   };
-}
-
-export function presentationLabel(state: WorkGraphPresentationState): string {
-  if (state === "READY") return "READY (derived)";
-  if (state === "WAITING") return "WAITING (derived)";
-  if (state === "BLOCKED") return "BLOCKED (derived)";
-  if (state === "INCONSISTENT") return "INCONSISTENT";
-  return state;
-}
-
-export function presentationExplanation(
-  state: WorkGraphPresentationState,
-): string {
-  if (state === "READY")
-    return "Recorded PENDING with every dependency recorded SUCCEEDED (or no dependencies). This is a dependency fact, not scheduling progress.";
-  if (state === "WAITING")
-    return "Recorded PENDING while at least one dependency is not SUCCEEDED. This is a dependency fact, not an execution forecast.";
-  if (state === "BLOCKED")
-    return "Recorded PENDING while a dependency is FAILED or CANCELLED.";
-  if (state === "INCONSISTENT")
-    return "Recorded PENDING with a dependency that is not present in this Campaign projection. The UI does not repair the graph.";
-  return "Exact recorded WorkUnit status.";
 }
