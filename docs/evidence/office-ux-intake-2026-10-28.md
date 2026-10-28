@@ -33,6 +33,16 @@ Result (exit 0):
 {"ok":true,"request":"6731e4e8-8b94-4f6e-ae56-dc5712d78671","campaign":"5b0d4ed4-e33e-4444-8e6f-9de19f5d9359","profileRevision":"60dabcfa-c5bc-463a-a380-13bd0805159a","planHash":"fe1e8dea59e1d3d076693f0a8897d1c57d3f77ff4f75124f5aa2477663f0fa3f","mode":"DETERMINISTIC_FAKE_MODEL"}
 ```
 
+## Repeatable harness run
+
+The journey is exposed as `cargo xtask e2e intake` and runs in the containerized
+Chromium CI step. A second author-run at implementation `228db45` (after adding
+the harness) passed:
+
+```json
+{"ok":true,"request":"1d3aaf1e-4cdc-4f06-961b-7a91dd66e6d0","campaign":"40412266-f02a-494c-aeb5-a3dfa21a3461","profileRevision":"e47d6b8e-a491-4cf3-b476-e196571f8f11","planHash":"aec35ca4eb702696b5a59b6fb6c1a97ed811ebaf3f9bf764abf36cf07bfaac05","mode":"DETERMINISTIC_FAKE_MODEL"}
+```
+
 ## What was exercised
 
 - Real Rust Core with SQLite migrations through `0030`, real device-session

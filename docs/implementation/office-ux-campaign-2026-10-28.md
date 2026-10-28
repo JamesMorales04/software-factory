@@ -196,4 +196,7 @@ running.
   `6731e4e8…`, Campaign `5b0d4ed4…`, candidate/evidence in
   [office-ux-intake-2026-10-28.md](../evidence/office-ux-intake-2026-10-28.md).
   This is not live model inference, execution completion or independent
-  acceptance; journeys 3 and 4 are recorded as PARTIAL.
+  acceptance; journeys 3 and 4 are recorded as PARTIAL. The journey is now
+  `cargo xtask e2e intake` and runs in the containerized Chromium CI step; a
+  second author run at `228db45` passed (request `1d3aaf1e…`, Campaign
+  `40412266…`).
