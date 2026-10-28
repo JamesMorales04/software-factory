@@ -139,6 +139,15 @@ compatible containerized provider runtime plus an owner-supplied credential and
 fresh bounded spend authorization. The deterministic fake-model and fixture
 journeys are not substitutes for live certification.
 
+### Lane J — localization result (merged)
+The EN/ES sweep is merged at `57738a1` (candidate `1aba287`). It localizes the
+shell/nav, Home/Request, Actions, Lead, Campaigns, Agent Office and Issues,
+adds the global switcher and mobile table/card fallbacks, and passes 139 Office
+tests plus an author-run real Chromium run with Spanish shell/navigation at
+834/390/320. Still untranslated: Overview, Delegations, Campaign detail/
+WorkGraph/diff/PR panels, Project files, Settings chrome and Execution
+Profiles. Full localization is not claimed.
+
 ### Autonomy design
 Codex Sol produced `office-ux-autonomy-contract-2026-10-28.md` (commit
 `271c821`, preserved on the baseline at `de7e2b7`). It keeps automatic
