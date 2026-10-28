@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "slice": "F1-S9 Slice 4 \u2014 Agent Office and interactive WorkGraph",
-  "status": "IMPLEMENTED_PENDING_INDEPENDENT_REVIEW",
+  "status": "IMPLEMENTED_INDEPENDENT_REVIEW_APPROVED_PENDING_PRODUCT_OWNER_APPROVAL",
   "result": "PASS",
   "candidate_sha": "2af7b68d504b21a33f47a5d586eef17bf4cefc72",
   "evidence_runs_at_sha": "e76602885dcfefc41da030dab79f065b86f2c7a5",
@@ -122,7 +122,6 @@
     }
   },
   "not_tested": [
-    "Independent verifier/reviewer acceptance of Slice 4",
     "Product Owner visual and workflow approval",
     "Live paid provider UAT (not authorized by this slice)",
     "SEC-01 isolation certification",
@@ -132,5 +131,22 @@
     "Compose browser evidence proves Agent Office with real recorded participants and tool events. The deterministic Compose Campaign has no Lead WorkGraph, so the Compose WorkGraph assertion is the truthful empty state.",
     "The host browser journey creates a one-unit Lead Campaign and exercises WorkGraph selection. Multi-node/parallel/diamond/eight-unit graph behavior is covered by layout and component tests.",
     "The host browser journey seeds an active provider session through the real Core Worker protocol (register, claim, intent, active, tool events); it does not call a provider model and does not claim paid inference."
-  ]
+  ],
+  "independent_review": {
+    "reviewer": "OpenCode independent agent on opencode-go/deepseek-v4.1-flash",
+    "reviewed_head": "28e840a3bdeba67e8ab91ec888f2d84a61e28c0b",
+    "code_candidate": "2af7b68d504b21a33f47a5d586eef17bf4cefc72",
+    "verdict": "APPROVE",
+    "resolved_blockers": [
+      "Lead non-terminal observation is NOT_EXPOSED; terminal BLOCKED/FAILED is FINAL.",
+      "Deep-linked participant fallback applies active Campaign/role/status/provider/Project filters.",
+      "Duplicate authoritative WorkGraph task rows remain visible in the table while only the visual node set is canonical."
+    ],
+    "non_blocking_followups": [
+      "Pre-existing CampaignDetail request race can overwrite a newer Campaign snapshot.",
+      "Provider session error text remains best-effort shape-redacted.",
+      "Very old Campaign sessions can fall outside the global 100-session Runtime projection.",
+      "Browser acceptance does not independently exercise a stale/superseded lease."
+    ]
+  }
 }

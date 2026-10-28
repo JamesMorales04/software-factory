@@ -3,7 +3,7 @@
 **Candidate:** `2af7b68d504b21a33f47a5d586eef17bf4cefc72`
 **Evidence run head:** `e76602885dcfefc41da030dab79f065b86f2c7a5`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
-**Status:** Implemented; independent review and Product Owner approval pending.
+**Status:** Implemented; independent DeepSeek review APPROVED; Product Owner approval pending.
 **Paid inference:** none.
 
 ## What was exercised
@@ -60,6 +60,23 @@ malformed rows, and count non-positive legacy tool sequences as discarded.
 Host Chromium and Compose E2E were run at `e766028`; the later commits are
 read-projection/UI-ordering fixes covered by Rust/Office tests and Clippy, and
 full exact-head CI is rerun on the final PR head.
+
+## Independent review
+
+An independent agent on `opencode-go/deepseek-v4.1-flash` reviewed code candidate
+`2af7b68` at reviewed head `28e840a` and returned **APPROVE**. The three prior
+blocking findings were verified fixed:
+
+1. Lead non-terminal observation is `NOT_EXPOSED`; terminal `BLOCKED`/`FAILED`
+   is `FINAL`.
+2. Deep-linked participant fallback applies the active Campaign/role/status/
+   provider/Project filters.
+3. Duplicate authoritative WorkGraph task rows remain visible in the table while
+   only the visual node set is canonical.
+
+Non-blocking follow-ups remain: a pre-existing CampaignDetail request race,
+best-effort provider error shape redaction, the global 100-session Runtime
+projection cap, and browser coverage of a stale/superseded lease.
 
 ## Limitations
 
