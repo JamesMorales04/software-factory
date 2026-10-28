@@ -663,7 +663,10 @@ impl Database {
                 ),
                 model_call_count: None,
                 model_call_state: None,
-                observation_note: if lease_state == "LIVE" {
+                observation_note: if observation == "UNKNOWN" {
+                    "Core records an unrecognized provider-session state. The projection fails closed and does not infer liveness."
+                        .into()
+                } else if lease_state == "LIVE" {
                     "Core holds a live attempt lease; external provider state is not independently verified."
                         .into()
                 } else if observation == "STALE" {
@@ -840,7 +843,7 @@ impl Database {
                AND (?7 IS NULL
                     OR (qr.role='verifier' AND ?7='VERIFIER')
                     OR (qr.role='reviewer' AND ?7='REVIEWER'))
-             ORDER BY qr.received_at DESC,qr.receipt_id ASC
+             ORDER BY qr.received_at DESC,qr.role ASC,qr.receipt_id ASC
              LIMIT ?6",
         )
         .bind(&query.campaign_id)

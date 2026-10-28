@@ -321,6 +321,13 @@ export function AgentOffice() {
           disconnected view does not mean a participant stopped.
         </div>
       )}
+      {page.page.has_more && (
+        <div className="callout" role="status">
+          Showing the first {page.page.returned} participants. The projection is
+          bounded; refine the Campaign, role, provider or status filters to
+          inspect more. No records were hidden silently.
+        </div>
+      )}
       {staleCount > 0 && (
         <div className="callout callout-attention" role="status">
           <strong>

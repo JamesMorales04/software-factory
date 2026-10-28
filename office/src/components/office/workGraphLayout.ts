@@ -73,7 +73,8 @@ const KNOWN_STATUSES = new Set([
 ]);
 
 function terminalFailure(status: string): boolean {
-  return status === "FAILED" || status === "CANCELLED";
+  const value = status.toUpperCase();
+  return value === "FAILED" || value === "CANCELLED";
 }
 
 function presentationState(
@@ -105,7 +106,9 @@ function presentationState(
   }
   if (
     dependencies.length === 0 ||
-    dependencies.every((dependency) => dependency.status === "SUCCEEDED")
+    dependencies.every(
+      (dependency) => dependency.status.toUpperCase() === "SUCCEEDED",
+    )
   ) {
     return "READY";
   }

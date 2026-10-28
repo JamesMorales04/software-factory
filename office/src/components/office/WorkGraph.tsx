@@ -67,7 +67,9 @@ function WorkUnitInspector({
 }) {
   const node = layout.nodes.find((item) => item.task.unit_id === task.unit_id);
   const session =
-    sessions.find((item) => item.attempt_id === task.attempt_id) ?? null;
+    sessions
+      .filter((item) => item.attempt_id === task.attempt_id)
+      .sort((left, right) => right.generation - left.generation)[0] ?? null;
   const verifier = receipts.find((receipt) => receipt.role === "verifier");
   const reviewer = receipts.find((receipt) => receipt.role === "reviewer");
   const unitIssues = issuesForUnit(layout.issues, task.unit_id);
