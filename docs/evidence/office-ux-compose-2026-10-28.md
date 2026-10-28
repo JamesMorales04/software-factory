@@ -18,8 +18,8 @@ inference was used.
 | [40742928074](https://github.com/JamesMorales04/software-factory/actions/runs/40742928074) | `056c502` | PASS | first unified-intake extension, request `bfafdc1b…`, Campaign `7464a25e…`, candidate `be2c44cd…`, Gate `ACCEPTED` |
 | [40750678825](https://github.com/JamesMorales04/software-factory/actions/runs/40750678825) | `b4a15b6` | PASS | integrated Wave 2: legacy candidate `4a869af6…`; intake request `cce4f85e…`, Campaign `5bb3a2d6…`, attempt `f663d098…`, candidate `d89b6417…` at `50429082…`, verifier `32cbef7a…`, reviewer `cc8ea452…`, Gate `ACCEPTED`, restart persistence `true` |
 | [40752448629](https://github.com/JamesMorales04/software-factory/actions/runs/40752448629) | `cf42718` | CANCELLED | hung acceptance step; not evidence |
-| [40754605706](https://github.com/JamesMorales04/software-factory/actions/runs/40754605706) | `cf42718` | FAIL | intake attempt `999611fa…` FAILED; Worker `Supervisor finalize failed: 409 Conflict` |
-| [40757937905](https://github.com/JamesMorales04/software-factory/actions/runs/40757937905) | `b1042ce` | FAIL | same failure: intake attempt `999611fa…`-equivalent, child execution exit `1`, finalize `409` |
+| [40754605706](https://github.com/JamesMorales04/software-factory/actions/runs/40754605706) | `cf42718` | FAIL | intake attempt `9847e28f…` FAILED; Worker `Supervisor finalize failed: 409 Conflict` |
+| [40757937905](https://github.com/JamesMorales04/software-factory/actions/runs/40757937905) | `b1042ce` | FAIL | intake attempt `999611fa…` FAILED; child execution exit `1`, finalize `409` |
 
 The `b4a15b6` tree contains the identical native runtime code used by
 `cf42718`/`b1042ce`; the later commits changed Office localization and the E2E
