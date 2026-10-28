@@ -144,3 +144,31 @@ safe only as default-off policy/acknowledgement/queue/advisory work. Commit 3
 approval, Core-owned envelope validation, enforced confinement, durable
 accounting and independent review. See
 [office-ux-autonomy-review-2026-10-28.md](office-ux-autonomy-review-2026-10-28.md).
+Wave 2 starts 2026-10-28. No lane result is accepted yet.
+
+### Lane L — actual result (2026-10-28)
+
+Candidate `5e7f8657a3a4e6c63b37876a1ae0817a4cc9162f` on
+`campaign/office-ux-lifecycle-e2e-20261028` extends
+`office/e2e-browser/intake-journey.mjs` and exposes
+`cargo xtask e2e intake-full`. The deterministic fixture journey passes:
+
+- request `e1157165-1e6f-4dbe-880f-837b7b446d69` → Campaign
+  `4fd4de11-7462-489f-9089-69b2a100fd6e`;
+- frozen profile revision `d5cdf397-35f9-4de7-b4da-12467cefab67`, plan
+  `9e10dc489ebcc987d3159d8d002b55288fe92f2d81d46773e07a8aa6b904d48a`,
+  Action `dccd91d6-588d-4e7e-8df5-6f3672a08ee2`;
+- Worker claim generation 1 on Lead Attempt
+  `257b2a8d-a82d-484e-8902-a75b602d4b97`, candidate
+  `d6a8d992-c1eb-4f4c-9e55-7ecc60122468` at commit
+  `b12a38bbb46aed13d28d295b1d3a4149a4c986ca`;
+- verifier and `MODEL` semantic-reviewer receipts `PASS`, deterministic Gate
+  `ACCEPTED`, changed path `src/provider.txt`;
+- Core restart and browser reload preserved the exact request, Campaign,
+  candidate, receipts and Gate.
+
+The journey exposed and repaired one projection defect: intake **detail** now
+exposes authoritative `campaignStatus` and `gateOutcome` instead of only the list
+projection. Live provider inference, Compose, independent verification and
+delivery remain `NOT_TESTED`; see
+[the candidate-bound evidence](../evidence/office-ux-intake-lifecycle-2026-10-28.md).

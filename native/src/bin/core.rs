@@ -5274,13 +5274,15 @@ async fn intake_request_value(
                 }))
                 .collect::<Vec<_>>()
         );
-    } else {
-        if let Some(campaign_status) = campaign_status {
-            value["campaignStatus"] = json!(campaign_status);
-        }
-        if let Some(gate_outcome) = gate_outcome {
-            value["gateOutcome"] = json!(gate_outcome);
-        }
+    }
+    // The Campaign status and latest Gate outcome are separate authoritative
+    // facts. Both the list and detail projections expose them so Office never
+    // has to infer a Gate badge from unrelated candidate state.
+    if let Some(campaign_status) = campaign_status {
+        value["campaignStatus"] = json!(campaign_status);
+    }
+    if let Some(gate_outcome) = gate_outcome {
+        value["gateOutcome"] = json!(gate_outcome);
     }
     Ok(value)
 }
@@ -10010,6 +10012,14 @@ mod tests {
             assert_eq!(approved["plan"]["plan_hash"], plan_hash);
             assert_eq!(approved["profile"]["revision"], profile_revision);
             assert_eq!(approved["profile"]["contentHash"], profile_hash);
+            assert_eq!(
+                approved["campaignStatus"], "AUTHORIZED",
+                "detail must project the authoritative Campaign status"
+            );
+            assert!(
+                approved.get("gateOutcome").is_none(),
+                "no Gate outcome may be invented before a Gate exists"
+            );
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
             let evidence = fixture
                 .app
@@ -10094,6 +10104,94 @@ mod tests {
             assert_eq!(status, StatusCode::CONFLICT);
             assert_eq!(cancel["code"], "LEAD_ALREADY_STARTED");
             assert_eq!(cancel["campaign_id"], campaign_id);
+
+            fixture.app.db.close().await;
+            let _ = std::fs::remove_file(fixture.path);
+            let _ = std::fs::remove_dir_all(fixture.repository);
+        }
+
+        #[tokio::test]
+        async fn intake_detail_projects_campaign_status_and_latest_gate_outcome() {
+            let fixture = setup().await;
+            let (status, _) = enable_policy(&fixture).await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, created) = create_intake(&fixture, "request-api-gate").await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            let intake_id = created["id"].as_str().unwrap().to_owned();
+            let context = fixture_plan(&fixture, &intake_id).await;
+            let (status, approved) = send(
+                &fixture.router,
+                "POST",
+                &format!("/intake/requests/{intake_id}/approve"),
+                Some(json!({
+                    "expected_plan_hash": context.plan.plan_hash,
+                    "rationale": "Reviewed the frozen plan and budget.",
+                    "idempotency_key": "approve-gate-projection",
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{approved}");
+            let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            let tasks = fixture.app.db.campaign_tasks(&campaign_id).await.unwrap();
+            let attempt_id = tasks[0].attempt_id.clone().expect("Lead Attempt");
+            let candidate_id = "candidate-gate-projection".to_owned();
+            let commit_sha = "a".repeat(40);
+            let tree_sha = "b".repeat(40);
+            let pool = sqlx_sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx_sqlite::SqliteConnectOptions::new()
+                        .filename(&fixture.path)
+                        .create_if_missing(false),
+                )
+                .await
+                .unwrap();
+            let (spec_sha256,): (String,) = sqlx::query_as::query_as(
+                "SELECT spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+            )
+            .bind(&attempt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query::query(
+                "INSERT INTO candidates
+                 (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+                 VALUES (?1,?2,?3,?4,?5,'worker-gate-projection',?6)",
+            )
+            .bind(&candidate_id)
+            .bind(&attempt_id)
+            .bind(&spec_sha256)
+            .bind(&commit_sha)
+            .bind(&tree_sha)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query::query("INSERT INTO gate_decisions VALUES (?1,'ACCEPTED','[]',?2)")
+                .bind(&candidate_id)
+                .bind(&now)
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            let (status, detail) = send(
+                &fixture.router,
+                "GET",
+                &format!("/intake/requests/{intake_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{detail}");
+            assert_eq!(detail["state"], "COMPLETED");
+            assert_eq!(detail["campaignStatus"], "AUTHORIZED");
+            assert_eq!(detail["gateOutcome"], "ACCEPTED");
+            assert_eq!(detail["campaignId"], campaign_id);
+            assert_eq!(
+                detail["campaign"]["candidates"][0]["id"], candidate_id,
+                "the detail campaign projection must expose the exact candidate"
+            );
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

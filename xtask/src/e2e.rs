@@ -21,6 +21,10 @@ const SUITES: &[(&str, &str)] = &[
         "intake",
         "unified request, policy, assessment, freeze and operator approval with a deterministic fake model",
     ),
+    (
+        "intake-full",
+        "unified intake through Worker, candidate, verifier, semantic reviewer, gate and Core restart",
+    ),
 ];
 
 pub(crate) fn list() -> Result<(), String> {
@@ -64,6 +68,16 @@ pub(crate) fn intake() -> Result<(), String> {
     cargo_run(&["build", "--bins", "--locked"])?;
     let mut command = std::process::Command::new("node");
     command.args(["office/e2e-browser/intake-journey.mjs"]);
+    crate::process::run(command).map_err(|error| {
+        format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
+    })
+}
+
+pub(crate) fn intake_full() -> Result<(), String> {
+    cargo_run(&["build", "--bins", "--locked"])?;
+    let mut command = std::process::Command::new("node");
+    command.args(["office/e2e-browser/intake-journey.mjs"]);
+    command.env("FACTORY_INTAKE_FULL", "1");
     crate::process::run(command).map_err(|error| {
         format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
     })

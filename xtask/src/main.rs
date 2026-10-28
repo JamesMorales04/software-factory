@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         ("e2e", Some("dispatch")) => e2e::dispatch(),
         ("e2e", Some("office")) => e2e::office(),
         ("e2e", Some("intake")) => e2e::intake(),
+        ("e2e", Some("intake-full")) => e2e::intake_full(),
         ("e2e", Some("negatives")) => e2e::negatives(),
         ("e2e", Some("provider")) => e2e::provider(),
         ("e2e", Some(_)) => e2e::unsupported(args.get(1).map(String::as_str).unwrap_or_default()),
@@ -66,6 +67,7 @@ Commands:
   e2e dispatch            fixture Campaign, Worker, candidate, receipts and gate
   e2e office              real Chromium journey against the Rust Core Office
   e2e intake              unified intake with a deterministic fake model gateway
+  e2e intake-full         unified intake through Worker, candidate, verifier, reviewer, gate and restart
   e2e negatives           deterministic scope, verification, authorization and lease negatives
   e2e provider            deterministic fake-provider Attempt through Core, Worker, Supervisor and gate
   e2e                     list available deterministic E2E suites

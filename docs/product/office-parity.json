@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-28T12:00:00Z",
+  "updated_at": "2026-10-28T17:55:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -132,7 +132,8 @@
         "search, filter and page synchronized issues and read an issue body as untrusted plain text",
         "submit a Project-scoped unified intake request with an exact execution profile revision",
         "explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
-        "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request"
+        "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request",
+        "follow an approved intake Campaign through Worker claim, exact candidate, verifier and semantic-reviewer receipts, deterministic Quality Gate, changed files and restart persistence"
       ],
       "states": [
         "loading",
@@ -176,9 +177,10 @@
         "office/e2e-browser/personal-access.mjs",
         "office/src/views/Issues.test.tsx",
         "office/src/views/Home.test.tsx",
-        "office/src/views/RequestWorkspace.test.tsx"
+        "office/src/views/RequestWorkspace.test.tsx",
+        "office/e2e-browser/intake-journey.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. Aggregate token/cost accounting across assessment plus implementation, role-specific routing beyond the single default gateway, and a real browser acceptance run remain unimplemented; these are displayed as explicit limits, not inferred state. Docs remain a later slice."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Live provider inference, Compose acceptance, aggregate token/cost accounting, role-specific routing beyond the single default gateway and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. Docs remain a later slice."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
