@@ -307,16 +307,17 @@ if [[ "$INTAKE_GATE" != *'"outcome":"ACCEPTED"'* ]]; then
   if [[ -n "$INTAKE_CANDIDATE_ID" ]]; then
     log "intake receipts: $(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts" 2>/dev/null | head -c 3000 || true)"
   fi
-  CORE="$(core_container || true)"
-  if [[ -n "$CORE" ]]; then
-    log "== Core log tail"
-    podman logs --tail 120 "$CORE" >&2 || true
-  fi
-  WORKER="$(podman ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' | grep '_worker_' | head -1 || true)"
-  if [[ -n "$WORKER" ]]; then
-    log "== Worker log tail"
-    podman logs --tail 80 "$WORKER" >&2 || true
-  fi
+  log "== containers"
+  podman ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Names}} {{.Status}}' >&2 || true
+  for service in core supervisor worker runtime; do
+    name="$(podman ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+      --format '{{.Names}}' | grep "_${service}_" | head -1 || true)"
+    if [[ -n "$name" ]]; then
+      log "== ${service} log tail"
+      podman logs --tail 160 "$name" >&2 || true
+    fi
+  done
   exit 1
 fi
 INTAKE_RECEIPTS="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/receipts")"
