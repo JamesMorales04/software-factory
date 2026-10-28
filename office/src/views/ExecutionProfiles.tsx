@@ -26,26 +26,27 @@ import {
   type SupportedExecutionRoute,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
+import { type MessageKey, useI18n } from "../i18n";
 
 const ROLES: {
   id: ExecutionProfileRole;
-  label: string;
-  responsibility: string;
+  labelKey: MessageKey;
+  responsibilityKey: MessageKey;
 }[] = [
   {
     id: "lead",
-    label: "Lead",
-    responsibility: "Semantic assessment and plan proposal",
+    labelKey: "execProfiles.role.lead",
+    responsibilityKey: "execProfiles.role.leadResponsibility",
   },
   {
     id: "implementer",
-    label: "Implementer",
-    responsibility: "Campaign implementation session route",
+    labelKey: "execProfiles.role.implementer",
+    responsibilityKey: "execProfiles.role.implementerResponsibility",
   },
   {
     id: "semanticReviewer",
-    label: "Semantic Reviewer",
-    responsibility: "Semantic review model call, when enabled",
+    labelKey: "execProfiles.role.semanticReviewer",
+    responsibilityKey: "execProfiles.role.semanticReviewerResponsibility",
   },
 ];
 
@@ -224,33 +225,47 @@ function uniqueModels(models: string[]): string[] {
   return result;
 }
 
-function validateModelId(model: string): string | null {
-  if (model.trim() === "") return "Model ID is required.";
-  if (model.length > 128) return "Model ID must be at most 128 characters.";
+function validateModelId(
+  model: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string | null {
+  if (model.trim() === "") return t("execProfiles.validation.modelRequired");
+  if (model.length > 128) return t("execProfiles.validation.modelTooLong");
   if (model.trim() !== model || /\s/.test(model)) {
-    return "Model ID must not contain whitespace.";
+    return t("execProfiles.validation.modelWhitespace");
   }
   return null;
 }
 
 function routeSupportWarning(
-  role: { id: ExecutionProfileRole; label: string },
+  role: { id: ExecutionProfileRole; labelKey: MessageKey },
   provider: ProviderView | undefined,
   model: string,
   discoveredModels: string[],
   baselineModels: string[],
+  t: ReturnType<typeof useI18n>["t"],
 ): string | null {
+  const label = t(role.labelKey);
   if (provider === undefined) {
-    return `The ${role.label} provider is not a configured Core connection; this profile stays a non-executable draft.`;
+    return t("execProfiles.warning.unknownProvider", { role: label });
   }
   if (!provider.configured) {
-    return `The ${role.label} provider ${provider.provider} has no stored credential; this profile stays a non-executable draft.`;
+    return t("execProfiles.warning.unconfiguredProvider", {
+      role: label,
+      provider: provider.provider,
+    });
   }
   if (!provider.enabled) {
-    return `The ${role.label} provider ${provider.provider} is disabled; this profile stays a non-executable draft.`;
+    return t("execProfiles.warning.disabledProvider", {
+      role: label,
+      provider: provider.provider,
+    });
   }
   if (role.id !== "implementer" && provider.kind !== "opencode") {
-    return `The ${role.label} route uses the ${provider.kind} App Server, which cannot execute one-shot model calls in this build; the Implementer route is unaffected.`;
+    return t("execProfiles.warning.appServerProvider", {
+      role: label,
+      kind: provider.kind,
+    });
   }
   const advertised = uniqueModels([
     provider.model,
@@ -258,7 +273,11 @@ function routeSupportWarning(
     ...discoveredModels,
   ]);
   if (model !== "" && !advertised.includes(model)) {
-    return `The ${role.label} model ${model} is not advertised by ${provider.provider}; run model discovery or select an advertised model.`;
+    return t("execProfiles.warning.unadvertisedModel", {
+      role: label,
+      model,
+      provider: provider.provider,
+    });
   }
   return null;
 }
@@ -267,15 +286,16 @@ function validateDraft(
   draft: ProfileDraft,
   routes: SupportedExecutionRoute[],
   providers: ProviderView[],
+  t: ReturnType<typeof useI18n>["t"],
 ): string | null {
   const name = draft.name.trim();
-  if (name.length === 0) return "Name is required.";
-  if (name.length > 80) return "Name must be at most 80 characters.";
+  if (name.length === 0) return t("execProfiles.validation.nameRequired");
+  if (name.length > 80) return t("execProfiles.validation.nameTooLong");
   if (draft.description.trim().length > 500) {
-    return "Description must be at most 500 characters.";
+    return t("execProfiles.validation.descriptionTooLong");
   }
   if (draft.autoStartEnabled && draft.autoStartRiskClasses.length === 0) {
-    return "Select at least one risk class when autonomous start is enabled.";
+    return t("execProfiles.validation.riskRequired");
   }
   const providerIds =
     providers.length > 0
@@ -284,43 +304,51 @@ function validateDraft(
   for (const role of ROLES) {
     const value = draft.roles[role.id];
     if (!providerIds.includes(value.provider)) {
-      return `Select a configured provider for the ${role.label} role.`;
+      return t("execProfiles.validation.providerRequired", {
+        role: t(role.labelKey),
+      });
     }
-    const modelError = validateModelId(value.model);
+    const modelError = validateModelId(value.model, t);
     if (modelError) {
-      return `${role.label}: ${modelError}`;
+      return `${t(role.labelKey)}: ${modelError}`;
     }
     if (value.maxInputTokens < 1 || value.maxInputTokens > 1_000_000) {
-      return `${role.label} max input tokens must be between 1 and 1,000,000.`;
+      return t("execProfiles.validation.roleInputRange", {
+        role: t(role.labelKey),
+      });
     }
     if (value.maxOutputTokens < 1 || value.maxOutputTokens > 100_000) {
-      return `${role.label} max output tokens must be between 1 and 100,000.`;
+      return t("execProfiles.validation.roleOutputRange", {
+        role: t(role.labelKey),
+      });
     }
     if (value.maxCostMicros < 1 || value.maxCostMicros > 100_000_000) {
-      return `${role.label} max cost micros must be between 1 and 100,000,000.`;
+      return t("execProfiles.validation.roleCostRange", {
+        role: t(role.labelKey),
+      });
     }
   }
   const budgets = draft.budgets;
   if (budgets.maxAttempts < 1 || budgets.maxAttempts > 10) {
-    return "Max attempts must be between 1 and 10.";
+    return t("execProfiles.validation.maxAttempts");
   }
   if (budgets.maxSessions < 1 || budgets.maxSessions > 16) {
-    return "Max sessions must be between 1 and 16.";
+    return t("execProfiles.validation.maxSessions");
   }
   if (budgets.maxTurns < 1 || budgets.maxTurns > 16) {
-    return "Max turns must be between 1 and 16.";
+    return t("execProfiles.validation.maxTurns");
   }
   if (budgets.maxInputTokens < 1 || budgets.maxInputTokens > 1_000_000) {
-    return "Campaign max input tokens must be between 1 and 1,000,000.";
+    return t("execProfiles.validation.maxInput");
   }
   if (budgets.maxOutputTokens < 1 || budgets.maxOutputTokens > 100_000) {
-    return "Campaign max output tokens must be between 1 and 100,000.";
+    return t("execProfiles.validation.maxOutput");
   }
   if (budgets.maxCostMicros < 1 || budgets.maxCostMicros > 100_000_000) {
-    return "Campaign max cost micros must be between 1 and 100,000,000.";
+    return t("execProfiles.validation.maxCost");
   }
   if (budgets.deadlineSecs < 30 || budgets.deadlineSecs > 86_400) {
-    return "Campaign deadline seconds must be between 30 and 86,400.";
+    return t("execProfiles.validation.deadline");
   }
   return null;
 }
@@ -332,6 +360,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 }
 
 export function ExecutionProfiles() {
+  const { t } = useI18n();
   const [profiles, setProfiles] = useState<ExecutionProfile[]>([]);
   const [routes, setRoutes] = useState<SupportedExecutionRoute[]>([]);
   const [providers, setProviders] = useState<ProviderView[]>([]);
@@ -374,27 +403,30 @@ export function ExecutionProfiles() {
       setLoaded(true);
       setError(null);
     } catch (cause) {
-      setError(errorMessage(cause, "Execution profiles could not be loaded."));
+      setError(errorMessage(cause, t("execProfiles.error.load")));
     }
-  }, []);
+  }, [t]);
 
-  const discoverProvider = useCallback(async (provider: string) => {
-    if (provider === "" || requestedDiscovery.current.has(provider)) return;
-    requestedDiscovery.current.add(provider);
-    setDiscovery((current) => ({ ...current, [provider]: "loading" }));
-    try {
-      const result = await coreApi.listProviderModels(provider);
-      setDiscovery((current) => ({ ...current, [provider]: result }));
-    } catch (cause) {
-      requestedDiscovery.current.delete(provider);
-      setDiscovery((current) => ({
-        ...current,
-        [provider]: {
-          error: errorMessage(cause, "Provider model discovery failed."),
-        },
-      }));
-    }
-  }, []);
+  const discoverProvider = useCallback(
+    async (provider: string) => {
+      if (provider === "" || requestedDiscovery.current.has(provider)) return;
+      requestedDiscovery.current.add(provider);
+      setDiscovery((current) => ({ ...current, [provider]: "loading" }));
+      try {
+        const result = await coreApi.listProviderModels(provider);
+        setDiscovery((current) => ({ ...current, [provider]: result }));
+      } catch (cause) {
+        requestedDiscovery.current.delete(provider);
+        setDiscovery((current) => ({
+          ...current,
+          [provider]: {
+            error: errorMessage(cause, t("execProfiles.error.discovery")),
+          },
+        }));
+      }
+    },
+    [t],
+  );
 
   useEffect(() => {
     void load();
@@ -429,10 +461,10 @@ export function ExecutionProfiles() {
       }
       setResolution(null);
       setResolutionError(
-        errorMessage(cause, "Project profile resolution is unavailable."),
+        errorMessage(cause, t("execProfiles.error.resolution")),
       );
     }
-  }, [projectDefaultTarget]);
+  }, [projectDefaultTarget, t]);
 
   useEffect(() => {
     void refreshResolution();
@@ -505,6 +537,7 @@ export function ExecutionProfiles() {
         value.model,
         discoveredModels(value.provider),
         baselineModels(value.provider),
+        t,
       );
       if (warning) warnings.push(warning);
     }
@@ -567,12 +600,12 @@ export function ExecutionProfiles() {
       const fresh = await coreApi.getExecutionProfile(draft.id);
       setDraft(draftFromProfile(fresh));
       setStale(false);
-      setNotice(`Reloaded revision ${fresh.revision}.`);
+      setNotice(
+        t("execProfiles.notice.reloaded", { revision: fresh.revision }),
+      );
       await load();
     } catch (cause) {
-      setError(
-        errorMessage(cause, "The current revision could not be reloaded."),
-      );
+      setError(errorMessage(cause, t("execProfiles.error.reload")));
     } finally {
       setBusy(false);
     }
@@ -584,7 +617,7 @@ export function ExecutionProfiles() {
     setFormError(null);
     setNotice(null);
     setError(null);
-    const validation = validateDraft(draft, routes, providers);
+    const validation = validateDraft(draft, routes, providers, t);
     if (validation) {
       setFormError(validation);
       return;
@@ -603,7 +636,13 @@ export function ExecutionProfiles() {
       setDraft(draftFromProfile(saved));
       setStale(false);
       setNotice(
-        `Saved ${saved.name} revision ${saved.revision} (${saved.executable ? "executable" : "draft, not executable"}).`,
+        t("execProfiles.notice.saved", {
+          name: saved.name,
+          revision: saved.revision,
+          state: saved.executable
+            ? t("execProfiles.state.executable")
+            : t("execProfiles.state.draftNotExecutable"),
+        }),
       );
       await load();
     } catch (cause) {
@@ -615,9 +654,7 @@ export function ExecutionProfiles() {
         setStale(true);
         setFormError(null);
       } else {
-        setFormError(
-          errorMessage(cause, "The execution profile could not be saved."),
-        );
+        setFormError(errorMessage(cause, t("execProfiles.error.save")));
       }
     } finally {
       setBusy(false);
@@ -640,13 +677,13 @@ export function ExecutionProfiles() {
       );
       setNotice(
         scope === "global"
-          ? `Global default set to ${profile.name}.`
-          : `Project default set to ${profile.name}.`,
+          ? t("execProfiles.notice.globalDefaultSet", { name: profile.name })
+          : t("execProfiles.notice.projectDefaultSet", { name: profile.name }),
       );
       await load();
       await refreshResolution();
     } catch (cause) {
-      setError(errorMessage(cause, "The profile default could not be set."));
+      setError(errorMessage(cause, t("execProfiles.error.defaultSet")));
     } finally {
       setBusy(false);
     }
@@ -668,15 +705,13 @@ export function ExecutionProfiles() {
       );
       setNotice(
         scope === "global"
-          ? "Global default cleared."
-          : "Project default cleared.",
+          ? t("execProfiles.notice.globalDefaultCleared")
+          : t("execProfiles.notice.projectDefaultCleared"),
       );
       await load();
       await refreshResolution();
     } catch (cause) {
-      setError(
-        errorMessage(cause, "The profile default could not be cleared."),
-      );
+      setError(errorMessage(cause, t("execProfiles.error.defaultCleared")));
     } finally {
       setBusy(false);
     }
@@ -686,13 +721,15 @@ export function ExecutionProfiles() {
     if (error) {
       return (
         <ErrorState
-          title="Execution profiles unavailable"
+          title={t("execProfiles.unavailableTitle")}
           message={error}
-          action={<Button onClick={() => void load()}>Retry</Button>}
+          action={
+            <Button onClick={() => void load()}>{t("common.retry")}</Button>
+          }
         />
       );
     }
-    return <LoadingState label="Loading execution profiles…" />;
+    return <LoadingState label={t("execProfiles.loading")} />;
   }
 
   const selectedProfile =
@@ -708,11 +745,8 @@ export function ExecutionProfiles() {
       <Panel className="execution-profiles-list">
         <div className="section-heading">
           <div>
-            <h2>Execution profiles ({profiles.length})</h2>
-            <p className="muted">
-              Versioned operator configuration for the model-backed roles. A
-              profile is not an authorization or a capability grant.
-            </p>
+            <h2>{t("execProfiles.title", { count: profiles.length })}</h2>
+            <p className="muted">{t("execProfiles.description")}</p>
           </div>
           <div className="row">
             <Button
@@ -721,25 +755,27 @@ export function ExecutionProfiles() {
               disabled={busy || routes.length === 0}
               onClick={startNewProfile}
             >
-              New profile
+              {t("execProfiles.newProfile")}
             </Button>
             <Button size="sm" disabled={busy} onClick={() => void load()}>
-              Refresh
+              {t("execProfiles.refresh")}
             </Button>
           </div>
         </div>
 
         <p className="muted">
-          Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"} ·{" "}
-          {routes.length} baseline tested route(s) · {providers.length} provider
-          connection(s)
+          {t("execProfiles.meta", {
+            date: lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—",
+            routes: routes.length,
+            providers: providers.length,
+          })}
         </p>
 
         {error && (
           <div className="ui-callout ui-callout--danger" role="alert">
-            <p>{error} The displayed profiles may be stale.</p>
+            <p>{t("execProfiles.error.stale", { error })}</p>
             <Button size="sm" onClick={() => void load()}>
-              Retry
+              {t("common.retry")}
             </Button>
           </div>
         )}
@@ -747,15 +783,15 @@ export function ExecutionProfiles() {
 
         {profiles.length === 0 ? (
           <EmptyState
-            title="No execution profiles"
-            description="Create a profile from the Core-supported routes. A draft with an unconfigured provider is saved as non-executable and cannot become a default."
+            title={t("execProfiles.emptyTitle")}
+            description={t("execProfiles.emptyDescription")}
             action={
               <Button
                 variant="primary"
                 disabled={busy || routes.length === 0}
                 onClick={startNewProfile}
               >
-                Create execution profile
+                {t("execProfiles.emptyAction")}
               </Button>
             }
           />
@@ -764,13 +800,13 @@ export function ExecutionProfiles() {
             <table>
               <thead>
                 <tr>
-                  <th scope="col">Profile</th>
-                  <th scope="col">Category</th>
-                  <th scope="col">Revision</th>
-                  <th scope="col">Content hash</th>
-                  <th scope="col">Executable</th>
-                  <th scope="col">Defaults</th>
-                  <th scope="col">Action</th>
+                  <th scope="col">{t("execProfiles.table.profile")}</th>
+                  <th scope="col">{t("execProfiles.table.category")}</th>
+                  <th scope="col">{t("execProfiles.table.revision")}</th>
+                  <th scope="col">{t("execProfiles.table.hash")}</th>
+                  <th scope="col">{t("execProfiles.table.executable")}</th>
+                  <th scope="col">{t("execProfiles.table.defaults")}</th>
+                  <th scope="col">{t("execProfiles.table.action")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -806,27 +842,35 @@ export function ExecutionProfiles() {
                       </Badge>
                       {profile.warnings.length > 0 && (
                         <span className="execution-profile-role-note">
-                          {profile.warnings.length} warning(s)
+                          {t("execProfiles.table.warnings", {
+                            count: profile.warnings.length,
+                          })}
                         </span>
                       )}
                     </td>
                     <td>
                       {profile.globalDefault && (
-                        <Badge tone="info">GLOBAL DEFAULT</Badge>
+                        <Badge tone="info">
+                          {t("execProfiles.table.globalDefault")}
+                        </Badge>
                       )}
                       {profile.projectDefaults.map((projectId) => (
                         <Badge key={projectId} tone="neutral">
-                          PROJECT {projectId.slice(0, 8)}
+                          {t("execProfiles.table.projectDefault", {
+                            id: projectId.slice(0, 8),
+                          })}
                         </Badge>
                       ))}
                       {!profile.globalDefault &&
                         profile.projectDefaults.length === 0 && (
-                          <span className="muted">none</span>
+                          <span className="muted">
+                            {t("execProfiles.table.none")}
+                          </span>
                         )}
                     </td>
                     <td>
                       <Button size="sm" onClick={() => selectProfile(profile)}>
-                        Edit
+                        {t("execProfiles.table.edit")}
                       </Button>
                     </td>
                   </tr>
@@ -839,9 +883,9 @@ export function ExecutionProfiles() {
         {selectedProfile && (
           <section
             className="execution-profile-defaults"
-            aria-label="Execution profile defaults"
+            aria-label={t("execProfiles.defaults.aria")}
           >
-            <h3>Defaults and effective profile</h3>
+            <h3>{t("execProfiles.defaults.title")}</h3>
             <div className="execution-profile-meta">
               <Badge
                 tone={selectedProfile.executable ? "success" : "attention"}
@@ -849,13 +893,15 @@ export function ExecutionProfiles() {
                 {selectedProfile.executable ? "EXECUTABLE" : "DRAFT"}
               </Badge>
               <span>
-                Revision <strong>{selectedProfile.revision}</strong>
+                {t("execProfiles.defaults.revision")}{" "}
+                <strong>{selectedProfile.revision}</strong>
               </span>
               <span>
-                Revision ID <code>{selectedProfile.revisionId}</code>
+                {t("execProfiles.defaults.revisionId")}{" "}
+                <code>{selectedProfile.revisionId}</code>
               </span>
               <span>
-                Content hash{" "}
+                {t("execProfiles.defaults.contentHash")}{" "}
                 <code className="execution-profile-hash">
                   {selectedProfile.contentHash}
                 </code>
@@ -863,10 +909,7 @@ export function ExecutionProfiles() {
             </div>
             {selectedProfile.warnings.length > 0 && (
               <div className="ui-callout ui-callout--attention" role="status">
-                <p>
-                  This profile is a non-executable draft. Core will reject it as
-                  a default or execution route until every warning is resolved.
-                </p>
+                <p>{t("execProfiles.defaults.warning")}</p>
                 <ul>
                   {selectedProfile.warnings.map((warning) => (
                     <li key={warning}>{warning}</li>
@@ -884,7 +927,7 @@ export function ExecutionProfiles() {
                         void clearDefault(selectedProfile, "global");
                     }}
                   >
-                    Clear global default
+                    {t("execProfiles.defaults.clearGlobal")}
                   </Button>
                 ) : (
                   <Button
@@ -894,22 +937,24 @@ export function ExecutionProfiles() {
                         void setDefault(selectedProfile, "global");
                     }}
                   >
-                    Set global default
+                    {t("execProfiles.defaults.setGlobal")}
                   </Button>
                 )}
               </div>
               <div className="execution-profile-project-default">
                 <Select
-                  label="Default project"
+                  label={t("execProfiles.defaults.project")}
                   value={projectDefaultTarget}
                   onChange={(event) =>
                     setProjectDefaultTarget(event.target.value)
                   }
                   disabled={projects.length === 0}
-                  help="A project default overrides the global default for that project only."
+                  help={t("execProfiles.defaults.projectHelp")}
                 >
                   {projects.length === 0 && (
-                    <option value="">No registered projects</option>
+                    <option value="">
+                      {t("execProfiles.defaults.noProjects")}
+                    </option>
                   )}
                   {projects.map((project) => (
                     <option key={project.id} value={project.id}>
@@ -928,7 +973,7 @@ export function ExecutionProfiles() {
                           void clearDefault(selectedProfile, "project");
                       }}
                     >
-                      Clear project default
+                      {t("execProfiles.defaults.clearProject")}
                     </Button>
                   ) : (
                     <Button
@@ -938,7 +983,7 @@ export function ExecutionProfiles() {
                           void setDefault(selectedProfile, "project");
                       }}
                     >
-                      Set project default
+                      {t("execProfiles.defaults.setProject")}
                     </Button>
                   ))}
               </div>
@@ -946,24 +991,27 @@ export function ExecutionProfiles() {
             <div className="execution-profile-resolution" role="status">
               {projectDefaultTarget === "" ? (
                 <p className="muted">
-                  Register a project to inspect project-default resolution.
+                  {t("execProfiles.defaults.registerProject")}
                 </p>
               ) : resolutionError ? (
                 <p className="error">
-                  Project resolution failed: {resolutionError}
+                  {t("execProfiles.defaults.resolutionError", {
+                    error: resolutionError,
+                  })}
                 </p>
               ) : resolution ? (
                 <p>
-                  Effective for{" "}
-                  {defaultProject?.repository ?? projectDefaultTarget}: profile{" "}
-                  <code>{resolution.profileId}</code>, revision{" "}
-                  {resolution.revision}, source{" "}
+                  {t("execProfiles.defaults.effective", {
+                    project: defaultProject?.repository ?? projectDefaultTarget,
+                  })}{" "}
+                  <code>{resolution.profileId}</code>{" "}
+                  {t("execProfiles.defaults.effectiveRevision", {
+                    revision: resolution.revision,
+                  })}{" "}
                   <Badge tone="info">{resolution.source}</Badge>
                 </p>
               ) : (
-                <p className="muted">
-                  No execution profile default exists for this project.
-                </p>
+                <p className="muted">{t("execProfiles.defaults.noDefault")}</p>
               )}
             </div>
           </section>
@@ -979,32 +1027,32 @@ export function ExecutionProfiles() {
             <div className="section-heading">
               <div>
                 <h2>
-                  {draft.id ? `Edit ${draft.name}` : "New execution profile"}
+                  {draft.id
+                    ? t("execProfiles.editor.editTitle", {
+                        name: draft.name,
+                      })
+                    : t("execProfiles.editor.newTitle")}
                 </h2>
-                <p className="muted">
-                  Every save creates an immutable revision. The expected
-                  revision prevents overwriting a newer operator edit.
-                </p>
+                <p className="muted">{t("execProfiles.editor.description")}</p>
               </div>
               {draft.id && (
                 <span className="muted">
-                  Editing revision {draft.expectedRevision}
+                  {t("execProfiles.editor.editingRevision", {
+                    revision: draft.expectedRevision ?? 0,
+                  })}
                 </span>
               )}
             </div>
 
             {stale && (
               <div className="ui-callout ui-callout--danger" role="alert">
-                <p>
-                  Core rejected this save because the profile changed since it
-                  was loaded. No revision was written.
-                </p>
+                <p>{t("execProfiles.editor.stale")}</p>
                 <Button
                   size="sm"
                   disabled={busy}
                   onClick={() => void reloadCurrentRevision()}
                 >
-                  Reload current revision
+                  {t("execProfiles.editor.reload")}
                 </Button>
               </div>
             )}
@@ -1015,10 +1063,7 @@ export function ExecutionProfiles() {
             )}
             {draftWarnings().length > 0 && (
               <div className="ui-callout ui-callout--attention" role="status">
-                <p>
-                  This draft is not executable. Core refuses to bind or use a
-                  profile until every role route is substantiated.
-                </p>
+                <p>{t("execProfiles.editor.draftWarning")}</p>
                 <ul>
                   {draftWarnings().map((warning) => (
                     <li key={warning}>{warning}</li>
@@ -1029,7 +1074,7 @@ export function ExecutionProfiles() {
 
             <div className="grid-2">
               <Input
-                label="Name"
+                label={t("execProfiles.editor.name")}
                 value={draft.name}
                 maxLength={80}
                 onChange={(event) =>
@@ -1041,7 +1086,7 @@ export function ExecutionProfiles() {
                 }
               />
               <Select
-                label="Category"
+                label={t("execProfiles.editor.category")}
                 value={draft.category}
                 onChange={(event) =>
                   setDraft((current) =>
@@ -1063,7 +1108,7 @@ export function ExecutionProfiles() {
               </Select>
             </div>
             <Textarea
-              label="Description"
+              label={t("execProfiles.editor.profileDescription")}
               value={draft.description}
               maxLength={500}
               rows={2}
@@ -1076,14 +1121,11 @@ export function ExecutionProfiles() {
               }
             />
 
-            <section aria-label="Role matrix">
+            <section aria-label={t("execProfiles.matrix.aria")}>
               <div className="section-heading">
                 <div>
-                  <h3>Role matrix</h3>
-                  <span className="muted">
-                    Each role resolves its own provider connection and model.
-                    The deterministic Verifier is not a profile role.
-                  </span>
+                  <h3>{t("execProfiles.matrix.title")}</h3>
+                  <span className="muted">{t("execProfiles.matrix.hint")}</span>
                 </div>
                 <Button
                   type="button"
@@ -1096,20 +1138,20 @@ export function ExecutionProfiles() {
                     }
                   }}
                 >
-                  Refresh model catalog
+                  {t("execProfiles.matrix.refresh")}
                 </Button>
               </div>
               <div className="execution-profile-matrix">
                 <table>
                   <thead>
                     <tr>
-                      <th scope="col">Role</th>
-                      <th scope="col">Provider</th>
-                      <th scope="col">Model</th>
-                      <th scope="col">Reasoning</th>
-                      <th scope="col">Max input</th>
-                      <th scope="col">Max output</th>
-                      <th scope="col">Max cost µ</th>
+                      <th scope="col">{t("execProfiles.matrix.role")}</th>
+                      <th scope="col">{t("execProfiles.matrix.provider")}</th>
+                      <th scope="col">{t("execProfiles.matrix.model")}</th>
+                      <th scope="col">{t("execProfiles.matrix.reasoning")}</th>
+                      <th scope="col">{t("execProfiles.matrix.maxInput")}</th>
+                      <th scope="col">{t("execProfiles.matrix.maxOutput")}</th>
+                      <th scope="col">{t("execProfiles.matrix.maxCost")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1136,14 +1178,16 @@ export function ExecutionProfiles() {
                       return (
                         <tr key={role.id}>
                           <th scope="row">
-                            <strong>{role.label}</strong>
+                            <strong>{t(role.labelKey)}</strong>
                             <span className="execution-profile-role-note">
-                              {role.responsibility}
+                              {t(role.responsibilityKey)}
                             </span>
                           </th>
                           <td>
                             <Select
-                              label={`${role.label} provider`}
+                              label={t("execProfiles.matrix.providerLabel", {
+                                role: t(role.labelKey),
+                              })}
                               value={value.provider}
                               onChange={(event) =>
                                 changeRoleProvider(role.id, event.target.value)
@@ -1158,31 +1202,51 @@ export function ExecutionProfiles() {
                                 (option) => option.value === value.provider,
                               ) && (
                                 <option value={value.provider}>
-                                  {value.provider} (not configured)
+                                  {t("execProfiles.matrix.notConfigured", {
+                                    provider: value.provider,
+                                  })}
                                 </option>
                               )}
                             </Select>
                             <span className="execution-profile-role-note">
                               {entry === "loading"
-                                ? "Discovering models…"
+                                ? t("execProfiles.matrix.discovering")
                                 : error
-                                  ? `Model catalog unavailable: ${error}`
+                                  ? t(
+                                      "execProfiles.matrix.catalogUnavailable",
+                                      {
+                                        error,
+                                      },
+                                    )
                                   : isDiscovery(entry)
                                     ? entry.status === "AVAILABLE"
-                                      ? `${entry.models.length} model(s) discovered`
-                                      : `Discovery unavailable: ${entry.detail}`
+                                      ? t("execProfiles.matrix.discovered", {
+                                          count: entry.models.length,
+                                        })
+                                      : t(
+                                          "execProfiles.matrix.discoveryUnavailable",
+                                          { detail: entry.detail },
+                                        )
                                     : configured
-                                      ? "Model catalog not loaded"
-                                      : "Provider is not configured"}
+                                      ? t(
+                                          "execProfiles.matrix.catalogNotLoaded",
+                                        )
+                                      : t(
+                                          "execProfiles.matrix.providerUnconfigured",
+                                        )}
                             </span>
                           </td>
                           <td>
                             {!manual && (
                               <>
                                 <Input
-                                  label={`Search ${role.label} models`}
+                                  label={t("execProfiles.matrix.searchModels", {
+                                    role: t(role.labelKey),
+                                  })}
                                   value={modelFilters[role.id]}
-                                  placeholder="Filter discovered models"
+                                  placeholder={t(
+                                    "execProfiles.matrix.filterPlaceholder",
+                                  )}
                                   onChange={(event) =>
                                     setModelFilters((current) => ({
                                       ...current,
@@ -1191,7 +1255,9 @@ export function ExecutionProfiles() {
                                   }
                                 />
                                 <Select
-                                  label={`${role.label} model`}
+                                  label={t("execProfiles.matrix.modelLabel", {
+                                    role: t(role.labelKey),
+                                  })}
                                   value={value.model}
                                   onChange={(event) =>
                                     updateRole(role.id, {
@@ -1202,8 +1268,12 @@ export function ExecutionProfiles() {
                                   {filtered.length === 0 && (
                                     <option value={value.model}>
                                       {value.model === ""
-                                        ? "No advertised model"
-                                        : `${value.model} (unverified)`}
+                                        ? t(
+                                            "execProfiles.matrix.noAdvertisedModel",
+                                          )
+                                        : t("execProfiles.matrix.unverified", {
+                                            model: value.model,
+                                          })}
                                     </option>
                                   )}
                                   {filtered.map((model) => (
@@ -1216,10 +1286,12 @@ export function ExecutionProfiles() {
                             )}
                             {manual && (
                               <Input
-                                label={`${role.label} manual model ID (unverified)`}
+                                label={t("execProfiles.matrix.manualLabel", {
+                                  role: t(role.labelKey),
+                                })}
                                 value={value.model}
                                 placeholder="provider-model-id"
-                                help="Core keeps a profile non-executable until the provider advertises this exact model."
+                                help={t("execProfiles.matrix.manualHelp")}
                                 onChange={(event) =>
                                   updateRole(role.id, {
                                     model: event.target.value,
@@ -1228,7 +1300,9 @@ export function ExecutionProfiles() {
                               />
                             )}
                             <Checkbox
-                              label={`Advanced: manual ${role.label} model ID (unverified)`}
+                              label={t("execProfiles.matrix.manualToggle", {
+                                role: t(role.labelKey),
+                              })}
                               checked={manual}
                               onChange={(event) =>
                                 setManualModel((current) => ({
@@ -1240,7 +1314,9 @@ export function ExecutionProfiles() {
                           </td>
                           <td>
                             <Select
-                              label={`${role.label} reasoning`}
+                              label={t("execProfiles.matrix.reasoningLabel", {
+                                role: t(role.labelKey),
+                              })}
                               value={value.reasoning}
                               onChange={(event) =>
                                 updateRole(role.id, {
@@ -1249,7 +1325,9 @@ export function ExecutionProfiles() {
                                 })
                               }
                             >
-                              <option value="">Provider default</option>
+                              <option value="">
+                                {t("execProfiles.matrix.providerDefault")}
+                              </option>
                               {REASONING.map((reasoning) => (
                                 <option key={reasoning} value={reasoning}>
                                   {reasoning}
@@ -1259,7 +1337,9 @@ export function ExecutionProfiles() {
                           </td>
                           <td>
                             <Input
-                              label={`${role.label} max input tokens`}
+                              label={t("execProfiles.matrix.maxInputLabel", {
+                                role: t(role.labelKey),
+                              })}
                               type="number"
                               min={1}
                               max={1_000_000}
@@ -1273,7 +1353,9 @@ export function ExecutionProfiles() {
                           </td>
                           <td>
                             <Input
-                              label={`${role.label} max output tokens`}
+                              label={t("execProfiles.matrix.maxOutputLabel", {
+                                role: t(role.labelKey),
+                              })}
                               type="number"
                               min={1}
                               max={100_000}
@@ -1287,7 +1369,9 @@ export function ExecutionProfiles() {
                           </td>
                           <td>
                             <Input
-                              label={`${role.label} max cost micros`}
+                              label={t("execProfiles.matrix.maxCostLabel", {
+                                role: t(role.labelKey),
+                              })}
                               type="number"
                               min={1}
                               max={100_000_000}
@@ -1307,17 +1391,14 @@ export function ExecutionProfiles() {
               </div>
             </section>
 
-            <section aria-label="Campaign budgets">
+            <section aria-label={t("execProfiles.budgets.aria")}>
               <div className="section-heading">
-                <h3>Campaign budgets</h3>
-                <span className="muted">
-                  Frozen into a Campaign authorization; a model cannot widen
-                  them.
-                </span>
+                <h3>{t("execProfiles.budgets.title")}</h3>
+                <span className="muted">{t("execProfiles.budgets.hint")}</span>
               </div>
               <div className="grid-2">
                 <Input
-                  label="Max attempts"
+                  label={t("execProfiles.budgets.maxAttempts")}
                   type="number"
                   min={1}
                   max={10}
@@ -1327,7 +1408,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Max sessions"
+                  label={t("execProfiles.budgets.maxSessions")}
                   type="number"
                   min={1}
                   max={16}
@@ -1337,7 +1418,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Max turns"
+                  label={t("execProfiles.budgets.maxTurns")}
                   type="number"
                   min={1}
                   max={16}
@@ -1347,7 +1428,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Campaign max input tokens"
+                  label={t("execProfiles.budgets.maxInput")}
                   type="number"
                   min={1}
                   max={1_000_000}
@@ -1357,7 +1438,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Campaign max output tokens"
+                  label={t("execProfiles.budgets.maxOutput")}
                   type="number"
                   min={1}
                   max={100_000}
@@ -1369,7 +1450,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Campaign max cost micros"
+                  label={t("execProfiles.budgets.maxCost")}
                   type="number"
                   min={1}
                   max={100_000_000}
@@ -1379,7 +1460,7 @@ export function ExecutionProfiles() {
                   }
                 />
                 <Input
-                  label="Campaign deadline seconds"
+                  label={t("execProfiles.budgets.deadline")}
                   type="number"
                   min={30}
                   max={86_400}
@@ -1391,16 +1472,15 @@ export function ExecutionProfiles() {
               </div>
             </section>
 
-            <section aria-label="Autonomous start policy">
+            <section aria-label={t("execProfiles.autoStart.aria")}>
               <div className="section-heading">
-                <h3>Autonomous start policy</h3>
+                <h3>{t("execProfiles.autoStart.title")}</h3>
                 <span className="muted">
-                  This is a policy declaration, not authority. Core still
-                  requires the frozen plan, delegation and risk approval.
+                  {t("execProfiles.autoStart.hint")}
                 </span>
               </div>
               <Checkbox
-                label="Declare autonomous start eligible for selected risk classes"
+                label={t("execProfiles.autoStart.label")}
                 checked={draft.autoStartEnabled}
                 onChange={(event) =>
                   setDraft((current) =>
@@ -1445,10 +1525,10 @@ export function ExecutionProfiles() {
             <div className="row">
               <Button type="submit" variant="primary" disabled={busy}>
                 {busy
-                  ? "Saving…"
+                  ? t("execProfiles.editor.saving")
                   : draft.id
-                    ? "Save revision"
-                    : "Create profile"}
+                    ? t("execProfiles.editor.saveRevision")
+                    : t("execProfiles.editor.create")}
               </Button>
               <Button
                 type="button"
@@ -1460,7 +1540,9 @@ export function ExecutionProfiles() {
                   setFormError(null);
                 }}
               >
-                {draft.id ? "Close editor" : "Cancel"}
+                {draft.id
+                  ? t("execProfiles.editor.close")
+                  : t("execProfiles.editor.cancel")}
               </Button>
             </div>
           </form>

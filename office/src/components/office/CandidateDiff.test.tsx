@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CandidateDiffSummary } from "../../coreApi";
+import { I18nProvider } from "../../i18n";
 import { CandidateDiff } from "./CandidateDiff";
 
 const mocks = vi.hoisted(() => ({
@@ -207,5 +208,35 @@ describe("CandidateDiff", () => {
     await screen.findByText(/Diff unavailable/);
     expect(screen.getByText(/IDENTITY_MISMATCH/)).toBeDefined();
     expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+  });
+
+  it("renders Spanish chrome without translating paths, SHAs or source prose", async () => {
+    render(
+      <I18nProvider initialLocale="es">
+        <CandidateDiff campaignId="campaign-1" candidateId="candidate-1" />
+      </I18nProvider>,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Archivos modificados" }),
+    ).toBeDefined();
+    expect(screen.getByText("Commit base")).toBeDefined();
+    expect(screen.getByText("Árbol del candidato")).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Copiar SHA del commit base" }),
+    ).toBeDefined();
+    expect(screen.getAllByText("src/main.rs").length).toBeGreaterThan(0);
+    expect(screen.getByText(projection.commit_sha.slice(0, 12))).toBeDefined();
+    expect(
+      screen.getByText(/Core read-only Git file diff between the frozen base/),
+    ).toBeDefined();
+
+    expect(
+      screen.getByRole("button", { name: "Copiar parche de src/main.rs" }),
+    ).toBeDefined();
+
+    await userEvent.click(screen.getByRole("button", { name: /logo\.bin/ }));
+    expect(
+      screen.getByText("Archivo binario; Core no genera un parche de texto."),
+    ).toBeDefined();
   });
 });

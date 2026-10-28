@@ -21,7 +21,7 @@ import {
   type ProviderView,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
-import { LanguageSwitcher } from "../i18n";
+import { LanguageSwitcher, useI18n } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 import { ExecutionProfiles } from "./ExecutionProfiles";
 
@@ -59,6 +59,7 @@ function ProviderCard({
   provider: ProviderView;
   onChanged: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [model, setModel] = useState(provider.model);
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl);
   const [credential, setCredential] = useState("");
@@ -106,10 +107,10 @@ function ProviderCard({
       setAuditError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Configuration audit could not be loaded.",
+          : t("settings.provider.auditError"),
       );
     }
-  }, [provider.provider]);
+  }, [provider.provider, t]);
 
   useEffect(() => {
     void refreshAudit();
@@ -135,14 +136,14 @@ function ProviderCard({
         outputMicrosPerMillion: outputRate,
       });
       setCredential("");
-      setNotice(
-        "Configuration saved. The credential was not returned to this page.",
-      );
+      setNotice(t("settings.provider.saved"));
       await onChanged();
       await refreshAudit();
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError ? cause.message : "Provider save failed.",
+        cause instanceof CoreApiError
+          ? cause.message
+          : t("settings.provider.saveFailed"),
       );
     } finally {
       setBusy(false);
@@ -161,7 +162,7 @@ function ProviderCard({
       setDiscoveryError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Model discovery failed.",
+          : t("settings.provider.discoveryFailed"),
       );
     } finally {
       setDiscoveryBusy(false);
@@ -179,7 +180,7 @@ function ProviderCard({
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Connection test failed.",
+          : t("settings.provider.testFailed"),
       );
     } finally {
       setBusy(false);
@@ -191,7 +192,7 @@ function ProviderCard({
     setError(null);
     try {
       await coreApi.revokeProviderCredential(provider.provider);
-      setNotice("Credential revoked and provider disabled.");
+      setNotice(t("settings.provider.revoked"));
       setCredential("");
       setRevoking(false);
       await onChanged();
@@ -200,7 +201,7 @@ function ProviderCard({
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Credential revocation failed.",
+          : t("settings.provider.revokeFailed"),
       );
     } finally {
       setBusy(false);
@@ -220,15 +221,24 @@ function ProviderCard({
           <StatusBadge
             status={provider.configured ? "CONFIGURED" : "NOT_CONFIGURED"}
             label={
-              provider.configured ? "credential configured" : "not configured"
+              provider.configured
+                ? t("settings.provider.credentialConfigured")
+                : t("settings.provider.notConfigured")
             }
           />
           <StatusBadge
             status={provider.enabled ? "ENABLED" : "DISABLED"}
-            label={provider.enabled ? "enabled" : "disabled"}
+            label={
+              provider.enabled
+                ? t("settings.provider.enabled")
+                : t("settings.provider.disabled")
+            }
           />
           {provider.isDefault && (
-            <StatusBadge status="DEFAULT" label="default route" />
+            <StatusBadge
+              status="DEFAULT"
+              label={t("settings.provider.defaultRoute")}
+            />
           )}
           <StatusBadge status={provider.status} />
         </div>
@@ -236,64 +246,71 @@ function ProviderCard({
 
       <dl className="overview-facts">
         <div>
-          <dt>Model</dt>
+          <dt>{t("settings.provider.model")}</dt>
           <dd>{provider.model}</dd>
         </div>
         <div>
-          <dt>Endpoint</dt>
+          <dt>{t("settings.provider.endpoint")}</dt>
           <dd>
             <code>{provider.baseUrl}</code>
           </dd>
         </div>
         <div>
-          <dt>Auth modes</dt>
+          <dt>{t("settings.provider.authModes")}</dt>
           <dd>{provider.authModes.join(", ")}</dd>
         </div>
         <div>
-          <dt>ChatGPT OAuth</dt>
+          <dt>{t("settings.provider.chatgptOauth")}</dt>
           <dd>
             <StatusBadge status={provider.chatgptOauth} />
           </dd>
         </div>
         <div>
-          <dt>Revision</dt>
+          <dt>{t("settings.provider.revision")}</dt>
           <dd>{provider.revision}</dd>
         </div>
         <div>
-          <dt>Updated</dt>
+          <dt>{t("settings.provider.updated")}</dt>
           <dd>{formatTimestamp(provider.updatedAt)}</dd>
         </div>
       </dl>
 
-      <section className="verification-path" aria-label="Verification path">
+      <section
+        className="verification-path"
+        aria-label={t("settings.provider.verification.aria")}
+      >
         <VerificationStep
-          label="Configured route"
+          label={t("settings.provider.verification.route")}
           status={provider.configured ? "CONFIGURED" : "NOT_CONFIGURED"}
-          detail="A saved route and credential are configuration, not proof of access."
+          detail={t("settings.provider.verification.routeDetail")}
         />
         <VerificationStep
-          label="Connection test"
+          label={t("settings.provider.verification.test")}
           status={test?.status ?? "NOT_TESTED"}
           detail={
             test
-              ? `${test.detail}; model ${test.modelAvailable ? "listed" : "not listed"}`
-              : "Not run in this page load. A model list is not coding inference."
+              ? t("settings.provider.verification.testDetail", {
+                  detail: test.detail,
+                  model: test.modelAvailable
+                    ? t("settings.provider.listed")
+                    : t("settings.provider.notListed"),
+                })
+              : t("settings.provider.verification.testNotRun")
           }
         />
         <VerificationStep
-          label="Coding inference"
+          label={t("settings.provider.verification.inference")}
           status="NOT_TESTED"
-          detail="No paid inference is authorized or proven by a /models response."
+          detail={t("settings.provider.verification.inferenceDetail")}
         />
       </section>
 
-      <section aria-label="Model catalog">
+      <section aria-label={t("settings.provider.catalog.aria")}>
         <div className="section-heading">
           <div>
-            <h3>Model catalog</h3>
+            <h3>{t("settings.provider.catalog.title")}</h3>
             <span className="muted">
-              A real provider catalog substantiates model IDs. It is discovery,
-              not proof of coding inference.
+              {t("settings.provider.catalog.description")}
             </span>
           </div>
           <Button
@@ -302,7 +319,9 @@ function ProviderCard({
             disabled={busy || discoveryBusy || !provider.configured}
             onClick={() => void discoverModels()}
           >
-            {discoveryBusy ? "Discovering…" : "Discover models"}
+            {discoveryBusy
+              ? t("settings.provider.catalog.discovering")
+              : t("settings.provider.catalog.discover")}
           </Button>
         </div>
         {discoveryError && (
@@ -312,10 +331,9 @@ function ProviderCard({
         )}
         {catalog === null ? (
           <p className="muted">
-            No model discovery is recorded in this Core process.{" "}
             {provider.configured
-              ? "Run discovery to read the provider catalog."
-              : "Configure the connection first."}
+              ? t("settings.provider.catalog.emptyConfigured")
+              : t("settings.provider.catalog.emptyUnconfigured")}
           </p>
         ) : (
           <div>
@@ -335,15 +353,13 @@ function ProviderCard({
                       size="sm"
                       onClick={() => setModel(discovered)}
                     >
-                      Use
+                      {t("settings.provider.catalog.use")}
                     </Button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="muted">
-                No model IDs were returned. Core does not invent them.
-              </p>
+              <p className="muted">{t("settings.provider.catalog.noModels")}</p>
             )}
           </div>
         )}
@@ -359,13 +375,13 @@ function ProviderCard({
       <form className="settings-form" onSubmit={(event) => void save(event)}>
         <div className="grid-2">
           <Input
-            label="Model"
+            label={t("settings.provider.model")}
             value={model}
             onChange={(event) => setModel(event.target.value)}
             required
           />
           <Input
-            label="Base URL"
+            label={t("settings.provider.baseUrl")}
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             required
@@ -374,92 +390,93 @@ function ProviderCard({
         <Input
           label={
             provider.configured
-              ? "Replace credential (leave blank to keep current)"
-              : "Provider credential"
+              ? t("settings.provider.replaceCredential")
+              : t("settings.provider.credential")
           }
           type="password"
           value={credential}
           onChange={(event) => setCredential(event.target.value)}
           autoComplete="new-password"
           required={!provider.configured}
-          placeholder={provider.configured ? "unchanged" : "provider API key"}
-          help="Credentials are encrypted by Core, never returned to the browser and never rendered in audit rows."
+          placeholder={
+            provider.configured
+              ? t("settings.provider.credentialUnchanged")
+              : t("settings.provider.credentialPlaceholder")
+          }
+          help={t("settings.provider.credentialHelp")}
         />
         <details className="settings-advanced">
-          <summary>Advanced budget and rate limits</summary>
+          <summary>{t("settings.provider.advanced")}</summary>
           <div className="grid-2">
             <Input
-              label="Max turns"
+              label={t("settings.provider.maxTurns")}
               type="number"
               min={0}
               value={maxTurns}
               onChange={(event) => setMaxTurns(Number(event.target.value))}
             />
             <Input
-              label="Max cost (micros)"
+              label={t("settings.provider.maxCost")}
               type="number"
               min={0}
               value={maxCost}
               onChange={(event) => setMaxCost(Number(event.target.value))}
             />
             <Input
-              label="Max input tokens"
+              label={t("settings.provider.maxInput")}
               type="number"
               min={0}
               value={maxInput}
               onChange={(event) => setMaxInput(Number(event.target.value))}
             />
             <Input
-              label="Max output tokens"
+              label={t("settings.provider.maxOutput")}
               type="number"
               min={0}
               value={maxOutput}
               onChange={(event) => setMaxOutput(Number(event.target.value))}
             />
             <Input
-              label="Input micros / million"
+              label={t("settings.provider.inputRate")}
               type="number"
               min={0}
               value={inputRate}
               onChange={(event) => setInputRate(Number(event.target.value))}
             />
             <Input
-              label="Output micros / million"
+              label={t("settings.provider.outputRate")}
               type="number"
               min={0}
               value={outputRate}
               onChange={(event) => setOutputRate(Number(event.target.value))}
             />
           </div>
-          <p className="muted">
-            These are provider-route defaults and Core model-call caps. The
-            explicit Campaign authorization remains authoritative for provider
-            sessions; these limits do not widen it. Frozen Campaign bindings are
-            not rewritten by a provider settings revision.
-          </p>
+          <p className="muted">{t("settings.provider.advancedHint")}</p>
         </details>
         <div className="settings-checks">
           <Checkbox
-            label="Enabled"
+            label={t("settings.provider.enabledLabel")}
             checked={enabled}
             onChange={(event) => setEnabled(event.target.checked)}
           />
           <Checkbox
-            label="Default route for Core model calls"
+            label={t("settings.provider.defaultLabel")}
             checked={isDefault}
             onChange={(event) => setIsDefault(event.target.checked)}
           />
         </div>
         <div className="row">
           <Button type="submit" variant="primary" disabled={busy}>
-            {busy ? "Saving…" : "Save configuration"}
+            {busy ? t("settings.provider.saving") : t("settings.provider.save")}
           </Button>
           <Button
             type="button"
             disabled={busy || !provider.configured}
             onClick={() => void runTest()}
           >
-            {busy ? "Working…" : "Test connection"}
+            {busy
+              ? t("settings.provider.working")
+              : t("settings.provider.test")}
           </Button>
           <Button
             type="button"
@@ -467,7 +484,7 @@ function ProviderCard({
             disabled={busy || !provider.configured}
             onClick={() => setRevoking(true)}
           >
-            Revoke credential
+            {t("settings.provider.revoke")}
           </Button>
         </div>
       </form>
@@ -475,10 +492,9 @@ function ProviderCard({
       {revoking && (
         <div className="ui-callout ui-callout--danger" role="alert">
           <p>
-            Revoke the stored credential for{" "}
-            <strong>{provider.displayName}</strong>? Core will disable this
-            provider route. Already frozen Campaign bindings keep their recorded
-            route; no new Core model call can use the credential.
+            {t("settings.provider.revokeConfirm", {
+              provider: provider.displayName,
+            })}
           </p>
           <div className="row">
             <Button
@@ -486,14 +502,16 @@ function ProviderCard({
               disabled={busy}
               onClick={() => void revoke()}
             >
-              {busy ? "Revoking…" : "Confirm revocation"}
+              {busy
+                ? t("settings.provider.revoking")
+                : t("settings.provider.confirmRevoke")}
             </Button>
             <Button
               type="button"
               disabled={busy}
               onClick={() => setRevoking(false)}
             >
-              Keep credential
+              {t("settings.provider.keepCredential")}
             </Button>
           </div>
         </div>
@@ -502,46 +520,52 @@ function ProviderCard({
       {test && (
         <div className="ui-callout ui-callout--info" role="status">
           <p>
-            Connection test: <StatusBadge status={test.status} /> ·{" "}
-            {test.detail}
-            {" · "}model <code>{test.model}</code>{" "}
-            {test.modelAvailable ? "listed" : "not listed"}
+            {t("settings.provider.testTitle")}{" "}
+            <StatusBadge status={test.status} /> · {test.detail}
+            {" · "}
+            {t("settings.provider.testModel")} <code>{test.model}</code>{" "}
+            {test.modelAvailable
+              ? t("settings.provider.listed")
+              : t("settings.provider.notListed")}
           </p>
           {test.models.length > 0 && (
             <p className="muted">
-              Models: {test.models.slice(0, 20).join(", ")}
-              {test.models.length > 20 ? "…" : ""}
+              {t("settings.provider.models", {
+                models: `${test.models.slice(0, 20).join(", ")}${
+                  test.models.length > 20 ? "…" : ""
+                }`,
+              })}
             </p>
           )}
-          <p className="muted">
-            A model list does not certify access, pricing or coding inference.
-          </p>
+          <p className="muted">{t("settings.provider.testNote")}</p>
         </div>
       )}
 
       <details className="settings-audit">
-        <summary>Configuration audit ({audit.length})</summary>
+        <summary>
+          {t("settings.provider.audit.title", { count: audit.length })}
+        </summary>
         {auditError ? (
           <div className="ui-callout ui-callout--danger" role="alert">
-            <p>{auditError} The audit history is unknown, not empty.</p>
+            <p>{t("settings.provider.audit.error", { error: auditError })}</p>
             <Button size="sm" onClick={() => void refreshAudit()}>
-              Retry audit
+              {t("settings.provider.audit.retry")}
             </Button>
           </div>
         ) : audit.length === 0 ? (
           <EmptyState
-            title="No audit entries"
-            description="Core returned an empty audit history for this provider."
+            title={t("settings.provider.audit.emptyTitle")}
+            description={t("settings.provider.audit.emptyDescription")}
           />
         ) : (
           <table>
             <thead>
               <tr>
-                <th>Revision</th>
-                <th>Action</th>
-                <th>Actor</th>
-                <th>Detail</th>
-                <th>Time</th>
+                <th>{t("settings.provider.audit.revision")}</th>
+                <th>{t("settings.provider.audit.action")}</th>
+                <th>{t("settings.provider.audit.actor")}</th>
+                <th>{t("settings.provider.audit.detail")}</th>
+                <th>{t("settings.provider.audit.time")}</th>
               </tr>
             </thead>
             <tbody>
@@ -563,6 +587,7 @@ function ProviderCard({
 }
 
 export function Settings() {
+  const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = resolveTab(searchParams.get("tab"));
   const needsProviderSettings = tab === "providers" || tab === "runtime";
@@ -598,10 +623,10 @@ export function Settings() {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Failed to load provider settings.",
+          : t("settings.error.load"),
       );
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (needsProviderSettings) void load();
@@ -617,12 +642,12 @@ export function Settings() {
         semanticReviewMaxOutputTokens: reviewTokens,
       });
       setRuntime(next);
-      setNotice("Runtime review policy saved.");
+      setNotice(t("settings.runtime.saved"));
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Runtime policy update failed.",
+          : t("settings.runtime.saveFailed"),
       );
     }
   }
@@ -631,39 +656,49 @@ export function Settings() {
     return (
       <ErrorState
         message={error}
-        action={<Button onClick={() => void load()}>Retry</Button>}
+        action={
+          <Button onClick={() => void load()}>{t("common.retry")}</Button>
+        }
       />
     );
   }
   if (needsProviderSettings && !loaded)
-    return <LoadingState label="Loading settings…" />;
+    return <LoadingState label={t("settings.loading")} />;
 
   const tabs: TabItem[] = [
-    { id: "profiles", label: "Execution profiles" },
-    { id: "providers", label: "Providers & models", count: providers.length },
-    { id: "runtime", label: "Runtime policy" },
-    { id: "access", label: "Access & Devices" },
+    { id: "profiles", label: t("settings.tabs.profiles") },
+    {
+      id: "providers",
+      label: t("settings.tabs.providers"),
+      count: providers.length,
+    },
+    { id: "runtime", label: t("settings.tabs.runtime") },
+    { id: "access", label: t("settings.tabs.access") },
   ];
 
   return (
     <div className="settings-workspace">
       <PageHeader
-        title="Settings"
+        title={t("settings.title")}
         description={
           tab === "access"
-            ? "Review local and private remote access, pair trusted devices, and revoke sessions."
+            ? t("settings.description.access")
             : tab === "profiles"
-              ? "Create versioned, Core-owned execution profiles for the Lead, Implementer and Semantic Reviewer roles. A profile is configuration, not an authorization."
-              : "Configure Core-owned provider routes and review policy. Credentials are encrypted at rest and never returned after submission. A configured route is not proof of live coding inference."
+              ? t("settings.description.profiles")
+              : t("settings.description.providers")
         }
         meta={
           <>
             {needsProviderSettings && (
-              <span>{providers.length} provider(s)</span>
+              <span>
+                {t("settings.meta.providers", { count: providers.length })}
+              </span>
             )}
             {needsProviderSettings && (
               <span>
-                Fetched {lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—"}
+                {t("settings.meta.fetched", {
+                  date: lastLoadedAt ? formatTimestamp(lastLoadedAt) : "—",
+                })}
               </span>
             )}
           </>
@@ -671,7 +706,7 @@ export function Settings() {
         actions={
           needsProviderSettings ? (
             <Button size="sm" onClick={() => void load()}>
-              Refresh
+              {t("settings.refresh")}
             </Button>
           ) : undefined
         }
@@ -679,7 +714,7 @@ export function Settings() {
       <LanguageSwitcher />
       {needsProviderSettings && error && (
         <div className="ui-callout ui-callout--danger" role="alert">
-          {error} The displayed configuration may be stale.
+          {error} {t("settings.error.stale")}
         </div>
       )}
       {notice && <p className="notice">{notice}</p>}
@@ -687,7 +722,7 @@ export function Settings() {
         items={tabs}
         value={tab}
         onChange={selectTab}
-        label="Settings sections"
+        label={t("settings.tabs.label")}
       />
 
       {tab === "profiles" && (
@@ -710,8 +745,8 @@ export function Settings() {
         >
           {providers.length === 0 ? (
             <EmptyState
-              title="No provider routes"
-              description="Core did not return a provider catalog entry."
+              title={t("settings.providers.emptyTitle")}
+              description={t("settings.providers.emptyDescription")}
             />
           ) : (
             providers.map((provider) => (
@@ -734,29 +769,21 @@ export function Settings() {
         >
           <Panel>
             <div className="section-heading">
-              <h2>Review and runtime policy</h2>
-              <span className="muted">
-                This policy is separate from a provider route or Campaign
-                authorization
-              </span>
+              <h2>{t("settings.runtime.title")}</h2>
+              <span className="muted">{t("settings.runtime.hint")}</span>
             </div>
-            <p className="muted">
-              Semantic Reviewer model calls are disabled by default. Enabling
-              them authorizes bounded Core-owned model calls for each candidate
-              review; they may incur provider charges. The verifier always
-              executes the frozen checks independently.
-            </p>
+            <p className="muted">{t("settings.runtime.description")}</p>
             <form
               className="settings-form"
               onSubmit={(event) => void saveRuntime(event)}
             >
               <Checkbox
-                label="Enable semantic Reviewer model calls (paid provider route)"
+                label={t("settings.runtime.enable")}
                 checked={reviewEnabled}
                 onChange={(event) => setReviewEnabled(event.target.checked)}
               />
               <Input
-                label="Semantic review max output tokens"
+                label={t("settings.runtime.maxOutput")}
                 type="number"
                 min={128}
                 max={32768}
@@ -767,43 +794,37 @@ export function Settings() {
               />
               <p className="muted">
                 {runtime
-                  ? `Current: ${runtime.semanticReviewEnabled ? "MODEL" : "DETERMINISTIC"} · updated ${formatTimestamp(runtime.updatedAt)}`
-                  : "Runtime policy not loaded."}
+                  ? t("settings.runtime.current", {
+                      mechanism: runtime.semanticReviewEnabled
+                        ? "MODEL"
+                        : "DETERMINISTIC",
+                      date: formatTimestamp(runtime.updatedAt),
+                    })
+                  : t("settings.runtime.notLoaded")}
               </p>
               <div className="row">
                 <Button type="submit" variant="primary">
-                  Save runtime policy
+                  {t("settings.runtime.save")}
                 </Button>
               </div>
             </form>
           </Panel>
           <Panel>
             <div className="section-heading">
-              <h2>Configuration boundaries</h2>
-              <Link to="/runtime">Open Runtime diagnostics</Link>
+              <h2>{t("settings.boundaries.title")}</h2>
+              <Link to="/runtime">{t("settings.boundaries.openRuntime")}</Link>
             </div>
             <dl className="detail">
-              <dt>Provider credentials</dt>
-              <dd>Encrypted by Core; never returned to this browser.</dd>
-              <dt>Frozen Campaigns</dt>
-              <dd>
-                Provider revisions do not rewrite an already frozen Campaign or
-                Delegation binding.
-              </dd>
-              <dt>Connection test</dt>
-              <dd>
-                Reads the provider model list only. It is not coding inference.
-              </dd>
-              <dt>ChatGPT OAuth</dt>
-              <dd>
-                Unsupported provider OAuth states remain visible as blocked or
-                not applicable; Office does not claim live Codex authentication.
-              </dd>
-              <dt>Credential fingerprint</dt>
-              <dd>
-                Configuration rows carry a non-secret fingerprint; the
-                credential value is never rendered.
-              </dd>
+              <dt>{t("settings.boundaries.credentials")}</dt>
+              <dd>{t("settings.boundaries.credentialsDetail")}</dd>
+              <dt>{t("settings.boundaries.frozen")}</dt>
+              <dd>{t("settings.boundaries.frozenDetail")}</dd>
+              <dt>{t("settings.boundaries.test")}</dt>
+              <dd>{t("settings.boundaries.testDetail")}</dd>
+              <dt>{t("settings.boundaries.oauth")}</dt>
+              <dd>{t("settings.boundaries.oauthDetail")}</dd>
+              <dt>{t("settings.boundaries.fingerprint")}</dt>
+              <dd>{t("settings.boundaries.fingerprintDetail")}</dd>
             </dl>
           </Panel>
         </div>

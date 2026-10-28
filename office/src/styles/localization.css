@@ -433,3 +433,56 @@
     gap: var(--space-1);
   }
 }
+
+/* Newly localized operational workspaces: keep primary controls and form
+   fields touch-sized when the layout collapses at 640 px and below. */
+@media (max-width: 640px) {
+  .overview-workspace .ui-button,
+  .delegations-workspace button,
+  .delegations-workspace .ui-button,
+  .delegations-workspace input,
+  .delegations-workspace select,
+  .campaign-workspace button,
+  .campaign-workspace .ui-button,
+  .campaign-workspace input,
+  .campaign-workspace select,
+  .campaign-workspace textarea,
+  .campaign-workspace .ui-tab,
+  .settings-workspace button,
+  .settings-workspace .ui-button,
+  .settings-workspace input,
+  .settings-workspace select,
+  .settings-workspace textarea,
+  .settings-workspace .ui-tab,
+  .project-files-workspace button,
+  .project-files-workspace .ui-button,
+  .project-files-workspace input,
+  .project-files-workspace select {
+    min-height: 44px;
+  }
+
+  .campaign-workspace .ui-page-actions,
+  .overview-workspace .ui-page-actions,
+  .project-files-workspace .ui-page-actions {
+    width: 100%;
+  }
+
+  .campaign-workspace .ui-page-actions .ui-button,
+  .overview-workspace .ui-page-actions .ui-button,
+  .project-files-workspace .ui-page-actions .ui-button {
+    flex: 1 1 180px;
+    justify-content: center;
+  }
+
+  .table-responsive th[scope="row"] {
+    display: block;
+    width: 100%;
+    padding: 10px 12px 4px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .table-responsive th[scope="row"] code {
+    overflow-wrap: anywhere;
+  }
+}

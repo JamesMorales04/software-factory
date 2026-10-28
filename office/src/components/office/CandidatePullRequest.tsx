@@ -9,6 +9,7 @@ import {
   type ProjectGitHubBinding,
 } from "../../coreApi";
 import { formatTimestamp } from "../../format";
+import { useI18n } from "../../i18n";
 import { Button } from "../ui/Button";
 import { Checkbox, Input, Select, Textarea } from "../ui/Field";
 import { EmptyState, LoadingState, Panel } from "../ui/Surface";
@@ -40,31 +41,31 @@ function errorDetail(
 }
 
 function PullRequestChecks({ status }: { status: CandidatePullRequestStatus }) {
+  const { t } = useI18n();
   const checks = status.checks;
   return (
     <div className="pr-checks" data-testid="pr-checks">
       <div className="pr-section-head">
-        <h4>Checks</h4>
+        <h4>{t("pr.checks.title")}</h4>
         <StatusBadge status={checks.state} />
       </div>
       <p className="muted">
-        {checks.detail} · head <code>{checks.headSha.slice(0, 12)}</code> ·
-        fetched {formatTimestamp(checks.fetchedAt)}
+        {checks.detail} · head <code>{checks.headSha.slice(0, 12)}</code> ·{" "}
+        {t("pr.checks.fetched", {
+          date: formatTimestamp(checks.fetchedAt),
+        })}
       </p>
       {checks.checkRuns.length === 0 && checks.statuses.length === 0 ? (
-        <p className="muted">
-          GitHub reported no check run or commit status for this head. No
-          success is inferred.
-        </p>
+        <p className="muted">{t("pr.checks.empty")}</p>
       ) : (
         <div className="pr-check-table-wrap">
           <table className="pr-check-table">
             <thead>
               <tr>
-                <th>Check</th>
-                <th>Status</th>
-                <th>Conclusion</th>
-                <th>Source</th>
+                <th>{t("pr.checks.table.check")}</th>
+                <th>{t("pr.checks.table.status")}</th>
+                <th>{t("pr.checks.table.conclusion")}</th>
+                <th>{t("pr.checks.table.source")}</th>
               </tr>
             </thead>
             <tbody>
@@ -83,17 +84,21 @@ function PullRequestChecks({ status }: { status: CandidatePullRequestStatus }) {
                   <td>
                     <StatusBadge status={run.conclusion.toUpperCase()} />
                   </td>
-                  <td className="muted">{run.app ?? "check run"}</td>
+                  <td className="muted">
+                    {run.app ?? t("pr.checks.checkRun")}
+                  </td>
                 </tr>
               ))}
               {checks.statuses.map((entry) => (
                 <tr key={`status-${entry.context}`}>
                   <td>{entry.context}</td>
-                  <td>commit status</td>
+                  <td>{t("pr.checks.commitStatus")}</td>
                   <td>
                     <StatusBadge status={entry.state.toUpperCase()} />
                   </td>
-                  <td className="muted">{entry.description || "status"}</td>
+                  <td className="muted">
+                    {entry.description || t("pr.checks.status")}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -101,10 +106,7 @@ function PullRequestChecks({ status }: { status: CandidatePullRequestStatus }) {
         </div>
       )}
       {(checks.checkRunsTruncated || checks.statusesTruncated) && (
-        <p className="warning">
-          Check results were truncated at Core's bound. Merge readiness stays
-          blocked until a complete fresh read is available.
-        </p>
+        <p className="warning">{t("pr.checks.truncated")}</p>
       )}
     </div>
   );
@@ -115,30 +117,32 @@ function PullRequestDiff({
 }: {
   diff: CandidatePullRequestDiffResult | null;
 }) {
+  const { t } = useI18n();
   if (!diff) return null;
   return (
     <div className="pr-diff" data-testid="pr-diff">
       <div className="pr-section-head">
-        <h4>Pull request diff</h4>
+        <h4>{t("pr.diff.title")}</h4>
         <span className="muted">
-          {diff.diff.bytes.toLocaleString()} bytes · fetched{" "}
-          {formatTimestamp(diff.diff.fetchedAt)}
+          {t("pr.diff.meta", {
+            bytes: diff.diff.bytes.toLocaleString(),
+            date: formatTimestamp(diff.diff.fetchedAt),
+          })}
         </span>
       </div>
       {!diff.head_matches_candidate && (
         <p className="warning" role="status">
-          This pull request head does not match the recorded Candidate commit.
-          The diff is shown for the pull request, not as Candidate evidence.
+          {t("pr.diff.headMismatch")}
         </p>
       )}
       {diff.diff.truncated && (
         <p className="warning" role="status">
-          Pull request diff truncated at Core's byte bound.
+          {t("pr.diff.truncated")}
         </p>
       )}
       <section
         className="diff-code-shell diff-code-shell--wrap"
-        aria-label={`Unified diff for pull request ${diff.pull_request.number}`}
+        aria-label={t("pr.diff.aria", { number: diff.pull_request.number })}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable diff region must be focusable so its overflow can be scrolled from the keyboard.
         tabIndex={0}
       >
@@ -161,6 +165,7 @@ export function CandidatePullRequest({
   projectId: string;
   candidateCommitSha: string;
 }) {
+  const { t } = useI18n();
   const [binding, setBinding] = useState<ProjectGitHubBinding | null>(null);
   const [bindingState, setBindingState] = useState<
     "loading" | "bound" | "unbound" | "error"
@@ -204,12 +209,10 @@ export function CandidatePullRequest({
       setBinding(null);
       setBindingState("error");
       setBindingError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : "Failed to read the Project's GitHub binding.",
+        cause instanceof CoreApiError ? cause.message : t("pr.error.binding"),
       );
     }
-  }, [projectId]);
+  }, [projectId, t]);
 
   useEffect(() => {
     void loadBinding();
@@ -227,17 +230,14 @@ export function CandidatePullRequest({
           ),
         );
       } catch (cause) {
-        const detail = errorDetail(
-          cause,
-          "Failed to read pull request comments.",
-        );
+        const detail = errorDetail(cause, t("pr.error.comments"));
         setError(detail.message);
         setErrorKind(detail.kind);
       } finally {
         setCommentsBusy(false);
       }
     },
-    [campaignId, candidateId],
+    [campaignId, candidateId, t],
   );
 
   async function loadStatus(number: number) {
@@ -259,7 +259,7 @@ export function CandidatePullRequest({
       setBlockerList(next.merge_blocked_reasons);
       void loadComments(number);
     } catch (cause) {
-      const detail = errorDetail(cause, "Failed to read the pull request.");
+      const detail = errorDetail(cause, t("pr.error.read"));
       setStatus(null);
       setError(detail.message);
       setErrorKind(detail.kind);
@@ -287,10 +287,7 @@ export function CandidatePullRequest({
         ),
       );
     } catch (cause) {
-      const detail = errorDetail(
-        cause,
-        "Failed to read the pull request diff.",
-      );
+      const detail = errorDetail(cause, t("pr.error.diff"));
       setError(detail.message);
       setErrorKind(detail.kind);
     } finally {
@@ -312,9 +309,9 @@ export function CandidatePullRequest({
       );
       setCommentBody("");
       await loadStatus(status.pull_request.number);
-      setNotice("Comment accepted by GitHub through Core.");
+      setNotice(t("pr.notice.comment"));
     } catch (cause) {
-      const detail = errorDetail(cause, "Failed to post the comment.");
+      const detail = errorDetail(cause, t("pr.error.comment"));
       setError(detail.message);
       setErrorKind(detail.kind);
     } finally {
@@ -329,7 +326,7 @@ export function CandidatePullRequest({
       .map((reviewer) => reviewer.trim())
       .filter(Boolean);
     if (list.length === 0) {
-      setError("Enter at least one GitHub reviewer login.");
+      setError(t("pr.review.empty"));
       setErrorKind("INVALID_REQUEST");
       return;
     }
@@ -344,11 +341,11 @@ export function CandidatePullRequest({
         list,
       );
       setNotice(
-        `Review requested from ${result.reviewers.join(", ")}. No approval is inferred.`,
+        t("pr.notice.review", { reviewers: result.reviewers.join(", ") }),
       );
       setReviewers("");
     } catch (cause) {
-      const detail = errorDetail(cause, "Failed to request review.");
+      const detail = errorDetail(cause, t("pr.error.review"));
       setError(detail.message);
       setErrorKind(detail.kind);
     } finally {
@@ -376,10 +373,13 @@ export function CandidatePullRequest({
       setMergeConfirmed(false);
       await loadStatus(status.pull_request.number);
       setNotice(
-        `Merged as ${result.merge_commit_sha.slice(0, 12) || "a merge commit recorded by GitHub"}. ${result.message}`,
+        t("pr.notice.merge", {
+          sha: result.merge_commit_sha.slice(0, 12) || t("pr.merge.noSha"),
+          message: result.message,
+        }),
       );
     } catch (cause) {
-      const detail = errorDetail(cause, "Merge was not accepted.");
+      const detail = errorDetail(cause, t("pr.error.merge"));
       await loadStatus(status.pull_request.number);
       setError(detail.message);
       setErrorKind(detail.kind);
@@ -408,11 +408,9 @@ export function CandidatePullRequest({
       );
       setNumberInput(String(result.pull_request.number));
       await loadStatus(result.pull_request.number);
-      setNotice(
-        `Opened pull request #${result.pull_request.number}. Core verified the head branch resolved to the exact Candidate commit.`,
-      );
+      setNotice(t("pr.notice.open", { number: result.pull_request.number }));
     } catch (cause) {
-      const detail = errorDetail(cause, "Pull request was not opened.");
+      const detail = errorDetail(cause, t("pr.error.open"));
       setError(detail.message);
       setErrorKind(detail.kind);
     } finally {
@@ -425,40 +423,37 @@ export function CandidatePullRequest({
       <div className="pr-heading">
         <div>
           <h3>
-            <GitPullRequest size={17} aria-hidden="true" /> GitHub pull request
+            <GitPullRequest size={17} aria-hidden="true" /> {t("pr.title")}
           </h3>
-          <p className="muted">
-            Core uses the encrypted GitHub connection. Tokens never reach this
-            page; branch protection and required checks remain
-            GitHub-authoritative.
-          </p>
+          <p className="muted">{t("pr.description")}</p>
         </div>
         {binding && (
           <div className="pr-binding">
             <span>
               <strong>{binding.repo_full_name}</strong>
             </span>
-            <span className="muted">base {binding.default_branch}</span>
+            <span className="muted">
+              {t("pr.binding.base", { branch: binding.default_branch })}
+            </span>
             <Button
               size="sm"
               variant="quiet"
               onClick={() => void loadBinding()}
-              aria-label="Refresh Project GitHub binding"
+              aria-label={t("pr.binding.refreshAria")}
             >
-              <RefreshCw size={14} aria-hidden="true" /> Refresh
+              <RefreshCw size={14} aria-hidden="true" />{" "}
+              {t("pr.binding.refresh")}
             </Button>
           </div>
         )}
       </div>
 
       {bindingState === "loading" && (
-        <LoadingState label="Reading the Project GitHub binding…" />
+        <LoadingState label={t("pr.binding.loading")} />
       )}
       {bindingState === "unbound" && (
         <div className="ui-callout ui-callout--attention" role="status">
-          This Project is not bound to a GitHub repository. Pull request reads
-          and actions are unavailable until the Project is bound in Projects.
-          Core does not infer a repository or PR.
+          {t("pr.binding.unbound")}
         </div>
       )}
       {bindingState === "error" && (
@@ -473,13 +468,12 @@ export function CandidatePullRequest({
       )}
       {error && (
         <div className="ui-callout ui-callout--danger" role="alert">
-          <strong>{errorKind ?? "Pull request operation failed"}.</strong>{" "}
-          {error}
+          <strong>{errorKind ?? t("pr.error.title")}.</strong> {error}
         </div>
       )}
       {blockers.length > 0 && (
         <div className="ui-callout ui-callout--attention" role="status">
-          <strong>Merge blocked by Core's fresh read.</strong>
+          <strong>{t("pr.merge.blockedTitle")}</strong>
           <ul>
             {blockers.map((blocker) => (
               <li key={blocker}>{blocker}</li>
@@ -492,19 +486,19 @@ export function CandidatePullRequest({
         <>
           <div className="pr-lookup">
             <Input
-              label="Pull request number"
+              label={t("pr.lookup.label")}
               inputMode="numeric"
               value={numberInput}
               onChange={(event) => setNumberInput(event.target.value)}
               placeholder="42"
-              help="Reads an existing PR from GitHub. No PR is invented from a candidate."
+              help={t("pr.lookup.help")}
             />
             <Button
               variant="primary"
               disabled={statusBusy || !/^[1-9][0-9]*$/.test(numberInput.trim())}
               onClick={() => void loadStatus(Number(numberInput.trim()))}
             >
-              {statusBusy ? "Reading…" : "Read PR and checks"}
+              {statusBusy ? t("pr.lookup.reading") : t("pr.lookup.read")}
             </Button>
           </div>
 
@@ -543,7 +537,7 @@ export function CandidatePullRequest({
                 </div>
               </div>
               <dl className="detail pr-facts">
-                <dt>Head</dt>
+                <dt>{t("pr.facts.head")}</dt>
                 <dd>
                   <code>{status.pull_request.headRef}</code>{" "}
                   <code title={status.pull_request.headSha}>
@@ -555,35 +549,40 @@ export function CandidatePullRequest({
                     }
                   >
                     {status.head_matches_candidate
-                      ? "matches Candidate"
-                      : "does not match Candidate"}
+                      ? t("pr.facts.headMatches")
+                      : t("pr.facts.headMismatch")}
                   </span>
                 </dd>
-                <dt>Base</dt>
+                <dt>{t("pr.facts.base")}</dt>
                 <dd>
                   <code>{status.pull_request.baseRef}</code>{" "}
                   <code title={status.pull_request.baseSha}>
                     {status.pull_request.baseSha.slice(0, 12)}
                   </code>
                 </dd>
-                <dt>GitHub mergeable</dt>
+                <dt>{t("pr.facts.mergeable")}</dt>
                 <dd>
                   {status.pull_request.mergeable === null
-                    ? "unknown (GitHub has not computed it)"
+                    ? t("pr.facts.mergeableUnknown")
                     : status.pull_request.mergeable
-                      ? "yes"
-                      : "no"}{" "}
-                  · state <code>{status.pull_request.mergeableState}</code>
+                      ? t("pr.facts.mergeableYes")
+                      : t("pr.facts.mergeableNo")}{" "}
+                  ·{" "}
+                  {t("pr.facts.mergeableState", {
+                    state: status.pull_request.mergeableState,
+                  })}
                 </dd>
-                <dt>Changes</dt>
+                <dt>{t("pr.facts.changes")}</dt>
                 <dd>
-                  {status.pull_request.changedFiles} files · +
-                  {status.pull_request.additions} / −
-                  {status.pull_request.deletions}
+                  {t("pr.facts.changesValue", {
+                    files: status.pull_request.changedFiles,
+                    additions: status.pull_request.additions,
+                    deletions: status.pull_request.deletions,
+                  })}
                 </dd>
-                <dt>Gate</dt>
-                <dd>{status.gate?.outcome ?? "no Gate decision recorded"}</dd>
-                <dt>Checked</dt>
+                <dt>{t("pr.facts.gate")}</dt>
+                <dd>{status.gate?.outcome ?? t("pr.facts.gateNone")}</dd>
+                <dt>{t("pr.facts.checked")}</dt>
                 <dd>{formatTimestamp(status.checked_at)}</dd>
               </dl>
 
@@ -595,14 +594,15 @@ export function CandidatePullRequest({
                   onClick={() => void loadStatus(status.pull_request.number)}
                   disabled={statusBusy}
                 >
-                  <RefreshCw size={14} aria-hidden="true" /> Fresh read
+                  <RefreshCw size={14} aria-hidden="true" />{" "}
+                  {t("pr.actions.freshRead")}
                 </Button>
                 <Button
                   size="sm"
                   onClick={() => void loadDiff()}
                   disabled={diffBusy}
                 >
-                  {diffBusy ? "Reading diff…" : "Read PR diff"}
+                  {diffBusy ? t("pr.diff.reading") : t("pr.diff.read")}
                 </Button>
               </div>
 
@@ -611,17 +611,19 @@ export function CandidatePullRequest({
               <div className="pr-grid">
                 <section aria-labelledby="pr-comments-heading">
                   <div className="pr-section-head">
-                    <h4 id="pr-comments-heading">Comments</h4>
+                    <h4 id="pr-comments-heading">{t("pr.comments.title")}</h4>
                     <span className="muted">
-                      {comments?.comments.comments.length ?? 0} shown
+                      {t("pr.comments.shown", {
+                        count: comments?.comments.comments.length ?? 0,
+                      })}
                     </span>
                   </div>
                   {commentsBusy ? (
-                    <LoadingState label="Reading comments…" />
+                    <LoadingState label={t("pr.comments.loading")} />
                   ) : !comments || comments.comments.comments.length === 0 ? (
                     <EmptyState
-                      title="No comments"
-                      description="GitHub returned no issue or review comment for this pull request."
+                      title={t("pr.comments.emptyTitle")}
+                      description={t("pr.comments.emptyDescription")}
                     />
                   ) : (
                     <ul className="pr-comments">
@@ -629,7 +631,7 @@ export function CandidatePullRequest({
                         <li key={`${comment.kind}-${comment.id}`}>
                           <div className="pr-comment-head">
                             <strong>
-                              {comment.author ?? "unknown author"}
+                              {comment.author ?? t("pr.comments.unknownAuthor")}
                             </strong>
                             <span className="muted">
                               {comment.kind} ·{" "}
@@ -642,7 +644,7 @@ export function CandidatePullRequest({
                           <p className="pr-comment-body">{comment.body}</p>
                           {comment.bodyTruncated && (
                             <span className="warning">
-                              Comment body truncated by Core's bound.
+                              {t("pr.comments.truncatedBody")}
                             </span>
                           )}
                         </li>
@@ -650,15 +652,13 @@ export function CandidatePullRequest({
                     </ul>
                   )}
                   {comments?.comments.truncated && (
-                    <p className="warning">
-                      Comment list truncated at Core's bound.
-                    </p>
+                    <p className="warning">{t("pr.comments.listTruncated")}</p>
                   )}
                   <Textarea
-                    label="Add a comment"
+                    label={t("pr.comments.addLabel")}
                     value={commentBody}
                     onChange={(event) => setCommentBody(event.target.value)}
-                    placeholder="Record a concrete finding or request."
+                    placeholder={t("pr.comments.placeholder")}
                     rows={3}
                   />
                   <Button
@@ -666,50 +666,49 @@ export function CandidatePullRequest({
                     onClick={() => void submitComment()}
                     disabled={commentBusy || commentBody.trim() === ""}
                   >
-                    {commentBusy ? "Posting…" : "Post comment"}
+                    {commentBusy
+                      ? t("pr.comments.posting")
+                      : t("pr.comments.post")}
                   </Button>
                 </section>
 
                 <section aria-labelledby="pr-review-heading">
                   <div className="pr-section-head">
-                    <h4 id="pr-review-heading">Request review</h4>
+                    <h4 id="pr-review-heading">{t("pr.review.title")}</h4>
                   </div>
                   <Input
-                    label="Reviewer logins"
+                    label={t("pr.review.logins")}
                     value={reviewers}
                     onChange={(event) => setReviewers(event.target.value)}
                     placeholder="octocat, reviewer"
-                    help="Comma-separated GitHub logins. A request is not an approval."
+                    help={t("pr.review.help")}
                   />
                   <Button
                     size="sm"
                     onClick={() => void submitReview()}
                     disabled={reviewBusy || reviewers.trim() === ""}
                   >
-                    {reviewBusy ? "Requesting…" : "Request review"}
+                    {reviewBusy
+                      ? t("pr.review.requesting")
+                      : t("pr.review.request")}
                   </Button>
                 </section>
               </div>
 
               <section className="pr-merge" aria-labelledby="pr-merge-heading">
                 <div className="pr-section-head">
-                  <h4 id="pr-merge-heading">Authorized merge</h4>
-                  <span className="muted">
-                    no auto-merge · Core re-reads PR and checks immediately
-                    before merge
-                  </span>
+                  <h4 id="pr-merge-heading">{t("pr.merge.title")}</h4>
+                  <span className="muted">{t("pr.merge.hint")}</span>
                 </div>
                 <p className="muted">
-                  Expected head{" "}
+                  {t("pr.merge.expectedHead")}{" "}
                   <code title={candidateCommitSha}>
                     {candidateCommitSha.slice(0, 12)}
                   </code>{" "}
-                  is pinned in the merge request. GitHub still enforces branch
-                  protection and required checks. A blocked response is shown as
-                  blocked, never as success.
+                  {t("pr.merge.expectedHeadDetail")}
                 </p>
                 <Select
-                  label="Merge method"
+                  label={t("pr.merge.method")}
                   value={mergeMethod}
                   onChange={(event) =>
                     setMergeMethod(
@@ -717,12 +716,12 @@ export function CandidatePullRequest({
                     )
                   }
                 >
-                  <option value="squash">Squash</option>
-                  <option value="merge">Merge commit</option>
-                  <option value="rebase">Rebase</option>
+                  <option value="squash">{t("pr.merge.squash")}</option>
+                  <option value="merge">{t("pr.merge.mergeCommit")}</option>
+                  <option value="rebase">{t("pr.merge.rebase")}</option>
                 </Select>
                 <Checkbox
-                  label="I explicitly confirm this merge of the exact expected head."
+                  label={t("pr.merge.confirm")}
                   checked={mergeConfirmed}
                   onChange={(event) => setMergeConfirmed(event.target.checked)}
                 />
@@ -736,47 +735,44 @@ export function CandidatePullRequest({
                     mergeBusy
                   }
                 >
-                  {mergeBusy ? "Merging…" : "Merge pull request"}
+                  {mergeBusy ? t("pr.merge.merging") : t("pr.merge.submit")}
                 </Button>
                 {!status.merge_ready && (
-                  <p className="warning">
-                    Merge is disabled until Core's fresh read reports a clean,
-                    matching head with complete successful checks.
-                  </p>
+                  <p className="warning">{t("pr.merge.disabled")}</p>
                 )}
               </section>
             </div>
           )}
 
           <details className="pr-open">
-            <summary>Open a pull request from an exact branch</summary>
+            <summary>{t("pr.open.summary")}</summary>
             <p className="muted">
-              Core verifies the GitHub branch resolves to{" "}
+              {t("pr.open.hint")}{" "}
               <code title={candidateCommitSha}>
                 {candidateCommitSha.slice(0, 12)}
               </code>
-              . A mismatched or missing branch is a typed blocked result.
+              . {t("pr.open.hintSuffix")}
             </p>
             <Input
-              label="Head branch"
+              label={t("pr.open.head")}
               value={openHead}
               onChange={(event) => setOpenHead(event.target.value)}
               placeholder="campaign/candidate-42"
             />
             <Input
-              label="Title"
+              label={t("pr.open.title")}
               value={openTitle}
               onChange={(event) => setOpenTitle(event.target.value)}
               maxLength={256}
             />
             <Textarea
-              label="Body"
+              label={t("pr.open.body")}
               value={openBody}
               onChange={(event) => setOpenBody(event.target.value)}
               rows={3}
             />
             <Checkbox
-              label="Open as draft"
+              label={t("pr.open.draft")}
               checked={openDraft}
               onChange={(event) => setOpenDraft(event.target.checked)}
             />
@@ -787,7 +783,7 @@ export function CandidatePullRequest({
                 openBusy || openHead.trim() === "" || openTitle.trim() === ""
               }
             >
-              {openBusy ? "Opening…" : "Open pull request"}
+              {openBusy ? t("pr.open.opening") : t("pr.open.submit")}
             </Button>
           </details>
         </>

@@ -191,11 +191,11 @@ describe("Settings", () => {
     expect(screen.getByLabelText("Idioma de la interfaz")).toBeDefined();
     expect(
       screen
-        .getByRole("tab", { name: "Runtime policy" })
+        .getByRole("tab", { name: "Política del entorno" })
         .getAttribute("aria-selected"),
     ).toBe("true");
     expect(
-      screen.getByRole("heading", { name: "Review and runtime policy" }),
+      screen.getByRole("heading", { name: "Política de revisión y entorno" }),
     ).toBeDefined();
     expect(document.documentElement.lang).toBe("es");
     await waitFor(() =>
