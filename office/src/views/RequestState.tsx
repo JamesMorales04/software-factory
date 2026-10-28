@@ -1,17 +1,18 @@
 import { Badge, type BadgeTone } from "../components/ui/Badge";
 import type { IntakeMode, IntakeState } from "../coreApi";
+import { useI18n } from "../i18n";
 
-const STATE_LABELS: Record<IntakeState, string> = {
-  SUBMITTED: "Submitted",
-  ASSESSING: "Assessing",
-  PLAN_READY: "Plan ready",
-  AWAITING_APPROVAL: "Awaiting approval",
-  EXECUTING: "Executing",
-  BLOCKED: "Blocked",
-  FAILED: "Failed",
-  COMPLETED: "Completed",
-  CANCELLED: "Cancelled",
-};
+const STATE_KEYS = {
+  SUBMITTED: "request.state.SUBMITTED",
+  ASSESSING: "request.state.ASSESSING",
+  PLAN_READY: "request.state.PLAN_READY",
+  AWAITING_APPROVAL: "request.state.AWAITING_APPROVAL",
+  EXECUTING: "request.state.EXECUTING",
+  BLOCKED: "request.state.BLOCKED",
+  FAILED: "request.state.FAILED",
+  COMPLETED: "request.state.COMPLETED",
+  CANCELLED: "request.state.CANCELLED",
+} as const satisfies Record<IntakeState, string>;
 
 const STATE_TONES: Record<IntakeState, BadgeTone> = {
   SUBMITTED: "neutral",
@@ -25,10 +26,10 @@ const STATE_TONES: Record<IntakeState, BadgeTone> = {
   CANCELLED: "muted",
 };
 
-export function intakeStateLabel(state: IntakeState | string): string {
-  if (state in STATE_LABELS) return STATE_LABELS[state as IntakeState];
-  return state.replaceAll("_", " ").toLowerCase();
-}
+const MODE_KEYS = {
+  REVIEW_PLAN: "request.mode.REVIEW_PLAN",
+  AUTONOMOUS: "request.mode.AUTONOMOUS",
+} as const satisfies Record<IntakeMode, string>;
 
 export function intakeStateTone(state: IntakeState | string): BadgeTone {
   if (state in STATE_TONES) return STATE_TONES[state as IntakeState];
@@ -36,24 +37,22 @@ export function intakeStateTone(state: IntakeState | string): BadgeTone {
 }
 
 export function IntakeStateBadge({ state }: { state: IntakeState | string }) {
+  const { t } = useI18n();
+  const known = state in STATE_KEYS ? STATE_KEYS[state as IntakeState] : null;
+  const label = known ? t(known) : state.replaceAll("_", " ").toLowerCase();
   return (
     <Badge tone={intakeStateTone(state)} className="request-state-badge">
-      {intakeStateLabel(state)}
+      {label}
     </Badge>
   );
 }
 
-export function intakeModeLabel(mode: IntakeMode | string): string {
-  if (mode === "REVIEW_PLAN") return "Review plan";
-  if (mode === "AUTONOMOUS") return "Autonomous";
-  return mode.replaceAll("_", " ").toLowerCase();
-}
-
 export function IntakeModeBadge({ mode }: { mode: IntakeMode | string }) {
+  const { t } = useI18n();
+  const known = mode in MODE_KEYS ? MODE_KEYS[mode as IntakeMode] : null;
+  const label = known ? t(known) : mode.replaceAll("_", " ").toLowerCase();
   return (
-    <Badge tone={mode === "AUTONOMOUS" ? "attention" : "muted"}>
-      {intakeModeLabel(mode)}
-    </Badge>
+    <Badge tone={mode === "AUTONOMOUS" ? "attention" : "muted"}>{label}</Badge>
   );
 }
 

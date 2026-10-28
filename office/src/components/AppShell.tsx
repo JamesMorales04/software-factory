@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { LanguageSwitcher, type MessageKey, useI18n } from "../i18n";
 import {
   isAdvancedRoute,
   isNavItemActive,
@@ -22,7 +23,7 @@ import {
   type NavItem,
   routeLabel,
 } from "../navigation";
-import { type Theme, useTheme } from "../theme";
+import { type Density, type Theme, useTheme } from "../theme";
 import { CommandPalette } from "./CommandPalette";
 import { HealthBadge } from "./HealthBadge";
 import { IconButton } from "./ui/Button";
@@ -30,10 +31,15 @@ import { Tooltip } from "./ui/Tooltip";
 
 const SIDEBAR_KEY = "factory-office-sidebar";
 
-const THEME_LABEL: Record<Theme, string> = {
-  system: "System theme",
-  light: "Light theme",
-  dark: "Dark theme",
+const THEME_KEY: Record<Theme, MessageKey> = {
+  system: "shell.theme.system",
+  light: "shell.theme.light",
+  dark: "shell.theme.dark",
+};
+
+const DENSITY_KEY: Record<Density, MessageKey> = {
+  comfortable: "shell.density.comfortable",
+  compact: "shell.density.compact",
 };
 
 function isMobileViewport(): boolean {
@@ -52,11 +58,13 @@ function nextTheme(theme: Theme): Theme {
 
 function NavLinkItem({
   item,
+  label,
   pathname,
   search,
   onNavigate,
 }: {
   item: NavItem;
+  label: string;
   pathname: string;
   search: string;
   onNavigate: () => void;
@@ -68,12 +76,12 @@ function NavLinkItem({
       to={item.to}
       className={`nav-link ${active ? "nav-link--active" : ""}`}
       aria-current={active ? "page" : undefined}
-      aria-label={item.label}
-      title={item.label}
+      aria-label={label}
+      title={label}
       onClick={onNavigate}
     >
       <Icon size={18} aria-hidden="true" />
-      <span>{item.label}</span>
+      <span>{label}</span>
     </Link>
   );
 }
@@ -86,6 +94,7 @@ export function AppShell({
   onLock: () => void;
 }) {
   const { theme, setTheme, density, setDensity } = useTheme();
+  const { t } = useI18n();
   const menuRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [collapsed, setCollapsed] = useState(
@@ -180,7 +189,7 @@ export function AppShell({
         className="skip-link"
         onClick={() => document.getElementById("main")?.focus()}
       >
-        Skip to main content
+        {t("shell.skipToMain")}
       </button>
       <div
         className={`app-shell ${collapsed ? "app-shell--collapsed" : ""} ${
@@ -191,7 +200,7 @@ export function AppShell({
           ref={sidebarRef}
           className="sidebar"
           id="primary-sidebar"
-          aria-label="Primary navigation"
+          aria-label={t("shell.primaryNavigation")}
         >
           <div className="sidebar-brand">
             <span className="brand-mark" aria-hidden="true">
@@ -203,7 +212,7 @@ export function AppShell({
             </span>
             {isMobile ? (
               <IconButton
-                label="Close navigation drawer"
+                label={t("shell.closeDrawer")}
                 className="sidebar-close"
                 onClick={closeMobileDrawer}
               >
@@ -211,7 +220,11 @@ export function AppShell({
               </IconButton>
             ) : (
               <IconButton
-                label={collapsed ? "Expand navigation" : "Collapse navigation"}
+                label={
+                  collapsed
+                    ? t("shell.expandNavigation")
+                    : t("shell.collapseNavigation")
+                }
                 className="sidebar-collapse"
                 onClick={() => setCollapsed((value) => !value)}
               >
@@ -223,11 +236,12 @@ export function AppShell({
               </IconButton>
             )}
           </div>
-          <nav className="sidebar-nav" aria-label="Primary">
+          <nav className="sidebar-nav" aria-label={t("shell.navigation")}>
             {NAV_GROUPS.map((group) => {
               const collapsible = group.collapsible === true;
+              const groupLabel = t(group.labelKey);
               return (
-                <div className="nav-group" key={group.label}>
+                <div className="nav-group" key={group.labelKey}>
                   {collapsible ? (
                     <>
                       <button
@@ -237,7 +251,7 @@ export function AppShell({
                         aria-controls="nav-group-advanced"
                         onClick={() => setAdvancedOpen((open) => !open)}
                       >
-                        <span>{group.label}</span>
+                        <span>{groupLabel}</span>
                         {advancedOpen ? (
                           <ChevronDown size={14} aria-hidden="true" />
                         ) : (
@@ -253,6 +267,7 @@ export function AppShell({
                           <NavLinkItem
                             key={item.to}
                             item={item}
+                            label={t(item.labelKey)}
                             pathname={pathname}
                             search={search}
                             onNavigate={() => setMobileOpen(false)}
@@ -262,12 +277,13 @@ export function AppShell({
                     </>
                   ) : (
                     <>
-                      <p className="nav-group-label">{group.label}</p>
+                      <p className="nav-group-label">{groupLabel}</p>
                       <div className="nav-group-items">
                         {group.items.map((item) => (
                           <NavLinkItem
                             key={item.to}
                             item={item}
+                            label={t(item.labelKey)}
                             pathname={pathname}
                             search={search}
                             onNavigate={() => setMobileOpen(false)}
@@ -286,7 +302,7 @@ export function AppShell({
           <button
             type="button"
             className="sidebar-scrim"
-            aria-label="Close navigation"
+            aria-label={t("shell.closeNavigation")}
             onClick={closeMobileDrawer}
           />
         )}
@@ -294,7 +310,7 @@ export function AppShell({
           <header className="topbar">
             <IconButton
               ref={menuRef}
-              label="Toggle navigation"
+              label={t("shell.toggleNavigation")}
               className="topbar-menu"
               aria-controls="primary-sidebar"
               aria-expanded={isMobile ? mobileOpen : !collapsed}
@@ -318,7 +334,7 @@ export function AppShell({
                 /
               </span>
               <span className="topbar-title">
-                {routeLabel(pathname, search)}
+                {routeLabel(pathname, search, t)}
               </span>
             </div>
             <div className="topbar-actions">
@@ -327,26 +343,37 @@ export function AppShell({
                 type="button"
                 className="command-trigger"
                 onClick={() => setPaletteOpen(true)}
-                aria-label="Open command navigation"
+                aria-label={t("shell.openCommandNavigation")}
               >
                 <Search size={16} aria-hidden="true" />
-                <span>Search</span>
+                <span>{t("shell.search")}</span>
                 <kbd className="ui-kbd">
                   <Command size={11} aria-hidden="true" />K
                 </kbd>
               </button>
-              <Tooltip label={`${THEME_LABEL[theme]} — switch`}>
+              <LanguageSwitcher variant="compact" />
+              <Tooltip
+                label={t("shell.theme.switch", { theme: t(THEME_KEY[theme]) })}
+              >
                 <IconButton
-                  label={`${THEME_LABEL[theme]}; switch theme`}
+                  label={t("shell.theme.switchAria", {
+                    theme: t(THEME_KEY[theme]),
+                  })}
                   className="topbar-preference"
                   onClick={() => setTheme(nextTheme(theme))}
                 >
                   <ThemeIcon size={17} aria-hidden="true" />
                 </IconButton>
               </Tooltip>
-              <Tooltip label={`${density} density — switch`}>
+              <Tooltip
+                label={t("shell.density.switch", {
+                  density: t(DENSITY_KEY[density]),
+                })}
+              >
                 <IconButton
-                  label={`${density} density; switch density`}
+                  label={t("shell.density.switchAria", {
+                    density: t(DENSITY_KEY[density]),
+                  })}
                   className="topbar-preference"
                   onClick={() =>
                     setDensity(
@@ -357,17 +384,15 @@ export function AppShell({
                   <DensityIcon size={17} aria-hidden="true" />
                 </IconButton>
               </Tooltip>
-              <Tooltip label="Lock Office">
-                <IconButton label="Lock Office" onClick={onLock}>
+              <Tooltip label={t("shell.lock")}>
+                <IconButton label={t("shell.lock")} onClick={onLock}>
                   <Lock size={17} aria-hidden="true" />
                 </IconButton>
               </Tooltip>
             </div>
           </header>
           <main id="main" className="workspace-main" tabIndex={-1}>
-            <h1 className="ui-visually-hidden">
-              Factory Office command center
-            </h1>
+            <h1 className="ui-visually-hidden">{t("shell.mainHeading")}</h1>
             {children}
           </main>
         </div>

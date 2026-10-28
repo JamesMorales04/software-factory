@@ -12,9 +12,11 @@ import {
   newIdempotencyKey,
   type Run,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 export function Campaigns() {
+  const { t, formatDate, formatNumber } = useI18n();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -65,7 +67,7 @@ export function Campaigns() {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load Campaigns.",
+              : t("campaigns.error.load"),
           );
         }
       }
@@ -76,7 +78,7 @@ export function Campaigns() {
       active = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   async function refresh() {
     const [nextCampaigns, nextActions, nextCandidates, nextAttempts, nextRuns] =
@@ -113,14 +115,17 @@ export function Campaigns() {
       });
       attemptKey.current = newIdempotencyKey();
       setNotice(
-        `Created Campaign ${shortId(campaign.id)} (${campaign.status}).`,
+        t("campaigns.notice.created", {
+          id: shortId(campaign.id),
+          status: campaign.status,
+        }),
       );
       await refresh();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Campaign creation failed.",
+          : t("campaigns.error.create"),
       );
     } finally {
       setBusy(false);
@@ -134,14 +139,18 @@ export function Campaigns() {
     try {
       const authorization = await coreApi.authorizeFixtureCampaign(campaign.id);
       setNotice(
-        `Authorized Campaign ${shortId(campaign.id)} as ${authorization.risk_class} ${authorization.execution_mode}.`,
+        t("campaigns.notice.authorized", {
+          id: shortId(campaign.id),
+          risk: authorization.risk_class,
+          mode: authorization.execution_mode,
+        }),
       );
       await refresh();
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Fixture authorization failed.",
+          : t("campaigns.error.authorize"),
       );
     } finally {
       setBusy(false);
@@ -154,13 +163,13 @@ export function Campaigns() {
     setNotice(null);
     try {
       const run = await coreApi.createCampaignRun(campaign.id);
-      setNotice(
-        `Queued Run ${shortId(run.id)}. Open Runs to queue its Attempt.`,
-      );
+      setNotice(t("campaigns.notice.queued", { id: shortId(run.id) }));
       await refresh();
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError ? cause.message : "Run queueing failed.",
+        cause instanceof CoreApiError
+          ? cause.message
+          : t("campaigns.error.queueRun"),
       );
     } finally {
       setBusy(false);
@@ -169,7 +178,10 @@ export function Campaigns() {
 
   async function onCancelled(campaign: Campaign) {
     setNotice(
-      `Campaign ${shortId(campaign.id)} is ${campaign.status}. Core records the cancellation; provider termination can remain unconfirmed.`,
+      t("campaigns.notice.cancelled", {
+        id: shortId(campaign.id),
+        status: campaign.status,
+      }),
     );
     setError(null);
     try {
@@ -178,7 +190,7 @@ export function Campaigns() {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Failed to refresh Campaigns after cancellation.",
+          : t("campaigns.error.refresh"),
       );
     }
   }
@@ -199,25 +211,22 @@ export function Campaigns() {
   }
 
   return (
-    <div>
-      <h2>Campaigns</h2>
-      <p className="muted">
-        A Campaign starts blocked, requires explicit R0 fixture authorization,
-        then admits one Run and one Attempt.
-      </p>
+    <div className="campaigns-workspace">
+      <h2>{t("campaigns.title")}</h2>
+      <p className="muted">{t("campaigns.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
 
       {actions.length === 0 ? (
         <p className="notice">
-          Create an Action before starting a Campaign.{" "}
-          <Link to="/actions">Open Actions</Link>
+          {t("campaigns.needAction")}{" "}
+          <Link to="/actions">{t("campaigns.openActions")}</Link>
         </p>
       ) : (
         <form className="create" onSubmit={onCreate}>
-          <h3>Create a Campaign</h3>
+          <h3>{t("campaigns.create.title")}</h3>
           <label>
-            Action
+            {t("campaigns.action")}
             <select
               data-testid="campaign-action"
               value={actionId}
@@ -235,162 +244,186 @@ export function Campaigns() {
             </select>
           </label>
           <button type="submit" disabled={busy || actionId === ""}>
-            {busy ? "Creating…" : "Create Campaign"}
+            {busy ? t("campaigns.creating") : t("campaigns.create")}
           </button>
         </form>
       )}
 
-      <h3>All Campaigns ({campaigns.length})</h3>
+      <h3>{t("campaigns.all", { count: formatNumber(campaigns.length) })}</h3>
       {campaigns.length === 0 ? (
-        <p className="muted">No Campaigns yet.</p>
+        <p className="muted">{t("campaigns.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Campaign</th>
-              <th>Action</th>
-              <th>Status</th>
-              <th>Run</th>
-              <th>Created</th>
-              <th>Control</th>
-            </tr>
-          </thead>
-          <tbody>
-            {campaigns.map((campaign) => {
-              const action = actionById.get(campaign.action_id);
-              const run = runByCampaign.get(campaign.id);
-              return (
-                <tr key={campaign.id}>
-                  <td>
-                    <Link to={`/campaigns/${campaign.id}`}>
-                      <code>{shortId(campaign.id)}</code>
-                    </Link>
-                  </td>
-                  <td>
-                    {action ? (
-                      action.objective
-                    ) : (
-                      <code>{shortId(campaign.action_id)}</code>
-                    )}
-                  </td>
-                  <td>
-                    <span className="pill">{campaign.status}</span>
-                  </td>
-                  <td>
-                    {run ? (
-                      <Link to="/runs">
-                        <code>{shortId(run.id)}</code>
+        <div className="table-responsive">
+          <table aria-label={t("campaigns.table.label")}>
+            <thead>
+              <tr>
+                <th>{t("campaigns.table.campaign")}</th>
+                <th>{t("campaigns.table.action")}</th>
+                <th>{t("campaigns.table.status")}</th>
+                <th>{t("campaigns.table.run")}</th>
+                <th>{t("campaigns.table.created")}</th>
+                <th>{t("campaigns.table.control")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {campaigns.map((campaign) => {
+                const action = actionById.get(campaign.action_id);
+                const run = runByCampaign.get(campaign.id);
+                return (
+                  <tr key={campaign.id}>
+                    <td data-label={t("campaigns.table.campaign")}>
+                      <Link to={`/campaigns/${campaign.id}`}>
+                        <code>{shortId(campaign.id)}</code>
                       </Link>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td className="muted">
-                    {formatTimestamp(campaign.created_at)}
-                  </td>
-                  <td>
-                    {campaign.status === "BLOCKED_AUTHORIZATION" && (
-                      <button
-                        type="button"
+                    </td>
+                    <td data-label={t("campaigns.table.action")}>
+                      {action ? (
+                        action.objective
+                      ) : (
+                        <code>{shortId(campaign.action_id)}</code>
+                      )}
+                    </td>
+                    <td data-label={t("campaigns.table.status")}>
+                      <span className="pill">{campaign.status}</span>
+                    </td>
+                    <td data-label={t("campaigns.table.run")}>
+                      {run ? (
+                        <Link to="/runs">
+                          <code>{shortId(run.id)}</code>
+                        </Link>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td
+                      className="muted"
+                      data-label={t("campaigns.table.created")}
+                    >
+                      {formatDate(campaign.created_at)}
+                    </td>
+                    <td data-label={t("campaigns.table.control")}>
+                      {campaign.status === "BLOCKED_AUTHORIZATION" && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void onAuthorize(campaign)}
+                        >
+                          {t("campaigns.authorize")}
+                        </button>
+                      )}
+                      {campaign.status === "AUTHORIZED" && !run && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void onQueueRun(campaign)}
+                        >
+                          {t("campaigns.queueRun")}
+                        </button>
+                      )}
+                      {run && (
+                        <span className="muted">
+                          {t("campaigns.runStatus", { status: run.status })}
+                        </span>
+                      )}
+                      <CancelCampaign
+                        campaign={campaign}
                         disabled={busy}
-                        onClick={() => void onAuthorize(campaign)}
-                      >
-                        Authorize R0 fixture
-                      </button>
-                    )}
-                    {campaign.status === "AUTHORIZED" && !run && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void onQueueRun(campaign)}
-                      >
-                        Queue Run
-                      </button>
-                    )}
-                    {run && <span className="muted">run {run.status}</span>}
-                    <CancelCampaign
-                      campaign={campaign}
-                      disabled={busy}
-                      onCancelled={onCancelled}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        onCancelled={onCancelled}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
-      <h3>Candidates and quality gates ({candidates.length})</h3>
-      <p className="muted">
-        Gate decisions are Core-owned and appear only after verifier and
-        reviewer receipts exist. No gate means the candidate is still pending.
-      </p>
+      <h3>
+        {t("campaigns.candidates.title", {
+          count: formatNumber(candidates.length),
+        })}
+      </h3>
+      <p className="muted">{t("campaigns.candidates.description")}</p>
       {candidates.length === 0 ? (
-        <p className="muted">No candidates recorded.</p>
+        <p className="muted">{t("campaigns.candidates.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Candidate</th>
-              <th>Commit</th>
-              <th>Attempt</th>
-              <th>Implementer</th>
-              <th>Campaign</th>
-              <th>Gate</th>
-              <th>Reasons</th>
-              <th>Recorded</th>
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((candidate) => {
-              const gate = gates[candidate.id];
-              const campaignId = campaignForCandidate(candidate);
-              return (
-                <tr key={candidate.id}>
-                  <td>
-                    <code>{shortId(candidate.id)}</code>
-                  </td>
-                  <td>
-                    <code title={candidate.commit_sha}>
-                      {shortId(candidate.commit_sha, 12)}
-                    </code>
-                  </td>
-                  <td>
-                    <code>{shortId(candidate.attempt_id)}</code>
-                  </td>
-                  <td>
-                    <code>{candidate.implementer_id}</code>
-                  </td>
-                  <td>
-                    {campaignId ? (
-                      <Link to={`/campaigns/${campaignId}`}>
-                        <code>{shortId(campaignId)}</code>
-                      </Link>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {gate ? (
-                      <span
-                        className={`pill gate-${gate.outcome.toLowerCase()}`}
-                      >
-                        {gate.outcome}
-                      </span>
-                    ) : (
-                      <span className="muted">PENDING</span>
-                    )}
-                  </td>
-                  <td className="muted">{gate?.reasons.join("; ") || "—"}</td>
-                  <td className="muted">
-                    {formatTimestamp(candidate.created_at)}
-                  </td>
-                </tr>
-              );
+        <div className="table-responsive">
+          <table
+            aria-label={t("campaigns.candidates.title", {
+              count: formatNumber(candidates.length),
             })}
-          </tbody>
-        </table>
+          >
+            <thead>
+              <tr>
+                <th>{t("campaigns.table.candidate")}</th>
+                <th>{t("campaigns.table.commit")}</th>
+                <th>{t("campaigns.table.attempt")}</th>
+                <th>{t("campaigns.table.implementer")}</th>
+                <th>{t("campaigns.table.campaign")}</th>
+                <th>{t("campaigns.table.gate")}</th>
+                <th>{t("campaigns.table.reasons")}</th>
+                <th>{t("campaigns.table.recorded")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((candidate) => {
+                const gate = gates[candidate.id];
+                const campaignId = campaignForCandidate(candidate);
+                return (
+                  <tr key={candidate.id}>
+                    <td data-label={t("campaigns.table.candidate")}>
+                      <code>{shortId(candidate.id)}</code>
+                    </td>
+                    <td data-label={t("campaigns.table.commit")}>
+                      <code title={candidate.commit_sha}>
+                        {shortId(candidate.commit_sha, 12)}
+                      </code>
+                    </td>
+                    <td data-label={t("campaigns.table.attempt")}>
+                      <code>{shortId(candidate.attempt_id)}</code>
+                    </td>
+                    <td data-label={t("campaigns.table.implementer")}>
+                      <code>{candidate.implementer_id}</code>
+                    </td>
+                    <td data-label={t("campaigns.table.campaign")}>
+                      {campaignId ? (
+                        <Link to={`/campaigns/${campaignId}`}>
+                          <code>{shortId(campaignId)}</code>
+                        </Link>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td data-label={t("campaigns.table.gate")}>
+                      {gate ? (
+                        <span
+                          className={`pill gate-${gate.outcome.toLowerCase()}`}
+                        >
+                          {gate.outcome}
+                        </span>
+                      ) : (
+                        <span className="muted">PENDING</span>
+                      )}
+                    </td>
+                    <td
+                      className="muted"
+                      data-label={t("campaigns.table.reasons")}
+                    >
+                      {gate?.reasons.join("; ") || "—"}
+                    </td>
+                    <td
+                      className="muted"
+                      data-label={t("campaigns.table.recorded")}
+                    >
+                      {formatDate(candidate.created_at)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

@@ -10,7 +10,8 @@ import {
   type ProviderView,
   type SpecCheck,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 const CHECK_KINDS: CheckKind[] = [
   "format",
@@ -75,6 +76,7 @@ function newCheck(): DraftCheck {
 }
 
 export function Actions() {
+  const { t, formatDate, formatNumber } = useI18n();
   const [actions, setActions] = useState<Action[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [providers, setProviders] = useState<ProviderView[]>([]);
@@ -88,7 +90,7 @@ export function Actions() {
       draftId: crypto.randomUUID(),
       id: "functional",
       kind: "functional",
-      description: "candidate content is present",
+      description: t("actions.defaultCheck.functional"),
       command: ["grep", "-q", "provider candidate", "src/provider.txt"],
       commandText: 'grep -q "provider candidate" src/provider.txt',
       expectExit: 0,
@@ -98,7 +100,7 @@ export function Actions() {
       draftId: crypto.randomUUID(),
       id: "negative",
       kind: "negative",
-      description: "absent content is rejected",
+      description: t("actions.defaultCheck.negative"),
       command: ["grep", "-q", "absent", "src/provider.txt"],
       commandText: "grep -q absent src/provider.txt",
       expectExit: 1,
@@ -138,7 +140,7 @@ export function Actions() {
           setError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Failed to load Actions.",
+              : t("actions.error.load"),
           );
         }
       }
@@ -149,7 +151,7 @@ export function Actions() {
       active = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [t]);
 
   function resetKey() {
     attemptKey.current = newIdempotencyKey();
@@ -179,12 +181,10 @@ export function Actions() {
         timeoutSecs: check.timeoutSecs,
       }));
       if (normalized.some((check) => check.command.length === 0)) {
-        throw new Error("Every check needs a nonempty command.");
+        throw new Error(t("actions.error.emptyCommand"));
       }
       if (normalized.length === 0) {
-        throw new Error(
-          "At least one frozen check is required for independent verification.",
-        );
+        throw new Error(t("actions.error.checkRequired"));
       }
       const action = await coreApi.createAction({
         project_id: projectId,
@@ -200,14 +200,17 @@ export function Actions() {
       });
       attemptKey.current = newIdempotencyKey();
       setNotice(
-        `Created Action ${shortId(action.id)} with spec ${shortId(action.spec_sha256, 12)}.`,
+        t("actions.notice.created", {
+          id: shortId(action.id),
+          spec: shortId(action.spec_sha256, 12),
+        }),
       );
       setObjective("");
       const next = await coreApi.listActions();
       setActions(next);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Action creation failed.",
+        cause instanceof Error ? cause.message : t("actions.error.create"),
       );
     } finally {
       setBusy(false);
@@ -215,26 +218,22 @@ export function Actions() {
   }
 
   return (
-    <div>
-      <h2>Actions</h2>
-      <p className="muted">
-        An Action freezes the objective, provider route, allowed paths and the
-        exact checks later Runs and independent verification bind to. The
-        provider route must be configured in Settings for live execution.
-      </p>
+    <div className="actions-workspace">
+      <h2>{t("actions.title")}</h2>
+      <p className="muted">{t("actions.description")}</p>
       {error && <p className="error">{error}</p>}
       {notice && <p className="notice">{notice}</p>}
 
       {projects.length === 0 ? (
         <p className="notice">
-          Register a Project before creating an Action.{" "}
-          <Link to="/projects">Open Projects</Link>
+          {t("actions.needProject")}{" "}
+          <Link to="/projects">{t("actions.openProjects")}</Link>
         </p>
       ) : (
         <form className="create" onSubmit={onCreate}>
-          <h3>New Action</h3>
+          <h3>{t("actions.new.title")}</h3>
           <label>
-            Project
+            {t("actions.project")}
             <select
               data-testid="action-project"
               value={projectId}
@@ -252,7 +251,7 @@ export function Actions() {
             </select>
           </label>
           <label>
-            Objective
+            {t("actions.objective")}
             <textarea
               data-testid="action-objective"
               value={objective}
@@ -263,12 +262,12 @@ export function Actions() {
               maxLength={2000}
               rows={3}
               required
-              placeholder="What should the Factory do?"
+              placeholder={t("actions.objective.placeholder")}
             />
           </label>
           <div className="grid-2">
             <label>
-              Provider
+              {t("actions.provider")}
               <select
                 value={provider}
                 onChange={(event) => {
@@ -301,7 +300,7 @@ export function Actions() {
               </select>
             </label>
             <label>
-              Model
+              {t("actions.model")}
               <input
                 value={model}
                 onChange={(event) => {
@@ -315,29 +314,25 @@ export function Actions() {
             </label>
           </div>
           <label>
-            Allowed repository paths (comma separated)
+            {t("actions.paths")}
             <input
               value={allowedPaths}
               onChange={(event) => {
                 setAllowedPaths(event.target.value);
                 resetKey();
               }}
-              placeholder="src, tests"
+              placeholder={t("actions.paths.placeholder")}
             />
           </label>
 
-          <h4>Frozen checks</h4>
-          <p className="muted">
-            Commands run with a cleared environment in a network-disabled child
-            container. Quote arguments that contain spaces. Verification
-            requires at least one executable check.
-          </p>
+          <h4>{t("actions.checks.title")}</h4>
+          <p className="muted">{t("actions.checks.help")}</p>
           {checks.map((check, index) => (
             <fieldset key={check.draftId}>
-              <legend>Check {index + 1}</legend>
+              <legend>{t("actions.check.legend", { index: index + 1 })}</legend>
               <div className="grid-2">
                 <label>
-                  ID
+                  {t("actions.check.id")}
                   <input
                     value={check.id}
                     onChange={(event) =>
@@ -347,7 +342,7 @@ export function Actions() {
                   />
                 </label>
                 <label>
-                  Kind
+                  {t("actions.check.kind")}
                   <select
                     value={check.kind}
                     onChange={(event) =>
@@ -365,7 +360,7 @@ export function Actions() {
                 </label>
               </div>
               <label>
-                Description
+                {t("actions.check.description")}
                 <input
                   value={check.description}
                   onChange={(event) =>
@@ -374,7 +369,7 @@ export function Actions() {
                 />
               </label>
               <label>
-                Command
+                {t("actions.check.command")}
                 <input
                   value={check.commandText}
                   onChange={(event) =>
@@ -387,7 +382,7 @@ export function Actions() {
               </label>
               <div className="grid-2">
                 <label>
-                  Expected exit code
+                  {t("actions.check.expectExit")}
                   <input
                     type="number"
                     value={check.expectExit}
@@ -399,7 +394,7 @@ export function Actions() {
                   />
                 </label>
                 <label>
-                  Timeout (seconds)
+                  {t("actions.check.timeout")}
                   <input
                     type="number"
                     min={1}
@@ -414,7 +409,7 @@ export function Actions() {
                 </label>
               </div>
               <p className="muted">
-                Preview:{" "}
+                {t("actions.check.preview")}{" "}
                 <code>{JSON.stringify(splitCommand(check.commandText))}</code>
               </p>
               <button
@@ -427,7 +422,7 @@ export function Actions() {
                   resetKey();
                 }}
               >
-                Remove check
+                {t("actions.removeCheck")}
               </button>
             </fieldset>
           ))}
@@ -438,71 +433,79 @@ export function Actions() {
               resetKey();
             }}
           >
-            Add check
+            {t("actions.addCheck")}
           </button>
           <button type="submit" disabled={busy || objective.trim() === ""}>
-            {busy ? "Creating…" : "Create Action"}
+            {busy ? t("actions.creating") : t("actions.create")}
           </button>
         </form>
       )}
 
-      <h3>All Actions ({actions.length})</h3>
+      <h3>{t("actions.all", { count: formatNumber(actions.length) })}</h3>
       {actions.length === 0 ? (
-        <p className="muted">No Actions yet.</p>
+        <p className="muted">{t("actions.empty")}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Project</th>
-              <th>Objective</th>
-              <th>Route</th>
-              <th>Risk</th>
-              <th>Status</th>
-              <th>Checks</th>
-              <th>Spec</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {actions.map((action) => (
-              <tr key={action.id}>
-                <td>
-                  <Link to={`/actions/${action.id}`}>
-                    <code>{shortId(action.id)}</code>
-                  </Link>
-                </td>
-                <td>
-                  <code>{shortId(action.project_id)}</code>
-                </td>
-                <td>
-                  {action.objective}
-                  <div className="muted">
-                    paths {action.spec.allowed_paths.join(", ") || "—"}
-                  </div>
-                </td>
-                <td>
-                  <code>
-                    {action.provider}/{action.model}
-                  </code>
-                </td>
-                <td>{action.risk}</td>
-                <td>
-                  <span className={`pill ${action.status.toLowerCase()}`}>
-                    {action.status}
-                  </span>
-                </td>
-                <td>{action.spec.checks.length}</td>
-                <td>
-                  <code title={action.spec_sha256}>
-                    {shortId(action.spec_sha256, 12)}
-                  </code>
-                </td>
-                <td className="muted">{formatTimestamp(action.created_at)}</td>
+        <div className="table-responsive">
+          <table aria-label={t("actions.table.label")}>
+            <thead>
+              <tr>
+                <th>{t("actions.table.id")}</th>
+                <th>{t("actions.table.project")}</th>
+                <th>{t("actions.table.objective")}</th>
+                <th>{t("actions.table.route")}</th>
+                <th>{t("actions.table.risk")}</th>
+                <th>{t("actions.table.status")}</th>
+                <th>{t("actions.table.checks")}</th>
+                <th>{t("actions.table.spec")}</th>
+                <th>{t("actions.table.created")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {actions.map((action) => (
+                <tr key={action.id}>
+                  <td data-label={t("actions.table.id")}>
+                    <Link to={`/actions/${action.id}`}>
+                      <code>{shortId(action.id)}</code>
+                    </Link>
+                  </td>
+                  <td data-label={t("actions.table.project")}>
+                    <code>{shortId(action.project_id)}</code>
+                  </td>
+                  <td data-label={t("actions.table.objective")}>
+                    {action.objective}
+                    <div className="muted">
+                      {t("actions.table.paths", {
+                        paths: action.spec.allowed_paths.join(", ") || "—",
+                      })}
+                    </div>
+                  </td>
+                  <td data-label={t("actions.table.route")}>
+                    <code>
+                      {action.provider}/{action.model}
+                    </code>
+                  </td>
+                  <td data-label={t("actions.table.risk")}>{action.risk}</td>
+                  <td data-label={t("actions.table.status")}>
+                    <span className={`pill ${action.status.toLowerCase()}`}>
+                      {action.status}
+                    </span>
+                  </td>
+                  <td data-label={t("actions.table.checks")}>
+                    {formatNumber(action.spec.checks.length)}
+                  </td>
+                  <td data-label={t("actions.table.spec")}>
+                    <code title={action.spec_sha256}>
+                      {shortId(action.spec_sha256, 12)}
+                    </code>
+                  </td>
+                  <td className="muted" data-label={t("actions.table.created")}>
+                    {formatDate(action.created_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

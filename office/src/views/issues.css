@@ -276,10 +276,12 @@
     grid-template-columns: 1fr;
   }
 
-  .issues-table th:nth-child(4),
-  .issues-table td:nth-child(4),
-  .issues-table th:nth-child(5),
-  .issues-table td:nth-child(5) {
-    display: none;
+  .issues-view button,
+  .issues-view .ui-button {
+    min-height: 44px;
+  }
+
+  .issues-pagination {
+    justify-content: flex-start;
   }
 }

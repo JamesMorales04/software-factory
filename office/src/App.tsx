@@ -10,6 +10,7 @@ import {
   logoutCurrentDevice,
   setupStatus,
 } from "./coreApi";
+import { useI18n } from "./i18n";
 import { ActionDetail } from "./views/ActionDetail";
 import { Actions } from "./views/Actions";
 import { AgentOffice } from "./views/AgentOffice";
@@ -39,6 +40,7 @@ function BootstrapGate({
   initial: boolean;
   available?: boolean;
 }) {
+  const { t } = useI18n();
   const [code, setCode] = useState("");
   const [deviceName, setDeviceName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +56,13 @@ function BootstrapGate({
           <span>Office</span>
         </span>
       </div>
-      <h1>{initial ? "Set up this Factory" : "Recover local access"}</h1>
+      <h1>{initial ? t("app.setup.title") : t("app.recover.title")}</h1>
       <p className="muted">
         {initial
-          ? "Run ./factory open on this workstation. Enter the one-time owner confirmation it provides. It is sent once over this local connection and is never placed in the page URL."
+          ? t("app.setup.description")
           : available
-            ? "Enter the one-time owner confirmation provided by ./factory recover. This browser cannot recover ownership by itself."
-            : "This browser has no active device session. Run ./factory recover on the workstation to issue a new one-time confirmation, then reload this page."}
+            ? t("app.recover.description")
+            : t("app.recover.unavailable")}
       </p>
       {available && (
         <form
@@ -74,31 +76,31 @@ function BootstrapGate({
                 setError(
                   cause instanceof CoreApiError
                     ? cause.message
-                    : "Owner enrollment failed.",
+                    : t("app.enroll.error"),
                 );
               })
               .finally(() => setBusy(false));
           }}
         >
           <label className="ui-field">
-            <span className="ui-field-label">One-time owner confirmation</span>
+            <span className="ui-field-label">{t("app.ownerCode.label")}</span>
             <input
               className="ui-input"
               type="password"
               value={code}
               onChange={(event) => setCode(event.target.value)}
-              placeholder="Confirmation code"
+              placeholder={t("app.ownerCode.placeholder")}
               autoComplete="off"
-              aria-label="One-time owner confirmation"
+              aria-label={t("app.ownerCode.label")}
             />
           </label>
           <label className="ui-field">
-            <span className="ui-field-label">This device name</span>
+            <span className="ui-field-label">{t("app.deviceName.label")}</span>
             <input
               className="ui-input"
               value={deviceName}
               onChange={(event) => setDeviceName(event.target.value)}
-              placeholder="My workstation"
+              placeholder={t("app.deviceName.placeholder")}
               autoComplete="off"
               maxLength={80}
             />
@@ -108,7 +110,7 @@ function BootstrapGate({
             variant="primary"
             disabled={busy || code.trim() === ""}
           >
-            {busy ? "Creating secure session…" : "Enroll this device"}
+            {busy ? t("app.enrolling") : t("app.enroll")}
           </Button>
         </form>
       )}
@@ -122,6 +124,7 @@ function BootstrapGate({
 }
 
 export function App() {
+  const { t } = useI18n();
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -158,23 +161,25 @@ export function App() {
           setConnectionError(
             cause instanceof CoreApiError
               ? cause.message
-              : "Factory Core is unavailable.",
+              : t("app.coreUnavailable"),
           );
         }
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   if (setupRequired === null || connectionError !== null) {
     return (
       <div className="gate">
         <p className="muted" role={connectionError ? "alert" : undefined}>
-          {connectionError ?? "Contacting Factory Core…"}
+          {connectionError ?? t("app.connecting")}
         </p>
         {connectionError && (
-          <Button onClick={() => window.location.reload()}>Retry</Button>
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
         )}
       </div>
     );
@@ -215,7 +220,7 @@ export function App() {
             setAuthActionError(
               cause instanceof CoreApiError
                 ? cause.message
-                : "Unable to end this device session.",
+                : t("app.lock.error"),
             );
           });
       }}
@@ -245,7 +250,10 @@ export function App() {
         <Route path="/workers" element={<Workers />} />
         <Route path="/runtime" element={<Runtime />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<p className="error">Unknown route.</p>} />
+        <Route
+          path="*"
+          element={<p className="error">{t("shell.unknownRoute")}</p>}
+        />
       </Routes>
     </AppShell>
   );

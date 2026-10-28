@@ -7,6 +7,7 @@ import type {
   ParticipantRecord,
   ProviderToolEventProjection,
 } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { AgentOffice } from "./AgentOffice";
 
 const mocks = vi.hoisted(() => ({
@@ -250,8 +251,8 @@ function LocationProbe() {
   );
 }
 
-function renderOffice(path = "/agents") {
-  return render(
+function renderOffice(path = "/agents", locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route
@@ -273,7 +274,14 @@ function renderOffice(path = "/agents") {
           }
         />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
@@ -322,6 +330,27 @@ describe("AgentOffice", () => {
     ).toBeDefined();
     expect(screen.getByText(/No recorded verifier/)).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("/agents");
+  });
+
+  it("renders zones, filters and participant controls in Spanish", async () => {
+    renderOffice("/agents", "es");
+    await screen.findByRole("heading", { name: "Oficina de agentes" });
+    expect(screen.getByText("Planificación")).toBeDefined();
+    expect(screen.getByText("Implementación")).toBeDefined();
+    expect(screen.getByText("Verificación")).toBeDefined();
+    expect(screen.getByText("Revisión")).toBeDefined();
+    expect(screen.getByText("Operaciones")).toBeDefined();
+    expect(screen.getByLabelText("Rol")).toBeDefined();
+    expect(screen.getByLabelText("Proveedor")).toBeDefined();
+    expect(
+      screen.getByRole("button", {
+        name: /Inspeccionar Implementador implementer:session-1/,
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/No hay participantes con el rol verificador/),
+    ).toBeDefined();
+    expect(screen.getByText("Estado veraz")).toBeDefined();
   });
 
   it("selects a participant, shows evidence and recorded tool events", async () => {

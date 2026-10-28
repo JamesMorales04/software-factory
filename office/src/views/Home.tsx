@@ -20,7 +20,8 @@ import {
   type OfficeOverview,
   type Project,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 import { IntakeModeBadge, IntakeStateBadge } from "./RequestState";
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -49,15 +50,20 @@ function policyScopeFromError(
   return scope && typeof scope === "object" ? scope : null;
 }
 
-function projectName(projectId: string, projects: Project[] | null): string {
+function projectName(
+  projectId: string,
+  projects: Project[] | null,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
   return (
     projects?.find((project) => project.id === projectId)?.repository ??
-    `Project ${shortId(projectId)}`
+    t("home.projectFallback", { id: shortId(projectId) })
   );
 }
 
 export function Home() {
   const navigate = useNavigate();
+  const { t, formatDate, formatNumber } = useI18n();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<ExecutionProfile[] | null>(null);
@@ -101,11 +107,9 @@ export function Home() {
           : (next[0]?.id ?? ""),
       );
     } catch (cause) {
-      setProjectsError(
-        errorMessage(cause, "Projects could not be loaded from Core."),
-      );
+      setProjectsError(errorMessage(cause, t("home.projects.error")));
     }
-  }, []);
+  }, [t]);
 
   const loadProfiles = useCallback(async () => {
     setProfiles(null);
@@ -125,12 +129,10 @@ export function Home() {
       if (endpointUnavailable(cause)) {
         setProfilesUnavailable(true);
       } else {
-        setProfilesError(
-          errorMessage(cause, "Execution profiles could not be loaded."),
-        );
+        setProfilesError(errorMessage(cause, t("home.profiles.error")));
       }
     }
-  }, []);
+  }, [t]);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -138,11 +140,9 @@ export function Home() {
       setOverview(next);
       setOverviewError(null);
     } catch (cause) {
-      setOverviewError(
-        errorMessage(cause, "Core status could not be refreshed."),
-      );
+      setOverviewError(errorMessage(cause, t("home.status.error")));
     }
-  }, []);
+  }, [t]);
 
   const loadRecent = useCallback(async () => {
     try {
@@ -156,12 +156,10 @@ export function Home() {
         setRecentRequests(null);
         setRecentError(null);
       } else {
-        setRecentError(
-          errorMessage(cause, "Recent requests could not be loaded."),
-        );
+        setRecentError(errorMessage(cause, t("home.recent.error")));
       }
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadProjects();
@@ -225,8 +223,8 @@ export function Home() {
       }
       setFormError(
         endpointUnavailable(cause)
-          ? "Unified request intake is not available from this Core build. The typed Office client is ready, but Core has not exposed /intake/requests."
-          : errorMessage(cause, "The request could not be submitted."),
+          ? t("home.request.endpointUnavailable")
+          : errorMessage(cause, t("home.request.error")),
       );
     } finally {
       setBusy(false);
@@ -237,9 +235,9 @@ export function Home() {
     event.preventDefault();
     const trimmed = objective.trim();
     const nextErrors: { project?: string; objective?: string } = {};
-    if (projectId === "") nextErrors.project = "Select a Project.";
+    if (projectId === "") nextErrors.project = t("home.validation.project");
     if (trimmed === "") {
-      nextErrors.objective = "Describe the engineering outcome you want.";
+      nextErrors.objective = t("home.validation.objective");
     }
     setFieldErrors(nextErrors);
     if (nextErrors.project || nextErrors.objective) {
@@ -251,9 +249,7 @@ export function Home() {
       return;
     }
     if (profileUnavailable) {
-      setFormError(
-        "The selected execution profile is not executable in this Core build. Choose another profile.",
-      );
+      setFormError(t("home.profile.notExecutableError"));
       document.getElementById("home-profile")?.focus();
       return;
     }
@@ -287,9 +283,7 @@ export function Home() {
       });
       await submitRequest(pending);
     } catch (cause) {
-      setPolicyError(
-        errorMessage(cause, "The execution policy could not be enabled."),
-      );
+      setPolicyError(errorMessage(cause, t("home.policy.error")));
     } finally {
       setPolicyBusy(false);
     }
@@ -298,15 +292,15 @@ export function Home() {
   return (
     <div className="home">
       <PageHeader
-        title="Home"
-        description="Describe the engineering outcome. Core derives the Action, Lead request, plan and Campaign authorization; Office never grants that authority."
+        title={t("home.title")}
+        description={t("home.description")}
         meta={
           <>
-            <span>Project → request → profile → mode</span>
+            <span>{t("home.meta.flow")}</span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>Requests are durable Core records</span>
+            <span>{t("home.meta.durable")}</span>
           </>
         }
       />
@@ -317,31 +311,31 @@ export function Home() {
             <div className="ui-callout ui-callout--danger" role="alert">
               <p>{projectsError}</p>
               <Button size="sm" onClick={() => void loadProjects()}>
-                Retry projects
+                {t("home.projects.retry")}
               </Button>
             </div>
           )}
 
           <Panel className="home-composer">
             <div className="section-heading">
-              <h2>New request</h2>
-              <span className="muted">Operator intent, not an Action spec</span>
+              <h2>{t("home.newRequest.title")}</h2>
+              <span className="muted">{t("home.newRequest.hint")}</span>
             </div>
 
             {projects === null && projectsError === null && (
-              <LoadingState label="Loading Projects…" />
+              <LoadingState label={t("home.projects.loading")} />
             )}
 
             {projects !== null && projects.length === 0 && (
               <EmptyState
-                title="Register a Project first"
-                description="A request is bound to an active Core Project. Registration freezes a base commit and does not grant execution authority."
+                title={t("home.projects.emptyTitle")}
+                description={t("home.projects.emptyDescription")}
                 action={
                   <Link
                     className="ui-button ui-button--secondary"
                     to="/projects"
                   >
-                    Open Projects
+                    {t("home.projects.open")}
                   </Link>
                 }
               />
@@ -355,7 +349,7 @@ export function Home() {
               >
                 <Select
                   id="home-project"
-                  label="Project"
+                  label={t("home.project.label")}
                   value={projectId}
                   onChange={(event) => {
                     setProjectId(event.target.value);
@@ -366,10 +360,10 @@ export function Home() {
                     resetRequestKey();
                   }}
                   error={fieldErrors.project}
-                  help="Core enforces the Project configuration, allowed paths and policy revision."
+                  help={t("home.project.help")}
                   required
                 >
-                  <option value="">Select a Project</option>
+                  <option value="">{t("home.project.select")}</option>
                   {projects.map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.repository}
@@ -379,7 +373,7 @@ export function Home() {
 
                 <Textarea
                   id="home-objective"
-                  label="What should the Factory do?"
+                  label={t("home.objective.label")}
                   value={objective}
                   onChange={(event) => {
                     setObjective(event.target.value);
@@ -389,8 +383,8 @@ export function Home() {
                     }));
                     resetRequestKey();
                   }}
-                  placeholder="Add a CSV export endpoint to the reporting API, keep the existing API backward compatible, and cover it with tests."
-                  help="Plain language is enough. Core freezes the concrete plan and checks after assessment."
+                  placeholder={t("home.objective.placeholder")}
+                  help={t("home.objective.help")}
                   error={fieldErrors.objective}
                   rows={5}
                   required
@@ -398,21 +392,21 @@ export function Home() {
 
                 <Select
                   id="home-profile"
-                  label="Execution profile"
+                  label={t("home.profile.label")}
                   value={profileId}
                   onChange={(event) => {
                     setProfileId(event.target.value);
                     resetRequestKey();
                   }}
-                  help="Profiles bind provider/model routes, budgets and limits. Core freezes the exact revision; every intake still requires explicit operator approval."
+                  help={t("home.profile.help")}
                   disabled={profiles === null}
                 >
                   <option value="">
                     {profilesUnavailable
-                      ? "Core default (profile list unavailable)"
+                      ? t("home.profile.coreDefaultUnavailable")
                       : profiles === null
-                        ? "Loading profiles…"
-                        : "Core default (Project, then global)"}
+                        ? t("home.profile.loading")
+                        : t("home.profile.coreDefault")}
                   </option>
                   {(profiles ?? []).map((profile) => (
                     <option
@@ -421,10 +415,14 @@ export function Home() {
                       disabled={!profile.executable}
                     >
                       {profile.name}
-                      {profile.executable ? "" : " — unavailable"}
-                      {profile.globalDefault ? " · global default" : ""}
+                      {profile.executable
+                        ? ""
+                        : t("home.profile.unavailableSuffix")}
+                      {profile.globalDefault
+                        ? t("home.profile.globalSuffix")
+                        : ""}
                       {profile.projectDefaults.includes(projectId) && projectId
-                        ? " · project default"
+                        ? t("home.profile.projectSuffix")
                         : ""}
                     </option>
                   ))}
@@ -432,17 +430,14 @@ export function Home() {
 
                 {profilesUnavailable && (
                   <p className="ui-callout ui-callout--info" role="status">
-                    Execution profiles are not available from this Core build.
-                    Submitting without an explicit profile lets Core resolve its
-                    Project or global default; if none exists, Core rejects the
-                    request.
+                    {t("home.profiles.unavailable")}
                   </p>
                 )}
                 {profilesError && (
                   <div className="ui-callout ui-callout--danger" role="alert">
                     <p>{profilesError}</p>
                     <Button size="sm" onClick={() => void loadProfiles()}>
-                      Retry profiles
+                      {t("home.profiles.retry")}
                     </Button>
                   </div>
                 )}
@@ -451,13 +446,16 @@ export function Home() {
                   !profilesUnavailable &&
                   profilesError === null && (
                     <p className="ui-callout ui-callout--attention">
-                      No execution profiles are configured. Core resolves a
-                      default when one exists; otherwise it rejects the request.
+                      {t("home.profiles.empty")}
                     </p>
                   )}
                 {selectedProfile && selectedProfile.warnings.length > 0 && (
                   <div className="ui-callout ui-callout--attention">
-                    <p>Core reports warnings for {selectedProfile.name}:</p>
+                    <p>
+                      {t("home.profile.warnings", {
+                        name: selectedProfile.name,
+                      })}
+                    </p>
                     <ul className="home-warning-list">
                       {selectedProfile.warnings.map((warning) => (
                         <li key={warning}>{warning}</li>
@@ -467,18 +465,13 @@ export function Home() {
                 )}
                 {profileUnavailable && (
                   <p className="ui-callout ui-callout--danger" role="alert">
-                    This profile is declared but not executable. Choose an
-                    executable profile or the Core default.
+                    {t("home.profile.notExecutable")}
                   </p>
                 )}
 
                 <p className="ui-callout ui-callout--info home-mode-help">
-                  <strong>
-                    Every request stops for explicit operator approval.
-                  </strong>{" "}
-                  Core assesses the request, freezes a plan and waits for your
-                  approval before any Campaign starts. This build has no
-                  automatic start for intake requests.
+                  <strong>{t("home.approval.title")}</strong>{" "}
+                  {t("home.approval.body")}
                 </p>
 
                 {policySetup && (
@@ -486,17 +479,12 @@ export function Home() {
                     className="ui-callout ui-callout--attention home-policy"
                     role="status"
                   >
-                    <h3>Enable governed execution</h3>
-                    <p>
-                      Core requires an explicit, bounded execution policy for
-                      this Project and exact profile revision before it can
-                      create the Lead request. This grant is non-autonomous and
-                      limited to R0 work; it does not enable auto-start.
-                    </p>
+                    <h3>{t("home.policy.title")}</h3>
+                    <p>{t("home.policy.description")}</p>
                     {policySetup.scope.profile && policySetup.scope.project ? (
                       <dl className="request-facts">
                         <div>
-                          <dt>Profile</dt>
+                          <dt>{t("home.policy.profile")}</dt>
                           <dd>
                             {policySetup.scope.profile.name} r
                             {policySetup.scope.profile.revision} ·{" "}
@@ -509,7 +497,7 @@ export function Home() {
                           </dd>
                         </div>
                         <div>
-                          <dt>Project</dt>
+                          <dt>{t("home.policy.project")}</dt>
                           <dd>
                             {policySetup.scope.project.repository} ·{" "}
                             <code title={policySetup.scope.project.configHash}>
@@ -521,126 +509,111 @@ export function Home() {
                           </dd>
                         </div>
                         <div>
-                          <dt>Allowed paths</dt>
+                          <dt>{t("home.policy.allowedPaths")}</dt>
                           <dd>
                             {policySetup.scope.project.allowedPaths.join(
                               ", ",
-                            ) || "None"}
+                            ) || t("home.policy.none")}
                           </dd>
                         </div>
                         <div>
-                          <dt>Capabilities</dt>
+                          <dt>{t("home.policy.capabilities")}</dt>
                           <dd>
                             {policySetup.scope.project.capabilities.join(
                               ", ",
-                            ) || "None"}
+                            ) || t("home.policy.none")}
                           </dd>
                         </div>
                         <div>
-                          <dt>Implementer route</dt>
+                          <dt>{t("home.policy.implementerRoute")}</dt>
                           <dd>
                             {policySetup.scope.profile.implementer.provider}/
                             {policySetup.scope.profile.implementer.model}
                           </dd>
                         </div>
                         <div>
-                          <dt>Objective scope</dt>
+                          <dt>{t("home.policy.objectiveScope")}</dt>
                           <dd>
                             {policySetup.scope.profile.grantTerms.objectiveClasses.join(
                               ", ",
                             )}{" "}
-                            · risk{" "}
-                            {policySetup.scope.profile.grantTerms.riskClasses.join(
-                              ", ",
-                            )}{" "}
+                            ·{" "}
+                            {t("home.policy.risk", {
+                              classes:
+                                policySetup.scope.profile.grantTerms.riskClasses.join(
+                                  ", ",
+                                ),
+                            })}{" "}
                             ·{" "}
                             {policySetup.scope.profile.grantTerms
                               .autonomousStart
-                              ? "autonomous start enabled"
-                              : "non-autonomous; explicit approval required"}
+                              ? t("home.policy.autonomous")
+                              : t("home.policy.nonAutonomous")}
                           </dd>
                         </div>
                         <div>
-                          <dt>Per-request limits</dt>
+                          <dt>{t("home.policy.perRequest")}</dt>
                           <dd>
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxAttemptsPerRequest
-                            }{" "}
-                            attempts ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxSessionsPerRequest
-                            }{" "}
-                            sessions ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxTurnsPerRequest
-                            }{" "}
-                            turns ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxInputTokensPerRequest
-                            }{" "}
-                            input tokens ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxOutputTokensPerRequest
-                            }{" "}
-                            output tokens ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxCostMicrosPerRequest
-                            }{" "}
-                            cost micros ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxTimeoutSecsPerRequest
-                            }
-                            s timeout ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxWallClockSecsPerRequest
-                            }
-                            s wall clock
+                            {t("home.policy.perRequestValue", {
+                              attempts:
+                                policySetup.scope.profile.grantTerms
+                                  .maxAttemptsPerRequest,
+                              sessions:
+                                policySetup.scope.profile.grantTerms
+                                  .maxSessionsPerRequest,
+                              turns:
+                                policySetup.scope.profile.grantTerms
+                                  .maxTurnsPerRequest,
+                              inputTokens:
+                                policySetup.scope.profile.grantTerms
+                                  .maxInputTokensPerRequest,
+                              outputTokens:
+                                policySetup.scope.profile.grantTerms
+                                  .maxOutputTokensPerRequest,
+                              costMicros:
+                                policySetup.scope.profile.grantTerms
+                                  .maxCostMicrosPerRequest,
+                              timeout:
+                                policySetup.scope.profile.grantTerms
+                                  .maxTimeoutSecsPerRequest,
+                              wallClock:
+                                policySetup.scope.profile.grantTerms
+                                  .maxWallClockSecsPerRequest,
+                            })}
                           </dd>
                         </div>
                         <div>
-                          <dt>Cumulative grant limits</dt>
+                          <dt>{t("home.policy.cumulative")}</dt>
                           <dd>
-                            {policySetup.scope.profile.grantTerms.maxRequests}{" "}
-                            requests ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxCumulativeSessions
-                            }{" "}
-                            sessions ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxCumulativeAttempts
-                            }{" "}
-                            attempts · valid{" "}
-                            {policySetup.scope.profile.grantTerms.validityDays}{" "}
-                            days ·{" "}
-                            {
-                              policySetup.scope.profile.grantTerms
-                                .maxRepairCycles
-                            }{" "}
-                            repair cycles ·{" "}
-                            {policySetup.scope.profile.grantTerms.maxParallel}{" "}
-                            parallel
+                            {t("home.policy.cumulativeValue", {
+                              requests:
+                                policySetup.scope.profile.grantTerms
+                                  .maxRequests,
+                              sessions:
+                                policySetup.scope.profile.grantTerms
+                                  .maxCumulativeSessions,
+                              attempts:
+                                policySetup.scope.profile.grantTerms
+                                  .maxCumulativeAttempts,
+                              days: policySetup.scope.profile.grantTerms
+                                .validityDays,
+                              repairCycles:
+                                policySetup.scope.profile.grantTerms
+                                  .maxRepairCycles,
+                              parallel:
+                                policySetup.scope.profile.grantTerms
+                                  .maxParallel,
+                            })}
                           </dd>
                         </div>
                       </dl>
                     ) : (
                       <p className="ui-callout ui-callout--danger">
-                        Core required an execution policy but did not return the
-                        exact profile and Project scope. Refresh the page and
-                        try again.
+                        {t("home.policy.scopeMissing")}
                       </p>
                     )}
                     <Checkbox
-                      label="I authorize this bounded non-autonomous R0 execution policy for the exact Project configuration and profile revision shown."
+                      label={t("home.policy.acknowledge")}
                       checked={policyAcknowledged}
                       onChange={(event) =>
                         setPolicyAcknowledged(event.target.checked)
@@ -669,8 +642,8 @@ export function Home() {
                         onClick={() => void enablePolicy()}
                       >
                         {policyBusy
-                          ? "Enabling governed execution…"
-                          : "Enable governed execution"}
+                          ? t("home.policy.enabling")
+                          : t("home.policy.enable")}
                       </Button>
                     </div>
                   </div>
@@ -690,12 +663,9 @@ export function Home() {
                       busy || profileUnavailable || policySetup !== null
                     }
                   >
-                    {busy ? "Submitting request…" : "Submit request"}
+                    {busy ? t("home.submitting") : t("home.submit")}
                   </Button>
-                  <span className="muted">
-                    Submitting records operator intent. It does not authorize a
-                    Campaign.
-                  </span>
+                  <span className="muted">{t("home.submitHint")}</span>
                 </div>
               </form>
             )}
@@ -703,30 +673,29 @@ export function Home() {
 
           <Panel className="home-recent">
             <div className="section-heading">
-              <h2>Recent requests</h2>
-              <span className="muted">Bounded Core projection</span>
+              <h2>{t("home.recent.title")}</h2>
+              <span className="muted">{t("home.recent.hint")}</span>
             </div>
             {recentRequests === null && !recentUnavailable && !recentError && (
-              <LoadingState label="Loading requests…" />
+              <LoadingState label={t("home.recent.loading")} />
             )}
             {recentUnavailable && (
               <p className="ui-callout ui-callout--info" role="status">
-                Unified request history is not available from this Core build.
-                The composer and existing operational views remain available.
+                {t("home.recent.unavailable")}
               </p>
             )}
             {recentError && (
               <div className="ui-callout ui-callout--danger" role="alert">
                 <p>{recentError}</p>
                 <Button size="sm" onClick={() => void loadRecent()}>
-                  Retry requests
+                  {t("home.recent.retry")}
                 </Button>
               </div>
             )}
             {recentRequests !== null && recentRequests.length === 0 && (
               <EmptyState
-                title="No requests yet"
-                description="Submit the first request above. Its state and conversation appear here."
+                title={t("home.recent.emptyTitle")}
+                description={t("home.recent.emptyDescription")}
               />
             )}
             {recentRequests !== null && recentRequests.length > 0 && (
@@ -738,8 +707,8 @@ export function Home() {
                         {request.objective}
                       </Link>
                       <span className="muted">
-                        {projectName(request.projectId, projects)} ·{" "}
-                        {formatTimestamp(request.updatedAt)}
+                        {projectName(request.projectId, projects, t)} ·{" "}
+                        {formatDate(request.updatedAt)}
                       </span>
                     </div>
                     <div className="home-request-badges">
@@ -753,10 +722,10 @@ export function Home() {
           </Panel>
         </div>
 
-        <aside className="home-side" aria-label="Current Factory status">
+        <aside className="home-side" aria-label={t("home.status.aria")}>
           <Panel className="home-status">
             <div className="section-heading">
-              <h2>Core status</h2>
+              <h2>{t("home.status.title")}</h2>
               {overview && (
                 <Badge
                   tone={overview.runtime.core_healthy ? "success" : "danger"}
@@ -766,21 +735,22 @@ export function Home() {
               )}
             </div>
             {overview === null && overviewError === null && (
-              <LoadingState label="Checking Core…" />
+              <LoadingState label={t("home.status.loading")} />
             )}
             {overview === null && overviewError !== null && (
               <div className="ui-callout ui-callout--danger" role="alert">
-                <p>Core status is unavailable: {overviewError}</p>
+                <p>{t("home.status.unavailable", { error: overviewError })}</p>
                 <Button size="sm" onClick={() => void loadOverview()}>
-                  Retry status
+                  {t("home.status.retry")}
                 </Button>
               </div>
             )}
             {overview && (
               <>
                 <p className="muted home-status-time">
-                  Snapshot {formatTimestamp(overview.as_of)}. Refreshed every 5
-                  seconds from Core.
+                  {t("home.status.snapshot", {
+                    date: formatDate(overview.as_of),
+                  })}
                 </p>
                 {overviewError && (
                   <div
@@ -788,29 +758,34 @@ export function Home() {
                     role="status"
                   >
                     <p>
-                      Latest refresh failed: {overviewError}. Showing the last
-                      authoritative snapshot.
+                      {t("home.status.refreshFailed", {
+                        error: overviewError,
+                      })}
                     </p>
                     <Button size="sm" onClick={() => void loadOverview()}>
-                      Retry now
+                      {t("home.status.retryNow")}
                     </Button>
                   </div>
                 )}
                 <dl className="home-facts">
                   <div>
-                    <dt>Workers</dt>
-                    <dd>{overview.runtime.workers}</dd>
+                    <dt>{t("home.status.workers")}</dt>
+                    <dd>{formatNumber(overview.runtime.workers)}</dd>
                   </div>
                   <div>
-                    <dt>Unresolved sessions</dt>
-                    <dd>{overview.runtime.unresolved_sessions}</dd>
+                    <dt>{t("home.status.unresolvedSessions")}</dt>
+                    <dd>
+                      {formatNumber(overview.runtime.unresolved_sessions)}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Unresolved model calls</dt>
-                    <dd>{overview.runtime.unresolved_model_calls}</dd>
+                    <dt>{t("home.status.unresolvedModelCalls")}</dt>
+                    <dd>
+                      {formatNumber(overview.runtime.unresolved_model_calls)}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Telemetry export</dt>
+                    <dt>{t("home.status.telemetry")}</dt>
                     <dd>
                       <Badge
                         tone={
@@ -832,34 +807,40 @@ export function Home() {
 
           <Panel className="home-active">
             <div className="section-heading">
-              <h2>Active work</h2>
-              <Link to="/campaigns">Campaigns</Link>
+              <h2>{t("home.active.title")}</h2>
+              <Link to="/campaigns">{t("nav.campaigns")}</Link>
             </div>
             {overview === null ? (
-              <p className="muted">Unavailable until Core status loads.</p>
+              <p className="muted">{t("home.active.unavailable")}</p>
             ) : (
               <>
                 <dl className="home-facts">
                   <div>
-                    <dt>Authorized campaigns</dt>
-                    <dd>{overview.counts.authorized_campaigns}</dd>
+                    <dt>{t("home.active.authorized")}</dt>
+                    <dd>
+                      {formatNumber(overview.counts.authorized_campaigns)}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Awaiting authorization</dt>
-                    <dd>{overview.counts.campaigns_awaiting_authorization}</dd>
+                    <dt>{t("home.active.awaiting")}</dt>
+                    <dd>
+                      {formatNumber(
+                        overview.counts.campaigns_awaiting_authorization,
+                      )}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Running agents</dt>
-                    <dd>{overview.counts.active_agents}</dd>
+                    <dt>{t("home.active.running")}</dt>
+                    <dd>{formatNumber(overview.counts.active_agents)}</dd>
                   </div>
                   <div>
-                    <dt>Blocked signals</dt>
-                    <dd>{overview.counts.blocked_signals}</dd>
+                    <dt>{t("home.active.blocked")}</dt>
+                    <dd>{formatNumber(overview.counts.blocked_signals)}</dd>
                   </div>
                 </dl>
-                <h3 className="home-subheading">Recent events</h3>
+                <h3 className="home-subheading">{t("home.active.events")}</h3>
                 {overview.recent_events.length === 0 ? (
-                  <p className="muted">No events recorded.</p>
+                  <p className="muted">{t("home.active.noEvents")}</p>
                 ) : (
                   <ul className="home-events">
                     {overview.recent_events.slice(0, 3).map((event) => (
@@ -867,7 +848,7 @@ export function Home() {
                         <code>#{event.sequence}</code>
                         <strong>{event.kind}</strong>
                         <span className="muted">
-                          {formatTimestamp(event.recorded_at)}
+                          {formatDate(event.recorded_at)}
                         </span>
                       </li>
                     ))}
@@ -879,15 +860,15 @@ export function Home() {
 
           <Panel className="home-decisions">
             <div className="section-heading">
-              <h2>Pending decisions</h2>
-              <Link to="/inbox">Open Decisions</Link>
+              <h2>{t("home.decisions.title")}</h2>
+              <Link to="/inbox">{t("home.decisions.open")}</Link>
             </div>
             {overview === null ? (
-              <p className="muted">Unavailable until Core status loads.</p>
+              <p className="muted">{t("home.active.unavailable")}</p>
             ) : pendingDecisions.length === 0 ? (
               <EmptyState
-                title="Nothing needs a decision"
-                description="Approvals, Gate repairs and unresolved usage appear when Core records them."
+                title={t("home.decisions.noneTitle")}
+                description={t("home.decisions.noneDescription")}
               />
             ) : (
               <ul className="home-decision-list">

@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { coreApi } from "../coreApi";
+import { useI18n } from "../i18n";
 
 type HealthState = "checking" | "healthy" | "unhealthy";
 
 export function HealthBadge() {
+  const { t } = useI18n();
   const [state, setState] = useState<HealthState>("checking");
 
   useEffect(() => {
@@ -26,10 +28,10 @@ export function HealthBadge() {
 
   const label =
     state === "healthy"
-      ? "Core healthy"
+      ? t("shell.health.healthy")
       : state === "unhealthy"
-        ? "Core unreachable"
-        : "Checking Core";
+        ? t("shell.health.unreachable")
+        : t("shell.health.checking");
 
   return (
     <span

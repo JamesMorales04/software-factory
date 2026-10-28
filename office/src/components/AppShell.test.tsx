@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider, LOCALE_STORAGE_KEY } from "../i18n";
 import { ThemeProvider } from "../theme";
 import { AppShell } from "./AppShell";
 
@@ -13,18 +14,25 @@ vi.mock("../coreApi", () => ({
 
 function LocationProbe() {
   const location = useLocation();
-  return <span data-testid="location">{location.pathname}</span>;
+  return (
+    <span data-testid="location">
+      {location.pathname}
+      {location.search}
+    </span>
+  );
 }
 
 function renderShell(pathname = "/projects", search = "") {
   return render(
-    <ThemeProvider>
-      <MemoryRouter initialEntries={[`${pathname}${search}`]}>
-        <AppShell onLock={() => undefined}>
-          <LocationProbe />
-        </AppShell>
-      </MemoryRouter>
-    </ThemeProvider>,
+    <I18nProvider initialLocale="en">
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[`${pathname}${search}`]}>
+          <AppShell onLock={() => undefined}>
+            <LocationProbe />
+          </AppShell>
+        </MemoryRouter>
+      </ThemeProvider>
+    </I18nProvider>,
   );
 }
 
@@ -268,6 +276,25 @@ describe("AppShell", () => {
     expect(document.querySelector(".workspace")?.hasAttribute("inert")).toBe(
       false,
     );
+  });
+
+  it("switches language from the global header without losing route context", async () => {
+    const user = userEvent.setup();
+    renderShell("/campaigns", "?status=BLOCKED_AUTHORIZATION");
+    const select = screen.getByLabelText("Display language");
+
+    await user.selectOptions(select, "es");
+
+    expect(await screen.findByRole("link", { name: "Campañas" })).toBeDefined();
+    expect(document.querySelector(".topbar-title")?.textContent).toBe(
+      "Campañas",
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/campaigns?status=BLOCKED_AUTHORIZATION",
+    );
+    await waitFor(() => expect(document.documentElement.lang).toBe("es"));
+    expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("es");
+    expect(screen.getByRole("link", { name: "Inicio" })).toBeDefined();
   });
 
   it("opens command navigation with the keyboard and selects a page", async () => {

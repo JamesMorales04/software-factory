@@ -21,7 +21,7 @@ import {
   PageHeader,
   Panel,
 } from "../components/ui/Surface";
-import { type TabItem, Tabs } from "../components/ui/Tabs";
+import { Tabs } from "../components/ui/Tabs";
 import {
   type Campaign,
   CoreApiError,
@@ -30,28 +30,36 @@ import {
   type ParticipantRecord,
   type Project,
 } from "../coreApi";
-import { formatTimestamp, shortId } from "../format";
+import { shortId } from "../format";
+import { useI18n } from "../i18n";
 
 const VIEW_IDS = ["floor", "table", "timeline"] as const;
 type ViewId = (typeof VIEW_IDS)[number];
 
-const VIEW_ITEMS: TabItem[] = [
-  { id: "floor", label: "Visual Office" },
-  { id: "table", label: "Table" },
-  { id: "timeline", label: "Timeline" },
-];
-
-const ROLE_OPTIONS = [
-  ["IMPLEMENTER", "Implementer"],
-  ["LEAD", "Lead"],
-  ["VERIFIER", "Verifier"],
-  ["REVIEWER", "Reviewer"],
-  ["WORKER", "Worker"],
+const VIEW_KEYS = [
+  { id: "floor", labelKey: "agentOffice.views.floor" },
+  { id: "table", labelKey: "agentOffice.views.table" },
+  { id: "timeline", labelKey: "agentOffice.views.timeline" },
 ] as const;
 
-const STATUS_GROUPS: { label: string; values: string[] }[] = [
+const ROLE_OPTIONS = [
+  ["IMPLEMENTER", "agentOffice.role.IMPLEMENTER"],
+  ["LEAD", "agentOffice.role.LEAD"],
+  ["VERIFIER", "agentOffice.role.VERIFIER"],
+  ["REVIEWER", "agentOffice.role.REVIEWER"],
+  ["WORKER", "agentOffice.role.WORKER"],
+] as const;
+
+const STATUS_GROUPS: {
+  labelKey:
+    | "agentOffice.statusGroup.providerSession"
+    | "agentOffice.statusGroup.leadRequest"
+    | "agentOffice.statusGroup.qualityReceipt"
+    | "agentOffice.statusGroup.worker";
+  values: string[];
+}[] = [
   {
-    label: "Provider session",
+    labelKey: "agentOffice.statusGroup.providerSession",
     values: [
       "INTENT",
       "ACTIVE",
@@ -64,7 +72,7 @@ const STATUS_GROUPS: { label: string; values: string[] }[] = [
     ],
   },
   {
-    label: "Lead request",
+    labelKey: "agentOffice.statusGroup.leadRequest",
     values: [
       "SUBMITTED",
       "ASSESSING",
@@ -77,10 +85,10 @@ const STATUS_GROUPS: { label: string; values: string[] }[] = [
     ],
   },
   {
-    label: "Quality receipt",
+    labelKey: "agentOffice.statusGroup.qualityReceipt",
     values: ["PASS", "FAIL", "CHANGES_REQUESTED", "NOT_TESTED"],
   },
-  { label: "Worker", values: ["REGISTERED"] },
+  { labelKey: "agentOffice.statusGroup.worker", values: ["REGISTERED"] },
 ];
 
 const KNOWN_PROVIDERS = ["opencode", "opencode-go", "codex", "fixture"];
@@ -99,6 +107,7 @@ function uniqueProviders(participants: ParticipantRecord[]): string[] {
 }
 
 export function AgentOffice() {
+  const { t, formatDate, formatNumber } = useI18n();
   const { participantId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -188,7 +197,7 @@ export function AgentOffice() {
         setError(
           cause instanceof CoreApiError
             ? cause.message
-            : "Failed to load the Agent Office projection.",
+            : t("agentOffice.error.load"),
         );
       }
     }
@@ -198,7 +207,7 @@ export function AgentOffice() {
       alive.current = false;
       clearInterval(timer);
     };
-  }, [load]);
+  }, [load, t]);
 
   const allParticipants = page?.participants ?? [];
   const selected =
@@ -263,40 +272,62 @@ export function AgentOffice() {
   if (error && !page) {
     return (
       <ErrorState
+        title={t("common.errorTitle")}
         message={error}
-        action={<Button onClick={() => window.location.reload()}>Retry</Button>}
+        action={
+          <Button onClick={() => window.location.reload()}>
+            {t("common.retry")}
+          </Button>
+        }
       />
     );
   }
-  if (!page) return <LoadingState label="Loading Agent Office…" />;
+  if (!page) return <LoadingState label={t("agentOffice.loading")} />;
 
   return (
     <div className="agent-office">
       <PageHeader
-        title="Agent Office"
-        description="Recorded engineering participants projected from Core sessions, Lead requests, independent receipts and Worker registrations. No simulated movement, reasoning or tool activity."
+        title={t("agentOffice.title")}
+        description={t("agentOffice.description")}
         meta={
           <>
             <span>
-              {participants.length} participant
-              {participants.length === 1 ? "" : "s"} in this projection
+              {t(
+                participants.length === 1
+                  ? "agentOffice.meta.participantsOne"
+                  : "agentOffice.meta.participantsOther",
+                { count: formatNumber(participants.length) },
+              )}
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
             <span>
-              {currentCount} current observation{currentCount === 1 ? "" : "s"}
+              {t(
+                currentCount === 1
+                  ? "agentOffice.meta.currentOne"
+                  : "agentOffice.meta.currentOther",
+                { count: formatNumber(currentCount) },
+              )}
             </span>
             <span className="overview-meta-separator" aria-hidden="true">
               /
             </span>
-            <span>{staleCount} stale unresolved</span>
+            <span>
+              {t("agentOffice.meta.stale", {
+                count: formatNumber(staleCount),
+              })}
+            </span>
             {lastLoadedAt && (
               <>
                 <span className="overview-meta-separator" aria-hidden="true">
                   /
                 </span>
-                <span>Snapshot {formatTimestamp(lastLoadedAt)}</span>
+                <span>
+                  {t("agentOffice.meta.snapshot", {
+                    date: formatDate(lastLoadedAt),
+                  })}
+                </span>
               </>
             )}
           </>
@@ -304,10 +335,10 @@ export function AgentOffice() {
         actions={
           <>
             <Link className={buttonClass("secondary")} to="/campaigns">
-              Campaigns
+              {t("nav.campaigns")}
             </Link>
             <Link className={buttonClass("quiet")} to="/runtime">
-              Runtime
+              {t("nav.runtime")}
             </Link>
           </>
         }
@@ -315,54 +346,61 @@ export function AgentOffice() {
 
       {error && (
         <div className="callout callout-attention" role="status">
-          <strong>Core refresh failed.</strong> {error} Showing the last
-          authoritative snapshot
-          {lastLoadedAt ? ` from ${formatTimestamp(lastLoadedAt)}` : ""}. A
-          disconnected view does not mean a participant stopped.
+          <strong>{t("agentOffice.error.refresh")}</strong>{" "}
+          {t("agentOffice.error.refreshBody", {
+            from: lastLoadedAt
+              ? t("agentOffice.error.from", {
+                  date: formatDate(lastLoadedAt),
+                })
+              : "",
+          })}
         </div>
       )}
       {page.page.has_more && (
         <div className="callout" role="status">
-          Showing the first {page.page.returned} participants. The projection is
-          bounded; refine the Campaign, role, provider or status filters to
-          inspect more. No records were hidden silently.
+          {t("agentOffice.page.more", {
+            count: formatNumber(page.page.returned),
+          })}
         </div>
       )}
       {staleCount > 0 && (
         <div className="callout callout-attention" role="status">
           <strong>
-            {staleCount} unresolved participant observation
-            {staleCount === 1 ? " is" : "s are"} stale.
+            {t(
+              staleCount === 1
+                ? "agentOffice.stale.one"
+                : "agentOffice.stale.other",
+              { count: formatNumber(staleCount) },
+            )}
           </strong>{" "}
-          The recorded session has no matching live lease. Review cleanup; this
-          is not proof that the external session stopped.
+          {t("agentOffice.stale.body")}
         </div>
       )}
 
       <Panel className="agent-filter-panel">
         <div className="agent-filters" data-testid="agent-filters">
           <Select
-            label="Role"
+            label={t("agentOffice.filters.role")}
             value={role}
             onChange={(event) => setFilter("role", event.target.value)}
           >
-            <option value="">All roles</option>
-            {ROLE_OPTIONS.map(([value, label]) => (
+            <option value="">{t("agentOffice.filters.allRoles")}</option>
+            {ROLE_OPTIONS.map(([value, labelKey]) => (
               <option value={value} key={value}>
-                {label}
+                {t(labelKey)}
               </option>
             ))}
           </Select>
           <Select
-            label="Recorded status"
+            label={t("agentOffice.filters.status")}
             value={status}
             onChange={(event) => setFilter("status", event.target.value)}
           >
-            <option value="">All statuses</option>
+            <option value="">{t("agentOffice.filters.allStatuses")}</option>
             {STATUS_GROUPS.map((group) => (
-              <optgroup label={group.label} key={group.label}>
+              <optgroup label={t(group.labelKey)} key={group.labelKey}>
                 {group.values.map((value) => (
-                  <option value={value} key={`${group.label}-${value}`}>
+                  <option value={value} key={`${group.labelKey}-${value}`}>
                     {value}
                   </option>
                 ))}
@@ -370,11 +408,11 @@ export function AgentOffice() {
             ))}
           </Select>
           <Select
-            label="Provider"
+            label={t("agentOffice.filters.provider")}
             value={provider}
             onChange={(event) => setFilter("provider", event.target.value)}
           >
-            <option value="">All providers</option>
+            <option value="">{t("agentOffice.filters.allProviders")}</option>
             {providers.map((value) => (
               <option value={value} key={value}>
                 {value}
@@ -382,11 +420,11 @@ export function AgentOffice() {
             ))}
           </Select>
           <Select
-            label="Campaign"
+            label={t("agentOffice.filters.campaign")}
             value={campaignId}
             onChange={(event) => setFilter("campaign", event.target.value)}
           >
-            <option value="">All Campaigns</option>
+            <option value="">{t("agentOffice.filters.allCampaigns")}</option>
             {[...campaigns]
               .sort((left, right) =>
                 right.created_at.localeCompare(left.created_at),
@@ -398,12 +436,12 @@ export function AgentOffice() {
               ))}
           </Select>
           <Select
-            label="Project"
-            help="Projection scope only. Operator authorization remains Factory-wide."
+            label={t("agentOffice.filters.project")}
+            help={t("agentOffice.filters.projectHelp")}
             value={projectId}
             onChange={(event) => setFilter("project", event.target.value)}
           >
-            <option value="">All Projects</option>
+            <option value="">{t("agentOffice.filters.allProjects")}</option>
             {projects.map((project) => (
               <option value={project.id} key={project.id}>
                 {shortId(project.id, 12)} · {project.repository}
@@ -416,32 +454,32 @@ export function AgentOffice() {
               onClick={clearFilters}
               disabled={!hasFilters}
             >
-              Clear filters
+              {t("agentOffice.filters.clear")}
             </Button>
           </div>
         </div>
-        <p className="muted">
-          Filters are applied by Core to the participant projection. They do not
-          grant or restrict operator authority.
-        </p>
+        <p className="muted">{t("agentOffice.filters.note")}</p>
       </Panel>
 
       <div className="agent-workspace">
         <div className="agent-main">
           <div className="section-heading">
-            <h2>Participants</h2>
+            <h2>{t("agentOffice.participants.title")}</h2>
             <span className="muted">
-              {participants.length} shown · ordered by last recorded observation
+              {t("agentOffice.participants.meta", {
+                count: formatNumber(participants.length),
+              })}
             </span>
           </div>
           <Tabs
-            items={VIEW_ITEMS.map((item) => ({
-              ...item,
+            items={VIEW_KEYS.map((item) => ({
+              id: item.id,
+              label: t(item.labelKey),
               count: item.id === view ? participants.length : undefined,
             }))}
             value={view}
             onChange={setView}
-            label="Agent Office views"
+            label={t("agentOffice.views.label")}
             className="agent-view-tabs"
           />
           <div
@@ -455,23 +493,25 @@ export function AgentOffice() {
                 <EmptyState
                   title={
                     hasFilters
-                      ? "No matching participants"
-                      : "No recorded participants"
+                      ? t("agentOffice.emptyFilteredTitle")
+                      : t("agentOffice.emptyTitle")
                   }
                   description={
                     hasFilters
-                      ? "No authoritative participant record matches the current filters. Clear a filter or inspect a different Campaign."
-                      : "Core has no recorded Lead, Implementer, Verifier, Reviewer or Worker participant yet. Start an authorized Campaign to populate the Office."
+                      ? t("agentOffice.emptyFilteredDescription")
+                      : t("agentOffice.emptyDescription")
                   }
                   action={
                     hasFilters ? (
-                      <Button onClick={clearFilters}>Clear filters</Button>
+                      <Button onClick={clearFilters}>
+                        {t("agentOffice.filters.clear")}
+                      </Button>
                     ) : (
                       <Link
                         className={buttonClass("secondary")}
                         to="/campaigns"
                       >
-                        Open Campaigns
+                        {t("agentOffice.openCampaigns")}
                       </Link>
                     )
                   }
@@ -499,7 +539,7 @@ export function AgentOffice() {
           </div>
 
           <details className="agent-sources">
-            <summary>Projection sources and evidence levels</summary>
+            <summary>{t("agentOffice.sources.summary")}</summary>
             <ul>
               {page.sources.map((source) => (
                 <li key={source.role}>
@@ -509,9 +549,8 @@ export function AgentOffice() {
               ))}
             </ul>
             <p className="muted">
-              Provider tool events are read from the existing{" "}
-              <code>provider_tool_events</code> ledger through a bounded,
-              redacted Core projection. Office polling is not an event stream.
+              {t("agentOffice.sources.note")} <code>provider_tool_events</code>{" "}
+              {t("agentOffice.sources.noteEnd")}
             </p>
           </details>
         </div>
@@ -520,9 +559,13 @@ export function AgentOffice() {
           {selectedMissing && !selected ? (
             <Panel className="agent-inspector" as="aside">
               <EmptyState
-                title="Participant not found"
-                description="The requested participant identity is not present in the current Core projection. It may be filtered by Campaign scope or no longer recorded."
-                action={<Button onClick={clearFilters}>Clear filters</Button>}
+                title={t("agentOffice.participantMissingTitle")}
+                description={t("agentOffice.participantMissingDescription")}
+                action={
+                  <Button onClick={clearFilters}>
+                    {t("agentOffice.filters.clear")}
+                  </Button>
+                }
               />
             </Panel>
           ) : (
@@ -532,23 +575,21 @@ export function AgentOffice() {
             />
           )}
           <Panel className="agent-legend">
-            <h3>Truthful state</h3>
+            <h3>{t("agentOffice.legend.title")}</h3>
             <ul>
               <li>
-                <StatusBadge status="CURRENT" /> Core holds a matching live
-                lease generation.
+                <StatusBadge status="CURRENT" />{" "}
+                {t("agentOffice.legend.current")}
               </li>
               <li>
-                <StatusBadge status="STALE" /> The session is unresolved but no
-                live lease matches it.
+                <StatusBadge status="STALE" /> {t("agentOffice.legend.stale")}
               </li>
               <li>
-                <StatusBadge status="FINAL" /> The recorded lifecycle is
-                terminal.
+                <StatusBadge status="FINAL" /> {t("agentOffice.legend.final")}
               </li>
               <li>
-                <StatusBadge status="NOT_EXPOSED" label="NOT EXPOSED" /> Core
-                does not record the requested fact.
+                <StatusBadge status="NOT_EXPOSED" label="NOT EXPOSED" />{" "}
+                {t("agentOffice.legend.notExposed")}
               </li>
             </ul>
           </Panel>
