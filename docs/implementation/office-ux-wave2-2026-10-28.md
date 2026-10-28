@@ -197,3 +197,21 @@ exposes authoritative `campaignStatus` and `gateOutcome` instead of only the lis
 projection. Live provider inference, Compose, independent verification and
 delivery remain `NOT_TESTED`; see
 [the candidate-bound evidence](../evidence/office-ux-intake-lifecycle-2026-10-28.md).
+## 9. Lane D — Decisions status (2026-10-28)
+
+Implemented on `campaign/office-ux-decisions-20261028`: enriched Core decision
+projection (project/campaign, proposed change, risk, budget/permission impact,
+evidence and exact revision); actionable/informational separation; exact
+frozen-intake approval with plan hash, profile revision/hash and confirmation;
+ambiguous model-reservation release; Lead withdrawal; Campaign cancellation;
+pre-submit revision revalidation; double-submit guard; unauthorized, stale,
+offline and empty states; EN/ES copy and responsive layout. Core adds an
+optional exact-profile guard to the existing intake approval operation and a
+typed decision-action projection. No Campaign full-scope authorization, Gate
+repair or provider-session termination mutation is exposed from the Inbox.
+
+Evidence: `cargo test -p factory-native --bin factory-core`, Core clippy/fmt,
+Office typecheck/lint/test/build, and a Chromium layout diagnostic against a
+mock Core at 1440/390/320 px with zero horizontal overflow and zero console
+errors. Real Core/Compose browser acceptance and independent verification are
+`NOT_TESTED`; the mock-Core diagnostic is not acceptance evidence.

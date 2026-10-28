@@ -1224,7 +1224,124 @@ export const en = {
   "decisions.target.runtime": "Open Runtime",
   "decisions.target.action": "Open Action",
   "decisions.target.default": "Open target",
+  "decisions.target.request": "Open request",
   "decisions.subject": "Subject {id}",
+  "decisions.refresh": "Refresh",
+  "decisions.live": "Live Core projection",
+  "decisions.stale": "Showing last loaded projection",
+  "decisions.lastLoaded": "Last loaded {date}",
+  "decisions.offlineTitle": "Factory Core is unreachable",
+  "decisions.offlineDetail":
+    "Actions are disabled until Core is reachable. The items shown are the last loaded projection, not live state.",
+  "decisions.offlineActions":
+    "Actions are unavailable while Core is unreachable.",
+  "decisions.connectionError": "The browser could not reach Factory Core.",
+  "decisions.error.unauthorized":
+    "This device session is not authorized to read decisions. Re-enroll or unlock this device.",
+  "decisions.severity.critical": "Critical",
+  "decisions.severity.attention": "Attention",
+  "decisions.severity.info": "Info",
+  "decisions.context": "Decision context",
+  "decisions.project": "Project",
+  "decisions.campaign": "Campaign",
+  "decisions.risk": "Risk",
+  "decisions.change": "Proposed change",
+  "decisions.workUnits": "Work units",
+  "decisions.acceptanceCriteria": "Acceptance checks",
+  "decisions.negativeCases": "Negative cases",
+  "decisions.paths": "Paths",
+  "decisions.impact": "Budget and permission impact",
+  "decisions.budget": "Budget",
+  "decisions.permissions": "Permissions",
+  "decisions.executionMode": "Execution mode",
+  "decisions.route": "Route",
+  "decisions.tools": "Allowed tools",
+  "decisions.delegation": "Delegation",
+  "decisions.noBudget": "No budget is recorded for this decision.",
+  "decisions.noPermissions": "No execution permission is recorded.",
+  "decisions.actionUnavailable": "Blocked or unavailable:",
+  "decisions.actionUnavailableDetail":
+    "Core reports a blocking authority or evidence condition. Follow the linked workspace; the Inbox will not bypass it.",
+  "decisions.evidence": "Evidence and identifiers",
+  "decisions.evidenceSummary": "Key evidence",
+  "decisions.revision": "Revision",
+  "decisions.staleTitle": "State changed",
+  "decisions.staleBody":
+    "Core state changed since this item loaded. Review the refreshed item and confirm the action again.",
+  "decisions.actions": "Available actions",
+  "decisions.noActions":
+    "No Inbox mutation is exposed for this item. Use the linked workspace to inspect it.",
+  "decisions.measured": "measured",
+  "decisions.unmeasured": "UNMEASURED",
+  "decisions.budget.attempts": "Attempts",
+  "decisions.budget.sessions": "Sessions",
+  "decisions.budget.turns": "Turns",
+  "decisions.budget.inputTokens": "Input tokens",
+  "decisions.budget.outputTokens": "Output tokens",
+  "decisions.budget.cost": "Cost ceiling",
+  "decisions.budget.deadline": "Deadline",
+  "decisions.budget.wallClock": "Wall clock",
+  "decisions.budget.timeout": "Timeout",
+  "decisions.budget.repairCycles": "Repair cycles",
+  "decisions.budget.parallel": "Parallel units",
+  "decisions.budget.usage": "Usage",
+  "decisions.budget.recordedCost": "Recorded cost",
+  "decisions.action.approveIntake": "Approve frozen plan…",
+  "decisions.action.approveIntakeSubmit": "Approve and start Campaign",
+  "decisions.action.approved":
+    "Core approved the exact frozen plan and started the Campaign.",
+  "decisions.action.approveIntakeConsequence":
+    "This creates a Campaign under the exact frozen plan, profile revision, route and budget. Core rejects a stale identity; it cannot be undone from the Inbox.",
+  "decisions.action.rationale": "Decision rationale",
+  "decisions.action.rationaleHelp":
+    "Recorded with the approval by Core. It does not alter the frozen plan.",
+  "decisions.action.confirmApprove":
+    "I reviewed the frozen plan, profile revision, scope, budget and acceptance criteria.",
+  "decisions.action.requiredRationale": "A rationale is required.",
+  "decisions.action.cancelIntake": "Cancel request…",
+  "decisions.action.cancelIntakeSubmit": "Cancel request",
+  "decisions.action.intakeCancelled": "Core recorded the request cancellation.",
+  "decisions.action.cancelIntakeConsequence":
+    "This withdraws the Lead request behind the intake request. It does not cancel an already authorized Campaign.",
+  "decisions.action.reason": "Reason",
+  "decisions.action.reasonHelp": "Recorded by Core with the decision.",
+  "decisions.action.confirmWithdraw":
+    "I understand this withdraws the request at the Lead boundary and cannot be undone here.",
+  "decisions.action.requiredReason": "A reason is required.",
+  "decisions.action.withdrawLead": "Withdraw request…",
+  "decisions.action.withdrawLeadSubmit": "Withdraw request",
+  "decisions.action.leadWithdrawn": "Core recorded the Lead withdrawal.",
+  "decisions.action.withdrawLeadConsequence":
+    "This records an authoritative Lead withdrawal. A Campaign that already started cannot be withdrawn here.",
+  "decisions.action.cancelCampaign": "Cancel Campaign…",
+  "decisions.action.cancelCampaignSubmit": "Cancel Campaign",
+  "decisions.action.campaignCancelled":
+    "Core recorded the Campaign cancellation.",
+  "decisions.action.cancelCampaignConsequence":
+    "This cancels the Campaign and its active records. Provider termination can remain unconfirmed; inspect the Campaign afterwards.",
+  "decisions.action.confirmCampaignCancel":
+    "I understand cancellation stops the Campaign; provider termination can remain unconfirmed.",
+  "decisions.action.completed": "Core recorded the decision.",
+  "decisions.action.noConsequence":
+    "This operation is recorded by Core. Review the refreshed projection afterwards.",
+  "decisions.action.staleMissing":
+    "This item is no longer in the Inbox. It may have been resolved by another operator.",
+  "decisions.action.alreadyStarted": "A Campaign already started.",
+  "decisions.action.requiredConfirmation":
+    "Confirm the consequence before continuing.",
+  "decisions.action.error": "The Core operation failed.",
+  "decisions.action.offline":
+    "The browser could not reach Factory Core. The action was not submitted.",
+  "decisions.action.unauthorized":
+    "This device is not authorized for that Core operation. Unlock or re-enroll this device.",
+  "decisions.action.busy": "Applying…",
+  "decisions.action.close": "Close",
+  "decisions.action.planHash": "Exact plan hash",
+  "decisions.action.profileRevision": "Exact profile revision",
+  "decisions.action.profileHash": "Exact profile hash",
+  "decisions.action.modelResolved": "Core released the model reservation.",
+  "decisions.action.unsupported":
+    "This Core action kind is not available in this Office revision:",
 
   "projects.title": "Projects",
   "projects.description":

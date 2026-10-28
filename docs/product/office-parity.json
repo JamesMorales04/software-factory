@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-28T17:55:00Z",
+  "updated_at": "2026-10-28T18:10:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -41,6 +41,7 @@
         "POST /lead/requests/{id}/assess",
         "POST /lead/requests/{id}/freeze",
         "POST /lead/requests/{id}/start",
+        "POST /lead/requests/{id}/withdraw",
         "GET /delegations",
         "POST /delegations",
         "GET /delegations/{id}",
@@ -133,7 +134,8 @@
         "submit a Project-scoped unified intake request with an exact execution profile revision",
         "explicitly enable a bounded non-autonomous execution policy for a Project and profile revision",
         "assess and freeze an intake plan, approve the exact frozen plan hash, message before freeze or withdraw the request",
-        "follow an approved intake Campaign through Worker claim, exact candidate, verifier and semantic-reviewer receipts, deterministic Quality Gate, changed files and restart persistence"
+        "follow an approved intake Campaign through Worker claim, exact candidate, verifier and semantic-reviewer receipts, deterministic Quality Gate, changed files and restart persistence",
+        "review actionable decisions with exact revision guards, approve an exact frozen intake plan, release ambiguous model reservations, withdraw a Lead request, cancel a Campaign, and keep informational events separate"
       ],
       "states": [
         "loading",
@@ -163,7 +165,10 @@
         "assessment-unavailable",
         "plan-frozen-amendment-refused",
         "withdrawal-fenced-after-start",
-        "authorization-reason"
+        "authorization-reason",
+        "stale-revision-guard",
+        "offline-last-loaded",
+        "double-submit-guard"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
@@ -178,9 +183,10 @@
         "office/src/views/Issues.test.tsx",
         "office/src/views/Home.test.tsx",
         "office/src/views/RequestWorkspace.test.tsx",
-        "office/e2e-browser/intake-journey.mjs"
+        "office/e2e-browser/intake-journey.mjs",
+        "office/src/views/DecisionInbox.test.tsx"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Live provider inference, Compose acceptance, aggregate token/cost accounting, role-specific routing beyond the single default gateway and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. Docs remain a later slice."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, per-page ETag sync with credential-generation fencing and credential-wide backoff, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is wired at /issues and component-tested; real browser acceptance remains pending. Unified intake now has a durable Project-scoped request, append-only pre-freeze operator messages, an explicit non-autonomous execution-policy grant, exact profile revision/plan-hash approval, and authoritative Lead withdrawal fencing. Assessment requires an authorized model gateway; no fixture fallback fabricates checks. A real Chromium journey now follows the ordinary intake path through Worker claim, exact candidate, independent verifier, semantic reviewer with model provenance, deterministic Quality Gate, changed files and Core-restart persistence using deterministic fixtures. Live provider inference, Compose acceptance for the intake path, aggregate token/cost accounting, role-specific routing beyond the single default gateway and independent acceptance remain unimplemented; these are displayed as explicit limits, not inferred state. The legacy Compose stack E2E passes. Docs remain a later slice. Decision Inbox now exposes only Core-backed actions with exact identity guards: approval of a frozen intake plan requires the exact plan hash/profile revision and explicit confirmation; ambiguous model reservations can be released; Lead withdrawal and Campaign cancellation require a reason and confirmation; every mutating action re-reads /office/decisions and aborts when the item revision changed or disappeared. Informational events remain separate and never render action controls. Full-scope Campaign authorization is not posted from the Inbox. Real browser acceptance for the new Inbox actions remains pending."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -199,12 +205,18 @@
         "GET /campaigns",
         "GET /provider/sessions",
         "GET /model/calls",
-        "POST /model/calls/{id}/resolve"
+        "POST /model/calls/{id}/resolve",
+        "POST /campaigns/{id}/cancel",
+        "POST /intake/requests/{id}/approve",
+        "POST /intake/requests/{id}/cancel",
+        "POST /lead/requests/{id}/withdraw"
       ],
       "user_actions": [
         "inspect authorized campaigns, blocked work, decisions, measured spend, recent accepted candidates and recent events",
-        "open the Decision Inbox and follow each item to its authoritative module",
+        "separate action-required decisions from informational events and deep-link each item to its exact Project, Campaign, request, candidate or runtime object",
+        "approve an exact frozen intake plan only with its plan hash and profile revision, an explicit rationale and confirmation",
         "resolve an AMBIGUOUS or UNKNOWN Core model call with an explicit operator reason",
+        "withdraw a frozen Lead request or cancel a Campaign with a reason and proportionate confirmation",
         "inspect an Action frozen specification, checks and related Campaigns, Lead requests and delegations"
       ],
       "states": [
@@ -215,14 +227,20 @@
         "stale-snapshot",
         "unresolved-usage",
         "unknown-usage",
-        "not-tested"
+        "not-tested",
+        "stale-revision-guard",
+        "offline-last-loaded",
+        "double-submit-guard",
+        "destructive-confirmation"
       ],
       "acceptance": [
         "office/src/views/Overview.test.tsx",
         "office/e2e-browser/rust-journey.mjs",
-        "scripts/compose-office-smoke.mjs"
+        "scripts/compose-office-smoke.mjs",
+        "office/src/views/DecisionInbox.test.tsx",
+        "native/src/bin/core.rs"
       ],
-      "notes": "Overview and decisions are operator-authenticated Core projections; the client does not synthesize decisions. The Inbox exposes model-call resolution and navigation only. Campaign authorization and Gate repair remain on their existing module pages. No SSE or live-stream claim."
+      "notes": "Overview and decisions are operator-authenticated Core projections; the client does not synthesize decisions. The Inbox exposes exact-revision intake approval, model-call resolution, Lead withdrawal, Campaign cancellation and navigation; every action revalidates the current decision revision, requires proportionate confirmation and is disabled while Core is unreachable. Full-scope Campaign authorization is not posted from the Inbox and links to the exact Campaign. Gate repair and provider-session termination remain outside the Inbox because no operator mutation is exposed. Component and Core projection tests cover the new actions; real browser acceptance remains pending. No SSE or live-stream claim."
     },
     "CAP-050": {
       "name": "Campaign operational workspace",

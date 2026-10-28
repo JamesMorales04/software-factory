@@ -1267,7 +1267,126 @@ export const es: Catalog = {
   "decisions.target.runtime": "Abrir el entorno de ejecución",
   "decisions.target.action": "Abrir acción",
   "decisions.target.default": "Abrir destino",
+  "decisions.target.request": "Abrir solicitud",
   "decisions.subject": "Sujeto {id}",
+  "decisions.refresh": "Actualizar",
+  "decisions.live": "Proyección de Core en vivo",
+  "decisions.stale": "Mostrando la última proyección cargada",
+  "decisions.lastLoaded": "Última carga {date}",
+  "decisions.offlineTitle": "Factory Core no está accesible",
+  "decisions.offlineDetail":
+    "Las acciones están deshabilitadas hasta que Core sea accesible. Los elementos mostrados son la última proyección cargada, no el estado en vivo.",
+  "decisions.offlineActions":
+    "Las acciones no están disponibles mientras Core no sea accesible.",
+  "decisions.connectionError":
+    "El navegador no pudo contactar con Factory Core.",
+  "decisions.error.unauthorized":
+    "Esta sesión de dispositivo no está autorizada para leer decisiones. Vuelve a inscribir o desbloquear este dispositivo.",
+  "decisions.severity.critical": "Crítico",
+  "decisions.severity.attention": "Atención",
+  "decisions.severity.info": "Información",
+  "decisions.context": "Contexto de la decisión",
+  "decisions.project": "Proyecto",
+  "decisions.campaign": "Campaña",
+  "decisions.risk": "Riesgo",
+  "decisions.change": "Cambio propuesto",
+  "decisions.workUnits": "Unidades de trabajo",
+  "decisions.acceptanceCriteria": "Comprobaciones de aceptación",
+  "decisions.negativeCases": "Casos negativos",
+  "decisions.paths": "Rutas",
+  "decisions.impact": "Impacto en presupuesto y permisos",
+  "decisions.budget": "Presupuesto",
+  "decisions.permissions": "Permisos",
+  "decisions.executionMode": "Modo de ejecución",
+  "decisions.route": "Ruta de modelo",
+  "decisions.tools": "Herramientas permitidas",
+  "decisions.delegation": "Delegación",
+  "decisions.noBudget": "No hay presupuesto registrado para esta decisión.",
+  "decisions.noPermissions": "No hay permiso de ejecución registrado.",
+  "decisions.actionUnavailable": "Bloqueado o no disponible:",
+  "decisions.actionUnavailableDetail":
+    "Core informa de una condición bloqueante de autoridad o evidencia. Sigue el espacio de trabajo enlazado; la Bandeja no la omitirá.",
+  "decisions.evidence": "Evidencia e identificadores",
+  "decisions.evidenceSummary": "Evidencia clave",
+  "decisions.revision": "Revisión",
+  "decisions.staleTitle": "El estado cambió",
+  "decisions.staleBody":
+    "El estado de Core cambió desde que se cargó este elemento. Revisa el elemento actualizado y vuelve a confirmar la acción.",
+  "decisions.actions": "Acciones disponibles",
+  "decisions.noActions":
+    "No se expone ninguna mutación de la Bandeja para este elemento. Usa el espacio de trabajo enlazado para inspeccionarlo.",
+  "decisions.measured": "medido",
+  "decisions.unmeasured": "SIN MEDIR",
+  "decisions.budget.attempts": "Intentos",
+  "decisions.budget.sessions": "Sesiones",
+  "decisions.budget.turns": "Turnos",
+  "decisions.budget.inputTokens": "Tokens de entrada",
+  "decisions.budget.outputTokens": "Tokens de salida",
+  "decisions.budget.cost": "Techo de coste",
+  "decisions.budget.deadline": "Fecha límite",
+  "decisions.budget.wallClock": "Tiempo máximo",
+  "decisions.budget.timeout": "Tiempo de espera",
+  "decisions.budget.repairCycles": "Ciclos de reparación",
+  "decisions.budget.parallel": "Unidades en paralelo",
+  "decisions.budget.usage": "Uso",
+  "decisions.budget.recordedCost": "Coste registrado",
+  "decisions.action.approveIntake": "Aprobar plan congelado…",
+  "decisions.action.approveIntakeSubmit": "Aprobar e iniciar campaña",
+  "decisions.action.approved":
+    "Core aprobó el plan congelado exacto e inició la campaña.",
+  "decisions.action.approveIntakeConsequence":
+    "Esto crea una campaña con el plan congelado, la revisión de perfil, la ruta y el presupuesto exactos. Core rechaza una identidad obsoleta; no se puede deshacer desde la Bandeja.",
+  "decisions.action.rationale": "Motivo de la decisión",
+  "decisions.action.rationaleHelp":
+    "Core lo registra con la aprobación. No altera el plan congelado.",
+  "decisions.action.confirmApprove":
+    "He revisado el plan congelado, la revisión de perfil, el alcance, el presupuesto y los criterios de aceptación.",
+  "decisions.action.requiredRationale": "Se requiere un motivo.",
+  "decisions.action.cancelIntake": "Cancelar solicitud…",
+  "decisions.action.cancelIntakeSubmit": "Cancelar solicitud",
+  "decisions.action.intakeCancelled":
+    "Core registró la cancelación de la solicitud.",
+  "decisions.action.cancelIntakeConsequence":
+    "Esto retira la solicitud de Lead asociada a la solicitud de intake. No cancela una campaña ya autorizada.",
+  "decisions.action.reason": "Motivo",
+  "decisions.action.reasonHelp": "Core lo registra con la decisión.",
+  "decisions.action.confirmWithdraw":
+    "Entiendo que esto retira la solicitud en el límite de Lead y no se puede deshacer aquí.",
+  "decisions.action.requiredReason": "Se requiere un motivo.",
+  "decisions.action.withdrawLead": "Retirar solicitud…",
+  "decisions.action.withdrawLeadSubmit": "Retirar solicitud",
+  "decisions.action.leadWithdrawn": "Core registró la retirada de Lead.",
+  "decisions.action.withdrawLeadConsequence":
+    "Esto registra una retirada autoritativa en el límite de Lead. Una campaña ya iniciada no se puede retirar aquí.",
+  "decisions.action.cancelCampaign": "Cancelar campaña…",
+  "decisions.action.cancelCampaignSubmit": "Cancelar campaña",
+  "decisions.action.campaignCancelled":
+    "Core registró la cancelación de la campaña.",
+  "decisions.action.cancelCampaignConsequence":
+    "Esto cancela la campaña y sus registros activos. La terminación del proveedor puede quedar sin confirmar; inspecciona la campaña después.",
+  "decisions.action.confirmCampaignCancel":
+    "Entiendo que la cancelación detiene la campaña; la terminación del proveedor puede quedar sin confirmar.",
+  "decisions.action.completed": "Core registró la decisión.",
+  "decisions.action.noConsequence":
+    "Core registra esta operación. Revisa la proyección actualizada después.",
+  "decisions.action.staleMissing":
+    "Este elemento ya no está en la Bandeja. Puede que otro operador lo haya resuelto.",
+  "decisions.action.alreadyStarted": "Ya se inició una campaña.",
+  "decisions.action.requiredConfirmation":
+    "Confirma la consecuencia antes de continuar.",
+  "decisions.action.error": "La operación de Core falló.",
+  "decisions.action.offline":
+    "El navegador no pudo contactar con Factory Core. La acción no se envió.",
+  "decisions.action.unauthorized":
+    "Este dispositivo no está autorizado para esa operación de Core. Desbloquea o vuelve a inscribir el dispositivo.",
+  "decisions.action.busy": "Aplicando…",
+  "decisions.action.close": "Cerrar",
+  "decisions.action.planHash": "Hash exacto del plan",
+  "decisions.action.profileRevision": "Revisión exacta del perfil",
+  "decisions.action.profileHash": "Hash exacto del perfil",
+  "decisions.action.modelResolved": "Core liberó la reserva del modelo.",
+  "decisions.action.unsupported":
+    "Este tipo de acción de Core no está disponible en esta revisión de Office:",
 
   "projects.title": "Proyectos",
   "projects.description":
