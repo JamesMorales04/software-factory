@@ -78,6 +78,26 @@ This is partial journey 11/12 evidence. The shell/Home/Request are not fully
 translated, the new intake backend was still absent, and the QR pairing flow was
 not exercised in this run. It is not a full localization or mobile acceptance.
 
+## Local Compose attempt — BLOCKED
+
+A real `scripts/compose-e2e.sh` attempt on the integration source at `e738c2c`
+used an isolated rootless VFS store (`CONTAINERS_STORAGE_CONF=/tmp/opencode/podman-vfs/storage.conf`)
+so the user's existing Podman store was untouched. The stack did not start:
+Podman/buildah failed while mounting an overlay over the build context:
+
+```text
+Error: mounting an overlay over build context directory: creating overlay
+scaffolding for build context directory: mount overlay:...,
+data: lowerdir=...,upperdir=...,workdir=...,userxattr: no such device
+```
+
+Exit code 125. The same failure occurred with `--isolation=chroot`,
+`--layers=false` and a tmpfs `TMPDIR`; the host cannot use buildah's context
+overlay on btrfs. **No Compose acceptance is claimed.** The repository's
+containerized CI `container-dev` job built and ran the dev image and Chromium
+journey on GitHub-hosted runners for the relevant PRs; that is separate CI
+evidence, not a local Compose result.
+
 ## Known limitations
 
 - **Not independent.** The author ran this journey. An independent verifier and
