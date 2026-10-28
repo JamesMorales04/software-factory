@@ -1389,6 +1389,140 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+export interface GitHubConnection {
+  configured: boolean;
+  enabled: boolean;
+  login: string | null;
+  scopes: string[];
+  scopes_reported: boolean;
+  credential_fingerprint: string;
+  revision: number;
+  verified_at: string | null;
+  revoked_at: string | null;
+  updated_at: string | null;
+  detail: string;
+}
+
+export interface GitHubConnectionAuditEntry {
+  audit_id: string;
+  revision: number;
+  action: string;
+  actor: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface GitHubConnectionState {
+  connection: GitHubConnection;
+  audit: GitHubConnectionAuditEntry[];
+}
+
+export interface GitHubRepository {
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  html_url: string;
+  pushed_at: string | null;
+}
+
+export interface GitHubRepositoryList {
+  repositories: GitHubRepository[];
+  fetched_at: string;
+  rate_limited: boolean;
+  next_allowed_at: string | null;
+  detail: string;
+}
+
+export interface ProjectGitHubBinding {
+  project_id: string;
+  owner: string;
+  repo: string;
+  repo_full_name: string;
+  default_branch: string;
+  bound_at: string;
+  updated_at: string;
+}
+
+export interface GitHubSyncState {
+  project_id: string;
+  repo_full_name: string;
+  status:
+    | "NEVER_SYNCED"
+    | "OK"
+    | "STALE"
+    | "RATE_LIMITED"
+    | "DENIED"
+    | "NOT_FOUND"
+    | "ERROR"
+    | "REVOKED";
+  detail: string;
+  etag: string | null;
+  last_synced_at: string | null;
+  last_attempt_at: string | null;
+  next_allowed_at: string | null;
+  last_status_code: number | null;
+  fetched: number;
+  created: number;
+  updated: number;
+  removed: number;
+  total_known: number;
+  truncated: boolean;
+  stale: boolean;
+  updated_at: string;
+}
+
+export interface GitHubLabel {
+  name: string;
+  color: string | null;
+}
+
+export interface GitHubIssueSummary {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  state_reason: string | null;
+  labels: GitHubLabel[];
+  author: string | null;
+  html_url: string;
+  comments: number;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  synced_at: string;
+}
+
+export interface GitHubIssueDetail extends GitHubIssueSummary {
+  body: string;
+  body_truncated: boolean;
+}
+
+export interface GitHubIssueList {
+  items: GitHubIssueSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  synced_at: string | null;
+  stale: boolean;
+  sync_status: "UNBOUND" | GitHubSyncState["status"];
+  last_error: string | null;
+  next_allowed_at: string | null;
+  truncated: boolean;
+  binding: ProjectGitHubBinding | null;
+}
+
+export interface GitHubIssueFilters {
+  state?: "all" | "open" | "closed";
+  label?: string;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProjectGitHubBindingResult {
+  binding: ProjectGitHubBinding;
+  sync_state: GitHubSyncState | null;
+}
+
 export const coreApi = {
   getAccessOverview: () => accessRequest<AccessOverview>("/auth/access"),
   createDeviceChallenge: () =>
@@ -1676,6 +1810,58 @@ export const coreApi = {
     request<ProviderTurnBudget>("/provider/turn_reservations/budget"),
   getObservability: () => request<ObservabilityStatus>("/observability"),
   getOverview: () => request<OfficeOverview>("/office/overview"),
+  getGitHubConnection: () =>
+    request<GitHubConnectionState>("/integrations/github"),
+  updateGitHubConnection: (token: string) =>
+    request<GitHubConnectionState>("/integrations/github", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
+  disconnectGitHub: () =>
+    request<GitHubConnectionState>("/integrations/github", {
+      method: "DELETE",
+    }),
+  listGitHubRepositories: (query = "") => {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    const suffix = params.toString();
+    return request<GitHubRepositoryList>(
+      `/integrations/github/repositories${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  bindProjectGitHub: (
+    projectId: string,
+    input: { owner: string; repo: string; default_branch: string },
+  ) =>
+    request<ProjectGitHubBindingResult>(
+      `/projects/${encodeURIComponent(projectId)}/github`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
+  syncProjectIssues: (projectId: string) =>
+    request<GitHubSyncState>(
+      `/projects/${encodeURIComponent(projectId)}/issues/sync`,
+      { method: "POST" },
+    ),
+  listProjectIssues: (projectId: string, filters: GitHubIssueFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.state) params.set("state", filters.state);
+    if (filters.label) params.set("label", filters.label);
+    if (filters.query) params.set("query", filters.query);
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.offset !== undefined)
+      params.set("offset", String(filters.offset));
+    const suffix = params.toString();
+    return request<GitHubIssueList>(
+      `/projects/${encodeURIComponent(projectId)}/issues${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  getProjectIssue: (projectId: string, number: number) =>
+    request<GitHubIssueDetail>(
+      `/projects/${encodeURIComponent(projectId)}/issues/${number}`,
+    ),
   listParticipants: (filters: ParticipantFilters = {}) => {
     const params = new URLSearchParams();
     if (filters.role) params.set("role", filters.role);

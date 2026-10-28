@@ -5,6 +5,8 @@ pub mod device_session;
 pub mod evaluation;
 pub mod execution;
 pub mod execution_profile;
+pub mod github;
+pub mod github_sync;
 pub mod lead;
 pub mod lead_model;
 pub mod model_gateway;

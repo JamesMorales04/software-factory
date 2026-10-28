@@ -46,6 +46,8 @@ struct App {
     lead_autonomous_start: bool,
     model_gateway: Option<factory_native::model_gateway::ModelGateway>,
     master_key: Option<factory_native::provider_secrets::ProviderSecretKey>,
+    github: factory_native::github::GitHubClient,
+    github_sync: tokio::sync::Mutex<()>,
     attempt_grant_key: Vec<u8>,
     observability: factory_native::observability::ExporterHandle,
 }
@@ -466,6 +468,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             == Some("1"),
         model_gateway: model_gateway_from_env()?,
         master_key,
+        github: factory_native::github::GitHubClient::from_env()?,
+        github_sync: tokio::sync::Mutex::new(()),
         attempt_grant_key: attempt_grant_key.into_bytes(),
         observability,
     });
@@ -707,6 +711,7 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/start", post(start_lead_request))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
+        .merge(github_integration_routes())
         .with_state(Arc::clone(&app))
         .merge(factory_native::device_pairing::routes(app.db.clone()));
 
@@ -898,6 +903,7 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
+        .merge(github_integration_routes())
         .with_state(app)
 }
 
@@ -2383,6 +2389,439 @@ fn project_files_error(error: factory_native::project_files::ProjectFilesError) 
         _ => error.to_string(),
     };
     (status, Json(json!({"error": message}))).into_response()
+}
+
+fn github_integration_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/integrations/github",
+            get(get_github_connection)
+                .put(put_github_connection)
+                .delete(delete_github_connection),
+        )
+        .route(
+            "/integrations/github/repositories",
+            get(github_repositories),
+        )
+        .route("/projects/{id}/github", post(bind_project_github))
+        .route("/projects/{id}/issues/sync", post(sync_project_issues))
+        .route("/projects/{id}/issues", get(project_issues))
+        .route("/projects/{id}/issues/{number}", get(project_issue))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubConnectionInput {
+    token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubRepositoriesQuery {
+    #[serde(default)]
+    query: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectGitHubInput {
+    owner: String,
+    repo: String,
+    default_branch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubIssuesQuery {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    offset: Option<u32>,
+}
+
+fn github_connection_view(
+    record: Option<&factory_native::db::GitHubConnectionRecord>,
+) -> serde_json::Value {
+    match record {
+        Some(record) => {
+            let configured = record.enabled && !record.credential_ciphertext.is_empty();
+            json!({
+                "configured": configured,
+                "enabled": record.enabled,
+                "login": record.login,
+                "scopes": record.scopes,
+                "scopes_reported": record.scopes_reported,
+                "credential_fingerprint": record.credential_fingerprint,
+                "revision": record.revision,
+                "verified_at": record.verified_at,
+                "revoked_at": record.revoked_at,
+                "updated_at": record.updated_at,
+                "detail": if configured {
+                    "credential verified; repository access and inference are not implied"
+                } else {
+                    "connection revoked; synchronization is disabled"
+                },
+            })
+        }
+        None => json!({
+            "configured": false,
+            "enabled": false,
+            "login": null,
+            "scopes": [],
+            "scopes_reported": false,
+            "credential_fingerprint": "",
+            "revision": 0,
+            "verified_at": null,
+            "revoked_at": null,
+            "updated_at": null,
+            "detail": "GitHub is not connected",
+        }),
+    }
+}
+
+async fn github_connection_state(app: &App) -> Result<serde_json::Value, Response> {
+    let record = match app.db.github_connection().await {
+        Ok(record) => Some(record),
+        Err(Error::NotFound) => None,
+        Err(error) => return Err(api_error(error)),
+    };
+    let audit = app
+        .db
+        .github_connection_audit(10)
+        .await
+        .map_err(api_error)?;
+    Ok(json!({
+        "connection": github_connection_view(record.as_ref()),
+        "audit": audit,
+    }))
+}
+
+fn github_upstream_error(error: factory_native::github::GitHubError) -> Response {
+    let status = match &error {
+        factory_native::github::GitHubError::Invalid(_) => StatusCode::BAD_REQUEST,
+        factory_native::github::GitHubError::Unauthorized => StatusCode::UNAUTHORIZED,
+        factory_native::github::GitHubError::Forbidden(_) => StatusCode::FORBIDDEN,
+        factory_native::github::GitHubError::NotFound => StatusCode::NOT_FOUND,
+        factory_native::github::GitHubError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    let mut body = json!({"error": error.detail(), "kind": error.kind()});
+    if let Some(next) = error.next_allowed_at() {
+        body["next_allowed_at"] = json!(next);
+    }
+    (status, Json(body)).into_response()
+}
+
+/// Decrypt the stored GitHub token for one request. The plaintext is never
+/// returned to Office, persisted or logged; it is registered for telemetry
+/// redaction and dropped after the request.
+async fn load_github_token(app: &App) -> Result<String, Response> {
+    let record = match app.db.github_connection().await {
+        Ok(record) => record,
+        Err(Error::NotFound) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(json!({"error": "GitHub is not connected"})),
+            )
+                .into_response());
+        }
+        Err(error) => return Err(api_error(error)),
+    };
+    if !record.enabled || record.credential_ciphertext.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "GitHub connection is revoked; reconnect before synchronizing"
+            })),
+        )
+            .into_response());
+    }
+    let Some(master_key) = app.master_key.as_ref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "GitHub credential protection is not configured"})),
+        )
+            .into_response());
+    };
+    let credential =
+        match master_key.decrypt(&record.credential_ciphertext, &record.credential_nonce) {
+            Ok(credential) => credential,
+            Err(_) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "stored GitHub credential could not be decrypted"})),
+                )
+                    .into_response());
+            }
+        };
+    let token = match String::from_utf8(credential) {
+        Ok(token) => token,
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "stored GitHub credential is not valid text"})),
+            )
+                .into_response());
+        }
+    };
+    factory_native::telemetry::register_secret(&token);
+    Ok(token)
+}
+
+async fn get_github_connection(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match github_connection_state(&app).await {
+        Ok(state) => Json(state).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn put_github_connection(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<GitHubConnectionInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    factory_native::telemetry::register_secret(&input.token);
+    let Some(master_key) = app.master_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "GitHub credential protection is not configured"})),
+        )
+            .into_response();
+    };
+    let user = match app.github.authenticated_user(&input.token).await {
+        Ok(user) => user,
+        Err(error) => return github_upstream_error(error),
+    };
+    let encrypted = match master_key.encrypt(input.token.as_bytes()) {
+        Ok(encrypted) => encrypted,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "GitHub credential could not be encrypted"})),
+            )
+                .into_response();
+        }
+    };
+    let saved = app
+        .db
+        .save_github_connection(
+            &encrypted,
+            &user.login,
+            &user.scopes,
+            user.scopes_reported,
+            "office-operator",
+        )
+        .await;
+    match saved {
+        Ok(_) => match github_connection_state(&app).await {
+            Ok(state) => Json(state).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn delete_github_connection(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.revoke_github_connection("office-operator").await {
+        Ok(_) | Err(Error::NotFound) => match github_connection_state(&app).await {
+            Ok(state) => Json(state).into_response(),
+            Err(response) => response,
+        },
+        Err(error) => api_error(error),
+    }
+}
+
+async fn github_repositories(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<GitHubRepositoriesQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let query = query.query.unwrap_or_default();
+    if query.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "repository query is too long"})),
+        )
+            .into_response();
+    }
+    let token = match load_github_token(&app).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    match app.github.repositories(&token, Some(&query)).await {
+        Ok(repositories) => Json(json!({
+            "repositories": repositories,
+            "fetched_at": fetched_at,
+            "rate_limited": false,
+            "next_allowed_at": null,
+            "detail": "",
+        }))
+        .into_response(),
+        Err(error)
+            if matches!(
+                &error,
+                factory_native::github::GitHubError::RateLimited { .. }
+            ) =>
+        {
+            Json(json!({
+                "repositories": [],
+                "fetched_at": fetched_at,
+                "rate_limited": true,
+                "next_allowed_at": error.next_allowed_at(),
+                "detail": error.detail(),
+            }))
+            .into_response()
+        }
+        Err(error) => github_upstream_error(error),
+    }
+}
+
+async fn bind_project_github(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<ProjectGitHubInput>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let binding = match app
+        .db
+        .bind_project_github(
+            &id,
+            factory_native::db::NewProjectGitHubBinding {
+                owner: &input.owner,
+                repo: &input.repo,
+                default_branch: &input.default_branch,
+            },
+            "office-operator",
+        )
+        .await
+    {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let sync_state = match app.db.github_sync_state(&id).await {
+        Ok(state) => Some(state),
+        Err(Error::NotFound) => None,
+        Err(error) => return api_error(error),
+    };
+    Json(json!({"binding": binding, "sync_state": sync_state})).into_response()
+}
+
+async fn sync_project_issues(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    match app.db.project_github_binding(&id).await {
+        Ok(_) => {}
+        Err(Error::NotFound) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "project is not bound to a GitHub repository"})),
+            )
+                .into_response();
+        }
+        Err(error) => return api_error(error),
+    }
+    let token = match load_github_token(&app).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let _guard = match app.github_sync.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "a GitHub issue sync is already running"})),
+            )
+                .into_response();
+        }
+    };
+    match factory_native::github_sync::sync_project_issues(&app.db, &app.github, &token, &id).await
+    {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_issues(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<GitHubIssuesQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.project_exists(&id).await {
+        Ok(true) => {}
+        Ok(false) => return api_error(Error::NotFound),
+        Err(error) => return api_error(error),
+    }
+    let state = query
+        .state
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "all".into());
+    let filters = factory_native::db::GitHubIssueFilters {
+        state,
+        label: query
+            .label
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+        query: query
+            .query
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+        limit: query.limit.unwrap_or(50),
+        offset: query.offset.unwrap_or(0),
+    };
+    match app.db.github_issues(&id, &filters).await {
+        Ok(issues) => Json(issues).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn project_issue(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app.db.github_issue(&id, number).await {
+        Ok(issue) => Json(issue).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn create_action(
@@ -4791,6 +5230,42 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn github_connection_projection_never_contains_credential_material() {
+        let record = factory_native::db::GitHubConnectionRecord {
+            login: "octo".into(),
+            scopes: vec!["repo".into()],
+            scopes_reported: true,
+            credential_ciphertext: "ciphertext-only-value".into(),
+            credential_nonce: "nonce-only-value".into(),
+            credential_fingerprint: "0123456789abcdef".into(),
+            enabled: true,
+            revision: 2,
+            verified_at: "2026-10-28T10:00:00Z".into(),
+            revoked_at: None,
+            created_at: "2026-10-28T09:00:00Z".into(),
+            updated_at: "2026-10-28T10:00:00Z".into(),
+        };
+        let view = github_connection_view(Some(&record));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(serialized.contains("\"configured\":true"));
+        assert!(!serialized.contains("ciphertext-only-value"));
+        assert!(!serialized.contains("nonce-only-value"));
+        assert!(!serialized.contains("credential_ciphertext"));
+        assert!(!serialized.contains("credential_nonce"));
+        let revoked = factory_native::db::GitHubConnectionRecord {
+            credential_ciphertext: String::new(),
+            credential_nonce: String::new(),
+            enabled: false,
+            revoked_at: Some("2026-10-28T11:00:00Z".into()),
+            ..record
+        };
+        assert_eq!(
+            github_connection_view(Some(&revoked))["configured"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
+    #[test]
     fn bind_mode_requires_explicit_container_opt_in() {
         assert!(validate_bind("127.0.0.1:8765", false).is_ok());
         assert!(validate_bind("0.0.0.0:8765", false).is_err());
@@ -4862,6 +5337,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4956,6 +5433,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -4973,6 +5452,10 @@ mod tests {
             "/campaigns/missing/candidates/missing/diff",
             "/model/calls/unresolved",
             "/provider/turn_reservations/budget",
+            "/integrations/github",
+            "/integrations/github/repositories",
+            "/projects/missing/issues",
+            "/projects/missing/issues/1",
         ] {
             let request = axum::http::Request::builder()
                 .uri(uri)
@@ -4983,6 +5466,54 @@ mod tests {
                 StatusCode::UNAUTHORIZED
             );
         }
+        let request = axum::http::Request::builder()
+            .method("PUT")
+            .uri("/integrations/github")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"token":"ghp_must_not_be_accepted_without_auth_1234"}"#,
+            ))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/projects/missing/issues/sync")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .uri("/integrations/github")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let connection: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(connection["connection"]["configured"], false);
+        assert_eq!(connection["connection"]["enabled"], false);
+        assert_eq!(connection["audit"].as_array().map(Vec::len), Some(0));
+        let serialized = String::from_utf8_lossy(&body);
+        assert!(!serialized.contains("credential_ciphertext"));
+        assert!(!serialized.contains("credential_nonce"));
+        assert!(!serialized.contains("ghp_must_not_be_accepted"));
+        let request = axum::http::Request::builder()
+            .uri("/projects/missing/issues")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
         let request = axum::http::Request::builder()
             .uri("/office/overview")
             .header("authorization", "Bearer operator-token")
@@ -5102,6 +5633,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -5242,6 +5775,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -5300,6 +5835,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -5344,6 +5881,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: Some(code_path.clone()),
             projects_root: None,
             allow_insecure_git: false,
@@ -6291,6 +6830,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -6340,6 +6881,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,
@@ -6567,6 +7110,8 @@ mod tests {
             lead_autonomous_start: false,
             model_gateway: None,
             master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
             enrollment_code_file: None,
             projects_root: None,
             allow_insecure_git: false,

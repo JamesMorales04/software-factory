@@ -206,6 +206,10 @@ pub const EVENT_KINDS: &[&str] = &[
     "delegation.released",
     "delegation.reserved",
     "delegation.revoked",
+    "github.connection_configured",
+    "github.connection_revoked",
+    "github.issues_synced",
+    "github.project_bound",
     "lead.assessment_recorded",
     "lead.plan_completed",
     "lead.plan_frozen",
@@ -752,6 +756,12 @@ mod execution_profiles;
 pub use execution_profiles::{
     ExecutionProfileAudit, ExecutionProfileDefaultBinding, ExecutionProfileDefaultSource,
     ExecutionProfileRecord, ResolvedExecutionProfile,
+};
+mod github;
+pub use github::{
+    GitHubConnectionAudit, GitHubConnectionRecord, GitHubIssueDetail, GitHubIssueFilters,
+    GitHubIssueList, GitHubIssueSummary, GitHubSyncStateRecord, NewProjectGitHubBinding,
+    ProjectGitHubBinding,
 };
 mod lead;
 mod model_calls;
