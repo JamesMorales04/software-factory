@@ -16,11 +16,11 @@ function LocationProbe() {
   return <span data-testid="location">{location.pathname}</span>;
 }
 
-function renderShell(pathname = "/projects") {
+function renderShell(pathname = "/projects", search = "") {
   return render(
     <ThemeProvider>
-      <MemoryRouter initialEntries={[pathname]}>
-        <AppShell pathname={pathname} onLock={() => undefined}>
+      <MemoryRouter initialEntries={[`${pathname}${search}`]}>
+        <AppShell onLock={() => undefined}>
           <LocationProbe />
         </AppShell>
       </MemoryRouter>
@@ -43,7 +43,7 @@ describe("AppShell", () => {
     renderShell();
     const projects = screen.getByRole("link", { name: "Projects" });
     expect(projects.getAttribute("aria-label")).toBe("Projects");
-    expect(screen.getByText("Operations")).toBeDefined();
+    expect(screen.getByText("Advanced")).toBeDefined();
     await userEvent.click(
       screen.getByRole("button", { name: "Skip to main content" }),
     );
@@ -55,12 +55,78 @@ describe("AppShell", () => {
     renderShell("/inbox");
     expect(
       screen
-        .getByRole("link", { name: "Decision Inbox" })
+        .getByRole("link", { name: "Decisions" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      screen.getByRole("link", { name: "Home" }).getAttribute("aria-current"),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole("link", { name: "Overview" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
+  });
+
+  it("preserves every existing deep link in primary and advanced areas", () => {
+    renderShell("/projects");
+    const destinations: Array<[string, string]> = [
+      ["Home", "/"],
+      ["Projects", "/projects"],
+      ["Campaigns", "/campaigns"],
+      ["Decisions", "/inbox"],
+      ["Agents", "/agents"],
+      ["Settings", "/settings"],
+      ["Overview", "/overview"],
+      ["Actions", "/actions"],
+      ["Lead", "/lead"],
+      ["Delegations", "/delegations"],
+      ["Runs", "/runs"],
+      ["Workers", "/workers"],
+      ["Runtime", "/runtime"],
+      ["Access & Devices", "/settings?tab=access"],
+    ];
+    for (const [name, href] of destinations) {
+      expect(screen.getByRole("link", { name }).getAttribute("href")).toBe(
+        href,
+      );
+    }
+  });
+
+  it("exposes the advanced area as a named disclosure", async () => {
+    renderShell("/projects");
+    const toggle = screen.getByRole("button", { name: "Advanced" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("link", { name: "Overview" })).toBeDefined();
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("link", { name: "Overview" })).toBeNull();
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("link", { name: "Overview" })).toBeDefined();
+  });
+
+  it("labels request workspaces, access routes and their owning section", () => {
+    renderShell("/requests/request-1");
+    expect(screen.getByText("Request")).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Home" }).getAttribute("aria-current"),
+    ).toBe("page");
+  });
+
+  it("distinguishes Settings from the query-backed Access & Devices route", () => {
+    renderShell("/settings", "?tab=access");
+    expect(document.querySelector(".topbar-title")?.textContent).toBe(
+      "Access & Devices",
+    );
+    expect(
+      screen
+        .getByRole("link", { name: "Access & Devices" })
         .getAttribute("aria-current"),
     ).toBe("page");
     expect(
       screen
-        .getByRole("link", { name: "Overview" })
+        .getByRole("link", { name: "Settings" })
         .getAttribute("aria-current"),
     ).toBeNull();
   });
@@ -115,7 +181,7 @@ describe("AppShell", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("link", { name: "Overview" }),
+        screen.getByRole("link", { name: "Home" }),
       ),
     );
     await userEvent.click(
@@ -123,6 +189,49 @@ describe("AppShell", () => {
     );
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     await waitFor(() => expect(document.activeElement).toBe(toggle));
+  });
+
+  it("keeps every destination reachable in the narrow drawer", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+    renderShell("/settings");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Toggle navigation" }),
+    );
+    for (const name of [
+      "Home",
+      "Projects",
+      "Campaigns",
+      "Decisions",
+      "Agents",
+      "Settings",
+      "Overview",
+      "Actions",
+      "Lead",
+      "Delegations",
+      "Runs",
+      "Workers",
+      "Runtime",
+      "Access & Devices",
+    ]) {
+      expect(screen.getByRole("link", { name })).toBeDefined();
+    }
+    await userEvent.click(
+      screen.getByRole("button", { name: "Close navigation drawer" }),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Toggle navigation" }),
+      ),
+    );
   });
 
   it("closes an open mobile drawer when the viewport becomes desktop", async () => {

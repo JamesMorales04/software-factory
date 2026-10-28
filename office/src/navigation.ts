@@ -4,9 +4,11 @@ import {
   Bot,
   FolderGit2,
   Gauge,
+  House,
   Inbox,
   ListChecks,
   Megaphone,
+  MonitorSmartphone,
   Play,
   Route,
   Settings,
@@ -24,52 +26,29 @@ export interface NavItem {
 export interface NavGroup {
   label: string;
   items: NavItem[];
+  collapsible?: boolean;
 }
 
+/**
+ * Operator-intent navigation. The primary group answers "what do I want to do
+ * next"; the advanced group keeps every existing operational view reachable
+ * without presenting internal domain objects as the first-run experience.
+ */
 export const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Overview",
+    label: "Workspace",
     items: [
       {
         to: "/",
-        label: "Overview",
-        icon: Gauge,
-        keywords: "overview health activity events status",
+        label: "Home",
+        icon: House,
+        keywords: "home request compose objective start work intake",
       },
-      {
-        to: "/inbox",
-        label: "Decision Inbox",
-        icon: Inbox,
-        keywords: "decisions approvals blocked unresolved usage",
-      },
-    ],
-  },
-  {
-    label: "Work",
-    items: [
       {
         to: "/projects",
         label: "Projects",
         icon: FolderGit2,
         keywords: "repositories imports configuration",
-      },
-      {
-        to: "/actions",
-        label: "Actions",
-        icon: ListChecks,
-        keywords: "objectives specs checks risk",
-      },
-      {
-        to: "/lead",
-        label: "Lead",
-        icon: Route,
-        keywords: "assessment plan freeze authorize",
-      },
-      {
-        to: "/delegations",
-        label: "Delegations",
-        icon: ShieldCheck,
-        keywords: "scoped grants budgets revoke",
       },
       {
         to: "/campaigns",
@@ -78,11 +57,55 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "runs attempts candidates gate quality",
       },
       {
+        to: "/inbox",
+        label: "Decisions",
+        icon: Inbox,
+        keywords:
+          "decision inbox approvals blocked unresolved usage needs action",
+      },
+      {
         to: "/agents",
-        label: "Agent Office",
+        label: "Agents",
         icon: Bot,
         keywords:
-          "participants agents sessions implementer lead verifier reviewer worker tool events",
+          "agent office participants sessions implementer lead verifier reviewer worker tool events",
+      },
+      {
+        to: "/settings",
+        label: "Settings",
+        icon: Settings,
+        keywords:
+          "providers models credentials runtime policy profiles access devices sessions tailscale pairing",
+      },
+    ],
+  },
+  {
+    label: "Advanced",
+    collapsible: true,
+    items: [
+      {
+        to: "/overview",
+        label: "Overview",
+        icon: Gauge,
+        keywords: "overview health activity events status metrics operations",
+      },
+      {
+        to: "/actions",
+        label: "Actions",
+        icon: ListChecks,
+        keywords: "objectives specs checks risk frozen action",
+      },
+      {
+        to: "/lead",
+        label: "Lead",
+        icon: Route,
+        keywords: "assessment plan freeze authorize legacy",
+      },
+      {
+        to: "/delegations",
+        label: "Delegations",
+        icon: ShieldCheck,
+        keywords: "scoped grants budgets revoke",
       },
       {
         to: "/runs",
@@ -96,11 +119,6 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Users,
         keywords: "registered credentials",
       },
-    ],
-  },
-  {
-    label: "Operations",
-    items: [
       {
         to: "/runtime",
         label: "Runtime",
@@ -108,11 +126,11 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "provider sessions model calls telemetry cleanup",
       },
       {
-        to: "/settings",
-        label: "Settings",
-        icon: Settings,
+        to: "/settings?tab=access",
+        label: "Access & Devices",
+        icon: MonitorSmartphone,
         keywords:
-          "providers models credentials runtime policy access devices sessions tailscale pairing",
+          "access devices sessions pairing tailscale remote trust revoke",
       },
     ],
   },
@@ -120,11 +138,58 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
-export function routeLabel(pathname: string): string {
+function matchesQuery(search: string, target: string): boolean {
+  const current = new URLSearchParams(search);
+  return [...new URLSearchParams(target)].every(
+    ([key, value]) => current.get(key) === value,
+  );
+}
+
+/**
+ * A request workspace belongs to Home; detail routes keep their list section
+ * active. Query-backed destinations (Access & Devices) are distinguishable
+ * from their parent Settings page.
+ */
+export function isNavItemActive(
+  item: NavItem,
+  pathname: string,
+  search = "",
+): boolean {
+  const [targetPath, targetQuery = ""] = item.to.split("?");
+  if (targetQuery !== "") {
+    return pathname === targetPath && matchesQuery(search, targetQuery);
+  }
+  if (item.to === "/settings" && matchesQuery(search, "tab=access")) {
+    return false;
+  }
+  if (targetPath === "/") {
+    return pathname === "/" || pathname.startsWith("/requests/");
+  }
+  return pathname === targetPath || pathname.startsWith(`${targetPath}/`);
+}
+
+export function isAdvancedRoute(pathname: string, search = ""): boolean {
+  const advanced = NAV_GROUPS.find((group) => group.collapsible);
+  return (
+    advanced?.items.some((item) => isNavItemActive(item, pathname, search)) ??
+    false
+  );
+}
+
+export function routeLabel(pathname: string, search = ""): string {
+  if (pathname.startsWith("/requests/")) return "Request";
   if (pathname.startsWith("/campaigns/")) return "Campaign detail";
   if (pathname.startsWith("/actions/")) return "Action detail";
   if (pathname.startsWith("/agents/")) return "Agent Office participant";
+  if (pathname === "/settings" && matchesQuery(search, "tab=access")) {
+    return "Access & Devices";
+  }
   return (
-    NAV_ITEMS.find((item) => item.to === pathname)?.label ?? "Factory Office"
+    NAV_ITEMS.find(
+      (item) =>
+        item.to.split("?")[0] === pathname &&
+        !item.to.includes("?") &&
+        isNavItemActive(item, pathname, search),
+    )?.label ?? "Factory Office"
   );
 }

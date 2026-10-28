@@ -1,4 +1,6 @@
 import {
+  ChevronDown,
+  ChevronRight,
   Command,
   Lock,
   Monitor,
@@ -9,10 +11,17 @@ import {
   Rows4,
   Search,
   Sun,
+  X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { NAV_GROUPS, routeLabel } from "../navigation";
+import { Link, useLocation } from "react-router-dom";
+import {
+  isAdvancedRoute,
+  isNavItemActive,
+  NAV_GROUPS,
+  type NavItem,
+  routeLabel,
+} from "../navigation";
 import { type Theme, useTheme } from "../theme";
 import { CommandPalette } from "./CommandPalette";
 import { HealthBadge } from "./HealthBadge";
@@ -41,27 +50,63 @@ function nextTheme(theme: Theme): Theme {
   return "system";
 }
 
+function NavLinkItem({
+  item,
+  pathname,
+  search,
+  onNavigate,
+}: {
+  item: NavItem;
+  pathname: string;
+  search: string;
+  onNavigate: () => void;
+}) {
+  const Icon = item.icon;
+  const active = isNavItemActive(item, pathname, search);
+  return (
+    <Link
+      to={item.to}
+      className={`nav-link ${active ? "nav-link--active" : ""}`}
+      aria-current={active ? "page" : undefined}
+      aria-label={item.label}
+      title={item.label}
+      onClick={onNavigate}
+    >
+      <Icon size={18} aria-hidden="true" />
+      <span>{item.label}</span>
+    </Link>
+  );
+}
+
 export function AppShell({
   children,
   onLock,
-  pathname,
 }: {
   children: ReactNode;
   onLock: () => void;
-  pathname: string;
 }) {
   const { theme, setTheme, density, setDensity } = useTheme();
   const menuRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === "collapsed",
   );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(isMobileViewport);
+  const [advancedOpen, setAdvancedOpen] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const location = useLocation();
+  const pathname = location.pathname;
+  const search = location.search;
+  const advancedActive = isAdvancedRoute(pathname, search);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
+
+  useEffect(() => {
+    if (advancedActive) setAdvancedOpen(true);
+  }, [advancedActive]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
@@ -89,17 +134,41 @@ export function AppShell({
   useEffect(() => {
     if (!mobileOpen) return;
     const first =
-      document.querySelector<HTMLAnchorElement>(".sidebar .nav-link");
+      sidebarRef.current?.querySelector<HTMLAnchorElement>(
+        ".sidebar .nav-link",
+      );
     first?.focus();
-    function onEscape(event: KeyboardEvent) {
+    function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setMobileOpen(false);
         requestAnimationFrame(() => menuRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        sidebarRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => element.closest("[hidden]") === null);
+      if (focusable.length === 0) return;
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === firstFocusable) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && document.activeElement === lastFocusable) {
+        event.preventDefault();
+        firstFocusable.focus();
       }
     }
-    document.addEventListener("keydown", onEscape);
-    return () => document.removeEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [mobileOpen]);
+
+  function closeMobileDrawer() {
+    setMobileOpen(false);
+    requestAnimationFrame(() => menuRef.current?.focus());
+  }
 
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
   const DensityIcon = density === "compact" ? Rows4 : Rows3;
@@ -119,6 +188,7 @@ export function AppShell({
         }`}
       >
         <aside
+          ref={sidebarRef}
           className="sidebar"
           id="primary-sidebar"
           aria-label="Primary navigation"
@@ -131,46 +201,84 @@ export function AppShell({
               <strong>Factory</strong>
               <span>Office</span>
             </span>
-            <IconButton
-              label={collapsed ? "Expand navigation" : "Collapse navigation"}
-              className="sidebar-collapse"
-              onClick={() => setCollapsed((value) => !value)}
-            >
-              {collapsed ? (
-                <PanelLeftOpen size={17} aria-hidden="true" />
-              ) : (
-                <PanelLeftClose size={17} aria-hidden="true" />
-              )}
-            </IconButton>
+            {isMobile ? (
+              <IconButton
+                label="Close navigation drawer"
+                className="sidebar-close"
+                onClick={closeMobileDrawer}
+              >
+                <X size={17} aria-hidden="true" />
+              </IconButton>
+            ) : (
+              <IconButton
+                label={collapsed ? "Expand navigation" : "Collapse navigation"}
+                className="sidebar-collapse"
+                onClick={() => setCollapsed((value) => !value)}
+              >
+                {collapsed ? (
+                  <PanelLeftOpen size={17} aria-hidden="true" />
+                ) : (
+                  <PanelLeftClose size={17} aria-hidden="true" />
+                )}
+              </IconButton>
+            )}
           </div>
-          <nav className="sidebar-nav">
-            {NAV_GROUPS.map((group) => (
-              <div className="nav-group" key={group.label}>
-                <p className="nav-group-label">{group.label}</p>
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  const active =
-                    item.to === "/"
-                      ? pathname === "/"
-                      : pathname === item.to ||
-                        pathname.startsWith(`${item.to}/`);
-                  return (
-                    <Link
-                      key={item.to}
-                      to={item.to}
-                      className={`nav-link ${active ? "nav-link--active" : ""}`}
-                      aria-current={active ? "page" : undefined}
-                      aria-label={item.label}
-                      title={item.label}
-                      onClick={() => setMobileOpen(false)}
-                    >
-                      <Icon size={18} aria-hidden="true" />
-                      <span>{item.label}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            ))}
+          <nav className="sidebar-nav" aria-label="Primary">
+            {NAV_GROUPS.map((group) => {
+              const collapsible = group.collapsible === true;
+              return (
+                <div className="nav-group" key={group.label}>
+                  {collapsible ? (
+                    <>
+                      <button
+                        type="button"
+                        className="nav-group-toggle"
+                        aria-expanded={advancedOpen}
+                        aria-controls="nav-group-advanced"
+                        onClick={() => setAdvancedOpen((open) => !open)}
+                      >
+                        <span>{group.label}</span>
+                        {advancedOpen ? (
+                          <ChevronDown size={14} aria-hidden="true" />
+                        ) : (
+                          <ChevronRight size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                      <div
+                        className="nav-group-items"
+                        id="nav-group-advanced"
+                        hidden={!advancedOpen}
+                      >
+                        {group.items.map((item) => (
+                          <NavLinkItem
+                            key={item.to}
+                            item={item}
+                            pathname={pathname}
+                            search={search}
+                            onNavigate={() => setMobileOpen(false)}
+                          />
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="nav-group-label">{group.label}</p>
+                      <div className="nav-group-items">
+                        {group.items.map((item) => (
+                          <NavLinkItem
+                            key={item.to}
+                            item={item}
+                            pathname={pathname}
+                            search={search}
+                            onNavigate={() => setMobileOpen(false)}
+                          />
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </nav>
           <div className="sidebar-footer" aria-hidden="true" />
         </aside>
@@ -179,10 +287,7 @@ export function AppShell({
             type="button"
             className="sidebar-scrim"
             aria-label="Close navigation"
-            onClick={() => {
-              setMobileOpen(false);
-              requestAnimationFrame(() => menuRef.current?.focus());
-            }}
+            onClick={closeMobileDrawer}
           />
         )}
         <div className="workspace" inert={mobileOpen || undefined}>
@@ -212,7 +317,9 @@ export function AppShell({
               <span className="topbar-separator" aria-hidden="true">
                 /
               </span>
-              <span className="topbar-title">{routeLabel(pathname)}</span>
+              <span className="topbar-title">
+                {routeLabel(pathname, search)}
+              </span>
             </div>
             <div className="topbar-actions">
               <HealthBadge />
@@ -231,6 +338,7 @@ export function AppShell({
               <Tooltip label={`${THEME_LABEL[theme]} — switch`}>
                 <IconButton
                   label={`${THEME_LABEL[theme]}; switch theme`}
+                  className="topbar-preference"
                   onClick={() => setTheme(nextTheme(theme))}
                 >
                   <ThemeIcon size={17} aria-hidden="true" />
@@ -239,6 +347,7 @@ export function AppShell({
               <Tooltip label={`${density} density — switch`}>
                 <IconButton
                   label={`${density} density; switch density`}
+                  className="topbar-preference"
                   onClick={() =>
                     setDensity(
                       density === "comfortable" ? "compact" : "comfortable",
