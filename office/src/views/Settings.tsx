@@ -20,6 +20,7 @@ import {
   type ProviderView,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
+import { LanguageSwitcher } from "../i18n";
 import { AccessDevices } from "./AccessDevices";
 import { ExecutionProfiles } from "./ExecutionProfiles";
 
@@ -587,6 +588,7 @@ export function Settings() {
           ) : undefined
         }
       />
+      <LanguageSwitcher />
       {needsProviderSettings && error && (
         <div className="ui-callout ui-callout--danger" role="alert">
           {error} The displayed configuration may be stale.

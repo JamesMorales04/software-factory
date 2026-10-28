@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelCallRecord } from "../coreApi";
+import { I18nProvider, type Locale } from "../i18n";
 import { Runtime } from "./Runtime";
 
 const mocks = vi.hoisted(() => ({
@@ -45,16 +46,25 @@ const unresolvedCall: ModelCallRecord = {
   updated_at: "2026-10-27T10:01:00Z",
 };
 
-function renderRuntime(path = "/runtime") {
-  return render(
+function renderRuntime(path = "/runtime", locale?: Locale) {
+  const content = (
     <MemoryRouter initialEntries={[path]}>
       <Runtime />
-    </MemoryRouter>,
+    </MemoryRouter>
+  );
+  return render(
+    locale ? (
+      <I18nProvider initialLocale={locale}>{content}</I18nProvider>
+    ) : (
+      content
+    ),
   );
 }
 
 describe("Runtime", () => {
   beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.lang = "en";
     mocks.health.mockReset().mockResolvedValue({
       healthy: true,
       version: "0.1.0",
@@ -105,6 +115,23 @@ describe("Runtime", () => {
     expect(screen.getByText("No matching sessions")).toBeDefined();
   });
 
+  it("renders metrics and navigation in Spanish", async () => {
+    renderRuntime("/runtime", "es");
+    expect(
+      await screen.findByRole("heading", { name: "Entorno de ejecución" }),
+    ).toBeDefined();
+    expect(screen.getByText("Gasto medido muestreado")).toBeDefined();
+    expect(screen.getByText("Techo reservado")).toBeDefined();
+    expect(screen.getByRole("tab", { name: /Sesiones/ })).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Bandeja de decisiones" }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("link", { name: "Abrir llamadas a modelos" }),
+    ).toBeDefined();
+    expect(document.documentElement.lang).toBe("es");
+  });
+
   it("deep-links directly to Diagnostics", async () => {
     renderRuntime("/runtime?tab=diagnostics");
     await screen.findByRole("heading", { name: "Service boundaries" });
@@ -123,6 +150,9 @@ describe("Runtime", () => {
     expect(
       screen.getByText("ceiling 500,000µ", { exact: false }),
     ).toBeDefined();
+    const table = screen.getByRole("table");
+    expect(table.closest(".table-responsive")).not.toBeNull();
+    expect(table.querySelectorAll("tbody td[data-label]").length).toBe(7);
     const reason = screen.getByLabelText("Release reason");
     const release = screen.getByRole("button", { name: "Release reservation" });
     expect(release.hasAttribute("disabled")).toBe(true);

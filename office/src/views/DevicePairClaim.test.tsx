@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../i18n";
 import { DevicePairClaim } from "./DevicePairClaim";
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +17,8 @@ vi.mock("../coreApi", () => ({
 
 describe("phone device pairing", () => {
   beforeEach(() => {
+    localStorage.clear();
+    document.documentElement.lang = "en";
     mocks.claimDevice.mockReset().mockResolvedValue({
       deviceId: "phone-1",
       verificationCode: "483921",
@@ -60,6 +63,41 @@ describe("phone device pairing", () => {
     );
     expect(window.location.hash).toBe("#/pair");
     view.unmount();
+  });
+
+  it("renders the pairing gate in Spanish", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/pair?challengeId=public-challenge"]}>
+        <I18nProvider initialLocale="es">
+          <Routes>
+            <Route path="/pair" element={<DevicePairClaim />} />
+          </Routes>
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Empareja este dispositivo" }),
+    ).toBeTruthy();
+    await user.type(
+      screen.getByRole("textbox", { name: "Nombre del dispositivo" }),
+      "Mi teléfono",
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Solicitar aprobación del propietario",
+      }),
+    );
+    expect(await screen.findByText("Código de verificación")).toBeTruthy();
+    expect(
+      screen.getByText(/Esperando la aprobación del propietario/),
+    ).toBeTruthy();
+    expect(mocks.claimDevice).toHaveBeenCalledWith(
+      "public-challenge",
+      "Mi teléfono",
+    );
+    expect(document.documentElement.lang).toBe("es");
   });
 
   it("shows a rejected request without creating an Office session", async () => {

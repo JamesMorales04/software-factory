@@ -5,6 +5,7 @@ import "@fontsource-variable/ibm-plex-sans";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import { App } from "./App";
+import { I18nProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
 import "./styles.css";
 
@@ -14,11 +15,13 @@ if (!root) {
 }
 createRoot(root).render(
   <StrictMode>
-    <ThemeProvider>
-      <HashRouter>
-        <App />
-      </HashRouter>
-    </ThemeProvider>
+    <I18nProvider>
+      <ThemeProvider>
+        <HashRouter>
+          <App />
+        </HashRouter>
+      </ThemeProvider>
+    </I18nProvider>
   </StrictMode>,
 );
 

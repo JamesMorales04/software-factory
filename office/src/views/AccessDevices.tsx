@@ -17,23 +17,24 @@ import {
   logoutCurrentDevice,
   type SecurityAuditEntry,
 } from "../coreApi";
-import { formatTimestamp } from "../format";
+import { type MessageKey, type Translate, useI18n } from "../i18n";
 
-const AUDIT_LABELS: Record<string, string> = {
-  created: "Session created",
-  rotated: "Session rotated",
-  revoked: "Session revoked",
-  revoked_all: "All sessions revoked",
-  claimed: "Pairing claimed",
-  approved: "Pairing approved",
-  rejected: "Pairing rejected",
-  cancelled: "Pairing cancelled",
-  consumed: "Pairing completed",
-  revocation_requested: "Revocation requested",
+const AUDIT_LABEL_KEYS: Record<string, MessageKey> = {
+  created: "access.audit.created",
+  rotated: "access.audit.rotated",
+  revoked: "access.audit.revoked",
+  revoked_all: "access.audit.revokedAll",
+  claimed: "access.audit.claimed",
+  approved: "access.audit.approved",
+  rejected: "access.audit.rejected",
+  cancelled: "access.audit.cancelled",
+  consumed: "access.audit.consumed",
+  revocation_requested: "access.audit.revocationRequested",
 };
 
-function auditLabel(action: string): string {
-  return AUDIT_LABELS[action] ?? action.replaceAll("_", " ");
+function auditLabel(action: string, t: Translate): string {
+  const key = AUDIT_LABEL_KEYS[action];
+  return key ? t(key) : action.replaceAll("_", " ");
 }
 
 function challengeUrl(
@@ -49,6 +50,7 @@ function challengeUrl(
 }
 
 function PairingQr({ value }: { value: string }) {
+  const { t } = useI18n();
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,16 +64,16 @@ function PairingQr({ value }: { value: string }) {
       color: { dark: "#07111f", light: "#ffffff" },
     }).then(
       () => active && setError(null),
-      () => active && setError("The pairing code could not be rendered."),
+      () => active && setError(t("access.pairing.qrError")),
     );
     return () => {
       active = false;
     };
-  }, [value]);
+  }, [t, value]);
 
   return (
     <div className="access-qr">
-      <canvas ref={canvas} aria-label="One-time device pairing QR code" />
+      <canvas ref={canvas} aria-label={t("access.pairing.qrAria")} />
       {error && (
         <p className="error" role="alert">
           {error}
@@ -88,6 +90,7 @@ function DeviceRow({
   device: DeviceSessionView;
   onChanged: () => Promise<void>;
 }) {
+  const { t, formatDate } = useI18n();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmedCode, setConfirmedCode] = useState("");
@@ -100,7 +103,9 @@ function DeviceRow({
       await onChanged();
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError ? cause.message : "Device action failed.",
+        cause instanceof CoreApiError
+          ? cause.message
+          : t("access.device.actionError"),
       );
     } finally {
       setBusy(false);
@@ -126,15 +131,15 @@ function DeviceRow({
         {device.status === "PENDING" ? (
           <>
             <p className="muted">
-              Verify code{" "}
+              {t("access.device.verifyCodeBefore")}{" "}
               <code className="access-code">
-                {device.verificationCode ?? "Unavailable"}
+                {device.verificationCode ?? t("access.device.unavailable")}
               </code>{" "}
-              on both devices before approval.
+              {t("access.device.verifyCodeAfter")}
             </p>
             <label className="ui-field access-code-confirm">
               <span className="ui-field-label">
-                Enter the code shown on the phone
+                {t("access.device.enterCode")}
               </span>
               <input
                 className="ui-input"
@@ -142,22 +147,20 @@ function DeviceRow({
                 autoComplete="one-time-code"
                 value={confirmedCode}
                 onChange={(event) => setConfirmedCode(event.target.value)}
-                aria-label="Confirm the verification code shown on the phone"
+                aria-label={t("access.device.confirmCodeAria")}
               />
             </label>
           </>
         ) : device.status === "APPROVED" ? (
-          <p className="muted">
-            Approved. Waiting for the phone to finish the one-time exchange; the
-            approval expires if it is not picked up.
-          </p>
+          <p className="muted">{t("access.device.approvedWaiting")}</p>
         ) : (
           <p className="muted">
-            Last activity{" "}
+            {t("access.device.lastActivity")}{" "}
             {device.lastActivityAt
-              ? formatTimestamp(device.lastActivityAt)
-              : "not recorded"}{" "}
-            · expires {formatTimestamp(device.expiresAt)}
+              ? formatDate(device.lastActivityAt)
+              : t("common.notRecorded")}{" "}
+            ·{" "}
+            {t("access.device.expires", { date: formatDate(device.expiresAt) })}
           </p>
         )}
         {error && (
@@ -181,7 +184,7 @@ function DeviceRow({
                 )
               }
             >
-              Approve device
+              {t("access.device.approve")}
             </Button>
             <Button
               size="sm"
@@ -189,7 +192,7 @@ function DeviceRow({
               disabled={busy}
               onClick={() => void mutate(() => coreApi.rejectDevice(device.id))}
             >
-              Reject
+              {t("access.device.reject")}
             </Button>
           </>
         ) : device.status === "APPROVED" ? (
@@ -201,7 +204,7 @@ function DeviceRow({
               void mutate(() => coreApi.cancelDeviceChallenge(device.id))
             }
           >
-            Cancel approval
+            {t("access.device.cancelApproval")}
           </Button>
         ) : (
           <Button
@@ -210,11 +213,7 @@ function DeviceRow({
             disabled={busy}
             onClick={() => {
               if (device.current) {
-                if (
-                  window.confirm(
-                    "Sign out this device? You will need to enroll it again.",
-                  )
-                ) {
+                if (window.confirm(t("access.device.signOutConfirm"))) {
                   void mutate(async () => {
                     await logoutCurrentDevice();
                     window.location.reload();
@@ -222,12 +221,18 @@ function DeviceRow({
                 }
                 return;
               }
-              if (window.confirm(`Revoke ${device.name}'s device session?`)) {
+              if (
+                window.confirm(
+                  t("access.device.revokeConfirm", { name: device.name }),
+                )
+              ) {
                 void mutate(() => coreApi.revokeDevice(device.id));
               }
             }}
           >
-            {device.current ? "Sign out" : "Revoke"}
+            {device.current
+              ? t("access.device.signOut")
+              : t("access.device.revoke")}
           </Button>
         )}
       </div>
@@ -236,6 +241,7 @@ function DeviceRow({
 }
 
 export function AccessDevices() {
+  const { t, formatDate } = useI18n();
   const [access, setAccess] = useState<AccessOverview | null>(null);
   const [devices, setDevices] = useState<DeviceSessionView[]>([]);
   const [challenge, setChallenge] = useState<DeviceChallenge | null>(null);
@@ -259,13 +265,11 @@ export function AccessDevices() {
       setLoading(false);
     } catch (cause) {
       setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : "Access status is unavailable.",
+        cause instanceof CoreApiError ? cause.message : t("access.error.load"),
       );
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refresh();
@@ -296,14 +300,12 @@ export function AccessDevices() {
       if (!access) await refresh();
       const next = await coreApi.createDeviceChallenge();
       setChallenge(next);
-      setNotice(
-        "Challenge created. It expires automatically and can be used once.",
-      );
+      setNotice(t("access.pairing.createdNotice"));
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Could not create a pairing challenge.",
+          : t("access.pairing.createError"),
       );
     } finally {
       setBusy(false);
@@ -316,12 +318,12 @@ export function AccessDevices() {
     setError(null);
     try {
       await coreApi.cancelDeviceChallenge(challenge.challengeId);
-      setNotice("Pairing code cancelled. It cannot be claimed or approved.");
+      setNotice(t("access.pairing.cancelledNotice"));
     } catch (cause) {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Could not cancel the pairing code.",
+          : t("access.pairing.cancelError"),
       );
     } finally {
       setChallenge(null);
@@ -330,12 +332,7 @@ export function AccessDevices() {
   }
 
   async function revokeAll() {
-    if (
-      !window.confirm(
-        "Revoke every enrolled device session, including this device? You will need to enroll again.",
-      )
-    )
-      return;
+    if (!window.confirm(t("access.devices.revokeAllConfirm"))) return;
     setBusy(true);
     setError(null);
     try {
@@ -345,27 +342,29 @@ export function AccessDevices() {
       setError(
         cause instanceof CoreApiError
           ? cause.message
-          : "Could not revoke device sessions.",
+          : t("access.pairing.revokeAllError"),
       );
       setBusy(false);
     }
   }
 
-  if (loading)
-    return <LoadingState label="Loading access and device sessions…" />;
+  if (loading) return <LoadingState label={t("access.loading")} />;
   if (!access && error) {
     return (
       <ErrorState
+        title={t("common.errorTitle")}
         message={error}
-        action={<Button onClick={() => void refresh()}>Retry</Button>}
+        action={
+          <Button onClick={() => void refresh()}>{t("common.retry")}</Button>
+        }
       />
     );
   }
   if (!access)
     return (
       <EmptyState
-        title="Access status unknown"
-        description="Core did not return access information."
+        title={t("access.error.unknownTitle")}
+        description={t("access.error.unknownDescription")}
       />
     );
 
@@ -384,25 +383,22 @@ export function AccessDevices() {
       <Panel>
         <div className="section-heading">
           <div>
-            <h2>Local access</h2>
-            <p className="muted">Office access state from Core</p>
+            <h2>{t("access.local.title")}</h2>
+            <p className="muted">{t("access.local.description")}</p>
           </div>
           <div className="row">
             <span className="access-status">{access.local.status}</span>
             <Button size="sm" onClick={() => void refresh()}>
-              Refresh status
+              {t("access.local.refresh")}
             </Button>
           </div>
         </div>
-        <p className="muted">
-          Office uses an independent, revocable browser session. The operator
-          recovery credential is not stored in this browser.
-        </p>
+        <p className="muted">{t("access.local.sessionNote")}</p>
       </Panel>
 
       <Panel>
         <div className="section-heading">
-          <h2>Private remote access</h2>
+          <h2>{t("access.remote.title")}</h2>
           <span
             className={`access-status access-status--${access.tailscale.status.toLowerCase()}`}
           >
@@ -410,34 +406,19 @@ export function AccessDevices() {
           </span>
         </div>
         {access.tailscale.status === "CONNECTED" ? (
-          <p className="muted">
-            Core can reach the private Office health endpoint. This confirms the
-            current Serve path only; Factory still requires its own enrolled
-            device session.
-          </p>
+          <p className="muted">{t("access.remote.connected")}</p>
         ) : access.tailscale.status === "DISCONNECTED" ? (
-          <p className="muted">
-            Core cannot reach the configured private Office health endpoint.
-            Check the Tailscale service, Serve configuration, and private HTTPS
-            endpoint in `docs/operations/compose-deployment.md`.
-          </p>
+          <p className="muted">{t("access.remote.disconnected")}</p>
         ) : access.tailscale.status === "UNKNOWN" ? (
-          <p className="muted">
-            Tailscale connectivity could not be verified. Check the service and
-            private HTTPS endpoint in `docs/operations/compose-deployment.md`.
-            Do not treat tailnet membership as a Factory session.
-          </p>
+          <p className="muted">{t("access.remote.unknown")}</p>
         ) : (
-          <p className="muted">
-            Remote access is disabled. To enable it, follow the optional
-            Tailscale overlay setup in `docs/operations/compose-deployment.md`.
-          </p>
+          <p className="muted">{t("access.remote.disabled")}</p>
         )}
         {access.tailscale.enabled ? (
           <>
             {access.tailscale.httpsEndpoint ? (
               <p>
-                Private HTTPS endpoint:{" "}
+                {t("access.remote.endpoint")}{" "}
                 <a
                   href={access.tailscale.httpsEndpoint}
                   target="_blank"
@@ -447,39 +428,26 @@ export function AccessDevices() {
                 </a>
               </p>
             ) : (
-              <p className="muted">
-                No private HTTPS endpoint is currently configured.
-              </p>
+              <p className="muted">{t("access.remote.noEndpoint")}</p>
             )}
             {access.tailscale.error && (
               <p className="error">{access.tailscale.error}</p>
             )}
           </>
         ) : (
-          <p className="muted">
-            The local Office connection remains available. Core, Worker, and
-            runtime services are not published by the Tailscale overlay.
-          </p>
+          <p className="muted">{t("access.remote.localAvailable")}</p>
         )}
         <div className="ui-callout ui-callout--info access-remote-guidance">
-          <strong>Tailscale HTTPS setup and privacy</strong>
-          <p>
-            Enable MagicDNS and HTTPS certificates in your tailnet settings.
-            Tailscale certificate hostnames are published in public Certificate
-            Transparency logs, so the device hostname can be visible publicly.
-            The certificate does not publish Factory itself: Office stays
-            private to the tailnet, and Funnel remains disabled.
-          </p>
+          <strong>{t("access.remote.guidanceTitle")}</strong>
+          <p>{t("access.remote.guidance")}</p>
         </div>
       </Panel>
 
       <Panel>
         <div className="section-heading">
           <div>
-            <h2>Enrolled devices</h2>
-            <p className="muted">
-              Each browser and phone receives its own session.
-            </p>
+            <h2>{t("access.devices.title")}</h2>
+            <p className="muted">{t("access.devices.description")}</p>
           </div>
           <div className="row">
             <Button
@@ -487,14 +455,14 @@ export function AccessDevices() {
               disabled={busy}
               onClick={() => void pairDevice()}
             >
-              {busy ? "Preparing…" : "Pair device"}
+              {busy ? t("access.devices.preparing") : t("access.devices.pair")}
             </Button>
             <Button
               variant="danger"
               disabled={busy}
               onClick={() => void revokeAll()}
             >
-              Revoke all devices
+              {t("access.devices.revokeAll")}
             </Button>
           </div>
         </div>
@@ -502,40 +470,33 @@ export function AccessDevices() {
           <div className="access-pairing" aria-live="polite">
             <PairingQr value={qrValue} />
             <div>
-              <h3>Scan with the phone camera</h3>
-              <p>
-                Confirm that this code matches on both screens before approving
-                the pending device.
-              </p>
+              <h3>{t("access.pairing.scanTitle")}</h3>
+              <p>{t("access.pairing.scanDescription")}</p>
               <dl className="detail">
-                <dt>Verification code</dt>
+                <dt>{t("access.pairing.verificationCode")}</dt>
                 <dd>
                   <code className="access-code">
                     {challenge.verificationCode}
                   </code>
                 </dd>
-                <dt>Expires</dt>
-                <dd>{formatTimestamp(challenge.expiresAt)}</dd>
+                <dt>{t("access.pairing.expires")}</dt>
+                <dd>{formatDate(challenge.expiresAt)}</dd>
               </dl>
-              <p className="muted">
-                The QR contains only a random challenge identifier. It grants no
-                access. Approval is required here before Core creates a phone
-                session.
-              </p>
+              <p className="muted">{t("access.pairing.qrNote")}</p>
               <Button
                 size="sm"
                 disabled={busy}
                 onClick={() => void cancelChallenge()}
               >
-                Cancel pairing code
+                {t("access.pairing.cancel")}
               </Button>
             </div>
           </div>
         )}
         {devices.length === 0 ? (
           <EmptyState
-            title="No other devices enrolled"
-            description="Pair a phone or another browser to create an independent session."
+            title={t("access.devices.emptyTitle")}
+            description={t("access.devices.emptyDescription")}
           />
         ) : (
           <ul className="access-device-list">
@@ -548,16 +509,14 @@ export function AccessDevices() {
       <Panel>
         <div className="section-heading">
           <div>
-            <h2>Security activity</h2>
-            <p className="muted">
-              Recent session and pairing events recorded by Core.
-            </p>
+            <h2>{t("access.audit.title")}</h2>
+            <p className="muted">{t("access.audit.description")}</p>
           </div>
         </div>
         {audit.length === 0 ? (
           <EmptyState
-            title="No security events yet"
-            description="Session creation, rotation, revocation and pairing decisions appear here."
+            title={t("access.audit.emptyTitle")}
+            description={t("access.audit.emptyDescription")}
           />
         ) : (
           <ul className="access-audit">
@@ -566,22 +525,23 @@ export function AccessDevices() {
                 key={`${entry.occurredAt}-${entry.action}-${entry.deviceName ?? "unknown"}-${entry.actor}`}
               >
                 <div>
-                  <strong>{auditLabel(entry.action)}</strong>
-                  <span>{entry.deviceName ?? "Unknown device"}</span>
+                  <strong>{auditLabel(entry.action, t)}</strong>
+                  <span>
+                    {entry.deviceName ?? t("access.audit.unknownDevice")}
+                  </span>
                 </div>
                 <div className="access-audit-meta">
-                  <span className="muted">by {entry.actor}</span>
-                  <time>{formatTimestamp(entry.occurredAt)}</time>
+                  <span className="muted">
+                    {t("access.audit.by", { actor: entry.actor })}
+                  </span>
+                  <time>{formatDate(entry.occurredAt)}</time>
                 </div>
               </li>
             ))}
           </ul>
         )}
       </Panel>
-      <p className="muted access-refresh">
-        Device list refreshes every five seconds. Last activity and expiry come
-        from Core.
-      </p>
+      <p className="muted access-refresh">{t("access.devices.refreshNote")}</p>
     </div>
   );
 }
