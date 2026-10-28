@@ -94,6 +94,20 @@ new candidate-diff label, and a stored fixture provider connection required by
 implementer-route validation. It passed at integration `8922bc6` with candidate
 `d92bd705…` and Gate `ACCEPTED`. The fixture provider connection is never called.
 
+## Final Wave 2 integration rerun
+
+After merging autonomy (default-off issue intake) and the complete EN/ES sweep,
+the full lifecycle passed again at integration `6819442`:
+
+```json
+{"ok":true,"request":"0b6ea52b-fc63-4efb-9042-9d0cfbeb00fc","campaign":"7c258c83-dc03-4702-9a3f-b7affa37d1cf","profileRevision":"bfd5c034-8d49-43cd-a9a8-983f567ca1e0","planHash":"b1ff9e2526c4fcb8cdf07320b33c22f44de6a580977af598e4213b0b3af2ec78","mode":"DETERMINISTIC_FIXTURE","candidateId":"eb4db2a1-d5c0-4253-8753-879fb3068622","candidateCommit":"fdb372155ff4052520907d3c4cd0e1610c2a7b11","gate":"ACCEPTED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
+```
+
+`cargo xtask e2e office` also passed at the same SHA (candidate
+`ed4b7847f4016fda4918cd376f8f50582390d55d`, Gate `ACCEPTED`) and
+`cargo xtask e2e intake` passed. Still deterministic-fixture evidence, not live
+inference or independent acceptance.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
