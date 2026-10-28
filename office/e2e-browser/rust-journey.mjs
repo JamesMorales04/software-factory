@@ -602,6 +602,30 @@ try {
       ],
     }),
   });
+  const _providerAction = await api("/actions", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      objective: "Provider session fixture objective",
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      idempotency_key: "office-provider-action",
+      allowed_paths: ["src"],
+      checks: _leadAction.spec.checks,
+    }),
+  });
+  const _cancelAction = await api("/actions", {
+    method: "POST",
+    body: JSON.stringify({
+      project_id: _leadProject.id,
+      objective: "Cancellation fixture objective",
+      provider: "opencode",
+      model: "deepseek-v4.1-flash",
+      idempotency_key: "office-cancel-action",
+      allowed_paths: ["src"],
+      checks: _leadAction.spec.checks,
+    }),
+  });
   const _leadDelegation = await api("/delegations", {
     method: "POST",
     body: JSON.stringify({
@@ -741,10 +765,23 @@ try {
     }),
   });
 
+  // This Action is intentionally not Lead-owned: the protected boundary now
+  // rejects a second Campaign for a Lead-owned Action. The provider-session
+  // fixture uses its own bounded Action so Agent Office can exercise a real
+  // Worker/Attempt without bypassing the Lead start guard.
+  await api(`/actions/${_providerAction.id}/classify`, {
+    method: "POST",
+    body: JSON.stringify({
+      risk_class: "R0",
+      actor: "office-e2e",
+      rationale: "deterministic provider-session fixture classification",
+      idempotency_key: "office-provider-classify",
+    }),
+  });
   const providerCampaign = await api("/campaigns", {
     method: "POST",
     body: JSON.stringify({
-      action_id: _leadAction.id,
+      action_id: _providerAction.id,
       idempotency_key: "office-provider-session-campaign",
     }),
   });
@@ -1029,10 +1066,19 @@ try {
     .waitFor();
   await page.getByTestId("workflow-projection").waitFor();
 
+  await api(`/actions/${_cancelAction.id}/classify`, {
+    method: "POST",
+    body: JSON.stringify({
+      risk_class: "R0",
+      actor: "office-e2e",
+      rationale: "deterministic cancellation fixture classification",
+      idempotency_key: "office-cancel-classify",
+    }),
+  });
   const cancelCampaign = await api("/campaigns", {
     method: "POST",
     body: JSON.stringify({
-      action_id: _leadAction.id,
+      action_id: _cancelAction.id,
       idempotency_key: "office-cancel-campaign",
     }),
   });
