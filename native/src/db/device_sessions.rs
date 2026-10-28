@@ -278,12 +278,30 @@ impl Database {
 
     /// Record session activity without extending its fixed expiration.
     pub async fn touch_device_session(&self, id: &str, now_ms: i64) -> Result<(), Error> {
+        const TOUCH_INTERVAL_MS: i64 = 60_000;
+        let last: Option<i64> = sqlx::query_scalar::query_scalar(
+            "SELECT last_activity_at_ms FROM device_sessions
+             WHERE id=?1 AND revoked_at_ms IS NULL AND expires_at_ms>?2",
+        )
+        .bind(id)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(last) = last else {
+            return Ok(());
+        };
+        if now_ms.saturating_sub(last) < TOUCH_INTERVAL_MS {
+            return Ok(());
+        }
+        let _write = self.write_lock.lock().await;
         sqlx::query::query(
             "UPDATE device_sessions SET last_activity_at_ms=?1
-             WHERE id=?2 AND revoked_at_ms IS NULL AND expires_at_ms>?1",
+             WHERE id=?2 AND revoked_at_ms IS NULL AND expires_at_ms>?1
+               AND last_activity_at_ms<=?3",
         )
         .bind(now_ms)
         .bind(id)
+        .bind(now_ms.saturating_sub(TOUCH_INTERVAL_MS))
         .execute(&self.pool)
         .await?;
         Ok(())

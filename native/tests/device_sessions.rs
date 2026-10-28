@@ -130,6 +130,41 @@ async fn recovery_revokes_sessions_and_reopens_single_owner_bootstrap() {
 }
 
 #[tokio::test]
+async fn activity_touch_is_throttled_to_reduce_writer_contention() {
+    let path = database_path();
+    let db = Database::open(&path).await.unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    let owner = device_session::issue_owner(&db, "Desktop", now)
+        .await
+        .unwrap();
+    let token_hash = device_session::sha256_hex(&owner.session_token);
+    db.touch_device_session(&owner.session_id, now + 1_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.device_session_by_token_hash(&token_hash, now + 1_001)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_activity_at_ms,
+        now
+    );
+    db.touch_device_session(&owner.session_id, now + 61_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.device_session_by_token_hash(&token_hash, now + 61_001)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_activity_at_ms,
+        now + 61_000
+    );
+    db.close().await;
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn sessions_expire_and_csrf_stops_matching_after_expiry() {
     let path = database_path();
     let db = Database::open(&path).await.unwrap();

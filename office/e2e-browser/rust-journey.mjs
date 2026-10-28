@@ -93,20 +93,31 @@ async function waitFor(url, timeoutMs = 15000) {
 }
 
 async function api(path, options = {}, bearer = operator) {
-  const response = await fetch(`${coreUrl}${path}`, {
-    ...options,
-    headers: {
-      authorization: `Bearer ${bearer}`,
-      "content-type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  const text = await response.text();
-  if (!response.ok)
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(`${coreUrl}${path}`, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    const text = await response.text();
+    if (response.ok) return text ? JSON.parse(text) : null;
+    // Core deliberately reports SQLite writer contention as a retryable 503.
+    // Fixture mutations carry idempotency keys, so a bounded retry is safe.
+    if (
+      response.status === 503 &&
+      text.includes("database is busy") &&
+      attempt < 5
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+      continue;
+    }
     throw new Error(
       `${options.method || "GET"} ${path}: ${response.status} ${text}`,
     );
-  return text ? JSON.parse(text) : null;
+  }
 }
 
 const corePort = await freePort();
