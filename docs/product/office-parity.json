@@ -372,12 +372,12 @@
       ],
       "notes": "The deterministic fixture path is the PR CI acceptance path. The owner-authorized live OpenCode container UAT is recorded separately and is not a browser-acceptance gate."
     },
-    "CAP-053": {
+    "CAP-054": {
       "name": "Personal access and device sessions",
       "user_facing": true,
       "job": "Enroll a browser without a permanent API token, maintain independent device sessions, pair a phone with owner approval, and inspect optional private Tailscale access.",
       "routes": [
-        "/settings?tab=access",
+        "/settings",
         "/pair"
       ],
       "core_api": [
@@ -385,9 +385,12 @@
         "POST /auth/bootstrap",
         "POST /auth/logout",
         "POST /auth/logout-all",
+        "POST /auth/rotate",
         "GET /auth/access",
         "GET /auth/devices",
+        "GET /auth/devices/audit",
         "POST /auth/device-challenges",
+        "POST /auth/device-challenges/{id}/cancel",
         "POST /auth/device-claims/{id}",
         "POST /auth/device-claims/{id}/poll",
         "POST /auth/devices/{id}/approve",
@@ -399,7 +402,9 @@
         "inspect local and optional private remote access state",
         "create a short-lived QR pairing challenge with a non-authorizing public identifier",
         "compare verification codes and approve or reject a pending device",
-        "revoke a single device or all sessions"
+        "cancel an unclaimed or approved-awaiting-pickup challenge",
+        "revoke a single device, sign out the current device, or revoke all sessions",
+        "inspect bounded session and pairing security activity"
       ],
       "states": [
         "loading",
@@ -408,9 +413,13 @@
         "unauthorized",
         "offline",
         "pending",
+        "approved",
+        "cancelled",
         "expired",
         "rejected",
         "revoked",
+        "current-device",
+        "approving",
         "remote-access-unknown"
       ],
       "acceptance": [
@@ -418,7 +427,7 @@
         "office/src/views/DevicePairClaim.test.tsx",
         "office/e2e-browser/personal-access.mjs"
       ],
-      "notes": "Session cookie material is HttpOnly. CSRF uses the dedicated readable SameSite cookie. Pairing challenge IDs do not grant authority and are stripped from browser history before phone requests. The PWA service worker uses network-only requests; no offline authorization or sensitive-response caching is claimed. Tailscale status follows Core’s private Office health probe and remains UNKNOWN when the probe is inconclusive. MagicDNS HTTPS certificate hostnames are disclosed in public Certificate Transparency logs; Funnel remains disabled. Browser and remote-network acceptance remain pending."
+      "notes": "Session cookie material is HttpOnly. CSRF uses the dedicated readable SameSite cookie. Pairing challenge IDs do not grant authority and are stripped from browser history before phone requests. The phone receives a separate hashed poll capability, and Core creates a session only after the authenticated owner submits the matching code. The PWA service worker uses network-only requests; no offline authorization or sensitive-response caching is claimed. Access & Devices marks the current device, supports per-device and all-device revocation, shows bounded security activity, and cancels challenges explicitly. Tailscale status follows Core's private Office health probe and remains UNKNOWN when the probe is inconclusive. Author-run deterministic and real Chromium pairing evidence passed at implementation 9afbb6f; mobile-data Tailscale access, independent review and Product Owner approval remain pending."
     }
   },
   "deferred": [

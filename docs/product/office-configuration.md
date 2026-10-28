@@ -58,6 +58,37 @@ enforces the policy and budget but cannot prove that internal ordering against
 a compromised reviewer token. A model `approve` alone does not create the
 verifier receipt required by the gate.
 
+## Settings → Access & Devices
+
+Access & Devices shows the current browser session, enrolled devices, last
+activity, expiry and recent Core security activity. Each browser or phone has
+its own revocable session; the permanent operator credential is never sent to
+the browser.
+
+To pair a phone:
+
+1. Open **Settings → Access & Devices** on the enrolled desktop and select
+   **Pair device**. The QR contains only a short-lived random challenge
+   identifier, never a session, operator token or verification code.
+2. Scan the QR with the phone while it can reach the Factory Office origin.
+   The phone claims the challenge and displays a six-digit verification code.
+3. Confirm the same code in Office and select **Approve device**. Core creates
+   an independent HttpOnly phone session only after the matching code is
+   submitted.
+4. Use **Reject** for an unexpected claimant or **Cancel pairing code** to make
+   an unclaimed or awaiting-pickup challenge terminal. Challenges expire after
+   three minutes and cannot be replayed.
+
+**Revoke** ends one device session; **Sign out** ends the current device; **Revoke
+all devices** ends every session, including the current browser. Revocation is
+immediate for protected API access. The Office shell still loads so local
+recovery can be shown, but it grants no operator API authority.
+
+The PWA service worker is network-only. It does not cache Core responses,
+campaign data, credentials or authorization state and offers no offline
+administration. Private Tailscale status is reported from Core's health probe;
+tailnet membership alone is not a Factory session, and Funnel is not supported.
+
 ## Projects
 
 Register HTTP(S) Git URLs; Core imports them into managed storage. Office shows

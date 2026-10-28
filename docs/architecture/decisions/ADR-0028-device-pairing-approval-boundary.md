@@ -8,8 +8,8 @@ amends: ADR-0026
 ---
 # ADR-0028: QR device pairing and approval boundary
 
-- **Status:** Proposed for Product Owner review. Implementation is not accepted or certified by this proposal.
-- **Amends:** [ADR-0026](ADR-0026-personal-access-and-device-sessions.md) with the device enrollment and approval boundary.
+- **Status:** Proposed for Product Owner review. Author-run implementation evidence at candidate `9afbb6f` covers the deterministic lifecycle, restricted listener, real Chromium pairing and revocation; independent review and mobile-data UAT remain pending.
+- **Amends:** [ADR-0026](ADR-0026-device-sessions-and-local-owner-bootstrap.md) with the device enrollment and approval boundary.
 
 ## Context
 
@@ -30,4 +30,8 @@ The QR can be copied without transferring a reusable secret. An unauthorized cla
 
 ## Verification obligations
 
-Test one-time claim, expiry, replay, matching and mismatching verification codes, approval, rejection, concurrent poll consumption, independent session creation, session revocation, unauthenticated management denial, CSRF/Origin/Host negatives and audit persistence. Real HTTPS remote access and real mobile browser behavior remain separate acceptance obligations.
+Test one-time claim, expiry, replay, matching and mismatching verification codes, approval, rejection, cancellation, concurrent poll consumption, independent session creation, session revocation, unauthenticated management denial, CSRF/Origin/Host negatives and audit persistence. Real HTTPS remote access and real mobile browser behavior remain separate acceptance obligations.
+
+## Evidence
+
+The deterministic DB, listener and Office tests plus a real Chromium desktop-and-phone journey passed at implementation `9afbb6f`; the owner approved with the matching code, the phone received an independent session, replay and rejection failed closed, a cancelled challenge could not be claimed, single-device and all-device revocation took effect, the audit stayed readable and the 390 px layout did not overflow. See [personal-access-pairing-2026-10-28.json](../evidence/personal-access-pairing-2026-10-28.json). Mobile-data Tailscale access, independent review and Product Owner approval remain pending.
