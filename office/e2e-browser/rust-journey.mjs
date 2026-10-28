@@ -235,8 +235,16 @@ try {
   await page.getByLabel("One-time owner confirmation").fill(enrollmentCode);
   await page.getByLabel("This device name").fill("Rust Office E2E");
   await page.getByRole("button", { name: "Enroll this device" }).click();
-  await page.getByRole("heading", { name: "Overview", level: 1 }).waitFor();
-  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page.getByRole("heading", { name: "Home", level: 1 }).waitFor();
+  const overviewLink = page.getByRole("link", { name: "Overview", exact: true });
+  if (!(await overviewLink.isVisible())) {
+    await page.getByRole("button", { name: "Advanced", exact: true }).click();
+  }
+  await overviewLink.click();
+  await page
+    .getByRole("heading", { name: "Overview", exact: true, level: 1 })
+    .waitFor();
+  await page.getByRole("link", { name: "Decisions", exact: true }).click();
   await page
     .getByRole("heading", { name: "Decision Inbox", exact: true, level: 1 })
     .waitFor();
@@ -268,7 +276,7 @@ try {
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
   await page.getByTestId("campaign-action").selectOption({ index: 0 });
   await page.getByRole("button", { name: "Create Campaign" }).click();
-  await page.getByRole("link", { name: "Decision Inbox", exact: true }).click();
+  await page.getByRole("link", { name: "Decisions", exact: true }).click();
   await page.getByText("Campaign awaiting authorization").waitFor();
   await page.getByRole("link", { name: "Campaigns", exact: true }).click();
   await page.getByRole("heading", { name: "Campaigns", exact: true }).waitFor();
