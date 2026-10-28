@@ -2509,7 +2509,7 @@ capabilities:
     deployment: []
     isolation: []
   limitations:
-  - Tailscale connectivity is shown as UNKNOWN without a verified Core health signal.
+  - Tailscale status reflects Core health probing of the configured private Office endpoint; it does not prove reachability from mobile data. HTTPS certificate hostnames appear in public Certificate Transparency logs.
   - The service worker does not cache API responses and does not offer offline authorization.
   blockers:
   - Real Compose and mobile-network browser acceptance remains pending.

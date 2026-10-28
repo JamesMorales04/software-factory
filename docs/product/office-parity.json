@@ -131,7 +131,7 @@
         "office/src/views/DevicePairClaim.test.tsx",
         "office/e2e-browser/personal-access.mjs"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Tailscale connectivity is UNKNOWN unless Core reports a verified service signal. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices and Agent Office are implemented. Agent Office projects recorded participants only. Issues and Docs remain later slices."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices and Agent Office are implemented. Agent Office projects recorded participants only. Issues and Docs remain later slices."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -418,7 +418,7 @@
         "office/src/views/DevicePairClaim.test.tsx",
         "office/e2e-browser/personal-access.mjs"
       ],
-      "notes": "Session cookie material is HttpOnly. CSRF uses the dedicated readable SameSite cookie. Pairing challenge IDs do not grant authority and are stripped from browser history before phone requests. The PWA service worker uses network-only requests; no offline authorization or sensitive-response caching is claimed. Tailscale reports UNKNOWN without a verified Core health signal. Browser and remote-network acceptance remain pending."
+      "notes": "Session cookie material is HttpOnly. CSRF uses the dedicated readable SameSite cookie. Pairing challenge IDs do not grant authority and are stripped from browser history before phone requests. The PWA service worker uses network-only requests; no offline authorization or sensitive-response caching is claimed. Tailscale status follows Core’s private Office health probe and remains UNKNOWN when the probe is inconclusive. MagicDNS HTTPS certificate hostnames are disclosed in public Certificate Transparency logs; Funnel remains disabled. Browser and remote-network acceptance remain pending."
     }
   },
   "deferred": [

@@ -54,8 +54,37 @@ describe("Access & Devices", () => {
       await screen.findByText("https://factory.example-tailnet.ts.net"),
     ).toBeTruthy();
     expect(screen.getByText("UNKNOWN")).toBeTruthy();
-    expect(screen.getByText(/Membership alone does not enroll/)).toBeTruthy();
+    expect(screen.getByText(/Do not treat tailnet membership/)).toBeTruthy();
+    expect(
+      screen.getByText(/public Certificate Transparency logs/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Funnel remains disabled/)).toBeTruthy();
   });
+
+  it.each(["CONNECTED", "DISCONNECTED", "UNKNOWN", "DISABLED"])(
+    "renders the Core-reported Tailscale state %s",
+    async (status) => {
+      mocks.getAccessOverview.mockResolvedValue({
+        local: { status: "AVAILABLE" },
+        tailscale: {
+          enabled: status !== "DISABLED",
+          status,
+          httpsEndpoint:
+            status === "DISABLED" ? null : access.tailscale.httpsEndpoint,
+          error: status === "DISCONNECTED" ? "health probe failed" : null,
+        },
+      });
+      render(<AccessDevices />);
+      expect((await screen.findAllByText(status)).length).toBeGreaterThan(0);
+      if (status === "DISCONNECTED") {
+        expect(screen.getByText(/health probe failed/)).toBeTruthy();
+        expect(screen.getByText(/Core cannot reach/)).toBeTruthy();
+      }
+      if (status === "DISABLED") {
+        expect(screen.getByText(/Remote access is disabled/)).toBeTruthy();
+      }
+    },
+  );
 
   it("creates a harmless QR challenge and requires code confirmation before approval", async () => {
     const user = userEvent.setup();

@@ -324,12 +324,32 @@ export function AccessDevices() {
             {access.tailscale.status}
           </span>
         </div>
+        {access.tailscale.status === "CONNECTED" ? (
+          <p className="muted">
+            Core can reach the private Office health endpoint. This confirms the
+            current Serve path only; Factory still requires its own enrolled
+            device session.
+          </p>
+        ) : access.tailscale.status === "DISCONNECTED" ? (
+          <p className="muted">
+            Core cannot reach the configured private Office health endpoint.
+            Check the Tailscale service, Serve configuration, and private HTTPS
+            endpoint in `docs/operations/compose-deployment.md`.
+          </p>
+        ) : access.tailscale.status === "UNKNOWN" ? (
+          <p className="muted">
+            Tailscale connectivity could not be verified. Check the service and
+            private HTTPS endpoint in `docs/operations/compose-deployment.md`.
+            Do not treat tailnet membership as a Factory session.
+          </p>
+        ) : (
+          <p className="muted">
+            Remote access is disabled. To enable it, follow the optional
+            Tailscale overlay setup in `docs/operations/compose-deployment.md`.
+          </p>
+        )}
         {access.tailscale.enabled ? (
           <>
-            <p className="muted">
-              Tailscale connectivity is reported as {access.tailscale.status}.
-              Membership alone does not enroll a device or grant Factory access.
-            </p>
             {access.tailscale.httpsEndpoint ? (
               <p>
                 Private HTTPS endpoint:{" "}
@@ -352,11 +372,20 @@ export function AccessDevices() {
           </>
         ) : (
           <p className="muted">
-            Remote access is optional. Follow the Tailscale overlay setup in
-            Compose deployment documentation. Office does not expose Core or
-            runtime services publicly.
+            The local Office connection remains available. Core, Worker, and
+            runtime services are not published by the Tailscale overlay.
           </p>
         )}
+        <div className="ui-callout ui-callout--info access-remote-guidance">
+          <strong>Tailscale HTTPS setup and privacy</strong>
+          <p>
+            Enable MagicDNS and HTTPS certificates in your tailnet settings.
+            Tailscale certificate hostnames are published in public Certificate
+            Transparency logs, so the device hostname can be visible publicly.
+            The certificate does not publish Factory itself: Office stays
+            private to the tailnet, and Funnel remains disabled.
+          </p>
+        </div>
       </Panel>
 
       <Panel>
