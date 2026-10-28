@@ -10,6 +10,7 @@ pub mod lead_model;
 pub mod model_gateway;
 pub mod model_output;
 pub mod observability;
+pub mod project_files;
 pub mod project_import;
 pub mod protocol;
 pub mod provider_catalog;

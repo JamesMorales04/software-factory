@@ -37,6 +37,68 @@ export interface Project {
   identity?: string;
 }
 
+export type ProjectTreeEntryKind =
+  | "FILE"
+  | "DIRECTORY"
+  | "SYMLINK"
+  | "SUBMODULE";
+
+export interface ProjectRevision {
+  commit: string;
+  tree: string;
+}
+
+export interface ProjectTreeEntry {
+  name: string;
+  path: string;
+  kind: ProjectTreeEntryKind;
+  mode: string;
+  objectId: string;
+  size: number | null;
+}
+
+export interface ProjectTreeProjection {
+  projectId: string;
+  revision: ProjectRevision;
+  path: string;
+  entries: ProjectTreeEntry[];
+  truncated: boolean;
+  skippedEntries: number;
+  provenance: string;
+}
+
+export type ProjectContentOmission = "BINARY" | "TOO_LARGE" | "NOT_A_FILE";
+
+export interface ProjectFileProjection {
+  projectId: string;
+  revision: ProjectRevision;
+  path: string;
+  name: string;
+  kind: ProjectTreeEntryKind;
+  mode: string;
+  objectId: string;
+  size: number | null;
+  content: string | null;
+  omitted: ProjectContentOmission | null;
+  lineCount?: number;
+  provenance: string;
+}
+
+export interface ProjectRef {
+  name: string;
+  kind: "BRANCH";
+  commit: string;
+}
+
+export interface ProjectRefsProjection {
+  projectId: string;
+  baseCommit: string;
+  head: string | null;
+  refs: ProjectRef[];
+  truncated: boolean;
+  provenance: string;
+}
+
 export interface Action {
   id: string;
   project_id: string;
@@ -1360,6 +1422,32 @@ export const coreApi = {
     }),
   getProjectConfig: (projectId: string) =>
     request<ProjectConfig>(`/projects/${encodeURIComponent(projectId)}/config`),
+  listProjectRefs: (projectId: string) =>
+    request<ProjectRefsProjection>(
+      `/projects/${encodeURIComponent(projectId)}/refs`,
+    ),
+  listProjectFiles: (
+    projectId: string,
+    options: { ref?: string; path?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (options.ref) params.set("ref", options.ref);
+    if (options.path) params.set("path", options.path);
+    const query = params.toString();
+    return request<ProjectTreeProjection>(
+      `/projects/${encodeURIComponent(projectId)}/files${query ? `?${query}` : ""}`,
+    );
+  },
+  getProjectFile: (
+    projectId: string,
+    options: { ref?: string; path: string },
+  ) => {
+    const params = new URLSearchParams({ path: options.path });
+    if (options.ref) params.set("ref", options.ref);
+    return request<ProjectFileProjection>(
+      `/projects/${encodeURIComponent(projectId)}/file?${params.toString()}`,
+    );
+  },
   updateProjectConfig: (projectId: string, input: UpdateProjectConfig) =>
     request<ProjectConfig>(
       `/projects/${encodeURIComponent(projectId)}/config`,

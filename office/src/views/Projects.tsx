@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   CoreApiError,
   coreApi,
@@ -136,7 +137,13 @@ export function Projects() {
                   </code>
                 </td>
                 <td className="muted">{formatTimestamp(project.created_at)}</td>
-                <td>
+                <td className="project-actions">
+                  <Link
+                    className="ui-button ui-button--secondary ui-button--sm"
+                    to={`/projects/${encodeURIComponent(project.id)}/files`}
+                  >
+                    Browse files
+                  </Link>
                   <button
                     type="button"
                     onClick={() => {
