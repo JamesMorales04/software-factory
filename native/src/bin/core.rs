@@ -306,6 +306,35 @@ struct NewLeadRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveLeadRequest {
+    expected_request_hash: String,
+    expected_plan_hash: String,
+    expected_spec_sha256: String,
+    expected_config_hash: String,
+    expected_delegation_hash: String,
+    #[serde(default)]
+    profile_revision_id: Option<String>,
+    #[serde(default)]
+    profile_hash: Option<String>,
+    #[serde(default)]
+    principal_label: Option<String>,
+    rationale: String,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    provider_authorization: Option<AuthorizeCampaign>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithdrawLeadRequest {
+    reason: String,
+    #[serde(default)]
+    principal_label: Option<String>,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ResolveModelCall {
     actor: String,
@@ -709,6 +738,8 @@ fn office_api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/assess", post(assess_lead_request))
         .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
         .route("/lead/requests/{id}/start", post(start_lead_request))
+        .route("/lead/requests/{id}/approve", post(approve_lead_request))
+        .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
         .merge(github_integration_routes())
@@ -897,6 +928,8 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/lead/requests/{id}/assess", post(assess_lead_request))
         .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
         .route("/lead/requests/{id}/start", post(start_lead_request))
+        .route("/lead/requests/{id}/approve", post(approve_lead_request))
+        .route("/lead/requests/{id}/withdraw", post(withdraw_lead_request))
         .route("/campaigns/{id}/authorize", post(authorize_campaign))
         .route("/campaigns/{id}/authorization", get(campaign_authorization))
         .route("/campaigns/{id}/runs", post(create_campaign_run))
@@ -1071,6 +1104,18 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+}
+
+/// Core-owned identity for an authenticated operator request. A browser device
+/// session is a distinct principal; the shared bearer token is a single local
+/// operator principal. A display label is audit metadata only.
+fn authenticated_operator(
+    session: Option<&factory_native::db::DeviceSessionRecord>,
+) -> (String, Option<String>) {
+    match session {
+        Some(device) => (format!("device:{}", device.id), Some(device.name.clone())),
+        None => ("operator-token".into(), None),
+    }
 }
 
 async fn browser_auth(State(app): State<Arc<App>>, mut request: Request, next: Next) -> Response {
@@ -1324,12 +1369,29 @@ fn api_error(error: Error) -> Response {
         Error::Invalid(_) | Error::Validation(_) | Error::Repository(_) | Error::Delegation(_) => {
             StatusCode::BAD_REQUEST
         }
-        Error::Conflict(_) | Error::Constraint(_) => StatusCode::CONFLICT,
+        Error::Conflict(_) | Error::Constraint(_) | Error::Withdrawn => StatusCode::CONFLICT,
+        Error::AlreadyStarted { .. } => StatusCode::CONFLICT,
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::Busy => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::AlreadyStarted {
+        campaign_id,
+        campaign_status,
+    } = &error
+    {
+        return (
+            status,
+            Json(json!({
+                "error": error.to_string(),
+                "code": "LEAD_ALREADY_STARTED",
+                "campaign_id": campaign_id,
+                "campaign_status": campaign_status,
+            })),
+        )
+            .into_response();
+    }
     (status, Json(json!({"error":error.to_string()}))).into_response()
 }
 
@@ -4731,12 +4793,12 @@ async fn freeze_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let plan = match app.db.freeze_lead_plan(&id, &format!("freeze:{id}")).await {
-        Ok(plan) => plan,
-        Err(error) => return api_error(error),
-    };
-    let request = match app.db.mark_lead_ready(&id).await {
-        Ok(request) => request,
+    let (plan, request) = match app
+        .db
+        .freeze_lead_plan_to_ready(&id, &format!("freeze:{id}"))
+        .await
+    {
+        Ok(result) => result,
         Err(error) => return api_error(error),
     };
     (
@@ -4755,13 +4817,12 @@ async fn start_lead_request(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if !app.lead_autonomous_start {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"autonomous start policy is not activated"})),
-        )
-            .into_response();
-    }
+    let autonomy = match factory_native::db::ValidatedAutonomyContext::from_deployment_policy(
+        app.lead_autonomous_start,
+    ) {
+        Ok(context) => context,
+        Err(error) => return api_error(error),
+    };
     let authorization = if body.is_empty() {
         None
     } else {
@@ -4778,14 +4839,121 @@ async fn start_lead_request(
     };
     match app
         .db
-        .start_lead_campaign(&id, &format!("start:{id}"), authorization.as_ref())
+        .start_lead_campaign(
+            &id,
+            &format!("start:{id}"),
+            factory_native::db::StartAuthority::Autonomous(autonomy),
+            None,
+            authorization.as_ref(),
+        )
         .await
     {
-        Ok((campaign, run, attempt)) => (
+        Ok(result) => (
             StatusCode::CREATED,
-            Json(json!({"campaign":campaign,"run":run,"attempt":attempt})),
+            Json(json!({
+                "campaign":result.campaign,
+                "run":result.run,
+                "attempt":result.attempt,
+                "replayed":result.replayed
+            })),
         )
             .into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn approve_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<ApproveLeadRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    let approval = match factory_native::db::AuthenticatedOperatorApproval::new(
+        &principal_id,
+        principal_label,
+        &input.rationale,
+    ) {
+        Ok(approval) => approval,
+        Err(error) => return api_error(error),
+    };
+    let expected = match factory_native::db::ExpectedStartBinding::new(
+        &input.expected_request_hash,
+        &input.expected_plan_hash,
+        &input.expected_spec_sha256,
+        &input.expected_config_hash,
+        &input.expected_delegation_hash,
+        input.profile_revision_id.as_deref(),
+        input.profile_hash.as_deref(),
+    ) {
+        Ok(binding) => binding,
+        Err(error) => return api_error(error),
+    };
+    let idempotency_key = input
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("lead-approve:{id}:{}", input.expected_plan_hash));
+    let provider_authorization = input
+        .provider_authorization
+        .map(AuthorizeCampaign::into_new);
+    let result = app
+        .db
+        .start_lead_campaign(
+            &id,
+            &idempotency_key,
+            factory_native::db::StartAuthority::Operator(approval),
+            Some(&expected),
+            provider_authorization.as_ref(),
+        )
+        .await;
+    match result {
+        Ok(result) => {
+            let evidence = app.db.lead_start_evidence(&id).await.ok().flatten();
+            (
+                if result.replayed {
+                    StatusCode::OK
+                } else {
+                    StatusCode::CREATED
+                },
+                Json(json!({
+                    "campaign":result.campaign,
+                    "run":result.run,
+                    "attempt":result.attempt,
+                    "replayed":result.replayed,
+                    "evidence":evidence,
+                })),
+            )
+                .into_response()
+        }
+        Err(error) => api_error(error),
+    }
+}
+
+async fn withdraw_lead_request(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    session: Option<Extension<factory_native::db::DeviceSessionRecord>>,
+    Json(input): Json<WithdrawLeadRequest>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (principal_id, device_label) =
+        authenticated_operator(session.as_ref().map(|Extension(device)| device));
+    let principal_label = input.principal_label.as_deref().or(device_label.as_deref());
+    match app
+        .db
+        .withdraw_lead_request(&id, &principal_id, principal_label, &input.reason)
+        .await
+    {
+        Ok(record) => Json(record).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -4805,6 +4973,18 @@ async fn get_lead_request(
     let assessment = app.db.lead_assessment(&id).await.ok();
     let proposal = app.db.lead_proposal(&id).await.ok();
     let plan = app.db.frozen_lead_plan(&id).await.ok();
+    let withdrawal = app.db.lead_withdrawal(&id).await.ok().flatten();
+    let evidence = app.db.lead_start_evidence(&id).await.ok().flatten();
+    let execution_binding = match &request.campaign_id {
+        Some(campaign_id) => app
+            .db
+            .campaign_execution_binding(campaign_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let projection = app.db.lead_request_projection(&id).await.ok();
     let model_calls = match app.db.lead_model_calls(&id).await {
         Ok(calls) => calls,
         Err(error) => return api_error(error),
@@ -4814,6 +4994,10 @@ async fn get_lead_request(
         "assessment": assessment,
         "proposal": proposal,
         "plan": plan,
+        "withdrawal": withdrawal,
+        "start_evidence": evidence,
+        "execution_binding": execution_binding,
+        "projection": projection,
         "model_calls": model_calls
     }))
     .into_response()
@@ -6363,6 +6547,8 @@ mod tests {
             ("POST", "/core-api/lead/requests/missing/assess"),
             ("POST", "/core-api/lead/requests/missing/freeze"),
             ("POST", "/core-api/lead/requests/missing/start"),
+            ("POST", "/core-api/lead/requests/missing/approve"),
+            ("POST", "/core-api/lead/requests/missing/withdraw"),
             ("POST", "/core-api/model/calls/missing/resolve"),
             ("POST", "/core-api/auth/bootstrap"),
             ("POST", "/core-api/auth/device-challenges"),
@@ -7690,6 +7876,420 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
 
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(repository);
+    }
+
+    fn approval_checks() -> Vec<factory_native::lead::SpecCheck> {
+        use factory_native::lead::{CheckKind, SpecCheck};
+        vec![
+            SpecCheck {
+                id: "format".into(),
+                kind: CheckKind::Format,
+                description: "format".into(),
+                command: vec!["cargo".into(), "fmt".into(), "--check".into()],
+                expect_exit: 0,
+                timeout_secs: 60,
+            },
+            SpecCheck {
+                id: "build".into(),
+                kind: CheckKind::Build,
+                description: "build".into(),
+                command: vec!["cargo".into(), "build".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "test".into(),
+                kind: CheckKind::Test,
+                description: "test".into(),
+                command: vec!["cargo".into(), "test".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "functional".into(),
+                kind: CheckKind::Functional,
+                description: "functional".into(),
+                command: vec!["cargo".into(), "run".into()],
+                expect_exit: 0,
+                timeout_secs: 120,
+            },
+            SpecCheck {
+                id: "negative".into(),
+                kind: CheckKind::Negative,
+                description: "negative".into(),
+                command: vec!["cargo".into(), "run".into(), "--bad".into()],
+                expect_exit: 1,
+                timeout_secs: 60,
+            },
+        ]
+    }
+
+    async fn create_ready_approval_lead(
+        db: &Database,
+        project_id: &str,
+        config_hash: &str,
+        grant: &StandingDelegation,
+        label: &str,
+    ) -> (String, Value) {
+        let checks = approval_checks();
+        let allowed = vec!["src".to_string()];
+        let action = db
+            .create_action_with_spec(
+                project_id,
+                "Implement the approval endpoint.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                &format!("approval-action-{label}"),
+                factory_native::db::ActionSpecInput {
+                    allowed_paths: &allowed,
+                    checks: &checks,
+                },
+            )
+            .await
+            .unwrap();
+        let (request, _) = db
+            .create_lead_request(
+                project_id,
+                &action.id,
+                &grant.id,
+                "Implement the approval endpoint.",
+                config_hash,
+                &format!("approval-request-{label}"),
+            )
+            .await
+            .unwrap();
+        db.begin_lead_assessment(&request.id).await.unwrap();
+        let config = db.project_config(project_id).await.unwrap();
+        let binding = factory_native::lead::ActionBinding {
+            id: action.id.clone(),
+            project_id: project_id.into(),
+            status: factory_native::lead::ActionStatus::Pending,
+        };
+        let (assessment, proposal) = factory_native::lead::fixture_lead_assessment(
+            &request.id,
+            &config,
+            &binding,
+            &action.spec,
+            &request.objective,
+            grant,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let input = factory_native::lead::AssessmentInput {
+            project_id: project_id.into(),
+            action_id: action.id.clone(),
+            request_id: request.id.clone(),
+            objective: request.objective.clone(),
+            allowed_evidence_refs: std::collections::BTreeSet::from(["repository-files".into()]),
+        };
+        db.record_lead_assessment(
+            &request.id,
+            "FIXTURE",
+            &assessment,
+            &input,
+            &format!("approval-assessment-{label}"),
+        )
+        .await
+        .unwrap();
+        db.record_lead_proposal(
+            &request.id,
+            &proposal,
+            &format!("approval-proposal-{label}"),
+        )
+        .await
+        .unwrap();
+        let (plan, _) = db
+            .freeze_lead_plan_to_ready(&request.id, &format!("approval-freeze-{label}"))
+            .await
+            .unwrap();
+        (
+            request.id,
+            json!({
+                "expected_request_hash": request.request_hash,
+                "expected_plan_hash": plan.plan_hash,
+                "expected_spec_sha256": action.spec_sha256,
+                "expected_config_hash": config_hash,
+                "expected_delegation_hash": grant.content_hash,
+                "principal_label": "Alice",
+                "rationale": "Reviewed the frozen plan.",
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn operator_approval_endpoint_is_authenticated_and_replay_safe() {
+        use tower::ServiceExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "factory-core-approval-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = std::env::temp_dir().join(format!(
+            "factory-core-approval-repo-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&repository).unwrap();
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(repository.join("seed.txt"), "seed\n").unwrap();
+        for arguments in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repository)
+                    .args(arguments)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "approval-project")
+            .await
+            .unwrap();
+        let config = db
+            .update_project_config(
+                &project.id,
+                &factory_native::db::NewProjectConfig {
+                    expected_revision: 1,
+                    allowed_paths: vec!["src".into()],
+                    capabilities: vec![
+                        factory_native::lead::Capability::RepositoryEdit,
+                        factory_native::lead::Capability::GenericToolchain,
+                    ],
+                    quality_profile: factory_native::lead::QualityProfile::Generic,
+                    active: true,
+                },
+            )
+            .await
+            .unwrap();
+        let mut grant = StandingDelegation {
+            id: "approval-grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: project.id.clone(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![
+                factory_native::lead::Capability::RepositoryEdit,
+                factory_native::lead::Capability::GenericToolchain,
+            ],
+            risk_classes: vec![factory_native::lead::RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: factory_native::lead::ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_attempts: 2,
+            max_timeout_secs: 300,
+            max_repair_cycles: 1,
+            max_wall_clock_secs: 1_800,
+            max_parallel: 1,
+            max_sessions: 4,
+            max_requests: 2,
+            max_cumulative_sessions: 8,
+            max_cumulative_attempts: 16,
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        db.create_standing_delegation(&grant, "approval-grant-key")
+            .await
+            .unwrap();
+        let (request_id, expected) =
+            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "first")
+                .await;
+        let (withdrawn_request, _) =
+            create_ready_approval_lead(&db, &project.id, &config.config_hash, &grant, "second")
+                .await;
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            github: factory_native::github::GitHubClient::production().unwrap(),
+            github_sync: tokio::sync::Mutex::new(()),
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app.clone());
+        let approve_uri = format!("/lead/requests/{request_id}/approve");
+        let mut body = expected.clone();
+        body["idempotency_key"] = json!("api-approval");
+        let request_body = serde_json::to_vec(&body).unwrap();
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer bootstrap-bootstrap-bootstrap-1234")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let mut forged = body.clone();
+        forged["actor"] = json!("forged-operator");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(serde_json::to_vec(&forged).unwrap()))
+            .unwrap();
+        assert!(
+            router
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status()
+                .is_client_error()
+        );
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(request_body.clone()))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let approved: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let campaign_id = approved["campaign"]["id"].as_str().unwrap().to_string();
+        assert_eq!(approved["evidence"]["principal_id"], "operator-token");
+        assert_eq!(approved["evidence"]["mode"], "OPERATOR");
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(request_body))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut second_key = body.clone();
+        second_key["idempotency_key"] = json!("api-approval-second");
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(&approve_uri)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&second_key).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let conflict: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(conflict["campaign_id"], campaign_id);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/lead/requests/{request_id}/withdraw"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({"reason":"stop"})).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let conflict: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(conflict["campaign_id"], campaign_id);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/lead/requests/{withdrawn_request}/withdraw"))
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({"reason":"stop","principal_label":"Alice"})).unwrap(),
+            ))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let withdrawal: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(withdrawal["principal_id"], "operator-token");
+        let request = axum::http::Request::builder()
+            .uri(format!("/lead/requests/{withdrawn_request}"))
+            .header("authorization", "Bearer operator-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let projection: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(projection["projection"], "WITHDRAWN");
+        app.db.close().await;
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(repository);
     }

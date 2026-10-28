@@ -46,6 +46,13 @@ pub enum Error {
     Conflict(&'static str),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("lead request was withdrawn by an authenticated operator")]
+    Withdrawn,
+    #[error("lead request already started Campaign {campaign_id} ({campaign_status})")]
+    AlreadyStarted {
+        campaign_id: String,
+        campaign_status: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -195,6 +202,7 @@ pub const EVENTS_PAGE_MAX: usize = 500;
 pub const EVENT_KINDS: &[&str] = &[
     "action.classified",
     "action.created",
+    "action.spec_frozen",
     "attempt.created",
     "campaign.authorized",
     "campaign.cancelled",
@@ -210,6 +218,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "github.connection_revoked",
     "github.issues_synced",
     "github.project_bound",
+    "lead.approved",
     "lead.assessment_recorded",
     "lead.plan_completed",
     "lead.plan_frozen",
@@ -218,6 +227,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "lead.request_created",
     "lead.started",
     "lead.state_changed",
+    "lead.withdrawn",
     "lead.work_failed",
     "model.call_ambiguous",
     "model.call_authorized",
@@ -765,7 +775,11 @@ pub use github::{
 };
 mod lead;
 mod model_calls;
-pub use lead::LeadTaskRecord;
+pub use lead::{
+    ActionDraftRecord, AuthenticatedOperatorApproval, CampaignExecutionBindingRecord,
+    ExpectedStartBinding, LeadStartEvidenceRecord, LeadStartResult, LeadTaskRecord,
+    LeadWithdrawalRecord, NewDraftLeadRequest, StartAuthority, ValidatedAutonomyContext,
+};
 pub use model_calls::{
     ModelCallDecision, ModelCallGrant, ModelCallPolicy, ModelCallRecord, ModelCallResult,
     ModelCallRole, ModelCallUsage, NewModelCallAuthorization,

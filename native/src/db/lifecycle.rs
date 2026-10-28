@@ -26,6 +26,35 @@ impl Database {
         if action.is_none() {
             return Err(Error::NotFound);
         }
+        let lead_request: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT id FROM lead_requests WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let draft: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT action_id FROM action_drafts WHERE action_id=?1")
+                .bind(action_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if let Some((request_id,)) = lead_request {
+            let withdrawal: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT request_id FROM lead_withdrawals WHERE request_id=?1",
+            )
+            .bind(&request_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if withdrawal.is_some() {
+                return Err(Error::Withdrawn);
+            }
+            return Err(Error::Forbidden(
+                "Lead Actions may execute only through the shared Lead start boundary".into(),
+            ));
+        }
+        if draft.is_some() {
+            return Err(Error::Forbidden(
+                "draft Actions cannot create a Campaign".into(),
+            ));
+        }
         let value = Campaign {
             id: Uuid::new_v4().to_string(),
             action_id: action_id.into(),

@@ -187,6 +187,27 @@ pub(super) async fn authorize_campaign_in_tx(
     if status != "BLOCKED_AUTHORIZATION" {
         return Err(Error::Conflict("campaign is not awaiting authorization"));
     }
+    let lead_request: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM lead_requests WHERE action_id=?1")
+            .bind(&action_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    if let Some((request_id,)) = lead_request {
+        let withdrawal: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT request_id FROM lead_withdrawals WHERE request_id=?1")
+                .bind(&request_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if withdrawal.is_some() {
+            return Err(Error::Withdrawn);
+        }
+        if reservation_policy != AuthorizationReservationPolicy::LeadStart {
+            return Err(Error::Forbidden(
+                "Lead Campaign authorizations are recorded only by the shared Lead start boundary"
+                    .into(),
+            ));
+        }
+    }
     let duplicate: Option<(String,)> = sqlx::query_as::query_as(
         "SELECT campaign_id FROM campaign_authorizations WHERE authorization_id=?1",
     )
