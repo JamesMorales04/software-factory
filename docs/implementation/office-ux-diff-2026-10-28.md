@@ -1,7 +1,7 @@
 # Office UX Wave 2 — Campaign diff and GitHub PR lane
 
 **Parent:** #39. **Branch:** `campaign/office-ux-diff-20261028`.
-**Baseline:** `924e026`. **Code candidate:** `b5be0f1` + `89413c8` (Core) and
+**Baseline:** `924e026`. **Code candidate:** `b5be0f1` + `89413c8` + `c6c5497` (Core) and
 `541edfc` (Office). Evidence:
 [office-campaign-diff-pr-2026-10-28.json](../evidence/office-campaign-diff-pr-2026-10-28.json).
 This is implementer evidence, not independent acceptance.

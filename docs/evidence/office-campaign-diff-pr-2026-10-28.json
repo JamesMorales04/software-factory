@@ -7,7 +7,8 @@
   "implementation_shas": [
     "b5be0f1027c5b585d0aae49e970e7e3384d926da",
     "541edfcb2ed18db7837cf19dbc7284dc34fe1fed",
-    "89413c8ae1c11bc69a5054439757c49b794dec36"
+    "89413c8ae1c11bc69a5054439757c49b794dec36",
+    "c6c5497cf30f727dae936e83369a3a5d8daf8a46"
   ],
   "migration": "none",
   "implementation": {
