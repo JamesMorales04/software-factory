@@ -1,7 +1,7 @@
 # Office UX Wave 2 — Campaign diff and GitHub PR lane
 
 **Parent:** #39. **Branch:** `campaign/office-ux-diff-20261028`.
-**Baseline:** `924e026`. **Code candidate:** `b5be0f1` (Core) and
+**Baseline:** `924e026`. **Code candidate:** `b5be0f1` + `89413c8` (Core) and
 `541edfc` (Office). Evidence:
 [office-campaign-diff-pr-2026-10-28.json](../evidence/office-campaign-diff-pr-2026-10-28.json).
 This is implementer evidence, not independent acceptance.
@@ -64,7 +64,7 @@ Campaign → Candidates now contains:
   non-file and budget states;
 - a PR panel for the Project binding, fresh PR/check read, bounded PR diff,
   comments, reviewer request, exact-head open form and explicitly confirmed
-  merge. Unbound, denied, blocked and pending states are surfaced, never faked.
+  merge. Comment and review effects re-read the PR head and refuse a mismatch. Unbound, denied, blocked and pending states are surfaced, never faked.
 
 ## Verification
 

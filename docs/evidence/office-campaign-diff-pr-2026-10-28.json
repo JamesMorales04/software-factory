@@ -6,7 +6,8 @@
   "baseline_sha": "924e026",
   "implementation_shas": [
     "b5be0f1027c5b585d0aae49e970e7e3384d926da",
-    "541edfcb2ed18db7837cf19dbc7284dc34fe1fed"
+    "541edfcb2ed18db7837cf19dbc7284dc34fe1fed",
+    "89413c8ae1c11bc69a5054439757c49b794dec36"
   ],
   "migration": "none",
   "implementation": {
@@ -43,7 +44,7 @@
       "patch budget"
     ],
     "identity": "Project repository identity is revalidated; base and candidate must be exact full Git object IDs; the candidate commit must descend from the recorded base; the recorded candidate tree must equal the commit tree; the Candidate ActionSpec hash must equal the frozen Action; the Office projection includes exact candidate and Gate identity.",
-    "pr_policy": "Pull request reads use the encrypted Core GitHub connection; tokens never reach Office. Opening a PR verifies the GitHub head branch resolves to the exact candidate commit. Review requests and comments are explicit operator actions. Merge requires explicit confirmation, an exact expected head pinned in the request, a fresh pull request read, a fresh check read, a clean GitHub mergeable state and GitHub API success. No auto-merge. Branch protection and required checks remain GitHub-authoritative; blocked responses are typed."
+    "pr_policy": "Pull request reads use the encrypted Core GitHub connection; tokens never reach Office. Opening a PR verifies the GitHub head branch resolves to the exact candidate commit. Review requests and comments are explicit operator actions and re-read the PR head first so an effect is refused when the head does not match the candidate commit. Merge requires explicit confirmation, an exact expected head pinned in the request, a fresh pull request read, a fresh check read, a clean GitHub mergeable state and GitHub API success. No auto-merge. Branch protection and required checks remain GitHub-authoritative; blocked responses are typed."
   },
   "commands": {
     "rust_format": "PASS: cargo fmt --all --check",
