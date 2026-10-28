@@ -101,6 +101,32 @@ fresh bounded budget envelope; absence is `BLOCKED`, not fabricated.
 - `main` stays unchanged until independent review, protection checks and Product
   Owner merge authorization.
 
-## 8. Status
+## 8. Status — 2026-10-28
 
-Wave 2 starts 2026-10-28. No lane result is accepted yet.
+Wave 2 starts from `924e026` (design doc later preserved at baseline `de7e2b7`).
+No lane result is accepted yet.
+
+### Active implementation lanes
+- R `campaign/office-ux-routing-20261028`
+- L `campaign/office-ux-lifecycle-e2e-20261028`
+- P `campaign/office-ux-projects-20261028`
+- D `campaign/office-ux-decisions-20261028`
+- F `campaign/office-ux-diff-20261028`
+- J `campaign/office-ux-i18n-sweep-20261028`
+- A `campaign/office-ux-autonomy-20261028` (commits 1–2 only; automatic start disabled)
+
+### Compose acceptance fix
+The first supported CI run failed because `compose.yaml` hard-codes
+`name: software-factory`, overriding the E2E project guard and defeating the
+dedicated-project check. `scripts/compose-e2e.sh` now passes an explicit
+`-p "$PROJECT"` on every invocation and prints container diagnostics on failure.
+Branch `campaign/office-ux-compose-fix-20261028` at `770a200`; a fresh CI run is
+pending. This was a real isolation defect, not merely a test failure.
+
+### Autonomy design
+Codex Sol produced `office-ux-autonomy-contract-2026-10-28.md` (commit
+`271c821`, preserved on the baseline at `de7e2b7`). It keeps automatic
+execution blocked behind a protected ADR and finite preauthorization. GPT-6
+Luna is independently reviewing the contract. The implementation lane is
+restricted to default-off policy/batch/queue/proposal work until that review
+and the protected approval are satisfied.
