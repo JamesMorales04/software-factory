@@ -1078,8 +1078,12 @@ try {
   );
   // A missing gate is a normal pending projection. The UI intentionally probes
   // that endpoint and renders PENDING; all other 404s are broken resources.
+  // Unified intake is not merged into this integration candidate yet; Home
+  // renders its explicit unavailable state and the poll is expected to 404.
   const unexpectedNotFound = notFound.filter(
-    (url) => !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url),
+    (url) =>
+      !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url) &&
+      !/\/core-api\/intake\/requests(\?|$)/.test(url),
   );
   assert.deepEqual(
     unexpectedNotFound,
