@@ -988,19 +988,19 @@ fn go_toolchain(contents: &BTreeMap<String, String>) -> DiscoveredToolchain {
             check(
                 "go-vet",
                 CheckKind::Lint,
-                "Run go vet on all packages",
+                "Run Go static analysis on all packages",
                 &["go", "vet", "./..."],
             ),
             check(
                 "go-test",
                 CheckKind::Test,
-                "Run the Go test suite",
+                "Run the project's Go unit tests",
                 &["go", "test", "./..."],
             ),
             check(
                 "go-build",
                 CheckKind::Build,
-                "Build all Go packages",
+                "Build the discovered Go packages",
                 &["go", "build", "./..."],
             ),
         ],

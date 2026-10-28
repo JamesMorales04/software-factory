@@ -1,7 +1,7 @@
 # Governed issue intake — independent review record (2026-10-28)
 
-**Reviewer:** GPT-6 Luna via Paseo (independent of the Codex Sol design and the
-OpenCode implementation lane).
+**Reviewer:** GPT-6 Luna via the external agent runner (independent of the
+Codex Sol design and the OpenCode implementation lane).
 **Design:** `docs/implementation/office-ux-autonomy-contract-2026-10-28.md`
 (commit `271c821`).
 **Verdict:** commits 1–2 safe only as default-off policy, acknowledgement,
