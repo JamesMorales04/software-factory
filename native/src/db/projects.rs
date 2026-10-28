@@ -255,6 +255,11 @@ impl Database {
         Ok(action)
     }
 
+    pub async fn project(&self, id: &str) -> Result<Project, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_project(&mut connection, id).await
+    }
+
     pub async fn projects(&self) -> Result<Vec<Project>, Error> {
         let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at,identity FROM projects ORDER BY created_at",

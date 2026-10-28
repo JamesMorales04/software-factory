@@ -63,6 +63,15 @@ struct NewProject {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ProjectBrowseQuery {
+    #[serde(default, rename = "ref")]
+    reference: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderTurnAuthorize {
     session_record_id: String,
     worker_id: String,
@@ -631,6 +640,9 @@ fn office_api_router(app: Arc<App>) -> Router {
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
         )
+        .route("/projects/{id}/files", get(project_files))
+        .route("/projects/{id}/file", get(project_file))
+        .route("/projects/{id}/refs", get(project_refs))
         .route("/actions", get(actions).post(create_action))
         .route("/office/overview", get(office_overview))
         .route("/office/decisions", get(office_decisions))
@@ -742,6 +754,9 @@ fn api_router(app: Arc<App>) -> Router {
             "/projects/{id}/config",
             get(project_config).put(update_project_config),
         )
+        .route("/projects/{id}/files", get(project_files))
+        .route("/projects/{id}/file", get(project_file))
+        .route("/projects/{id}/refs", get(project_refs))
         .route("/actions", get(actions).post(create_action))
         .route("/actions/{id}/classify", post(classify_action))
         .route("/office/overview", get(office_overview))
@@ -2209,6 +2224,131 @@ async fn update_project_config(
         Ok(config) => (StatusCode::OK, Json(config)).into_response(),
         Err(error) => api_error(error),
     }
+}
+
+async fn project_files(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ProjectBrowseQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let ProjectBrowseQuery { reference, path } = query;
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    let path = path.unwrap_or_default();
+    project_browse_projection(move || {
+        factory_native::project_files::list_project_files(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+            reference.as_deref(),
+            &path,
+        )
+    })
+    .await
+}
+
+async fn project_file(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<ProjectBrowseQuery>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let ProjectBrowseQuery { reference, path } = query;
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    let path = path.unwrap_or_default();
+    project_browse_projection(move || {
+        factory_native::project_files::read_project_file(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+            reference.as_deref(),
+            &path,
+        )
+    })
+    .await
+}
+
+async fn project_refs(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, &app.operator_token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let project = match app.db.project(&id).await {
+        Ok(project) => project,
+        Err(error) => return api_error(error),
+    };
+    let project_id = project.id;
+    let repository = PathBuf::from(project.repository);
+    let identity = project.identity;
+    let base_commit = project.base_commit;
+    project_browse_projection(move || {
+        factory_native::project_files::list_project_refs(
+            &project_id,
+            &repository,
+            &identity,
+            &base_commit,
+        )
+    })
+    .await
+}
+
+async fn project_browse_projection<T>(
+    task: impl FnOnce() -> Result<T, factory_native::project_files::ProjectFilesError> + Send + 'static,
+) -> Response
+where
+    T: serde::Serialize + Send + 'static,
+{
+    match tokio::task::spawn_blocking(task).await {
+        Ok(Ok(projection)) => (StatusCode::OK, Json(projection)).into_response(),
+        Ok(Err(error)) => project_files_error(error),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("repository projection task failed: {error}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn project_files_error(error: factory_native::project_files::ProjectFilesError) -> Response {
+    use factory_native::project_files::ProjectFilesError;
+    let status = match &error {
+        ProjectFilesError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ProjectFilesError::NotFound => StatusCode::NOT_FOUND,
+        ProjectFilesError::Stale => StatusCode::CONFLICT,
+        ProjectFilesError::Git { .. } | ProjectFilesError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let message = match &error {
+        ProjectFilesError::Git { .. } | ProjectFilesError::Io(_) => {
+            "repository projection is unavailable".to_owned()
+        }
+        _ => error.to_string(),
+    };
+    (status, Json(json!({"error": message}))).into_response()
 }
 
 async fn create_action(
@@ -6111,6 +6251,183 @@ mod tests {
         );
         drop(app);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn project_files_api_browses_registered_repository_with_bounds() {
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "factory-core-project-files-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repository = root.join("repo");
+        std::fs::create_dir_all(repository.join("src")).unwrap();
+        std::fs::write(repository.join("README.md"), "# Project\n").unwrap();
+        std::fs::write(repository.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repository.join("asset.bin"), b"binary\0payload").unwrap();
+        let git = |arguments: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "fixture@example.invalid"]);
+        git(&["add", "--all"]);
+        git(&["commit", "-qm", "fixture"]);
+        let base_commit = git(&["rev-parse", "HEAD"]);
+
+        let path = root.join("factory.sqlite");
+        let db = Database::open(&path).await.unwrap();
+        let project = db
+            .register_project(&repository, "project-key")
+            .await
+            .unwrap();
+        let app = Arc::new(App {
+            db,
+            operator_token: "operator-token".into(),
+            worker_bootstrap_token: "bootstrap-bootstrap-bootstrap-1234".into(),
+            verifier_token: "verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            reviewer_token: "reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            lead_fixture_assessor: false,
+            lead_autonomous_start: false,
+            model_gateway: None,
+            master_key: None,
+            enrollment_code_file: None,
+            projects_root: None,
+            allow_insecure_git: false,
+            setup: Mutex::new(SetupState {
+                failures: 0,
+                blocked_until_ms: 0,
+            }),
+            attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
+            observability: factory_native::observability::ExporterHandle::disabled(),
+        });
+        let router = build_router(app);
+
+        let request = |uri: String| {
+            axum::http::Request::builder()
+                .uri(uri)
+                .header("authorization", "Bearer operator-token")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let response = router
+            .clone()
+            .oneshot(request(format!("/projects/{}/files", project.id)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let tree: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(tree["revision"]["commit"], base_commit);
+        assert_eq!(tree["path"], "");
+        assert!(
+            tree["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "src" && entry["kind"] == "DIRECTORY")
+        );
+        assert!(
+            tree["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "README.md" && entry["kind"] == "FILE")
+        );
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=src/main.rs&ref={base_commit}",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let file: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(file["content"], "fn main() {}\n");
+        assert_eq!(file["lineCount"], 1);
+        assert_eq!(file["omitted"], Value::Null);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=asset.bin",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let binary: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(binary["omitted"], "BINARY");
+        assert_eq!(binary["content"], Value::Null);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=../etc/passwd",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(request(format!(
+                "/projects/{}/file?path=src/main.rs&ref=main",
+                project.id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/projects/{}/refs", project.id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router
+            .oneshot(request(format!("/projects/{}/refs", project.id)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let refs: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(refs["baseCommit"], base_commit);
+        assert_eq!(refs["head"], "main");
+        assert_eq!(refs["refs"][0]["commit"], base_commit);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
