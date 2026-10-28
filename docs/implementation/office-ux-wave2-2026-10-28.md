@@ -120,8 +120,15 @@ The first supported CI run failed because `compose.yaml` hard-codes
 `name: software-factory`, overriding the E2E project guard and defeating the
 dedicated-project check. `scripts/compose-e2e.sh` now passes an explicit
 `-p "$PROJECT"` on every invocation and prints container diagnostics on failure.
-Branch `campaign/office-ux-compose-fix-20261028` at `770a200`; a fresh CI run is
-pending. This was a real isolation defect, not merely a test failure.
+Branch `campaign/office-ux-compose-fix-20261028` at `770a200`; the fresh
+supported CI run **passed**: run
+https://github.com/JamesMorales04/software-factory/actions/runs/40738776286
+(`compose` success). It exercises the real rootless Compose Core/Worker/
+Supervisor/runtime/verifier/reviewer stack, candidate, receipts, gate and
+restart persistence on the legacy Action/Campaign path. The new Compose intake
+extension is in progress on `campaign/office-ux-compose-intake-20261028`. Local
+Compose remains blocked by the host buildah/btrfs limitation; CI is the
+supported environment.
 
 ### Live-provider local diagnostic
 `factory-provider-probe opencode /tmp/opencode/provider-probe-workspace` against
