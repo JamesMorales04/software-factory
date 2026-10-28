@@ -1,6 +1,6 @@
 # Agent Office and WorkGraph — Slice 4 evidence
 
-**Candidate:** `c770746b1fcfccbc3d3a711f95f48e87895ced42`
+**Candidate:** `4271d4851db3a39431b88b2c3c1f011587192ebf`
 **Evidence run head:** `19c871827b7ebc2102ae4405ea7ca8367cde18f0`
 **Base:** `0a03c7cd2bd6e6af52395c760c1b81ebe187a548`
 **Status:** Implemented; independent review and Product Owner approval pending.
@@ -50,11 +50,13 @@
 
 ## Post-evidence code fix
 
-Commit `c770746` scopes quality-receipt role filtering in SQL so
-`VERIFIER`/`REVIEWER` pagination cannot miss rows beyond the fetch window,
-advances tool-event cursors across malformed rows, and counts non-positive
-legacy tool sequences as discarded. Participant unit tests and Clippy pass;
-full exact-head CI is rerun on the final PR head.
+Commit `4271d48` aligns the projection with the contract after independent
+review: Lead liveness is `NOT_EXPOSED`, deep-linked participants respect active
+filters, and duplicate authoritative WorkGraph rows remain in the table while
+the visual node set is canonical. It also scopes quality-receipt role filtering
+in SQL, advances tool-event cursors across malformed rows, and counts
+non-positive legacy tool sequences as discarded. Rust/Office tests and Clippy
+pass; full exact-head CI is rerun on the final PR head.
 
 ## Limitations
 
