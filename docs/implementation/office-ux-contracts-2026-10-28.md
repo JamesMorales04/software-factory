@@ -238,15 +238,26 @@ Intake does **not** own a second lifecycle. It derives:
 
 - Resolve the project default, then global default, when the profile is omitted.
 - Validate the active project config and the exact profile revision.
-- Select the latest active non-revoked delegation for the project that matches
-  the profile route and R0 scope; if none exists, create a bounded **proposed**
-  delegation derived from the profile (never `autonomousStart: true` unless the
-  profile and Core policy explicitly allow it). Recording a proposed delegation
-  does not authorize execution.
-- Create the derived Action, delegation (if needed), and Lead request in one
-  transaction with idempotent replay. The Action spec may start with empty
-  checks/allowed paths; the Lead proposal supplies the concrete plan.
+- Require an existing active, non-revoked grant for the project that matches the
+  exact profile revision's implementer route, capabilities, paths, risk scope,
+  expiry and remaining cumulative capacity. **Intake never auto-issues a
+  delegation.** If none matches, return `409` with
+  `authorization.reason = "EXECUTION_POLICY_REQUIRED"`.
+- Create the derived Action draft and Lead request in one transaction with
+  idempotent replay. The executable ActionSpec is inserted at freeze (ADR-0029);
+  the draft carries the assessment input and the Lead proposal supplies the
+  concrete plan.
 - Return `201` with the projection, `200` on idempotent replay.
+
+**Execution-policy setup.** A separate explicit operator operation
+`POST /projects/{id}/execution-policy` (body: profile id, exact revision/hash,
+expected project config hash, acknowledgement, idempotency key) may create the
+bounded **non-autonomous** delegation from the profile. It is a deliberate
+authorization grant, not intake side-effect. It records the exact profile
+revision, scope/capabilities/paths, route, budgets and expiry; it never enables
+autonomous start. Re-enabling after a profile revision change creates a new
+grant only after the operator's explicit acknowledgement. Existing grants are
+never widened or replenished by a profile edit.
 
 `POST /intake/requests/{id}/assess` runs the existing bounded assessment path
 using the frozen profile's `lead` route. It returns the refreshed projection.
@@ -258,14 +269,21 @@ No model route → `503` with a typed reason; do not fall back silently.
 { "expected_plan_hash": "sha256-hex", "actor": "office-operator", "rationale": "..." }
 ```
 
-- Requires a frozen plan and exact hash match.
+- Requires a frozen plan, the exact profile revision and an exact plan hash
+  match. The authenticated principal is the approver; a client-supplied display
+  label is not identity.
+- Calls the shared Lead start boundary with `StartAuthority::Operator`
+  (ADR-0029). It permits the bounded non-autonomous execution-policy grant but
+  retains every scope/risk/expiry/route/budget/execution-mode check and stores
+  immutable start evidence.
 - Derives the Campaign authorization from the profile's `implementer` route,
   the frozen plan's budgets/risk and the project config's allowed paths.
 - If `mode` is `AUTONOMOUS` and the profile `autoStart` policy is enabled and
   Core policy permits it, this may be idempotently invoked by the submission
-  flow; otherwise the UI must present an explicit approval.
+  flow; otherwise the UI must present an explicit approval. Autonomous authority
+  is never synthesized from a manual approval.
 - Never broadens the frozen plan, budget or path scope; returns `409` if the
-  plan is stale or the authorization cannot be derived.
+  plan is stale, withdrawn or the authorization cannot be derived.
 
 `POST /intake/requests/{id}/message` body
 `{ "body": "...", "idempotency_key": "uuid" }` appends a durable operator
@@ -273,8 +291,11 @@ message. Messages never mutate a frozen plan. A material amendment after freeze
 must create a new request/revision; return `409` with a typed reason.
 
 `POST /intake/requests/{id}/cancel` body `{ "reason": "..." }` records an
-intake-only cancellation. It does not cancel an authorized Campaign; the
-existing Campaign cancellation operation remains authoritative.
+immutable `lead_withdrawals` fact through the shared boundary (ADR-0029).
+Withdrawal and start serialize: after withdrawal, assessment dispatch, freeze,
+start and alternate Campaign creation reject the request. If a Campaign already
+started, return `409` with its identity; the existing Campaign cancellation
+operation remains authoritative. An intake-only terminal flag is forbidden.
 
 `GET /intake/requests?state=&project_id=&limit=&offset=` and
 `GET /intake/requests/{id}` are bounded and authenticated.

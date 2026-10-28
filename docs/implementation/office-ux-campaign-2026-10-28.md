@@ -58,9 +58,11 @@ implements Core. Integration is gated on the contract, not on a verbal summary.
 | Baseline/integration | `campaign/office-ux-baseline-20261028` | `sf-office-ux/baseline` | Director | #39 | Active |
 | C profiles | `campaign/office-ux-profiles-20261028` | `sf-office-ux/profiles` | OpenCode | #40 | Assigned |
 | A IA/Home | `campaign/office-ux-ia-20261028` | `sf-office-ux/ia` | OpenCode | #41 | Assigned |
-| B intake | `campaign/office-ux-intake-20261028` | `sf-office-ux/intake` | OpenCode | #42 | Blocked: review blockers + design |
+| B intake | `campaign/office-ux-intake-20261028` | `sf-office-ux/intake` | OpenCode | #42 | Blocked on core-intake |
 | J i18n | `campaign/office-ux-i18n-20261028` | `sf-office-ux/i18n` | OpenCode | #43 | Assigned |
 | K files | `campaign/office-ux-files-20261028` | `sf-office-ux/files` | OpenCode | #44 | Assigned |
+| Core intake foundation | `campaign/office-ux-core-intake-20261028` | `sf-office-ux/core-intake` | OpenCode | #42 | Assigned |
+| L issues | `campaign/office-ux-issues-20261028` | `sf-office-ux/issues` | OpenCode | #50 | Assigned |
 | QA | continuous | `sf-office-ux/qa` | OpenCode/Codex | #39 | Prepared |
 
 ## 5. Shared-file ownership
@@ -152,3 +154,8 @@ running.
   profile-binding, budget intersection, cancellation fencing and atomic replay.
   The review is evidence of review, not implementation approval. Findings are
   recorded in `office-ux-contracts-2026-10-28.md` §3.5.
+- 2026-10-28: Design recorded as **ADR-0029 (Proposed)**. Core foundation lane
+  `campaign/office-ux-core-intake-20261028` implements draft-to-executable spec,
+  request-scoped operator start, start evidence and withdrawal fencing. Intake
+  remains blocked until that foundation is reviewed and merged into the campaign
+  baseline.
