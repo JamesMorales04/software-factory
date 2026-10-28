@@ -179,12 +179,29 @@ FACTORY_E2E_KEEP=1 PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose \
 ```
 
 `FACTORY_E2E_KEEP=1` leaves the dedicated `software-factory-e2e` stack running.
-The legacy `scripts/compose-agent-office-smoke.mjs` is **NOT_COMPATIBLE** with
-managed device sessions: it requires `FACTORY_API_TOKEN` and reads the
-permanent `/config/operator.token`. Do not use that script or retrieve the
-permanent token to unlock Office. Its browser journey is pending migration to
-the local confirmation-code and cookie-session flow; browser acceptance for
-device sessions is therefore **NOT_TESTED**.
+For this developer-only browser smoke, issue a short-lived local recovery code
+and pass it through the environment. The code is captured by the shell variable
+and is not printed by these commands:
+
+```sh
+CODE="$(podman exec software-factory-e2e_core_1 /usr/local/bin/factory-core issue-recovery-code)"
+FACTORY_OFFICE_URL=http://127.0.0.1:8894 \
+FACTORY_BOOTSTRAP_CODE="$CODE" \
+CHROMIUM_EXE=/absolute/path/to/chrome \
+FACTORY_BROWSER_NO_SANDBOX=1 \
+  node scripts/compose-agent-office-smoke.mjs
+unset CODE
+```
+
+The smoke enrolls its isolated browser context through the one-time confirmation
+flow, then inspects real Implementer/Verifier/Reviewer/Worker participants,
+reads the recorded tool-event projection, preserves participant context across
+reload, opens the Campaign WorkGraph (empty or populated), and checks document
+overflow at 1440/834/390 px. It writes evidence under
+`/tmp/factory-agent-office-smoke` unless `S4A_BROWSER_EVIDENCE_DIR` is set.
+This harness has not been run against the managed-session flow in this PR;
+real browser acceptance remains **NOT_TESTED**. The short-lived confirmation is
+for this local test harness and is not part of normal onboarding.
 Tear down the kept stack with:
 
 ```sh
