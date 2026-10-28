@@ -129,6 +129,55 @@ pub fn approved_local_path(root: Option<&Path>, requested: &str) -> Result<PathB
     Ok(canonical)
 }
 
+/// Validate a local repository path after Git resolves its actual top level.
+/// `approved_local_path` checks the requested directory; Git can still resolve
+/// a parent worktree outside the approved root if that directory is nested in
+/// one. Registration must revalidate the resolved repository root.
+pub fn approved_local_repository(
+    root: Option<&Path>,
+    requested: &str,
+) -> Result<PathBuf, ImportError> {
+    let canonical = approved_local_path(root, requested)?;
+    let root = root.ok_or_else(|| {
+        ImportError::Invalid(
+            "local import requires an operator-approved FACTORY_PROJECTS_ROOT".into(),
+        )
+    })?;
+    let canonical_root = root.canonicalize().map_err(|error| {
+        ImportError::Invalid(format!("managed projects root is unavailable: {error}"))
+    })?;
+    let path = canonical
+        .to_str()
+        .ok_or_else(|| ImportError::Invalid("local repository path encoding".into()))?;
+    let output = std::process::Command::new("git")
+        .args(["-C", path, "rev-parse", "--show-toplevel"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .map_err(|error| {
+            ImportError::Invalid(format!("Git top-level resolution failed: {error}"))
+        })?;
+    if !output.status.success() {
+        return Err(ImportError::Invalid(
+            "path is not inside a Git worktree".into(),
+        ));
+    }
+    let top = String::from_utf8(output.stdout)
+        .map_err(|_| ImportError::Invalid("Git top-level output encoding".into()))?;
+    let top = top
+        .strip_suffix('\n')
+        .ok_or_else(|| ImportError::Invalid("Git top-level output terminator".into()))?;
+    let top = PathBuf::from(top).canonicalize().map_err(|error| {
+        ImportError::Invalid(format!("Git top-level path is unavailable: {error}"))
+    })?;
+    if !top.starts_with(&canonical_root) {
+        return Err(ImportError::Invalid(
+            "the Git worktree root is outside the managed projects root".into(),
+        ));
+    }
+    Ok(canonical)
+}
+
 pub async fn import(
     url: &str,
     root: &Path,
@@ -1355,6 +1404,24 @@ mod tests {
                 .iter()
                 .any(|(key, value)| { key == "GIT_CONFIG_VALUE_0" && value == "false" })
         );
+    }
+
+    #[test]
+    fn rejects_a_managed_root_nested_in_a_parent_git_worktree() {
+        let parent = fixture_root("nested-worktree");
+        git(&parent, &["init", "-q"]);
+        let approved = parent.join("managed");
+        std::fs::create_dir_all(&approved).unwrap();
+        let requested = approved.join("checkout");
+        std::fs::create_dir_all(&requested).unwrap();
+        let error = approved_local_repository(Some(&approved), requested.to_str().unwrap())
+            .expect_err("a parent worktree outside the approved root must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("the Git worktree root is outside the managed projects root")
+        );
+        let _ = std::fs::remove_dir_all(parent);
     }
 
     #[test]

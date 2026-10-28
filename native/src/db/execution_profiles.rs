@@ -218,6 +218,43 @@ impl Database {
         load_execution_profile(&mut connection, id, &cache).await
     }
 
+    /// Resolve one exact immutable revision, independent of the profile head.
+    /// Intake requests bind the revision that existed at submission; a later
+    /// name-only edit must not invalidate that frozen evidence.
+    pub async fn execution_profile_revision(
+        &self,
+        profile_id: &str,
+        revision_id: &str,
+    ) -> Result<ExecutionProfileRecord, Error> {
+        let cache = self.provider_model_cache();
+        let mut connection = self.pool.acquire().await?;
+        let row = sqlx::query::query(
+            "SELECT p.id,r.revision AS current_revision,r.content_hash AS profile_hash,
+                    p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash
+             FROM execution_profiles p
+             JOIN execution_profile_revisions r ON r.profile_id=p.id
+             WHERE p.id=?1 AND r.revision_id=?2",
+        )
+        .bind(profile_id)
+        .bind(revision_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or(Error::NotFound)?;
+        let profile = profile_from_row(&row)?;
+        let availability = load_provider_availability(&mut connection, &cache).await?;
+        let defaults = load_defaults(&mut connection).await?;
+        let mut project_defaults = defaults
+            .iter()
+            .filter(|(scope, id, _)| scope == "project" && id == &profile.id)
+            .map(|(_, _, project_id)| project_id.clone())
+            .collect::<Vec<_>>();
+        project_defaults.sort();
+        let global_default = defaults
+            .iter()
+            .any(|(scope, id, _)| scope == "global" && id == &profile.id);
+        build_record(profile, &availability, global_default, project_defaults)
+    }
+
     pub async fn execution_profiles(&self) -> Result<Vec<ExecutionProfileRecord>, Error> {
         let mut connection = self.pool.acquire().await?;
         let rows = sqlx::query::query(

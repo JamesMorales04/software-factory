@@ -92,9 +92,16 @@ tested-route registry; it is no longer the complete set of routable models.
 - Profile content never grants authority; a default binding still requires an
   executable revision.
 - Each role call reserves its own model-call envelope using the intersection of
-  route, provider and Core caps.
-- Campaign authorization continues to carry the implementer route and its caps;
-  reviewer and Lead calls cannot reuse the implementer route.
+  route, provider and Core caps. This is a **per-call** intersection, not one
+  durable request/Campaign ledger shared by assessment, review and
+  implementation. Aggregate cross-role spending is therefore not yet bounded by
+  a single profile Campaign ceiling; this is a blocking limitation for the
+  "complete budget intersection" claim.
+- Campaign authorization continues to carry the implementer route and its caps.
+  A frozen Lead route may differ from the implementer route; Lead model-call
+  authorization now validates against the immutable frozen Lead route rather
+  than the Action/delegation implementer route. The deterministic full journey
+  proves distinct Lead/Implementer routes end to end.
 - The semantic-review receipt path validates the model-call route against the
   frozen reviewer route (a legacy Campaign without a frozen profile falls back
   to its recorded authorization route).

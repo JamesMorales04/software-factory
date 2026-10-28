@@ -2657,8 +2657,13 @@ async fn worker_provider_profile(
         }
         Err(error) => return api_error(error),
     };
+    let substantiated = factory_native::execution_profile::substantiated_models(
+        &settings.provider,
+        &settings.model,
+        &app.db.provider_model_cache(),
+    );
     if !settings.enabled
-        || settings.model != query.model
+        || !substantiated.iter().any(|model| model == &query.model)
         || settings.credential_ciphertext.is_empty()
     {
         return (
@@ -2752,8 +2757,9 @@ async fn resolve_project_input(app: &App, requested: &str) -> Result<ResolvedPro
             source_key: format!("git:{requested}"),
         });
     }
-    let canonical = factory_native::project_import::approved_local_path(Some(root), requested)
-        .map_err(|error| error.to_string())?;
+    let canonical =
+        factory_native::project_import::approved_local_repository(Some(root), requested)
+            .map_err(|error| error.to_string())?;
     Ok(ResolvedProjectInput {
         repository: canonical.clone(),
         source_kind: "local",
@@ -4077,7 +4083,14 @@ async fn candidate_pull_request(
         Ok(gate) => gate,
         Err(response) => return response,
     };
-    let blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    let mut blockers = pull_request_blockers(&pull_request, &checks, &context.candidate.commit_sha);
+    let gate_accepted = gate
+        .as_ref()
+        .and_then(|value| value["outcome"].as_str())
+        .is_some_and(|outcome| outcome == "ACCEPTED");
+    if !gate_accepted {
+        blockers.push("candidate Quality Gate is not ACCEPTED".into());
+    }
     Json(json!({
         "campaign_id": context.campaign.id,
         "candidate_id": context.candidate.id,
@@ -4085,6 +4098,7 @@ async fn candidate_pull_request(
         "candidate_tree_sha": context.candidate.tree_sha,
         "project_id": context.project.id,
         "gate": gate,
+        "gate_accepted": gate_accepted,
         "binding": context.binding,
         "pull_request": pull_request,
         "checks": checks,
@@ -8399,24 +8413,23 @@ async fn validate_intake_assess_authority(
     record: &factory_native::db::IntakeRequestRecord,
     lead: &factory_native::db::LeadRequestRecord,
 ) -> Result<factory_native::db::ExecutionProfileRecord, Error> {
-    let profile =
-        app.db
-            .execution_profile(&record.profile_id)
-            .await
-            .map_err(|error| match error {
-                Error::NotFound => Error::IntakeConflict {
-                    code: "EXECUTION_PROFILE_STALE",
-                    message: "the frozen execution profile no longer exists".into(),
-                },
-                other => other,
-            })?;
-    if profile.revision_id != record.profile_revision_id
-        || profile.content_hash != record.profile_hash
-    {
+    // Resolve the exact revision frozen at submission. A newer profile head
+    // (even a name-only edit) must not invalidate already-submitted evidence.
+    let profile = app
+        .db
+        .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => Error::IntakeConflict {
+                code: "EXECUTION_PROFILE_STALE",
+                message: "the frozen execution profile revision no longer exists".into(),
+            },
+            other => other,
+        })?;
+    if profile.revision != record.profile_revision || profile.content_hash != record.profile_hash {
         return Err(Error::IntakeConflict {
             code: "EXECUTION_PROFILE_STALE",
-            message: "the execution profile has a newer revision; submit a new request to use it"
-                .into(),
+            message: "the frozen execution profile revision no longer matches the request".into(),
         });
     }
     if !profile.executable {
@@ -13960,7 +13973,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn intake_assessment_rejects_a_stale_profile_revision() {
+        async fn intake_assessment_uses_the_frozen_profile_revision_after_a_newer_head() {
             let fixture = setup().await;
             let (status, _) = enable_policy(&fixture).await;
             assert_eq!(status, StatusCode::CREATED);
@@ -13981,27 +13994,28 @@ mod tests {
                 .await
                 .unwrap();
             assert_ne!(updated.revision_id, fixture.profile.revision_id);
-            let (status, stale) = send(
+            let (status, assessed) = send(
                 &fixture.router,
                 "POST",
                 &format!("/intake/requests/{intake_id}/assess"),
                 None,
             )
             .await;
-            assert_eq!(status, StatusCode::CONFLICT, "{stale}");
-            assert_eq!(stale["code"], "EXECUTION_PROFILE_STALE");
+            // This fixture has no stored provider credential, so the call fails
+            // after authority is accepted. It must not fail as a stale profile.
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{assessed}");
+            assert_eq!(assessed["routeCode"], "MODEL_CREDENTIAL_UNAVAILABLE");
             let record = fixture.app.db.intake_request(&intake_id).await.unwrap();
             assert_eq!(record.profile_revision_id, fixture.profile.revision_id);
-            let lead = fixture
+            assert_eq!(record.profile_hash, fixture.profile.content_hash);
+            let frozen = fixture
                 .app
                 .db
-                .lead_request(&record.lead_request_id)
+                .execution_profile_revision(&record.profile_id, &record.profile_revision_id)
                 .await
                 .unwrap();
-            assert_eq!(
-                lead.state,
-                factory_native::lead::LeadRequestState::Submitted
-            );
+            assert_eq!(frozen.content_hash, fixture.profile.content_hash);
+            assert_eq!(frozen.revision, fixture.profile.revision);
 
             fixture.app.db.close().await;
             let _ = std::fs::remove_file(fixture.path);

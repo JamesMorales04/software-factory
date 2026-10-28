@@ -121,6 +121,19 @@ The legacy Office journey also passed at this SHA (candidate
 `5d9508a81dd0f5102a0f47c8baf36f4ff6f091e5`, Gate `ACCEPTED`). This remains
 deterministic, author-run evidence; independent acceptance is a separate step.
 
+## Distinct Lead/Implementer route proof
+
+After the independent review found that a frozen Lead route could differ from
+the implementer route yet fail model-call authorization, the deterministic full
+journey was changed to use a Lead-only model ID. It passed at implementation
+`4f623cd` + routing fix:
+
+```json
+{"ok":true,"request":"fa8b821b-f1ca-498d-8629-11b41b16cf12","campaign":"63edcc61-33d8-4fb2-9724-66f6991b53d5","profileRevision":"e1f90a2a-a8b4-4bc4-95ae-8b470518130d","planHash":"66426f1db0d685671ce5e1c1964860621709df850b3e50ac70d353c0ccf4d137","mode":"DETERMINISTIC_FIXTURE","candidateId":"c4046177-42ee-4682-a2a4-f13bde30624d","candidateCommit":"3725e0d3820b376d271d0f05924192f36c03e18b","gate":"ACCEPTED","persistence":"CORE_RESTART_AND_BROWSER_RELOAD"}
+```
+
+The non-full journey also passed. This is still deterministic fixture evidence.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real

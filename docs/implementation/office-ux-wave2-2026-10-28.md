@@ -308,6 +308,11 @@ campaign.
   API projections.
 - Independent verifier/reviewer acceptance and Product Owner authorization are
   **PENDING**. Author-run journeys and CI are not independent acceptance.
+- Aggregate cross-role model spending is **NOT IMPLEMENTED**. Each role call is
+  bounded by its route/provider/Core caps and each Campaign carries an
+  implementation cap, but there is no single durable request/Campaign ledger
+  shared by Lead assessment, semantic review and implementation. Do not claim
+  complete budget intersection.
 - Automatic issue start remains **blocked** (protected ADR-0029 amendment, owner
   approval, Core-owned envelope validation, enforced confinement, durable
   accounting, revocation fencing and independent review).

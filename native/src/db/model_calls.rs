@@ -708,26 +708,55 @@ impl Database {
                         "Lead model call requires an assessing request".into(),
                     ));
                 }
-                let action: Option<(String, String)> =
-                    sqlx::query_as::query_as("SELECT provider,model FROM actions WHERE id=?1")
-                        .bind(&action_id)
-                        .fetch_optional(&mut *transaction)
-                        .await?;
-                let Some((provider, model)) = action else {
-                    return Err(Error::NotFound);
-                };
-                if provider != input.provider || model != input.model {
-                    return Err(Error::Forbidden(
-                        "Lead model call route differs from the Action".into(),
-                    ));
+                // An intake request freezes an execution-profile revision whose
+                // Lead route may differ from the Implementer route used by the
+                // Action and the delegation. The old Action/delegation route
+                // equality check made such profiles executable but unusable.
+                let frozen_lead_route =
+                    match super::intake::load_execution_context(transaction, &input.objective_id)
+                        .await?
+                    {
+                        Some(context) => Some(
+                            // The context is immutable; loading the exact
+                            // revision here also rechecks its stored hash.
+                            super::intake::load_frozen_profile_content(transaction, &context)
+                                .await?,
+                        ),
+                        None => None,
+                    };
+                if let Some(content) = &frozen_lead_route {
+                    let route = &content.roles.lead;
+                    if route.provider != input.provider || route.model != input.model {
+                        return Err(Error::Forbidden(
+                            "Lead model call differs from the frozen Lead route".into(),
+                        ));
+                    }
+                } else {
+                    let action: Option<(String, String)> =
+                        sqlx::query_as::query_as("SELECT provider,model FROM actions WHERE id=?1")
+                            .bind(&action_id)
+                            .fetch_optional(&mut *transaction)
+                            .await?;
+                    let Some((provider, model)) = action else {
+                        return Err(Error::NotFound);
+                    };
+                    if provider != input.provider || model != input.model {
+                        return Err(Error::Forbidden(
+                            "Lead model call route differs from the Action".into(),
+                        ));
+                    }
                 }
                 let grant =
                     super::delegations::load_delegation(transaction, &delegation_id).await?;
                 grant.validate(Utc::now())?;
-                if grant.principal_id != input.principal_id
-                    || grant.project_id != input.project_id
-                    || grant.route.provider != input.provider
-                    || grant.route.model != input.model
+                if grant.principal_id != input.principal_id || grant.project_id != input.project_id
+                {
+                    return Err(Error::Forbidden(
+                        "Lead model call differs from the active delegation".into(),
+                    ));
+                }
+                if frozen_lead_route.is_none()
+                    && (grant.route.provider != input.provider || grant.route.model != input.model)
                 {
                     return Err(Error::Forbidden(
                         "Lead model call differs from the active delegation".into(),

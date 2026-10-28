@@ -53,8 +53,8 @@ model or fixture failure.
 The fix extends the signed operation grant to the maximum bounded execution
 runtime plus a settlement margin. The fence still revalidates the grant and the
 durable attempt/lease authorization with Core every 500 ms, so revocation is
-not weakened. The fix must be re-verified by a supported Compose run; this
-document does not claim that re-verification yet.
+not weakened. This is implemented in `4f623cd`; a supported Compose
+re-verification is **PENDING** and this document does not claim it.
 
 ## What the passing runs exercised
 

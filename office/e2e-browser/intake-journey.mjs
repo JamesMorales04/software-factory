@@ -627,10 +627,14 @@ try {
       active: true,
     }),
   });
+  // The full deterministic journey proves a profile whose frozen Lead route
+  // differs from the Implementer route. The provider's configured model also
+  // substantiates the Lead-only ID; the fake gateway accepts any model name.
+  const leadModel = full && !live ? `${model}-lead` : model;
   await coreApi(`/settings/providers/${encodeURIComponent(provider)}`, {
     method: "PUT",
     body: JSON.stringify({
-      model,
+      model: leadModel,
       baseUrl: liveConfig?.providerBaseUrl ?? modelUrl,
       credential:
         liveConfig?.providerCredential ?? "fake-provider-credential-0123456789",
@@ -661,6 +665,7 @@ try {
     maxOutputTokens: 8192,
     maxCostMicros: 300000,
   };
+  const leadRole = { ...role, model: leadModel };
   const profile = await coreApi("/execution-profiles", {
     method: "POST",
     body: JSON.stringify({
@@ -668,7 +673,7 @@ try {
       description: "Deterministic intake journey profile",
       category: "BALANCED",
       roles: {
-        lead: role,
+        lead: leadRole,
         implementer: {
           ...role,
           maxInputTokens: 40000,
