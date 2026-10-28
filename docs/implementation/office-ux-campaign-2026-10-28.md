@@ -109,8 +109,8 @@ decision.
 |---|---|---|---|---|
 | 1 | First use: owner bootstrap, provider config, project registration | Compose + Chromium (candidate-bound) | — | NOT_TESTED |
 | 2 | Private GitHub import | Authorized connector + Chromium | — | NOT_TESTED |
-| 3 | Simple request without manual Actions/delegations | Core integration + Chromium | — | NOT_TESTED |
-| 4 | Assessment, plan, authorization, execution | Core integration + fake provider / authorized live route | — | NOT_TESTED |
+| 3 | Simple request without manual Actions/delegations | Core integration + Chromium, deterministic fake model | `040e6be` | PARTIAL — request/policy via Home UI PASS; provider/profile setup via API; not independent |
+| 4 | Assessment, plan, authorization, execution | Core integration + deterministic fake model | `040e6be` | PARTIAL — assessment/freeze/operator approval/Campaign start PASS; execution/verification NOT_TESTED |
 | 5 | Monitoring of tasks/agents/candidate/evidence | Browser against real Core | — | NOT_TESTED |
 | 6 | Decision Inbox intervention | Browser + Core operation | — | NOT_TESTED |
 | 7 | Review diff, PR, checks, authorized delivery | Browser + GitHub sandbox | — | NOT_TESTED |
@@ -188,3 +188,12 @@ running.
   switch (candidate `a7b689d…`, gate `ACCEPTED`). This is partial journey 11/12
   evidence only: the new intake is absent from that run, the shell/Home are not
   fully translated and QR pairing was not exercised.
+- 2026-10-28: Unified intake browser journey at integration implementation
+  `040e6be` passed with a deterministic local fake model gateway: Home policy
+  setup, durable request, assessment/freeze, exact plan-hash operator approval
+  with `FACTORY_ENABLE_AUTONOMOUS_START=0`, and Campaign authorization
+  (`EXECUTING`; profile revision and plan hash frozen). Request
+  `6731e4e8…`, Campaign `5b0d4ed4…`, candidate/evidence in
+  [office-ux-intake-2026-10-28.md](../evidence/office-ux-intake-2026-10-28.md).
+  This is not live model inference, execution completion or independent
+  acceptance; journeys 3 and 4 are recorded as PARTIAL.

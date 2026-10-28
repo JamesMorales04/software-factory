@@ -123,11 +123,11 @@ jobs:
           podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
             -e FACTORY_PLAYWRIGHT_CORE=/workspaces/software-factory/office/e2e-browser/node_modules/playwright-core \
             dev sh -c 'npm --prefix office/e2e-browser ci && cargo test --locked -p factory-native --test browser'
-      - name: Containerized Chromium Office journey
+      - name: Containerized Chromium Office and unified-intake journeys
         env:
           PODMAN_COMPOSE_PROVIDER: /usr/bin/podman-compose
           FACTORY_BROWSER_NO_SANDBOX: "1"
         run: |
           podman compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps \
             -e FACTORY_BROWSER_NO_SANDBOX=1 dev \
-            sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office'
+            sh -c 'npm --prefix office ci && npm --prefix office/e2e-browser ci && cargo xtask e2e office && cargo xtask e2e intake'

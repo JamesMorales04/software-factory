@@ -17,6 +17,10 @@ const SUITES: &[(&str, &str)] = &[
         "provider",
         "deterministic fake-provider Attempt through Core, Worker, Supervisor and gate",
     ),
+    (
+        "intake",
+        "unified request, policy, assessment, freeze and operator approval with a deterministic fake model",
+    ),
 ];
 
 pub(crate) fn list() -> Result<(), String> {
@@ -51,6 +55,15 @@ pub(crate) fn dispatch() -> Result<(), String> {
 pub(crate) fn office() -> Result<(), String> {
     let mut command = std::process::Command::new("node");
     command.args(["office/e2e-browser/rust-journey.mjs"]);
+    crate::process::run(command).map_err(|error| {
+        format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
+    })
+}
+
+pub(crate) fn intake() -> Result<(), String> {
+    cargo_run(&["build", "--bins", "--locked"])?;
+    let mut command = std::process::Command::new("node");
+    command.args(["office/e2e-browser/intake-journey.mjs"]);
     crate::process::run(command).map_err(|error| {
         format!("{error}\nInstall Office browser dependencies with `npm ci` in office/e2e-browser.")
     })
