@@ -1056,6 +1056,8 @@ export const es: Catalog = {
   "issues.list.selectProjectDescription":
     "Elige un Proyecto para inspeccionar su instantánea de incidencias de GitHub.",
   "issues.filters.state": "Estado",
+  "issues.filters.open": "Abiertas",
+  "issues.filters.closed": "Cerradas",
   "issues.filters.allStates": "Todos los estados",
   "issues.filters.label": "Etiqueta",
   "issues.filters.labelPlaceholder": "etiqueta exacta",

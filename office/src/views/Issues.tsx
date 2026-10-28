@@ -972,8 +972,8 @@ export function Issues() {
                   selectState(event.target.value as IssueStateFilter)
                 }
               >
-                <option value="open">Open</option>
-                <option value="closed">Closed</option>
+                <option value="open">{t("issues.filters.open")}</option>
+                <option value="closed">{t("issues.filters.closed")}</option>
                 <option value="all">{t("issues.filters.allStates")}</option>
               </Select>
               <Input

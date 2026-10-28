@@ -1023,6 +1023,8 @@ export const en = {
   "issues.list.selectProjectDescription":
     "Choose a Project to inspect its GitHub issue snapshot.",
   "issues.filters.state": "State",
+  "issues.filters.open": "Open",
+  "issues.filters.closed": "Closed",
   "issues.filters.allStates": "All states",
   "issues.filters.label": "Label",
   "issues.filters.labelPlaceholder": "exact label",
