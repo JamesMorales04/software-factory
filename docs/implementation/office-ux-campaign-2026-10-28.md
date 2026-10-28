@@ -109,8 +109,8 @@ decision.
 |---|---|---|---|---|
 | 1 | First use: owner bootstrap, provider config, project registration | Compose + Chromium (candidate-bound) | — | NOT_TESTED |
 | 2 | Private GitHub import | Authorized connector + Chromium | — | NOT_TESTED |
-| 3 | Simple request without manual Actions/delegations | Core integration + Chromium, deterministic fake model | `40272e3` | PARTIAL — request/policy via Home UI PASS; provider/profile setup via API; not independent |
-| 4 | Assessment, plan, authorization, execution | Core integration + deterministic fake model | `40272e3` | PARTIAL — assessment/freeze/operator approval/Campaign start PASS; execution/verification NOT_TESTED |
+| 3 | Simple request without manual Actions/delegations | Core integration + Chromium, deterministic fake model | `aad25f3` | PARTIAL — request/policy via Home UI PASS; provider/profile setup via API; not independent |
+| 4 | Assessment, plan, authorization, execution | Core integration + deterministic fake model | `aad25f3` | PARTIAL — assessment/freeze/operator approval/Campaign start PASS; execution/verification NOT_TESTED |
 | 5 | Monitoring of tasks/agents/candidate/evidence | Browser against real Core | — | NOT_TESTED |
 | 6 | Decision Inbox intervention | Browser + Core operation | — | NOT_TESTED |
 | 7 | Review diff, PR, checks, authorized delivery | Browser + GitHub sandbox | — | NOT_TESTED |

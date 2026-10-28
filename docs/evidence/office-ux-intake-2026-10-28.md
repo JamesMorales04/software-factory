@@ -57,6 +57,16 @@ The policy panel now displays Core-derived per-request and cumulative grant
 terms; Home submits `REVIEW_PLAN` only and states that every intake requires
 explicit operator approval.
 
+## Final disclosure fix
+
+At implementation `aad25f3` the residual "optional auto-start" profile help was
+removed and the Core-derived wall-clock limit is rendered. The intake journey
+passed again:
+
+```json
+{"ok":true,"request":"0685ec95-9765-498f-800d-10439fca3cb3","campaign":"adb45a4e-9162-4b09-9881-be9a55feafea","profileRevision":"ffd4bc46-d4e7-4ba7-b71a-f6e388e33a2e","planHash":"ee71e151154810ef85c5666ec1e5fe63241e43d6466894966d606bc3266e35ef","mode":"DETERMINISTIC_FAKE_MODEL"}
+```
+
 ## What was exercised
 
 - Real Rust Core with SQLite migrations through `0030`, real device-session
