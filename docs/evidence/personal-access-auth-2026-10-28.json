@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "record": "personal-access-auth-author-run",
-  "implementation_sha": "97e6e0d62566fc230809180f3205997098d2f1cb",
+  "implementation_sha": "f2d1be58172ce89b9544cad94a80c3c8aa4a39a1",
   "date": "2026-10-28",
   "environment": {
     "host_os": "CachyOS",
@@ -73,6 +73,11 @@
       "name": "existing containerized Chromium Office journey",
       "pass": true,
       "detail": "cargo xtask e2e office passed against real Core, Supervisor, Worker, Vite Office and Chromium after replacing the removed operator-token form with one-time owner enrollment; deterministic candidate 04488f7f03cd6bac8d90904de093fea2c23e2e8f reached ACCEPTED"
+    },
+    {
+      "name": "session writer contention",
+      "pass": true,
+      "detail": "last-activity writes are throttled to one per minute under the write gate; the full Chromium Office journey passed and retries the documented 503 busy response with bounded idempotent backoff"
     }
   ],
   "not_tested": [

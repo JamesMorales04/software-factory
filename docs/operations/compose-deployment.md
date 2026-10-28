@@ -200,7 +200,7 @@ reads the recorded tool-event projection, preserves participant context across
 reload, opens the Campaign WorkGraph (empty or populated), and checks document
 overflow at 1440/834/390 px. It writes evidence under
 `/tmp/factory-agent-office-smoke` unless `S4A_BROWSER_EVIDENCE_DIR` is set.
-The managed-session harness and the existing `cargo xtask e2e office` journey passed against implementation `97e6e0d` together with session
+The managed-session harness and the existing `cargo xtask e2e office` journey passed against implementation `f2d1be5` together with session
 persistence across Core restart, logout revocation, local recovery and a safe
 migration copy from schema 23 to 24; see
 [personal-access-auth-2026-10-28.json](../evidence/personal-access-auth-2026-10-28.json).
