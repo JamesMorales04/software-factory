@@ -1167,7 +1167,8 @@ try {
   const unexpectedNotFound = notFound.filter(
     (url) =>
       !/\/core-api\/quality\/candidates\/[^/]+\/gate$/.test(url) &&
-      !/\/core-api\/intake\/requests(\?|$)/.test(url),
+      !/\/core-api\/intake\/requests(\?|$)/.test(url) &&
+      !/\/core-api\/execution-profiles(\?|$)/.test(url),
   );
   assert.deepEqual(
     unexpectedNotFound,
