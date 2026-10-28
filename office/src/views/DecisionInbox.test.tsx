@@ -201,6 +201,7 @@ describe("Decision Inbox", () => {
       screen.getByRole("button", { name: /Approve frozen plan/ }),
     );
     const rationale = screen.getByLabelText("Decision rationale");
+    await waitFor(() => expect(document.activeElement).toBe(rationale));
     const confirm = screen.getByRole("checkbox", {
       name: /I reviewed the frozen plan/,
     });
@@ -223,11 +224,11 @@ describe("Decision Inbox", () => {
         rationale: "Reviewed the exact frozen plan and budget.",
       }),
     );
-    expect(
-      await screen.findByText(
-        "Core approved the exact frozen plan and started the Campaign.",
-      ),
-    ).toBeDefined();
+    const success = await screen.findByText(
+      "Core approved the exact frozen plan and started the Campaign.",
+    );
+    expect(success).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(success));
   });
 
   it("revalidates the Core revision before submitting and aborts a stale item", async () => {

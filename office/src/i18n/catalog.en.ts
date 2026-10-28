@@ -219,6 +219,7 @@ export const en = {
   "decisions.actionUnavailableDetail":
     "Core reports a blocking authority or evidence condition. Follow the linked workspace; the Inbox will not bypass it.",
   "decisions.evidence": "Evidence and identifiers",
+  "decisions.evidenceSummary": "Key evidence",
   "decisions.revision": "Revision",
   "decisions.staleTitle": "State changed",
   "decisions.staleBody":

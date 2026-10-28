@@ -231,6 +231,7 @@ export const es: Catalog = {
   "decisions.actionUnavailableDetail":
     "Core informa de una condición bloqueante de autoridad o evidencia. Sigue el espacio de trabajo enlazado; la Bandeja no la omitirá.",
   "decisions.evidence": "Evidencia e identificadores",
+  "decisions.evidenceSummary": "Evidencia clave",
   "decisions.revision": "Revisión",
   "decisions.staleTitle": "El estado cambió",
   "decisions.staleBody":

@@ -792,6 +792,22 @@ export function DecisionCard({
       )}
 
       {evidence.length > 0 && (
+        <dl
+          className="decision-inline-facts decision-evidence-summary"
+          aria-label={t("decisions.evidenceSummary")}
+        >
+          {evidence.slice(0, 3).map((entry) => (
+            <div key={entry.reference ?? `${entry.label}:${entry.value}`}>
+              <dt>{entry.label}</dt>
+              <dd title={entry.value}>
+                <code>{shortId(entry.value, 32)}</code>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {evidence.length > 0 && (
         <details className="decision-evidence">
           <summary>
             {t("decisions.evidence")} ({formatNumber(evidence.length)})
