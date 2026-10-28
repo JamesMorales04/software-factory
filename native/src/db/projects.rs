@@ -255,6 +255,14 @@ impl Database {
         Ok(action)
     }
 
+    pub async fn project_exists(&self, id: &str) -> Result<bool, Error> {
+        let row: Option<(i64,)> = sqlx::query_as::query_as("SELECT 1 FROM projects WHERE id=?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn projects(&self) -> Result<Vec<Project>, Error> {
         let rows: Vec<(String, String, String, String, String)> = sqlx::query_as::query_as(
             "SELECT id,repository,base_commit,created_at,identity FROM projects ORDER BY created_at",

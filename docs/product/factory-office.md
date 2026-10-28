@@ -86,8 +86,12 @@ recorded Lead, Implementer, Verifier, Reviewer and Worker participants into a
 visual office, table and timeline with a Core-backed inspector and bounded
 provider tool events. Campaign Detail now includes an interactive,
 dependency-aware WorkGraph with a keyboard-accessible node inspector while
-retaining the authoritative table. Issues, Docs and a stable `/office`
-deep-link base remain unimplemented.
+retaining the authoritative table. Issues has a read-only GitHub snapshot
+foundation: encrypted connection, Project repository binding, bounded sync and
+plain-text issue detail are implemented in the lane view; governed intake,
+board ordering, Action/Campaign relationships and issue writing remain
+unimplemented. The view is exported and awaiting App/navigation route wiring.
+Docs and a stable `/office` deep-link base remain unimplemented.
 
 Known gaps:
 
@@ -108,7 +112,9 @@ Known gaps:
   are reached by Campaign scope or exact identity rather than a global sweep.
 - Provider connection tests read model discovery only; no live coding inference
   is authorized by this slice.
-- No issue board or repository docs/wiki.
+- No issue board, issue-to-Action/Campaign relationship, issue writing or
+  repository docs/wiki. The GitHub issue slice is read-only and requires a
+  Project repository binding plus an explicit sync.
 - Hash-only routes, no stable `/office` deep-link base.
 - The design foundation is implemented; Storybook, visual regression, full
   automated accessibility and the remaining graph/board/diff components are not.

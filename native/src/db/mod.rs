@@ -204,6 +204,10 @@ pub const EVENT_KINDS: &[&str] = &[
     "delegation.released",
     "delegation.reserved",
     "delegation.revoked",
+    "github.connection_configured",
+    "github.connection_revoked",
+    "github.issues_synced",
+    "github.project_bound",
     "lead.assessment_recorded",
     "lead.plan_completed",
     "lead.plan_frozen",
@@ -740,6 +744,12 @@ pub use authorization::{CampaignAuthorizationRecord, NewCampaignAuthorization};
 mod delegations;
 mod device_sessions;
 pub use device_sessions::{DeviceSessionRecord, NewDeviceSession};
+mod github;
+pub use github::{
+    GitHubConnectionAudit, GitHubConnectionRecord, GitHubIssueDetail, GitHubIssueFilters,
+    GitHubIssueList, GitHubIssueSummary, GitHubSyncStateRecord, NewProjectGitHubBinding,
+    ProjectGitHubBinding,
+};
 mod lead;
 mod model_calls;
 pub use lead::LeadTaskRecord;

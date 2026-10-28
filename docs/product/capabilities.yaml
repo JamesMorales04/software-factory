@@ -796,11 +796,19 @@ capabilities:
     - office/src/views/AgentOffice.tsx
     - office/src/components/office/AgentOfficeFloor.tsx
     - office/src/components/office/ParticipantInspector.tsx
+    - office/src/views/Issues.tsx
+    - office/src/views/issues.css
     - native/src/db/participants.rs
+    - native/src/db/github.rs
+    - native/src/github.rs
+    - native/src/github_sync.rs
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
+    - office/src/views/Issues.test.tsx
     - native/src/db/participants.rs
+    - native/src/github.rs
+    - native/src/github_sync.rs
     - native/src/bin/core.rs
   acceptance:
     deterministic: The Office typechecks, lints, passes component tests and builds; participant and tool-event routes require operator authentication, validate filters, bound pagination and redact provider detail.
@@ -819,6 +827,7 @@ capabilities:
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
+  - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is exported and awaiting App/navigation route wiring.
   blockers: []
 - id: CAP-012
   name: Durable events and telemetry

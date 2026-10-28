@@ -23,7 +23,8 @@
         "/settings",
         "/pair",
         "/agents",
-        "/agents/:participantId"
+        "/agents/:participantId",
+        "/issues"
       ],
       "core_api": [
         "GET /health",
@@ -83,7 +84,15 @@
         "GET /campaigns/{id}/candidates/{candidate_id}/diff",
         "GET /model/calls/unresolved",
         "GET /office/participants",
-        "GET /provider/sessions/{session_record_id}/tool_events"
+        "GET /provider/sessions/{session_record_id}/tool_events",
+        "PUT /integrations/github",
+        "GET /integrations/github",
+        "DELETE /integrations/github",
+        "GET /integrations/github/repositories",
+        "POST /projects/{id}/github",
+        "POST /projects/{id}/issues/sync",
+        "GET /projects/{id}/issues",
+        "GET /projects/{id}/issues/{number}"
       ],
       "user_actions": [
         "register a Project",
@@ -100,7 +109,11 @@
         "inspect recorded participants in a visual floor, table and timeline with a shared inspector",
         "follow a participant to its Campaign, WorkUnit, Run, Attempt, candidate and Gate evidence",
         "inspect bounded, redacted provider tool events for an exact session generation",
-        "enroll and revoke browser sessions, create a device pairing challenge, and approve or reject a pending phone"
+        "enroll and revoke browser sessions, create a device pairing challenge, and approve or reject a pending phone",
+        "connect a GitHub credential, inspect its verified login/scopes and revoke it",
+        "bind one owner/repository and default branch per Project",
+        "run a bounded GitHub issue sync and inspect truthful sync, stale and rate-limit state",
+        "search, filter and page synchronized issues and read an issue body as untrusted plain text"
       ],
       "states": [
         "loading",
@@ -118,7 +131,12 @@
         "pairing-pending",
         "pairing-expired",
         "pairing-rejected",
-        "remote-access-unknown"
+        "remote-access-unknown",
+        "github-unconfigured",
+        "github-revoked",
+        "never-synced",
+        "rate-limited",
+        "truncated-snapshot"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
@@ -129,9 +147,10 @@
         "scripts/compose-agent-office-smoke.mjs",
         "office/src/views/AccessDevices.test.tsx",
         "office/src/views/DevicePairClaim.test.tsx",
-        "office/e2e-browser/personal-access.mjs"
+        "office/e2e-browser/personal-access.mjs",
+        "office/src/views/Issues.test.tsx"
       ],
-      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices and Agent Office are implemented. Agent Office projects recorded participants only. Issues and Docs remain later slices."
+      "notes": "The current UI polls Core; no SSE/live-stream claim. Browser authorization uses HttpOnly device-session cookies and a readable CSRF cookie, never browser storage bearer tokens. QR pairing includes only a non-authorizing challenge identifier; phone sessions remain pending until owner approval and verification-code confirmation. The service worker is network-only and does not cache Core API responses or authorize offline work. Core reports CONNECTED, DISCONNECTED, UNKNOWN or DISABLED from its private Office health projection; this does not prove mobile-network reachability. Overview, Decision Inbox, Action detail, the tabbed Campaign workspace, Runtime, Settings, Access & Devices, Agent Office and the read-only Issues snapshot foundation are implemented. Agent Office projects recorded participants only. Issues has an encrypted GitHub connection, one repository binding per Project, bounded pagination/ETag sync, stable issue identity and safe plain-text detail; governed intake, board ordering, Action/Campaign relationships, issue writing and a real authorized GitHub call remain later work. The Issues view is exported and component-tested; App/navigation route wiring is pending integration-owner merge. Docs remain a later slice."
     },
     "CAP-049": {
       "name": "Operational Overview and Decision Inbox",
@@ -433,8 +452,8 @@
   "deferred": [
     {
       "module": "Issues",
-      "planned_slice": "Slice 5",
-      "reason": "GitHub synchronization is not implemented; provide only a truthful initial slice and register remaining scope."
+      "planned_slice": "Slice 5 (read-only GitHub snapshot foundation delivered)",
+      "reason": "GitHub connection, Project repository binding, bounded synchronization and plain-text detail exist at /issues. Governed intake/board ordering, issue-to-Action/Campaign relationships, issue writing, comments and real authorized GitHub acceptance remain deferred."
     },
     {
       "module": "Docs",
