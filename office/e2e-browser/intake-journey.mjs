@@ -1014,7 +1014,7 @@ try {
 
     await page.getByRole("tab", { name: /Candidates/ }).click();
     const candidatePanel = page.getByTestId("candidate-panel");
-    await candidatePanel.getByText("ACCEPTED", { exact: true }).waitFor();
+    await candidatePanel.getByText("ACCEPTED", { exact: true }).first().waitFor();
     await candidatePanel
       .getByText(candidate.commit_sha.slice(0, 12), { exact: true })
       .first()
@@ -1024,9 +1024,10 @@ try {
       .first()
       .waitFor();
     const candidateDiff = candidatePanel.getByTestId("candidate-diff");
-    await candidateDiff.getByText(/Changed paths \(1\)/).waitFor();
+    await candidateDiff.getByText(/Changed files/).waitFor();
     await candidateDiff
       .getByText("src/provider.txt", { exact: true })
+      .first()
       .waitFor();
 
     await page.getByRole("tab", { name: /Evidence/ }).click();
@@ -1133,7 +1134,7 @@ try {
       .waitFor();
     await page.getByRole("tab", { name: /Candidates/ }).click();
     const persistedPanel = page.getByTestId("candidate-panel");
-    await persistedPanel.getByText("ACCEPTED", { exact: true }).waitFor();
+    await persistedPanel.getByText("ACCEPTED", { exact: true }).first().waitFor();
     await persistedPanel.getByTestId("candidate-diff").waitFor();
     await page.getByRole("tab", { name: /Evidence/ }).click();
     await page

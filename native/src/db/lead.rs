@@ -1275,6 +1275,28 @@ impl Database {
         Ok(record)
     }
 
+    /// Exact execution-spec identity for one Attempt. Lead WorkUnits have a
+    /// unit-specific spec while the Campaign has a separate root spec; readers
+    /// must compare against this exact row, not only the root ActionSpec.
+    pub async fn attempt_spec_identity(&self, attempt_id: &str) -> Result<(String, String), Error> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query_as::query_as(
+            "SELECT action_id,spec_sha256 FROM attempt_specs WHERE attempt_id=?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| Error::Forbidden("Attempt has no exact execution spec".into()))
+    }
+
+    /// Revalidate the frozen WorkGraph/spec lineage for a Lead Campaign
+    /// Attempt. Non-Lead/legacy Attempts without a Campaign execution binding
+    /// remain valid.
+    pub async fn validate_attempt_lineage(&self, attempt_id: &str) -> Result<(), Error> {
+        let mut connection = self.pool.acquire().await?;
+        validate_lead_attempt_lineage(&mut connection, attempt_id).await
+    }
+
     pub async fn lead_withdrawal(
         &self,
         request_id: &str,

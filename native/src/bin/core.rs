@@ -5667,19 +5667,37 @@ async fn candidate_diff(
     let Some(action) = action else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !candidate
+    // A Lead WorkUnit candidate is bound to its exact Attempt spec; the
+    // Campaign also has a root ActionSpec. Accept either the legacy root match
+    // or the exact attempt spec, but never an unrelated spec. For Lead
+    // Campaigns the frozen WorkGraph lineage is revalidated.
+    let root_spec_matches = candidate
         .action_spec_sha256
-        .eq_ignore_ascii_case(&action.spec_sha256)
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "candidate ActionSpec hash does not match the frozen Action",
-                "candidate_id": candidate.id,
-                "kind": "SPEC_MISMATCH",
-            })),
-        )
-            .into_response();
+        .eq_ignore_ascii_case(&action.spec_sha256);
+    if !root_spec_matches {
+        let (attempt_action_id, attempt_spec_sha) =
+            match app.db.attempt_spec_identity(&candidate.attempt_id).await {
+                Ok(value) => value,
+                Err(error) => return api_error(error),
+            };
+        if attempt_action_id != action.id
+            || !candidate
+                .action_spec_sha256
+                .eq_ignore_ascii_case(&attempt_spec_sha)
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "candidate ActionSpec hash does not match the exact execution spec",
+                    "candidate_id": candidate.id,
+                    "kind": "SPEC_MISMATCH",
+                })),
+            )
+                .into_response();
+        }
+        if let Err(error) = app.db.validate_attempt_lineage(&candidate.attempt_id).await {
+            return api_error(error);
+        }
     }
     let project = match app.db.project(&action.project_id).await {
         Ok(project) => project,
