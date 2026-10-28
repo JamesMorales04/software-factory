@@ -13,7 +13,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
 };
 use factory_native::lead::{LeadRequestState, StandingDelegation};
 use factory_native::quality::{EvidenceKind, GateOutcome, ReceiptResult};
@@ -463,9 +463,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = build_router(Arc::clone(&app));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "native Factory Core listening");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let office_access_bind = env::var("FACTORY_OFFICE_ACCESS_BIND").ok();
+    if let Some(bind) = office_access_bind {
+        let office_addr: SocketAddr = validate_bind(&bind, container_mode)?;
+        let office_listener = tokio::net::TcpListener::bind(office_addr).await?;
+        let office_router = build_office_access_router(
+            Arc::clone(&app),
+            env::var("FACTORY_OFFICE_DIR").ok().map(PathBuf::from),
+        );
+        tracing::info!(%office_addr, "native Factory Office access listener listening");
+        tokio::select! {
+            result = axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()) => result?,
+            result = axum::serve(office_listener, office_router).with_graceful_shutdown(shutdown_signal()) => result?,
+        }
+    } else {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
     app.observability.shutdown().await;
     app.db.close().await;
     Ok(())
@@ -548,7 +563,7 @@ async fn shutdown_signal() {
 }
 
 fn build_router(app: Arc<App>) -> Router {
-    let api = api_router(app);
+    let api = api_router(Arc::clone(&app));
     let nested = api.clone();
     let mut router = Router::new().merge(api).nest("/core-api", nested);
     if let Ok(directory) = env::var("FACTORY_OFFICE_DIR") {
@@ -561,7 +576,138 @@ fn build_router(app: Arc<App>) -> Router {
             );
         }
     }
-    router
+    router.layer(from_fn_with_state(app, browser_auth))
+}
+
+fn build_office_access_router(app: Arc<App>, office_directory: Option<PathBuf>) -> Router {
+    let api = office_api_router(Arc::clone(&app));
+    let nested = api.clone();
+    let mut router = Router::new().merge(api).nest("/core-api", nested);
+    if let Some(directory) = office_directory.filter(|directory| directory.is_dir()) {
+        let index = directory.join("index.html");
+        router = router.fallback_service(
+            tower_http::services::ServeDir::new(directory)
+                .not_found_service(tower_http::services::ServeFile::new(index)),
+        );
+    } else {
+        router = router.fallback(office_api_route_not_found);
+    }
+    router.layer(from_fn_with_state(app, browser_auth))
+}
+
+fn office_api_router(app: Arc<App>) -> Router {
+    let api = Router::new()
+        .route(
+            "/health",
+            get(|| async { Json(json!({"healthy":true,"version":"0.1.0"})) }),
+        )
+        .route("/auth/bootstrap", post(auth_bootstrap))
+        .route("/auth/session", get(auth_session))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/logout-all", post(auth_logout_all))
+        .route("/auth/rotate", post(auth_rotate))
+        .route("/setup/status", get(setup_status))
+        .route("/settings/providers", get(provider_settings_list))
+        .route(
+            "/settings/runtime",
+            get(runtime_settings).put(update_runtime_settings),
+        )
+        .route(
+            "/settings/providers/{provider}",
+            axum::routing::put(update_provider_settings),
+        )
+        .route(
+            "/settings/providers/{provider}/credential",
+            delete(revoke_provider_credential),
+        )
+        .route(
+            "/settings/providers/{provider}/test",
+            post(test_provider_connection),
+        )
+        .route("/settings/providers/{provider}/audit", get(provider_audit))
+        .route("/projects", get(projects).post(register_project))
+        .route(
+            "/projects/{id}/config",
+            get(project_config).put(update_project_config),
+        )
+        .route("/actions", get(actions).post(create_action))
+        .route("/office/overview", get(office_overview))
+        .route("/office/decisions", get(office_decisions))
+        .route("/office/participants", get(office_participants))
+        .route(
+            "/provider/sessions/{session_record_id}/tool_events",
+            get(provider_session_tool_events),
+        )
+        .route("/campaigns", get(campaigns).post(create_campaign))
+        .route("/campaigns/{id}", get(campaign_detail))
+        .route(
+            "/campaigns/{id}/candidates/{candidate_id}/diff",
+            get(candidate_diff),
+        )
+        .route("/campaigns/{id}/cancel", post(cancel_campaign))
+        .route("/campaigns/{id}/authorization", get(campaign_authorization))
+        .route("/campaigns/{id}/authorize", post(authorize_campaign))
+        .route("/campaigns/{id}/runs", post(create_campaign_run))
+        .route("/runs", get(runs))
+        .route("/runs/{id}/attempts", post(create_run_attempt))
+        .route("/attempts", get(attempts))
+        .route("/events", get(events))
+        .route("/observability", get(observability_status))
+        .route(
+            "/provider/turn_reservations/budget",
+            get(provider_turn_reservation_budget),
+        )
+        .route("/provider/sessions", get(provider_sessions))
+        .route("/model/calls/unresolved", get(unresolved_model_calls))
+        .route("/model/calls", get(model_calls))
+        .route("/model/calls/{id}/resolve", post(resolve_model_call))
+        .route("/quality/candidates/{id}/receipts", get(quality_receipts))
+        .route("/quality/candidates/{id}/gate", get(quality_gate))
+        .route("/delegations", get(delegations).post(create_delegation))
+        .route(
+            "/delegations/{id}",
+            get(get_delegation).post(revoke_delegation),
+        )
+        .route(
+            "/lead/requests",
+            get(lead_requests).post(create_lead_request),
+        )
+        .route("/lead/requests/{id}", get(get_lead_request))
+        .route("/lead/requests/{id}/assess", post(assess_lead_request))
+        .route("/lead/requests/{id}/freeze", post(freeze_lead_request))
+        .route("/lead/requests/{id}/start", post(start_lead_request))
+        .route("/candidates", get(candidates))
+        .route("/workers", get(workers))
+        .with_state(Arc::clone(&app))
+        .merge(office_pairing_routes(app.db.clone()));
+
+    api.route("/worker", any(office_route_not_found))
+        .route("/worker/{*path}", any(office_route_not_found))
+        .route("/review", any(office_route_not_found))
+        .route("/review/{*path}", any(office_route_not_found))
+        .route("/supervisor", any(office_route_not_found))
+        .route("/supervisor/{*path}", any(office_route_not_found))
+        .route("/quality/receipts", any(office_route_not_found))
+}
+
+async fn office_route_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+async fn office_api_route_not_found() -> Response {
+    let mut response = StatusCode::NOT_FOUND.into_response();
+    response.headers_mut().insert(
+        "x-factory-office-route-miss",
+        axum::http::HeaderValue::from_static("true"),
+    );
+    response
+}
+
+/// PR C adds only its intended public claim/poll and operator-managed access routes here.
+/// The outer Office listener middleware supplies Host/Origin/CSRF checks and the operator
+/// session extension; claim and poll handlers must continue to work without that extension.
+fn office_pairing_routes(_db: Database) -> Router {
+    Router::new()
 }
 
 fn api_router(app: Arc<App>) -> Router {
@@ -711,7 +857,6 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/runs/{id}/attempts", post(create_run_attempt))
         .route("/candidates", get(candidates))
         .route("/workers", get(workers))
-        .route_layer(from_fn_with_state(Arc::clone(&app), browser_auth))
         .with_state(app)
 }
 
@@ -5149,6 +5294,194 @@ mod tests {
         assert_eq!(replay.status(), StatusCode::CONFLICT);
         let _ = std::fs::remove_file(database_path);
         let _ = std::fs::remove_file(code_path);
+    }
+
+    #[tokio::test]
+    async fn office_access_listener_serves_office_and_denies_control_routes() {
+        use tower::ServiceExt;
+
+        let database_path = std::env::temp_dir().join(format!(
+            "factory-core-office-access-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let office_directory = std::env::temp_dir().join(format!(
+            "factory-core-office-assets-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(office_directory.join("assets")).unwrap();
+        std::fs::write(office_directory.join("index.html"), "office-shell").unwrap();
+        std::fs::write(office_directory.join("assets/app.js"), "office-asset").unwrap();
+        let app = test_app(&database_path).await;
+        let office_router =
+            build_office_access_router(Arc::clone(&app), Some(office_directory.clone()));
+        let api_only_router = build_office_access_router(Arc::clone(&app), None);
+
+        for (uri, expected) in [("/", "office-shell"), ("/assets/app.js", "office-asset")] {
+            let response = office_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, expected);
+        }
+
+        let office_projection = office_router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/core-api/office/overview")
+                    .header("host", "localhost:8768")
+                    .header("authorization", "Bearer operator-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(office_projection.status(), StatusCode::OK);
+
+        let office_get_routes = [
+            "/core-api/health",
+            "/core-api/auth/session",
+            "/core-api/setup/status",
+            "/core-api/settings/providers",
+            "/core-api/settings/runtime",
+            "/core-api/settings/providers/opencode/audit",
+            "/core-api/projects",
+            "/core-api/projects/missing/config",
+            "/core-api/actions",
+            "/core-api/office/overview",
+            "/core-api/office/decisions",
+            "/core-api/office/participants",
+            "/core-api/provider/sessions/missing/tool_events",
+            "/core-api/campaigns",
+            "/core-api/campaigns/missing",
+            "/core-api/campaigns/missing/candidates/missing/diff",
+            "/core-api/campaigns/missing/authorization",
+            "/core-api/runs",
+            "/core-api/attempts",
+            "/core-api/events",
+            "/core-api/observability",
+            "/core-api/provider/turn_reservations/budget",
+            "/core-api/provider/sessions",
+            "/core-api/model/calls",
+            "/core-api/model/calls/unresolved",
+            "/core-api/quality/candidates/missing/receipts",
+            "/core-api/quality/candidates/missing/gate",
+            "/core-api/delegations",
+            "/core-api/lead/requests",
+            "/core-api/lead/requests/missing",
+            "/core-api/candidates",
+            "/core-api/workers",
+        ];
+        for uri in office_get_routes {
+            let response = api_only_router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .header("host", "localhost:8768")
+                        .header("authorization", "Bearer operator-token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response
+                    .headers()
+                    .get("x-factory-office-route-miss")
+                    .is_none(),
+                "Office route was not registered: {uri}"
+            );
+        }
+
+        let denied = [
+            (
+                "/worker/register",
+                "Bearer bootstrap-bootstrap-bootstrap-1234",
+            ),
+            (
+                "/core-api/worker/register",
+                "Bearer bootstrap-bootstrap-bootstrap-1234",
+            ),
+            (
+                "/quality/receipts",
+                "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "/core-api/quality/receipts",
+                "Bearer verifier-token-aaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            (
+                "/review/config",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "/core-api/review/config",
+                "Bearer reviewer-token-bbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "/supervisor/workspace_operation_valid",
+                "Bearer operator-token",
+            ),
+            (
+                "/core-api/supervisor/workspace_operation_valid",
+                "Bearer operator-token",
+            ),
+        ];
+        for (uri, credential) in denied {
+            let mut request = axum::http::Request::builder()
+                .method(if uri.ends_with("/review/config") {
+                    "GET"
+                } else {
+                    "POST"
+                })
+                .uri(uri)
+                .header("host", "localhost:8768")
+                .header("authorization", credential);
+            let body = if uri.ends_with("/review/config") {
+                axum::body::Body::empty()
+            } else {
+                request = request.header("content-type", "application/json");
+                axum::body::Body::from("{}")
+            };
+            let response = office_router
+                .clone()
+                .oneshot(request.body(body).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+
+        let local_router = build_router(app);
+        let local_worker_route = local_router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/worker/register")
+                    .header("host", "localhost:8765")
+                    .header("authorization", "Bearer bootstrap-bootstrap-bootstrap-1234")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(local_worker_route.status(), StatusCode::NOT_FOUND);
+
+        drop(office_router);
+        let _ = std::fs::remove_file(database_path);
+        let _ = std::fs::remove_dir_all(office_directory);
     }
 
     #[tokio::test]
