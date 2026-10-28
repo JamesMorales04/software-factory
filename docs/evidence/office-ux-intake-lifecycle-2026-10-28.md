@@ -68,6 +68,14 @@ implementation `bb2ce6b`:
 
 Same deterministic/fixture limits apply.
 
+## Localization merge rerun
+
+After merging the full EN/ES sweep, the full intake lifecycle was rerun at
+implementation `bd424c2` and passed again (request `ce2a1b8b…`, Campaign
+`6d9aa195…`, candidate `4bbda2b3…` at commit `14d0d9ad…`, Gate `ACCEPTED`,
+restart/reload persistence). This verifies the localization changes did not
+break the flagship selectors or state projection.
+
 ## What the journey exercised
 
 1. Real Core with SQLite migrations, real device-session enrollment and real
