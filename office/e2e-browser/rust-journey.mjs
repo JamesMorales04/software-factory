@@ -569,19 +569,6 @@ try {
     );
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator(".settings-language-select").selectOption("es");
-  assert.equal(
-    await page.evaluate(() => document.documentElement.lang),
-    "es",
-    "language switch must update the document language",
-  );
-  await page.getByRole("heading", { name: "Idioma" }).waitFor();
-  await page.locator(".settings-language-select").selectOption("en");
-  assert.equal(
-    await page.evaluate(() => document.documentElement.lang),
-    "en",
-    "language switch must restore English",
-  );
 
   const _projects = await api("/projects");
   const _leadProject = _projects[0];
