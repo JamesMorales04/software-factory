@@ -1385,12 +1385,15 @@ mod tests {
         ));
         let db = Database::open(&path).await.unwrap();
         let now = Utc::now().to_rfc3339();
-        sqlx::query::query("INSERT INTO projects VALUES ('project','/fixture',?1,?2,'')")
-            .bind("a".repeat(40))
-            .bind(&now)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture',?1,?2,'')",
+        )
+        .bind("a".repeat(40))
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         sqlx::query::query(
             "INSERT INTO actions VALUES ('action','project','objective','opencode','deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
         )

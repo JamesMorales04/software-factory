@@ -34,6 +34,7 @@ impl CoreProcess {
             .env("FACTORY_VERIFIER_TOKEN", VERIFIER_TOKEN)
             .env("FACTORY_REVIEWER_TOKEN", REVIEWER_TOKEN)
             .env("FACTORY_ATTEMPT_GRANT_KEY", ATTEMPT_GRANT_KEY)
+            .env("FACTORY_PROJECTS_ROOT", std::env::temp_dir())
             .env("FACTORY_OTLP_ENDPOINT", otlp_endpoint)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

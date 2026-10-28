@@ -1894,6 +1894,103 @@ async fn project_retry_keeps_first_base_after_repository_advances() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn project_source_identity_is_explicit_and_duplicates_are_rejected() {
+    let root = std::env::temp_dir().join(format!("factory-project-source-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let git = |arguments: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(arguments)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.name", "Fixture"]);
+    git(&["config", "user.email", "fixture@example.invalid"]);
+    std::fs::write(root.join("content"), "one").unwrap();
+    git(&["add", "content"]);
+    git(&["commit", "-qm", "first"]);
+    let db = Database::open(&root.join("factory.sqlite")).await.unwrap();
+    let source = RegisterProjectSource {
+        name: "Widgets".into(),
+        source_kind: "local".into(),
+        source_url: String::new(),
+        source_key: "local:widgets".into(),
+        source_visibility: String::new(),
+        default_branch: "main".into(),
+    };
+    let project = db
+        .register_project_with_source(&root, &source, "source-key")
+        .await
+        .unwrap();
+    assert_eq!(project.name, "Widgets");
+    assert_eq!(project.source_kind, "local");
+    assert_eq!(project.source_key, "local:widgets");
+    assert_eq!(project.default_branch, "main");
+    let replay = db
+        .register_project_with_source(&root, &source, "source-key")
+        .await
+        .unwrap();
+    assert_eq!(project.id, replay.id);
+    assert!(matches!(
+        db.register_project_with_source(&root, &source, "another-key")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        db.project_by_source_key("local:widgets")
+            .await
+            .unwrap()
+            .map(|project| project.id),
+        Some(project.id.clone())
+    );
+    assert!(
+        db.project_by_source_key("local:missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.close().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn project_discovery_is_persisted_against_its_scanned_commit() {
+    let (path, db) = temp_db("factory-project-discovery").await;
+    insert_project(&db, "project", "/fixture", &"a".repeat(40)).await;
+    let base_commit = "a".repeat(40);
+    let discovery = crate::project_import::ProjectDiscovery {
+        base_commit: base_commit.clone(),
+        toolchains: Vec::new(),
+        suggested_capabilities: vec![crate::lead::Capability::RepositoryEdit],
+        suggested_checks: Vec::new(),
+        scanned_manifests: vec!["Cargo.toml".into()],
+        truncated: false,
+        skipped_entries: 0,
+        provenance: "test".into(),
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let saved = db
+        .save_project_discovery("project", &discovery)
+        .await
+        .unwrap();
+    assert_eq!(saved.base_commit, base_commit);
+    let loaded = db.project_discovery("project").await.unwrap().unwrap();
+    assert_eq!(
+        loaded.discovery.suggested_capabilities,
+        discovery.suggested_capabilities
+    );
+    assert_eq!(loaded.discovery.scanned_manifests, vec!["Cargo.toml"]);
+    assert!(db.project_discovery("missing").await.is_err());
+    db.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn p9_database_is_send_sync_and_not_connection_mutexed() {
     fn assert_send_sync<T: Send + Sync>() {}
