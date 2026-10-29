@@ -810,6 +810,7 @@ export const es: Catalog = {
     "Identidad de registro del Trabajador. Core no expone la actividad del heartbeat en esta proyección.",
   "agentOffice.zone.recorded": "{count} registrados",
   "agentOffice.scene.label": "Planta isométrica de la Oficina",
+  "agentOffice.scene.emptyStations": "Puestos sin un participante registrado:",
   "agentOffice.scene.hint":
     "Estudio isométrico determinista de la misma proyección de participantes de Core. Arrastra para desplazar; usa la rueda o los controles para ampliar. Pasa el cursor o selecciona un avatar para ver su identidad y observación registradas; al seleccionarlo se abre el inspector. La posición del puesto es determinista para este conjunto observado; no se simula movimiento ni actividad.",
   "agentOffice.scene.pan": "Desplazar la planta de la Oficina",

@@ -14,6 +14,7 @@ import {
   OFFICE_MAX_ZOOM,
   OFFICE_MIN_ZOOM,
   OFFICE_SLOT_COLUMN,
+  OFFICE_WORLD_PADDING,
   OFFICE_ZONE_SIDE_LANE,
   panCamera,
   zoomCamera,
@@ -208,6 +209,42 @@ describe("buildOfficeSceneLayout", () => {
     const layout = buildOfficeSceneLayout(implementers(5));
     const zone = layout.zones.find((item) => item.role === "IMPLEMENTER");
     expect(zone?.slots).toHaveLength(5);
+    expect(zone?.rows).toBe(2);
+    expect(zone?.columns).toBe(3);
+    expect(zone?.slots.map((slot) => slot.row)).toEqual([0, 0, 0, 1, 1]);
+    expect(
+      zone?.slots.slice(0, 3).every((slot) => slot.perspectiveScale === 0.9),
+    ).toBe(true);
+    expect(
+      zone?.slots.slice(3).every((slot) => slot.perspectiveScale === 1),
+    ).toBe(true);
+    for (let left = 0; left < (zone?.slots.length ?? 0); left += 1) {
+      for (
+        let right = left + 1;
+        right < (zone?.slots.length ?? 0);
+        right += 1
+      ) {
+        const leftSlot = zone?.slots[left];
+        const rightSlot = zone?.slots[right];
+        if (!leftSlot || !rightSlot) continue;
+        expect(
+          overlaps(
+            {
+              x: leftSlot.x,
+              y: leftSlot.y,
+              width: OFFICE_AVATAR_WIDTH,
+              height: OFFICE_AVATAR_HEIGHT,
+            },
+            {
+              x: rightSlot.x,
+              y: rightSlot.y,
+              width: OFFICE_AVATAR_WIDTH,
+              height: OFFICE_AVATAR_HEIGHT,
+            },
+          ),
+        ).toBe(false);
+      }
+    }
     const looks = new Set(
       (zone?.slots ?? []).map(
         (slot) => officeAvatarLook(slot.lookIndex).signature,
@@ -216,14 +253,25 @@ describe("buildOfficeSceneLayout", () => {
     expect(looks.size).toBe(5);
   });
 
+  it("terminates with distinct identities after the former 48-look boundary", () => {
+    const layout = buildOfficeSceneLayout(mixedParticipants(200));
+    expect(layout.slots).toHaveLength(200);
+    expect(new Set(layout.slots.map((slot) => slot.lookIndex)).size).toBe(200);
+    expect(
+      new Set(
+        layout.slots.map((slot) => officeAvatarLook(slot.lookIndex).signature),
+      ).size,
+    ).toBe(200);
+  });
+
   it("seats 30 implementers without duplicate positions", () => {
     const layout = buildOfficeSceneLayout(implementers(30));
     const implementation = layout.zones.find(
       (zone) => zone.role === "IMPLEMENTER",
     );
     expect(implementation?.slots).toHaveLength(30);
-    expect(implementation?.columns).toBe(6);
-    expect(implementation?.rows).toBe(5);
+    expect(implementation?.columns).toBe(8);
+    expect(implementation?.rows).toBe(4);
     const positions = new Set(
       layout.slots.map(
         (slot) => `${Math.round(slot.anchorX)}:${Math.round(slot.anchorY)}`,
@@ -248,8 +296,8 @@ describe("buildOfficeSceneLayout", () => {
     const rows = [...new Set(anchors.map((slot) => slot.row))].sort(
       (left, right) => left - right,
     );
-    expect(columns).toHaveLength(6);
-    expect(rows).toHaveLength(5);
+    expect(columns).toHaveLength(8);
+    expect(rows).toHaveLength(4);
     const columnAnchors = columns.map(
       (column) => anchors.find((slot) => slot.column === column)?.anchorX ?? 0,
     );
@@ -264,8 +312,8 @@ describe("buildOfficeSceneLayout", () => {
       plainColumn + OFFICE_CLUSTER_GAP - 1,
     );
     expect(rowAnchors.at(-1)).toBeGreaterThan(rowAnchors[0] ?? 0);
-    expect(new Set(columnAnchors).size).toBe(6);
-    expect(new Set(rowAnchors).size).toBe(5);
+    expect(new Set(columnAnchors).size).toBe(8);
+    expect(new Set(rowAnchors).size).toBe(4);
     expect(OFFICE_SLOT_COLUMN).toBeGreaterThan(OFFICE_AVATAR_WIDTH);
   });
 
@@ -283,6 +331,37 @@ describe("buildOfficeSceneLayout", () => {
           1,
       );
     }
+  });
+
+  it("collapses stations without a recorded participant into one studio", () => {
+    const layout = buildOfficeSceneLayout(implementers(30));
+    expect(layout.zones).toHaveLength(1);
+    const [implementation] = layout.zones;
+    expect(implementation?.role).toBe("IMPLEMENTER");
+    expect(implementation?.wing).toBe("center");
+    expect(layout.emptyRoles).toEqual([
+      "LEAD",
+      "VERIFIER",
+      "REVIEWER",
+      "WORKER",
+    ]);
+    if (!implementation) throw new Error("implementation station is missing");
+    expect(layout.width).toBeLessThan(
+      implementation.width + OFFICE_WORLD_PADDING * 3,
+    );
+  });
+
+  it("keeps recorded wings and omits an empty center column", () => {
+    const layout = buildOfficeSceneLayout([
+      participant(0, "LEAD"),
+      participant(1, "VERIFIER"),
+    ]);
+    expect(layout.zones.map((zone) => zone.role)).toEqual(["LEAD", "VERIFIER"]);
+    expect(layout.emptyRoles).toContain("IMPLEMENTER");
+    const [left, right] = layout.zones;
+    expect(left?.wing).toBe("left");
+    expect(right?.wing).toBe("right");
+    expect(left?.x).toBeLessThan(right?.x ?? 0);
   });
 
   it("renders one avatar per participant identity and reports duplicates", () => {
@@ -364,13 +443,20 @@ describe("buildOfficeSceneLayout", () => {
 describe("office camera", () => {
   it("fits a scene inside the viewport and clamps the zoom range", () => {
     const camera = fitCamera(1000, 500, { width: 500, height: 400 });
-    expect(camera.zoom).toBe(0.55);
-    expect(camera.x).toBe(-25);
-    expect(camera.y).toBe(63);
-    expect(zoomPercent(camera)).toBe(55);
+    expect(camera.zoom).toBeCloseTo(0.472);
+    expect(camera.x).toBe(14);
+    expect(camera.y).toBe(82);
+    expect(zoomPercent(camera)).toBe(47);
     expect(cameraStyle(camera).transform).toBe(
-      "translate(-25px, 63px) scale(0.55)",
+      "translate(14px, 82px) scale(0.472)",
     );
+  });
+
+  it("fits the studio width on a narrow mobile viewport", () => {
+    const camera = fitCamera(928, 574, { width: 356, height: 340 });
+    expect(camera.zoom).toBeCloseTo(328 / 928);
+    expect(camera.x).toBe(14);
+    expect(928 * camera.zoom).toBeLessThanOrEqual(356 - 28);
   });
 
   it("clamps panning so the scene cannot be lost", () => {
@@ -384,8 +470,8 @@ describe("office camera", () => {
 
   it("anchors a scene taller than the viewport below the studio wall", () => {
     const camera = fitCamera(220, 1800, { width: 420, height: 320 });
-    expect(camera.zoom).toBe(0.55);
-    expect(camera.x).toBe(Math.round((420 - 220 * 0.55) / 2));
+    expect(camera.zoom).toBe(0.2);
+    expect(camera.x).toBe(Math.round((420 - 220 * 0.2) / 2));
     expect(camera.y).toBe(8);
   });
 
@@ -395,8 +481,8 @@ describe("office camera", () => {
       width: 500,
       height: 400,
     });
-    expect(panned.x).toBe(236);
-    expect(panned.y).toBe(186);
+    expect(panned.x).toBe(198);
+    expect(panned.y).toBe(148);
   });
 
   it("clamps zoom-in and zoom-out around a focus point", () => {

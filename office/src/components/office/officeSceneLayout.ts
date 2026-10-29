@@ -1,14 +1,19 @@
 import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
 
 /**
- * Deterministic V0 layout for the isometric Agent Office floor.
+ * Deterministic planar (2.5D) layout for the isometric Agent Office studio.
  *
  * The scene has no per-frame loop and no physics. Every position is a pure
  * function of the observed participant set, the participant identity and the
- * role zone. A participant's slot is the rank of its stable `participant_id`
+ * role station. A participant's slot is the rank of its stable `participant_id`
  * inside its role group, so repeated renders and reordered Core pages produce
  * identical stations. Adding or removing a participant can renumber later
  * slots in the same role group; the next render is still deterministic.
+ *
+ * V3 composes a single continuous studio deck: only stations with recorded
+ * participants become floor areas, so a 30-Implementer projection is one wide
+ * bullpen instead of five empty boxes. Empty role stations are reported
+ * separately and never rendered as furniture or fabricated agents.
  */
 
 export const OFFICE_AVATAR_WIDTH = 92;
@@ -28,18 +33,18 @@ export const OFFICE_SLOT_ROW = 118;
 export const OFFICE_SLOT_STAGGER = 24;
 export const OFFICE_CLUSTER_SIZE = 3;
 export const OFFICE_CLUSTER_GAP = 26;
-export const OFFICE_ZONE_HEADER = 58;
-export const OFFICE_ZONE_PADDING = 16;
+export const OFFICE_ZONE_HEADER = 72;
+export const OFFICE_ZONE_PADDING = 14;
 /** Reserved floor lane for role furniture; avatars never enter it. */
-export const OFFICE_ZONE_SIDE_LANE = 64;
-export const OFFICE_ZONE_GAP = 46;
-export const OFFICE_ZONE_MIN_WIDTH = 224;
-export const OFFICE_ZONE_MIN_HEIGHT = 216;
-export const OFFICE_WORLD_PADDING = 52;
-export const OFFICE_LOOK_COUNT = 48;
-export const OFFICE_WALL_HEIGHT = 52;
-
-export const OFFICE_MIN_ZOOM = 0.45;
+export const OFFICE_ZONE_SIDE_LANE = 72;
+export const OFFICE_ZONE_GAP = 34;
+export const OFFICE_ZONE_MIN_WIDTH = 260;
+export const OFFICE_ZONE_MIN_HEIGHT = 204;
+export const OFFICE_WORLD_PADDING = 40;
+/** Vertical space reserved above the floor for the continuous studio wall. */
+export const OFFICE_TOP_PADDING = 76;
+export const OFFICE_WALL_HEIGHT = 66;
+export const OFFICE_MIN_ZOOM = 0.2;
 export const OFFICE_MAX_ZOOM = 2;
 export const OFFICE_ZOOM_STEP = 1.25;
 export const OFFICE_PAN_STEP = 120;
@@ -52,13 +57,20 @@ export const OFFICE_ROLE_ORDER: readonly ParticipantRole[] = [
   "WORKER",
 ];
 
+/** Left and right wings of the studio plan, top-to-bottom. */
+export const OFFICE_LEFT_ROLES: readonly ParticipantRole[] = ["LEAD", "WORKER"];
+export const OFFICE_RIGHT_ROLES: readonly ParticipantRole[] = [
+  "VERIFIER",
+  "REVIEWER",
+];
+
 export const OFFICE_FALLBACK_VIEWPORT = { width: 960, height: 560 } as const;
 
 const VIEWPORT_PAN_SLACK = 48;
 const VIEWPORT_OVERSCROLL = 24;
-const FIT_PADDING = 28;
-const FIT_MIN_ZOOM = 0.55;
-const FIT_MAX_ZOOM = 1.25;
+const FIT_PADDING = 14;
+const FIT_MIN_ZOOM = OFFICE_MIN_ZOOM;
+const FIT_MAX_ZOOM = 2;
 
 export interface OfficeSlot {
   participant: ParticipantRecord;
@@ -76,11 +88,15 @@ export interface OfficeSlot {
   anchorY: number;
   /** 1-based depth order; higher values render in front. */
   depth: number;
+  /** Figure scale from the back to front row of its workstation cluster. */
+  perspectiveScale: number;
 }
 
 export interface OfficeZone {
   role: ParticipantRole;
   id: string;
+  /** Stable plan side; drives partition and background composition. */
+  wing: "left" | "center" | "right";
   x: number;
   y: number;
   width: number;
@@ -93,8 +109,12 @@ export interface OfficeZone {
 export interface OfficeSceneLayout {
   width: number;
   height: number;
+  /** Top edge of the walkable floor, below the continuous studio wall. */
+  floorTop: number;
   zones: OfficeZone[];
   slots: OfficeSlot[];
+  /** Roles with no recorded participant in this projection. */
+  emptyRoles: ParticipantRole[];
   /** Participant identities received more than once and rendered only once. */
   duplicateIds: string[];
 }
@@ -125,15 +145,6 @@ const ZONE_IDS: Record<ParticipantRole, string> = {
   WORKER: "operations",
 };
 
-function hashIdentity(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -161,8 +172,13 @@ function clusterOffset(index: number, pitch: number): number {
 
 function groupMetrics(memberCount: number): ZoneMetrics {
   const count = Math.max(1, memberCount);
-  const columns = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(count))));
-  const rows = Math.max(1, Math.ceil(count / columns));
+  // One or two participants share a compact bench. Larger crews use a
+  // staggered two-row pod, then grow as a wide bullpen with at most eight
+  // columns. Row depth gives the SVG scene a back/front cue without changing
+  // deterministic identity placement.
+  const rows =
+    count <= 2 ? 1 : count <= 12 ? 2 : Math.max(1, Math.ceil(count / 8));
+  const columns = Math.min(8, count, Math.max(1, Math.ceil(count / rows)));
   const contentWidth =
     clusterOffset(columns - 1, OFFICE_SLOT_COLUMN) +
     (rows > 1 ? OFFICE_SLOT_STAGGER : 0) +
@@ -208,6 +224,7 @@ function contentOffset(
 
 function buildZone(
   role: ParticipantRole,
+  wing: OfficeZone["wing"],
   members: ParticipantRecord[],
   x: number,
   y: number,
@@ -240,11 +257,14 @@ function buildZone(
       anchorX,
       anchorY,
       depth: 0,
+      perspectiveScale:
+        metrics.rows > 1 ? 0.9 + (0.1 * row) / (metrics.rows - 1) : 1,
     };
   });
   return {
     role,
     id: ZONE_IDS[role],
+    wing,
     x,
     y,
     width,
@@ -312,12 +332,22 @@ export function compareDuplicateRecords(
   return duplicateRecordKey(left).localeCompare(duplicateRecordKey(right));
 }
 
+interface StudioColumn {
+  wing: OfficeZone["wing"];
+  roles: ParticipantRole[];
+  width: number;
+  height: number;
+  x: number;
+}
+
 /**
- * Lay out five role stations around a central implementation floor.
+ * Lay out the recorded role stations as one continuous studio.
  *
- * All coordinates are in unscaled world pixels; the camera applies pan/zoom.
- * The layout is intentionally independent of viewport width so that slot
- * identity and camera transforms can be tested separately.
+ * Columns only exist when they contain a recorded station. The center column
+ * holds Implementation; the wings hold Planning/Operations and
+ * Verification/Review. The world grows with the widest and tallest present
+ * column and is centered by a fitted camera. All coordinates are unscaled
+ * world pixels.
  */
 export function buildOfficeSceneLayout(
   participants: ParticipantRecord[],
@@ -347,90 +377,118 @@ export function buildOfficeSceneLayout(
   for (const participant of unique) {
     groups.get(participant.role)?.push(participant);
   }
+  const members = (role: ParticipantRole) => groups.get(role) ?? [];
+  const metrics = (role: ParticipantRole) => groupMetrics(members(role).length);
+  const emptyRoles = OFFICE_ROLE_ORDER.filter(
+    (role) => members(role).length === 0,
+  );
 
-  const planning = groupMetrics(groups.get("LEAD")?.length ?? 0);
-  const implementation = groupMetrics(groups.get("IMPLEMENTER")?.length ?? 0);
-  const verification = groupMetrics(groups.get("VERIFIER")?.length ?? 0);
-  const review = groupMetrics(groups.get("REVIEWER")?.length ?? 0);
-  const operations = groupMetrics(groups.get("WORKER")?.length ?? 0);
+  const planning = metrics("LEAD");
+  const implementation = metrics("IMPLEMENTER");
+  const verification = metrics("VERIFIER");
+  const review = metrics("REVIEWER");
+  const operations = metrics("WORKER");
 
-  const leftWidth = Math.max(planning.width, operations.width);
-  const rightWidth = Math.max(verification.width, review.width);
-  const leftHeight = planning.height + OFFICE_ZONE_GAP + operations.height;
-  const rightHeight = verification.height + OFFICE_ZONE_GAP + review.height;
-  const centerHeight = Math.max(leftHeight, rightHeight, implementation.height);
+  const wings: {
+    wing: OfficeZone["wing"];
+    roles: ParticipantRole[];
+    metric: ZoneMetrics;
+  }[] = [];
+  const leftRoles = OFFICE_LEFT_ROLES.filter(
+    (role) => members(role).length > 0,
+  );
+  const rightRoles = OFFICE_RIGHT_ROLES.filter(
+    (role) => members(role).length > 0,
+  );
+  if (leftRoles.length > 0) {
+    wings.push({
+      wing: "left",
+      roles: leftRoles,
+      metric: planning.height >= operations.height ? planning : operations,
+    });
+  }
+  if (members("IMPLEMENTER").length > 0) {
+    wings.push({
+      wing: "center",
+      roles: ["IMPLEMENTER"],
+      metric: implementation,
+    });
+  }
+  if (rightRoles.length > 0) {
+    wings.push({
+      wing: "right",
+      roles: rightRoles,
+      metric: verification.height >= review.height ? verification : review,
+    });
+  }
+
+  const columns: StudioColumn[] = [];
+  let cursorX = OFFICE_WORLD_PADDING;
+  for (const wing of wings) {
+    const heights = wing.roles.map((role) => metrics(role).height);
+    const height =
+      heights.reduce((total, value) => total + value, 0) +
+      Math.max(0, heights.length - 1) * OFFICE_ZONE_GAP;
+    const width = Math.max(
+      wing.metric.width,
+      ...wing.roles.map((role) => metrics(role).width),
+    );
+    columns.push({
+      wing: wing.wing,
+      roles: wing.roles,
+      width,
+      height,
+      x: cursorX,
+    });
+    cursorX += width + OFFICE_ZONE_GAP;
+  }
+
+  const contentHeight = Math.max(1, ...columns.map((column) => column.height));
+  const floorTop = OFFICE_TOP_PADDING;
   const worldWidth =
-    OFFICE_WORLD_PADDING * 2 +
-    leftWidth +
-    OFFICE_ZONE_GAP +
-    implementation.width +
-    OFFICE_ZONE_GAP +
-    rightWidth;
-  const worldHeight = OFFICE_WORLD_PADDING * 2 + centerHeight;
+    columns.length === 0
+      ? OFFICE_WORLD_PADDING * 2 + OFFICE_ZONE_MIN_WIDTH
+      : cursorX - OFFICE_ZONE_GAP + OFFICE_WORLD_PADDING;
+  const worldHeight = floorTop + contentHeight + OFFICE_WORLD_PADDING;
 
-  const leftX = OFFICE_WORLD_PADDING;
-  const implementationX = leftX + leftWidth + OFFICE_ZONE_GAP;
-  const rightX = implementationX + implementation.width + OFFICE_ZONE_GAP;
-
-  const zones: OfficeZone[] = [
-    buildZone(
-      "LEAD",
-      groups.get("LEAD") ?? [],
-      leftX,
-      OFFICE_WORLD_PADDING,
-      leftWidth,
-      planning.height,
-    ),
-    buildZone(
-      "IMPLEMENTER",
-      groups.get("IMPLEMENTER") ?? [],
-      implementationX,
-      OFFICE_WORLD_PADDING +
-        Math.round((centerHeight - implementation.height) / 2),
-      implementation.width,
-      implementation.height,
-    ),
-    buildZone(
-      "VERIFIER",
-      groups.get("VERIFIER") ?? [],
-      rightX,
-      OFFICE_WORLD_PADDING,
-      rightWidth,
-      verification.height,
-    ),
-    buildZone(
-      "REVIEWER",
-      groups.get("REVIEWER") ?? [],
-      rightX,
-      OFFICE_WORLD_PADDING + verification.height + OFFICE_ZONE_GAP,
-      rightWidth,
-      review.height,
-    ),
-    buildZone(
-      "WORKER",
-      groups.get("WORKER") ?? [],
-      leftX,
-      OFFICE_WORLD_PADDING + planning.height + OFFICE_ZONE_GAP,
-      leftWidth,
-      operations.height,
-    ),
-  ];
+  const zones: OfficeZone[] = [];
+  for (const column of columns) {
+    let cursorY = floorTop;
+    if (column.roles.length === 1 && column.wing === "center") {
+      const only = metrics(column.roles[0]).height;
+      cursorY = floorTop + Math.round((contentHeight - only) / 2);
+    }
+    for (const role of column.roles) {
+      const metric = metrics(role);
+      zones.push(
+        buildZone(
+          role,
+          column.wing,
+          members(role),
+          column.x,
+          cursorY,
+          column.width,
+          metric.height,
+        ),
+      );
+      cursorY += metric.height + OFFICE_ZONE_GAP;
+    }
+  }
 
   const slots = zones.flatMap((zone) => zone.slots);
-  const usedLooks = new Set<number>();
-  for (const slot of [...slots].sort((left, right) =>
-    left.participant.participant_id.localeCompare(
-      right.participant.participant_id,
-    ),
-  )) {
-    let lookIndex =
-      hashIdentity(slot.participant.participant_id) % OFFICE_LOOK_COUNT;
-    while (usedLooks.has(lookIndex)) {
-      lookIndex = (lookIndex + 1) % OFFICE_LOOK_COUNT;
-    }
-    usedLooks.add(lookIndex);
-    slot.lookIndex = lookIndex;
-  }
+  // Assigning in stable identity order keeps the same set deterministic and
+  // gives every participant a unique palette combination without collision
+  // probing. The mixed-radix appearance palette supports far more combinations
+  // than the current Office projection's 200-participant page size.
+  [...slots]
+    .sort((left, right) =>
+      left.participant.participant_id.localeCompare(
+        right.participant.participant_id,
+      ),
+    )
+    .forEach((slot, index) => {
+      slot.lookIndex = index;
+    });
   const ordered = [...slots].sort(
     (left, right) =>
       left.anchorY - right.anchorY ||
@@ -446,8 +504,10 @@ export function buildOfficeSceneLayout(
   return {
     width: Math.round(worldWidth),
     height: Math.round(worldHeight),
+    floorTop,
     zones,
     slots,
+    emptyRoles,
     duplicateIds,
   };
 }
