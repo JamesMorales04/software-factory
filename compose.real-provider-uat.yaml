@@ -14,7 +14,7 @@ services:
       FACTORY_PROVIDER_KIND: opencode
       FACTORY_PROVIDER_SANDBOX: container
   git-fixture:
-    image: docker.io/library/python:3.12-alpine
+    image: docker.io/library/python:3.12-alpine@sha256:5789aa194f757888f41fa3d48e14b6feaa1b57c0af0b56fcb1372d6474d3bff0
     command: ["python3", "-m", "http.server", "8080", "--directory", "/srv"]
     read_only: true
     cap_drop:

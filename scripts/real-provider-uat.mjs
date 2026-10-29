@@ -38,6 +38,11 @@ export const VERIFICATION_SCHEMA = "factory.subscription-verification.v1";
 const VERIFICATION_MAX_BYTES = 64 * 1024;
 const DEFAULT_VERIFICATION_MAX_AGE_SECS = 86_400;
 const SUBSCRIPTION_MODE = "GO_SUBSCRIPTION_INCLUDED";
+const SAFE_CORE_ERROR_CODES = new Set([
+  "INFERENCE_AUTHORIZATION_REQUIRED",
+  "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+  "SUBSCRIPTION_QUOTA_EXHAUSTED",
+]);
 
 const activeSecrets = new Set();
 
@@ -398,22 +403,6 @@ function redactDeep(value, secrets) {
     const output = {};
     for (const [key, item] of Object.entries(value)) {
       output[key] = redactDeep(item, secrets);
-    }
-    return output;
-  }
-  return value;
-}
-
-const SENSITIVE_KEY = /(credential|token|secret|password|authorization|cookie)/i;
-
-/// Error bodies are untrusted. Drop credential-shaped fields so a broken or
-/// malicious upstream cannot make the harness log a secret it never received.
-function sanitizeErrorPayload(value) {
-  if (Array.isArray(value)) return value.map(sanitizeErrorPayload);
-  if (value && typeof value === "object") {
-    const output = {};
-    for (const [key, item] of Object.entries(value)) {
-      output[key] = SENSITIVE_KEY.test(key) ? "[REDACTED]" : sanitizeErrorPayload(item);
     }
     return output;
   }
@@ -913,7 +902,7 @@ export function classifySubscriptionAdmissionError(error) {
   if (
     error instanceof UatError &&
     /INFERENCE_AUTHORIZATION_REQUIRED|INFERENCE_AUTHORIZATION_NOT_APPLICABLE/i.test(
-      error.message,
+      error.code,
     )
   ) {
     return new UatError(
@@ -932,13 +921,34 @@ function throwIfQuota(error, stage) {
   throw error;
 }
 
+export function readBillingSource(record, kind, id) {
+  const billing = record?.billing_source ?? record?.billingSource;
+  const normalized = typeof billing === "string" ? billing.toLowerCase() : "";
+  const observation = {
+    go: "SUBSCRIPTION_INCLUDED",
+    "go-plus": "SUBSCRIPTION_INCLUDED",
+    "go-teams": "SUBSCRIPTION_INCLUDED",
+    subscription: "SUBSCRIPTION_INCLUDED",
+    free: "FREE_ROUTE",
+    balance: "PAID_FALLBACK",
+    byok: "PAID_FALLBACK",
+  }[normalized] ?? "UNKNOWN";
+  return {
+    observation,
+    source: `${kind}:${id}`,
+  };
+}
+
 export function readActualCharge(record, kind, id) {
-  const known =
-    record?.actual_charge_known === true ||
+  const actualKnown = record?.actual_charge_known === true;
+  const providerReportedKnown =
     record?.provider_reported_actual_charge_known === true;
-  const rawMicros =
-    record?.actual_charge_micros ??
-    record?.provider_reported_actual_charge_micros;
+  const known = actualKnown || providerReportedKnown;
+  const rawMicros = actualKnown
+    ? record.actual_charge_micros
+    : providerReportedKnown
+      ? record.provider_reported_actual_charge_micros
+      : undefined;
   const billing = record?.billing_source ?? record?.billingSource;
   const normalizedBilling =
     typeof billing === "string" ? billing.toLowerCase() : null;
@@ -946,15 +956,20 @@ export function readActualCharge(record, kind, id) {
     normalizedBilling === "balance" || normalizedBilling === "byok";
 
   if (known) {
-    const micros = Number(rawMicros);
-    if (!Number.isFinite(micros) || micros < 0) {
+    if (
+      typeof rawMicros !== "number" ||
+      !Number.isSafeInteger(rawMicros) ||
+      rawMicros < 0
+    ) {
       return {
         observation: "UNKNOWN",
         micros: null,
         reason: "INVALID_ACTUAL_CHARGE_EVIDENCE",
+        fallbackObserved: paidBilling,
         source: `${kind}:${id}`,
       };
     }
+    const micros = rawMicros;
     if (micros > 0) {
       return {
         observation: "VERIFIED_POSITIVE",
@@ -993,9 +1008,9 @@ export function readActualCharge(record, kind, id) {
   if (typeof billing === "string") {
     if (["go", "go-plus", "go-teams", "subscription", "free"].includes(normalizedBilling)) {
       return {
-        observation: "VERIFIED_ZERO",
-        micros: 0,
-        provenance: `BILLING_SOURCE_${normalizedBilling.toUpperCase().replaceAll("-", "_")}`,
+        observation: "UNKNOWN",
+        micros: null,
+        reason: "BILLING_SOURCE_IS_NOT_ACTUAL_CHARGE_EVIDENCE",
         source: `${kind}:${id}`,
       };
     }
@@ -1012,10 +1027,14 @@ export function summarizeActualCharge(records) {
   const observations = records.map(({ record, kind, id }) =>
     readActualCharge(record, kind, id),
   );
+  const billingSourceObservations = records.map(({ record, kind, id }) =>
+    readBillingSource(record, kind, id),
+  );
   const positive = observations.find(
     (item) => item.observation === "VERIFIED_POSITIVE",
   );
-  const fallback = observations.find((item) => item.fallbackObserved === true);
+  const fallback = observations.find((item) => item.fallbackObserved === true) ??
+    billingSourceObservations.find((item) => item.observation === "PAID_FALLBACK");
   if (positive) {
     return {
       observation: "VERIFIED_POSITIVE",
@@ -1103,16 +1122,18 @@ export class CoreClient {
     }
     const allowed = options.allowStatuses?.includes(status) ?? false;
     if (!response.ok && !allowed) {
-      const sanitized = sanitizeErrorPayload(payload);
-      const detail = bounded(
-        redact(
-          typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized),
-          this.secrets,
-        ),
-      );
+      const reportedErrorCode =
+        payload && typeof payload === "object" && !Array.isArray(payload)
+          ? payload.code ?? payload.error
+          : null;
+      const safeCoreCode =
+        typeof reportedErrorCode === "string" &&
+        SAFE_CORE_ERROR_CODES.has(reportedErrorCode)
+          ? reportedErrorCode
+          : null;
       throw new UatError(
-        options.statusCode ?? "CORE_HTTP",
-        `Core ${method} ${path} -> ${status}: ${detail}`,
+        safeCoreCode ?? options.statusCode ?? "CORE_HTTP",
+        `Core ${method} ${path} -> ${status} (response body omitted)`,
       );
     }
     return { status, payload };
@@ -1670,7 +1691,11 @@ function safeModelCall(call) {
       call.provider_reported_actual_charge_micros ?? null,
     provider_reported_actual_charge_known:
       call.provider_reported_actual_charge_known === true,
-    billing_source: call.billing_source ?? call.billingSource ?? null,
+    billing_source_observation: readBillingSource(
+      call,
+      "model_call",
+      call.reservation_id,
+    ),
     provider: call.provider,
     model: call.model,
     purpose: call.purpose,
@@ -1752,7 +1777,7 @@ function buildFundingUsageEvidence(
   );
   const listRateMicros = configuredRateMicros + opencodeMessageCostMicros;
 
-  const actualCharge = summarizeActualCharge([
+  const chargeRecords = [
     ...leadCalls.map((record) => ({
       record,
       kind: "model_call",
@@ -1768,7 +1793,11 @@ function buildFundingUsageEvidence(
       kind: "provider_session",
       id: record.session_record_id,
     })),
-  ]);
+  ];
+  const actualCharge = summarizeActualCharge(chargeRecords);
+  const billingSourceObservations = chargeRecords.map(({ record, kind, id }) =>
+    readBillingSource(record, kind, id),
+  );
 
   const rateRevision = {
     provider_settings_revision: preflight.provider.revision ?? null,
@@ -1846,6 +1875,7 @@ function buildFundingUsageEvidence(
         is_actual_charge: false,
         is_spending_cap: false,
       },
+      provider_billing_source_observations: billingSourceObservations,
       provider_reported_actual_charge: actualCharge,
       unknown,
     },
@@ -2186,6 +2216,11 @@ async function finishExecution(client, gate, state, pre, startedAt, projection) 
             "provider_session",
             state.attempt_id,
           ),
+          billing_source_observation: readBillingSource(
+            implementer.session,
+            "provider_session",
+            state.attempt_id,
+          ),
         },
         sessions: providerSessions.map((session) => ({
           session_record_id: session.session_record_id,
@@ -2203,6 +2238,11 @@ async function finishExecution(client, gate, state, pre, startedAt, projection) 
           cost_semantics:
             "OPENCODE_LOCAL_MESSAGE_COST_ESTIMATE_NOT_A_BALANCE_CHARGE",
           actual_charge: readActualCharge(
+            session,
+            "provider_session",
+            session.session_record_id,
+          ),
+          billing_source_observation: readBillingSource(
             session,
             "provider_session",
             session.session_record_id,

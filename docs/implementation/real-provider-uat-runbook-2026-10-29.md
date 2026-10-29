@@ -434,7 +434,9 @@ authorization. Do not silently reclassify a subscription run as paid.
 - Frozen plan hash, budget observation (not authorization) and Owner rationale.
 - Implementer provider session record ID, OpenCode session ID, model, turns,
   terminal state, measured tokens, list-rate estimate, actual-charge observation
-  and cleanup receipt.
+  and cleanup receipt. Preserve `billing_source` as a separate route-source
+  observation; subscription or free route labels alone do not verify an actual
+  zero charge.
 - Lead and Reviewer model-call reservations, roles, measured tokens,
   configured-rate micros and actual-charge observation.
 - Independent verifier receipt and MODEL Reviewer receipt.
