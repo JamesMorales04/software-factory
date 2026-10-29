@@ -3892,7 +3892,6 @@ impl Database {
         }
         validate_progress_work_item_in_tx(&mut transaction, campaign_id, &checkpoint.work_item_id)
             .await?;
-        verify_progress_evidence_in_tx(&mut transaction, campaign_id, evidence).await?;
         // Durable replay guard: even if the bounded in-memory projection evicted
         // an old key, an identical artifact/outcome cannot earn progress again.
         let mut fresh_evidence = Vec::with_capacity(evidence.len());
@@ -3918,6 +3917,13 @@ impl Database {
                 fresh_evidence.push(item.clone());
             }
         }
+        verify_progress_evidence_in_tx(
+            &mut transaction,
+            campaign_id,
+            &fresh_evidence,
+            fence.map(|fence| fence.attempt_id),
+        )
+        .await?;
         let stored: Option<(String, String)> = sqlx::query_as::query_as(
             "SELECT policy_sha256,state_json FROM campaign_progress_state WHERE campaign_id=?1",
         )
@@ -3971,13 +3977,15 @@ impl Database {
             let evidence_sha256 = sha256_hex(evidence_json.as_bytes());
             let inserted = sqlx::query::query(
                 "INSERT OR IGNORE INTO progress_evidence
-                 (evidence_id,campaign_id,work_item_id,kind,artifact_ref,artifact_sha256,
-                  baseline_ref,observed_sequence,evidence_json,evidence_sha256,created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 (evidence_id,campaign_id,work_item_id,attempt_id,kind,artifact_ref,
+                  artifact_sha256,baseline_ref,observed_sequence,execution_receipt_id,
+                  evidence_json,evidence_sha256,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             )
             .bind(&item.evidence_id)
             .bind(campaign_id)
             .bind(&checkpoint.work_item_id)
+            .bind(&item.attempt_id)
             .bind(
                 serde_json::to_value(item.kind)
                     .ok()
@@ -3991,6 +3999,7 @@ impl Database {
                 i64::try_from(item.observed_sequence)
                     .map_err(|_| Error::Invalid("progress sequence overflow"))?,
             )
+            .bind(&item.execution_receipt_id)
             .bind(&evidence_json)
             .bind(&evidence_sha256)
             .bind(Utc::now().to_rfc3339())
@@ -4495,8 +4504,30 @@ async fn verify_progress_evidence_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
     evidence: &[ProgressEvidence],
+    current_attempt: Option<&str>,
 ) -> Result<(), Error> {
+    let mut receipts = std::collections::BTreeSet::new();
     for item in evidence {
+        if current_attempt.is_some_and(|attempt| item.attempt_id != attempt) {
+            return Err(Error::Forbidden(
+                "progress evidence attempt differs from the fenced worker attempt".into(),
+            ));
+        }
+        if item.kind == crate::execution_policy::ProgressKind::TestsImproved
+            && !item.execution_receipt_id.is_empty()
+            && !receipts.insert(item.execution_receipt_id.as_str())
+        {
+            return Err(Error::Forbidden(
+                "checkpoint reuses one execution receipt for multiple evidence rows".into(),
+            ));
+        }
+        if item.kind != crate::execution_policy::ProgressKind::TestsImproved
+            && !item.execution_receipt_id.is_empty()
+        {
+            return Err(Error::Forbidden(
+                "only test progress may cite an execution receipt".into(),
+            ));
+        }
         match item.kind {
             crate::execution_policy::ProgressKind::FindingsResolved => {
                 let receipts: Vec<(String, String, String, String, String, String)> =
@@ -4575,7 +4606,7 @@ async fn verify_progress_evidence_in_tx(
                 let (suite, outcome, call_id) = parse_test_receipt_ref(&item.artifact_ref)
                     .ok_or_else(|| {
                         Error::Forbidden(
-                            "test progress must cite a Core-recorded tool call id".into(),
+                            "test progress must cite a Core-recorded execution receipt".into(),
                         )
                     })?;
                 if suite != item.baseline_ref {
@@ -4583,36 +4614,15 @@ async fn verify_progress_evidence_in_tx(
                         "test progress suite and baseline identity differ".into(),
                     ));
                 }
-                let detail: Option<(String,)> = sqlx::query_as::query_as(
-                    "SELECT pte.detail
-                     FROM provider_tool_events pte
-                     JOIN provider_sessions ps ON ps.session_record_id=pte.session_record_id
-                     JOIN attempts a ON a.id=ps.attempt_id
-                     JOIN runs r ON r.id=a.run_id
-                     WHERE r.campaign_id=?1 AND pte.call_id=?2
-                       AND pte.tool='run_command' AND pte.decision='RESULT'
-                     ORDER BY pte.created_at DESC,pte.sequence DESC LIMIT 1",
+                super::execution_receipts::verify_tests_improved_evidence_in_tx(
+                    &mut *connection,
+                    campaign_id,
+                    item,
+                    suite,
+                    outcome,
+                    call_id,
                 )
-                .bind(campaign_id)
-                .bind(call_id)
-                .fetch_optional(&mut *connection)
                 .await?;
-                let Some((detail,)) = detail else {
-                    return Err(Error::Forbidden(
-                        "test progress has no Core-recorded frozen-check result".into(),
-                    ));
-                };
-                let passed = detail.contains("exit=Some(0)");
-                match outcome {
-                    "PASS" if passed => {}
-                    "FAIL" if !passed => {}
-                    _ => {
-                        return Err(Error::Forbidden(
-                            "test progress outcome does not match the Core-recorded check result"
-                                .into(),
-                        ));
-                    }
-                }
             }
             crate::execution_policy::ProgressKind::RepairValidated => {
                 let gates: Vec<(String, String, String, String)> = sqlx::query_as::query_as(
@@ -7730,35 +7740,47 @@ mod tests {
             evidence_id: format!("evidence-{sequence}"),
             campaign_id: campaign_id.into(),
             work_item_id: work_item_id.into(),
+            attempt_id: "attempt".into(),
             kind,
             artifact_ref: format!("artifact-{sequence}"),
             artifact_sha256: sha256_hex(artifact.as_bytes()),
             baseline_ref: "suite-stable".into(),
             observed_sequence: sequence,
+            execution_receipt_id: String::new(),
         }
     }
 
     fn test_evidence(
         campaign_id: &str,
         work_item_id: &str,
+        attempt_id: &str,
         sequence: u64,
-        suite: &str,
-        outcome: &str,
-        call_id: &str,
+        receipt: &crate::db::ExecutionCheckReceiptRecord,
     ) -> ProgressEvidence {
         ProgressEvidence {
-            evidence_id: format!("test-{sequence}-{outcome}"),
+            evidence_id: format!("test-{sequence}-{}", receipt.outcome),
             campaign_id: campaign_id.into(),
             work_item_id: work_item_id.into(),
+            attempt_id: attempt_id.into(),
             kind: crate::execution_policy::ProgressKind::TestsImproved,
-            artifact_ref: format!("suite:{suite}|{outcome}|{call_id}"),
-            artifact_sha256: sha256_hex(format!("{suite}-{sequence}-{outcome}").as_bytes()),
-            baseline_ref: suite.into(),
+            artifact_ref: format!(
+                "suite:{}|{}|{}",
+                receipt.suite, receipt.outcome, receipt.call_id
+            ),
+            artifact_sha256: receipt.result_sha256.clone(),
+            baseline_ref: receipt.suite.clone(),
             observed_sequence: sequence,
+            execution_receipt_id: receipt.receipt_id.clone(),
         }
     }
 
-    async fn insert_test_tool_event(db: &Database, attempt_id: &str, call_id: &str, passed: bool) {
+    async fn record_check_receipt(
+        db: &Database,
+        attempt_id: &str,
+        call_id: &str,
+        candidate_sha256: &str,
+        exit_code: i32,
+    ) -> crate::db::ExecutionCheckReceiptRecord {
         let session = format!("session-{attempt_id}");
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
@@ -7773,31 +7795,24 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        let (sequence,): (i64,) = sqlx::query_as::query_as(
-            "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events
-             WHERE session_record_id=?1",
-        )
-        .bind(&session)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        sqlx::query::query(
-            "INSERT INTO provider_tool_events
-             (session_record_id,sequence,call_id,tool,decision,detail,created_at)
-             VALUES (?1,?2,?3,'run_command','RESULT',?4,?5)",
-        )
-        .bind(&session)
-        .bind(sequence)
-        .bind(call_id)
-        .bind(if passed {
-            "exit=Some(0)"
-        } else {
-            "exit=Some(1)"
+        db.record_provider_tool_event(&ProviderToolEventInput {
+            session_record_id: session,
+            worker_id: "worker".into(),
+            generation: 1,
+            call_id: call_id.into(),
+            tool: "run_command".into(),
+            decision: "RESULT".into(),
+            detail: format!("exit={exit_code}"),
+            check: Some(crate::db::ExecutionCheckInput {
+                command: vec!["cargo".into(), "test".into()],
+                candidate_sha256: candidate_sha256.into(),
+                exit_code: Some(exit_code),
+            }),
         })
-        .bind(&now)
-        .execute(&db.pool)
         .await
-        .unwrap();
+        .unwrap()
+        .execution_check
+        .expect("execution check receipt")
     }
 
     fn progress_checkpoint(
@@ -7827,6 +7842,14 @@ mod tests {
         .await
         .unwrap();
         let allowed_paths = vec!["src".to_string()];
+        let checks = vec![crate::lead::SpecCheck {
+            id: "test".into(),
+            kind: crate::lead::CheckKind::Test,
+            description: "Frozen test".into(),
+            command: vec!["cargo".into(), "test".into()],
+            expect_exit: 0,
+            timeout_secs: 60,
+        }];
         let action = db
             .create_action_with_spec(
                 "progress-project",
@@ -7836,7 +7859,7 @@ mod tests {
                 "progress-action",
                 crate::db::ActionSpecInput {
                     allowed_paths: &allowed_paths,
-                    checks: &[],
+                    checks: &checks,
                 },
             )
             .await
@@ -8140,6 +8163,38 @@ mod tests {
         );
         assert!(!first.hold_open);
 
+        let foreign_attempt = ProgressEvidence {
+            attempt_id: "foreign-attempt".into(),
+            ..progress_evidence(
+                &campaign_id,
+                &lease.work_item_id,
+                crate::execution_policy::ProgressKind::CandidateChanged,
+                9,
+                "foreign-candidate",
+            )
+        };
+        let foreign_request = ProgressCheckpointRequest {
+            campaign_id: campaign_id.clone(),
+            work_item_id: lease.work_item_id.clone(),
+            checkpoint: progress_checkpoint(
+                &campaign_id,
+                9,
+                std::slice::from_ref(&foreign_attempt),
+            ),
+            evidence: vec![foreign_attempt],
+            gate: None,
+        };
+        let rejected = db
+            .record_worker_progress_checkpoint(
+                "progress-worker",
+                &attempt_id,
+                lease.lease.generation,
+                &foreign_request,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
         let second_request = ProgressCheckpointRequest {
             checkpoint: progress_checkpoint(&campaign_id, 2, &[]),
             ..request.clone()
@@ -8195,11 +8250,13 @@ mod tests {
             evidence_id: "sequence-seed".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::CandidateChanged,
             artifact_ref: "src/lib.rs".into(),
             artifact_sha256: sha256_hex(b"candidate"),
             baseline_ref: sha256_hex(b"empty"),
             observed_sequence: 12_345,
+            execution_receipt_id: String::new(),
         };
         db.record_progress_checkpoint(
             &campaign_id,
@@ -8303,11 +8360,13 @@ mod tests {
             evidence_id: format!("attempt-evidence-{sequence}"),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::CandidateChanged,
             artifact_ref: "src/lib.rs".into(),
             artifact_sha256: sha256_hex(content.as_bytes()),
             baseline_ref: sha256_hex(b"empty"),
             observed_sequence: sequence,
+            execution_receipt_id: String::new(),
         };
         let first = candidate(1_000, "attempt-1");
         let first_outcome = db
@@ -8487,11 +8546,13 @@ mod tests {
             evidence_id: "accepted-1".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::UnitAccepted,
             artifact_ref: "progress-candidate".into(),
             artifact_sha256: commit.clone(),
             baseline_ref: "unit".into(),
             observed_sequence: 1,
+            execution_receipt_id: String::new(),
         };
         let gate = crate::progress::GateRecord {
             gate_id: "progress-candidate".into(),
@@ -8576,11 +8637,13 @@ mod tests {
             evidence_id: "raw-commit-accepted".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::UnitAccepted,
             artifact_ref: "raw-commit-candidate".into(),
             artifact_sha256: digest.clone(),
             baseline_ref: "unit".into(),
             observed_sequence: 1,
+            execution_receipt_id: String::new(),
         };
         let gate = crate::progress::GateRecord {
             gate_id: "raw-commit-candidate".into(),
@@ -8826,11 +8889,13 @@ mod tests {
             evidence_id: "finding-evidence".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::FindingsResolved,
             artifact_ref: "finding-1".into(),
             artifact_sha256: sha256_hex(resolved_commit.as_bytes()),
             baseline_ref: open_commit.clone(),
             observed_sequence: 1,
+            execution_receipt_id: String::new(),
         };
         // Existing open finding with no later PASS is not resolution.
         let unresolved = db
@@ -8882,11 +8947,13 @@ mod tests {
             evidence_id: "repair-evidence".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::RepairValidated,
             artifact_ref: "open-candidate".into(),
             artifact_sha256: sha256_hex(open_commit.as_bytes()),
             baseline_ref: "open-candidate".into(),
             observed_sequence: 3,
+            execution_receipt_id: String::new(),
         };
         let repair_required_only = db
             .record_progress_checkpoint(
@@ -8913,11 +8980,13 @@ mod tests {
             evidence_id: "repair-validated".into(),
             campaign_id: campaign_id.clone(),
             work_item_id: campaign_id.clone(),
+            attempt_id: "attempt".into(),
             kind: crate::execution_policy::ProgressKind::RepairValidated,
             artifact_ref: "resolved-candidate".into(),
             artifact_sha256: sha256_hex(resolved_commit.as_bytes()),
             baseline_ref: "open-candidate".into(),
             observed_sequence: 4,
+            execution_receipt_id: String::new(),
         };
         let accepted = db
             .record_progress_checkpoint(
@@ -8938,37 +9007,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_progress_requires_a_matching_core_recorded_check_result() {
+    async fn test_progress_requires_a_bound_execution_receipt() {
         let (path, db, _) = fixture().await;
         let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
-        let missing = test_evidence(
-            &campaign_id,
-            &campaign_id,
-            1,
-            "suite-a",
-            "PASS",
-            "invented-call",
-        );
+        let invented = ProgressEvidence {
+            evidence_id: "invented-receipt".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            attempt_id: attempt_id.clone(),
+            kind: crate::execution_policy::ProgressKind::TestsImproved,
+            artifact_ref: "suite:check:cargo\u{0}test|PASS|invented-call".into(),
+            artifact_sha256: "d".repeat(64),
+            baseline_ref: "check:cargo\u{0}test".into(),
+            observed_sequence: 1,
+            execution_receipt_id: "invented-receipt".into(),
+        };
         let error = db
             .record_progress_checkpoint(
                 &campaign_id,
-                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&missing)),
-                std::slice::from_ref(&missing),
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&invented)),
+                std::slice::from_ref(&invented),
                 None,
             )
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
 
-        insert_test_tool_event(&db, &attempt_id, "failed-check", false).await;
-        let wrong_outcome = test_evidence(
-            &campaign_id,
-            &campaign_id,
-            2,
-            "suite-a",
-            "PASS",
+        let failed = record_check_receipt(
+            &db,
+            &attempt_id,
             "failed-check",
-        );
+            &sha256_hex(b"candidate-fail"),
+            1,
+        )
+        .await;
+        let mut wrong_outcome = test_evidence(&campaign_id, &campaign_id, &attempt_id, 2, &failed);
+        wrong_outcome.artifact_ref = format!("suite:{}|PASS|{}", failed.suite, failed.call_id);
         let error = db
             .record_progress_checkpoint(
                 &campaign_id,
@@ -8979,6 +9053,264 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_progress_accepts_a_bound_fail_to_pass_receipt() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let failed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "bound-fail",
+            &sha256_hex(b"candidate-before"),
+            1,
+        )
+        .await;
+        let passed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "bound-pass",
+            &sha256_hex(b"candidate-after"),
+            0,
+        )
+        .await;
+        let evidence = [
+            test_evidence(&campaign_id, &campaign_id, &attempt_id, 1, &failed),
+            test_evidence(&campaign_id, &campaign_id, &attempt_id, 2, &passed),
+        ];
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &evidence),
+                &evidence,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{outcome:?}"
+        );
+        assert_eq!(
+            outcome.decision,
+            crate::execution_policy::ContinuationDecision::Continue
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_progress_rejects_relabelled_or_foreign_receipts() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let failed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "relabel-fail",
+            &sha256_hex(b"candidate-a"),
+            1,
+        )
+        .await;
+        assert_eq!(failed.outcome, "FAIL");
+        let passed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "relabel-pass",
+            &sha256_hex(b"candidate-b"),
+            0,
+        )
+        .await;
+
+        let false_suite = ProgressEvidence {
+            artifact_ref: format!("suite:check:not-frozen|PASS|{}", passed.call_id),
+            baseline_ref: "check:not-frozen".into(),
+            ..test_evidence(&campaign_id, &campaign_id, &attempt_id, 1, &passed)
+        };
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&false_suite)),
+                std::slice::from_ref(&false_suite),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let altered = ProgressEvidence {
+            artifact_sha256: "d".repeat(64),
+            ..test_evidence(&campaign_id, &campaign_id, &attempt_id, 2, &passed)
+        };
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&altered)),
+                std::slice::from_ref(&altered),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let foreign_attempt = ProgressEvidence {
+            attempt_id: "foreign-attempt".into(),
+            ..test_evidence(&campaign_id, &campaign_id, &attempt_id, 3, &passed)
+        };
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 3, std::slice::from_ref(&foreign_attempt)),
+                std::slice::from_ref(&foreign_attempt),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let pass_again = record_check_receipt(
+            &db,
+            &attempt_id,
+            "relabel-pass-again",
+            &sha256_hex(b"candidate-b"),
+            0,
+        )
+        .await;
+        let unchanged_pass = test_evidence(&campaign_id, &campaign_id, &attempt_id, 4, &pass_again);
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 4, std::slice::from_ref(&unchanged_pass)),
+                std::slice::from_ref(&unchanged_pass),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let same_candidate = sha256_hex(b"candidate-same");
+        let fail_same =
+            record_check_receipt(&db, &attempt_id, "relabel-fail-same", &same_candidate, 1).await;
+        let pass_same =
+            record_check_receipt(&db, &attempt_id, "relabel-pass-same", &same_candidate, 0).await;
+        assert_eq!(fail_same.candidate_sha256, pass_same.candidate_sha256);
+        let unchanged_candidate =
+            test_evidence(&campaign_id, &campaign_id, &attempt_id, 5, &pass_same);
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 5, std::slice::from_ref(&unchanged_candidate)),
+                std::slice::from_ref(&unchanged_candidate),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO lead_integrations
+             (integration_id,campaign_id,purpose,next_task_id,attempt_id,status,
+              candidates_json,candidate_id,created_at,updated_at)
+             VALUES ('foreign-unit',?1,'FANIN','',?2,'PENDING','[]',NULL,?3,?3)",
+        )
+        .bind(&campaign_id)
+        .bind(&attempt_id)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let cross_work_item = test_evidence(&campaign_id, "foreign-unit", &attempt_id, 6, &passed);
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint("foreign-unit", 6, std::slice::from_ref(&cross_work_item)),
+                std::slice::from_ref(&cross_work_item),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_progress_rejects_consumed_receipt_relabelling() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let failed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "consume-fail",
+            &sha256_hex(b"consume-before"),
+            1,
+        )
+        .await;
+        let passed = record_check_receipt(
+            &db,
+            &attempt_id,
+            "consume-pass",
+            &sha256_hex(b"consume-after"),
+            0,
+        )
+        .await;
+        let evidence = [
+            test_evidence(&campaign_id, &campaign_id, &attempt_id, 1, &failed),
+            test_evidence(&campaign_id, &campaign_id, &attempt_id, 2, &passed),
+        ];
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &evidence),
+                &evidence,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{outcome:?}"
+        );
+
+        // A fresh evidence id and a fresh call id cannot relabel the consumed
+        // PASS receipt as a new improvement.
+        let mut relabelled = test_evidence(&campaign_id, &campaign_id, &attempt_id, 3, &passed);
+        relabelled.evidence_id = "relabelled-evidence".into();
+        relabelled.artifact_ref = format!("suite:{}|PASS|relabelled-call", passed.suite);
+        let rejected = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 3, std::slice::from_ref(&relabelled)),
+                std::slice::from_ref(&relabelled),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
+        // A fresh evidence id with the identical artifact identity is a replay
+        // and cannot earn verified progress again.
+        let mut replay = test_evidence(&campaign_id, &campaign_id, &attempt_id, 4, &passed);
+        replay.evidence_id = "fresh-evidence-id".into();
+        let replay_outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 4, std::slice::from_ref(&replay)),
+                std::slice::from_ref(&replay),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            replay_outcome.classification,
+            crate::progress::CheckpointClassification::Verified,
+            "{replay_outcome:?}"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -9008,11 +9340,13 @@ mod tests {
                 evidence_id: format!("forged-{kind:?}"),
                 campaign_id: campaign_id.clone(),
                 work_item_id: campaign_id.clone(),
+                attempt_id: "attempt".into(),
                 kind,
                 artifact_ref: artifact_ref.into(),
                 artifact_sha256,
                 baseline_ref: "invented-baseline".into(),
                 observed_sequence: 1,
+                execution_receipt_id: String::new(),
             };
             let error = db
                 .record_progress_checkpoint(
@@ -9035,27 +9369,32 @@ mod tests {
         let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
         for zone in 0..5u64 {
             let sequence = zone * 2 + 1;
-            let fail_call = format!("fail-{zone}");
-            let pass_call = format!("pass-{zone}");
-            let failed = test_evidence(
-                &campaign_id,
-                &campaign_id,
-                sequence,
-                "suite-stable",
-                "FAIL",
-                &fail_call,
-            );
-            let passed = test_evidence(
-                &campaign_id,
-                &campaign_id,
-                sequence + 1,
-                "suite-stable",
-                "PASS",
-                &pass_call,
-            );
-            insert_test_tool_event(&db, &attempt_id, &fail_call, false).await;
-            insert_test_tool_event(&db, &attempt_id, &pass_call, true).await;
-            let evidence = [failed, passed];
+            let failed = record_check_receipt(
+                &db,
+                &attempt_id,
+                &format!("fail-{zone}"),
+                &sha256_hex(format!("candidate-fail-{zone}").as_bytes()),
+                1,
+            )
+            .await;
+            let passed = record_check_receipt(
+                &db,
+                &attempt_id,
+                &format!("pass-{zone}"),
+                &sha256_hex(format!("candidate-pass-{zone}").as_bytes()),
+                0,
+            )
+            .await;
+            let evidence = [
+                test_evidence(&campaign_id, &campaign_id, &attempt_id, sequence, &failed),
+                test_evidence(
+                    &campaign_id,
+                    &campaign_id,
+                    &attempt_id,
+                    sequence + 1,
+                    &passed,
+                ),
+            ];
             let outcome = db
                 .record_progress_checkpoint(
                     &campaign_id,

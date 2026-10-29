@@ -15,6 +15,11 @@
 //! because evidence identity, outcome digests, candidate history, blocker keys
 //! and resolved findings are part of that snapshot.
 //!
+//! `TestsImproved` evidence is additionally bound to an immutable Core
+//! execution receipt (`execution_receipt_id`) recorded when the Worker ran the
+//! exact frozen command for that Attempt and work item. A caller-supplied suite
+//! label, call id or digest alone never creates a verified test transition.
+//!
 //! Core integration contract (Director owns `bin/core.rs` wiring):
 //! - `POST /worker/progress_checkpoint` (Worker session auth): body
 //!   `{ attempt_id, worker_id, generation, campaign_id, work_item_id,
@@ -933,6 +938,18 @@ fn validate_evidence(
             "evidence work item differs from the checkpoint".into(),
         ));
     }
+    if evidence.attempt_id.trim().is_empty() {
+        return Err(ProgressError::InvalidEvidence(
+            "evidence attempt identity is empty".into(),
+        ));
+    }
+    if evidence.kind == ProgressKind::TestsImproved
+        && evidence.execution_receipt_id.trim().is_empty()
+    {
+        return Err(ProgressError::InvalidEvidence(
+            "test evidence requires an execution receipt".into(),
+        ));
+    }
     if !is_sha256(&evidence.artifact_sha256) {
         return Err(ProgressError::InvalidEvidence(
             "artifactSha256 is not a lowercase SHA-256".into(),
@@ -1003,11 +1020,13 @@ mod tests {
             evidence_id: format!("ev-{sequence}-{kind:?}"),
             campaign_id: "campaign".into(),
             work_item_id: "unit-1".into(),
+            attempt_id: "attempt-1".into(),
             kind,
             artifact_ref: format!("artifact-{sequence}"),
             artifact_sha256: sha(artifact),
             baseline_ref: baseline.into(),
             observed_sequence: sequence,
+            execution_receipt_id: String::new(),
         }
     }
 
@@ -1016,11 +1035,13 @@ mod tests {
             evidence_id: format!("ev-{sequence}-{outcome}"),
             campaign_id: "campaign".into(),
             work_item_id: "unit-1".into(),
+            attempt_id: "attempt-1".into(),
             kind: ProgressKind::TestsImproved,
             artifact_ref: format!("suite:{suite}:{outcome}"),
             artifact_sha256: sha(&format!("{suite}-{sequence}-{outcome}")),
             baseline_ref: suite.into(),
             observed_sequence: sequence,
+            execution_receipt_id: format!("receipt-{sequence}-{outcome}"),
         }
     }
 

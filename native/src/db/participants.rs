@@ -1705,6 +1705,7 @@ mod tests {
                     tool: tool.into(),
                     decision: decision.into(),
                     detail: detail.into(),
+                    check: None,
                 })
                 .await
                 .unwrap();

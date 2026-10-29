@@ -1789,7 +1789,7 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        let spec = r#"{"schema_version":1,"project_id":"project","repository":"/fixture","base_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","objective":"objective","objective_sha256":"hash","provider":"opencode","model":"deepseek-v4.1-flash","allowed_paths":["src"],"checks":[]}"#;
+        let spec = r#"{"schema_version":1,"project_id":"project","repository":"/fixture","base_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","objective":"objective","objective_sha256":"hash","provider":"opencode","model":"deepseek-v4.1-flash","allowed_paths":["src"],"checks":[{"id":"test","kind":"test","description":"test","command":["cargo","test"],"expectExit":0,"timeoutSecs":60}]}"#;
         sqlx::query::query(
             "INSERT INTO action_specs(action_id,spec_json,spec_sha256) VALUES ('action',?1,?2)",
         )
@@ -1966,6 +1966,7 @@ mod tests {
                 tool: "run_command".into(),
                 decision: "REQUEST".into(),
                 detail: "bounded tool request".into(),
+                check: None,
             })
             .await
             .unwrap();
@@ -2597,6 +2598,7 @@ mod tests {
                 tool: "write_file".into(),
                 decision: "REQUEST".into(),
                 detail: "requested".into(),
+                check: None,
             })
             .await
             .unwrap();
@@ -2612,6 +2614,7 @@ mod tests {
             tool: "write_file".into(),
             decision: "REQUEST".into(),
             detail: "requested".into(),
+            check: None,
         })
         .await
         .unwrap();
@@ -2624,10 +2627,103 @@ mod tests {
                 tool: "write_file".into(),
                 decision: "REQUEST".into(),
                 detail: "duplicate".into(),
+                check: None,
             })
             .await,
             Err(Error::Conflict(_))
         ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn execution_check_receipts_bind_the_frozen_command_and_candidate() {
+        let (path, db) = fixture(100).await;
+        insert_session(&db, "session-check", "attempt").await;
+        db.mark_provider_active("session-check", "worker", 1, "ses_check", "/tmp/check")
+            .await
+            .unwrap();
+        let record = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-call".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["cargo".into(), "test".into()],
+                    candidate_sha256: "c".repeat(64),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap();
+        let receipt = record.execution_check.expect("execution receipt");
+        assert_eq!(receipt.suite, "check:cargo\u{0}test");
+        assert_eq!(receipt.outcome, "PASS");
+        assert_eq!(receipt.candidate_sha256, "c".repeat(64));
+        assert_eq!(receipt.result_sha256.len(), 64);
+
+        let missing = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-missing".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(missing, Error::Forbidden(_)), "{missing:?}");
+
+        let false_command = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-false".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["false".into()],
+                    candidate_sha256: "c".repeat(64),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(false_command, Error::Forbidden(_)),
+            "{false_command:?}"
+        );
+
+        let bad_candidate = db
+            .record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: "session-check".into(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: "check-bad-candidate".into(),
+                tool: "run_command".into(),
+                decision: "RESULT".into(),
+                detail: "exit=Some(0)".into(),
+                check: Some(ExecutionCheckInput {
+                    command: vec!["cargo".into(), "test".into()],
+                    candidate_sha256: "not-a-digest".into(),
+                    exit_code: Some(0),
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(bad_candidate, Error::Invalid(_)),
+            "{bad_candidate:?}"
+        );
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -2810,6 +2906,10 @@ pub struct ProviderToolEventInput {
     pub tool: String,
     pub decision: String,
     pub detail: String,
+    /// Present for `run_command` RESULTS. Core validates the command against
+    /// the frozen Attempt spec and records an immutable execution receipt.
+    #[serde(default)]
+    pub check: Option<super::execution_receipts::ExecutionCheckInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2821,6 +2921,8 @@ pub struct ProviderToolEventRecord {
     pub decision: String,
     pub detail: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_check: Option<super::execution_receipts::ExecutionCheckReceiptRecord>,
 }
 
 impl Database {
@@ -2893,6 +2995,24 @@ impl Database {
         .bind(&created_at)
         .execute(&mut *transaction)
         .await?;
+        let execution_check = if input.tool == "run_command" && input.decision == "RESULT" {
+            let check = input.check.as_ref().ok_or(Error::Forbidden(
+                "run_command result requires an execution check receipt".into(),
+            ))?;
+            Some(
+                super::execution_receipts::record_execution_check_receipt_in_tx(
+                    &mut transaction,
+                    &input.session_record_id,
+                    sequence,
+                    input.generation,
+                    &input.call_id,
+                    check,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         record_event(
             &mut transaction,
             &input.session_record_id,
@@ -2912,6 +3032,7 @@ impl Database {
             decision: input.decision.clone(),
             detail: input.detail.clone(),
             created_at,
+            execution_check,
         })
     }
 
@@ -2939,6 +3060,7 @@ impl Database {
                         decision,
                         detail,
                         created_at,
+                        execution_check: None,
                     }
                 },
             )

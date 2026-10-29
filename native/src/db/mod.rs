@@ -882,7 +882,9 @@ pub use participants::{
     ParticipantRoute, ParticipantSession, ParticipantSource, ParticipantUsage,
     ProviderSessionContext, ProviderToolEventProjection, ProviderToolEventView,
 };
+mod execution_receipts;
 mod project_configs;
+pub use execution_receipts::{ExecutionCheckInput, ExecutionCheckReceiptRecord};
 mod provider_sessions;
 mod provider_settings;
 pub use provider_settings::{ProviderSettingsAudit, ProviderSettingsRecord, ProviderSettingsWrite};
