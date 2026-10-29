@@ -795,6 +795,14 @@ capabilities:
     - office/src/App.tsx
     - office/src/views/AgentOffice.tsx
     - office/src/components/office/AgentOfficeFloor.tsx
+    - office/src/components/office/AgentOfficeIsometric.tsx
+    - office/src/components/office/OfficeAvatar.tsx
+    - office/src/components/office/OfficeAvatarFigure.tsx
+    - office/src/components/office/OfficeRoomBackdrop.tsx
+    - office/src/components/office/OfficeRoomFurniture.tsx
+    - office/src/components/office/OfficeStudioShell.tsx
+    - office/src/components/office/officeAvatarAppearance.ts
+    - office/src/components/office/officeSceneLayout.ts
     - office/src/components/office/ParticipantInspector.tsx
     - office/src/views/Issues.tsx
     - office/src/views/issues.css
@@ -805,6 +813,9 @@ capabilities:
     test:
     - office/src/views/Campaigns.tsx
     - office/src/views/AgentOffice.test.tsx
+    - office/src/components/office/AgentOfficeIsometric.test.tsx
+    - office/src/components/office/officeAvatarAppearance.test.ts
+    - office/src/components/office/officeSceneLayout.test.ts
     - office/src/views/Issues.test.tsx
     - native/src/db/participants.rs
     - native/src/github.rs
@@ -827,6 +838,7 @@ capabilities:
   - Campaign and Lead labels can remain AUTHORIZED/RUNNING after an ACCEPTED Run; the gate and Run states are authoritative.
   - Agent Office is read-only; it does not expose stop, model switching, budget changes or tool invocation.
   - Provider-session liveness is represented by recorded lease state only; external provider state is not independently verified.
+  - Agent Office V3 covers deterministic layouts and unique avatar appearances through the current 200-participant projection. Renderer fixture captures are not live Core or inspector acceptance; the original vector scene remains less painterly and spatially rich than the approved reference. Product Owner visual approval and authenticated Agent Office browser acceptance remain pending.
   - GitHub issue synchronization is read-only and bounded; governed intake/board ordering, issue writing, comments, Action/Campaign relationships and a real authorized GitHub call remain not tested. The Issues view is wired at /issues; real browser acceptance is pending.
   blockers: []
 - id: CAP-012
