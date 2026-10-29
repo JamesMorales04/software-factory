@@ -4264,7 +4264,19 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, i64::from(applied) + 1);
+        let expected_extra = std::fs::read_dir(&repo_migrations)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.split_once('_')
+                    .and_then(|(prefix, _)| prefix.parse::<u32>().ok())
+                    .is_some_and(|version| version > 35)
+                    && name.ends_with(".sql")
+            })
+            .count() as i64;
+        assert_eq!(migration_count, i64::from(applied) + expected_extra);
         let (model_state, dispatch, provider_request): (String, Option<i64>, Option<String>) =
             sqlx::query_as::query_as(
                 "SELECT state,dispatched_at_ms,provider_request_id FROM model_call_reservations
@@ -4456,7 +4468,17 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, i64::from(applied) + 2);
+        let expected_total = std::fs::read_dir(&repo_migrations)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "sql")
+            })
+            .count() as i64;
+        assert_eq!(migration_count, expected_total);
         let model_call: (String, i64, Option<String>) = sqlx::query_as::query_as(
             "SELECT state,cost_micros,ledger_reservation_id FROM model_call_reservations
              WHERE reservation_id='legacy-call'",
