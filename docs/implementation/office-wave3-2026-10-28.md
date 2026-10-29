@@ -222,6 +222,34 @@ The owner's generated pack is now repository-accessible at
 isometric renderer composes original SVG/DOM geometry; no Game Dev Tycoon assets
 are used. Owner visual approval remains outstanding.
 
+## 10. Integration-blocker status (2026-10-28, post-review)
+
+**Migration numbering resolved.** Policy owns `0034`; ledger owns `0035`;
+policy progress holds are `0036`; the ledger repair is `0037` (renamed from a
+duplicate `0036`). The full `0001…0037` chain applies cleanly with
+`PRAGMA foreign_key_check` empty and `integrity_check = ok`.
+
+**Integrated candidate** `4912ef0` (P + I + C + L merged):
+`cargo test -p factory-native --lib` → **467 passed, 0 failed, 2 ignored**.
+One browser test was flaky on an earlier run and passed on rerun; it is not
+claimed as stable evidence.
+
+**Remaining independent-review blocks (exact reviewed SHAs):**
+
+| Lane | Reviewed SHA | Verdict | Remaining finding |
+|---|---|---|---|
+| C #72 | `de31135` | Sol BLOCK / Luna BLOCK | policy JSON decoder mismatch; progress not durable across attempts; fake progress from unchanged checks; V2 egress; `max_turns*8`; Core wiring |
+| L #73 | `8cba5ad` | Sol BLOCK | existing bound campaigns default to V1 on upgrade; quote token envelope does not bound the dispatched request; stale pricing remains eligible; V2 cumulative token caps |
+| I #70 | `cd0c1ef` | Luna BLOCK | inspector still uses the raw first duplicate instead of the layout winner |
+| P #59 | `0ae58f4`/`278688f` | Luna APPROVE WITH CONDITIONS | resolved; live inference not authorized |
+
+Repairs are active on the same lanes. A separate Core-wiring worktree
+(`factory/core-wiring/20261028`, base `a12aa38`) is implementing the
+Director-owned `bin/core.rs` envelope/authorization wiring.
+
+**Not accepted, not merged to `main`.** The ordered `0034→0035` populated
+upgrade, Core binary tests, Compose E2E and live-provider proof remain gates.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
