@@ -28,6 +28,22 @@ not reproduce: rootless Podman on this btrfs host built all product images and
 started every Compose service, including the nested runtime engine. Therefore
 the real run is reported, not a CI-only fallback.
 
+### Base product start (no test override)
+
+The unmodified product topology was also started independently on
+`http://127.0.0.1:8899` with:
+
+```sh
+podman compose -p software-factory-uat60-base -f compose.yaml up -d --build
+```
+
+Core, Supervisor, the runtime broker and Office became healthy; the Worker
+registered (`compose-worker`); `FACTORY_PROVIDER_KIND` resolved to the
+fail-closed live route `opencode` in both Worker and runtime. No provider
+credential was configured, no request was created and no inference or execution
+was performed. See `base-product-start.json`. This proves product startup on
+this host; it does **not** certify live inference.
+
 ## Exact command
 
 ```sh
@@ -117,6 +133,11 @@ measurements inside the 5,000,000-micros request envelope; they are not paid
 provider spend. The implementer session usage (40 input / 80 output, 400
 micros) is deterministic fixture usage, not live inference.
 
+The Core V2 spending ledger confirms the boundary: authorized `5,000,000`
+micros, settled `4` micros total, available `4,999,996`, with `IMPLEMENTER`
+settled at `0`. The only billable-route reservations are the Lead assessment
+and the semantic reviewer, both served by the deterministic model fixture.
+
 ## Screenshots (1440 and 390)
 
 All files are in this directory. Every capture is the real Office served by the
@@ -192,6 +213,19 @@ those captures. They do invalidate any claim of complete Office completeness.
 action, plan, campaign, attempt, candidate, receipt and Gate identities, the
 assertion map, the two findings, the screenshot list, the browser console
 classification, the exact commands and the honest evidence boundary.
+
+Supporting records from the same run:
+
+- [`core-projections.json`](core-projections.json) — exact Core projections for
+  the request (including the V2 spending ledger), Campaign, Gate, receipts,
+  participants, model calls and candidate diff.
+- [`stack-health.json`](stack-health.json) — Core, Supervisor, runtime broker,
+  Worker registration and model-fixture health.
+- [`runtime-broker-excerpt.txt`](runtime-broker-excerpt.txt) — real nested
+  provider container and child executions, including the expected negative
+  check exit 1.
+- [`base-product-start.json`](base-product-start.json) — the separately started
+  unmodified product topology, health checks and fail-closed provider kinds.
 
 ## Unverified / explicitly not claimed
 

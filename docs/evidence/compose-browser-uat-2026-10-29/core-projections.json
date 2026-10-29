@@ -1,0 +1,1552 @@
+{
+  "schema": "factory.compose-browser-uat.core-projections.v1",
+  "intake_request": {
+    "actionId": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+    "assessment": {
+      "actionId": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+      "assumptions": [
+        "Deterministic Compose model fixture."
+      ],
+      "changeImpact": [
+        "src"
+      ],
+      "complexity": "small",
+      "effortEstimate": {
+        "assumptions": [
+          "Single deterministic Compose unit."
+        ],
+        "maxPersonHours": 2,
+        "minPersonHours": 1,
+        "status": "estimated",
+        "unit": "person-hours",
+        "unknownReason": ""
+      },
+      "evidenceRefs": [
+        "repository-files"
+      ],
+      "intent": "change",
+      "knowledgeGaps": [],
+      "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+      "proposal": {
+        "acceptanceCriteria": [
+          {
+            "command": [
+              "true"
+            ],
+            "description": "deterministic build",
+            "expectExit": 0,
+            "id": "build",
+            "kind": "build",
+            "timeoutSecs": 30
+          },
+          {
+            "command": [
+              "true"
+            ],
+            "description": "deterministic test",
+            "expectExit": 0,
+            "id": "test",
+            "kind": "test",
+            "timeoutSecs": 30
+          },
+          {
+            "command": [
+              "grep",
+              "-q",
+              "provider candidate",
+              "src/provider.txt"
+            ],
+            "description": "provider candidate content exists",
+            "expectExit": 0,
+            "id": "functional",
+            "kind": "functional",
+            "timeoutSecs": 30
+          }
+        ],
+        "actionId": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "assumptions": [
+          "Deterministic Compose model fixture; not live inference."
+        ],
+        "baseRevision": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+        "budget": {
+          "maxAttempts": 1,
+          "timeoutSecs": 300
+        },
+        "class": "feature",
+        "maxParallel": 1,
+        "maxRepairCycles": 0,
+        "maxSessions": 2,
+        "maxWallClockSecs": 600,
+        "negativeCases": [
+          {
+            "command": [
+              "grep",
+              "-q",
+              "absent",
+              "src/provider.txt"
+            ],
+            "description": "absent content is rejected",
+            "expectExit": 1,
+            "id": "negative",
+            "kind": "negative",
+            "timeoutSecs": 30
+          }
+        ],
+        "objective": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+        "projectConfigHash": "010395dd48610df38ab112571ef7c43c7542d669940c5dc9da143b87642df551",
+        "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+        "qualityProfile": "generic",
+        "riskClass": "R0",
+        "risks": [
+          "Model output is test data."
+        ],
+        "route": {
+          "mode": "build",
+          "model": "deepseek-v4.1-flash",
+          "provider": "opencode-go"
+        },
+        "workUnits": [
+          {
+            "acceptanceCriteria": [],
+            "allowedPaths": [
+              "src"
+            ],
+            "capabilities": [
+              "repository-edit",
+              "generic-toolchain"
+            ],
+            "dependsOn": [],
+            "description": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+            "id": "unit-1",
+            "kind": "implementation",
+            "negativeCases": []
+          }
+        ]
+      },
+      "requestId": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+      "schemaRevision": 1,
+      "suggestedNextAction": "Freeze and approve the plan.",
+      "uncertainty": [
+        "Not live provider inference."
+      ],
+      "validationNeeds": [
+        "Run the frozen checks."
+      ]
+    },
+    "authorization": {
+      "available": false,
+      "reason": null,
+      "required": false
+    },
+    "campaign": {
+      "attempts": [
+        {
+          "created_at": "2026-10-29T14:15:58.741676772+00:00",
+          "id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+          "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+          "status": "CANDIDATE_READY"
+        }
+      ],
+      "authorization": {
+        "actor": "Wave 3 Compose Browser UAT",
+        "allowedTools": [
+          "run_command",
+          "write_file"
+        ],
+        "authorizationId": "intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "authorizedPaths": [
+          "src"
+        ],
+        "campaignId": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "createdAt": "2026-10-29T14:15:58.742236024+00:00",
+        "delegationId": "6c3f0735-dd29-4ade-89b4-eb30db9529a7",
+        "executionMode": "TRUSTED_LOCAL_PROVIDER",
+        "legacy": null,
+        "model": "deepseek-v4.1-flash",
+        "policy": {
+          "authorizationId": "intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "monetaryEnvelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+          "operations": {
+            "maxGenerationTokens": 8192,
+            "maxInFlightOperations": 2,
+            "maxRequestBytes": 2097152,
+            "maxResponseBytes": 2097152,
+            "modelRequestTimeoutSecs": 300,
+            "toolCallTimeoutSecs": 600
+          },
+          "policyId": "policy:intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "progress": {
+            "diagnoseAfterStagnantCheckpoints": 2,
+            "escalateAfterUnsuccessfulReplans": 1,
+            "observationTimeoutSecs": 300
+          },
+          "scopeSha256": "e204ef91fcf4e101da9e3cd38c42391f12d4a599c89e2c1080fd52f303d46b0b"
+        },
+        "provider": "opencode-go",
+        "providerMode": "build",
+        "rationale": "operator device:ccb21e25-4a52-4a52-a667-6912cced9fa9: Reviewed the exact frozen Compose browser UAT plan.",
+        "riskClass": "R0",
+        "schemaVersion": 2
+      },
+      "campaign": {
+        "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "created_at": "2026-10-29T14:15:58.741676772+00:00",
+        "id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "status": "AUTHORIZED"
+      },
+      "candidates": [
+        {
+          "action_spec_sha256": "b5de1d3471148364600ac3e72e8f4669625a77c72611ec4e599f127fe053cb48",
+          "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+          "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+          "created_at": "2026-10-29T14:16:02.718794873+00:00",
+          "id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+          "implementer_id": "compose-worker",
+          "integration": false,
+          "lineage": [],
+          "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e"
+        }
+      ],
+      "events": [
+        {
+          "detail": "V2 authority recorded; non-autonomous scope with technical operation limits",
+          "kind": "delegation.recorded",
+          "recorded_at": "2026-10-29T14:15:56.259540964+00:00",
+          "sequence": 7,
+          "subject_id": "6c3f0735-dd29-4ade-89b4-eb30db9529a7"
+        },
+        {
+          "detail": "project=459ee709-8c56-448e-a350-41742bc8634c profile=0b8510de-964e-4962-9c61-d33be2130458 revision=1 actor=Wave 3 Compose Browser UAT non_autonomous=true",
+          "kind": "execution_policy.granted",
+          "recorded_at": "2026-10-29T14:15:56.259677974+00:00",
+          "sequence": 8,
+          "subject_id": "6c3f0735-dd29-4ade-89b4-eb30db9529a7"
+        },
+        {
+          "detail": "assessment session reserved; no executable ActionSpec or Campaign start",
+          "kind": "lead.request_created",
+          "recorded_at": "2026-10-29T14:15:57.358101941+00:00",
+          "sequence": 10,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "Submitted->Assessing",
+          "kind": "lead.state_changed",
+          "recorded_at": "2026-10-29T14:15:57.558800975+00:00",
+          "sequence": 12,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "role=LEAD reservation=f59c9620-55be-4c0c-b2d0-7d50595cce87 provider=opencode-go model=deepseek-v4.1-flash input=9192 output=8192 cost=224",
+          "kind": "model.call_authorized",
+          "recorded_at": "2026-10-29T14:15:57.561526822+00:00",
+          "sequence": 13,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "role=LEAD reservation=f59c9620-55be-4c0c-b2d0-7d50595cce87 state=SETTLED input=500 output=500 total=1000 cost=2",
+          "kind": "model.call_settled",
+          "recorded_at": "2026-10-29T14:15:57.565591623+00:00",
+          "sequence": 14,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "913f4023-e839-40a8-8f36-065cdcfdae40",
+          "kind": "lead.assessment_recorded",
+          "recorded_at": "2026-10-29T14:15:57.570681480+00:00",
+          "sequence": 15,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "f1b639b2-11f9-41b4-84bb-a3cf7df9174d",
+          "kind": "lead.proposal_recorded",
+          "recorded_at": "2026-10-29T14:15:57.571339801+00:00",
+          "sequence": 16,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937",
+          "kind": "lead.plan_frozen",
+          "recorded_at": "2026-10-29T14:15:57.572616295+00:00",
+          "sequence": 18,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "Frozen->Ready",
+          "kind": "lead.state_changed",
+          "recorded_at": "2026-10-29T14:15:57.572697539+00:00",
+          "sequence": 19,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f policy=policy:intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f risk=R0 mode=TRUSTED_LOCAL_PROVIDER",
+          "kind": "campaign.authorized",
+          "recorded_at": "2026-10-29T14:15:58.742740983+00:00",
+          "sequence": 20,
+          "subject_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f"
+        },
+        {
+          "detail": "OPERATOR TRUSTED_LOCAL_PROVIDER start for plan 2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937 authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "kind": "campaign.started",
+          "recorded_at": "2026-10-29T14:15:58.744095486+00:00",
+          "sequence": 21,
+          "subject_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f"
+        },
+        {
+          "detail": "OPERATOR principal=device:ccb21e25-4a52-4a52-a667-6912cced9fa9 authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "kind": "lead.approved",
+          "recorded_at": "2026-10-29T14:15:58.744119602+00:00",
+          "sequence": 22,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "TRUSTED_LOCAL_PROVIDER campaign=3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "kind": "lead.started",
+          "recorded_at": "2026-10-29T14:15:58.744138918+00:00",
+          "sequence": 23,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "status=RUNNING attempt=7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+          "kind": "run.status_changed",
+          "recorded_at": "2026-10-29T14:15:59.101213203+00:00",
+          "sequence": 24,
+          "subject_id": "692e45b5-c802-401f-b809-4b14fac2b7a7"
+        },
+        {
+          "detail": "generation=1",
+          "kind": "worker.claimed",
+          "recorded_at": "2026-10-29T14:15:59.101245775+00:00",
+          "sequence": 25,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "provider session intent recorded before external effect",
+          "kind": "provider.session_intended",
+          "recorded_at": "2026-10-29T14:15:59.102843359+00:00",
+          "sequence": 26,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=6d327147-722e-4e7a-8c62-8471ae7214cf output=4096 cost=224",
+          "kind": "provider.turn_authorized",
+          "recorded_at": "2026-10-29T14:15:59.964315449+00:00",
+          "sequence": 28,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=6d327147-722e-4e7a-8c62-8471ae7214cf input=10 output=20 total=30 cost=100",
+          "kind": "provider.turn_settled",
+          "recorded_at": "2026-10-29T14:15:59.966414556+00:00",
+          "sequence": 29,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=1842fa06-63b8-454d-adb0-66f95c9b66ca output=4096 cost=224",
+          "kind": "provider.turn_authorized",
+          "recorded_at": "2026-10-29T14:15:59.970182843+00:00",
+          "sequence": 32,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=1842fa06-63b8-454d-adb0-66f95c9b66ca input=10 output=20 total=30 cost=100",
+          "kind": "provider.turn_settled",
+          "recorded_at": "2026-10-29T14:15:59.971481901+00:00",
+          "sequence": 33,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=bb97acf1-3cb6-4e3a-bf36-b260c34041b8 output=4096 cost=224",
+          "kind": "provider.turn_authorized",
+          "recorded_at": "2026-10-29T14:15:59.981375983+00:00",
+          "sequence": 37,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=bb97acf1-3cb6-4e3a-bf36-b260c34041b8 input=10 output=20 total=30 cost=100",
+          "kind": "provider.turn_settled",
+          "recorded_at": "2026-10-29T14:15:59.982490831+00:00",
+          "sequence": 38,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=0f7e326b-1acc-4576-90ff-c9d22dad9073 output=4096 cost=224",
+          "kind": "provider.turn_authorized",
+          "recorded_at": "2026-10-29T14:16:02.302054063+00:00",
+          "sequence": 42,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "reservation=0f7e326b-1acc-4576-90ff-c9d22dad9073 input=10 output=20 total=30 cost=100",
+          "kind": "provider.turn_settled",
+          "recorded_at": "2026-10-29T14:16:02.303332972+00:00",
+          "sequence": 43,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "state=COMPLETED usage_known=true",
+          "kind": "provider.session_terminal",
+          "recorded_at": "2026-10-29T14:16:02.712265401+00:00",
+          "sequence": 44,
+          "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+        },
+        {
+          "detail": "all WorkGraph tasks succeeded",
+          "kind": "lead.plan_completed",
+          "recorded_at": "2026-10-29T14:16:02.718986146+00:00",
+          "sequence": 45,
+          "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+        },
+        {
+          "detail": "attempt=7a9c6699-5cb1-4db4-9734-4b96cefb60ca commit=42c4b47aee07a37b48649334ff7eb15afe0ccec4 tree=f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+          "kind": "candidate.recorded",
+          "recorded_at": "2026-10-29T14:16:02.719009210+00:00",
+          "sequence": 46,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "role=verifier receipt=2322b463-9c23-48aa-9c8f-8ee1df4242c4 principal=verifier-process result=Pass evidence=Executed",
+          "kind": "quality.receipt_recorded",
+          "recorded_at": "2026-10-29T14:16:13.307821465+00:00",
+          "sequence": 47,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "role=SEMANTIC_REVIEWER reservation=9fb7c083-b405-4bc8-98e9-f06e165aca11 provider=opencode-go model=deepseek-v4.1-flash input=4901 output=8192 cost=224",
+          "kind": "model.call_authorized",
+          "recorded_at": "2026-10-29T14:16:13.667636092+00:00",
+          "sequence": 48,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "role=SEMANTIC_REVIEWER reservation=9fb7c083-b405-4bc8-98e9-f06e165aca11 state=SETTLED input=300 output=100 total=400 cost=2",
+          "kind": "model.call_settled",
+          "recorded_at": "2026-10-29T14:16:13.670671647+00:00",
+          "sequence": 49,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "role=reviewer receipt=def99d99-3c5a-415d-be0f-2c6cc0445129 principal=reviewer-process result=Pass evidence=Executed",
+          "kind": "quality.receipt_recorded",
+          "recorded_at": "2026-10-29T14:16:13.673909297+00:00",
+          "sequence": 50,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "outcome=Accepted",
+          "kind": "quality.gate_decided",
+          "recorded_at": "2026-10-29T14:16:13.674186213+00:00",
+          "sequence": 51,
+          "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+        },
+        {
+          "detail": "status=ACCEPTED outcome=ACCEPTED",
+          "kind": "run.status_changed",
+          "recorded_at": "2026-10-29T14:16:13.674315438+00:00",
+          "sequence": 52,
+          "subject_id": "692e45b5-c802-401f-b809-4b14fac2b7a7"
+        }
+      ],
+      "inference": {
+        "envelope": {
+          "authorizationRevision": 1,
+          "authorizedMicros": 5000000,
+          "createdAtMs": 1793283357359,
+          "currency": "USD",
+          "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+          "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+          "requestId": "9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+          "revokedAtMs": null,
+          "state": "ACTIVE"
+        },
+        "legacyEvidenceExcluded": true,
+        "status": {
+          "ambiguousMicros": 0,
+          "asOf": "2026-10-29T14:19:48.273+00:00",
+          "authorizationRevision": 1,
+          "authorizedMicros": 5000000,
+          "availableMicros": 4999996,
+          "billingBasis": "USD_MICROS",
+          "byProvider": [
+            {
+              "ambiguousMicros": 0,
+              "key": "opencode-go",
+              "reservedMicros": 0,
+              "settledMicros": 4
+            }
+          ],
+          "byRole": [
+            {
+              "ambiguousMicros": 0,
+              "key": "LEAD",
+              "reservedMicros": 0,
+              "settledMicros": 2
+            },
+            {
+              "ambiguousMicros": 0,
+              "key": "IMPLEMENTER",
+              "reservedMicros": 0,
+              "settledMicros": 0
+            },
+            {
+              "ambiguousMicros": 0,
+              "key": "SEMANTIC_REVIEWER",
+              "reservedMicros": 0,
+              "settledMicros": 2
+            },
+            {
+              "ambiguousMicros": 0,
+              "key": "EVALUATION",
+              "reservedMicros": 0,
+              "settledMicros": 0
+            },
+            {
+              "ambiguousMicros": 0,
+              "key": "AUXILIARY",
+              "reservedMicros": 0,
+              "settledMicros": 0
+            }
+          ],
+          "currency": "USD",
+          "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+          "overrunMicros": 0,
+          "pricingProvenance": "632e6504-b9c6-4115-b2a7-ad63937662d3",
+          "reservedMicros": 0,
+          "settledMicros": 4,
+          "state": "ACTIVE",
+          "unresolvedCount": 0
+        }
+      },
+      "runs": [
+        {
+          "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+          "created_at": "2026-10-29T14:15:58.741676772+00:00",
+          "id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+          "status": "ACCEPTED"
+        }
+      ],
+      "tasks": [
+        {
+          "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+          "base_commit": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+          "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+          "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+          "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+          "candidate_tree": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+          "depends_on": [],
+          "request_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+          "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+          "sequence": 0,
+          "status": "SUCCEEDED",
+          "task_id": "c2555f9c-ec83-4777-831c-d79f98de9b3d",
+          "unit_id": "unit-1",
+          "updated_at": "2026-10-29T14:16:02.718887629+00:00"
+        }
+      ]
+    },
+    "campaignId": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+    "campaignStatus": "AUTHORIZED",
+    "createdAt": "2026-10-29T14:15:57.358119174+00:00",
+    "delegationId": "6c3f0735-dd29-4ade-89b4-eb30db9529a7",
+    "gateOutcome": "ACCEPTED",
+    "id": "9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+    "leadRequestId": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+    "messages": [],
+    "mode": "REVIEW_PLAN",
+    "objective": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+    "plan": {
+      "config_hash": "010395dd48610df38ab112571ef7c43c7542d669940c5dc9da143b87642df551",
+      "created_at": "2026-10-29T14:15:57.572529290+00:00",
+      "delegation_hash": "068f72500330b41433ccfd4ce55cc52578aeb6da3a16d1ddfca56b96df43b250",
+      "id": "490e9141-e7f5-4081-971f-1c041bd6888b",
+      "plan_hash": "2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937",
+      "proposal_id": "f1b639b2-11f9-41b4-84bb-a3cf7df9174d",
+      "request_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+    },
+    "profile": {
+      "contentHash": "2aaa75215fe1bb8e2c3e8563610dfd62202851f5bae3caefca88212f11a3fbe8",
+      "id": "0b8510de-964e-4962-9c61-d33be2130458",
+      "name": "Compose Browser UAT Balanced",
+      "revision": 1,
+      "revisionId": "5b04fae2-57ae-4549-80bf-bc336eb9d029"
+    },
+    "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+    "proposal": {
+      "acceptanceCriteria": [
+        {
+          "command": [
+            "true"
+          ],
+          "description": "deterministic build",
+          "expectExit": 0,
+          "id": "build",
+          "kind": "build",
+          "timeoutSecs": 30
+        },
+        {
+          "command": [
+            "true"
+          ],
+          "description": "deterministic test",
+          "expectExit": 0,
+          "id": "test",
+          "kind": "test",
+          "timeoutSecs": 30
+        },
+        {
+          "command": [
+            "grep",
+            "-q",
+            "provider candidate",
+            "src/provider.txt"
+          ],
+          "description": "provider candidate content exists",
+          "expectExit": 0,
+          "id": "functional",
+          "kind": "functional",
+          "timeoutSecs": 30
+        }
+      ],
+      "actionId": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+      "assumptions": [
+        "Deterministic Compose model fixture; not live inference."
+      ],
+      "baseRevision": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+      "budget": {
+        "maxAttempts": 1,
+        "timeoutSecs": 300
+      },
+      "class": "feature",
+      "maxParallel": 1,
+      "maxRepairCycles": 0,
+      "maxSessions": 2,
+      "maxWallClockSecs": 600,
+      "negativeCases": [
+        {
+          "command": [
+            "grep",
+            "-q",
+            "absent",
+            "src/provider.txt"
+          ],
+          "description": "absent content is rejected",
+          "expectExit": 1,
+          "id": "negative",
+          "kind": "negative",
+          "timeoutSecs": 30
+        }
+      ],
+      "objective": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+      "projectConfigHash": "010395dd48610df38ab112571ef7c43c7542d669940c5dc9da143b87642df551",
+      "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+      "qualityProfile": "generic",
+      "riskClass": "R0",
+      "risks": [
+        "Model output is test data."
+      ],
+      "route": {
+        "mode": "build",
+        "model": "deepseek-v4.1-flash",
+        "provider": "opencode-go"
+      },
+      "workUnits": [
+        {
+          "acceptanceCriteria": [],
+          "allowedPaths": [
+            "src"
+          ],
+          "capabilities": [
+            "repository-edit",
+            "generic-toolchain"
+          ],
+          "dependsOn": [],
+          "description": "Add the deterministic Compose browser UAT candidate 1793283355485 and cover it with frozen checks.",
+          "id": "unit-1",
+          "kind": "implementation",
+          "negativeCases": []
+        }
+      ]
+    },
+    "spending": {
+      "envelope": {
+        "authorizationRevision": 1,
+        "authorizedMicros": 5000000,
+        "createdAtMs": 1793283357359,
+        "currency": "USD",
+        "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+        "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+        "requestId": "9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "revokedAtMs": null,
+        "state": "ACTIVE"
+      },
+      "legacyEvidenceExcluded": true,
+      "status": {
+        "ambiguousMicros": 0,
+        "asOf": "2026-10-29T14:19:48.272+00:00",
+        "authorizationRevision": 1,
+        "authorizedMicros": 5000000,
+        "availableMicros": 4999996,
+        "billingBasis": "USD_MICROS",
+        "byProvider": [
+          {
+            "ambiguousMicros": 0,
+            "key": "opencode-go",
+            "reservedMicros": 0,
+            "settledMicros": 4
+          }
+        ],
+        "byRole": [
+          {
+            "ambiguousMicros": 0,
+            "key": "LEAD",
+            "reservedMicros": 0,
+            "settledMicros": 2
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "IMPLEMENTER",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "SEMANTIC_REVIEWER",
+            "reservedMicros": 0,
+            "settledMicros": 2
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "EVALUATION",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "AUXILIARY",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          }
+        ],
+        "currency": "USD",
+        "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+        "overrunMicros": 0,
+        "pricingProvenance": "632e6504-b9c6-4115-b2a7-ad63937662d3",
+        "reservedMicros": 0,
+        "settledMicros": 4,
+        "state": "ACTIVE",
+        "unresolvedCount": 0
+      }
+    },
+    "state": "COMPLETED",
+    "stateDetail": "Quality Gate recorded ACCEPTED for the exact candidate.",
+    "updatedAt": "2026-10-29T14:15:58.741676772+00:00"
+  },
+  "campaign": {
+    "attempts": [
+      {
+        "created_at": "2026-10-29T14:15:58.741676772+00:00",
+        "id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "status": "CANDIDATE_READY"
+      }
+    ],
+    "authorization": {
+      "actor": "Wave 3 Compose Browser UAT",
+      "allowedTools": [
+        "run_command",
+        "write_file"
+      ],
+      "authorizationId": "intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+      "authorizedPaths": [
+        "src"
+      ],
+      "campaignId": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+      "createdAt": "2026-10-29T14:15:58.742236024+00:00",
+      "delegationId": "6c3f0735-dd29-4ade-89b4-eb30db9529a7",
+      "executionMode": "TRUSTED_LOCAL_PROVIDER",
+      "legacy": null,
+      "model": "deepseek-v4.1-flash",
+      "policy": {
+        "authorizationId": "intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "monetaryEnvelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+        "operations": {
+          "maxGenerationTokens": 8192,
+          "maxInFlightOperations": 2,
+          "maxRequestBytes": 2097152,
+          "maxResponseBytes": 2097152,
+          "modelRequestTimeoutSecs": 300,
+          "toolCallTimeoutSecs": 600
+        },
+        "policyId": "policy:intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "progress": {
+          "diagnoseAfterStagnantCheckpoints": 2,
+          "escalateAfterUnsuccessfulReplans": 1,
+          "observationTimeoutSecs": 300
+        },
+        "scopeSha256": "e204ef91fcf4e101da9e3cd38c42391f12d4a599c89e2c1080fd52f303d46b0b"
+      },
+      "provider": "opencode-go",
+      "providerMode": "build",
+      "rationale": "operator device:ccb21e25-4a52-4a52-a667-6912cced9fa9: Reviewed the exact frozen Compose browser UAT plan.",
+      "riskClass": "R0",
+      "schemaVersion": 2
+    },
+    "campaign": {
+      "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+      "created_at": "2026-10-29T14:15:58.741676772+00:00",
+      "id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+      "status": "AUTHORIZED"
+    },
+    "candidates": [
+      {
+        "action_spec_sha256": "b5de1d3471148364600ac3e72e8f4669625a77c72611ec4e599f127fe053cb48",
+        "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+        "created_at": "2026-10-29T14:16:02.718794873+00:00",
+        "id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+        "implementer_id": "compose-worker",
+        "integration": false,
+        "lineage": [],
+        "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e"
+      }
+    ],
+    "events": [
+      {
+        "detail": "V2 authority recorded; non-autonomous scope with technical operation limits",
+        "kind": "delegation.recorded",
+        "recorded_at": "2026-10-29T14:15:56.259540964+00:00",
+        "sequence": 7,
+        "subject_id": "6c3f0735-dd29-4ade-89b4-eb30db9529a7"
+      },
+      {
+        "detail": "project=459ee709-8c56-448e-a350-41742bc8634c profile=0b8510de-964e-4962-9c61-d33be2130458 revision=1 actor=Wave 3 Compose Browser UAT non_autonomous=true",
+        "kind": "execution_policy.granted",
+        "recorded_at": "2026-10-29T14:15:56.259677974+00:00",
+        "sequence": 8,
+        "subject_id": "6c3f0735-dd29-4ade-89b4-eb30db9529a7"
+      },
+      {
+        "detail": "assessment session reserved; no executable ActionSpec or Campaign start",
+        "kind": "lead.request_created",
+        "recorded_at": "2026-10-29T14:15:57.358101941+00:00",
+        "sequence": 10,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "Submitted->Assessing",
+        "kind": "lead.state_changed",
+        "recorded_at": "2026-10-29T14:15:57.558800975+00:00",
+        "sequence": 12,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "role=LEAD reservation=f59c9620-55be-4c0c-b2d0-7d50595cce87 provider=opencode-go model=deepseek-v4.1-flash input=9192 output=8192 cost=224",
+        "kind": "model.call_authorized",
+        "recorded_at": "2026-10-29T14:15:57.561526822+00:00",
+        "sequence": 13,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "role=LEAD reservation=f59c9620-55be-4c0c-b2d0-7d50595cce87 state=SETTLED input=500 output=500 total=1000 cost=2",
+        "kind": "model.call_settled",
+        "recorded_at": "2026-10-29T14:15:57.565591623+00:00",
+        "sequence": 14,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "913f4023-e839-40a8-8f36-065cdcfdae40",
+        "kind": "lead.assessment_recorded",
+        "recorded_at": "2026-10-29T14:15:57.570681480+00:00",
+        "sequence": 15,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "f1b639b2-11f9-41b4-84bb-a3cf7df9174d",
+        "kind": "lead.proposal_recorded",
+        "recorded_at": "2026-10-29T14:15:57.571339801+00:00",
+        "sequence": 16,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937",
+        "kind": "lead.plan_frozen",
+        "recorded_at": "2026-10-29T14:15:57.572616295+00:00",
+        "sequence": 18,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "Frozen->Ready",
+        "kind": "lead.state_changed",
+        "recorded_at": "2026-10-29T14:15:57.572697539+00:00",
+        "sequence": 19,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f policy=policy:intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f risk=R0 mode=TRUSTED_LOCAL_PROVIDER",
+        "kind": "campaign.authorized",
+        "recorded_at": "2026-10-29T14:15:58.742740983+00:00",
+        "sequence": 20,
+        "subject_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f"
+      },
+      {
+        "detail": "OPERATOR TRUSTED_LOCAL_PROVIDER start for plan 2bc112b6ccc260d1f8550bcde8c043b0f583385fab86e4553585cdb3c552f937 authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "kind": "campaign.started",
+        "recorded_at": "2026-10-29T14:15:58.744095486+00:00",
+        "sequence": 21,
+        "subject_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f"
+      },
+      {
+        "detail": "OPERATOR principal=device:ccb21e25-4a52-4a52-a667-6912cced9fa9 authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "kind": "lead.approved",
+        "recorded_at": "2026-10-29T14:15:58.744119602+00:00",
+        "sequence": 22,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "TRUSTED_LOCAL_PROVIDER campaign=3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f authorization=intake-9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "kind": "lead.started",
+        "recorded_at": "2026-10-29T14:15:58.744138918+00:00",
+        "sequence": 23,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "status=RUNNING attempt=7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "kind": "run.status_changed",
+        "recorded_at": "2026-10-29T14:15:59.101213203+00:00",
+        "sequence": 24,
+        "subject_id": "692e45b5-c802-401f-b809-4b14fac2b7a7"
+      },
+      {
+        "detail": "generation=1",
+        "kind": "worker.claimed",
+        "recorded_at": "2026-10-29T14:15:59.101245775+00:00",
+        "sequence": 25,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "provider session intent recorded before external effect",
+        "kind": "provider.session_intended",
+        "recorded_at": "2026-10-29T14:15:59.102843359+00:00",
+        "sequence": 26,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=6d327147-722e-4e7a-8c62-8471ae7214cf output=4096 cost=224",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-29T14:15:59.964315449+00:00",
+        "sequence": 28,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=6d327147-722e-4e7a-8c62-8471ae7214cf input=10 output=20 total=30 cost=100",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-29T14:15:59.966414556+00:00",
+        "sequence": 29,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=1842fa06-63b8-454d-adb0-66f95c9b66ca output=4096 cost=224",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-29T14:15:59.970182843+00:00",
+        "sequence": 32,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=1842fa06-63b8-454d-adb0-66f95c9b66ca input=10 output=20 total=30 cost=100",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-29T14:15:59.971481901+00:00",
+        "sequence": 33,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=bb97acf1-3cb6-4e3a-bf36-b260c34041b8 output=4096 cost=224",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-29T14:15:59.981375983+00:00",
+        "sequence": 37,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=bb97acf1-3cb6-4e3a-bf36-b260c34041b8 input=10 output=20 total=30 cost=100",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-29T14:15:59.982490831+00:00",
+        "sequence": 38,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=0f7e326b-1acc-4576-90ff-c9d22dad9073 output=4096 cost=224",
+        "kind": "provider.turn_authorized",
+        "recorded_at": "2026-10-29T14:16:02.302054063+00:00",
+        "sequence": 42,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "reservation=0f7e326b-1acc-4576-90ff-c9d22dad9073 input=10 output=20 total=30 cost=100",
+        "kind": "provider.turn_settled",
+        "recorded_at": "2026-10-29T14:16:02.303332972+00:00",
+        "sequence": 43,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "state=COMPLETED usage_known=true",
+        "kind": "provider.session_terminal",
+        "recorded_at": "2026-10-29T14:16:02.712265401+00:00",
+        "sequence": 44,
+        "subject_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca"
+      },
+      {
+        "detail": "all WorkGraph tasks succeeded",
+        "kind": "lead.plan_completed",
+        "recorded_at": "2026-10-29T14:16:02.718986146+00:00",
+        "sequence": 45,
+        "subject_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31"
+      },
+      {
+        "detail": "attempt=7a9c6699-5cb1-4db4-9734-4b96cefb60ca commit=42c4b47aee07a37b48649334ff7eb15afe0ccec4 tree=f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+        "kind": "candidate.recorded",
+        "recorded_at": "2026-10-29T14:16:02.719009210+00:00",
+        "sequence": 46,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "role=verifier receipt=2322b463-9c23-48aa-9c8f-8ee1df4242c4 principal=verifier-process result=Pass evidence=Executed",
+        "kind": "quality.receipt_recorded",
+        "recorded_at": "2026-10-29T14:16:13.307821465+00:00",
+        "sequence": 47,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "role=SEMANTIC_REVIEWER reservation=9fb7c083-b405-4bc8-98e9-f06e165aca11 provider=opencode-go model=deepseek-v4.1-flash input=4901 output=8192 cost=224",
+        "kind": "model.call_authorized",
+        "recorded_at": "2026-10-29T14:16:13.667636092+00:00",
+        "sequence": 48,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "role=SEMANTIC_REVIEWER reservation=9fb7c083-b405-4bc8-98e9-f06e165aca11 state=SETTLED input=300 output=100 total=400 cost=2",
+        "kind": "model.call_settled",
+        "recorded_at": "2026-10-29T14:16:13.670671647+00:00",
+        "sequence": 49,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "role=reviewer receipt=def99d99-3c5a-415d-be0f-2c6cc0445129 principal=reviewer-process result=Pass evidence=Executed",
+        "kind": "quality.receipt_recorded",
+        "recorded_at": "2026-10-29T14:16:13.673909297+00:00",
+        "sequence": 50,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "outcome=Accepted",
+        "kind": "quality.gate_decided",
+        "recorded_at": "2026-10-29T14:16:13.674186213+00:00",
+        "sequence": 51,
+        "subject_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4"
+      },
+      {
+        "detail": "status=ACCEPTED outcome=ACCEPTED",
+        "kind": "run.status_changed",
+        "recorded_at": "2026-10-29T14:16:13.674315438+00:00",
+        "sequence": 52,
+        "subject_id": "692e45b5-c802-401f-b809-4b14fac2b7a7"
+      }
+    ],
+    "inference": {
+      "envelope": {
+        "authorizationRevision": 1,
+        "authorizedMicros": 5000000,
+        "createdAtMs": 1793283357359,
+        "currency": "USD",
+        "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+        "projectId": "459ee709-8c56-448e-a350-41742bc8634c",
+        "requestId": "9ddd7b88-e9a7-4b4f-bd16-e3a31e15952f",
+        "revokedAtMs": null,
+        "state": "ACTIVE"
+      },
+      "legacyEvidenceExcluded": true,
+      "status": {
+        "ambiguousMicros": 0,
+        "asOf": "2026-10-29T14:19:48.275+00:00",
+        "authorizationRevision": 1,
+        "authorizedMicros": 5000000,
+        "availableMicros": 4999996,
+        "billingBasis": "USD_MICROS",
+        "byProvider": [
+          {
+            "ambiguousMicros": 0,
+            "key": "opencode-go",
+            "reservedMicros": 0,
+            "settledMicros": 4
+          }
+        ],
+        "byRole": [
+          {
+            "ambiguousMicros": 0,
+            "key": "LEAD",
+            "reservedMicros": 0,
+            "settledMicros": 2
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "IMPLEMENTER",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "SEMANTIC_REVIEWER",
+            "reservedMicros": 0,
+            "settledMicros": 2
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "EVALUATION",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          },
+          {
+            "ambiguousMicros": 0,
+            "key": "AUXILIARY",
+            "reservedMicros": 0,
+            "settledMicros": 0
+          }
+        ],
+        "currency": "USD",
+        "envelopeId": "3580822d-568d-422e-812a-f5a489ad35b5",
+        "overrunMicros": 0,
+        "pricingProvenance": "632e6504-b9c6-4115-b2a7-ad63937662d3",
+        "reservedMicros": 0,
+        "settledMicros": 4,
+        "state": "ACTIVE",
+        "unresolvedCount": 0
+      }
+    },
+    "runs": [
+      {
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "created_at": "2026-10-29T14:15:58.741676772+00:00",
+        "id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "status": "ACCEPTED"
+      }
+    ],
+    "tasks": [
+      {
+        "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "base_commit": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+        "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+        "candidate_tree": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+        "depends_on": [],
+        "request_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+        "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "sequence": 0,
+        "status": "SUCCEEDED",
+        "task_id": "c2555f9c-ec83-4777-831c-d79f98de9b3d",
+        "unit_id": "unit-1",
+        "updated_at": "2026-10-29T14:16:02.718887629+00:00"
+      }
+    ]
+  },
+  "gate": {
+    "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+    "outcome": "ACCEPTED",
+    "reasons": [
+      "independent executed evidence accepts exact candidate"
+    ],
+    "decided_at": "2026-10-29T14:16:13.674113625+00:00"
+  },
+  "receipts": [
+    {
+      "receipt_id": "def99d99-3c5a-415d-be0f-2c6cc0445129",
+      "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "role": "reviewer",
+      "principal_id": "reviewer-process",
+      "action_spec_sha256": "b5de1d3471148364600ac3e72e8f4669625a77c72611ec4e599f127fe053cb48",
+      "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+      "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "MODEL",
+      "model_provider": "opencode-go",
+      "model_name": "deepseek-v4.1-flash",
+      "model_reservation_id": "9fb7c083-b405-4bc8-98e9-f06e165aca11",
+      "model_request_sha256": "a09dcbd7f2528a6bbbfe2adc8207874d41821dd7be9b8e7ae7a993efba26b21c",
+      "input_tokens": 300,
+      "output_tokens": 100,
+      "total_tokens": 400,
+      "cost_micros": 2,
+      "usage_known": true,
+      "received_at": "2026-10-29T14:16:13.673761596+00:00"
+    },
+    {
+      "receipt_id": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+      "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "role": "verifier",
+      "principal_id": "verifier-process",
+      "action_spec_sha256": "b5de1d3471148364600ac3e72e8f4669625a77c72611ec4e599f127fe053cb48",
+      "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+      "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+      "result": "PASS",
+      "evidence": "EXECUTED",
+      "findings": [],
+      "mechanism": "DETERMINISTIC",
+      "model_provider": "",
+      "model_name": "",
+      "model_reservation_id": "",
+      "model_request_sha256": "",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cost_micros": 0,
+      "usage_known": false,
+      "received_at": "2026-10-29T14:16:13.307659107+00:00"
+    }
+  ],
+  "participants": {
+    "participants": [
+      {
+        "participant_id": "reviewer:def99d99-3c5a-415d-be0f-2c6cc0445129",
+        "role": "REVIEWER",
+        "identity_kind": "QUALITY_RECEIPT",
+        "identity_id": "def99d99-3c5a-415d-be0f-2c6cc0445129",
+        "principal_id": "reviewer-process",
+        "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+        "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "request_id": null,
+        "work_unit_id": "unit-1",
+        "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "attempt_generation": null,
+        "worker_id": null,
+        "requested_route": null,
+        "observed_route": {
+          "provider": "opencode-go",
+          "model": "deepseek-v4.1-flash",
+          "mode": null
+        },
+        "route_provenance": "QUALITY_RECEIPT_MODEL_OBSERVED",
+        "session": null,
+        "status": "PASS",
+        "status_source": "QUALITY_RECEIPT",
+        "lease_state": "NOT_APPLICABLE",
+        "observation": "FINAL",
+        "failure_reason": null,
+        "usage": {
+          "input_tokens": 300,
+          "output_tokens": 100,
+          "total_tokens": 400,
+          "cost_micros": 2,
+          "usage_known": true
+        },
+        "usage_provenance": "QUALITY_RECEIPT_MODEL",
+        "evidence": {
+          "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+          "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+          "candidate_tree": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+          "gate_outcome": "ACCEPTED",
+          "gate_decided_at": "2026-10-29T14:16:13.674113625+00:00",
+          "verifier_receipt_id": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+          "reviewer_receipt_id": "def99d99-3c5a-415d-be0f-2c6cc0445129"
+        },
+        "model_call_count": null,
+        "model_call_state": null,
+        "observation_note": "Independent review receipt recorded with model provenance. The recorded provider/model is the receipt's observed review route.",
+        "recorded_at": "2026-10-29T14:16:13.673761596+00:00",
+        "last_observed_at": "2026-10-29T14:16:13.673761596+00:00"
+      },
+      {
+        "participant_id": "verifier:2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+        "role": "VERIFIER",
+        "identity_kind": "QUALITY_RECEIPT",
+        "identity_id": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+        "principal_id": "verifier-process",
+        "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+        "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "request_id": null,
+        "work_unit_id": "unit-1",
+        "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "attempt_generation": null,
+        "worker_id": null,
+        "requested_route": null,
+        "observed_route": null,
+        "route_provenance": "NOT_EXPOSED",
+        "session": null,
+        "status": "PASS",
+        "status_source": "QUALITY_RECEIPT",
+        "lease_state": "NOT_APPLICABLE",
+        "observation": "FINAL",
+        "failure_reason": null,
+        "usage": null,
+        "usage_provenance": "NOT_APPLICABLE",
+        "evidence": {
+          "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+          "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+          "candidate_tree": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+          "gate_outcome": "ACCEPTED",
+          "gate_decided_at": "2026-10-29T14:16:13.674113625+00:00",
+          "verifier_receipt_id": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+          "reviewer_receipt_id": "def99d99-3c5a-415d-be0f-2c6cc0445129"
+        },
+        "model_call_count": null,
+        "model_call_state": null,
+        "observation_note": "Independent deterministic review receipt recorded by Core.",
+        "recorded_at": "2026-10-29T14:16:13.307659107+00:00",
+        "last_observed_at": "2026-10-29T14:16:13.307659107+00:00"
+      },
+      {
+        "participant_id": "implementer:147ef036-b36f-4cfa-ab3e-33e4d0427e55",
+        "role": "IMPLEMENTER",
+        "identity_kind": "PROVIDER_SESSION",
+        "identity_id": "147ef036-b36f-4cfa-ab3e-33e4d0427e55",
+        "principal_id": "compose-worker",
+        "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+        "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "request_id": null,
+        "work_unit_id": "unit-1",
+        "run_id": "692e45b5-c802-401f-b809-4b14fac2b7a7",
+        "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+        "attempt_generation": 1,
+        "worker_id": "compose-worker",
+        "requested_route": {
+          "provider": "opencode-go",
+          "model": "deepseek-v4.1-flash",
+          "mode": "build"
+        },
+        "observed_route": null,
+        "route_provenance": "PROVIDER_SESSION_BINDING_REQUESTED",
+        "session": {
+          "session_record_id": "147ef036-b36f-4cfa-ab3e-33e4d0427e55",
+          "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+          "worker_id": "compose-worker",
+          "generation": 1,
+          "provider": "opencode-go",
+          "model": "deepseek-v4.1-flash",
+          "provider_mode": "build",
+          "state": "COMPLETED",
+          "provider_session_id": "ses_fixture",
+          "input_tokens": 40,
+          "output_tokens": 80,
+          "total_tokens": 120,
+          "cost_micros": 400,
+          "usage_known": true,
+          "cleanup": "RECORDED",
+          "cleanup_receipt": "session_delete_verified_absent",
+          "error": null,
+          "created_at": "2026-10-29T14:15:59.102758989+00:00",
+          "updated_at": "2026-10-29T14:16:02.712188475+00:00"
+        },
+        "status": "COMPLETED",
+        "status_source": "PROVIDER_SESSION",
+        "lease_state": "EXPIRED",
+        "observation": "FINAL",
+        "failure_reason": null,
+        "usage": {
+          "input_tokens": 40,
+          "output_tokens": 80,
+          "total_tokens": 120,
+          "cost_micros": 400,
+          "usage_known": true
+        },
+        "usage_provenance": "PROVIDER_SESSION_BINDING",
+        "evidence": {
+          "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+          "candidate_commit": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+          "candidate_tree": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e",
+          "gate_outcome": "ACCEPTED",
+          "gate_decided_at": "2026-10-29T14:16:13.674113625+00:00",
+          "verifier_receipt_id": "2322b463-9c23-48aa-9c8f-8ee1df4242c4",
+          "reviewer_receipt_id": "def99d99-3c5a-415d-be0f-2c6cc0445129"
+        },
+        "model_call_count": null,
+        "model_call_state": null,
+        "observation_note": "Final recorded provider-session state. Core does not independently verify external termination.",
+        "recorded_at": "2026-10-29T14:15:59.102758989+00:00",
+        "last_observed_at": "2026-10-29T14:16:02.712188475+00:00"
+      },
+      {
+        "participant_id": "lead:9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+        "role": "LEAD",
+        "identity_kind": "LEAD_REQUEST",
+        "identity_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+        "principal_id": "device:ccb21e25-4a52-4a52-a667-6912cced9fa9",
+        "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+        "action_id": "be6bb2dc-fcfd-4d76-be5f-7127fbd5be9d",
+        "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+        "request_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+        "work_unit_id": null,
+        "run_id": null,
+        "attempt_id": null,
+        "attempt_generation": null,
+        "worker_id": null,
+        "requested_route": {
+          "provider": "opencode-go",
+          "model": "deepseek-v4.1-flash",
+          "mode": null
+        },
+        "observed_route": null,
+        "route_provenance": "LEAD_MODEL_CALL_RESERVATION",
+        "session": null,
+        "status": "RUNNING",
+        "status_source": "LEAD_REQUEST",
+        "lease_state": "NOT_APPLICABLE",
+        "observation": "NOT_EXPOSED",
+        "failure_reason": null,
+        "usage": {
+          "input_tokens": 500,
+          "output_tokens": 500,
+          "total_tokens": 1000,
+          "cost_micros": 2,
+          "usage_known": true
+        },
+        "usage_provenance": "LEAD_MODEL_CALLS",
+        "evidence": null,
+        "model_call_count": 1,
+        "model_call_state": "SETTLED",
+        "observation_note": "A Lead request is a Core-recorded planning or assessment operation. It does not establish a continuously running agent session or a live lease; liveness is NOT EXPOSED.",
+        "recorded_at": "2026-10-29T14:15:57.357828692+00:00",
+        "last_observed_at": "2026-10-29T14:15:58.741676772+00:00"
+      }
+    ],
+    "page": {
+      "limit": 50,
+      "offset": 0,
+      "returned": 4,
+      "has_more": false,
+      "order": "last_observed_at DESC, participant_id ASC",
+      "as_of": "2026-10-29T14:19:48.277820394+00:00"
+    },
+    "sources": [
+      {
+        "role": "IMPLEMENTER",
+        "source": "provider_sessions -> attempts -> runs -> campaigns",
+        "note": "One participant per observed provider session generation. External provider liveness is not verified."
+      },
+      {
+        "role": "LEAD",
+        "source": "lead_requests + model_call_reservations",
+        "note": "A Lead request is a recorded planning operation, not a continuously running agent."
+      },
+      {
+        "role": "VERIFIER",
+        "source": "quality_receipts role=verifier",
+        "note": "Independent verification receipt recorded by Core."
+      },
+      {
+        "role": "REVIEWER",
+        "source": "quality_receipts role=reviewer",
+        "note": "Independent review receipt recorded by Core, including deterministic or model provenance."
+      },
+      {
+        "role": "WORKER",
+        "source": "worker_sessions",
+        "note": "Worker registration identity only. Core does not expose heartbeat liveness through this projection."
+      }
+    ]
+  },
+  "model_calls": [
+    {
+      "reservation_id": "9fb7c083-b405-4bc8-98e9-f06e165aca11",
+      "role": "semantic_reviewer",
+      "principal_id": "reviewer-process",
+      "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+      "objective_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "scope_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "semantic_review",
+      "request_sha256": "a09dcbd7f2528a6bbbfe2adc8207874d41821dd7be9b8e7ae7a993efba26b21c",
+      "input_tokens": 300,
+      "output_tokens": 100,
+      "total_tokens": 400,
+      "cost_micros": 2,
+      "max_cost_micros": 224,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-29T14:16:13.665977692+00:00",
+      "updated_at": "2026-10-29T14:16:13.670308087+00:00"
+    },
+    {
+      "reservation_id": "f59c9620-55be-4c0c-b2d0-7d50595cce87",
+      "role": "lead",
+      "principal_id": "device:ccb21e25-4a52-4a52-a667-6912cced9fa9",
+      "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+      "objective_id": "9f80ad6d-5c67-4b50-bbb6-be044ad85f31",
+      "scope_id": "6c3f0735-dd29-4ade-89b4-eb30db9529a7",
+      "provider": "opencode-go",
+      "model": "deepseek-v4.1-flash",
+      "purpose": "lead_assessment",
+      "request_sha256": "3339ad97a0a8f4d502be4b48aa9ed1a51c60074fa8da682ff8bc4d3f84a0da6a",
+      "input_tokens": 500,
+      "output_tokens": 500,
+      "total_tokens": 1000,
+      "cost_micros": 2,
+      "max_cost_micros": 224,
+      "usage_known": true,
+      "state": "SETTLED",
+      "error": "",
+      "created_at": "2026-10-29T14:15:57.559939067+00:00",
+      "updated_at": "2026-10-29T14:15:57.564876194+00:00"
+    }
+  ],
+  "candidate_diff": {
+    "base_commit": "5b1e23e193ea8652e9005c143626baf3dd2759f2",
+    "base_tree_sha": "f725e7787ba53ef16eeb65b3f970e27a2fc9949c",
+    "campaign_id": "3f5f9abe-bcbe-4e0c-8ac9-6a0227e6ca3f",
+    "candidate": {
+      "action_spec_sha256": "b5de1d3471148364600ac3e72e8f4669625a77c72611ec4e599f127fe053cb48",
+      "attempt_id": "7a9c6699-5cb1-4db4-9734-4b96cefb60ca",
+      "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+      "created_at": "2026-10-29T14:16:02.718794873+00:00",
+      "id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "implementer_id": "compose-worker",
+      "integration": false,
+      "lineage": [],
+      "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e"
+    },
+    "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+    "changed_paths": [
+      "src/provider.txt"
+    ],
+    "changed_paths_truncated": false,
+    "commit_sha": "42c4b47aee07a37b48649334ff7eb15afe0ccec4",
+    "diff_stat": "1 file changed, 1 insertion(+)",
+    "files": [
+      {
+        "additions": 1,
+        "binary": false,
+        "deletions": 0,
+        "newMode": "100644",
+        "oldMode": "000000",
+        "omitted": null,
+        "patch": "diff --git a/src/provider.txt b/src/provider.txt\nnew file mode 100644\nindex 0000000..c699450\n--- /dev/null\n+++ b/src/provider.txt\n@@ -0,0 +1 @@\n+provider candidate\n",
+        "patchBytes": 164,
+        "patchTruncated": false,
+        "path": "src/provider.txt",
+        "status": "ADDED"
+      }
+    ],
+    "files_truncated": false,
+    "gate": {
+      "candidate_id": "0ee276a1-0a65-46d6-ae10-a8fa4a311cc4",
+      "decided_at": "2026-10-29T14:16:13.674113625+00:00",
+      "outcome": "ACCEPTED",
+      "reasons": [
+        "independent executed evidence accepts exact candidate"
+      ]
+    },
+    "patch_bytes": 164,
+    "patch_truncated": false,
+    "project_id": "459ee709-8c56-448e-a350-41742bc8634c",
+    "returned_files": 1,
+    "source": "Core read-only Git file diff between the frozen base and the exact Candidate; no execution",
+    "total_additions": 1,
+    "total_deletions": 0,
+    "tree_sha": "f243f6b9432141b8f5f7b8b0b774a6d6d98ad31e"
+  }
+}
