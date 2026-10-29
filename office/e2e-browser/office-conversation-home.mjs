@@ -478,6 +478,10 @@ try {
   await context.route("**/core-api/**", baseRoutes);
   const page = await context.newPage();
   await page.goto(`${baseUrl}/#/`);
+  // The Home shell appears after App has checked setup, restored the session,
+  // and received the health projection. Wait for that Core-backed ready state
+  // before asserting on the page heading.
+  await page.getByText("Core healthy").waitFor();
   await page.getByRole("heading", { name: "Home" }).waitFor();
   await page
     .getByRole("heading", { name: "What do you want to build today?" })

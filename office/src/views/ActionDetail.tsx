@@ -17,6 +17,7 @@ import {
   type LeadRequestRecord,
   type Project,
   type StandingDelegation,
+  type StandingDelegationV2,
 } from "../coreApi";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
@@ -26,7 +27,7 @@ interface LoadedAction {
   project: Project | null;
   campaigns: Campaign[];
   leadRequests: LeadRequestRecord[];
-  delegations: StandingDelegation[];
+  delegations: (StandingDelegation | StandingDelegationV2)[];
 }
 
 function statusTone(status: string) {
@@ -73,9 +74,9 @@ export function ActionDetail() {
           leadRequests: leadRequests.filter(
             (item) => item.action_id === action.id,
           ),
-          delegations: delegations.filter(
-            (item) => item.projectId === action.project_id,
-          ),
+          delegations: delegations
+            .filter((item) => item.delegation.projectId === action.project_id)
+            .map((item) => item.delegation),
         });
         setError(null);
       } catch (cause) {

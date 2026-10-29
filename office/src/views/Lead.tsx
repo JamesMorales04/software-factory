@@ -4,6 +4,7 @@ import {
   type Action,
   CoreApiError,
   coreApi,
+  type DelegationProjection,
   type LeadAssessmentView,
   type LeadPlanProposalView,
   type LeadRequestProjection,
@@ -12,7 +13,6 @@ import {
   type NewCampaignAuthorization,
   newIdempotencyKey,
   type Project,
-  type StandingDelegation,
 } from "../coreApi";
 import {
   DEFAULT_OPERATION_LIMITS,
@@ -20,6 +20,7 @@ import {
 } from "../executionDefaults";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
+import { selectableLeadDelegations } from "../leadDelegations";
 
 function parseJson<T>(raw: string | undefined): T | null {
   if (!raw) return null;
@@ -88,7 +89,7 @@ export function Lead() {
   const { t, formatDate, formatNumber, formatMicros } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
-  const [delegations, setDelegations] = useState<StandingDelegation[]>([]);
+  const [delegations, setDelegations] = useState<DelegationProjection[]>([]);
   const [requests, setRequests] = useState<LeadRequestRecord[]>([]);
   const [selected, setSelected] = useState<LeadRequestProjection | null>(null);
   const [projectId, setProjectId] = useState("");
@@ -116,8 +117,11 @@ export function Lead() {
     setRequests(nextRequests);
     if (!projectId && nextProjects[0]) setProjectId(nextProjects[0].id);
     if (!actionId && nextActions[0]) setActionId(nextActions[0].id);
-    if (!delegationId && nextDelegations[0])
-      setDelegationId(nextDelegations[0].id);
+    const firstCurrentGrant = nextDelegations.find(
+      (projection) => projection.schemaVersion === 2,
+    );
+    if (!delegationId && firstCurrentGrant)
+      setDelegationId(firstCurrentGrant.delegation.id);
   }, [projectId, actionId, delegationId]);
 
   useEffect(() => {
@@ -215,7 +219,35 @@ export function Lead() {
     setError(null);
     setNotice(null);
     try {
-      const result = await coreApi.startLeadRequest(id, authorization);
+      const approvalProjection =
+        selected?.request.id === id
+          ? selected
+          : await coreApi.getLeadRequest(id);
+      setSelected(approvalProjection);
+      if (!approvalProjection.plan || !approvalProjection.start_binding) {
+        throw new Error(t("lead.error.view"));
+      }
+      const binding = approvalProjection.start_binding;
+      const result = await coreApi.approveLeadRequest(id, {
+        expected_request_hash: binding.request_hash,
+        expected_plan_hash: binding.plan_hash,
+        expected_spec_sha256: binding.spec_sha256,
+        expected_config_hash: binding.config_hash,
+        expected_delegation_hash: binding.delegation_hash,
+        ...(binding.profile_revision_id === null ||
+        binding.profile_hash === null
+          ? {}
+          : {
+              profile_revision_id: binding.profile_revision_id,
+              profile_hash: binding.profile_hash,
+            }),
+        rationale:
+          authorization?.rationale ??
+          "Explicit operator approval of the frozen Lead plan from Office.",
+        ...(authorization === undefined
+          ? {}
+          : { provider_authorization: authorization }),
+      });
       setAuthorizationDraft(null);
       setSelected(await coreApi.getLeadRequest(id));
       setNotice(
@@ -277,9 +309,7 @@ export function Lead() {
   const projectActions = actions.filter(
     (action) => action.project_id === projectId,
   );
-  const projectDelegations = delegations.filter(
-    (delegation) => delegation.projectId === projectId && !delegation.revokedAt,
-  );
+  const projectDelegations = selectableLeadDelegations(delegations, projectId);
   const selectedAssessment = selected
     ? parseJson<LeadAssessmentView>(selected.assessment?.assessment_json)
     : null;
@@ -333,7 +363,10 @@ export function Lead() {
           <select
             data-testid="lead-project"
             value={projectId}
-            onChange={(event) => setProjectId(event.target.value)}
+            onChange={(event) => {
+              setProjectId(event.target.value);
+              setDelegationId("");
+            }}
           >
             <option value="">{t("lead.form.selectProject")}</option>
             {projects.map((project) => (
