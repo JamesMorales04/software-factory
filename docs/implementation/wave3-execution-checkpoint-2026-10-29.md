@@ -62,8 +62,11 @@ were left untouched.
 - #81 — capability evidence-reference correction: open draft against Wave 3 at
   `13adff74a8de434fd46c527ea92608b695a98d03`. Canonical container architecture
   governance and Compose policy passed after retrying with the worktree's common
-  Git metadata mounted read-only. Rust and container-dev remain pending;
-  independent review is queued behind the exact-SHA access review.
+  Git metadata mounted read-only; Rust passed. Independent exact-SHA review
+  **APPROVED** the two evidence-reference deletions. Container-dev failed on the
+  pre-existing FIXTURE Worker route-identity bug, repaired in Home candidate
+  `3d39465`; rerun only after rebinding #81 to a reviewed integration base that
+  contains that repair, without folding Home into the evidence-only PR.
 - #82 — Agent Office V3: open draft at
   `82b9ee4703326947a9a3c78153d9bf1994a3a960`. The previous candidate was
   blocked for a non-terminating appearance allocation loop; `e31e462` replaces
@@ -157,6 +160,10 @@ completion.
   when an earlier-sorting identity is added or removed; this is nonblocking.
   Owner visual acceptance remains pending because the scene is materially less
   painterly than the approved reference.
+- Independent review of capability-evidence PR #81 exact SHA `13adff7`:
+  **APPROVE**. The two deleted README references were fixture-only; CAP-050 and
+  CAP-052 retain their own deterministic JSON evidence, so no evidence list is
+  emptied or overstated.
 - Access exact-SHA review of `2851345` found no credential leak, auth bypass,
   pairing resurrection or current Tailscale path to Core's control listener,
   but returned **BLOCK** for the Compose socket-mount policy gap described
@@ -187,5 +194,6 @@ completion.
 
 **Independent review:** access `2851345` BLOCK (repair `a03dd55` re-review
 pending); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS; capability
-PR #81 review pending.
+PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected integration
+candidate).
 **Campaign status:** in progress; Wave 3 is not a certified product release.
