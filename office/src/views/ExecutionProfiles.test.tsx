@@ -165,9 +165,13 @@ const providers: ProviderView[] = [
     modelDiscovery: {
       provider: "opencode-go",
       status: "AVAILABLE",
+      source: "OPENCODE_GO_CATALOG_URL",
+      catalogUrl: "https://opencode.ai/inference/go/v1/models",
       models: ["deepseek-v4.1-flash", "reviewer-model"],
       detail: "2 model(s) discovered",
       discoveredAt: "2026-10-27T10:00:00Z",
+      credentialSignal: "NOT_OBSERVED",
+      lastKnown: null,
     },
   },
   {
@@ -190,11 +194,15 @@ const providers: ProviderView[] = [
     model: "gpt-6-luna",
     modelDiscovery: {
       provider: "codex",
-      status: "UNAVAILABLE",
+      status: "UNSUPPORTED",
+      source: "UNSUPPORTED",
+      catalogUrl: null,
       models: [],
       detail:
         "the Codex App Server adapter has no OpenAI-compatible model catalog",
       discoveredAt: "2026-10-27T10:00:00Z",
+      credentialSignal: "NOT_OBSERVED",
+      lastKnown: null,
     },
   },
 ];
@@ -261,20 +269,31 @@ describe("ExecutionProfiles", () => {
           return Promise.resolve({
             ...match.modelDiscovery,
             adapter: match.kind,
-            discovery:
-              match.kind === "opencode"
-                ? "OPENAI_MODELS_ENDPOINT"
-                : "UNSUPPORTED",
+            credential: {
+              presence: "CONFIGURED",
+              validation: "NOT_OBSERVED",
+              detail: "test fixture",
+            },
+            inference: { status: "NOT_TESTED", detail: "test fixture" },
           });
         }
         return Promise.resolve({
           provider,
-          status: "UNAVAILABLE",
+          status: "UNREACHABLE",
+          source: "OPENAI_MODELS_ENDPOINT",
+          catalogUrl: null,
           models: [],
           detail: "provider model endpoint is unavailable",
           discoveredAt: "2026-10-27T10:00:00Z",
+          credentialSignal: "NOT_OBSERVED",
+          lastKnown: null,
           adapter: "opencode",
-          discovery: "OPENAI_MODELS_ENDPOINT",
+          credential: {
+            presence: "CONFIGURED",
+            validation: "NOT_OBSERVED",
+            detail: "test fixture",
+          },
+          inference: { status: "NOT_TESTED", detail: "test fixture" },
         });
       });
     mockList([balanced, conservative]);

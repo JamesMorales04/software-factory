@@ -2353,6 +2353,99 @@ async fn revoke_provider_credential(
     }
 }
 
+fn provider_credential_view(
+    settings: &factory_native::db::ProviderSettingsRecord,
+    discovery: &factory_native::provider_catalog::ProviderModelCatalogEntry,
+) -> serde_json::Value {
+    use factory_native::provider_catalog::ProviderCredentialSignal;
+
+    let configured = !settings.credential_ciphertext.is_empty();
+    let (validation, detail) = match discovery.credential_signal {
+        ProviderCredentialSignal::Rejected => (
+            "REJECTED",
+            "The catalog endpoint rejected the stored credential. This is a credential or permission signal for that endpoint, not proof about inference access.",
+        ),
+        ProviderCredentialSignal::NotProvided => (
+            "NOT_PROVIDED",
+            "This catalog requires a credential and Core has none available. No catalog request was made.",
+        ),
+        ProviderCredentialSignal::NotObserved if configured => (
+            "NOT_OBSERVED",
+            "A credential is stored. Presence is configuration; a catalog response does not validate inference access.",
+        ),
+        ProviderCredentialSignal::NotObserved => (
+            "NOT_OBSERVED",
+            "No credential is stored. Catalog access does not imply inference access.",
+        ),
+    };
+    json!({
+        "presence": if configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+        "validation": validation,
+        "detail": detail,
+    })
+}
+
+fn provider_inference_view() -> serde_json::Value {
+    json!({
+        "status": "NOT_TESTED",
+        "detail": "Core did not run a model call. Catalog discovery and credential observations are not inference.",
+    })
+}
+
+/// Read one provider catalog without conflating it with credential validity or
+/// inference. The public OpenCode Go catalog is read without decrypting or
+/// sending the inference credential; a generic `{base}/models` request needs it.
+async fn discover_provider_catalog(
+    app: &Arc<App>,
+    provider: &str,
+    settings: &factory_native::db::ProviderSettingsRecord,
+) -> Result<factory_native::provider_catalog::ProviderModelCatalogEntry, Response> {
+    let requires_credential =
+        factory_native::provider_catalog::catalog_endpoint(provider, &settings.base_url)
+            .map(|endpoint| endpoint.requires_credential)
+            .unwrap_or(false);
+    let mut credential = String::new();
+    if requires_credential && !settings.credential_ciphertext.is_empty() {
+        let Some(master_key) = app.master_key.as_ref() else {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error":"provider credential protection is not configured",
+                    "code":"CREDENTIAL_PROTECTION_UNAVAILABLE",
+                })),
+            )
+                .into_response());
+        };
+        let plaintext = master_key
+            .decrypt(&settings.credential_ciphertext, &settings.credential_nonce)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": error})),
+                )
+                    .into_response()
+            })?;
+        credential = String::from_utf8(plaintext).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"stored credential is not valid text"})),
+            )
+                .into_response()
+        })?;
+        factory_native::telemetry::register_secret(&credential);
+    }
+    let allow_loopback_http = env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
+    Ok(factory_native::provider_catalog::discover_models(
+        provider,
+        &settings.base_url,
+        &credential,
+        allow_loopback_http,
+        test_upstream_hosts(),
+        chrono::Utc::now().to_rfc3339(),
+    )
+    .await)
+}
+
 async fn test_provider_connection(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -2361,13 +2454,13 @@ async fn test_provider_connection(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(_catalog) = factory_native::provider_catalog::entry(&provider) else {
+    if factory_native::provider_catalog::entry(&provider).is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error":"unknown provider"})),
         )
             .into_response();
-    };
+    }
     let settings = match app.db.provider_settings(&provider).await {
         Ok(settings) => settings,
         Err(factory_native::db::Error::NotFound) => {
@@ -2379,95 +2472,42 @@ async fn test_provider_connection(
         }
         Err(error) => return api_error(error),
     };
-    let Some(master_key) = app.master_key.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"provider credential protection is not configured"})),
-        )
-            .into_response();
+    let entry = match discover_provider_catalog(&app, &provider, &settings).await {
+        Ok(entry) => entry,
+        Err(response) => return response,
     };
-    let credential =
-        match master_key.decrypt(&settings.credential_ciphertext, &settings.credential_nonce) {
-            Ok(credential) => match String::from_utf8(credential) {
-                Ok(credential) => credential,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error":"stored credential is not valid text"})),
-                    )
-                        .into_response();
-                }
-            },
-            Err(error) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": error})),
-                )
-                    .into_response();
-            }
-        };
-    factory_native::telemetry::register_secret(&credential);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": error.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    let url = format!("{}/models", settings.base_url.trim_end_matches('/'));
-    let response = client.get(&url).bearer_auth(&credential).send().await;
-    let (status, models, detail) = match response {
-        Ok(response) => {
-            let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                || status == reqwest::StatusCode::FORBIDDEN
-            {
-                ("DENIED", Vec::new(), format!("HTTP {status}"))
-            } else if status == reqwest::StatusCode::NOT_FOUND
-                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
-            {
-                ("UNSUPPORTED", Vec::new(), format!("HTTP {status}"))
-            } else if status.is_success() {
-                let body: serde_json::Value = response.json().await.unwrap_or_default();
-                let models: Vec<String> = body
-                    .get("data")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
-                            .take(100)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                ("AUTHENTICATED", models, "model list retrieved".into())
-            } else {
-                ("UNREACHABLE", Vec::new(), format!("HTTP {status}"))
-            }
-        }
-        Err(error) => ("UNREACHABLE", Vec::new(), error.to_string()),
-    };
-    let model_available = models.iter().any(|model| model == &settings.model);
+    app.db.record_provider_model_discovery(entry.clone());
+    let entry = app
+        .db
+        .provider_model_cache()
+        .entry(&provider)
+        .cloned()
+        .unwrap_or(entry);
     let _ = app
         .db
-        .record_provider_test(&provider, "office-operator", &detail)
+        .record_provider_test(
+            &provider,
+            "office-operator",
+            &format!("catalog check: {:?} - {}", entry.status, entry.detail),
+        )
         .await;
+    let credential = provider_credential_view(&settings, &entry);
+    let inference = provider_inference_view();
+    let model_available = entry.models.iter().any(|model| model == &settings.model);
     Json(json!({
-        "provider": provider,
-        "status": status,
-        "models": models,
+        "provider": entry.provider,
+        "status": entry.status,
+        "source": entry.source,
+        "catalogUrl": entry.catalog_url,
+        "models": entry.models,
+        "detail": entry.detail,
+        "discoveredAt": entry.discovered_at,
+        "lastKnown": entry.last_known,
+        "credentialSignal": entry.credential_signal,
         "model": settings.model,
         "modelAvailable": model_available,
-        "detail": detail
+        "credential": credential,
+        "inference": inference,
     }))
     .into_response()
 }
@@ -2480,13 +2520,13 @@ async fn provider_models(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(catalog) = factory_native::provider_catalog::entry(&provider) else {
+    if factory_native::provider_catalog::entry(&provider).is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error":"unknown provider"})),
         )
             .into_response();
-    };
+    }
     let settings = match app.db.provider_settings(&provider).await {
         Ok(settings) => settings,
         Err(factory_native::db::Error::NotFound) => {
@@ -2501,89 +2541,17 @@ async fn provider_models(
         }
         Err(error) => return api_error(error),
     };
-    let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind);
-    let discovery_label = match adapter {
-        Some(adapter) => match adapter.model_discovery() {
-            factory_native::provider_adapter::ModelDiscoverySupport::OpenAiModelsEndpoint => {
-                "OPENAI_MODELS_ENDPOINT"
-            }
-            factory_native::provider_adapter::ModelDiscoverySupport::Unsupported(_) => {
-                "UNSUPPORTED"
-            }
-        },
-        None => "UNSUPPORTED",
-    };
-    let discovered_at = chrono::Utc::now().to_rfc3339();
-    let entry = match adapter {
-        Some(adapter)
-            if matches!(
-                adapter.model_discovery(),
-                factory_native::provider_adapter::ModelDiscoverySupport::OpenAiModelsEndpoint
-            ) =>
-        {
-            let Some(master_key) = app.master_key.as_ref() else {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({
-                        "error":"provider credential protection is not configured",
-                        "code":"CREDENTIAL_PROTECTION_UNAVAILABLE",
-                    })),
-                )
-                    .into_response();
-            };
-            let credential = match master_key
-                .decrypt(&settings.credential_ciphertext, &settings.credential_nonce)
-            {
-                Ok(credential) => match String::from_utf8(credential) {
-                    Ok(credential) => credential,
-                    Err(_) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error":"stored credential is not valid text"})),
-                        )
-                            .into_response();
-                    }
-                },
-                Err(error) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": error})),
-                    )
-                        .into_response();
-                }
-            };
-            factory_native::telemetry::register_secret(&credential);
-            let allow_loopback_http =
-                env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
-            factory_native::provider_catalog::discover_models(
-                &provider,
-                &settings.base_url,
-                &credential,
-                allow_loopback_http,
-                test_upstream_hosts(),
-                discovered_at,
-            )
-            .await
-        }
-        Some(_) => factory_native::provider_catalog::ProviderModelCatalogEntry {
-            provider: provider.clone(),
-            status: factory_native::provider_catalog::ProviderDiscoveryStatus::Unavailable,
-            models: Vec::new(),
-            detail: format!(
-                "the {} adapter exposes no supported model catalog",
-                catalog.display_name
-            ),
-            discovered_at,
-        },
-        None => factory_native::provider_catalog::ProviderModelCatalogEntry {
-            provider: provider.clone(),
-            status: factory_native::provider_catalog::ProviderDiscoveryStatus::Unavailable,
-            models: Vec::new(),
-            detail: format!("provider kind {} has no implemented adapter", settings.kind),
-            discovered_at,
-        },
+    let entry = match discover_provider_catalog(&app, &provider, &settings).await {
+        Ok(entry) => entry,
+        Err(response) => return response,
     };
     app.db.record_provider_model_discovery(entry.clone());
+    let entry = app
+        .db
+        .provider_model_cache()
+        .entry(&provider)
+        .cloned()
+        .unwrap_or(entry);
     let _ = app
         .db
         .record_provider_test(
@@ -2592,14 +2560,21 @@ async fn provider_models(
             &format!("model discovery: {:?} - {}", entry.status, entry.detail),
         )
         .await;
+    let credential = provider_credential_view(&settings, &entry);
+    let inference = provider_inference_view();
     Json(json!({
         "provider": entry.provider,
         "status": entry.status,
+        "source": entry.source,
+        "catalogUrl": entry.catalog_url,
         "models": entry.models,
         "detail": entry.detail,
         "discoveredAt": entry.discovered_at,
+        "lastKnown": entry.last_known,
+        "credentialSignal": entry.credential_signal,
         "adapter": settings.kind,
-        "discovery": discovery_label,
+        "credential": credential,
+        "inference": inference,
     }))
     .into_response()
 }
@@ -13091,15 +13066,22 @@ mod tests {
         let _ = std::fs::remove_file(key_path);
 
         let models = axum::Router::new().route(
-            "/v1/models",
+            "/inference/go/v1/models",
             axum::routing::get(|| async {
                 axum::Json(json!({
-                    "data": [{"id": "deepseek-v4.1-flash"}, {"id": "discovered-model"}]
+                    "object": "list",
+                    "data": [
+                        {"id": "deepseek-v4.1-flash"},
+                        {"id": "discovered-model"}
+                    ]
                 }))
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let base_url = format!(
+            "http://{}/inference/go/openai/v1",
+            listener.local_addr().unwrap()
+        );
         tokio::spawn(async move { axum::serve(listener, models).await.unwrap() });
 
         let path = std::env::temp_dir().join(format!(
@@ -13191,7 +13173,15 @@ mod tests {
             discovery["models"],
             json!(["deepseek-v4.1-flash", "discovered-model"])
         );
-        assert_eq!(discovery["discovery"], "OPENAI_MODELS_ENDPOINT");
+        assert_eq!(discovery["source"], "OPENCODE_GO_CATALOG_URL");
+        assert_eq!(
+            discovery["catalogUrl"],
+            format!("{}/v1/models", base_url.trim_end_matches("/openai/v1")).as_str()
+        );
+        assert_eq!(discovery["credentialSignal"], "NOT_OBSERVED");
+        assert_eq!(discovery["credential"]["presence"], "CONFIGURED");
+        assert_eq!(discovery["credential"]["validation"], "NOT_OBSERVED");
+        assert_eq!(discovery["inference"]["status"], "NOT_TESTED");
         assert!(!String::from_utf8_lossy(&body).contains("discovery-credential"));
         let cached = app.db.provider_model_cache();
         assert_eq!(
@@ -13215,13 +13205,13 @@ mod tests {
             .await
             .unwrap();
         let codex_discovery: Value = serde_json::from_slice(&codex_body).unwrap();
-        assert_eq!(codex_discovery["status"], "UNAVAILABLE");
-        assert_eq!(codex_discovery["discovery"], "UNSUPPORTED");
+        assert_eq!(codex_discovery["status"], "UNSUPPORTED");
+        assert_eq!(codex_discovery["source"], "UNSUPPORTED");
         assert_eq!(codex_discovery["models"], json!([]));
         assert!(
             codex_discovery["detail"]
                 .as_str()
-                .is_some_and(|detail| detail.contains("no supported model catalog"))
+                .is_some_and(|detail| detail.contains("no model catalog"))
         );
         let unknown = router
             .clone()
@@ -13723,9 +13713,13 @@ mod tests {
                 factory_native::provider_catalog::ProviderModelCatalogEntry {
                     provider: "opencode".into(),
                     status: factory_native::provider_catalog::ProviderDiscoveryStatus::Available,
+                    source: factory_native::provider_catalog::ProviderCatalogSource::OpenAiModelsEndpoint,
+                    catalog_url: Some(format!("{review_url}/models")),
                     models: vec!["reviewer-model".into()],
                     detail: "test discovery".into(),
                     discovered_at: chrono::Utc::now().to_rfc3339(),
+                    credential_signal: factory_native::provider_catalog::ProviderCredentialSignal::NotObserved,
+                    last_known: None,
                 },
             );
 

@@ -17,7 +17,6 @@ import {
   type FactorySettings,
   type ProviderAudit,
   type ProviderModelCatalogEntry,
-  type ProviderTestResult,
   type ProviderView,
 } from "../coreApi";
 import { formatTimestamp } from "../format";
@@ -74,13 +73,13 @@ function ProviderCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [test, setTest] = useState<ProviderTestResult | null>(null);
   const [audit, setAudit] = useState<ProviderAudit[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [catalog, setCatalog] = useState<ProviderModelCatalogEntry | null>(
     provider.modelDiscovery,
   );
+  const [modelFilter, setModelFilter] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
 
@@ -96,6 +95,7 @@ function ProviderCard({
     setInputRate(provider.inputMicrosPerMillion);
     setOutputRate(provider.outputMicrosPerMillion);
     setCatalog(provider.modelDiscovery);
+    setModelFilter("");
   }, [provider]);
 
   const refreshAudit = useCallback(async () => {
@@ -169,24 +169,6 @@ function ProviderCard({
     }
   }
 
-  async function runTest() {
-    setBusy(true);
-    setError(null);
-    setTest(null);
-    try {
-      setTest(await coreApi.testProvider(provider.provider));
-      await refreshAudit();
-    } catch (cause) {
-      setError(
-        cause instanceof CoreApiError
-          ? cause.message
-          : t("settings.provider.testFailed"),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function revoke() {
     setBusy(true);
     setError(null);
@@ -207,6 +189,18 @@ function ProviderCard({
       setBusy(false);
     }
   }
+
+  const filteredModels =
+    catalog?.status === "AVAILABLE"
+      ? catalog.models.filter((candidate) =>
+          candidate.toLowerCase().includes(modelFilter.trim().toLowerCase()),
+        )
+      : [];
+  const credentialStatus = !provider.configured
+    ? "NOT_CONFIGURED"
+    : catalog?.status === "CREDENTIAL_REJECTED"
+      ? "REJECTED"
+      : "STORED";
 
   return (
     <Panel className="settings-provider" data-testid="provider-card">
@@ -280,22 +274,23 @@ function ProviderCard({
         aria-label={t("settings.provider.verification.aria")}
       >
         <VerificationStep
-          label={t("settings.provider.verification.route")}
-          status={provider.configured ? "CONFIGURED" : "NOT_CONFIGURED"}
-          detail={t("settings.provider.verification.routeDetail")}
+          label={t("settings.provider.verification.catalog")}
+          status={catalog?.status ?? "NOT_TESTED"}
+          detail={
+            catalog
+              ? `${catalog.detail} · ${formatTimestamp(catalog.discoveredAt)}`
+              : t("settings.provider.verification.catalogNotRun")
+          }
         />
         <VerificationStep
-          label={t("settings.provider.verification.test")}
-          status={test?.status ?? "NOT_TESTED"}
+          label={t("settings.provider.verification.credential")}
+          status={credentialStatus}
           detail={
-            test
-              ? t("settings.provider.verification.testDetail", {
-                  detail: test.detail,
-                  model: test.modelAvailable
-                    ? t("settings.provider.listed")
-                    : t("settings.provider.notListed"),
-                })
-              : t("settings.provider.verification.testNotRun")
+            !provider.configured
+              ? t("settings.provider.verification.credentialMissing")
+              : catalog?.status === "CREDENTIAL_REJECTED"
+                ? t("settings.provider.verification.credentialRejected")
+                : t("settings.provider.verification.credentialPresent")
           }
         />
         <VerificationStep
@@ -337,29 +332,91 @@ function ProviderCard({
           </p>
         ) : (
           <div>
-            <p>
+            <p aria-live="polite">
               <StatusBadge status={catalog.status} />{" "}
               <span className="muted">
                 {catalog.detail} · {formatTimestamp(catalog.discoveredAt)}
               </span>
             </p>
-            {catalog.status === "AVAILABLE" && catalog.models.length > 0 ? (
-              <ul className="settings-model-catalog">
-                {catalog.models.map((discovered) => (
-                  <li key={discovered}>
-                    <code>{discovered}</code>
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => setModel(discovered)}
-                    >
-                      {t("settings.provider.catalog.use")}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
+            <p className="muted">
+              {t("settings.provider.catalog.source", {
+                source: catalog.source,
+              })}
+              {catalog.catalogUrl ? (
+                <>
+                  {" · "}
+                  <code>{catalog.catalogUrl}</code>
+                </>
+              ) : null}
+            </p>
+            {catalog.status === "ENDPOINT_UNSUPPORTED" && (
+              <div className="ui-callout ui-callout--attention" role="status">
+                <p>{t("settings.provider.catalog.endpointUnsupported")}</p>
+              </div>
+            )}
+            {catalog.status === "AVAILABLE" ? (
+              catalog.models.length > 0 ? (
+                <>
+                  <Input
+                    label={t("settings.provider.catalog.search")}
+                    value={modelFilter}
+                    onChange={(event) => setModelFilter(event.target.value)}
+                    placeholder={t(
+                      "settings.provider.catalog.searchPlaceholder",
+                    )}
+                  />
+                  <p className="muted">
+                    {t("settings.provider.catalog.filtered", {
+                      shown: filteredModels.length,
+                      total: catalog.models.length,
+                    })}
+                  </p>
+                  {filteredModels.length === 0 ? (
+                    <p className="muted">
+                      {t("settings.provider.catalog.noMatches")}
+                    </p>
+                  ) : (
+                    <ul className="settings-model-catalog">
+                      {filteredModels.map((discovered) => (
+                        <li key={discovered}>
+                          <code>{discovered}</code>
+                          {model === discovered && (
+                            <StatusBadge
+                              status="CURRENT"
+                              label={t("settings.provider.catalog.selected")}
+                            />
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => setModel(discovered)}
+                          >
+                            {t("settings.provider.catalog.use")}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : (
+                <p className="muted">
+                  {t("settings.provider.catalog.noModels")}
+                </p>
+              )
             ) : (
-              <p className="muted">{t("settings.provider.catalog.noModels")}</p>
+              catalog.status !== "ENDPOINT_UNSUPPORTED" && (
+                <p className="muted">
+                  {t("settings.provider.catalog.noModels")}
+                </p>
+              )
+            )}
+            {catalog.lastKnown && (
+              <p className="muted">
+                {t("settings.provider.catalog.lastKnown", {
+                  count: catalog.lastKnown.models.length,
+                  date: formatTimestamp(catalog.lastKnown.observedAt),
+                })}
+              </p>
             )}
           </div>
         )}
@@ -373,20 +430,6 @@ function ProviderCard({
       {notice && <p className="notice">{notice}</p>}
 
       <form className="settings-form" onSubmit={(event) => void save(event)}>
-        <div className="grid-2">
-          <Input
-            label={t("settings.provider.model")}
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-            required
-          />
-          <Input
-            label={t("settings.provider.baseUrl")}
-            value={baseUrl}
-            onChange={(event) => setBaseUrl(event.target.value)}
-            required
-          />
-        </div>
         <Input
           label={
             provider.configured
@@ -405,6 +448,24 @@ function ProviderCard({
           }
           help={t("settings.provider.credentialHelp")}
         />
+        <details className="settings-advanced">
+          <summary>{t("settings.provider.advancedRoute")}</summary>
+          <p className="muted">{t("settings.provider.advancedRouteHint")}</p>
+          <div className="grid-2">
+            <Input
+              label={t("settings.provider.model")}
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              required
+            />
+            <Input
+              label={t("settings.provider.baseUrl")}
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              required
+            />
+          </div>
+        </details>
         <details className="settings-advanced">
           <summary>{t("settings.provider.advanced")}</summary>
           <div className="grid-2">
@@ -471,15 +532,6 @@ function ProviderCard({
           </Button>
           <Button
             type="button"
-            disabled={busy || !provider.configured}
-            onClick={() => void runTest()}
-          >
-            {busy
-              ? t("settings.provider.working")
-              : t("settings.provider.test")}
-          </Button>
-          <Button
-            type="button"
             variant="danger"
             disabled={busy || !provider.configured}
             onClick={() => setRevoking(true)}
@@ -514,30 +566,6 @@ function ProviderCard({
               {t("settings.provider.keepCredential")}
             </Button>
           </div>
-        </div>
-      )}
-
-      {test && (
-        <div className="ui-callout ui-callout--info" role="status">
-          <p>
-            {t("settings.provider.testTitle")}{" "}
-            <StatusBadge status={test.status} /> · {test.detail}
-            {" · "}
-            {t("settings.provider.testModel")} <code>{test.model}</code>{" "}
-            {test.modelAvailable
-              ? t("settings.provider.listed")
-              : t("settings.provider.notListed")}
-          </p>
-          {test.models.length > 0 && (
-            <p className="muted">
-              {t("settings.provider.models", {
-                models: `${test.models.slice(0, 20).join(", ")}${
-                  test.models.length > 20 ? "…" : ""
-                }`,
-              })}
-            </p>
-          )}
-          <p className="muted">{t("settings.provider.testNote")}</p>
         </div>
       )}
 

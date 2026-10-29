@@ -1197,19 +1197,27 @@ mod tests {
         db.record_provider_model_discovery(crate::provider_catalog::ProviderModelCatalogEntry {
             provider: "opencode-go".into(),
             status: crate::provider_catalog::ProviderDiscoveryStatus::Available,
+            source: crate::provider_catalog::ProviderCatalogSource::OpenCodeGoCatalogUrl,
+            catalog_url: Some("https://opencode.ai/inference/go/v1/models".into()),
             models: vec!["reviewer-model".into()],
             detail: "test discovery".into(),
             discovered_at: "2026-10-28T00:00:00Z".into(),
+            credential_signal: crate::provider_catalog::ProviderCredentialSignal::NotObserved,
+            last_known: None,
         });
         let reloaded = db.execution_profile(&draft.id).await.unwrap();
         assert!(reloaded.executable, "{:?}", reloaded.warnings);
 
         db.record_provider_model_discovery(crate::provider_catalog::ProviderModelCatalogEntry {
             provider: "opencode-go".into(),
-            status: crate::provider_catalog::ProviderDiscoveryStatus::Unavailable,
+            status: crate::provider_catalog::ProviderDiscoveryStatus::Unreachable,
+            source: crate::provider_catalog::ProviderCatalogSource::OpenCodeGoCatalogUrl,
+            catalog_url: Some("https://opencode.ai/inference/go/v1/models".into()),
             models: Vec::new(),
             detail: "HTTP 500".into(),
             discovered_at: "2026-10-28T00:01:00Z".into(),
+            credential_signal: crate::provider_catalog::ProviderCredentialSignal::NotObserved,
+            last_known: None,
         });
         let stale = db.execution_profile(&draft.id).await.unwrap();
         assert!(!stale.executable);

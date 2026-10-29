@@ -15,6 +15,7 @@ const SUCCESS = new Set([
   "CONFIGURED",
   "CURRENT",
   "REGISTERED",
+  "AVAILABLE",
 ]);
 
 const ATTENTION = new Set([
@@ -33,6 +34,8 @@ const ATTENTION = new Set([
   "STALE",
   "DISCONNECTED",
   "WAITING",
+  "ENDPOINT_UNSUPPORTED",
+  "INVALID_RESPONSE",
 ]);
 
 const DANGER = new Set([
@@ -45,6 +48,7 @@ const DANGER = new Set([
   "UNHEALTHY",
   "UNREACHABLE",
   "CHANGES_REQUESTED",
+  "CREDENTIAL_REJECTED",
 ]);
 
 const INFO = new Set([

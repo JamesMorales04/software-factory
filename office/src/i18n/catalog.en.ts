@@ -2658,6 +2658,16 @@ export const en = {
   "settings.provider.verification.route": "Configured route",
   "settings.provider.verification.routeDetail":
     "A saved route and credential are configuration, not proof of access.",
+  "settings.provider.verification.catalog": "Model catalog",
+  "settings.provider.verification.catalogNotRun":
+    "Not discovered in this Core process. No catalog endpoint has been evaluated.",
+  "settings.provider.verification.credential": "Credential",
+  "settings.provider.verification.credentialMissing":
+    "No credential is stored for this provider route.",
+  "settings.provider.verification.credentialRejected":
+    "The catalog endpoint rejected the stored credential. This is a permission signal for that endpoint, not proof about inference.",
+  "settings.provider.verification.credentialPresent":
+    "A credential is stored. Presence is configuration; a catalog response does not validate inference access.",
   "settings.provider.verification.test": "Connection test",
   "settings.provider.verification.testDetail": "{detail}; model {model}",
   "settings.provider.verification.testNotRun":
@@ -2678,6 +2688,18 @@ export const en = {
   "settings.provider.catalog.emptyUnconfigured":
     "No model discovery is recorded in this Core process. Configure the connection first.",
   "settings.provider.catalog.use": "Use",
+  "settings.provider.catalog.selected": "selected",
+  "settings.provider.catalog.search": "Search catalogued models",
+  "settings.provider.catalog.searchPlaceholder": "Filter by model ID",
+  "settings.provider.catalog.filtered":
+    "{shown} of {total} catalogued model(s)",
+  "settings.provider.catalog.noMatches":
+    "No catalogued model matches this search.",
+  "settings.provider.catalog.source": "Source: {source}",
+  "settings.provider.catalog.endpointUnsupported":
+    "This provider does not publish a model catalog at the configured catalog URL. This is a catalog-endpoint fact, not a credential finding. Use advanced configuration only if the provider documents a model ID.",
+  "settings.provider.catalog.lastKnown":
+    "Last successful catalog in this Core process: {count} model(s), observed {date}.",
   "settings.provider.catalog.noModels":
     "No model IDs were returned. Core does not invent them.",
   "settings.provider.baseUrl": "Base URL",
@@ -2688,6 +2710,9 @@ export const en = {
   "settings.provider.credentialPlaceholder": "provider API key",
   "settings.provider.credentialHelp":
     "Credentials are encrypted by Core, never returned to the browser and never rendered in audit rows.",
+  "settings.provider.advancedRoute": "Advanced model and endpoint",
+  "settings.provider.advancedRouteHint":
+    "Use a raw model ID or endpoint only when the provider publishes no catalog. A manual model stays unverified until the provider catalog substantiates it.",
   "settings.provider.advanced": "Advanced budget and rate limits",
   "settings.provider.maxTurns": "Max turns",
   "settings.provider.maxCost": "Max cost (micros)",

@@ -448,19 +448,22 @@
         "stale-snapshot",
         "provider-unconfigured",
         "credential-configured",
-        "connection-authenticated",
-        "connection-denied",
-        "connection-unreachable",
-        "connection-unsupported",
         "model-discovery-unavailable",
         "unverified-model",
-        "not-tested"
+        "not-tested",
+        "catalog-available",
+        "catalog-endpoint-unsupported",
+        "catalog-unreachable",
+        "catalog-invalid-response",
+        "credential-present",
+        "credential-rejected",
+        "inference-not-tested"
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
         "office/src/views/Settings.test.tsx"
       ],
-      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test and model discovery read provider metadata only and are not coding inference. `GET /settings/providers/{provider}/models` returns a typed AVAILABLE or UNAVAILABLE catalog with a bounded model list, no proxy and no redirects; Codex App Server discovery is UNAVAILABLE by design. Discovery is an in-memory Core cache and is not persisted. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
+      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test and model discovery read provider metadata only and are not coding inference. `GET /settings/providers/{provider}/models` returns a typed catalog status (`AVAILABLE`, `ENDPOINT_UNSUPPORTED`, `CREDENTIAL_REJECTED`, `UNREACHABLE`, `INVALID_RESPONSE` or `UNSUPPORTED`) with source, catalog URL and observation time, a bounded model list, no proxy and no redirects. `opencode-go` reads its sibling `/inference/go/v1/models` catalog without sending the inference credential; a missing catalog is not a credential finding, and a 401/403 is only a signal for that catalog endpoint. Codex App Server discovery is `UNSUPPORTED` by design. Discovery and the last-known snapshot are an in-memory Core cache and are not persisted. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

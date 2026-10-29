@@ -2758,6 +2758,16 @@ export const es: Catalog = {
   "settings.provider.verification.route": "Ruta configurada",
   "settings.provider.verification.routeDetail":
     "Una ruta y una credencial guardadas son configuración, no prueba de acceso.",
+  "settings.provider.verification.catalog": "Catálogo de modelos",
+  "settings.provider.verification.catalogNotRun":
+    "No descubierto en este proceso de Core. No se ha evaluado ningún endpoint de catálogo.",
+  "settings.provider.verification.credential": "Credencial",
+  "settings.provider.verification.credentialMissing":
+    "No hay ninguna credencial guardada para esta ruta de proveedor.",
+  "settings.provider.verification.credentialRejected":
+    "El endpoint del catálogo rechazó la credencial guardada. Es una señal de permiso para ese endpoint, no prueba sobre la inferencia.",
+  "settings.provider.verification.credentialPresent":
+    "Hay una credencial guardada. La presencia es configuración; una respuesta del catálogo no valida el acceso de inferencia.",
   "settings.provider.verification.test": "Prueba de conexión",
   "settings.provider.verification.testDetail": "{detail}; modelo {model}",
   "settings.provider.verification.testNotRun":
@@ -2778,6 +2788,18 @@ export const es: Catalog = {
   "settings.provider.catalog.emptyUnconfigured":
     "No hay ningún descubrimiento de modelos registrado en este proceso de Core. Configura primero la conexión.",
   "settings.provider.catalog.use": "Usar",
+  "settings.provider.catalog.selected": "seleccionado",
+  "settings.provider.catalog.search": "Buscar modelos catalogados",
+  "settings.provider.catalog.searchPlaceholder": "Filtrar por ID de modelo",
+  "settings.provider.catalog.filtered":
+    "{shown} de {total} modelos catalogados",
+  "settings.provider.catalog.noMatches":
+    "Ningún modelo catalogado coincide con esta búsqueda.",
+  "settings.provider.catalog.source": "Origen: {source}",
+  "settings.provider.catalog.endpointUnsupported":
+    "Este proveedor no publica un catálogo de modelos en la URL de catálogo configurada. Es un hecho del endpoint de catálogo, no una conclusión sobre la credencial. Usa la configuración avanzada solo si el proveedor documenta un ID de modelo.",
+  "settings.provider.catalog.lastKnown":
+    "Último catálogo correcto en este proceso de Core: {count} modelos, observado {date}.",
   "settings.provider.catalog.noModels":
     "No se devolvieron ID de modelo. Core no los inventa.",
   "settings.provider.baseUrl": "URL base",
@@ -2788,6 +2810,9 @@ export const es: Catalog = {
   "settings.provider.credentialPlaceholder": "clave API del proveedor",
   "settings.provider.credentialHelp":
     "Core cifra las credenciales, nunca las devuelve al navegador ni las muestra en las filas de auditoría.",
+  "settings.provider.advancedRoute": "Modelo y endpoint avanzados",
+  "settings.provider.advancedRouteHint":
+    "Usa un ID de modelo o endpoint manual solo cuando el proveedor no publique catálogo. Un modelo manual permanece sin verificar hasta que un catálogo del proveedor lo respalde.",
   "settings.provider.advanced": "Límites avanzados de presupuesto y tarifas",
   "settings.provider.maxTurns": "Máximo de turnos",
   "settings.provider.maxCost": "Coste máximo (micros)",
