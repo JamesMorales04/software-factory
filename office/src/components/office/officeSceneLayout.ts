@@ -476,9 +476,18 @@ export function fitCamera(
     FIT_MIN_ZOOM,
     FIT_MAX_ZOOM,
   );
+  const scaledWidth = width * zoom;
+  const scaledHeight = height * zoom;
   return {
-    x: Math.round((view.width - width * zoom) / 2),
-    y: Math.round((view.height - height * zoom) / 2),
+    x: Math.round((view.width - scaledWidth) / 2),
+    // A tall scene that cannot fit vertically is anchored below the studio's
+    // top wall instead of being cropped equally at both ends. The operator
+    // still pans; this keeps room plaques and the top row visible on narrow
+    // viewports instead of opening on a mid-floor crop.
+    y:
+      scaledHeight <= view.height
+        ? Math.round((view.height - scaledHeight) / 2)
+        : 8,
     zoom,
   };
 }

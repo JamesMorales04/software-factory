@@ -1739,6 +1739,12 @@
   .office-scene-zoom-value {
     min-width: 54px;
   }
+
+  .office-zone-header {
+    left: 50%;
+    transform: translateX(-50%) scale(var(--office-zone-scale, 1));
+    transform-origin: top center;
+  }
 }
 
 @media (max-width: 380px) {

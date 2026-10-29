@@ -382,6 +382,13 @@ describe("office camera", () => {
     expect(camera.y).toBe(400 - 1000 - 24);
   });
 
+  it("anchors a scene taller than the viewport below the studio wall", () => {
+    const camera = fitCamera(220, 1800, { width: 420, height: 320 });
+    expect(camera.zoom).toBe(0.55);
+    expect(camera.x).toBe(Math.round((420 - 220 * 0.55) / 2));
+    expect(camera.y).toBe(8);
+  });
+
   it("limits panning of a scene that already fits", () => {
     const camera = fitCamera(100, 100, { width: 500, height: 400 });
     const panned = panCamera(camera, 10000, 10000, 100, 100, {
