@@ -236,7 +236,8 @@ export function Home() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = objective.trim();
-    const nextErrors: { project?: string; objective?: string; spend?: string } = {};
+    const nextErrors: { project?: string; objective?: string; spend?: string } =
+      {};
     const spendMicros = Math.round(Number(spendUsd) * 1_000_000);
     if (projectId === "") nextErrors.project = t("home.validation.project");
     if (trimmed === "") {
