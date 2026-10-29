@@ -83,11 +83,36 @@ def tailscale_serve_config_errors(path: Path) -> list[str]:
     return errors
 
 
+def office_socket_volume_sources(config: dict) -> set[str]:
+    """Resolve Compose volume keys that refer to the protected socket volume."""
+    volumes = config.get("volumes") or {}
+    protected_names = {"factory-office-socket"}
+    socket_definition = volumes.get("factory-office-socket") or {}
+    explicit_socket_name = socket_definition.get("name")
+    if explicit_socket_name:
+        protected_names.add(str(explicit_socket_name))
+    elif config.get("name"):
+        protected_names.add(f"{config['name']}_factory-office-socket")
+
+    protected_sources = set()
+    for source, definition in volumes.items():
+        definition = definition or {}
+        effective_name = definition.get("name")
+        external = definition.get("external")
+        if isinstance(external, dict):
+            effective_name = external.get("name") or effective_name
+        if source == "factory-office-socket" or effective_name in protected_names:
+            protected_sources.add(source)
+    return protected_sources
+
+
 def main(path: str) -> int:
     with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
     services = config.get("services", {})
-    named_volumes = set((config.get("volumes") or {}).keys())
+    volume_definitions = config.get("volumes") or {}
+    named_volumes = set(volume_definitions.keys())
+    office_socket_sources = office_socket_volume_sources(config)
     errors: list[str] = []
 
     def fail(message: str) -> None:
@@ -130,7 +155,7 @@ def main(path: str) -> int:
         for volume in service.get("volumes", []) or []:
             source = str(volume.get("source", ""))
             target = str(volume.get("target", ""))
-            if source == "factory-office-socket":
+            if source in office_socket_sources:
                 if name not in {"init", "core", "tailscale"}:
                     fail(
                         f"{name}: Office socket volume is restricted to init, core, and tailscale"
