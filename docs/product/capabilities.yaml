@@ -2218,16 +2218,25 @@ capabilities:
     - office/src/components/ui/Field.tsx
     - office/src/components/ui/Surface.tsx
     - office/src/styles/tokens.css
+    - office/src/styles/layout.css
+    - office/src/styles/components.css
+    - office/src/styles/home.css
+    - office/src/views/Home.tsx
     test:
     - office/src/components/ui/Button.test.tsx
+    - office/src/components/ui/Field.test.tsx
+    - office/src/views/Home.test.tsx
+    - office/src/views/Home.styles.test.ts
     - office/src/theme.test.tsx
+    - office/e2e-browser/office-home-visual-polish.mjs
     - office/e2e-browser/rust-journey.mjs
   acceptance:
-    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow.
+    deterministic: Semantic tokens, light/dark themes, density, grouped navigation, command search and shared accessible primitives typecheck, lint, pass component tests and build inside the container-native workflow. The visual-polish slice adds semantic shell/content tokens, deep-navy navigation and a conversation-first Home with 1440/834/390/320 component and fixture-browser checks.
     real: Primary Office journeys remain usable at desktop, tablet and narrow widths with visible focus, truthful states and real Core-backed browser acceptance.
   evidence:
     deterministic:
     - docs/evidence/office-design-foundation-2026-10-27.json
+    - docs/evidence/office-home-visual-polish-2026-10-29/visual-polish-evidence.json
     live_agent: []
     uat: []
     deployment: []
@@ -2235,9 +2244,12 @@ capabilities:
   limitations:
   - Storybook, visual regression, the full axe audit, the interactive WorkGraph, a full code-diff viewer and a visual Agent Office remain later slices.
   - Provider connection tests read model discovery only; no live coding inference is authorized by these Office slices.
+  - The 2026-10-29 visual-polish slice propagates the new tokens and primitives only to the shell and Home; Projects, Campaigns, Settings and Agent Office keep their existing composition until their own slices.
+  - Fixture Chromium screenshots at 1440/834/390/320 are style evidence only. Real Core/Compose browser acceptance and Product Owner visual acceptance remain NOT_TESTED.
   - Existing operational views still use the legacy compatibility surface until their module redesign.
   blockers:
   - The full accessible WorkGraph and Agent Office journeys remain to be implemented.
+  - Product Owner visual acceptance of the shell and Home remains outstanding.
 
 - id: CAP-049
   name: Operational Overview and Decision Inbox

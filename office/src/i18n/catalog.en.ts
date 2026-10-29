@@ -38,6 +38,7 @@ export const en = {
   "nav.factoryOffice": "Factory Office",
 
   "shell.skipToMain": "Skip to main content",
+  "shell.preferences": "Display preferences",
   "shell.primaryNavigation": "Primary navigation",
   "shell.navigation": "Primary",
   "shell.closeDrawer": "Close navigation drawer",
@@ -92,17 +93,13 @@ export const en = {
   "app.lock.error": "Unable to end this device session.",
 
   "home.title": "Home",
-  "home.description":
-    "Describe the outcome you want. The Factory assesses it, proposes a plan and waits for your approval before any work starts.",
-  "home.meta.flow": "Project → outcome → profile → authorization",
-  "home.meta.durable": "Requests are durable Core records",
   "home.projects.error": "Projects could not be loaded from Core.",
   "home.projects.retry": "Retry projects",
   "home.newRequest.title": "New request",
   "home.newRequest.hint": "Operator intent, not an Action spec",
   "home.composer.title": "What should the Factory work on?",
   "home.composer.description":
-    "Write the engineering outcome in plain language. Pick a Project and an execution profile, authorize an inference amount and submit the request. Core freezes the plan; nothing executes until you approve it.",
+    "Describe the outcome in plain language. The Lead drafts a plan; you approve it before any work starts.",
   "home.projects.loading": "Loading Projects…",
   "home.projects.emptyTitle": "Register a Project first",
   "home.projects.emptyDescription":
@@ -111,16 +108,11 @@ export const en = {
   "home.projectFallback": "Project {id}",
   "home.project.label": "Project",
   "home.project.select": "Select a Project",
-  "home.project.help":
-    "Core enforces the Project configuration, allowed paths and policy revision.",
   "home.objective.label": "What should the Factory do?",
   "home.objective.placeholder":
     "Add a CSV export endpoint to the reporting API, keep the existing API backward compatible, and cover it with tests.",
-  "home.objective.help":
-    "Plain language is enough. Core freezes the concrete plan and checks after assessment.",
   "home.profile.label": "Execution profile",
-  "home.profile.help":
-    "Choose how Lead, Implementer and Semantic Reviewer work. Technical operation limits stay in the profile's advanced settings.",
+  "home.profile.routes": "Route detail",
   "home.profile.routesHint":
     "These routes are part of the profile revision Core freezes for this request.",
   "home.profile.coreDefaultUnavailable":
@@ -141,9 +133,9 @@ export const en = {
     "This profile is declared but not executable. Choose an executable profile or the Core default.",
   "home.profile.notExecutableError":
     "The selected execution profile is not executable in this Core build. Choose another profile.",
-  "home.approval.title": "Every request stops for explicit operator approval.",
+  "home.approval.title": "Explicit approval required.",
   "home.approval.body":
-    "Core assesses the request, freezes a plan and waits for your approval before any Campaign starts. This build has no automatic start for intake requests.",
+    "Core freezes the plan and waits for you; nothing executes on its own.",
   "home.policy.title": "Enable governed execution",
   "home.policy.description":
     "Core requires an explicit, bounded execution policy for this Project and exact profile revision before it can create the Lead request. This grant is non-autonomous and limited to R0 work; it does not enable auto-start.",
@@ -175,9 +167,7 @@ export const en = {
   "home.validation.project": "Select a Project.",
   "home.spend.label": "Maximum inference spend (USD)",
   "home.spend.help":
-    "One explicit amount covers the Lead assessment, implementation and review. Core stops billable calls when it is exhausted and asks for an increase.",
-  "home.spend.note":
-    "This is the only spend amount required. Advanced cost and token limits stay in the execution profile's technical settings.",
+    "Covers Lead assessment, implementation and review. Core stops billable calls when it is exhausted and asks for an increase.",
   "home.validation.authorization":
     "Enter a positive USD amount for the inference envelope.",
   "home.validation.objective": "Describe the engineering outcome you want.",
@@ -187,9 +177,8 @@ export const en = {
   "home.submit": "Submit request",
   "home.submitting": "Submitting request…",
   "home.submitHint":
-    "Submitting records operator intent. It does not authorize a Campaign.",
-  "home.recent.title": "Recent requests",
-  "home.recent.hint": "Bounded Core projection",
+    "Records intent in Core. It does not authorize a Campaign.",
+  "home.recent.title": "Recent work",
   "home.recent.loading": "Loading requests…",
   "home.recent.unavailable":
     "Unified request history is not available from this Core build. The composer and existing operational views remain available.",

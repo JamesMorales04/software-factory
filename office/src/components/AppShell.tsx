@@ -299,7 +299,31 @@ export function AppShell({
               );
             })}
           </nav>
-          <div className="sidebar-footer" aria-hidden="true" />
+          <div className="sidebar-footer">
+            <fieldset
+              className="sidebar-preferences"
+              aria-label={t("shell.preferences")}
+            >
+              <IconButton
+                label={t("shell.theme.switchAria", {
+                  theme: t(THEME_KEY[theme]),
+                })}
+                onClick={() => setTheme(nextTheme(theme))}
+              >
+                <ThemeIcon size={17} aria-hidden="true" />
+              </IconButton>
+              <IconButton
+                label={t("shell.density.switchAria", {
+                  density: t(DENSITY_KEY[density]),
+                })}
+                onClick={() =>
+                  setDensity(density === "compact" ? "comfortable" : "compact")
+                }
+              >
+                <DensityIcon size={17} aria-hidden="true" />
+              </IconButton>
+            </fieldset>
+          </div>
         </aside>
         {mobileOpen && (
           <button
@@ -395,7 +419,6 @@ export function AppShell({
             </div>
           </header>
           <main id="main" className="workspace-main" tabIndex={-1}>
-            <h1 className="ui-visually-hidden">{t("shell.mainHeading")}</h1>
             {children}
           </main>
         </div>

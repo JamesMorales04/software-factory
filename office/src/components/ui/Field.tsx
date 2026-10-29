@@ -14,6 +14,7 @@ export function Field({
   error,
   children,
   className,
+  labelHidden = false,
 }: {
   label: ReactNode;
   htmlFor: string;
@@ -21,12 +22,18 @@ export function Field({
   error?: string | null;
   children: ReactNode;
   className?: string;
+  /** Keep the programmatic label while letting a surrounding heading carry the
+   * visible prompt. Use only when the visible context is unambiguous. */
+  labelHidden?: boolean;
 }) {
   const helpId = `${htmlFor}-help`;
   const errorId = `${htmlFor}-error`;
   return (
     <div className={cn("ui-field", className)}>
-      <label className="ui-field-label" htmlFor={htmlFor}>
+      <label
+        className={cn("ui-field-label", labelHidden && "ui-visually-hidden")}
+        htmlFor={htmlFor}
+      >
         {label}
       </label>
       {children}
@@ -61,16 +68,24 @@ export function Input({
   error,
   id: providedId,
   className,
+  labelHidden,
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & {
   label: ReactNode;
   help?: ReactNode;
   error?: string | null;
+  labelHidden?: boolean;
 }) {
   const generated = useId();
   const id = providedId ?? generated;
   return (
-    <Field label={label} htmlFor={id} help={help} error={error}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={help}
+      error={error}
+      labelHidden={labelHidden}
+    >
       <input
         id={id}
         className={cn("ui-input", className)}
@@ -88,16 +103,24 @@ export function Textarea({
   error,
   id: providedId,
   className,
+  labelHidden,
   ...props
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & {
   label: ReactNode;
   help?: ReactNode;
   error?: string | null;
+  labelHidden?: boolean;
 }) {
   const generated = useId();
   const id = providedId ?? generated;
   return (
-    <Field label={label} htmlFor={id} help={help} error={error}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={help}
+      error={error}
+      labelHidden={labelHidden}
+    >
       <textarea
         id={id}
         className={cn("ui-textarea", className)}
@@ -115,17 +138,25 @@ export function Select({
   error,
   id: providedId,
   className,
+  labelHidden,
   children,
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement> & {
   label: ReactNode;
   help?: ReactNode;
   error?: string | null;
+  labelHidden?: boolean;
 }) {
   const generated = useId();
   const id = providedId ?? generated;
   return (
-    <Field label={label} htmlFor={id} help={help} error={error}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={help}
+      error={error}
+      labelHidden={labelHidden}
+    >
       <select
         id={id}
         className={cn("ui-select", className)}

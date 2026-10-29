@@ -39,4 +39,27 @@ describe("Button", () => {
       screen.getByRole("button", { name: "Lock Office" }).getAttribute("title"),
     ).toBe("Lock Office");
   });
+
+  it("exposes an in-flight busy state without changing the accessible name", async () => {
+    const onClick = vi.fn();
+    const { rerender } = render(
+      <Button variant="primary" size="lg">
+        Submit request
+      </Button>,
+    );
+    const idle = screen.getByRole("button", { name: "Submit request" });
+    expect(idle.getAttribute("aria-busy")).toBeNull();
+
+    rerender(
+      <Button variant="primary" size="lg" busy disabled onClick={onClick}>
+        Submitting request…
+      </Button>,
+    );
+    const busy = screen.getByRole("button", { name: "Submitting request…" });
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(busy.querySelector(".ui-button-spinner")).not.toBeNull();
+    expect((busy as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(busy);
+    expect(onClick).not.toHaveBeenCalled();
+  });
 });

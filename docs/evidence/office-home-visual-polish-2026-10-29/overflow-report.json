@@ -1,0 +1,62 @@
+{
+  "fixture_only": true,
+  "note": "Viewport checks passed only for this mocked fixture page; they are not acceptance evidence.",
+  "results": [
+    {
+      "name": "home-1440.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-834.png",
+      "viewport": 834,
+      "documentScrollWidth": 834,
+      "bodyScrollWidth": 834,
+      "offenders": []
+    },
+    {
+      "name": "home-390.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-320.png",
+      "viewport": 320,
+      "documentScrollWidth": 320,
+      "bodyScrollWidth": 320,
+      "offenders": []
+    },
+    {
+      "name": "home-390-drawer.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-dark.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    },
+    {
+      "name": "home-390-es.png",
+      "viewport": 390,
+      "documentScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "offenders": []
+    },
+    {
+      "name": "home-1440-empty-projects.png",
+      "viewport": 1440,
+      "documentScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "offenders": []
+    }
+  ]
+}

@@ -264,9 +264,7 @@ describe("Home", () => {
     expect(screen.getByLabelText("What should the Factory do?")).toBeDefined();
     expect(screen.getByLabelText("Execution profile")).toBeDefined();
     expect(screen.queryByRole("radio", { name: /Autonomous/ })).toBeNull();
-    expect(
-      screen.getByText(/Every request stops for explicit operator approval/),
-    ).toBeDefined();
+    expect(screen.getByText(/Explicit approval required/)).toBeDefined();
     expect(await screen.findByText("Add a CSV export endpoint")).toBeDefined();
     expect(screen.getByText("Awaiting approval")).toBeDefined();
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
@@ -300,11 +298,7 @@ describe("Home", () => {
     expect(
       screen.getByLabelText("Gasto máximo de inferencia (USD)"),
     ).toBeDefined();
-    expect(
-      screen.getByText(
-        /Cada solicitud se detiene para la aprobación explícita del operador/,
-      ),
-    ).toBeDefined();
+    expect(screen.getByText(/Aprobación explícita obligatoria/)).toBeDefined();
     expect(await screen.findByText("Pendiente de aprobación")).toBeDefined();
     expect(screen.getByText("Estado de Core")).toBeDefined();
     expect(
