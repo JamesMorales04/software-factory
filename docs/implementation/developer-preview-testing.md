@@ -317,3 +317,7 @@ inference is blocked; an operator API-key route is the supported Codex path.
 Do not treat this guide or the deterministic fixture as a substitute for the
 live report.
 
+The current container-native bounded OpenCode Go run is **prepared but not run**
+in the [real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md),
+including its accounting findings and Owner spend decision.
+

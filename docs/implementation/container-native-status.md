@@ -127,6 +127,22 @@ SEC-01, deployment, Windows or Product Owner personal UAT. Evidence:
 and the
 [certification manifest](evidence/container-native-live-uat-certification-manifest.json).
 
+## Real-provider acceptance preparation (2026-10-29)
+
+A bounded OpenCode Go UAT for the current candidate is **prepared but not run**:
+[real-provider UAT runbook](real-provider-uat-runbook-2026-10-29.md). It uses
+the real Compose Core/Worker/verifier/reviewer path, stops at the exact frozen
+plan for Owner approval, and requires an explicit accounting mode, Extra Usage
+state and spend cap. The dry-run contract test uses a local fake Core and makes
+no inference.
+
+Accounting finding: Core does not persist the raw OpenCode
+`opencode.allowance`, `opencode.billing_source` or API `usage.cost`. OpenCode's
+local message `cost` is a list-rate estimate (observed nonzero for Go messages),
+not a balance charge. The live evidence must therefore mark Go allowance
+consumption **UNKNOWN** and the Owner must read the OpenCode Console. No paid
+inference is authorized or performed by this preparation.
+
 ## Not tested / blocked
 
 - OpenCode live inference inside the provider container: **PASS (owner-authorized,
