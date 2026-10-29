@@ -34,6 +34,12 @@ body {
   letter-spacing: -0.01em;
 }
 
+.harness-studio {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .harness-header p:last-child {
   margin: 0;
   max-width: 80ch;

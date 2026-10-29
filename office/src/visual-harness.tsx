@@ -88,11 +88,13 @@ createRoot(root).render(
             only; no telemetry, activity or acceptance is implied.
           </p>
         </header>
-        <AgentOfficeIsometric
-          participants={participants}
-          selectedId={selected}
-          onSelect={() => undefined}
-        />
+        <div className="agent-office agent-office--studio harness-studio">
+          <AgentOfficeIsometric
+            participants={participants}
+            selectedId={selected}
+            onSelect={() => undefined}
+          />
+        </div>
       </div>
     </I18nProvider>
   </StrictMode>,
