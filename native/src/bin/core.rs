@@ -1047,6 +1047,10 @@ fn api_router(app: Arc<App>) -> Router {
         .route("/observability", get(observability_status))
         .route("/worker/register", post(register_worker))
         .route("/worker/claim", post(worker_claim))
+        .route(
+            "/worker/progress_checkpoint",
+            post(worker_progress_checkpoint),
+        )
         .route("/worker/heartbeat", post(worker_heartbeat))
         .route("/worker/report", post(worker_report))
         .route(
@@ -9611,63 +9615,6 @@ async fn create_execution_policy(
     }
 }
 
-/// Validate that the implementer route carried by a Campaign authorization can
-/// actually be dispatched by the Worker provider-session adapter for the
-/// configured connection. This is not a model gateway: Codex implements through
-/// the App Server and remains executable for that role.
-async fn validate_implementer_route(
-    app: &App,
-    provider: &str,
-    model: &str,
-) -> Result<(), factory_native::model_routing::RouteError> {
-    use factory_native::model_routing::RouteError;
-    let settings = app
-        .db
-        .provider_settings(provider)
-        .await
-        .map_err(|error| match error {
-            factory_native::db::Error::NotFound => RouteError::ProviderNotConfigured {
-                provider: provider.into(),
-            },
-            other => RouteError::Database(other.to_string()),
-        })?;
-    if !settings.enabled {
-        return Err(RouteError::ProviderDisabled {
-            provider: provider.into(),
-        });
-    }
-    let adapter = factory_native::provider_adapter::ProviderAdapter::from_kind(&settings.kind)
-        .ok_or_else(|| RouteError::AdapterUnsupported {
-            provider: provider.into(),
-            kind: settings.kind.clone(),
-            role: "implementer".into(),
-        })?;
-    if !adapter.supports_provider_session() {
-        return Err(RouteError::AdapterUnsupported {
-            provider: provider.into(),
-            kind: settings.kind.clone(),
-            role: "implementer".into(),
-        });
-    }
-    if settings.credential_ciphertext.is_empty() || settings.credential_nonce.is_empty() {
-        return Err(RouteError::CredentialUnavailable {
-            provider: provider.into(),
-        });
-    }
-    let models = factory_native::execution_profile::substantiated_models(
-        provider,
-        &settings.model,
-        &app.db.provider_model_cache(),
-    );
-    if !models.iter().any(|advertised| advertised == model) {
-        return Err(RouteError::ModelUnavailable {
-            provider: provider.into(),
-            model: model.into(),
-        });
-    }
-    Ok(())
-}
-
 async fn authorize_campaign(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -9676,19 +9623,6 @@ async fn authorize_campaign(
 ) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if input.execution_mode == "TRUSTED_LOCAL_PROVIDER"
-        && let Err(error) = validate_implementer_route(&app, &input.provider, &input.model).await
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": error.to_string(),
-                "code": "IMPLEMENTER_ROUTE_UNAVAILABLE",
-                "routeCode": error.code(),
-            })),
-        )
-            .into_response();
     }
     let authorization = match input.execution_mode.as_str() {
         "FIXTURE" => {
@@ -9863,6 +9797,49 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0u8, |difference, (a, b)| difference | (a ^ b))
         == 0
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProgressCheckpoint {
+    attempt_id: String,
+    worker_id: String,
+    generation: i64,
+    campaign_id: String,
+    work_item_id: String,
+    checkpoint: factory_native::execution_policy::ProgressCheckpoint,
+    evidence: Vec<factory_native::execution_policy::ProgressEvidence>,
+    #[serde(default)]
+    gate: Option<factory_native::progress::GateRecord>,
+}
+
+async fn worker_progress_checkpoint(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Json(input): Json<WorkerProgressCheckpoint>,
+) -> Response {
+    if !worker_session_authorized(&app, &headers, &input.worker_id).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match app
+        .db
+        .record_worker_progress_checkpoint(
+            &input.worker_id,
+            &input.attempt_id,
+            input.generation,
+            &factory_native::progress::ProgressCheckpointRequest {
+                campaign_id: input.campaign_id,
+                work_item_id: input.work_item_id,
+                checkpoint: input.checkpoint,
+                evidence: input.evidence,
+                gate: input.gate,
+            },
+        )
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => api_error(error),
+    }
 }
 
 async fn worker_session_authorized(app: &App, headers: &HeaderMap, worker_id: &str) -> bool {
