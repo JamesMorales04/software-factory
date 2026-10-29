@@ -30,8 +30,8 @@ provenance and is not current campaign certification.
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; fixture Chromium clean rerun PASS; V2 grant contract repair active | Use existing authenticated V2 execution-policy grant in E2E and Lead projection; rerun canonical journey, review exact SHA, keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Candidate `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; clean | Luna subagent `access_security_repairs`; exact independent review PASS; author reports 27 base/overlay policy tests | Update existing draft PRs #36→#37→#38 with reviewed candidate/evidence; no merge; remote Serve and SEC-01 remain NOT_TESTED |
-| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `a8d3488abfbfc4cec1b60005ca7ae664008a5019`, pushed | Luna subagent `funding_shared_admission`; independent review BLOCK HIGH (accounting zero + error-body secret leakage); repairs active | Add null/zero and plaintext-secret regressions; validate dedicated Compose project behavior; keep UAT BLOCKED |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Cumulative #38 head `0c3fd4436dd4a83ef2a1a721a22c0932883fd5e3`; clean | Luna subagent `access_security_repairs`; exact review PASS; #38 fast-forwarded, #37 policy-only split being prepared | Preserve stack order and put the guard in #37 before that layer can promote; no merge; remote Serve and SEC-01 NOT_TESTED |
+| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `c5c90ce1f3a2a2274724b18cf41aa2d26ef6530a`, pushed | Luna subagent `funding_shared_admission`; HIGHs repaired; exact re-review and CI in progress | Collect review/CI; live UAT BLOCKED because Core V3 subscription admission is absent |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
 No active Cargo or frontend writer was observed in the funding, Home, access,
@@ -45,13 +45,17 @@ were left untouched.
 
 - #77 — Design System and Home visual foundation: integrated into Wave 3.
 - #78 — Isometric Agent Office V2: integrated into Wave 3.
-- #79 — subscription-only provider UAT preparation: open draft; Owner requires
-  subscription-only inference with no positive USD cap, no-extra-billing
-  evidence and fail-closed behavior. Commit `a8d3488` is pushed and updates the
-  runbook/harness accordingly. Core V3 funding admission is absent, so the live
-  preflight refuses before Project/Request creation; no UAT ran. Fake-Core
-  harness tests passed 26/26. Exact review and architecture/Compose/container/
-  Rust PR checks are running.
+- #79 — subscription-only provider UAT preparation: open draft; commit
+  `c5c90ce` is pushed. It requires explicit valid charge amounts before showing
+  zero, separates subscription billing-source observations, omits arbitrary
+  Core error bodies, rejects paid modes/spend caps, and refuses before
+  Project/Request when Core admission is absent. Harness tests pass 27/27.
+  Rootless Podman 6.1.4/podman-compose 1.6.0 config/quiet/service listing and
+  six overlay mutations passed without starting services; the fixture image is
+  pinned to OCI index digest `sha256:5789aa…4d3bff0`. No live inference/billing.
+  Repository impact check passed for PR event base `f0f9a24` / head `c5c90ce`;
+  remote `compose-policy` passed, architecture/Rust/container-dev pending;
+  independent review is running.
 - #80 — conversational Home: open draft against Wave 3 at
   `3d394652fd3956676affbefb6c8109076ca33c77`. Feature review passed. The
   FIXTURE-only claim regression is repaired and focused DB, fmt and strict
@@ -180,18 +184,13 @@ completion.
   Exact review PASS; its full suite rerun was unavailable in the reviewer
   environment. Remote Tailscale access and SEC-01 remain NOT_TESTED.
 - No live provider inference ran in this campaign session.
-- PR #79 candidate `a8d3488`: 26 UAT harness tests pass; JS syntax, shell syntax
-  and diff checks pass. It refuses a positive cap, paid fallback and absent Core
-  admission before project/request creation. This is fake-Core preparation
-  evidence only; provider inference/billing remains NOT_TESTED. Independent
-  review BLOCKED this exact SHA: null charge could become verified zero,
-  subscription billing source could imply zero without explicit charge
-  evidence, and arbitrary Core error text could expose provider credentials.
-  Regressions and repairs are active. Podman rendered the UAT overlay config
-  without starting services. Its declaration currently fails architecture
-  consistency because the Compose change lacks a container-native impact block
-  and its base SHA differs from the PR event base; a corrected body and
-  real-Podman config validation are in progress.
+- PR #79 candidate `a8d3488` was independently BLOCKED for null/source-only
+  verified-zero accounting and arbitrary Core error-body secret leakage. Both
+  HIGH findings are repaired in `c5c90ce`; 27/27 harness tests and syntax/
+  whitespace checks pass. Rootless Podman config and six negative mutations
+  passed without starting services; image is digest-pinned. Current Core still
+  lacks `/funding/subscription`, so preflight fails before Project/Request and
+  real UAT remains BLOCKED. Exact re-review/CI pending.
 
 ## Immediate sequence
 
@@ -212,8 +211,9 @@ completion.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
-**Independent review:** access candidate `0c3fd44` PASS (suite rerun limitation
-recorded); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
+**Independent review:** access candidate `0c3fd44` PASS (reviewer suite rerun
+limitation recorded); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
 capability PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected
-integration candidate); PR #79 `a8d3488` BLOCK HIGH (repairs active).
+integration candidate); PR #79 `c5c90ce` review pending (prior `a8d3488`
+BLOCK HIGH repaired).
 **Campaign status:** in progress; Wave 3 is not a certified product release.
