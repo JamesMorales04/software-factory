@@ -14,6 +14,7 @@ import {
   OFFICE_MAX_ZOOM,
   OFFICE_MIN_ZOOM,
   OFFICE_SLOT_COLUMN,
+  OFFICE_WORLD_PADDING,
   OFFICE_ZONE_SIDE_LANE,
   panCamera,
   zoomCamera,
@@ -222,8 +223,8 @@ describe("buildOfficeSceneLayout", () => {
       (zone) => zone.role === "IMPLEMENTER",
     );
     expect(implementation?.slots).toHaveLength(30);
-    expect(implementation?.columns).toBe(6);
-    expect(implementation?.rows).toBe(5);
+    expect(implementation?.columns).toBe(8);
+    expect(implementation?.rows).toBe(4);
     const positions = new Set(
       layout.slots.map(
         (slot) => `${Math.round(slot.anchorX)}:${Math.round(slot.anchorY)}`,
@@ -248,8 +249,8 @@ describe("buildOfficeSceneLayout", () => {
     const rows = [...new Set(anchors.map((slot) => slot.row))].sort(
       (left, right) => left - right,
     );
-    expect(columns).toHaveLength(6);
-    expect(rows).toHaveLength(5);
+    expect(columns).toHaveLength(8);
+    expect(rows).toHaveLength(4);
     const columnAnchors = columns.map(
       (column) => anchors.find((slot) => slot.column === column)?.anchorX ?? 0,
     );
@@ -264,8 +265,8 @@ describe("buildOfficeSceneLayout", () => {
       plainColumn + OFFICE_CLUSTER_GAP - 1,
     );
     expect(rowAnchors.at(-1)).toBeGreaterThan(rowAnchors[0] ?? 0);
-    expect(new Set(columnAnchors).size).toBe(6);
-    expect(new Set(rowAnchors).size).toBe(5);
+    expect(new Set(columnAnchors).size).toBe(8);
+    expect(new Set(rowAnchors).size).toBe(4);
     expect(OFFICE_SLOT_COLUMN).toBeGreaterThan(OFFICE_AVATAR_WIDTH);
   });
 
@@ -283,6 +284,37 @@ describe("buildOfficeSceneLayout", () => {
           1,
       );
     }
+  });
+
+  it("collapses stations without a recorded participant into one studio", () => {
+    const layout = buildOfficeSceneLayout(implementers(30));
+    expect(layout.zones).toHaveLength(1);
+    const [implementation] = layout.zones;
+    expect(implementation?.role).toBe("IMPLEMENTER");
+    expect(implementation?.wing).toBe("center");
+    expect(layout.emptyRoles).toEqual([
+      "LEAD",
+      "VERIFIER",
+      "REVIEWER",
+      "WORKER",
+    ]);
+    if (!implementation) throw new Error("implementation station is missing");
+    expect(layout.width).toBeLessThan(
+      implementation.width + OFFICE_WORLD_PADDING * 3,
+    );
+  });
+
+  it("keeps recorded wings and omits an empty center column", () => {
+    const layout = buildOfficeSceneLayout([
+      participant(0, "LEAD"),
+      participant(1, "VERIFIER"),
+    ]);
+    expect(layout.zones.map((zone) => zone.role)).toEqual(["LEAD", "VERIFIER"]);
+    expect(layout.emptyRoles).toContain("IMPLEMENTER");
+    const [left, right] = layout.zones;
+    expect(left?.wing).toBe("left");
+    expect(right?.wing).toBe("right");
+    expect(left?.x).toBeLessThan(right?.x ?? 0);
   });
 
   it("renders one avatar per participant identity and reports duplicates", () => {
@@ -364,13 +396,20 @@ describe("buildOfficeSceneLayout", () => {
 describe("office camera", () => {
   it("fits a scene inside the viewport and clamps the zoom range", () => {
     const camera = fitCamera(1000, 500, { width: 500, height: 400 });
-    expect(camera.zoom).toBe(0.55);
-    expect(camera.x).toBe(-25);
-    expect(camera.y).toBe(63);
-    expect(zoomPercent(camera)).toBe(55);
+    expect(camera.zoom).toBeCloseTo(0.472);
+    expect(camera.x).toBe(14);
+    expect(camera.y).toBe(82);
+    expect(zoomPercent(camera)).toBe(47);
     expect(cameraStyle(camera).transform).toBe(
-      "translate(-25px, 63px) scale(0.55)",
+      "translate(14px, 82px) scale(0.472)",
     );
+  });
+
+  it("fits the studio width on a narrow mobile viewport", () => {
+    const camera = fitCamera(928, 574, { width: 356, height: 340 });
+    expect(camera.zoom).toBeCloseTo(328 / 928);
+    expect(camera.x).toBe(14);
+    expect(928 * camera.zoom).toBeLessThanOrEqual(356 - 28);
   });
 
   it("clamps panning so the scene cannot be lost", () => {
@@ -384,8 +423,8 @@ describe("office camera", () => {
 
   it("anchors a scene taller than the viewport below the studio wall", () => {
     const camera = fitCamera(220, 1800, { width: 420, height: 320 });
-    expect(camera.zoom).toBe(0.55);
-    expect(camera.x).toBe(Math.round((420 - 220 * 0.55) / 2));
+    expect(camera.zoom).toBe(0.2);
+    expect(camera.x).toBe(Math.round((420 - 220 * 0.2) / 2));
     expect(camera.y).toBe(8);
   });
 
@@ -395,8 +434,8 @@ describe("office camera", () => {
       width: 500,
       height: 400,
     });
-    expect(panned.x).toBe(236);
-    expect(panned.y).toBe(186);
+    expect(panned.x).toBe(198);
+    expect(panned.y).toBe(148);
   });
 
   it("clamps zoom-in and zoom-out around a focus point", () => {

@@ -790,6 +790,7 @@ export const en = {
     "Worker registration identity. Core does not expose heartbeat liveness in this projection.",
   "agentOffice.zone.recorded": "{count} recorded",
   "agentOffice.scene.label": "Isometric Office floor",
+  "agentOffice.scene.emptyStations": "Stations without a recorded participant:",
   "agentOffice.scene.hint":
     "Deterministic isometric studio of the same Core participant projection. Drag to pan, scroll or use the controls to zoom. Hover or select an avatar for its recorded identity and observation; selecting it opens the inspector. Station position is deterministic for this observed set; no movement or activity is simulated.",
   "agentOffice.scene.pan": "Pan the Office floor",
