@@ -217,6 +217,17 @@ describe("buildOfficeSceneLayout", () => {
     expect(looks.size).toBe(5);
   });
 
+  it("terminates with distinct identities after the former 48-look boundary", () => {
+    const layout = buildOfficeSceneLayout(mixedParticipants(200));
+    expect(layout.slots).toHaveLength(200);
+    expect(new Set(layout.slots.map((slot) => slot.lookIndex)).size).toBe(200);
+    expect(
+      new Set(
+        layout.slots.map((slot) => officeAvatarLook(slot.lookIndex).signature),
+      ).size,
+    ).toBe(200);
+  });
+
   it("seats 30 implementers without duplicate positions", () => {
     const layout = buildOfficeSceneLayout(implementers(30));
     const implementation = layout.zones.find(

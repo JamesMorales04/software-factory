@@ -44,8 +44,6 @@ export const OFFICE_WORLD_PADDING = 40;
 /** Vertical space reserved above the floor for the continuous studio wall. */
 export const OFFICE_TOP_PADDING = 76;
 export const OFFICE_WALL_HEIGHT = 66;
-export const OFFICE_LOOK_COUNT = 48;
-
 export const OFFICE_MIN_ZOOM = 0.2;
 export const OFFICE_MAX_ZOOM = 2;
 export const OFFICE_ZOOM_STEP = 1.25;
@@ -144,15 +142,6 @@ const ZONE_IDS: Record<ParticipantRole, string> = {
   REVIEWER: "review",
   WORKER: "operations",
 };
-
-function hashIdentity(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -482,20 +471,19 @@ export function buildOfficeSceneLayout(
   }
 
   const slots = zones.flatMap((zone) => zone.slots);
-  const usedLooks = new Set<number>();
-  for (const slot of [...slots].sort((left, right) =>
-    left.participant.participant_id.localeCompare(
-      right.participant.participant_id,
-    ),
-  )) {
-    let lookIndex =
-      hashIdentity(slot.participant.participant_id) % OFFICE_LOOK_COUNT;
-    while (usedLooks.has(lookIndex)) {
-      lookIndex = (lookIndex + 1) % OFFICE_LOOK_COUNT;
-    }
-    usedLooks.add(lookIndex);
-    slot.lookIndex = lookIndex;
-  }
+  // Assigning in stable identity order keeps the same set deterministic and
+  // gives every participant a unique palette combination without collision
+  // probing. The mixed-radix appearance palette supports far more combinations
+  // than the current Office projection's 200-participant page size.
+  [...slots]
+    .sort((left, right) =>
+      left.participant.participant_id.localeCompare(
+        right.participant.participant_id,
+      ),
+    )
+    .forEach((slot, index) => {
+      slot.lookIndex = index;
+    });
   const ordered = [...slots].sort(
     (left, right) =>
       left.anchorY - right.anchorY ||

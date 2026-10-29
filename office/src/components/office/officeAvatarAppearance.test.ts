@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  OFFICE_AVATAR_LOOK_COUNT,
   OFFICE_BUILD_COUNT,
   OFFICE_HAIR_COLOR_COUNT,
   OFFICE_HAIR_STYLE_COUNT,
@@ -11,21 +12,26 @@ import {
 
 describe("officeAvatarLook", () => {
   it("is deterministic for every stable look index", () => {
-    for (let index = 0; index < 96; index += 1) {
+    for (let index = 0; index < 256; index += 1) {
       expect(officeAvatarLook(index)).toEqual(officeAvatarLook(index));
       expect(officeAvatarLook(index).signature).toBe(
         officeAvatarLook(index).signature,
       );
     }
-    expect(officeAvatarLook(48)).toEqual(officeAvatarLook(0));
-    expect(officeAvatarLook(-1)).toEqual(officeAvatarLook(47));
+    expect(officeAvatarLook(48)).not.toEqual(officeAvatarLook(0));
+    expect(officeAvatarLook(OFFICE_AVATAR_LOOK_COUNT)).toEqual(
+      officeAvatarLook(0),
+    );
+    expect(officeAvatarLook(-1)).toEqual(
+      officeAvatarLook(OFFICE_AVATAR_LOOK_COUNT - 1),
+    );
     expect(officeAvatarLook(Number.NaN).signature).toBe(
       officeAvatarLook(0).signature,
     );
   });
 
   it("keeps every palette value inside its original palette", () => {
-    for (let index = 0; index < 48; index += 1) {
+    for (let index = 0; index < 200; index += 1) {
       const look = officeAvatarLook(index);
       expect(look.skin).toBeGreaterThanOrEqual(1);
       expect(look.skin).toBeLessThanOrEqual(OFFICE_SKIN_COUNT);
@@ -67,5 +73,12 @@ describe("officeAvatarLook", () => {
     expect(new Set(looks.map((look) => look.facialHair)).size).toBeGreaterThan(
       3,
     );
+  });
+
+  it("gives the current 200-participant Office page distinct signatures", () => {
+    const looks = Array.from({ length: 200 }, (_, index) =>
+      officeAvatarLook(index),
+    );
+    expect(new Set(looks.map((look) => look.signature)).size).toBe(200);
   });
 });
