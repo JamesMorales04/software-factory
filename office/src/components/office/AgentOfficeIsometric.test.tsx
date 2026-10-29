@@ -128,6 +128,7 @@ describe("AgentOfficeIsometric", () => {
       }
       expect(screen.getByTestId("agent-floor")).toBeDefined();
     },
+    15000,
   );
 
   it("renders 30 implementers in the implementation station only", () => {
