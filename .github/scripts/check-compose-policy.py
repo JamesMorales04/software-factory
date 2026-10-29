@@ -114,7 +114,11 @@ def office_socket_volume_sources(config: dict) -> set[str]:
         effective_name = definition.get("name")
         external = definition.get("external")
         if isinstance(external, dict):
-            effective_name = external.get("name") or effective_name
+            effective_name = external.get("name") or effective_name or source
+        elif external is True and not effective_name:
+            # Compose uses the source key as the physical name for an implicit
+            # external volume. Treat it as an identity before checking aliases.
+            effective_name = source
         if source == "factory-office-socket" or effective_name in protected_names:
             protected_sources.add(source)
     return protected_sources
