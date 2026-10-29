@@ -2192,6 +2192,18 @@ pub(crate) async fn campaign_requirement_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
 ) -> Result<CampaignInferenceRequirement, Error> {
+    let quarantined: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT reason,detail_json FROM inference_campaign_binding_quarantine
+         WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some((reason, _detail)) = quarantined {
+        return Err(Error::Forbidden(format!(
+            "campaign inference binding is quarantined: {reason}; operator reconciliation is required"
+        )));
+    }
     let row: Option<(String,)> =
         sqlx::query_as::query_as("SELECT mode FROM inference_campaign_modes WHERE campaign_id=?1")
             .bind(campaign_id)
@@ -2256,6 +2268,17 @@ pub(super) async fn bind_campaign_inference_envelope_in_tx(
     input: &CampaignEnvelopeBindingInput,
 ) -> Result<(), Error> {
     input.validate().map_err(ledger_error)?;
+    let quarantined: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT reason FROM inference_campaign_binding_quarantine WHERE campaign_id=?1",
+    )
+    .bind(&input.campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if quarantined.is_some() {
+        return Err(Error::Forbidden(
+            "campaign inference binding is quarantined; operator reconciliation is required".into(),
+        ));
+    }
     let envelope = load_envelope(connection, &input.envelope_id)
         .await?
         .ok_or(Error::NotFound)?;
@@ -4192,6 +4215,25 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        for envelope in ["envelope-foreign", "envelope-unrelated"] {
+            sqlx::query::query(
+                "INSERT INTO inference_envelopes
+                 (id,request_id,project_id,currency,state,authorized_micros,
+                  authorization_revision,created_at_ms,revoked_at_ms)
+                 VALUES (?1,?2,?3,'USD','ACTIVE',10000,1,?4,NULL)",
+            )
+            .bind(envelope)
+            .bind(if envelope == "envelope-foreign" {
+                "foreign-request"
+            } else {
+                "unrelated-request"
+            })
+            .bind("project")
+            .bind(now_ms)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
         sqlx::query::query(
             "INSERT INTO inference_authorizations
              (id,envelope_id,revision,limit_micros,actor,scope_sha256,evidence_sha256,
@@ -4254,8 +4296,136 @@ mod tests {
         .await
         .unwrap();
         sqlx::query::query(
+            "INSERT INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES ('delegation-upgrade','worker','audit','project',1,'hash','{}',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES ('request','project','action-upgrade','delegation-upgrade','objective','hash',
+                     'hash','FROZEN',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES ('request','campaign-upgrade','OPERATOR','operator',NULL,'test',
+                     'lead-start-upgrade',?1,?1,NULL,NULL,?1,?1,?1,?1,?1,?2)",
+        )
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
             "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
              VALUES ('campaign-upgrade','envelope',?1)",
+        )
+        .bind(now_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Foreign-project binding: must be quarantined by 0039.
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('other-project','/other','base',?1,'')",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action-foreign','other-project','objective','opencode-go',
+                     'deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign-foreign','action-foreign','AUTHORIZED',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+             VALUES ('campaign-foreign','envelope-foreign',?1)",
+        )
+        .bind(now_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Unrelated-request binding: same project, different lead request.
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action-unrelated','project','objective','opencode-go',
+                     'deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign-unrelated','action-unrelated','AUTHORIZED',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO standing_delegations
+             (id,principal_id,audit_id,project_id,revision,content_hash,content_json,created_at)
+             VALUES ('delegation-unrelated','worker','audit','project',1,'hash','{}',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_requests
+             (id,project_id,action_id,delegation_id,objective,request_hash,project_config_hash,
+              state,created_at,updated_at)
+             VALUES ('other-request','project','action-unrelated','delegation-unrelated',
+                     'objective','hash','hash','FROZEN',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO lead_start_evidence
+             (request_id,campaign_id,mode,principal_id,principal_label,rationale,
+              idempotency_key,request_hash,plan_hash,profile_revision_id,profile_hash,
+              spec_sha256,config_hash,delegation_hash,policy_hash,authorization_digest,created_at)
+             VALUES ('other-request','campaign-unrelated','OPERATOR','operator',NULL,'test',
+                     'lead-start-unrelated',?1,?1,NULL,NULL,?1,?1,?1,?1,?1,?2)",
+        )
+        .bind("a".repeat(64))
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+             VALUES ('campaign-unrelated','envelope-unrelated',?1)",
         )
         .bind(now_ms)
         .execute(&pool)
@@ -4316,6 +4486,26 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(mode, "V2");
+        for invalid in ["campaign-foreign", "campaign-unrelated"] {
+            assert!(matches!(
+                db.require_campaign_inference_envelope(invalid).await,
+                Err(Error::Forbidden(_))
+            ));
+        }
+        let (quarantined,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM inference_campaign_binding_quarantine")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(quarantined, 2);
+        let (valid_binding,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM inference_campaign_bindings
+             WHERE campaign_id='campaign-upgrade'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(valid_binding, 1);
         for table in [
             "inference_ledger_policy",
             "inference_campaign_modes",
@@ -4521,6 +4711,20 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(trigger_count.0, 4);
+        let (policy,): (String,) =
+            sqlx::query_as::query_as("SELECT mode FROM inference_ledger_policy WHERE id=1")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(policy, "V1");
+        let (quarantine_table,): (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+             AND name='inference_campaign_binding_quarantine'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(quarantine_table, 1);
         db.close().await;
         let reopened = Database::open(&path).await.unwrap();
         let (reopened_count,): (i64,) =
