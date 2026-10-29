@@ -2164,24 +2164,19 @@ pub(crate) async fn require_enabled_subscription_funding_in_tx(
     .bind(campaign_id)
     .fetch_optional(&mut *connection)
     .await?;
-    match row {
+    use crate::execution_policy::SubscriptionFundingRefusal;
+    let refusal = match row {
         Some((state, digest))
             if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
                 || digest.len() != 64
                 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
         {
-            Err(Error::Forbidden(
-                "subscription funding evidence is invalid; provider dispatch is disabled".into(),
-            ))
+            SubscriptionFundingRefusal::InvalidEvidence
         }
-        Some(_) => Err(Error::Unavailable(
-            "subscription funding execution is not enabled by verified provider evidence".into(),
-        )),
-        None => Err(Error::Unavailable(
-            "Campaign has no verified subscription funding evidence; provider dispatch is NOT_VERIFIED"
-                .into(),
-        )),
-    }
+        Some(_) => SubscriptionFundingRefusal::VerificationRequired,
+        None => SubscriptionFundingRefusal::BindingRequired,
+    };
+    Err(refusal.into())
 }
 
 pub(crate) async fn campaign_requirement_in_tx(
@@ -2745,7 +2740,12 @@ mod tests {
                 .await
                 .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
             "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"
         );
         db.close().await;

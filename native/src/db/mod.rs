@@ -46,6 +46,8 @@ pub enum Error {
     RateLimited(String),
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    #[error("subscription funding refused: {0}")]
+    SubscriptionFunding(#[from] crate::execution_policy::SubscriptionFundingRefusal),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]

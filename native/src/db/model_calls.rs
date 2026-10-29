@@ -9,7 +9,8 @@
 use super::*;
 
 use crate::execution_policy::{
-    InferenceRole, InferenceSettlement, ReserveInferenceInput, UsdMicros,
+    InferenceRole, InferenceSettlement, ReserveInferenceInput, SubscriptionFundingRefusal,
+    UsdMicros,
 };
 use chrono::Utc;
 use sqlx::row::Row;
@@ -53,9 +54,7 @@ async fn model_call_ledger_requirement(
     match role {
         ModelCallRole::Lead => {
             let _ = (connection, objective_id);
-            Err(Error::Unavailable(
-                "Lead assessment has no verified request-level subscription funding binding".into(),
-            ))
+            Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
         ModelCallRole::SemanticReviewer => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -85,9 +84,7 @@ async fn model_call_ledger_requirement(
             if let Some((campaign_id,)) = campaign {
                 return campaign_requirement_to_envelope(connection, &campaign_id).await;
             }
-            Err(Error::Unavailable(
-                "evaluation inference has no campaign-bound, verified subscription funding".into(),
-            ))
+            Err(SubscriptionFundingRefusal::BindingRequired.into())
         }
     }
 }
@@ -605,15 +602,13 @@ impl Database {
             )
             .await?;
         } else {
-            let reason = match role.as_str() {
-                "LEAD" => "Lead dispatch has no request-level subscription funding binding",
-                "SEMANTIC_REVIEWER" => {
-                    "reviewer dispatch has no campaign-bound subscription funding"
+            let refusal = match role.as_str() {
+                "LEAD" | "SEMANTIC_REVIEWER" | "EVALUATION" => {
+                    SubscriptionFundingRefusal::BindingRequired
                 }
-                "EVALUATION" => "evaluation dispatch has no campaign-bound subscription funding",
-                _ => "model dispatch role is invalid",
+                _ => SubscriptionFundingRefusal::InvalidEvidence,
             };
-            return Err(Error::Unavailable(reason.into()));
+            return Err(refusal.into());
         }
         if dispatched_at_ms.is_some() {
             if let Some(ledger_id) = &ledger_reservation_id {
@@ -1871,7 +1866,9 @@ mod tests {
         envelope_for(&db, scope).await;
         assert!(matches!(
             db.authorize_model_call(&evaluation_input(scope)).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (reservations,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -1891,7 +1888,9 @@ mod tests {
         envelope_for(&db, scope).await;
         assert!(matches!(
             db.authorize_model_call(&evaluation_input(scope)).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (reservations,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -1973,7 +1972,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(SubscriptionFundingRefusal::BindingRequired)
+            ),
             "Core dispatch must refuse missing funding before writing dispatch intent: {error:?}"
         );
         let dispatched: (Option<i64>,) = sqlx::query_as::query_as(
@@ -2003,7 +2005,10 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(SubscriptionFundingRefusal::BindingRequired)
+            ),
             "Lead inference must not use a monetary request envelope under subscription-only policy: {error:?}"
         );
         db.close().await;
@@ -2018,7 +2023,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(
+                error,
+                Error::SubscriptionFunding(SubscriptionFundingRefusal::BindingRequired)
+            ),
             "Core campaign inference must refuse before reservation without subscription evidence: {error:?}"
         );
         db.close().await;
@@ -2035,14 +2043,18 @@ mod tests {
         input.estimated_input_tokens = 100;
         assert!(matches!(
             db.authorize_model_call(&input).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let mut fitting = evaluation_input(scope);
         fitting.estimated_input_tokens = 40;
         fitting.requested_output_tokens = 20;
         assert!(matches!(
             db.authorize_model_call(&fitting).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (reservations,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -2080,7 +2092,9 @@ mod tests {
         }
         assert!(matches!(
             db.authorize_model_call(&evaluation_input(scope)).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         db.close().await;
         let _ = std::fs::remove_file(path);
@@ -2095,7 +2109,9 @@ mod tests {
         assert!(matches!(
             db.authorize_model_call(&evaluation_input("evaluation-v2"))
                 .await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (count,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -2113,7 +2129,9 @@ mod tests {
         assert!(matches!(
             db.authorize_model_call(&evaluation_input("evaluation-v1"))
                 .await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (count,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -2132,7 +2150,9 @@ mod tests {
         envelope_for(&db, scope).await;
         assert!(matches!(
             db.authorize_model_call(&evaluation_input(scope)).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(
+                SubscriptionFundingRefusal::BindingRequired
+            ))
         ));
         let (reservations,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")

@@ -200,36 +200,6 @@ impl Database {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         use sqlx::row::Row;
         let now_ms = Utc::now().timestamp_millis();
-        // An expired, unbound turn has provably produced no egress request.
-        // Release its shared-ledger hold before reclaiming the legacy row; a
-        // linked hold that is already ambiguous refuses new turns instead.
-        let expired_unbound: Vec<(String, String)> = sqlx::query_as::query_as(
-            "SELECT reservation_id,ledger_reservation_id FROM provider_turn_reservations
-             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?1
-               AND ledger_reservation_id IS NOT NULL",
-        )
-        .bind(now_ms)
-        .fetch_all(&mut *transaction)
-        .await?;
-        for (reservation_id, ledger_reservation_id) in expired_unbound {
-            super::inference_ledger::release_inference_in_tx(
-                &mut transaction,
-                &ledger_reservation_id,
-                "core:provider_turn",
-                &format!("provider_turn:{reservation_id}:expired_unbound"),
-                now_ms,
-            )
-            .await?;
-        }
-        sqlx::query::query(
-            "UPDATE provider_turn_reservations
-             SET state='RELEASED',error='expired before any egress request',updated_at=?1
-             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?2",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .bind(now_ms)
-        .execute(&mut *transaction)
-        .await?;
         let session = sqlx::query::query(
             "SELECT attempt_id,worker_id,generation,state,provider,model
              FROM provider_sessions WHERE session_record_id=?1",
@@ -291,6 +261,57 @@ impl Database {
         }
         let campaign_id: String = lease.try_get("campaign_id")?;
         let authorization_version: i64 = lease.try_get("schema_version")?;
+        // Subscription eligibility precedes historical monetary requirements.
+        // Keep V2's durable blocking hold so a refused turn cannot churn
+        // through repeated assignments. No monetary reservation is created.
+        if let Err(error) = super::inference_ledger::require_enabled_subscription_funding_in_tx(
+            &mut transaction,
+            &campaign_id,
+        )
+        .await
+        {
+            if authorization_version == 2 && matches!(error, Error::SubscriptionFunding(_)) {
+                super::lead::record_blocking_progress_hold_in_tx(
+                    &mut transaction,
+                    &attempt_id,
+                    "BLOCKED",
+                    &error.to_string(),
+                )
+                .await?;
+                transaction.commit().await?;
+            }
+            return Err(error);
+        }
+        // An expired, unbound turn has provably produced no egress request.
+        // Release its shared-ledger hold before reclaiming the legacy row; a
+        // linked hold that is already ambiguous refuses new turns instead.
+        let expired_unbound: Vec<(String, String)> = sqlx::query_as::query_as(
+            "SELECT reservation_id,ledger_reservation_id FROM provider_turn_reservations
+             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?1
+               AND ledger_reservation_id IS NOT NULL",
+        )
+        .bind(now_ms)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for (reservation_id, ledger_reservation_id) in expired_unbound {
+            super::inference_ledger::release_inference_in_tx(
+                &mut transaction,
+                &ledger_reservation_id,
+                "core:provider_turn",
+                &format!("provider_turn:{reservation_id}:expired_unbound"),
+                now_ms,
+            )
+            .await?;
+        }
+        sqlx::query::query(
+            "UPDATE provider_turn_reservations
+             SET state='RELEASED',error='expired before any egress request',updated_at=?1
+             WHERE state='RESERVED' AND requests_bound=0 AND expires_at_ms<=?2",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
         // V1 may use legacy accounting; V2 (or a global V2 cutover) must have a
         // bound active envelope before this billable turn is even reserved.
         let requirement =
@@ -443,11 +464,6 @@ impl Database {
         } else {
             return Err(Error::Invalid("unknown authorization policy version"));
         };
-        super::inference_ledger::require_enabled_subscription_funding_in_tx(
-            &mut transaction,
-            &campaign_id,
-        )
-        .await?;
         let max_total = max_input.saturating_add(max_output);
         let remaining_input = max_input
             .saturating_sub(used_input)
@@ -1998,22 +2014,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_provider_turn_is_typed_unavailable_without_a_bound_envelope() {
+    async fn v2_provider_turn_refuses_funding_before_monetary_prerequisites() {
         let (_path, db, session) = active_turn_fixture_v2().await;
-        let error = db
-            .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, Error::Unavailable(_)),
-            "a V2 turn without a bound envelope must fail closed: {error:?}"
-        );
+        for _ in 0..2 {
+            let error = db
+                .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::SubscriptionFunding(
+                        crate::execution_policy::SubscriptionFundingRefusal::BindingRequired
+                    )
+                ),
+                "a monetary prerequisite must not obscure missing subscription funding: {error:?}"
+            );
+        }
         assert!(
             db.progress_hold("campaign", "campaign")
                 .await
                 .unwrap()
-                .is_some(),
-            "a V2 ledger failure must create a durable blocking hold"
+                .is_some_and(|hold| hold.reason.contains("subscription funding")),
+            "a V2 funding refusal must retain its truthful blocking progress hold"
+        );
+        let counts: (i64, i64, i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT COUNT(*) FROM provider_turn_reservations),
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests),
+                    (SELECT COUNT(*) FROM inference_reservations),
+                    (SELECT COUNT(*) FROM progress_holds)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            counts,
+            (0, 0, 0, 1),
+            "repeated refusal must not reserve, bind egress or duplicate the hold"
         );
         sqlx::query::query("UPDATE attempts SET status='QUEUED' WHERE id='attempt'")
             .execute(&db.pool)
@@ -2024,8 +2061,35 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none(),
-            "a V2 ledger failure must prevent repeated dispatch"
+            "the subscription funding hold must prevent repeated assignment"
         );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn funding_storage_failure_does_not_become_a_durable_policy_refusal() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        sqlx::query::query("DROP TABLE subscription_funding_policies")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Sqlx(_)), "{error:?}");
+        assert!(
+            db.progress_hold("campaign", "campaign")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0);
         db.close().await;
     }
 
@@ -2061,7 +2125,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(error, Error::SubscriptionFunding(_)),
             "a subscription proposal cannot authorize Worker egress without runtime admission: {error:?}"
         );
         let reservations: (i64,) =
@@ -2080,7 +2144,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(error, Error::SubscriptionFunding(_)),
             "missing subscription evidence must not fall through to legacy billing: {error:?}"
         );
         let reservations: (i64,) =
@@ -2127,7 +2191,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(error, Error::SubscriptionFunding(_)),
             "Worker egress must recheck funding before binding an external request: {error:?}"
         );
         let bound: (i64, i64) = sqlx::query_as::query_as(
@@ -2247,7 +2311,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Unavailable(_)),
+            matches!(error, Error::SubscriptionFunding(_)),
             "verified subscription evidence is required: {error:?}"
         );
         let bound: (i64, i64) = sqlx::query_as::query_as(
@@ -2337,7 +2401,7 @@ mod tests {
         let valid = bind("deepseek-v4.1-flash", "worker", 1);
         assert!(matches!(
             db.bind_provider_turn(&valid).await,
-            Err(Error::Unavailable(_))
+            Err(Error::SubscriptionFunding(_))
         ));
         sqlx::query::query("UPDATE provider_turn_reservations SET expires_at_ms=1 WHERE reservation_id='reserved-identity'").execute(&db.pool).await.unwrap();
         assert!(matches!(
@@ -2443,7 +2507,7 @@ mod tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "no verified subscription route is available: {result:?}"
         );
         let (reservations,): (i64,) =
@@ -2487,7 +2551,7 @@ mod tests {
             assert!(matches!(
                 db.authorize_provider_turn(&session, "worker", 1, 10, &"a".repeat(64), 1)
                     .await,
-                Err(Error::Unavailable(_))
+                Err(Error::SubscriptionFunding(_))
             ));
         }
         let reservations: (i64,) =
@@ -2617,7 +2681,7 @@ mod tests {
                 })
                 .await;
             assert!(
-                matches!(result, Err(Error::Unavailable(_))),
+                matches!(result, Err(Error::SubscriptionFunding(_))),
                 "subscription refusal precedes egress binding: {result:?}"
             );
         }
@@ -2641,7 +2705,7 @@ mod tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"b".repeat(64), 1)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "funding remains the first dispatch gate: {result:?}"
         );
         let state: (String,) = sqlx::query_as::query_as(
@@ -3525,7 +3589,7 @@ mod ledger_link_tests {
                 sequence: 1,
             })
             .await;
-        assert!(matches!(next, Err(Error::Unavailable(_))));
+        assert!(matches!(next, Err(Error::SubscriptionFunding(_))));
         let quote = db
             .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
             .await
@@ -3609,7 +3673,7 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "monetary envelope is not subscription evidence: {result:?}"
         );
         let status = db.inference_spending_status(&envelope_id).await.unwrap();
@@ -3641,7 +3705,7 @@ mod ledger_link_tests {
         assert!(matches!(
             db.authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
                 .await,
-            Err(Error::Unavailable(_) | Error::Forbidden(_))
+            Err(Error::SubscriptionFunding(_) | Error::Forbidden(_))
         ));
         let count: (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
@@ -3672,7 +3736,7 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 500, &"a".repeat(64), 1)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "positive USD and token envelopes still need subscription route evidence: {result:?}"
         );
         let count: (i64,) =
@@ -3692,7 +3756,7 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "Codex model identity does not prove ChatGPT-plan funding: {result:?}"
         );
         let counts: (i64, i64, i64) = sqlx::query_as::query_as("SELECT (SELECT COUNT(*) FROM provider_turn_reservations),(SELECT COUNT(*) FROM provider_turn_egress_requests),(SELECT COUNT(*) FROM inference_reservations)").fetch_one(&db.pool).await.unwrap();
@@ -3709,7 +3773,7 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 2)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "provider turn is blocked before the first egress without verified subscription evidence"
         );
         db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
@@ -3788,7 +3852,7 @@ mod ledger_link_tests {
             .authorize_provider_turn(&session, "worker", 1, 50, &"d".repeat(64), 1)
             .await;
         assert!(
-            matches!(result, Err(Error::Unavailable(_))),
+            matches!(result, Err(Error::SubscriptionFunding(_))),
             "a shared monetary ledger cannot substitute for subscription verification: {result:?}"
         );
         let status = db.inference_spending_status(&envelope_id).await.unwrap();

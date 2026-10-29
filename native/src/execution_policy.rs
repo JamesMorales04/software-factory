@@ -278,6 +278,32 @@ pub enum FundingAdmissionDecision {
     AuthorizationInvalid,
 }
 
+/// Fail-closed runtime refusal while trusted subscription admission is absent.
+/// This type has no successful variant and cannot confer dispatch authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SubscriptionFundingRefusal {
+    #[error(
+        "request or Campaign has no verified subscription funding binding; dispatch is NOT_VERIFIED"
+    )]
+    BindingRequired,
+    #[error(
+        "subscription funding execution remains disabled pending trusted provider verification"
+    )]
+    VerificationRequired,
+    #[error("subscription funding evidence is invalid; provider dispatch is disabled")]
+    InvalidEvidence,
+}
+
+impl SubscriptionFundingRefusal {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::BindingRequired => "SUBSCRIPTION_FUNDING_BINDING_REQUIRED",
+            Self::VerificationRequired => "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
+            Self::InvalidEvidence => "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAuthenticationClass {
     OpenCodeSubscription,
