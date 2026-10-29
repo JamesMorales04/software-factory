@@ -27,7 +27,7 @@ provenance and is not current campaign certification.
 
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
-| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | `5b902a4d3baf1d9840c8e511f08fd051ef93f9a6` plus dirty `native/src/execution_policy.rs` evaluator | Luna subagent `funding_shared_admission` | Failing regression tests, then shared fail-closed enforcement across Core and Worker paths; no paid fallback |
+| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | `fe1729a70a0c065010a5bd8009dd6c3b03023833`, clean | Implemented by Luna subagent `funding_shared_admission`; exact-SHA independent review pending in `sf-wave3/funding-review` | Review; then continue with quota recovery/re-admission and request-level Home funding boundary; no paid fallback |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | `6482f0c9b68f7fec3933a1b4dbe50e8f6e1e225c`, pushed | Implemented by Luna subagent `home_conversation`; exact-SHA independent review PASS from `review_home_523b288`; draft PR #80 | Await CI and real Core/Compose acceptance; Owner visual sign-off remains pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | `f7479c0c5f936d1097426dd1293ef43ea6e72fb6` plus dirty SVG/DOM renderer work and untracked `office/node_modules` | Unassigned; preserve | Reassess after Home lane frees frontend capacity; do not discard existing changes |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | `c8bf930bc34e7d7062b13821d0c84f734e394a18` plus dirty repairs | Unassigned; preserve | Resume only with safe exclusive ownership; require negative tests and exact-SHA independent security review |
@@ -61,9 +61,14 @@ completion.
 
 - Funding Milestone 1: committed domain, migration 0041, persistence and quota
   pause representation at `5b902a4`; dispatch remains disabled.
-- Funding Milestone 2: incomplete at checkpoint. The typed evaluator is
-  uncommitted and not wired into runtime admission; both Core and Worker
-  boundaries require enforcement and regression coverage.
+- Funding Milestone 2 first fail-closed slice: `fe1729a` adds a typed evaluator
+  plus one shared DB guard at candidate-bound Core model-call admission,
+  dispatch recheck, Worker turn admission and egress binding. Implementer
+  reports fmt, focused funding/Core/Worker tests, `factory-native` library
+  suite (498 passed, 2 ignored) and strict Clippy passed. Proposals remain
+  disabled; no subscription provider route is enabled. Exact-SHA independent
+  review is pending. Quota pause/re-admission, true revocation/revision wiring,
+  and request-level Lead/Intake funding remain follow-up work.
 - Home conversational slice: typecheck, lint, 268 Office tests, production
   build, parity check and fixture Chromium captures passed on `523b288`. The
   production build reports an existing >500 kB chunk warning. Screenshots at
@@ -88,9 +93,9 @@ completion.
 
 ## Immediate sequence
 
-1. Collect and inspect the funding agent's exact diff, focused tests and commit;
-   request independent review on that exact SHA, then proceed to quota/restart
-   fencing.
+1. Collect the independent review of funding candidate `fe1729a`; repair any
+   findings, rerun invalidated checks, then proceed to quota/restart fencing and
+   the separate request-level subscription envelope boundary.
 2. Monitor PR #80 CI; obtain real Core/Compose browser evidence with no live
    provider inference, then integrate only if gates pass. Keep visual Owner
    acceptance pending.
