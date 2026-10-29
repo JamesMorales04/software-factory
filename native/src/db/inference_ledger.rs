@@ -266,16 +266,7 @@ impl Database {
                 "provider token envelope produces a zero price".into(),
             ));
         }
-        let coverage_json = serde_json::json!({
-            "input": coverage.input,
-            "output": coverage.output,
-            "cachedInput": coverage.cached_input,
-            "reasoning": coverage.reasoning,
-            "tools": coverage.tools,
-            "retries": coverage.retries,
-            "requestOverhead": coverage.request_overhead,
-        })
-        .to_string();
+        let coverage_json = crate::inference_ledger::adapter_coverage_document(&coverage);
         let snapshot_json = serde_json::json!({
             "basis": "provider-settings-token-envelope",
             "provider": input.provider,
@@ -878,13 +869,13 @@ pub(crate) async fn reserve_inference_in_tx(
     .ok_or(Error::Validation(
         "inference reservation requires a frozen pricing quote".into(),
     ))?;
-    let settings: Option<(String, String, i64, i64)> = sqlx::query_as::query_as(
-        "SELECT model,auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
+    let settings: Option<(String, String, String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT kind,model,auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
     )
     .bind(&input.provider)
     .fetch_optional(&mut *connection)
     .await?;
-    let Some((settings_model, auth_mode, enabled, settings_revision)) = settings else {
+    let Some((kind, settings_model, auth_mode, enabled, settings_revision)) = settings else {
         return Err(Error::Unavailable(
             "pricing quote has no current provider settings".into(),
         ));
@@ -896,6 +887,16 @@ pub(crate) async fn reserve_inference_in_tx(
     {
         return Err(Error::Unavailable(
             "pricing quote is stale for the current provider settings".into(),
+        ));
+    }
+    let coverage = crate::inference_ledger::adapter_billing_coverage(&kind, &auth_mode).ok_or(
+        Error::Unavailable("provider adapter has no enforceable billing coverage".into()),
+    )?;
+    let coverage_sha256 =
+        sha256_hex(crate::inference_ledger::adapter_coverage_document(&coverage).as_bytes());
+    if coverage_sha256 != pricing_quote.coverage_sha256 {
+        return Err(Error::Unavailable(
+            "pricing quote coverage differs from the current adapter declaration".into(),
         ));
     }
     let snapshot: serde_json::Value = serde_json::from_str(&pricing_quote.snapshot_json)
@@ -1188,13 +1189,13 @@ async fn dispatch_inference_in_tx(
     .ok_or(Error::Unavailable(
         "dispatched reservation has no frozen pricing quote".into(),
     ))?;
-    let settings: Option<(String, i64, i64)> = sqlx::query_as::query_as(
-        "SELECT auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
+    let settings: Option<(String, String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT kind,auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
     )
     .bind(&reservation.provider)
     .fetch_optional(&mut *connection)
     .await?;
-    let Some((auth_mode, enabled, settings_revision)) = settings else {
+    let Some((kind, auth_mode, enabled, settings_revision)) = settings else {
         return Err(Error::Unavailable(
             "dispatched reservation has no current provider settings".into(),
         ));
@@ -1206,6 +1207,16 @@ async fn dispatch_inference_in_tx(
     {
         return Err(Error::Unavailable(
             "pricing quote is stale for dispatch".into(),
+        ));
+    }
+    let coverage = crate::inference_ledger::adapter_billing_coverage(&kind, &auth_mode).ok_or(
+        Error::Unavailable("provider adapter has no enforceable billing coverage".into()),
+    )?;
+    let coverage_sha256 =
+        sha256_hex(crate::inference_ledger::adapter_coverage_document(&coverage).as_bytes());
+    if coverage_sha256 != quote.coverage_sha256 {
+        return Err(Error::Unavailable(
+            "pricing quote coverage differs from the current adapter declaration".into(),
         ));
     }
     // Frozen authorization context must still resolve to the exact durable
@@ -3787,16 +3798,17 @@ mod tests {
         let db = Database::open(&path).await.unwrap();
         seed_project(&db, "project").await;
         let (envelope_id, _) = create_envelope(&db, "request-forged", 10_000).await;
+        let trusted = test_quote(&db, 1_000).await;
         let quote_id = "forged-quote";
         sqlx::query::query(
             "INSERT INTO inference_pricing_quotes
              (quote_id,provider,model,revision,currency,upper_bound_micros,provider_revision,
               auth_mode,input_tokens,output_tokens,coverage_sha256,coverage_json,snapshot_json,
               evidence_sha256,created_at_ms)
-             VALUES (?1,'opencode-go','deepseek-v4.1-flash',1,'USD',1,1,'api_key',1,1,?2,?3,?4,?5,1)",
+             VALUES (?1,'opencode-go','deepseek-v4.1-flash',99,'USD',1,1,'api_key',1,1,?2,?3,?4,?5,1)",
         )
         .bind(quote_id)
-        .bind("a".repeat(64))
+        .bind(&trusted.coverage_sha256)
         .bind(r#"{"input":true,"output":true,"cachedInput":true,"reasoning":true,"tools":true,"retries":true,"requestOverhead":true}"#)
         .bind(r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","providerRevision":1,"authMode":"api_key","inputTokens":1,"outputTokens":1,"upperBoundMicros":2}"#)
         .bind("b".repeat(64))
@@ -3804,7 +3816,7 @@ mod tests {
         .await
         .unwrap();
         let mut input = reserve_input(
-            &test_quote(&db, 1_000).await,
+            &trusted,
             &envelope_id,
             "operation",
             "idempotency",
@@ -3821,6 +3833,87 @@ mod tests {
         assert!(matches!(
             db.reserve_inference(&input).await,
             Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn stale_adapter_coverage_declaration_invalidates_a_quote() {
+        let path = temp_path("factory-ledger-coverage-stale");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-coverage", 10_000).await;
+        let quote = test_quote(&db, 1_000).await;
+        let stale_quote = "coverage-stale-quote";
+        let snapshot = r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","providerRevision":1,"authMode":"api_key","inputTokens":500,"outputTokens":500,"upperBoundMicros":1000}"#;
+        sqlx::query::query(
+            "INSERT INTO inference_pricing_quotes
+             (quote_id,provider,model,revision,currency,upper_bound_micros,provider_revision,
+              auth_mode,input_tokens,output_tokens,coverage_sha256,coverage_json,snapshot_json,
+              evidence_sha256,created_at_ms)
+             VALUES (?1,'opencode-go','deepseek-v4.1-flash',99,'USD',1000,1,'api_key',500,500,
+                     ?2,?3,?4,?5,1)",
+        )
+        .bind(stale_quote)
+        .bind("0".repeat(64))
+        .bind(r#"{"input":true,"output":true,"cachedInput":true,"reasoning":true,"tools":true,"retries":true,"requestOverhead":true}"#)
+        .bind(snapshot)
+        .bind("b".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let mut input = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        input.pricing_revision = stale_quote.into();
+        input.pricing_snapshot_json = snapshot.into();
+        assert!(matches!(
+            db.reserve_inference(&input).await,
+            Err(Error::Unavailable(_))
+        ));
+        // A reservation already carrying the stale quote must also be refused
+        // at dispatch, not only at creation.
+        let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO inference_reservations
+             (id,envelope_id,operation_id,idempotency_key,request_sha256,role,
+              authorization_revision,scope_sha256,principal_id,parent_operation_id,provider,model,
+              pricing_revision,pricing_snapshot_json,upper_bound_micros,settled_micros,state,
+              worker_id,generation,dispatched_at_ms,provider_request_id,expires_at_ms,
+              settlement_sha256,created_at_ms,updated_at_ms)
+             VALUES ('stale-coverage-reservation',?1,'stale-operation','stale-idempotency',?2,
+                     'LEAD',1,?3,'principal',NULL,'opencode-go','deepseek-v4.1-flash',
+                     ?4,?5,1000,NULL,'RESERVED',NULL,NULL,NULL,NULL,?6,NULL,?7,?7)",
+        )
+        .bind(&envelope_id)
+        .bind("a".repeat(64))
+        .bind("a".repeat(64))
+        .bind(stale_quote)
+        .bind(snapshot)
+        .bind(now_ms + 60_000)
+        .bind(now_ms)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+                reservation_id: "stale-coverage-reservation".into(),
+                worker_id: None,
+                generation: None,
+                provider_request_id: Some("request".into()),
+                attempt_id: None,
+                actor: "core:test".into(),
+            })
+            .await,
+            Err(Error::Unavailable(_))
         ));
         db.close().await;
         let _ = std::fs::remove_file(path);
@@ -4032,7 +4125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrade_from_released_0035_applies_0036_and_preserves_rows() {
+    async fn upgrade_from_released_0035_applies_0037_and_preserves_rows() {
         let repo_migrations = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
         let subset =
             std::env::temp_dir().join(format!("factory-migrations-0035-{}", Uuid::new_v4()));
@@ -4054,7 +4147,7 @@ mod tests {
             }
         }
         assert!(applied >= 33);
-        let path = temp_path("factory-ledger-upgrade-0036");
+        let path = temp_path("factory-ledger-upgrade-0037");
         let options = SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true)
@@ -4231,7 +4324,7 @@ mod tests {
             .execute(&db.pool)
             .await
             .is_err(),
-            "0036 dispatch immutability trigger must be installed on upgrade"
+            "0037 dispatch immutability trigger must be installed on upgrade"
         );
         db.close().await;
         std::fs::remove_dir_all(subset).unwrap();

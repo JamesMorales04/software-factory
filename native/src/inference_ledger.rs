@@ -98,6 +98,19 @@ pub struct AdapterBillingCoverage {
     pub request_overhead: bool,
 }
 
+pub fn adapter_coverage_document(coverage: &AdapterBillingCoverage) -> String {
+    serde_json::json!({
+        "input": coverage.input,
+        "output": coverage.output,
+        "cachedInput": coverage.cached_input,
+        "reasoning": coverage.reasoning,
+        "tools": coverage.tools,
+        "retries": coverage.retries,
+        "requestOverhead": coverage.request_overhead,
+    })
+    .to_string()
+}
+
 pub fn adapter_billing_coverage(kind: &str, auth_mode: &str) -> Option<AdapterBillingCoverage> {
     match (kind, auth_mode) {
         ("opencode" | "codex", "api_key") => Some(AdapterBillingCoverage {

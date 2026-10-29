@@ -248,6 +248,91 @@ async fn broker_enforces_a_core_turn_policy_and_rewrites_output() {
 }
 
 #[tokio::test]
+async fn broker_rejects_bodies_above_the_quote_token_byte_bound_before_send() {
+    use axum::{Router, extract::State, routing::post};
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Upstream {
+        seen: Arc<Mutex<usize>>,
+    }
+    async fn responses(State(state): State<Upstream>) -> axum::Json<serde_json::Value> {
+        *state.seen.lock().unwrap() += 1;
+        axum::Json(serde_json::json!({
+            "id":"resp","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        }))
+    }
+    let seen = Arc::new(Mutex::new(0usize));
+    let app = Router::new()
+        .route("/v1/responses", post(responses))
+        .with_state(Upstream { seen: seen.clone() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let policy: SharedTurnPolicy = Arc::new(Mutex::new(Some(TurnPolicy {
+        reservation_id: "reservation".into(),
+        max_input_tokens: 100,
+        max_output_tokens: 10,
+        max_total_tokens: 110,
+        max_cost_micros: 1000,
+        model: "mock-model".into(),
+        request_sha256: String::new(),
+        expires_at_ms: chrono::Utc::now().timestamp_millis() + 60_000,
+        requests: 0,
+        max_requests: 2,
+        strict_request_digest: false,
+        binding: false,
+    })));
+    let socket = std::env::temp_dir().join(format!("tb-{}", uuid::Uuid::new_v4().simple()));
+    let config = EgressConfig::new(
+        &format!("http://{upstream}"),
+        "real-upstream-credential-0123456789".into(),
+        "egress-token-0123456789abcdef0123456789abcdef".into(),
+        true,
+    )
+    .unwrap()
+    .with_turn_policy(policy);
+    let broker = EgressBroker::start(config, &socket).await.unwrap();
+    let (address, bridge) = start_loopback_bridge(&socket).await.unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/v1/responses");
+    let oversized = serde_json::json!({"model":"mock-model","input":"a".repeat(300)});
+    // This body is below the old four-bytes-per-token (400 byte) allowance but
+    // above the quote's 100-token/byte bound.
+    assert!(serde_json::to_vec(&oversized).unwrap().len() > 100);
+    assert!(serde_json::to_vec(&oversized).unwrap().len() < 400);
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&oversized)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(*seen.lock().unwrap(), 0, "oversized body reached upstream");
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth("egress-token-0123456789abcdef0123456789abcdef")
+            .json(&serde_json::json!({"model":"mock-model","input":"hello"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(*seen.lock().unwrap(), 1);
+    bridge.abort();
+    broker.stop();
+    server.abort();
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
 async fn actual_codex_executable_uses_the_egress_broker() {
     let Some(codex) = std::env::var("CODEX_BIN")
         .ok()
