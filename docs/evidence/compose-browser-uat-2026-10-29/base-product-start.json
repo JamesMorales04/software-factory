@@ -43,4 +43,3 @@
   "execution_performed": false,
   "note": "Startup and health only. The base deployment selects the live OpenCode route and has no provider credential configured; no request, model call or execution was started."
 }
-
