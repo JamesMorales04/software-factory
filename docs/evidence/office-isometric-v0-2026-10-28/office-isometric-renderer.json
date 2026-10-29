@@ -2,14 +2,14 @@
   "schema_version": 1,
   "capability": "CAP-011",
   "slice": "office-isometric-v0",
-  "candidate": "bba85f36ae619eb5d11eb86bd8fd8ac283992d7a",
-  "code_candidate": "6bb5cde8f3b3ba386180976532aff963ceec8666",
-  "candidate_tree": "cbef6367814c5281ce7c2cbd70855f9408118fcf",
-  "recorded_at": "2026-10-29T00:16:00Z",
+  "candidate": "8af44f7172b3ae0a4a7f0a2e3871aacde86eafdb",
+  "code_candidate": "8af44f7172b3ae0a4a7f0a2e3871aacde86eafdb",
+  "candidate_tree": "e27cd5d6c0cc2966ba0d72c04efa21a902993da7",
+  "recorded_at": "2026-10-29T00:48:00Z",
   "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
   "live_core": false,
   "live_activity": false,
-  "statement": "Real Chromium rendered the real Office bundle at four viewports and exercised selection, filtering, zoom and pan. Core API responses were deterministic Playwright route fixtures. This is renderer and interaction self-test evidence, not live agent activity, not independent acceptance and not Compose acceptance.",
+  "statement": "Real Chromium rendered the real Office bundle at four viewports and exercised selection, filtering, zoom and pan. Core API responses were deterministic Playwright route fixtures and the page carried a visible MOCK CORE FIXTURE banner. This is renderer and interaction self-test evidence, not live agent activity, not independent acceptance and not Compose acceptance.",
   "browser": {
     "engine": "Chromium",
     "product": "Google Chrome for Testing 156.0.8078.4",
@@ -20,16 +20,16 @@
   "method": {
     "server": "Vite dev server from office/ on 127.0.0.1:4173",
     "app": "Factory Office hash route /#/agents",
-    "fixtures": "Playwright page.route interception of **/core-api/** with 12 deterministic ParticipantRecord fixtures, 2 Campaigns and 1 Project",
-    "scene_harness": "Developer-only visual-harness.html (removed before commit) rendering the same AgentOfficeIsometric component; the page screenshots use the real AgentOffice route, sidebar, filters and ParticipantInspector"
+    "fixtures": "Playwright page.route interception of **/core-api/** with 12 deterministic ParticipantRecord fixtures, 2 Campaigns and 1 Project; a visible MOCK CORE FIXTURE banner was injected before capture",
+    "scene_harness": "office/visual-harness.html, served only by the Vite dev server, excluded from the production build, with a permanent TEST FIXTURE — NOT LIVE CORE DATA banner. It renders the same AgentOfficeIsometric component with deterministic fixtures."
   },
   "viewports": [
     {
       "width": 1440,
       "height": 1000,
       "avatars": 12,
-      "page_overflow_px": 0,
-      "zoom": "Zoom 84%",
+      "document_overflow_px": 0,
+      "zoom": "Zoom 83%",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-1440.png"
@@ -38,8 +38,8 @@
       "width": 834,
       "height": 1000,
       "avatars": 12,
-      "page_overflow_px": 0,
-      "zoom": "Zoom 92%",
+      "document_overflow_px": 0,
+      "zoom": "Zoom 89%",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-834.png"
@@ -48,8 +48,9 @@
       "width": 390,
       "height": 900,
       "avatars": 12,
-      "page_overflow_px": 0,
-      "zoom": "Zoom 45%",
+      "document_overflow_px": 0,
+      "zoom": "Zoom 55%",
+      "scene_crop": "pannable crop; descendant scene art intentionally exceeds the clipped viewport",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-390.png"
@@ -58,8 +59,9 @@
       "width": 320,
       "height": 780,
       "avatars": 12,
-      "page_overflow_px": 0,
-      "zoom": "Zoom 45%",
+      "document_overflow_px": 0,
+      "zoom": "Zoom 55%",
+      "scene_crop": "pannable crop; descendant scene art intentionally exceeds the clipped viewport",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-320.png"
@@ -76,14 +78,25 @@
       "action": "select Role = IMPLEMENTER",
       "url": "#/agents?role=IMPLEMENTER",
       "avatars": 3,
-      "zoom": "Zoom 96%",
+      "zoom": "Zoom 86%",
       "screenshot": "page-filtered-1440.png"
     },
+    "inspector_collapse": {
+      "action": "Hide inspector / Show inspector on the Visual Office tab",
+      "result": "the side panel hides and restores without losing the view or filters",
+      "component_test": "office/src/views/AgentOffice.test.tsx"
+    },
     "scene_density": {
-      "fixture": "30 implementers",
-      "viewports": [1440, 390, 320],
-      "result": "30 avatars in the Implementation station; no page overflow; viewport pans when the fitted scene is wider than the floor",
-      "screenshot": "scene-30-1440.png"
+      "fixtures": ["5 all-current Implementers", "30 all-current Implementers", "12 mixed observations"],
+      "viewports": [1440, 834, 390, 320],
+      "result": "one unique avatar appearance per participant, non-working poses for STALE/FINAL/UNKNOWN, no document overflow; narrow widths use a pannable crop",
+      "screenshots": [
+        "scene-5-implementers-1440.png",
+        "scene-30-1440.png",
+        "scene-30-390.png",
+        "scene-30-320.png",
+        "scene-12-es-1440.png"
+      ]
     },
     "empty": {
       "fixture": "0 participants",
@@ -97,7 +110,8 @@
     "Independent verification or Quality Gate acceptance",
     "Live provider sessions or model inference",
     "Automated axe audit and full manual screen-reader review",
-    "Visual regression baseline"
+    "Visual regression baseline",
+    "Owner visual approval of the studio amendment"
   ],
-  "artifacts_note": "Screenshots are bounded renderer-review artifacts. The scene screenshots carry a visible 'not live activity' fixture header; the page screenshots were captured against intercepted fixtures and must not be read as live agent activity."
+  "artifacts_note": "Screenshots are bounded renderer-review artifacts. Page captures carry a visible MOCK CORE FIXTURE banner and scene captures carry a TEST FIXTURE — NOT LIVE CORE DATA header. They must never be read as live agent activity or Core acceptance."
 }
