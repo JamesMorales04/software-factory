@@ -265,6 +265,11 @@ struct NewDelegation {
     idempotency_key: String,
 }
 
+/// Operator-supplied Campaign authorization payload. It carries no
+/// productivity caps: technical operation limits and the deterministic progress
+/// policy are validated by Core against the frozen profile and delegation. The
+/// monetary envelope amount is an explicit operator authorization; Core never
+/// derives or invents a price from it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorizeCampaign {
@@ -274,7 +279,6 @@ struct AuthorizeCampaign {
     actor: String,
     rationale: String,
     authorized_paths: Vec<String>,
-    max_attempts: u32,
     #[serde(default)]
     provider: String,
     #[serde(default)]
@@ -284,23 +288,22 @@ struct AuthorizeCampaign {
     #[serde(default)]
     delegation_id: String,
     #[serde(default)]
-    max_sessions: u32,
-    #[serde(default)]
-    max_turns: u32,
-    #[serde(default)]
-    max_input_tokens: u64,
-    #[serde(default)]
-    max_output_tokens: u64,
-    #[serde(default)]
-    max_cost_micros: u64,
-    #[serde(default)]
-    deadline_secs: u64,
-    #[serde(default)]
     allowed_tools: Vec<String>,
+    operations: factory_native::execution_policy::OperationLimits,
+    progress: factory_native::execution_policy::ProgressPolicy,
+    /// Explicit operator monetary authorization in integer USD micros. Required
+    /// for billable provider execution and never inferred from a model.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
+    /// Only a direct Campaign may reference an already-created request
+    /// envelope. Request-scoped Lead approval always creates the envelope from
+    /// the operator's explicit amount.
+    #[serde(default)]
+    monetary_envelope_id: Option<String>,
 }
 
 impl AuthorizeCampaign {
-    fn into_new(self) -> NewCampaignAuthorization {
+    fn into_new(self, monetary_envelope_id: String) -> NewCampaignAuthorization {
         NewCampaignAuthorization {
             authorization_id: self.authorization_id,
             risk_class: self.risk_class,
@@ -308,18 +311,14 @@ impl AuthorizeCampaign {
             actor: self.actor,
             rationale: self.rationale,
             authorized_paths: self.authorized_paths,
-            max_attempts: self.max_attempts,
             provider: self.provider,
             model: self.model,
             provider_mode: self.provider_mode,
             delegation_id: self.delegation_id,
-            max_sessions: self.max_sessions,
-            max_turns: self.max_turns,
-            max_input_tokens: self.max_input_tokens,
-            max_output_tokens: self.max_output_tokens,
-            max_cost_micros: self.max_cost_micros,
-            deadline_secs: self.deadline_secs,
             allowed_tools: self.allowed_tools,
+            monetary_envelope_id,
+            progress: self.progress,
+            operations: self.operations,
         }
     }
 }
@@ -354,6 +353,11 @@ struct ApproveLeadRequest {
     idempotency_key: Option<String>,
     #[serde(default)]
     provider_authorization: Option<AuthorizeCampaign>,
+    /// Explicit operator monetary authorization for a billable MODEL start.
+    /// This is independent of the provider authorization payload and is never
+    /// accepted from a model.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -399,6 +403,10 @@ struct ApproveIntakeRequest {
     principal_label: Option<String>,
     #[serde(default)]
     idempotency_key: Option<String>,
+    /// Explicit operator monetary authorization in integer USD micros for a
+    /// billable MODEL request. Core never derives, rounds or invents it.
+    #[serde(default)]
+    authorized_micros: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1238,6 +1246,7 @@ impl App {
         &self,
         role: factory_native::execution_profile::ExecutionRole,
         route: &factory_native::execution_profile::ExecutionRoleRoute,
+        operations: &factory_native::execution_policy::OperationLimits,
     ) -> Result<
         factory_native::model_gateway::ModelGateway,
         factory_native::model_routing::RouteError,
@@ -1269,7 +1278,7 @@ impl App {
             allow_loopback_http,
             test_upstream_hosts(),
         )
-        .for_role(role, route)
+        .for_role(role, route, operations)
         .await
     }
 
@@ -1282,9 +1291,18 @@ impl App {
         factory_native::model_gateway::ModelGateway,
         factory_native::model_routing::RouteError,
     > {
+        use factory_native::model_routing::RouteError;
+        let content = profile.content.v2().ok_or_else(|| RouteError::Invalid {
+            provider: String::new(),
+            model: String::new(),
+            detail:
+                "legacy V1 execution profile is historical evidence and cannot start new execution"
+                    .into(),
+        })?;
         self.gateway_for_role(
             factory_native::execution_profile::ExecutionRole::Lead,
-            &profile.content.roles.lead,
+            &content.roles.lead,
+            &content.operations,
         )
         .await
     }
@@ -1308,9 +1326,17 @@ impl App {
             .map_err(|error| RouteError::Database(error.to_string()))?;
         match frozen {
             Some(profile) => {
+                let content = profile.content.v2().ok_or_else(|| RouteError::Invalid {
+                    provider: String::new(),
+                    model: String::new(),
+                    detail:
+                        "legacy V1 execution profile is historical evidence and cannot dispatch a new review"
+                            .into(),
+                })?;
                 self.gateway_for_role(
                     factory_native::execution_profile::ExecutionRole::SemanticReviewer,
-                    &profile.content.roles.semantic_reviewer,
+                    &content.roles.semantic_reviewer,
+                    &content.operations,
                 )
                 .await
             }
@@ -2748,10 +2774,34 @@ async fn delegations(State(app): State<Arc<App>>, headers: HeaderMap) -> Respons
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.standing_delegations().await {
-        Ok(grants) => Json(grants).into_response(),
-        Err(error) => api_error(error),
+    let versions = match app.db.standing_delegation_versions().await {
+        Ok(versions) => versions,
+        Err(error) => return api_error(error),
+    };
+    let mut projections = Vec::with_capacity(versions.len());
+    for (id, version) in versions {
+        let projection = match version {
+            2 => match app.db.standing_delegation_v2(&id).await {
+                Ok(delegation) => json!({
+                    "schemaVersion": 2,
+                    "delegation": delegation,
+                    "usage": app.db.delegation_usage(&id).await.ok(),
+                }),
+                Err(error) => return api_error(error),
+            },
+            _ => match app.db.standing_delegation(&id).await {
+                Ok(delegation) => json!({
+                    "schemaVersion": 1,
+                    "historical": true,
+                    "delegation": delegation,
+                    "usage": app.db.delegation_usage(&id).await.ok(),
+                }),
+                Err(error) => return api_error(error),
+            },
+        };
+        projections.push(projection);
     }
+    Json(projections).into_response()
 }
 
 async fn lead_requests(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
@@ -5347,26 +5397,20 @@ fn decision_campaign(campaign: Option<&Campaign>) -> Value {
     }
 }
 
-fn decision_budget_from_intake(budget: &factory_native::intake::IntakeCampaignBudget) -> Value {
+fn decision_scope_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
     json!({
-        "max_attempts": budget.max_attempts,
-        "max_sessions": budget.max_sessions,
-        "max_turns": budget.max_turns,
-        "max_input_tokens": budget.max_input_tokens,
-        "max_output_tokens": budget.max_output_tokens,
-        "max_cost_micros": budget.max_cost_micros,
-        "deadline_secs": budget.deadline_secs,
+        "operations": context.scope.operations,
+        "progress": context.scope.progress,
+        "max_parallel": context.scope.max_parallel,
+        "timeout_secs": context.scope.max_timeout_secs,
     })
 }
 
-fn decision_budget_from_proposal(proposal: &LeadPlanProposal) -> Value {
+fn decision_scope_from_proposal(proposal: &LeadPlanProposal) -> Value {
     json!({
-        "max_attempts": proposal.budget.max_attempts,
-        "max_sessions": proposal.max_sessions,
-        "max_repair_cycles": proposal.max_repair_cycles,
         "max_parallel": proposal.max_parallel,
-        "max_wall_clock_secs": proposal.max_wall_clock_secs,
         "timeout_secs": proposal.budget.timeout_secs,
+        "work_units": proposal.work_units.len(),
     })
 }
 
@@ -5418,6 +5462,135 @@ fn intake_allowed_tools(mechanism: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+fn inference_intake_conflict(code: &'static str, error: impl std::fmt::Display) -> Error {
+    Error::IntakeConflict {
+        code,
+        message: error.to_string(),
+    }
+}
+
+/// Freeze one Core-derived pricing quote for the exact provider/model. The
+/// bound, coverage and snapshot come from Core provider settings and the
+/// adapter's declared billing coverage; a missing setting, model mismatch,
+/// disabled connection or unsupported adapter is a typed fail-closed error.
+async fn ensure_inference_pricing_quote(
+    app: &App,
+    provider: &str,
+    model: &str,
+    actor: &str,
+) -> Result<(), Error> {
+    let settings = app.db.provider_settings(provider).await?;
+    if !settings.enabled || settings.model != model {
+        return Err(Error::Unavailable(format!(
+            "Core provider settings do not price {provider}/{model}"
+        )));
+    }
+    let revision = i64::from(settings.revision);
+    let evidence = factory_native::device_session::sha256_hex(&format!(
+        "provider-settings:{provider}:{model}:revision:{revision}:rates:{}:{}",
+        settings.input_micros_per_million, settings.output_micros_per_million
+    ));
+    app.db
+        .create_inference_pricing_quote(
+            &factory_native::inference_ledger::NewInferencePricingQuote {
+                provider: provider.into(),
+                model: model.into(),
+                revision,
+                evidence_sha256: evidence,
+                actor: actor.into(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            inference_intake_conflict(
+                "INFERENCE_PRICING_UNAVAILABLE",
+                format!("billable pricing is not enforceable for {provider}/{model}: {error}"),
+            )
+        })
+}
+
+/// Every frozen profile role is part of the Campaign's required execution, so a
+/// billable start must be able to price every distinct route before any
+/// upstream call.
+async fn ensure_profile_pricing_quotes(
+    app: &App,
+    content: &factory_native::execution_profile::ExecutionProfileContent,
+    actor: &str,
+) -> Result<(), Error> {
+    let mut seen = BTreeSet::new();
+    for (_, route) in content.roles.entries() {
+        if !seen.insert((route.provider.clone(), route.model.clone())) {
+            continue;
+        }
+        ensure_inference_pricing_quote(app, &route.provider, &route.model, actor).await?;
+    }
+    Ok(())
+}
+
+/// Create the single operator-request envelope. The amount is the explicit
+/// operator authorization; the scope and evidence digests are Core-derived
+/// frozen identities. Replaying the same request agreement returns the durable
+/// envelope.
+async fn create_request_inference_envelope(
+    app: &App,
+    request_id: &str,
+    project_id: &str,
+    authorized_micros: Option<u64>,
+    actor: &str,
+    scope_sha256: &str,
+    evidence_sha256: &str,
+) -> Result<Option<factory_native::inference_ledger::InferenceEnvelopeRecord>, Error> {
+    let Some(authorized_micros) = authorized_micros else {
+        return Ok(None);
+    };
+    if authorized_micros == 0 {
+        return Err(Error::Conflict(
+            "the operator authorized a zero inference envelope",
+        ));
+    }
+    let authorized = factory_native::execution_policy::UsdMicros::new(authorized_micros)
+        .map_err(|_| Error::Invalid("operator inference authorization"))?;
+    let envelope = app
+        .db
+        .create_inference_envelope(&factory_native::inference_ledger::NewInferenceEnvelope {
+            request_id: request_id.into(),
+            project_id: project_id.into(),
+            authorized_micros: authorized,
+            actor: actor.into(),
+            scope_sha256: scope_sha256.into(),
+            evidence_sha256: evidence_sha256.into(),
+            idempotency_key: format!("request-envelope:{request_id}"),
+        })
+        .await
+        .map_err(|error| {
+            inference_intake_conflict(
+                "INFERENCE_AUTHORIZATION_UNAVAILABLE",
+                format!("the inference envelope could not be recorded: {error}"),
+            )
+        })?;
+    Ok(Some(envelope))
+}
+
+/// Read-only ledger projection attached to request and Campaign JSON. Absence of
+/// an envelope is `null`: Core never claims measured spending without a ledger.
+async fn inference_spending_value(app: &App, request_id: &str) -> Result<Value, Error> {
+    let Some(envelope) = app.db.inference_envelope_for_request(request_id).await? else {
+        return Ok(Value::Null);
+    };
+    let spending = app
+        .db
+        .inference_spending_status(&envelope.envelope_id)
+        .await?;
+    Ok(json!({
+        "envelope": envelope,
+        "status": spending,
+        // Legacy model-call and provider-session rows remain evidence and are
+        // never added to the ledger totals.
+        "legacyEvidenceExcluded": true,
+    }))
 }
 
 fn decision_permissions_from_intake(context: &factory_native::db::IntakeApprovalContext) -> Value {
@@ -5539,8 +5712,8 @@ impl<'a> DecisionProjection<'a> {
                 .or_else(|| action.map(|action| action.spec_sha256.clone()));
             let budget = context
                 .as_ref()
-                .map(|context| decision_budget_from_intake(&context.budget))
-                .or_else(|| proposal.as_ref().map(decision_budget_from_proposal))
+                .map(decision_scope_from_intake)
+                .or_else(|| proposal.as_ref().map(decision_scope_from_proposal))
                 .unwrap_or(Value::Null);
             let permissions = context
                 .as_ref()
@@ -5755,7 +5928,7 @@ impl<'a> DecisionProjection<'a> {
             };
             let budget = proposal
                 .as_ref()
-                .map(decision_budget_from_proposal)
+                .map(decision_scope_from_proposal)
                 .unwrap_or(Value::Null);
             let permissions = proposal
                 .as_ref()
@@ -6645,9 +6818,24 @@ async fn campaign_detail_projection(app: &App, id: &str) -> Result<serde_json::V
         .into_iter()
         .filter(|event| related_subjects.contains(&event.subject_id))
         .collect::<Vec<_>>();
+    let inference = match app.db.inference_envelope_for_campaign(id).await? {
+        Some(envelope) => {
+            let status = app
+                .db
+                .inference_spending_status(&envelope.envelope_id)
+                .await?;
+            json!({
+                "envelope": envelope,
+                "status": status,
+                "legacyEvidenceExcluded": true,
+            })
+        }
+        None => Value::Null,
+    };
     Ok(json!({
         "campaign": campaign,
         "authorization": authorization,
+        "inference": inference,
         "tasks": tasks,
         "runs": runs,
         "attempts": attempts,
@@ -7731,11 +7919,29 @@ async fn get_delegation(
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match app.db.standing_delegation(&id).await {
-        Ok(delegation) => match app.db.delegation_usage(&id).await {
-            Ok(usage) => Json(json!({"delegation":delegation,"usage":usage})).into_response(),
-            Err(error) => api_error(error),
-        },
+    let usage = match app.db.delegation_usage(&id).await {
+        Ok(usage) => usage,
+        Err(error) => return api_error(error),
+    };
+    match app.db.standing_delegation_v2(&id).await {
+        Ok(delegation) => Json(json!({
+            "delegation": delegation,
+            "usage": usage,
+            "schemaVersion": 2,
+        }))
+        .into_response(),
+        Err(Error::NotFound) | Err(Error::Forbidden(_)) => {
+            match app.db.standing_delegation(&id).await {
+                Ok(delegation) => Json(json!({
+                    "delegation": delegation,
+                    "usage": usage,
+                    "schemaVersion": 1,
+                    "historical": true,
+                }))
+                .into_response(),
+                Err(error) => api_error(error),
+            }
+        }
         Err(error) => api_error(error),
     }
 }
@@ -7816,7 +8022,7 @@ async fn assess_lead_request(
         Ok(action) => action,
         Err(error) => return api_error(error),
     };
-    let grant = match app.db.standing_delegation(&request.delegation_id).await {
+    let grant = match app.db.standing_delegation_v2(&request.delegation_id).await {
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
@@ -8003,8 +8209,8 @@ async fn start_lead_request(
     let authorization = if body.is_empty() {
         None
     } else {
-        match serde_json::from_slice::<AuthorizeCampaign>(&body) {
-            Ok(input) => Some(input.into_new()),
+        let input = match serde_json::from_slice::<AuthorizeCampaign>(&body) {
+            Ok(input) => input,
             Err(_) => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -8012,7 +8218,88 @@ async fn start_lead_request(
                 )
                     .into_response();
             }
+        };
+        if input.monetary_envelope_id.is_some() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error":"Core creates the request-scoped inference envelope from the operator amount"
+                })),
+            )
+                .into_response();
         }
+        let envelope_id = if input.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+            let request = match app.db.lead_request(&id).await {
+                Ok(request) => request,
+                Err(error) => return api_error(error),
+            };
+            let plan = match app.db.frozen_lead_plan(&request.id).await {
+                Ok(plan) => plan,
+                Err(error) => return api_error(error),
+            };
+            let action = match app.db.action(&request.action_id).await {
+                Ok(action) => action,
+                Err(error) => return api_error(error),
+            };
+            let actor = match app.db.standing_delegation_v2(&request.delegation_id).await {
+                Ok(grant) => grant.principal_id,
+                Err(error) => return api_error(error),
+            };
+            let existing = if request.campaign_id.is_some() {
+                match app.db.inference_envelope_for_request(&request.id).await {
+                    Ok(envelope) => envelope,
+                    Err(error) => return api_error(error),
+                }
+            } else {
+                None
+            };
+            if let Some(envelope) = existing {
+                if Some(envelope.authorized_micros.get()) != input.authorized_micros {
+                    return api_error(Error::Conflict(
+                        "start replay changed the operator inference authorization",
+                    ));
+                }
+                envelope.envelope_id
+            } else {
+                if let Err(error) =
+                    ensure_inference_pricing_quote(&app, &input.provider, &input.model, &actor)
+                        .await
+                {
+                    return api_error(error);
+                }
+                match create_request_inference_envelope(
+                    &app,
+                    &request.id,
+                    &request.project_id,
+                    input.authorized_micros,
+                    &actor,
+                    &action.spec_sha256,
+                    &plan.plan_hash,
+                )
+                .await
+                {
+                    Ok(Some(envelope)) => envelope.envelope_id,
+                    Ok(None) => {
+                        return api_error(Error::IntakeConflict {
+                            code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                            message:
+                                "billable execution requires an explicit operator-authorized monetary amount"
+                                    .into(),
+                        });
+                    }
+                    Err(error) => return api_error(error),
+                }
+            }
+        } else {
+            if input.authorized_micros.is_some() {
+                return api_error(Error::IntakeConflict {
+                    code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                    message: "fixture execution has no billable inference envelope".into(),
+                });
+            }
+            factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+        };
+        Some(input.into_new(envelope_id))
     };
     match app
         .db
@@ -8076,9 +8363,99 @@ async fn approve_lead_request(
         .idempotency_key
         .clone()
         .unwrap_or_else(|| format!("lead-approve:{id}:{}", input.expected_plan_hash));
-    let provider_authorization = input
-        .provider_authorization
-        .map(AuthorizeCampaign::into_new);
+    let provider_authorization = match input.provider_authorization {
+        Some(authorization) => {
+            let nested_amount = authorization.authorized_micros;
+            if input.authorized_micros.is_some()
+                && nested_amount.is_some()
+                && input.authorized_micros != nested_amount
+            {
+                return api_error(Error::Invalid(
+                    "conflicting operator inference authorization amounts",
+                ));
+            }
+            let amount = input.authorized_micros.or(nested_amount);
+            if authorization.monetary_envelope_id.is_some() {
+                return api_error(Error::Invalid(
+                    "Core creates the request-scoped inference envelope from the operator amount",
+                ));
+            }
+            let envelope_id = if authorization.execution_mode == "TRUSTED_LOCAL_PROVIDER" {
+                let request = match app.db.lead_request(&id).await {
+                    Ok(request) => request,
+                    Err(error) => return api_error(error),
+                };
+                let plan = match app.db.frozen_lead_plan(&request.id).await {
+                    Ok(plan) => plan,
+                    Err(error) => return api_error(error),
+                };
+                let action = match app.db.action(&request.action_id).await {
+                    Ok(action) => action,
+                    Err(error) => return api_error(error),
+                };
+                let actor = principal_label.unwrap_or(&principal_id).to_owned();
+                let existing = if request.campaign_id.is_some() {
+                    match app.db.inference_envelope_for_request(&request.id).await {
+                        Ok(envelope) => envelope,
+                        Err(error) => return api_error(error),
+                    }
+                } else {
+                    None
+                };
+                if let Some(envelope) = existing {
+                    if Some(envelope.authorized_micros.get()) != amount {
+                        return api_error(Error::Conflict(
+                            "approval replay changed the operator inference authorization",
+                        ));
+                    }
+                    envelope.envelope_id
+                } else {
+                    if let Err(error) = ensure_inference_pricing_quote(
+                        &app,
+                        &authorization.provider,
+                        &authorization.model,
+                        &actor,
+                    )
+                    .await
+                    {
+                        return api_error(error);
+                    }
+                    match create_request_inference_envelope(
+                        &app,
+                        &request.id,
+                        &request.project_id,
+                        amount,
+                        &actor,
+                        &action.spec_sha256,
+                        &plan.plan_hash,
+                    )
+                    .await
+                    {
+                        Ok(Some(envelope)) => envelope.envelope_id,
+                        Ok(None) => {
+                            return api_error(Error::IntakeConflict {
+                                code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                                message:
+                                    "billable execution requires an explicit operator-authorized monetary amount"
+                                        .into(),
+                            });
+                        }
+                        Err(error) => return api_error(error),
+                    }
+                }
+            } else {
+                if amount.is_some() {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                        message: "fixture execution has no billable inference envelope".into(),
+                    });
+                }
+                factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+            };
+            Some(authorization.into_new(envelope_id))
+        }
+        None => None,
+    };
     let result = app
         .db
         .start_lead_campaign(
@@ -8166,6 +8543,10 @@ async fn get_lead_request(
         Ok(calls) => calls,
         Err(error) => return api_error(error),
     };
+    let spending = match inference_spending_value(&app, &id).await {
+        Ok(spending) => spending,
+        Err(error) => return api_error(error),
+    };
     Json(json!({
         "request": request,
         "assessment": assessment,
@@ -8175,7 +8556,8 @@ async fn get_lead_request(
         "start_evidence": evidence,
         "execution_binding": execution_binding,
         "projection": projection,
-        "model_calls": model_calls
+        "model_calls": model_calls,
+        "spending": spending
     }))
     .into_response()
 }
@@ -8265,6 +8647,7 @@ async fn intake_request_value(
     };
     let withdrawal = app.db.lead_withdrawal(&lead.id).await?;
     let authorization = app.db.intake_authorization_state(&record.id, state).await;
+    let spending = inference_spending_value(app, &record.id).await?;
     let state_detail = intake_state_detail(
         state,
         &lead,
@@ -8291,6 +8674,7 @@ async fn intake_request_value(
         "leadRequestId": record.lead_request_id,
         "campaignId": campaign_id,
         "authorization": authorization,
+        "spending": spending,
         "createdAt": record.created_at,
         "updatedAt": record.updated_at,
     });
@@ -8373,19 +8757,35 @@ async fn intake_policy_scope(
         },
     }
     .map(|profile| {
-        let terms = factory_native::intake::execution_policy_terms(&profile.content);
+        let version = profile.content.schema_version();
+        let content = profile.content.v2();
+        let terms = content.map(factory_native::intake::execution_policy_terms);
         json!({
             "id": profile.id,
             "revisionId": profile.revision_id,
             "revision": profile.revision,
-            "name": profile.content.name,
+            "schemaVersion": version,
+            "name": content.map(|content| content.name.as_str()),
             "contentHash": profile.content_hash,
             "executable": profile.executable,
             "warnings": profile.warnings,
-            "budgets": profile.content.budgets,
-            "autoStart": profile.content.auto_start,
-            "implementer": profile.content.roles.implementer,
+            "operations": content.map(|content| content.operations),
+            "progress": content.map(|content| content.progress),
+            "autoStart": content.map(|content| content.auto_start.clone()),
+            "implementer": content.map(|content| content.roles.implementer.clone()),
             "grantTerms": terms,
+            // V1 cap evidence remains readable as historical provenance and is
+            // never projected as current execution authority.
+            "legacyV1": match &profile.content {
+                factory_native::execution_profile::ExecutionProfileRevisionContent::V1(legacy) => {
+                    Some(json!({
+                        "budgets": legacy.budgets,
+                        "roles": legacy.roles,
+                        "autoStart": legacy.auto_start,
+                    }))
+                }
+                factory_native::execution_profile::ExecutionProfileRevisionContent::V2(_) => None,
+            },
         })
     });
     json!({"project": project, "profile": profile})
@@ -8443,7 +8843,7 @@ async fn validate_intake_assess_authority(
     }
     let grant = app
         .db
-        .standing_delegation(&record.delegation_id)
+        .standing_delegation_v2(&record.delegation_id)
         .await
         .map_err(|error| match error {
             Error::NotFound => Error::IntakeConflict {
@@ -8474,7 +8874,13 @@ async fn validate_intake_assess_authority(
             message: "the request is not bound to a non-autonomous R0 execution policy".into(),
         });
     }
-    let implementer = &profile.content.roles.implementer;
+    let content = profile.content.v2().ok_or_else(|| Error::IntakeConflict {
+        code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+        message:
+            "a legacy V1 execution profile is historical evidence and cannot start new execution"
+                .into(),
+    })?;
+    let implementer = &content.roles.implementer;
     if grant.route.provider != implementer.provider
         || grant.route.model != implementer.model
         || grant.route.mode != "build"
@@ -8511,6 +8917,7 @@ fn build_intake_authorization(
     principal_label: Option<&str>,
     principal_id: &str,
     rationale: &str,
+    monetary_envelope_id: &str,
 ) -> NewCampaignAuthorization {
     let route = &context.profile.roles.implementer;
     let execution_mode = intake_execution_mode(&context.mechanism);
@@ -8522,18 +8929,14 @@ fn build_intake_authorization(
         actor: principal_label.unwrap_or(principal_id).to_owned(),
         rationale: rationale.into(),
         authorized_paths: context.action_spec.allowed_paths.clone(),
-        max_attempts: context.budget.max_attempts,
         provider: route.provider.clone(),
         model: route.model.clone(),
         provider_mode: "build".into(),
         delegation_id: context.grant.id.clone(),
-        max_sessions: context.budget.max_sessions,
-        max_turns: context.budget.max_turns,
-        max_input_tokens: context.budget.max_input_tokens,
-        max_output_tokens: context.budget.max_output_tokens,
-        max_cost_micros: context.budget.max_cost_micros,
-        deadline_secs: context.budget.deadline_secs,
         allowed_tools,
+        monetary_envelope_id: monetary_envelope_id.to_owned(),
+        progress: context.scope.progress,
+        operations: context.scope.operations,
     }
 }
 
@@ -8753,7 +9156,7 @@ async fn assess_intake_request(
                 Ok(context) => context,
                 Err(error) => return api_error(error),
             };
-            if factory_native::intake::intersect_campaign_budget(
+            if factory_native::intake::validate_execution_scope(
                 &context.profile,
                 &context.proposal,
                 &context.grant,
@@ -8762,8 +9165,8 @@ async fn assess_intake_request(
             .is_err()
             {
                 return api_error(Error::IntakeConflict {
-                    code: "AUTHORIZATION_UNAVAILABLE_BUDGET",
-                    message: "the frozen plan cannot be bounded for explicit implementation".into(),
+                    code: "AUTHORIZATION_UNAVAILABLE_SCOPE",
+                    message: "the frozen plan cannot be bound to the execution scope".into(),
                 });
             }
             let _ = plan;
@@ -8813,7 +9216,7 @@ async fn assess_intake_request(
         Ok(config) => config,
         Err(error) => return api_error(error),
     };
-    let grant = match app.db.standing_delegation(&record.delegation_id).await {
+    let grant = match app.db.standing_delegation_v2(&record.delegation_id).await {
         Ok(grant) => grant,
         Err(error) => return api_error(error),
     };
@@ -8979,8 +9382,82 @@ async fn approve_intake_request(
         Ok(binding) => binding,
         Err(error) => return api_error(error),
     };
-    let authorization =
-        build_intake_authorization(&context, principal_label, &principal_id, &input.rationale);
+    let billable = context.mechanism == "MODEL";
+    let actor = principal_label.unwrap_or(&principal_id).to_owned();
+    let monetary_envelope_id = if billable {
+        let Some(authorized_micros) = input.authorized_micros else {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                message:
+                    "billable execution requires an explicit operator-authorized monetary amount"
+                        .into(),
+            });
+        };
+        // Replay must not re-price or create a second envelope. The original
+        // envelope is the durable record of the operator's exact amount.
+        let existing = if context.intake.campaign_id.is_some() {
+            match app
+                .db
+                .inference_envelope_for_request(&context.intake.id)
+                .await
+            {
+                Ok(envelope) => envelope,
+                Err(error) => return api_error(error),
+            }
+        } else {
+            None
+        };
+        if let Some(envelope) = existing {
+            if envelope.authorized_micros.get() != authorized_micros {
+                return api_error(Error::Conflict(
+                    "approval replay changed the operator inference authorization",
+                ));
+            }
+            envelope.envelope_id
+        } else {
+            let content = &context.profile;
+            if let Err(error) = ensure_profile_pricing_quotes(&app, content, &actor).await {
+                return api_error(error);
+            }
+            match create_request_inference_envelope(
+                &app,
+                &context.intake.id,
+                &context.intake.project_id,
+                Some(authorized_micros),
+                &actor,
+                &context.spec_sha256,
+                &context.plan.plan_hash,
+            )
+            .await
+            {
+                Ok(Some(envelope)) => envelope.envelope_id,
+                Ok(None) => {
+                    return api_error(Error::IntakeConflict {
+                        code: "INFERENCE_AUTHORIZATION_REQUIRED",
+                        message:
+                            "billable execution requires an explicit operator-authorized monetary amount"
+                                .into(),
+                    });
+                }
+                Err(error) => return api_error(error),
+            }
+        }
+    } else {
+        if input.authorized_micros.is_some() {
+            return api_error(Error::IntakeConflict {
+                code: "INFERENCE_AUTHORIZATION_NOT_APPLICABLE",
+                message: "fixture execution has no billable inference envelope".into(),
+            });
+        }
+        factory_native::db::NO_BILLABLE_ENVELOPE.to_owned()
+    };
+    let authorization = build_intake_authorization(
+        &context,
+        principal_label,
+        &principal_id,
+        &input.rationale,
+        &monetary_envelope_id,
+    );
     let idempotency_key = input
         .idempotency_key
         .clone()
@@ -9213,7 +9690,31 @@ async fn authorize_campaign(
         )
             .into_response();
     }
-    let authorization = input.into_new();
+    let authorization = match input.execution_mode.as_str() {
+        "FIXTURE" => {
+            if input.monetary_envelope_id.is_some() || input.authorized_micros.is_some() {
+                return api_error(Error::Conflict(
+                    "fixture authorization has no billable inference envelope",
+                ));
+            }
+            input.into_new(factory_native::db::NO_BILLABLE_ENVELOPE.to_owned())
+        }
+        // A provider Campaign needs the one operator-request envelope and its
+        // atomic Campaign binding. Direct-route authorization has no request
+        // identity to own that envelope, so it fails closed instead of
+        // authorizing unbindable spending.
+        "TRUSTED_LOCAL_PROVIDER" => {
+            return api_error(Error::Forbidden(
+                "provider execution requires a request-scoped Lead/intake approval; submit a new request instead of a direct Campaign authorization"
+                    .into(),
+            ));
+        }
+        _ => {
+            return api_error(Error::Forbidden(
+                "only FIXTURE and TRUSTED_LOCAL_PROVIDER execution are enabled".into(),
+            ));
+        }
+    };
     match app.db.authorize_campaign(&id, &authorization).await {
         Ok((record, created)) => (
             if created {
@@ -9401,7 +9902,8 @@ struct ExecutionProfileRequest {
     description: String,
     category: factory_native::execution_profile::ExecutionProfileCategory,
     roles: factory_native::execution_profile::ExecutionProfileRoles,
-    budgets: factory_native::execution_profile::CampaignBudgets,
+    operations: factory_native::execution_policy::OperationLimits,
+    progress: factory_native::execution_policy::ProgressPolicy,
     #[serde(rename = "auto_start")]
     auto_start: ExecutionProfileAutoStartRequest,
     #[serde(default)]
@@ -9417,7 +9919,8 @@ impl ExecutionProfileRequest {
             description: self.description,
             category: self.category,
             roles: self.roles,
-            budgets: self.budgets,
+            operations: self.operations,
+            progress: self.progress,
             auto_start: factory_native::execution_profile::AutoStartPolicy {
                 enabled: self.auto_start.enabled,
                 risk_classes: self.auto_start.risk_classes,
@@ -9448,13 +9951,57 @@ impl ExecutionProfileDefaultRequest {
     }
 }
 
+fn execution_profile_value(profile: &factory_native::db::ExecutionProfileRecord) -> Value {
+    let mut value = json!({
+        "id": profile.id,
+        "revision": profile.revision,
+        "revisionId": profile.revision_id,
+        "schemaVersion": profile.content.schema_version(),
+        "contentHash": profile.content_hash,
+        "globalDefault": profile.global_default,
+        "projectDefaults": profile.project_defaults,
+        "executable": profile.executable,
+        "warnings": profile.warnings,
+        "createdAt": profile.created_at,
+        "updatedAt": profile.updated_at,
+    });
+    match &profile.content {
+        factory_native::execution_profile::ExecutionProfileRevisionContent::V2(content) => {
+            value["name"] = json!(content.name);
+            value["description"] = json!(content.description);
+            value["category"] = json!(content.category);
+            value["roles"] = json!(content.roles);
+            value["operations"] = json!(content.operations);
+            value["progress"] = json!(content.progress);
+            value["autoStart"] = json!(content.auto_start);
+            value["implementer"] = json!(content.roles.implementer);
+            value["legacyV1"] = Value::Null;
+        }
+        factory_native::execution_profile::ExecutionProfileRevisionContent::V1(legacy) => {
+            value["name"] = json!(legacy.name);
+            value["description"] = json!(legacy.description);
+            value["category"] = json!(legacy.category);
+            value["roles"] = json!(legacy.roles);
+            value["operations"] = Value::Null;
+            value["progress"] = Value::Null;
+            value["autoStart"] = json!(legacy.auto_start);
+            value["implementer"] = json!(legacy.roles.implementer);
+            value["legacyV1"] = json!({
+                "budgets": legacy.budgets,
+                "historical": true,
+            });
+        }
+    }
+    value
+}
+
 async fn execution_profiles_list(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if !authorized(&headers, &app.operator_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.db.execution_profiles().await {
         Ok(profiles) => Json(json!({
-            "profiles": profiles,
+            "profiles": profiles.iter().map(execution_profile_value).collect::<Vec<_>>(),
             "supportedRoutes": factory_native::execution_profile::SUPPORTED_ROUTES,
         }))
         .into_response(),
@@ -9471,7 +10018,7 @@ async fn execution_profile_detail(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match app.db.execution_profile(&id).await {
-        Ok(profile) => Json(profile).into_response(),
+        Ok(profile) => Json(execution_profile_value(&profile)).into_response(),
         Err(error) => api_error(error),
     }
 }
@@ -9502,7 +10049,9 @@ async fn create_execution_profile(
         .create_execution_profile(&content, "office-operator")
         .await
     {
-        Ok(profile) => (StatusCode::CREATED, Json(profile)).into_response(),
+        Ok(profile) => {
+            (StatusCode::CREATED, Json(execution_profile_value(&profile))).into_response()
+        }
         Err(error) => api_error(error),
     }
 }
@@ -9534,7 +10083,7 @@ async fn update_execution_profile(
         .update_execution_profile(&id, expected_revision, &content, "office-operator")
         .await
     {
-        Ok(profile) => Json(profile).into_response(),
+        Ok(profile) => Json(execution_profile_value(&profile)).into_response(),
         Err(Error::Conflict("execution profile revision is stale")) => (
             StatusCode::CONFLICT,
             Json(json!({"error":"execution profile revision is stale"})),
@@ -10259,7 +10808,40 @@ mod tests {
             attempt_grant_key: b"attempt-grant-key-0123456789abcdef".to_vec(),
             observability: factory_native::observability::ExporterHandle::disabled(),
         });
-        let router = build_router(app);
+        let router = build_router(Arc::clone(&app));
+        let mut execution_grant = factory_native::lead::StandingDelegationV2 {
+            id: "grant-api-v2".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: project.id.clone(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![factory_native::lead::ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![
+                factory_native::lead::Capability::RepositoryEdit,
+                factory_native::lead::Capability::GenericToolchain,
+            ],
+            risk_classes: vec![factory_native::lead::RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: factory_native::lead::ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: approval_operations(),
+            progress: approval_progress(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        execution_grant.content_hash = execution_grant.compute_content_hash();
+        app.db
+            .create_standing_delegation_v2(&execution_grant, "grant-api-v2-key")
+            .await
+            .unwrap();
         let request = axum::http::Request::builder()
             .method("POST")
             .uri("/delegations")
@@ -10334,7 +10916,7 @@ mod tests {
                 serde_json::to_vec(&json!({
                     "project_id": project.id,
                     "action_id": action["id"],
-                    "delegation_id": "grant-api",
+                    "delegation_id": "grant-api-v2",
                     "objective": "Implement the API slice.",
                     "project_config_hash": config_hash,
                     "idempotency_key": "lead-api-key"
@@ -12191,10 +12773,7 @@ mod tests {
             json!({
                 "provider": provider,
                 "model": model,
-                "reasoning": "medium",
-                "maxInputTokens": 64000,
-                "maxOutputTokens": 8192,
-                "maxCostMicros": 300000
+                "reasoning": "medium"
             })
         }
 
@@ -12208,14 +12787,18 @@ mod tests {
                     "implementer": role("opencode-go", "deepseek-v4.1-flash"),
                     "semanticReviewer": role("opencode-go", "deepseek-v4.1-flash")
                 },
-                "budgets": {
-                    "maxAttempts": 3,
-                    "maxSessions": 2,
-                    "maxTurns": 4,
-                    "maxInputTokens": 40000,
-                    "maxOutputTokens": 12000,
-                    "maxCostMicros": 500000,
-                    "deadlineSecs": 600
+                "operations": {
+                    "modelRequestTimeoutSecs": 300,
+                    "toolCallTimeoutSecs": 600,
+                    "maxRequestBytes": 2097152,
+                    "maxResponseBytes": 2097152,
+                    "maxGenerationTokens": 8192,
+                    "maxInFlightOperations": 4
+                },
+                "progress": {
+                    "diagnoseAfterStagnantCheckpoints": 2,
+                    "escalateAfterUnsuccessfulReplans": 1,
+                    "observationTimeoutSecs": 300
                 },
                 "auto_start": {"enabled": false, "risk_classes": []}
             })
@@ -12620,11 +13203,30 @@ mod tests {
         ]
     }
 
+    fn approval_operations() -> factory_native::execution_policy::OperationLimits {
+        factory_native::execution_policy::OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn approval_progress() -> factory_native::execution_policy::ProgressPolicy {
+        factory_native::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        }
+    }
+
     async fn create_ready_approval_lead(
         db: &Database,
         project_id: &str,
         config_hash: &str,
-        grant: &StandingDelegation,
+        grant: &factory_native::lead::StandingDelegationV2,
         label: &str,
     ) -> (String, Value) {
         let checks = approval_checks();
@@ -12773,7 +13375,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut grant = StandingDelegation {
+        let mut grant = factory_native::lead::StandingDelegationV2 {
             id: "approval-grant".into(),
             principal_id: "owner".into(),
             audit_id: "audit".into(),
@@ -12794,20 +13396,15 @@ mod tests {
                 model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
-            max_attempts: 2,
             max_timeout_secs: 300,
-            max_repair_cycles: 1,
-            max_wall_clock_secs: 1_800,
             max_parallel: 1,
-            max_sessions: 4,
-            max_requests: 2,
-            max_cumulative_sessions: 8,
-            max_cumulative_attempts: 16,
+            operations: approval_operations(),
+            progress: approval_progress(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(1),
             revoked_at: None,
         };
         grant.content_hash = grant.compute_content_hash();
-        db.create_standing_delegation(&grant, "approval-grant-key")
+        db.create_standing_delegation_v2(&grant, "approval-grant-key")
             .await
             .unwrap();
         let (request_id, expected) =
@@ -13233,23 +13830,40 @@ mod tests {
     mod intake_api {
         use super::*;
         use factory_native::db::{NewProjectConfig, ProviderSettingsWrite};
+        use factory_native::execution_policy::{OperationLimits, ProgressPolicy};
         use factory_native::execution_profile::{
-            AutoStartPolicy, CampaignBudgets, ExecutionProfileCategory, ExecutionProfileRoles,
-            ExecutionRoleRoute, ReasoningEffort,
+            AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileRoles, ExecutionRoleRoute,
+            ReasoningEffort,
         };
         use factory_native::lead::{
             ActionBinding, AssessmentInput, Capability, CheckKind, QualityProfile, SpecCheck,
         };
         use tower::ServiceExt;
 
+        fn operations() -> OperationLimits {
+            OperationLimits {
+                model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+                tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+                max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+                max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+                max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+            }
+        }
+
+        fn progress() -> ProgressPolicy {
+            ProgressPolicy {
+                diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+                escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+                observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            }
+        }
+
         fn route() -> ExecutionRoleRoute {
             ExecutionRoleRoute {
                 provider: "opencode-go".into(),
                 model: "deepseek-v4.1-flash".into(),
                 reasoning: Some(ReasoningEffort::Medium),
-                max_input_tokens: 64_000,
-                max_output_tokens: 8_192,
-                max_cost_micros: 300_000,
             }
         }
 
@@ -13263,15 +13877,8 @@ mod tests {
                     implementer: route(),
                     semantic_reviewer: route(),
                 },
-                budgets: CampaignBudgets {
-                    max_attempts: 2,
-                    max_sessions: 3,
-                    max_turns: 4,
-                    max_input_tokens: 40_000,
-                    max_output_tokens: 12_000,
-                    max_cost_micros: 500_000,
-                    deadline_secs: 600,
-                },
+                operations: operations(),
+                progress: progress(),
                 auto_start: AutoStartPolicy {
                     enabled: false,
                     risk_classes: Vec::new(),
@@ -13561,6 +14168,7 @@ mod tests {
         async fn fixture_plan(
             fixture: &Fixture,
             intake_id: &str,
+            mechanism: &str,
         ) -> factory_native::db::IntakeApprovalContext {
             let request = fixture.app.db.intake_request(intake_id).await.unwrap();
             let lead = fixture
@@ -13578,7 +14186,7 @@ mod tests {
             let grant = fixture
                 .app
                 .db
-                .standing_delegation(&request.delegation_id)
+                .standing_delegation_v2(&request.delegation_id)
                 .await
                 .unwrap();
             fixture
@@ -13626,7 +14234,7 @@ mod tests {
             fixture
                 .app
                 .db
-                .record_lead_assessment(&lead.id, "FIXTURE", &assessment, &input, "api-fixture-a")
+                .record_lead_assessment(&lead.id, mechanism, &assessment, &input, "api-fixture-a")
                 .await
                 .unwrap();
             fixture
@@ -13704,11 +14312,35 @@ mod tests {
                 provider: "opencode".into(),
                 model: "reviewer-model".into(),
                 reasoning: Some(ReasoningEffort::Medium),
-                max_input_tokens: 64_000,
-                max_output_tokens: 8_192,
-                max_cost_micros: 300_000,
             };
             let fixture = setup_with(Some(&key), &lead_url, &review_url, content).await;
+            let opencode_settings = fixture.app.db.provider_settings("opencode").await.unwrap();
+            fixture
+                .app
+                .db
+                .save_provider_settings(
+                    &ProviderSettingsWrite {
+                        provider: "opencode".into(),
+                        kind: "opencode".into(),
+                        model: "reviewer-model".into(),
+                        base_url: review_url.clone(),
+                        auth_mode: opencode_settings.auth_mode,
+                        credential_ciphertext: opencode_settings.credential_ciphertext,
+                        credential_nonce: opencode_settings.credential_nonce,
+                        credential_fingerprint: opencode_settings.credential_fingerprint,
+                        enabled: true,
+                        is_default: false,
+                        max_turns: opencode_settings.max_turns,
+                        max_input_tokens: opencode_settings.max_input_tokens,
+                        max_output_tokens: opencode_settings.max_output_tokens,
+                        max_cost_micros: opencode_settings.max_cost_micros,
+                        input_micros_per_million: opencode_settings.input_micros_per_million,
+                        output_micros_per_million: opencode_settings.output_micros_per_million,
+                    },
+                    "test-operator",
+                )
+                .await
+                .unwrap();
             fixture.app.db.record_provider_model_discovery(
                 factory_native::provider_catalog::ProviderModelCatalogEntry {
                     provider: "opencode".into(),
@@ -13740,7 +14372,7 @@ mod tests {
             let (status, created) = create_intake(&fixture, "reviewer-route-request").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
-            let context = fixture_plan(&fixture, &intake_id).await;
+            let context = fixture_plan(&fixture, &intake_id, "MODEL").await;
             let (status, approved) = send(
                 &fixture.router,
                 "POST",
@@ -13749,11 +14381,26 @@ mod tests {
                     "expected_plan_hash": context.plan.plan_hash,
                     "rationale": "route test",
                     "idempotency_key": "reviewer-route-approve",
+                    "authorized_micros": 5_000_000,
                 })),
             )
             .await;
             assert_eq!(status, StatusCode::CREATED, "{approved}");
             let campaign_id = approved["campaignId"].as_str().unwrap().to_owned();
+            assert_eq!(
+                approved["spending"]["envelope"]["envelopeId"],
+                approved["spending"]["status"]["envelopeId"],
+                "the request projection exposes one ledger envelope"
+            );
+            let bound = fixture
+                .app
+                .db
+                .inference_envelope_for_campaign(&campaign_id)
+                .await
+                .unwrap()
+                .expect("V2 campaign envelope binding");
+            assert_eq!(bound.request_id, intake_id);
+            assert_eq!(bound.authorized_micros.get(), 5_000_000);
 
             let runs = fixture.app.db.runs().await.unwrap();
             let run = runs
@@ -13811,6 +14458,29 @@ mod tests {
             assert_eq!(call["model"], "reviewer-model");
             assert_eq!(*review_hits.lock().unwrap(), 1);
             assert_eq!(*lead_hits.lock().unwrap(), 0);
+            let spending = fixture
+                .app
+                .db
+                .inference_spending_status(&bound.envelope_id)
+                .await
+                .unwrap();
+            assert_eq!(spending.unresolved_count, 0);
+            assert_eq!(spending.envelope_id, bound.envelope_id);
+            assert!(spending.settled_micros.get() <= spending.authorized_micros.get());
+            let review_reservations = fixture
+                .app
+                .db
+                .inference_reservations(&bound.envelope_id)
+                .await
+                .unwrap();
+            assert!(
+                review_reservations
+                    .iter()
+                    .any(|reservation| reservation.model == "reviewer-model"
+                        && reservation.state
+                            == factory_native::execution_policy::ReservationState::Settled),
+                "the reviewer call is the one charged operation: {review_reservations:?}"
+            );
 
             let frozen = fixture
                 .app
@@ -13820,7 +14490,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                frozen.content.roles.semantic_reviewer.model,
+                frozen
+                    .content
+                    .v2()
+                    .expect("V2 frozen profile")
+                    .roles
+                    .semantic_reviewer
+                    .model,
                 "reviewer-model"
             );
 
@@ -13844,7 +14520,7 @@ mod tests {
                 body["scope"]["project"]["configHash"],
                 fixture.config.config_hash
             );
-            assert_eq!(body["scope"]["profile"]["grantTerms"]["maxRequests"], 4);
+            assert_eq!(body["scope"]["profile"]["grantTerms"]["maxParallel"], 1);
             assert_eq!(
                 body["scope"]["profile"]["grantTerms"]["objectiveClasses"],
                 json!(["feature", "maintenance", "refactor"])
@@ -13859,8 +14535,37 @@ mod tests {
             );
             assert_eq!(body["scope"]["profile"]["grantTerms"]["validityDays"], 30);
             assert_eq!(
-                body["scope"]["profile"]["grantTerms"]["maxAttemptsPerRequest"],
-                fixture.profile.content.budgets.max_attempts
+                body["scope"]["profile"]["grantTerms"]["maxTimeoutSecs"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .operations
+                    .tool_call_timeout_secs
+                    .get()
+            );
+            assert_eq!(
+                body["scope"]["profile"]["operations"]["maxGenerationTokens"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .operations
+                    .max_generation_tokens
+                    .get()
+            );
+            assert_eq!(
+                body["scope"]["profile"]["progress"]["diagnoseAfterStagnantCheckpoints"],
+                fixture
+                    .profile
+                    .content
+                    .v2()
+                    .unwrap()
+                    .progress
+                    .diagnose_after_stagnant_checkpoints
+                    .get()
             );
 
             let (status, policy) = enable_policy(&fixture).await;
@@ -14032,7 +14737,7 @@ mod tests {
             let (status, created) = create_intake(&fixture, "request-api-approve").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
-            let context = fixture_plan(&fixture, &intake_id).await;
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let plan_hash = context.plan.plan_hash.clone();
             let profile_revision = context.context.profile_revision;
             let profile_hash = context.context.profile_hash.clone();
@@ -14161,7 +14866,7 @@ mod tests {
             let (status, created) = create_intake(&fixture, "request-api-gate").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
-            let context = fixture_plan(&fixture, &intake_id).await;
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let (status, approved) = send(
                 &fixture.router,
                 "POST",
@@ -14249,7 +14954,7 @@ mod tests {
             let (status, created) = create_intake(&fixture, "request-api-decisions").await;
             assert_eq!(status, StatusCode::CREATED, "{created}");
             let intake_id = created["id"].as_str().unwrap().to_owned();
-            let context = fixture_plan(&fixture, &intake_id).await;
+            let context = fixture_plan(&fixture, &intake_id, "FIXTURE").await;
             let plan_hash = context.plan.plan_hash.clone();
             let profile_revision_id = context.context.profile_revision_id.clone();
             let profile_hash = context.context.profile_hash.clone();
@@ -14268,8 +14973,16 @@ mod tests {
             assert!(item["revision"].is_string());
             assert_eq!(item["project"]["id"], fixture.project_id);
             assert_eq!(
-                item["impact"]["budget"]["max_attempts"],
-                context.budget.max_attempts
+                item["impact"]["budget"]["operations"]["maxGenerationTokens"],
+                context.scope.operations.max_generation_tokens.get()
+            );
+            assert_eq!(
+                item["impact"]["budget"]["progress"]["diagnoseAfterStagnantCheckpoints"],
+                context
+                    .scope
+                    .progress
+                    .diagnose_after_stagnant_checkpoints
+                    .get()
             );
             let approve = item["actions"]
                 .as_array()

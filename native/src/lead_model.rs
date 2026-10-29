@@ -9,7 +9,7 @@ use crate::{
     db::{ActionSpec, Database, ModelCallRole},
     lead::{
         ActionBinding, AssessmentInput, LeadAssessment, LeadError, LeadPlanProposal, ProjectConfig,
-        StandingDelegation,
+        StandingDelegationV2,
     },
     model_gateway::{ModelCallRequest, ModelGateway, ModelGatewayError},
     model_output::decode_lead_assessment,
@@ -21,17 +21,11 @@ pub struct AssessmentRequest<'a> {
     pub action: &'a ActionBinding,
     pub action_spec: &'a ActionSpec,
     pub objective: &'a str,
-    pub grant: &'a StandingDelegation,
+    pub grant: &'a StandingDelegationV2,
     pub now: chrono::DateTime<chrono::Utc>,
 }
 
 fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadError> {
-    if request.grant.max_sessions < 2 {
-        return Err(LeadError::Budget(
-            "the execution policy needs at least an assessment and one implementation session"
-                .into(),
-        ));
-    }
     let schema =
         serde_json::to_string(&crate::model_output::lead_assessment_schema()).map_err(|error| {
             LeadError::Assessment(format!("cannot encode assessment schema: {error}"))
@@ -47,8 +41,11 @@ fn assessment_prompt(request: &AssessmentRequest<'_>) -> Result<String, LeadErro
     }
     let checks_are_frozen = !request.action_spec.checks.is_empty();
     let timeout_secs = request.grant.max_timeout_secs.min(300);
-    let max_wall_clock_secs = request.grant.max_wall_clock_secs;
-    let max_sessions = request.grant.max_sessions.min(2);
+    // Legacy V1 productivity fields remain in the proposal evidence shape. V2
+    // does not enforce or replenish them, so Core records their absence instead
+    // of inventing turns, sessions or a Campaign wall clock.
+    let max_wall_clock_secs = 0;
+    let max_sessions = 0;
     let description: String = request.objective.chars().take(500).collect();
     let unit = serde_json::json!({
         "id": "unit-1",
@@ -191,7 +188,7 @@ pub async fn assess(
         .proposal
         .clone()
         .ok_or_else(|| LeadError::Assessment("model assessment has no proposal".into()))?;
-    proposal.validate(
+    proposal.validate_v2(
         request.grant,
         &request.project.binding(),
         request.action,

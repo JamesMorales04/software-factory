@@ -564,81 +564,9 @@ impl Database {
         &self,
         input: &CampaignEnvelopeBindingInput,
     ) -> Result<(), Error> {
-        input.validate().map_err(ledger_error)?;
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let envelope = load_envelope(&mut transaction, &input.envelope_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        let campaign: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT a.project_id FROM campaigns c JOIN actions a ON a.id=c.action_id
-             WHERE c.id=?1",
-        )
-        .bind(&input.campaign_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let Some((project_id,)) = campaign else {
-            return Err(Error::NotFound);
-        };
-        if project_id != envelope.project_id {
-            return Err(Error::Forbidden(
-                "campaign belongs to a different project than the inference envelope".into(),
-            ));
-        }
-        if !campaign_owns_envelope_request(
-            &mut transaction,
-            &input.campaign_id,
-            &envelope.request_id,
-        )
-        .await?
-        {
-            return Err(Error::Forbidden(
-                "campaign does not belong to the envelope's operator request".into(),
-            ));
-        }
-        let existing: Option<(String, String)> = sqlx::query_as::query_as(
-            "SELECT campaign_id,envelope_id FROM inference_campaign_bindings
-             WHERE campaign_id=?1 OR envelope_id=?2",
-        )
-        .bind(&input.campaign_id)
-        .bind(&input.envelope_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        if let Some((existing_campaign, existing_envelope)) = existing {
-            if existing_campaign != input.campaign_id || existing_envelope != input.envelope_id {
-                return Err(Error::Conflict(
-                    "campaign or inference envelope is already bound elsewhere",
-                ));
-            }
-            classify_campaign_v2(&mut transaction, &input.campaign_id, &input.evidence_sha256)
-                .await?;
-            transaction.commit().await?;
-            return Ok(());
-        }
-        sqlx::query::query(
-            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
-             VALUES (?1,?2,?3)",
-        )
-        .bind(&input.campaign_id)
-        .bind(&envelope.id)
-        .bind(Utc::now().timestamp_millis())
-        .execute(&mut *transaction)
-        .await?;
-        classify_campaign_v2(&mut transaction, &input.campaign_id, &input.evidence_sha256).await?;
-        insert_ledger_event(
-            &mut transaction,
-            &envelope.id,
-            None,
-            "CAMPAIGN_BOUND",
-            &input.actor,
-            &format!(
-                "campaign:{}:request:{}",
-                input.campaign_id, envelope.request_id
-            ),
-            &input.evidence_sha256,
-            Utc::now().timestamp_millis(),
-        )
-        .await?;
+        bind_campaign_inference_envelope_in_tx(&mut transaction, input).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -2224,6 +2152,87 @@ async fn classify_campaign_v2(
     .bind(Utc::now().timestamp_millis())
     .bind(evidence_sha256)
     .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+/// Bind a Campaign to its operator-request envelope inside the caller's
+/// transaction. Lead start uses this so a V2 Campaign cannot commit without a
+/// durable envelope binding.
+pub(super) async fn bind_campaign_inference_envelope_in_tx(
+    connection: &mut SqliteConnection,
+    input: &CampaignEnvelopeBindingInput,
+) -> Result<(), Error> {
+    input.validate().map_err(ledger_error)?;
+    let envelope = load_envelope(connection, &input.envelope_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    if envelope.state != EnvelopeState::Active {
+        return Err(Error::Forbidden(
+            "inference envelope is not active for a new Campaign".into(),
+        ));
+    }
+    let campaign: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT a.project_id FROM campaigns c JOIN actions a ON a.id=c.action_id
+         WHERE c.id=?1",
+    )
+    .bind(&input.campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((project_id,)) = campaign else {
+        return Err(Error::NotFound);
+    };
+    if project_id != envelope.project_id {
+        return Err(Error::Forbidden(
+            "campaign belongs to a different project than the inference envelope".into(),
+        ));
+    }
+    if !campaign_owns_envelope_request(connection, &input.campaign_id, &envelope.request_id).await?
+    {
+        return Err(Error::Forbidden(
+            "campaign does not belong to the envelope's operator request".into(),
+        ));
+    }
+    let existing: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT campaign_id,envelope_id FROM inference_campaign_bindings
+         WHERE campaign_id=?1 OR envelope_id=?2",
+    )
+    .bind(&input.campaign_id)
+    .bind(&input.envelope_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some((existing_campaign, existing_envelope)) = existing {
+        if existing_campaign != input.campaign_id || existing_envelope != input.envelope_id {
+            return Err(Error::Conflict(
+                "campaign or inference envelope is already bound elsewhere",
+            ));
+        }
+        classify_campaign_v2(connection, &input.campaign_id, &input.evidence_sha256).await?;
+        return Ok(());
+    }
+    sqlx::query::query(
+        "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+         VALUES (?1,?2,?3)",
+    )
+    .bind(&input.campaign_id)
+    .bind(&envelope.id)
+    .bind(Utc::now().timestamp_millis())
+    .execute(&mut *connection)
+    .await?;
+    classify_campaign_v2(connection, &input.campaign_id, &input.evidence_sha256).await?;
+    insert_ledger_event(
+        connection,
+        &envelope.id,
+        None,
+        "CAMPAIGN_BOUND",
+        &input.actor,
+        &format!(
+            "campaign:{}:request:{}",
+            input.campaign_id, envelope.request_id
+        ),
+        &input.evidence_sha256,
+        Utc::now().timestamp_millis(),
+    )
     .await?;
     Ok(())
 }
