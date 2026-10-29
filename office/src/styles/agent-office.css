@@ -961,6 +961,8 @@
   width: 92px;
   height: 112px;
   overflow: visible;
+  transform: scale(var(--office-perspective-scale, 1));
+  transform-origin: 50% 100%;
   filter: drop-shadow(0 3px 2px rgb(0 0 0 / 0.28));
 }
 
