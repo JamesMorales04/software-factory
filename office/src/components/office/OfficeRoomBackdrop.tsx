@@ -6,25 +6,6 @@ interface Point {
   y: number;
 }
 
-function clippedRect(
-  left: number,
-  top: number,
-  right: number,
-  bottom: number,
-  cut: number,
-): Point[] {
-  return [
-    { x: left + cut, y: top },
-    { x: right - cut, y: top },
-    { x: right, y: top + cut },
-    { x: right, y: bottom - cut },
-    { x: right - cut, y: bottom },
-    { x: left + cut, y: bottom },
-    { x: left, y: bottom - cut },
-    { x: left, y: top + cut },
-  ];
-}
-
 function points(pointsList: Point[]): string {
   return pointsList.map((point) => `${point.x},${point.y}`).join(" ");
 }
@@ -34,17 +15,6 @@ function offset(pointsList: Point[], dx: number, dy: number): Point[] {
     x: point.x + dx,
     y: point.y + dy,
   }));
-}
-
-function WallClock({ x, y }: { x: number; y: number }) {
-  return (
-    <g className="office-wall-clock" transform={`translate(${x} ${y})`}>
-      <circle className="office-wall-clock-face" cx="0" cy="0" r="10" />
-      <circle className="office-wall-clock-inner" cx="0" cy="0" r="7.6" />
-      <path className="office-wall-clock-hours" d="M0 -5 V0 L4 2" />
-      <circle className="office-wall-clock-pin" cx="0" cy="0" r="1.1" />
-    </g>
-  );
 }
 
 function Whiteboard({ x, y, width }: { x: number; y: number; width: number }) {
@@ -220,94 +190,106 @@ function ToolBoard({ x, y, width }: { x: number; y: number; width: number }) {
   );
 }
 
-function WallShelf({ x, y, width }: { x: number; y: number; width: number }) {
-  return (
-    <g className="office-wall-shelf" transform={`translate(${x} ${y})`}>
-      <rect
-        className="office-wall-shelf-board"
-        x="0"
-        y="0"
-        width={width}
-        height="3"
-        rx="1"
-      />
-      <path
-        className="office-wall-shelf-bracket"
-        d={`M4 3 V8 M${width - 4} 3 V8`}
-      />
-      <rect
-        className="office-wall-shelf-book office-book-a"
-        x="5"
-        y="-9"
-        width="4"
-        height="9"
-        rx="0.6"
-      />
-      <rect
-        className="office-wall-shelf-book office-book-c"
-        x="10"
-        y="-7"
-        width="4"
-        height="7"
-        rx="0.6"
-      />
-      <rect
-        className="office-wall-shelf-book office-book-d"
-        x="15"
-        y="-10"
-        width="4"
-        height="10"
-        rx="0.6"
-      />
-      <circle className="office-wall-shelf-orb" cx={width - 12} cy="-3" r="3" />
-    </g>
-  );
-}
+function StudioPartition({ zone }: { zone: OfficeZone }) {
+  const width = zone.width;
+  const alignRight = zone.role === "VERIFIER" || zone.role === "REVIEWER";
+  const panelWidth = Math.min(340, Math.max(164, width - 60));
+  const left = alignRight ? width - panelWidth - 16 : 16;
+  const top = 3;
+  const height = 76;
+  const depth = 6;
+  const boardWidth = Math.min(210, panelWidth - 84);
+  const hasBoard = panelWidth >= 196;
+  const boardLeft = left + (panelWidth - boardWidth) / 2 + 8;
+  const boardY = top + 34;
+  const role = zone.role;
 
-function RoomWindow({
-  x,
-  width,
-  glowId,
-}: {
-  x: number;
-  width: number;
-  glowId: string;
-}) {
   return (
-    <g className="office-room-window" transform={`translate(${x} 10)`}>
-      <ellipse
-        className="office-room-window-glow"
-        cx={width / 2}
-        cy="14"
-        rx={width * 0.8}
-        ry="26"
-        fill={`url(#${glowId})`}
+    <g className="office-partition" data-role={role}>
+      <polygon
+        className="office-partition-shadow"
+        points={points([
+          { x: left + 10, y: top + height + 4 },
+          { x: left + panelWidth + 16, y: top + height - 4 },
+          { x: left + panelWidth + 16, y: top + height + 6 },
+          { x: left + 10, y: top + height + 14 },
+        ])}
       />
       <rect
-        className="office-room-window-frame"
-        x="0"
-        y="0"
-        width={width}
-        height="30"
+        className="office-partition-post"
+        x={left}
+        y={top - 2}
+        width="5"
+        height={height + 6}
+        rx="1.5"
+      />
+      <rect
+        className="office-partition-post"
+        x={left + panelWidth - 5}
+        y={top - 2}
+        width="5"
+        height={height + 6}
+        rx="1.5"
+      />
+      <polygon
+        className="office-partition-side"
+        points={points([
+          { x: left + panelWidth, y: top },
+          { x: left + panelWidth + depth, y: top - depth },
+          { x: left + panelWidth + depth, y: top + height - depth },
+          { x: left + panelWidth, y: top + height },
+        ])}
+      />
+      <rect
+        className="office-partition-face"
+        x={left}
+        y={top}
+        width={panelWidth}
+        height={height}
         rx="2"
       />
       <rect
-        className="office-room-window-glass"
-        x="3"
-        y="3"
-        width={width - 6}
-        height="24"
-        rx="1"
+        className="office-partition-inset"
+        x={left + 5}
+        y={top + 5}
+        width={panelWidth - 10}
+        height={height - 10}
+        rx="1.5"
       />
       <path
-        className="office-room-window-city"
-        d={`M5 24 V18 H12 V15 H19 V21 H26 V17 H33 V23 H40 V14 H${width - 4} V24 Z`}
+        className="office-partition-accent"
+        d={`M${left + 8} ${top + 5} H${left + panelWidth - 8}`}
       />
       <path
-        className="office-room-window-stars"
-        d="M9 7 h1 M22 9 h1 M38 6 h1"
+        className="office-partition-seam"
+        d={`M${left + 12} ${top + 8} V${top + height - 8} M${left + panelWidth - 12} ${top + 8} V${top + height - 8}`}
       />
-      <path className="office-room-window-mullion" d={`M${width / 2} 3 V27`} />
+      {hasBoard &&
+        (role === "LEAD" ? (
+          <Whiteboard x={boardLeft} y={boardY} width={boardWidth} />
+        ) : role === "VERIFIER" || role === "WORKER" ? (
+          <ToolBoard x={boardLeft} y={boardY + 2} width={boardWidth} />
+        ) : (
+          <Pinboard x={boardLeft} y={boardY + 2} width={boardWidth} />
+        ))}
+      <g
+        className="office-partition-sconce"
+        transform={`translate(${left + panelWidth - 14} ${top + 12})`}
+      >
+        <path className="office-room-sconce" d="M-3 0 H3 L2 8 H-2 Z" />
+        <circle className="office-room-sconce-bulb" cx="0" cy="9" r="2.4" />
+      </g>
+      <g
+        className="office-partition-sconce"
+        transform={`translate(${left + 14} ${top + 12})`}
+      >
+        <path className="office-room-sconce" d="M-3 0 H3 L2 8 H-2 Z" />
+        <circle className="office-room-sconce-bulb" cx="0" cy="9" r="2.4" />
+      </g>
+      <path
+        className="office-partition-base"
+        d={`M${left - 2} ${top + height} H${left + panelWidth + 2}`}
+      />
     </g>
   );
 }
@@ -316,30 +298,24 @@ export function OfficeRoomBackdrop({ zone }: { zone: OfficeZone }) {
   const width = zone.width;
   const height = zone.height;
   const glowId = `office-room-glow-${zone.id}`;
-  const floor = clippedRect(
-    10,
-    OFFICE_ZONE_HEADER - 5,
-    width - 10,
-    height - 8,
-    16,
-  );
-  const rug = clippedRect(
-    24,
-    OFFICE_ZONE_HEADER + 15,
-    width - 24,
-    height - 24,
-    12,
-  );
-  const wallWidth = Math.max(0, width - 20);
-  const wall = [
-    { x: 10, y: 4 },
-    { x: width - 10, y: 4 },
-    { x: width - 10, y: OFFICE_ZONE_HEADER - 6 },
-    { x: 10, y: OFFICE_ZONE_HEADER - 6 },
+  const rugTop = OFFICE_ZONE_HEADER - 8;
+  const rugBottom = height - 7;
+  const rug = [
+    { x: 18, y: rugTop + 3 },
+    { x: width - 8, y: rugTop },
+    { x: width - 18, y: rugBottom },
+    { x: 6, y: rugBottom - 3 },
   ];
-  const hasRoomForWallArt = wallWidth >= 380;
-  const hasRoomForFullWallDecor = wallWidth >= 460;
-  const wallArtWidth = Math.min(118, wallWidth - 170);
+  const rugInner = offset(
+    [
+      { x: 27, y: rugTop + 9 },
+      { x: width - 19, y: rugTop + 6 },
+      { x: width - 27, y: rugBottom - 9 },
+      { x: 15, y: rugBottom - 12 },
+    ],
+    0,
+    0,
+  );
 
   return (
     <svg
@@ -350,132 +326,34 @@ export function OfficeRoomBackdrop({ zone }: { zone: OfficeZone }) {
     >
       <defs>
         <radialGradient id={glowId} cx="50%" cy="50%" r="50%">
-          <stop offset="0" stopColor="var(--office-lamp)" stopOpacity="0.42" />
+          <stop offset="0" stopColor="var(--office-lamp)" stopOpacity="0.36" />
           <stop
             offset="0.55"
             stopColor="var(--office-lamp)"
-            stopOpacity="0.13"
+            stopOpacity="0.12"
           />
           <stop offset="1" stopColor="var(--office-lamp)" stopOpacity="0" />
         </radialGradient>
-        <pattern
-          id={`office-room-planks-${zone.id}`}
-          width="72"
-          height="36"
-          patternUnits="userSpaceOnUse"
-          patternTransform="rotate(23)"
-        >
-          <rect width="72" height="36" fill="transparent" />
-          <path className="office-room-plank-line" d="M0 1 H72 M0 18 H72" />
-          <path className="office-room-plank-seam" d="M18 0 V18 M54 18 V36" />
-        </pattern>
       </defs>
       <polygon
-        className="office-room-floor-side"
-        points={points(offset(floor, 0, 9))}
-      />
-      <polygon className="office-room-floor" points={points(floor)} />
-      <polygon
-        className="office-room-floor-planks"
-        points={points(floor)}
-        fill={`url(#office-room-planks-${zone.id})`}
+        className="office-room-rug-shadow"
+        points={points(offset(rug, 0, 7))}
       />
       <polygon className="office-room-rug" points={points(rug)} />
-      <polygon
-        className="office-room-rug-inner"
-        points={points(offset(rug, 6, 5))}
-      />
-      <polygon
-        className="office-room-floor-shine"
-        points={points(offset(floor, 5, 4))}
+      <polygon className="office-room-rug-inner" points={points(rugInner)} />
+      <path
+        className="office-room-rug-stitch"
+        d={`M${rugInner[0].x + 4} ${rugInner[0].y + 6} L${rugInner[3].x + 4} ${rugInner[3].y - 6}`}
       />
       <ellipse
         className="office-room-light"
         cx={width / 2}
-        cy={height * 0.6}
-        rx={width * 0.48}
-        ry={height * 0.38}
+        cy={height * 0.64}
+        rx={width * 0.46}
+        ry={height * 0.34}
         fill={`url(#${glowId})`}
       />
-      <g className="office-room-wall">
-        <polygon
-          className="office-room-wall-return office-room-wall-return-left"
-          points={`10,4 10,${OFFICE_ZONE_HEADER - 6} 2,${OFFICE_ZONE_HEADER} 2,10`}
-        />
-        <polygon
-          className="office-room-wall-return office-room-wall-return-right"
-          points={`${width - 10},4 ${width - 10},${OFFICE_ZONE_HEADER - 6} ${width - 2},${OFFICE_ZONE_HEADER} ${width - 2},10`}
-        />
-        <polygon
-          className="office-room-wall-cap"
-          points={points(offset(wall, 0, -4))}
-        />
-        <polygon className="office-room-wall-face" points={points(wall)} />
-        <path
-          className="office-room-wall-panel"
-          d={`M20 8 V${OFFICE_ZONE_HEADER - 8} M${width - 20} 8 V${OFFICE_ZONE_HEADER - 8}`}
-        />
-        {Array.from(
-          { length: Math.max(0, Math.floor((wallWidth - 40) / 44)) },
-          (_, index) => 36 + index * 44,
-        ).map((seamX) => (
-          <path
-            key={`wall-seam-${seamX}`}
-            className="office-room-wall-seam"
-            d={`M${seamX} 8 V${OFFICE_ZONE_HEADER - 9}`}
-          />
-        ))}
-        <path
-          className="office-room-wall-trim"
-          d={`M10 ${OFFICE_ZONE_HEADER - 6} H${width - 10}`}
-        />
-        <path
-          className="office-room-skirting"
-          d={`M10 ${OFFICE_ZONE_HEADER - 3} H${width - 10}`}
-        />
-        {wallWidth > 430 && (
-          <RoomWindow
-            x={wallWidth > 560 ? width * 0.42 : 210}
-            width={84}
-            glowId={glowId}
-          />
-        )}
-        {hasRoomForWallArt && zone.role === "LEAD" && (
-          <Whiteboard x={width - 146} y={12} width={wallArtWidth} />
-        )}
-        {hasRoomForWallArt &&
-          (zone.role === "IMPLEMENTER" || zone.role === "REVIEWER") && (
-            <Pinboard x={width - 146} y={12} width={wallArtWidth} />
-          )}
-        {hasRoomForWallArt &&
-          (zone.role === "VERIFIER" || zone.role === "WORKER") && (
-            <ToolBoard x={width - 146} y={13} width={wallArtWidth} />
-          )}
-        {hasRoomForFullWallDecor && (
-          <WallShelf
-            x={width - 206}
-            y={44}
-            width={Math.min(46, wallArtWidth - 20)}
-          />
-        )}
-        {(hasRoomForFullWallDecor || !hasRoomForWallArt) && wallWidth > 320 && (
-          <WallClock
-            x={hasRoomForFullWallDecor ? width - 174 : width - 50}
-            y={27}
-          />
-        )}
-        <g
-          className="office-wall-sconce"
-          transform={`translate(${width - 12} 30)`}
-        >
-          <path className="office-room-sconce" d="M-3 0 H3 L2 8 H-2 Z" />
-          <circle className="office-room-sconce-bulb" cx="0" cy="9" r="2.6" />
-        </g>
-        <g className="office-wall-sconce" transform="translate(12 30)">
-          <path className="office-room-sconce" d="M-3 0 H3 L2 8 H-2 Z" />
-          <circle className="office-room-sconce-bulb" cx="0" cy="9" r="2.6" />
-        </g>
-      </g>
+      <StudioPartition zone={zone} />
       <RoomFloorFurniture zone={zone} glowId={glowId} />
     </svg>
   );

@@ -493,6 +493,19 @@ export function AgentOfficeIsometric({
         </div>
       </div>
 
+      {layout.emptyRoles.length > 0 && (
+        <div
+          className="office-scene-empty-stations"
+          data-testid="office-empty-stations"
+        >
+          <span>{t("agentOffice.scene.emptyStations")}</span>
+          <ul>
+            {layout.emptyRoles.map((role) => (
+              <li key={role}>{t(ZONE_META[role].labelKey)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {layout.duplicateIds.length > 0 && (
         <p className="callout callout-attention" role="status">
           {t(

@@ -66,6 +66,7 @@ function lookVariables(look: OfficeAvatarLook): CSSProperties {
     "--office-accent": `var(--office-accent-${look.accent})`,
     "--office-trouser": `var(--office-trouser-${look.trouser})`,
     "--office-jacket-colour": `var(--office-jacket-${look.jacket})`,
+    "--office-chair": `var(--office-chair-${look.trouser})`,
   } as CSSProperties;
 }
 
@@ -167,7 +168,7 @@ export function OfficeAvatar({
         focusable="false"
       >
         {working ? (
-          <SeatedFigure look={look} />
+          <SeatedFigure look={look} role={participant.role} />
         ) : (
           <StandingFigure look={look} observation={participant.observation} />
         )}
