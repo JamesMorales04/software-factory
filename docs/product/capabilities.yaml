@@ -2357,7 +2357,6 @@ capabilities:
     - docs/evidence/office-campaign-workspace-2026-10-27.json
     - docs/evidence/office-agent-office-slice4-2026-10-27.json
     - docs/evidence/office-campaign-diff-pr-2026-10-28.json
-    - docs/evidence/office-home-simplification-2026-10-29/README.md
     live_agent: []
     uat: []
     deployment: []
@@ -2466,7 +2465,6 @@ capabilities:
   evidence:
     deterministic:
     - docs/evidence/office-settings-workspace-2026-10-27.json
-    - docs/evidence/office-home-simplification-2026-10-29/README.md
     live_agent: []
     uat: []
     deployment: []
