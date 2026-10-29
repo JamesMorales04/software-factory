@@ -87,20 +87,40 @@ describe("Settings", () => {
     mocks.updateProvider.mockReset().mockResolvedValue(provider);
     mocks.testProvider.mockReset().mockResolvedValue({
       provider: "codex",
-      status: "AUTHENTICATED",
-      models: ["gpt-6-luna"],
+      status: "UNSUPPORTED",
+      source: "UNSUPPORTED",
+      catalogUrl: null,
+      models: [],
       model: "gpt-6-luna",
-      modelAvailable: true,
-      detail: "model endpoint reachable",
+      modelAvailable: false,
+      detail: "the Codex App Server adapter exposes no model catalog",
+      discoveredAt: "2026-10-27T10:00:00Z",
+      lastKnown: null,
+      credentialSignal: "NOT_OBSERVED",
+      credential: {
+        presence: "CONFIGURED",
+        validation: "NOT_OBSERVED",
+        detail: "test fixture",
+      },
+      inference: { status: "NOT_TESTED", detail: "test fixture" },
     });
     mocks.listProviderModels.mockReset().mockResolvedValue({
       provider: "codex",
       status: "AVAILABLE",
+      source: "OPENAI_MODELS_ENDPOINT",
+      catalogUrl: "https://api.openai.com/v1/models",
       models: ["gpt-6-luna", "gpt-6-sol"],
       detail: "2 model(s) discovered",
       discoveredAt: "2026-10-27T10:00:00Z",
+      lastKnown: null,
+      credentialSignal: "NOT_OBSERVED",
       adapter: "codex",
-      discovery: "OPENAI_MODELS_ENDPOINT",
+      credential: {
+        presence: "CONFIGURED",
+        validation: "NOT_OBSERVED",
+        detail: "test fixture",
+      },
+      inference: { status: "NOT_TESTED", detail: "test fixture" },
     });
     mocks.revokeProviderCredential.mockReset().mockResolvedValue({
       ...provider,
@@ -130,26 +150,24 @@ describe("Settings", () => {
     mocks.getProjectExecutionProfile.mockReset().mockResolvedValue(null);
   });
 
-  it("separates configured route, connection test and proven inference", async () => {
+  it("separates catalog, credential and proven inference", async () => {
     renderSettings();
     await screen.findByRole("heading", { name: "Settings" });
     expect(screen.getByText("Codex")).toBeDefined();
     expect(screen.getByText("ChatGPT OAuth")).toBeDefined();
     expect(screen.getByText("BLOCKED")).toBeDefined();
-    expect(screen.getByText("Configured route")).toBeDefined();
+    expect(screen.getAllByText("Model catalog").length).toBeGreaterThan(0);
+    expect(screen.getByText("Credential")).toBeDefined();
     expect(screen.getByText("Coding inference")).toBeDefined();
     expect(screen.getByText(/No paid inference is authorized/)).toBeDefined();
     expect(screen.getByText("credential configured")).toBeDefined();
+    expect(
+      screen.getByText(/No catalog endpoint has been evaluated/),
+    ).toBeDefined();
     await userEvent.click(screen.getByText("Advanced budget and rate limits"));
     expect(screen.getByLabelText("Max turns")).toBeDefined();
     await userEvent.click(screen.getByText("Configuration audit (1)"));
     expect(screen.getByText("route updated")).toBeDefined();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Test connection" }),
-    );
-    await waitFor(() =>
-      expect(screen.getAllByText("AUTHENTICATED").length).toBeGreaterThan(0),
-    );
   });
 
   it("discovers the real provider model catalog and can stage a model", async () => {
@@ -162,12 +180,54 @@ describe("Settings", () => {
     await waitFor(() =>
       expect(mocks.listProviderModels).toHaveBeenCalledWith("codex"),
     );
-    expect(screen.getByText(/2 model\(s\) discovered/)).toBeDefined();
+    expect(
+      screen.getAllByText(/2 model\(s\) discovered/).length,
+    ).toBeGreaterThan(0);
+    await userEvent.type(
+      screen.getByLabelText("Search catalogued models"),
+      "sol",
+    );
     expect(screen.getByText("gpt-6-sol")).toBeDefined();
-    await userEvent.click(screen.getAllByRole("button", { name: "Use" })[1]);
+    expect(screen.getAllByRole("button", { name: "Use" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Use" }));
     expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe(
       "gpt-6-sol",
     );
+  });
+
+  it("does not call a missing catalog an invalid credential", async () => {
+    mocks.listProviderModels.mockResolvedValue({
+      provider: "codex",
+      status: "ENDPOINT_UNSUPPORTED",
+      source: "OPENAI_MODELS_ENDPOINT",
+      catalogUrl: "https://api.openai.com/v1/models",
+      models: [],
+      detail:
+        "provider does not expose a model catalog at the configured catalog URL (HTTP 404); the endpoint is absent and this response does not evaluate the credential",
+      discoveredAt: "2026-10-27T10:00:00Z",
+      lastKnown: null,
+      credentialSignal: "NOT_OBSERVED",
+      adapter: "codex",
+      credential: {
+        presence: "CONFIGURED",
+        validation: "NOT_OBSERVED",
+        detail: "test fixture",
+      },
+      inference: { status: "NOT_TESTED", detail: "test fixture" },
+    });
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Discover models" }),
+    );
+    expect(
+      await screen.findByText(/does not publish a model catalog/),
+    ).toBeDefined();
+    expect(screen.queryByText(/invalid credential/i)).toBeNull();
+    expect(screen.queryByText(/token is invalid/i)).toBeNull();
+    expect(
+      screen.getAllByText(/does not evaluate the credential/).length,
+    ).toBeGreaterThan(0);
   });
 
   it("offers an accessible language switch without leaving the Settings route", async () => {

@@ -1481,19 +1481,57 @@ export interface StartLeadCampaignResult {
   attempt: Attempt;
 }
 
-export type ProviderDiscoveryStatus = "AVAILABLE" | "UNAVAILABLE";
+export type ProviderDiscoveryStatus =
+  | "AVAILABLE"
+  | "ENDPOINT_UNSUPPORTED"
+  | "CREDENTIAL_REJECTED"
+  | "UNREACHABLE"
+  | "INVALID_RESPONSE"
+  | "UNSUPPORTED";
+
+export type ProviderCatalogSource =
+  | "OPENCODE_GO_CATALOG_URL"
+  | "OPENAI_MODELS_ENDPOINT"
+  | "UNSUPPORTED";
+
+export type ProviderCredentialSignal =
+  | "NOT_OBSERVED"
+  | "NOT_PROVIDED"
+  | "REJECTED";
+
+export interface ProviderCatalogSnapshot {
+  source: ProviderCatalogSource;
+  models: string[];
+  observedAt: string;
+}
 
 export interface ProviderModelCatalogEntry {
   provider: string;
   status: ProviderDiscoveryStatus;
+  source: ProviderCatalogSource;
+  catalogUrl: string | null;
   models: string[];
   detail: string;
   discoveredAt: string;
+  credentialSignal: ProviderCredentialSignal;
+  lastKnown: ProviderCatalogSnapshot | null;
+}
+
+export interface ProviderCredentialObservation {
+  presence: "CONFIGURED" | "NOT_CONFIGURED";
+  validation: "NOT_OBSERVED" | "NOT_PROVIDED" | "REJECTED";
+  detail: string;
+}
+
+export interface ProviderInferenceObservation {
+  status: "NOT_TESTED";
+  detail: string;
 }
 
 export interface ProviderModelDiscovery extends ProviderModelCatalogEntry {
   adapter: string;
-  discovery: "OPENAI_MODELS_ENDPOINT" | "UNSUPPORTED";
+  credential: ProviderCredentialObservation;
+  inference: ProviderInferenceObservation;
 }
 
 export interface ProviderView {
@@ -1537,13 +1575,11 @@ export interface UpdateProviderRequest {
   outputMicrosPerMillion: number;
 }
 
-export interface ProviderTestResult {
-  provider: string;
-  status: "AUTHENTICATED" | "DENIED" | "UNREACHABLE" | "UNSUPPORTED";
-  models: string[];
+export interface ProviderTestResult extends ProviderModelCatalogEntry {
   model: string;
   modelAvailable: boolean;
-  detail: string;
+  credential: ProviderCredentialObservation;
+  inference: ProviderInferenceObservation;
 }
 
 export interface FactorySettings {

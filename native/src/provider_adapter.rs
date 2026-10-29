@@ -13,6 +13,10 @@
 //!   review. Pretending the App Server were an OpenAI gateway would fabricate a
 //!   capability that does not exist.
 //!
+//! Model-catalog policy is per connection, not per adapter. `opencode-go` and
+//! `opencode` share this adapter but publish their catalogs at different URLs,
+//! so [`crate::provider_catalog`] owns that decision.
+//!
 //! Decision mechanism: `DETERMINISTIC`.
 
 use crate::provider_catalog;
@@ -20,19 +24,10 @@ use crate::provider_catalog;
 /// A transport Core implements for one provider connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAdapter {
-    /// OpenAI-compatible `POST /chat/completions` and `GET /models`.
+    /// OpenAI-compatible `POST /chat/completions`.
     OpenAiChatCompletions,
     /// Codex App Server JSON-RPC over stdio, driven by the Worker.
     CodexAppServer,
-}
-
-/// How a provider adapters exposes a model catalog, if at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelDiscoverySupport {
-    /// `GET {base_url}/models` with the provider credential.
-    OpenAiModelsEndpoint,
-    /// No supported catalog transport exists for this adapter.
-    Unsupported(&'static str),
 }
 
 impl ProviderAdapter {
@@ -69,15 +64,6 @@ impl ProviderAdapter {
     pub fn supports_provider_session(self) -> bool {
         matches!(self, Self::OpenAiChatCompletions | Self::CodexAppServer)
     }
-
-    pub fn model_discovery(self) -> ModelDiscoverySupport {
-        match self {
-            Self::OpenAiChatCompletions => ModelDiscoverySupport::OpenAiModelsEndpoint,
-            Self::CodexAppServer => ModelDiscoverySupport::Unsupported(
-                "the Codex App Server adapter has no OpenAI-compatible model catalog",
-            ),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -107,16 +93,8 @@ mod tests {
         let codex = ProviderAdapter::CodexAppServer;
         assert!(!codex.supports_chat_completions());
         assert!(codex.supports_provider_session());
-        assert!(matches!(
-            codex.model_discovery(),
-            ModelDiscoverySupport::Unsupported(_)
-        ));
         let opencode = ProviderAdapter::OpenAiChatCompletions;
         assert!(opencode.supports_chat_completions());
         assert!(opencode.supports_provider_session());
-        assert_eq!(
-            opencode.model_discovery(),
-            ModelDiscoverySupport::OpenAiModelsEndpoint
-        );
     }
 }

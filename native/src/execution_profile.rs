@@ -779,9 +779,13 @@ mod tests {
         cache.record(provider_catalog::ProviderModelCatalogEntry {
             provider: "opencode-go".into(),
             status: provider_catalog::ProviderDiscoveryStatus::Available,
+            source: provider_catalog::ProviderCatalogSource::OpenCodeGoCatalogUrl,
+            catalog_url: Some("https://opencode.ai/inference/go/v1/models".into()),
             models: vec!["discovered-model".into(), "deepseek-v4.1-flash".into()],
             detail: "ok".into(),
             discovered_at: "2026-10-28T00:00:00Z".into(),
+            credential_signal: provider_catalog::ProviderCredentialSignal::NotObserved,
+            last_known: None,
         });
         let models = substantiated_models("opencode-go", "configured-model", &cache);
         assert_eq!(
