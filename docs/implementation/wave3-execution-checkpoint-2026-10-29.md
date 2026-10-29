@@ -28,10 +28,10 @@ provenance and is not current campaign certification.
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
-| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; feature review PASS; fixture route fix committed; isolated Home Chromium run active | Run Home-specific fixture journey, rebind PR declarations to exact SHA; broader Lead journey requires V2 grant HTTP route, while existing fixture creates historical V1 grant; keep visual sign-off pending |
+| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; feature review PASS; isolated Home Chromium fixture PASS; PR declarations rebound, CI running | Replace E2E historical V1 grant setup with existing authenticated V2 execution-policy grant; make Lead consume V2 wrappers safely, then rerun journey; keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Repair HEAD `a03dd55776fe20c15a8fac3565a40fa5b147a0b6`; clean | Luna subagent `access_security_repairs`; re-review BLOCK HIGH for named-volume alias bypass | Resolve actual Compose volume identity aliases and add exact Worker negative regression; do not promote while HIGH remains |
-| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | `a8d3488abfbfc4cec1b60005ca7ae664008a5019`, pushed | Luna subagent `funding_shared_admission`; exact review and PR checks running | Wait for review/CI; UAT remains BLOCKED because current Core lacks V3 subscription admission |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Candidate `96fd894be02174f38a31c48b2107b02704d3ecb6`; clean | Luna subagent `access_security_repairs`; two alias bypasses corrected; exact re-review running | Verify all prior canonical/name/external aliases reject at final SHA; do not promote until independent review and Owner authorization |
+| Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | Candidate `a8d3488abfbfc4cec1b60005ca7ae664008a5019`, pushed | Luna subagent `funding_shared_admission`; independent review BLOCK HIGH (accounting zero + error-body secret leakage); repairs active | Add null/zero and plaintext-secret regressions; validate dedicated Compose project behavior; keep UAT BLOCKED |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
 No active Cargo or frontend writer was observed in the funding, Home, access,
@@ -57,9 +57,12 @@ were left untouched.
   FIXTURE-only claim regression is repaired and focused DB, fmt and strict
   Clippy gates passed. A full journey has an existing V1/V2 contract mismatch:
   fixture setup creates a historical V1 delegation, but V2 Lead requires a V2
-  grant and Core exposes no HTTP V2 grant-create route. The agent is exercising
-  the isolated Home-only Chromium journey. PR architecture declaration needs
-  rebinding to this exact SHA.
+  grant. Core already exposes the authenticated
+  `POST /projects/{id}/execution-policy` path defined by ADR-0029; the fixture
+  and Lead projection need to use its V2 wrapper without treating historical V1
+  as authority. The isolated Home fixture passed once (14 captures/no
+  overflow), but a clean rerun is active because unmodified starts intermittently
+  timed out before Home rendered.
 - #81 — capability evidence-reference correction: open draft against Wave 3 at
   `13adff74a8de434fd46c527ea92608b695a98d03`. Canonical container architecture
   governance and Compose policy passed after retrying with the worktree's common
@@ -77,12 +80,14 @@ were left untouched.
   fails on the inherited CAP-050/052 registry entries pending #81.
 - #36 → #37 → #38 — no PRs opened from this repair branch yet. Exact review of
   `2851345` found a Major Compose policy gap, addressed in `d2fa767`/`a03dd55`;
-  re-review then found a HIGH named-volume alias bypass. A `shared-bits` alias
-  with `name: software-factory_factory-office-socket` mounted read-only in
-  Worker passes policy. Current Compose does not use this alias, but the static
-  policy must resolve top-level volume names and external aliases. A regression
-  fix is active. Tailscale authentication, Serve and remote HTTPS remain
-  NOT_TESTED; no promotion until exact re-review and Owner authorization.
+  re-review found HIGH named-volume and unnamed-external alias bypasses.
+  Commits `d0d4040` and `d2783e4` resolve canonical, project-derived, explicit,
+  external-name and implicit-external identities. Regressions reject the
+  `shared-bits` aliases and unnamed `factory-office-socket: {external:true}`
+  mounted in Worker. Evidence commit `96fd894` records 27 overlay tests and 27
+  base tests (5 overlay-only skipped on base). Current Tailscale authentication,
+  Serve and remote HTTPS remain NOT_TESTED; exact re-review and Owner
+  authorization are pending.
 
 Historical deterministic Compose/Chromium acceptance at `40d44ec` and prior
 live OpenCode evidence at `1225bae` are candidate-bound history. They do not
@@ -166,14 +171,23 @@ completion.
 - Access exact-SHA review of `2851345` found no credential leak, auth bypass,
   pairing resurrection or current Tailscale path to Core's control listener,
   but returned BLOCK for the socket policy gap. Re-review of `a03dd55` found a
-  HIGH alias bypass in the checker, now under repair. The changed evidence
-  correctly marks current Unix-socket Serve/HTTPS NOT_TESTED. Remote Tailscale
-  access and SEC-01 remain NOT_TESTED.
+  HIGH alias bypasses in the checker. `d0d4040`/`d2783e4` resolve explicit,
+  named and implicit external aliases; `96fd894` records 27-test base/overlay
+  runs and marks current Unix-socket Serve/HTTPS NOT_TESTED. Exact re-review is
+  running; remote Tailscale access and SEC-01 remain NOT_TESTED.
 - No live provider inference ran in this campaign session.
 - PR #79 candidate `a8d3488`: 26 UAT harness tests pass; JS syntax, shell syntax
   and diff checks pass. It refuses a positive cap, paid fallback and absent Core
   admission before project/request creation. This is fake-Core preparation
-  evidence only; provider inference/billing remains NOT_TESTED.
+  evidence only; provider inference/billing remains NOT_TESTED. Independent
+  review BLOCKED this exact SHA: null charge could become verified zero,
+  subscription billing source could imply zero without explicit charge
+  evidence, and arbitrary Core error text could expose provider credentials.
+  Regressions and repairs are active. Podman rendered the UAT overlay config
+  without starting services. Its declaration currently fails architecture
+  consistency because the Compose change lacks a container-native impact block
+  and its base SHA differs from the PR event base; a corrected body and
+  real-Podman config validation are in progress.
 
 ## Immediate sequence
 
@@ -194,8 +208,8 @@ completion.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
-**Independent review:** access `a03dd55` BLOCK HIGH (alias repair candidate
-`d0d4040` pending); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
+**Independent review:** access `a03dd55` BLOCK HIGH (candidate `96fd894`
+re-review running); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS;
 capability PR #81 `13adff7` APPROVE (container-dev rerun pending on corrected
-integration candidate); PR #79 review pending.
+integration candidate); PR #79 `a8d3488` BLOCK HIGH (repairs active).
 **Campaign status:** in progress; Wave 3 is not a certified product release.
