@@ -2,10 +2,13 @@
 
 ## Candidate and scope
 
-Source candidate: `5961f0ba8411929ffe6bd55be8c58bfac57c94da` on
-`factory/office-isometric-v3/20261029`. The code was not changed after these
-captures; this evidence document and its PNGs are a separate documentation
-commit.
+Source candidate: `e31e46298b42f13e80701913b43878336587ccb8` on
+`factory/office-isometric-v3/20261029`. This includes the V3 studio renderer
+and a follow-up fix for the 49+ participant non-terminating look assignment.
+The replacement remains stable for the same participant set and provides
+distinct palette combinations through the current 200-participant projection.
+Screenshots in this evidence commit were captured
+from that exact tracked source snapshot.
 
 V3 replaces the individual flat role rooms with a continuous studio deck and
 isometric floor grid. The renderer adds wall windows, sconces and light pools,
@@ -24,9 +27,9 @@ Playwright Core 1.64.1.
 
 | Screenshot | Viewport | Fixture participants | Observed renderer result |
 | --- | ---: | ---: | --- |
-| [Desktop](desktop-1440.png) | 1440 × 1000 | 5 mixed roles | 5 avatars and 5 identity controls; no document overflow or browser errors |
+| [Desktop](desktop-1440.png) | 1440 × 1000 | 5 Implementers | 5 avatars and 5 identity controls; no document overflow or browser errors |
 | [Tablet](tablet-834.png) | 834 × 1112 | 12 mixed roles | 12 avatars and 12 identity controls; no document overflow or browser errors |
-| [Mobile](mobile-390.png) | 390 × 844 | 5 mixed roles | 5 avatars and 5 identity controls; full studio centered at 35% zoom; no document overflow or browser errors |
+| [Mobile](mobile-390.png) | 390 × 844 | 5 Implementers | 5 avatars and 5 identity controls; full studio centered at 35% zoom; no document overflow or browser errors |
 
 The mobile capture exposed and then verified a camera-fit fix: the previous
 55% fit floor cropped both sides of the studio on a narrow viewport. The fit
@@ -42,10 +45,11 @@ reference. These captures do **not** establish Product Owner visual acceptance.
 
 The current SVG/DOM renderer remains adequate for the tested 0, 1, 5, 12 and 30
 participant layouts. Automated rendering tests verify one distinct avatar per
-participant identity and stable, non-overlapping station slots; browser captures
-show responsive camera behavior through 12 participants. No evidence currently
-shows that a different rendering engine is needed to meet the 30-agent layout
-requirement.
+participant identity and stable, non-overlapping station slots. Regression
+coverage checks 200 distinct palette combinations and exercises a 200-record
+layout without collision probing. Browser captures show responsive camera
+behavior through 12 participants. No evidence currently shows that a different
+rendering engine is needed to meet the 30-agent layout requirement.
 
 No PixiJS or alternate-engine spike was run. The visible gap against the
 reference is chiefly in illustration fidelity, material lighting and perceived
@@ -63,11 +67,12 @@ files matched the source candidate exactly:
 
 - `npm --prefix office run typecheck` — PASS
 - `npm --prefix office run lint` — PASS, Biome checked 141 files
-- `npm --prefix office run test -- --reporter=dot` — PASS, 266 tests in 35 files
+- `npm --prefix office run test -- --reporter=dot` — PASS, 268 tests in 35 files
 - `npm --prefix office run build` — PASS; Vite reports the existing 1.2 MB main
   JavaScript chunk warning
 - Playwright Chromium renderer capture — PASS for the three viewport cases
-  above; fixture only, no live Core or API calls
+  above; assertions checked participant counts, fixture banner, no document
+  overflow and no page errors. Fixture only, no live Core or API calls.
 
 The Office component tests cover keyboard and selection behavior, camera
 controls, identity mapping and layouts at 0/1/5/12/30 participants. The
