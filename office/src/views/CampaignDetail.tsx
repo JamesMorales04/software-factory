@@ -35,12 +35,7 @@ import {
   type QualityReceipt,
   type QualityRole,
 } from "../coreApi";
-import {
-  formatCostMicros,
-  formatObservableLimit,
-  formatTimestamp,
-  shortId,
-} from "../format";
+import { formatCostMicros, formatTimestamp, shortId } from "../format";
 import { useI18n } from "../i18n";
 
 interface LoadedCampaign {
@@ -127,6 +122,15 @@ function executionModeLabel(
   if (mode === "TRUSTED_LOCAL_PROVIDER")
     return t("campaignDetail.executionMode.trustedLocal");
   return mode;
+}
+
+function formatStringList(
+  values: string[] | null | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (!Array.isArray(values)) return t("common.none");
+  const present = values.filter((value) => value !== "");
+  return present.length === 0 ? t("common.none") : present.join(", ");
 }
 
 function summarizeGates(
@@ -361,29 +365,23 @@ export function CampaignDetail() {
   const turnRecords = sessions.filter(
     (session) => session.turn_id !== "",
   ).length;
+  // Only a historical V1 row has productivity ceilings to compare against.
+  // V2 policy.operations/progress are per-operation bounds, not Campaign caps.
+  const legacyCaps = authorization?.legacy ?? null;
   const overBudget: string[] = [];
-  if (authorization) {
-    if (
-      authorization.max_sessions > 0 &&
-      sessions.length > authorization.max_sessions
-    )
+  if (legacyCaps) {
+    if (legacyCaps.maxSessions > 0 && sessions.length > legacyCaps.maxSessions)
       overBudget.push("sessions");
-    if (authorization.max_turns > 0 && turnRecords > authorization.max_turns)
+    if (legacyCaps.maxTurns > 0 && turnRecords > legacyCaps.maxTurns)
       overBudget.push("turns");
-    if (
-      authorization.max_input_tokens > 0 &&
-      totalInput > authorization.max_input_tokens
-    )
+    if (legacyCaps.maxInputTokens > 0 && totalInput > legacyCaps.maxInputTokens)
       overBudget.push("input tokens");
     if (
-      authorization.max_output_tokens > 0 &&
-      totalOutput > authorization.max_output_tokens
+      legacyCaps.maxOutputTokens > 0 &&
+      totalOutput > legacyCaps.maxOutputTokens
     )
       overBudget.push("output tokens");
-    if (
-      authorization.max_cost_micros > 0 &&
-      totalCost > authorization.max_cost_micros
-    )
+    if (legacyCaps.maxCostMicros > 0 && totalCost > legacyCaps.maxCostMicros)
       overBudget.push("cost");
   }
 
@@ -592,7 +590,7 @@ export function CampaignDetail() {
             </span>
             <span>
               {authorization
-                ? executionModeLabel(authorization.execution_mode, t)
+                ? executionModeLabel(authorization.executionMode, t)
                 : t("campaignDetail.meta.authorizationMissing")}
             </span>
             <span>
@@ -679,7 +677,7 @@ export function CampaignDetail() {
             <dt>{t("campaignDetail.summary.authorization")}</dt>
             <dd>
               {authorization
-                ? authorization.risk_class
+                ? authorization.riskClass
                 : t("campaignDetail.summary.notRecorded")}
             </dd>
           </div>
@@ -1106,8 +1104,8 @@ export function CampaignDetail() {
             {authorization ? (
               <>
                 <p>
-                  {authorization.authorization_id} · {authorization.risk_class}{" "}
-                  · {executionModeLabel(authorization.execution_mode, t)} ·{" "}
+                  {authorization.authorizationId} · {authorization.riskClass} ·{" "}
+                  {executionModeLabel(authorization.executionMode, t)} ·{" "}
                   {t("campaignDetail.budget.actor", {
                     actor: authorization.actor,
                   })}
@@ -1116,18 +1114,22 @@ export function CampaignDetail() {
                 <dl className="detail">
                   <BudgetRow
                     label={t("campaignDetail.budget.execution")}
-                    value={executionModeLabel(authorization.execution_mode, t)}
+                    value={executionModeLabel(authorization.executionMode, t)}
+                  />
+                  <BudgetRow
+                    label={t("campaignDetail.budget.schemaVersion")}
+                    value={String(authorization.schemaVersion)}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.route")}
                     value={
-                      authorization.execution_mode === "FIXTURE"
+                      authorization.executionMode === "FIXTURE"
                         ? authorization.provider || authorization.model
                           ? t("campaignDetail.budget.fixtureRoute", {
                               provider: authorization.provider,
                               model: authorization.model,
                               mode:
-                                authorization.provider_mode ||
+                                authorization.providerMode ||
                                 t("campaignDetail.budget.modeNotSet"),
                             })
                           : t("campaignDetail.budget.fixtureNoProvider")
@@ -1136,7 +1138,7 @@ export function CampaignDetail() {
                               provider: authorization.provider,
                               model: authorization.model,
                               mode:
-                                authorization.provider_mode ||
+                                authorization.providerMode ||
                                 t("campaignDetail.budget.modeNotSet"),
                             })
                           : t("campaignDetail.budget.providerNoRoute")
@@ -1144,75 +1146,66 @@ export function CampaignDetail() {
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.delegation")}
-                    value={authorization.delegation_id || t("common.notSet")}
+                    value={authorization.delegationId || t("common.notSet")}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.authorizedPaths")}
-                    value={
-                      authorization.authorized_paths.join(", ") ||
-                      t("campaignDetail.summary.none")
-                    }
+                    value={formatStringList(authorization.authorizedPaths, t)}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.allowedTools")}
-                    value={
-                      authorization.allowed_tools.join(", ") ||
-                      t("campaignDetail.summary.none")
-                    }
+                    value={formatStringList(authorization.allowedTools, t)}
                   />
+                  {authorization.policy && (
+                    <>
+                      <BudgetRow
+                        label={t("campaignDetail.budget.policyId")}
+                        value={authorization.policy.policyId}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.monetaryEnvelope")}
+                        value={authorization.policy.monetaryEnvelopeId}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.scopeHash")}
+                        value={shortId(authorization.policy.scopeSha256, 16)}
+                      />
+                    </>
+                  )}
                   <BudgetRow
                     label={t("campaignDetail.budget.attempts")}
-                    value={t("campaignDetail.budget.observedAuthorized", {
-                      observed: detail.attempts.length,
-                      authorized: formatObservableLimit(
-                        authorization.max_attempts,
-                      ),
+                    value={t("campaignDetail.budget.observedAttempts", {
+                      count: detail.attempts.length,
                     })}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.sessions")}
-                    value={t("campaignDetail.budget.observedAuthorized", {
-                      observed: sessions.length,
-                      authorized: formatObservableLimit(
-                        authorization.max_sessions,
-                      ),
+                    value={t("campaignDetail.budget.observedSessions", {
+                      count: sessions.length,
                     })}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.turnRecords")}
-                    value={t("campaignDetail.budget.turnRecordsValue", {
+                    value={t("campaignDetail.budget.turnRecordsObserved", {
                       count: turnRecords,
-                      authorized: formatObservableLimit(
-                        authorization.max_turns,
-                      ),
                     })}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.inputTokens")}
-                    value={t("campaignDetail.budget.tokensValue", {
-                      measured: totalInput.toLocaleString(),
-                      authorized: formatObservableLimit(
-                        authorization.max_input_tokens,
-                      ),
+                    value={t("campaignDetail.budget.tokensMeasured", {
+                      count: totalInput.toLocaleString(),
                     })}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.outputTokens")}
-                    value={t("campaignDetail.budget.tokensValue", {
-                      measured: totalOutput.toLocaleString(),
-                      authorized: formatObservableLimit(
-                        authorization.max_output_tokens,
-                      ),
+                    value={t("campaignDetail.budget.tokensMeasured", {
+                      count: totalOutput.toLocaleString(),
                     })}
                   />
                   <BudgetRow
                     label={t("campaignDetail.budget.cost")}
-                    value={t("campaignDetail.budget.costValue", {
-                      measured: formatCostMicros(totalCost),
-                      authorized:
-                        authorization.max_cost_micros > 0
-                          ? formatCostMicros(authorization.max_cost_micros)
-                          : t("common.notSet"),
+                    value={t("campaignDetail.budget.costMeasured", {
+                      amount: formatCostMicros(totalCost),
                     })}
                   />
                   <BudgetRow
@@ -1228,15 +1221,131 @@ export function CampaignDetail() {
                       amount: formatCostMicros(unmeasuredBound),
                     })}
                   />
-                  <BudgetRow
-                    label={t("campaignDetail.budget.deadline")}
-                    value={
-                      authorization.deadline_secs > 0
-                        ? `${authorization.deadline_secs}s`
-                        : t("common.notSet")
-                    }
-                  />
                 </dl>
+                {authorization.schemaVersion === 2 && authorization.policy && (
+                  <section
+                    aria-label={t("campaignDetail.budget.operationsAria")}
+                  >
+                    <h3>{t("campaignDetail.budget.operationsTitle")}</h3>
+                    <dl className="detail">
+                      <BudgetRow
+                        label={t("campaignDetail.budget.modelRequestTimeout")}
+                        value={t("campaignDetail.budget.seconds", {
+                          count:
+                            authorization.policy.operations
+                              .modelRequestTimeoutSecs,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.toolCallTimeout")}
+                        value={t("campaignDetail.budget.seconds", {
+                          count:
+                            authorization.policy.operations.toolCallTimeoutSecs,
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.maxRequestBytes")}
+                        value={t("campaignDetail.budget.bytes", {
+                          count:
+                            authorization.policy.operations.maxRequestBytes.toLocaleString(),
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.maxResponseBytes")}
+                        value={t("campaignDetail.budget.bytes", {
+                          count:
+                            authorization.policy.operations.maxResponseBytes.toLocaleString(),
+                        })}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.maxGenerationTokens")}
+                        value={authorization.policy.operations.maxGenerationTokens.toLocaleString()}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.maxInFlight")}
+                        value={String(
+                          authorization.policy.operations.maxInFlightOperations,
+                        )}
+                      />
+                    </dl>
+                    <h3>{t("campaignDetail.budget.progressTitle")}</h3>
+                    <dl className="detail">
+                      <BudgetRow
+                        label={t("campaignDetail.budget.diagnoseAfter")}
+                        value={String(
+                          authorization.policy.progress
+                            .diagnoseAfterStagnantCheckpoints,
+                        )}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.escalateAfter")}
+                        value={String(
+                          authorization.policy.progress
+                            .escalateAfterUnsuccessfulReplans,
+                        )}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.observationTimeout")}
+                        value={t("campaignDetail.budget.seconds", {
+                          count:
+                            authorization.policy.progress
+                              .observationTimeoutSecs,
+                        })}
+                      />
+                    </dl>
+                  </section>
+                )}
+                {authorization.schemaVersion === 2 && !authorization.policy && (
+                  <p className="warning">
+                    {t("campaignDetail.budget.missingPolicy")}
+                  </p>
+                )}
+                {legacyCaps && (
+                  <section aria-label={t("campaignDetail.budget.legacyAria")}>
+                    <h3>{t("campaignDetail.budget.legacyTitle")}</h3>
+                    <p className="muted">
+                      {t("campaignDetail.budget.legacyHint")}
+                    </p>
+                    <dl className="detail">
+                      <BudgetRow
+                        label={t("campaignDetail.budget.attempts")}
+                        value={String(legacyCaps.maxAttempts)}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.sessions")}
+                        value={String(legacyCaps.maxSessions)}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.legacyTurns")}
+                        value={String(legacyCaps.maxTurns)}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.legacyInputTokens")}
+                        value={legacyCaps.maxInputTokens.toLocaleString()}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.legacyOutputTokens")}
+                        value={legacyCaps.maxOutputTokens.toLocaleString()}
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.legacyCost")}
+                        value={
+                          legacyCaps.maxCostMicros > 0
+                            ? formatCostMicros(legacyCaps.maxCostMicros)
+                            : t("common.notSet")
+                        }
+                      />
+                      <BudgetRow
+                        label={t("campaignDetail.budget.deadline")}
+                        value={
+                          legacyCaps.deadlineSecs > 0
+                            ? `${legacyCaps.deadlineSecs}s`
+                            : t("common.notSet")
+                        }
+                      />
+                    </dl>
+                  </section>
+                )}
                 <p className="muted">{t("campaignDetail.budget.note")}</p>
                 {overBudget.length > 0 && (
                   <p className="warning">

@@ -141,8 +141,8 @@ export function Campaigns() {
       setNotice(
         t("campaigns.notice.authorized", {
           id: shortId(campaign.id),
-          risk: authorization.risk_class,
-          mode: authorization.execution_mode,
+          risk: authorization.riskClass,
+          mode: authorization.executionMode,
         }),
       );
       await refresh();

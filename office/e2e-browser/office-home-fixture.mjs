@@ -226,6 +226,86 @@ const request = {
   updatedAt: "2026-10-29T09:55:00Z",
 };
 
+const action = {
+  id: "action-1",
+  project_id: project.id,
+  objective: "Add a CSV export endpoint to the reporting API",
+  provider: "opencode-go",
+  model: "deepseek-v4.1-flash",
+  risk: "R0",
+  status: "AUTHORIZED",
+  objective_sha256: "objective-hash",
+  created_at: "2026-10-29T09:40:00Z",
+  spec_sha256: "spec-hash",
+  spec: {
+    schema_version: 1,
+    project_id: project.id,
+    repository: project.repository,
+    base_commit: project.base_commit,
+    objective: "Add a CSV export endpoint to the reporting API",
+    objective_sha256: "objective-hash",
+    provider: "opencode-go",
+    model: "deepseek-v4.1-flash",
+    allowed_paths: ["src"],
+    checks: [],
+  },
+};
+
+const campaignAuthorization = {
+  campaignId: "campaign-1",
+  authorizationId: "authorization-1",
+  riskClass: "R0",
+  executionMode: "TRUSTED_LOCAL_PROVIDER",
+  actor: "Fixture owner",
+  rationale: "Fixture-only V2 authorization for visual review.",
+  authorizedPaths: ["src"],
+  provider: "opencode-go",
+  model: "deepseek-v4.1-flash",
+  providerMode: "build",
+  delegationId: "delegation-1",
+  allowedTools: ["write_file", "run_command"],
+  schemaVersion: 2,
+  policy: {
+    policyId: "policy-1",
+    authorizationId: "authorization-1",
+    monetaryEnvelopeId: "envelope-1",
+    scopeSha256: "c".repeat(64),
+    operations,
+    progress,
+  },
+  legacy: null,
+  createdAt: "2026-10-29T09:58:00Z",
+};
+
+const campaignDetail = {
+  campaign: {
+    id: "campaign-1",
+    action_id: "action-1",
+    status: "AUTHORIZED",
+    created_at: "2026-10-29T09:58:00Z",
+  },
+  authorization: campaignAuthorization,
+  tasks: [],
+  runs: [],
+  attempts: [],
+  candidates: [],
+  events: [],
+};
+
+const requestDetail = {
+  ...request,
+  state: "COMPLETED",
+  stateDetail: "Fixture Campaign completed; no live execution is implied.",
+  campaignId: "campaign-1",
+  campaignStatus: "SUCCEEDED",
+  gateOutcome: "ACCEPTED",
+  campaign: campaignDetail,
+  assessment: null,
+  proposal: null,
+  plan: null,
+  messages: [],
+};
+
 function json(route, body, status = 200) {
   return route.fulfill({
     status,
@@ -258,6 +338,12 @@ async function mockCore(route) {
       ],
     });
   if (path === "/intake/requests") return json(route, [request]);
+  if (path === "/intake/requests/fixture-request")
+    return json(route, requestDetail);
+  if (path === "/campaigns/campaign-1") return json(route, campaignDetail);
+  if (path === "/actions") return json(route, [action]);
+  if (path === "/lead/requests") return json(route, []);
+  if (path === "/provider/sessions") return json(route, []);
   if (path === "/office/overview") return json(route, overview);
   if (path === "/settings/providers")
     return json(route, { providers: [provider] });
@@ -392,6 +478,34 @@ try {
     fullPage: true,
   });
   await capture(page, join(output, "execution-profiles-390.png"), 390, 1200);
+
+  await page.goto(`${baseUrl}/#/campaigns/campaign-1?tab=budget`);
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page
+    .getByRole("heading", {
+      name: "Authorization, budget and observed usage",
+    })
+    .waitFor();
+  await markFixture(page);
+  await page.screenshot({
+    path: join(output, "campaign-budget-v2-1440.png"),
+    fullPage: true,
+  });
+  await capture(page, join(output, "campaign-budget-v2-390.png"), 390, 1200);
+
+  await page.goto(`${baseUrl}/#/requests/fixture-request`);
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page
+    .getByRole("heading", {
+      name: "Add a CSV export endpoint to the reporting API",
+    })
+    .waitFor();
+  await markFixture(page);
+  await page.screenshot({
+    path: join(output, "request-campaign-v2-1440.png"),
+    fullPage: true,
+  });
+  await capture(page, join(output, "request-campaign-v2-390.png"), 390, 1200);
 
   console.log(JSON.stringify({ ok: true, fixture_only: true, output }));
 } finally {

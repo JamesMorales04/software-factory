@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-29T14:15:00Z",
+  "updated_at": "2026-10-29T15:30:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -369,7 +369,9 @@
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
+        "office/e2e-browser/office-home-fixture.mjs",
         "office/src/views/CampaignDetail.test.tsx",
+        "office/src/views/RequestWorkspace.test.tsx",
         "office/src/components/office/CandidateDiff.test.tsx",
         "office/src/components/office/CandidatePullRequest.test.tsx",
         "office/src/components/office/CandidateDiff.styles.test.ts",
@@ -377,7 +379,7 @@
         "office/src/components/office/workGraphLayout.test.ts",
         "scripts/compose-agent-office-smoke.mjs"
       ],
-      "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The WorkGraph now includes a deterministic dependency layout, keyboard selection and a WorkUnit inspector while preserving the authoritative table. Graph presentation states are explicitly derived from recorded task status and dependencies; malformed data is surfaced, not repaired. Candidate diffs are bounded Core projections from the frozen base to the exact candidate commit/tree: changed-file status, additions/deletions, unified patches, binary/large/non-file omissions, file/patch/byte caps and exact candidate/Gate identity. GitHub pull request reads and actions use the encrypted Core connection; tokens stay server-side. Merge requires explicit confirmation and a fresh PR/check read, never bypasses GitHub branch protection and is never automatic. Real GitHub execution is NOT_TESTED until performed. Participant, tool-event and visual Office projections are provided by Agent Office."
+      "notes": "Campaign authorization, Run state, Attempt state and Gate outcome are displayed separately. The Campaign and Request views consume the camelCase V2 `CampaignAuthorizationRecord`: schema version, risk/execution mode, route, authorized paths/tools, `policy.operations`, `policy.progress` and `monetaryEnvelopeId`. Historical V1 caps are optional `legacy` evidence only; missing/empty arrays never crash the Budget & usage tab. The WorkGraph now includes a deterministic dependency layout, keyboard selection and a WorkUnit inspector while preserving the authoritative table. Graph presentation states are explicitly derived from recorded task status and dependencies; malformed data is surfaced, not repaired. Candidate diffs are bounded Core projections from the frozen base to the exact candidate commit/tree: changed-file status, additions/deletions, unified patches, binary/large/non-file omissions, file/patch/byte caps and exact candidate/Gate identity. GitHub pull request reads and actions use the encrypted Core connection; tokens stay server-side. Merge requires explicit confirmation and a fresh PR/check read, never bypasses GitHub branch protection and is never automatic. Real GitHub execution is NOT_TESTED until performed. Participant, tool-event and visual Office projections are provided by Agent Office."
     },
     "CAP-051": {
       "name": "Runtime operational console",

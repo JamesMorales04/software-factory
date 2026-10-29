@@ -82,7 +82,10 @@ available limitation instead of inventing a mutation. Action Detail shows the fr
 checks and related Core records. Campaign Detail is a tabbed operational
 workspace with separate lifecycle, WorkGraph, execution/participant,
 candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
-views. Candidate revisions expose a bounded Core file diff from the exact
+views. Campaign authorization is read from the camelCase V2 record
+(`schemaVersion`, `policy.operations`, `policy.progress`,
+`monetaryEnvelopeId`, route, risk and execution mode); V1 ceilings appear only
+as separate historical evidence when `legacy` is present. Candidate revisions expose a bounded Core file diff from the exact
 frozen base to the exact candidate commit/tree, including per-file status,
 additions/deletions and unified patches with explicit binary, large, non-file,
 truncated and unavailable states. The same workspace can read a bound GitHub

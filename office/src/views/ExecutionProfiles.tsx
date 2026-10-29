@@ -26,6 +26,10 @@ import {
   type ResolvedExecutionProfile,
   type SupportedExecutionRoute,
 } from "../coreApi";
+import {
+  DEFAULT_OPERATION_LIMITS,
+  DEFAULT_PROGRESS_POLICY,
+} from "../executionDefaults";
 import { formatTimestamp } from "../format";
 import { type MessageKey, useI18n } from "../i18n";
 
@@ -86,21 +90,6 @@ interface ProfileDraft {
   autoStartRiskClasses: ExecutionRiskClass[];
 }
 
-const DEFAULT_OPERATIONS: ExecutionOperationLimits = {
-  modelRequestTimeoutSecs: 300,
-  toolCallTimeoutSecs: 600,
-  maxRequestBytes: 2 * 1024 * 1024,
-  maxResponseBytes: 2 * 1024 * 1024,
-  maxGenerationTokens: 8_192,
-  maxInFlightOperations: 4,
-};
-
-const DEFAULT_PROGRESS: ExecutionProgressPolicy = {
-  diagnoseAfterStagnantCheckpoints: 2,
-  escalateAfterUnsuccessfulReplans: 1,
-  observationTimeoutSecs: 300,
-};
-
 function routeDefaults(
   routes: SupportedExecutionRoute[],
   preferred: string,
@@ -131,8 +120,8 @@ function newDraft(routes: SupportedExecutionRoute[]): ProfileDraft {
       implementer: role(defaultRoute),
       semanticReviewer: role(defaultRoute),
     },
-    operations: { ...DEFAULT_OPERATIONS },
-    progress: { ...DEFAULT_PROGRESS },
+    operations: { ...DEFAULT_OPERATION_LIMITS },
+    progress: { ...DEFAULT_PROGRESS_POLICY },
     autoStartEnabled: false,
     autoStartRiskClasses: [],
   };
@@ -156,8 +145,8 @@ function draftFromProfile(profile: ExecutionProfile): ProfileDraft {
       implementer: role(profile.roles.implementer),
       semanticReviewer: role(profile.roles.semanticReviewer),
     },
-    operations: { ...(profile.operations ?? DEFAULT_OPERATIONS) },
-    progress: { ...(profile.progress ?? DEFAULT_PROGRESS) },
+    operations: { ...(profile.operations ?? DEFAULT_OPERATION_LIMITS) },
+    progress: { ...(profile.progress ?? DEFAULT_PROGRESS_POLICY) },
     autoStartEnabled: profile.autoStart.enabled,
     autoStartRiskClasses: [...profile.autoStart.riskClasses],
   };

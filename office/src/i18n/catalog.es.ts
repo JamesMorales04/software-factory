@@ -595,14 +595,6 @@ export const es: Catalog = {
   "lead.error.pathsEmpty": "Las rutas autorizadas no deben estar vacías.",
   "lead.error.authorizationIncomplete":
     "La autorización explícita está incompleta.",
-  "lead.validation.positiveInteger": "{name} debe ser un entero positivo.",
-  "lead.validation.attempts": "Intentos",
-  "lead.validation.sessions": "Sesiones",
-  "lead.validation.turns": "Turnos",
-  "lead.validation.inputTokens": "Tokens de entrada",
-  "lead.validation.outputTokens": "Tokens de salida",
-  "lead.validation.cost": "Coste",
-  "lead.validation.deadline": "Plazo",
   "lead.notice.submitted": "Solicitud de Lead {id} enviada.",
   "lead.notice.assessed": "Evaluación determinista del fixture registrada.",
   "lead.notice.frozen":
@@ -721,13 +713,8 @@ export const es: Catalog = {
   "lead.start.paths": "Rutas autorizadas (separadas por comas)",
   "lead.start.routeNote": "Ruta {route} · Delegación {delegation} · Riesgo R0",
   "lead.start.risk": "Riesgo",
-  "lead.start.attempts": "Intentos",
-  "lead.start.sessions": "Sesiones",
-  "lead.start.turns": "Turnos",
-  "lead.start.maxInputTokens": "Máx. tokens de entrada",
-  "lead.start.maxOutputTokens": "Máx. tokens de salida",
-  "lead.start.maxCost": "Coste máx. (microcostes)",
-  "lead.start.deadline": "Plazo (segundos)",
+  "lead.start.technicalLimits":
+    "Core aplica límites técnicos de operación V2 y supervisión determinista del progreso. No son topes de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña; la envolvente de la solicitud sigue siendo autoritativa para el gasto.",
   "lead.start.tools": "Herramientas permitidas (separadas por comas)",
   "lead.start.authorize": "Autorizar e iniciar Campaña",
   "lead.start.authorizing": "Autorizando…",
@@ -2241,7 +2228,7 @@ export const es: Catalog = {
     "Una decisión de Puerta requiere un Candidato y ambos recibos independientes.",
   "campaignDetail.budget.title": "Autorización, presupuesto y uso observado",
   "campaignDetail.budget.hint":
-    "Medido, no medido y autorizado son hechos distintos",
+    "Los límites V2 son por operación; los topes V1 son evidencia histórica",
   "campaignDetail.budget.actor": "actor {actor}",
   "campaignDetail.budget.execution": "Ejecución",
   "campaignDetail.budget.route": "Ruta",
@@ -2256,6 +2243,44 @@ export const es: Catalog = {
   "campaignDetail.budget.delegation": "Delegación",
   "campaignDetail.budget.authorizedPaths": "Rutas autorizadas",
   "campaignDetail.budget.allowedTools": "Herramientas permitidas",
+  "campaignDetail.budget.schemaVersion": "Versión de esquema",
+  "campaignDetail.budget.policyId": "Política",
+  "campaignDetail.budget.monetaryEnvelope": "Envolvente monetaria",
+  "campaignDetail.budget.scopeHash": "Hash del alcance",
+  "campaignDetail.budget.observedAttempts": "{count} observados",
+  "campaignDetail.budget.observedSessions": "{count} observadas",
+  "campaignDetail.budget.turnRecordsObserved":
+    "{count} registros con id de turno",
+  "campaignDetail.budget.tokensMeasured": "{count} medidos",
+  "campaignDetail.budget.costMeasured": "{amount} medido",
+  "campaignDetail.budget.operationsAria": "Límites técnicos de operación V2",
+  "campaignDetail.budget.operationsTitle": "Límites técnicos de operación (V2)",
+  "campaignDetail.budget.modelRequestTimeout":
+    "Tiempo máximo de solicitud de modelo",
+  "campaignDetail.budget.toolCallTimeout":
+    "Tiempo máximo de llamada a herramienta",
+  "campaignDetail.budget.maxRequestBytes": "Bytes máximos de solicitud",
+  "campaignDetail.budget.maxResponseBytes": "Bytes máximos de respuesta",
+  "campaignDetail.budget.maxGenerationTokens": "Tokens máximos de generación",
+  "campaignDetail.budget.maxInFlight": "Operaciones simultáneas máximas",
+  "campaignDetail.budget.progressTitle": "Supervisión del progreso",
+  "campaignDetail.budget.diagnoseAfter":
+    "Diagnosticar tras puntos de control estancados",
+  "campaignDetail.budget.escalateAfter":
+    "Escalar tras replanteamientos fallidos",
+  "campaignDetail.budget.observationTimeout": "Tiempo máximo de observación",
+  "campaignDetail.budget.seconds": "{count} s",
+  "campaignDetail.budget.bytes": "{count} bytes",
+  "campaignDetail.budget.legacyAria": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyTitle": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyHint":
+    "Estos campos son procedencia histórica de una autorización V1. La política de ejecución V2 no los aplica y Office no puede ampliarlos.",
+  "campaignDetail.budget.legacyTurns": "Máximo de turnos (V1)",
+  "campaignDetail.budget.legacyInputTokens": "Tokens máximos de entrada (V1)",
+  "campaignDetail.budget.legacyOutputTokens": "Tokens máximos de salida (V1)",
+  "campaignDetail.budget.legacyCost": "Coste máximo (V1)",
+  "campaignDetail.budget.missingPolicy":
+    "Esta autorización V2 no contiene su política de ejecución. Los datos de Core están incompletos; Office no inventará límites de operación.",
   "campaignDetail.budget.attempts": "Intentos",
   "campaignDetail.budget.sessions": "Sesiones",
   "campaignDetail.budget.observedAuthorized":
@@ -2277,7 +2302,7 @@ export const es: Catalog = {
     "{amount} techo de sesiones observadas, no gasto observado",
   "campaignDetail.budget.deadline": "Fecha límite",
   "campaignDetail.budget.note":
-    "Los totales medidos excluyen las sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Son registros de Core, no una factura.",
+    "Los totales medidos excluyen sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Los límites de operación y umbrales de progreso V2 no son topes de productividad de la Campaña. Son registros de Core, no una factura.",
   "campaignDetail.budget.overBudget":
     "El uso medido supera la autorización registrada para {items}.",
   "campaignDetail.budget.noAuthorization":
