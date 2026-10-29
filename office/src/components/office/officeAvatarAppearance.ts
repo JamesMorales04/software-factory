@@ -1,11 +1,11 @@
 /**
  * Deterministic original avatar appearance for the isometric Office.
  *
- * `lookIndex` comes from the layout, where it is unique across the
- * scene. It makes five Implementers five recognizable people who are This mapping turns it into clothing, hair, skin and accessory
- * choices, so five Implementers are five recognizable people rather than five
- * still stable across polling and a stable identity-based palette. The palette
- * is Factory-original; no game art is used.
+ * `lookIndex` comes from the layout, where it is unique across the scene. This
+ * mapping turns it into clothing, hair, skin and accessory choices, so five
+ * Implementers are five recognizable people rather than five copies of a role
+ * icon. The appearance remains stable across polling and for the same observed
+ * set. The palette is Factory-original; no game art is used.
  */
 
 export interface OfficeAvatarLook {
