@@ -184,44 +184,14 @@ log "== configuring the fixture implementer connection"
 api PUT /settings/providers/opencode \
   '{"model":"deepseek-v4.1-flash","baseUrl":"https://opencode.ai/inference/go/openai/v1","credential":"compose-fixture-credential-0123456789","enabled":true,"isDefault":false,"maxTurns":4,"maxInputTokens":20000,"maxOutputTokens":8000,"maxCostMicros":500000,"inputMicrosPerMillion":1000,"outputMicrosPerMillion":2000}' >/dev/null
 
-log "== authorizing and dispatching a Campaign"
-CAMPAIGN_ID="$(api POST /campaigns \
-  "{\"action_id\":\"$ACTION_ID\",\"idempotency_key\":\"e2e-campaign\"}" \
-  | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
-api POST "/campaigns/$CAMPAIGN_ID/authorize" \
-  "{\"authorization_id\":\"e2e-auth\",\"risk_class\":\"R0\",\"execution_mode\":\"TRUSTED_LOCAL_PROVIDER\",\"actor\":\"e2e-operator\",\"rationale\":\"deterministic Compose acceptance\",\"authorized_paths\":[\"src\"],\"max_attempts\":1,\"provider\":\"opencode\",\"model\":\"deepseek-v4.1-flash\",\"provider_mode\":\"build\",\"delegation_id\":\"e2e-grant\",\"max_sessions\":1,\"max_turns\":2,\"max_input_tokens\":20000,\"max_output_tokens\":8000,\"max_cost_micros\":500000,\"deadline_secs\":120,\"allowed_tools\":[\"write_file\"]}" >/dev/null
-RUN_ID="$(api POST "/campaigns/$CAMPAIGN_ID/runs" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
-ATTEMPT_ID="$(api POST "/runs/$RUN_ID/attempts" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
-
-log "== waiting for the candidate, verifier, reviewer and gate"
-CANDIDATE_ID=""
-GATE=""
-for _ in $(seq 1 300); do
-  CANDIDATE_ID="$(api GET /candidates \
-    | python3 -c 'import json,sys; target=sys.argv[1]; print(next((c["id"] for c in json.load(sys.stdin) if c["attempt_id"]==target), ""))' "$ATTEMPT_ID")"
-  if [[ -n "$CANDIDATE_ID" ]]; then
-    GATE="$(api GET "/quality/candidates/$CANDIDATE_ID/gate" 2>/dev/null || true)"
-    if [[ "$GATE" == *'"outcome":"ACCEPTED"'* ]]; then
-      break
-    fi
-  fi
-  sleep 1
-done
-[[ "$GATE" == *'"outcome":"ACCEPTED"'* ]] || { log "gate did not accept: ${GATE:-none}"; exit 1; }
-RECEIPTS="$(api GET "/quality/candidates/$CANDIDATE_ID/receipts")"
-[[ "$RECEIPTS" == *'"role":"verifier"'* && "$RECEIPTS" == *'"role":"reviewer"'* ]] || {
-  log "missing independent receipts"; exit 1;
-}
-[[ "$RECEIPTS" != *'"result":"FAIL"'* ]] || { log "receipt failed"; exit 1; }
-
 log "== configuring the deterministic model gateway and executable profile"
 api PUT /settings/providers/opencode-go \
   '{"model":"deepseek-v4.1-flash","baseUrl":"http://model-fixture:8080/v1","credential":"compose-fixture-credential-0123456789","enabled":true,"isDefault":true,"maxTurns":4,"maxInputTokens":100000,"maxOutputTokens":12000,"maxCostMicros":500000,"inputMicrosPerMillion":1000,"outputMicrosPerMillion":2000}' >/dev/null
 api PUT /settings/runtime \
   '{"semanticReviewEnabled":true,"semanticReviewMaxOutputTokens":8192}' >/dev/null
-ROLE='{"provider":"opencode-go","model":"deepseek-v4.1-flash","reasoning":"medium","maxInputTokens":64000,"maxOutputTokens":8192,"maxCostMicros":300000}'
+ROLE='{"provider":"opencode-go","model":"deepseek-v4.1-flash","reasoning":"medium"}'
 PROFILE_JSON="$(api POST /execution-profiles \
-  "{\"name\":\"Compose Intake Balanced\",\"description\":\"Deterministic Compose intake profile\",\"category\":\"BALANCED\",\"roles\":{\"lead\":$ROLE,\"implementer\":{\"provider\":\"opencode-go\",\"model\":\"deepseek-v4.1-flash\",\"reasoning\":\"medium\",\"maxInputTokens\":40000,\"maxOutputTokens\":12000,\"maxCostMicros\":500000},\"semanticReviewer\":$ROLE},\"budgets\":{\"maxAttempts\":3,\"maxSessions\":4,\"maxTurns\":4,\"maxInputTokens\":40000,\"maxOutputTokens\":12000,\"maxCostMicros\":500000,\"deadlineSecs\":600},\"auto_start\":{\"enabled\":false,\"risk_classes\":[]}}")"
+  "{\"name\":\"Compose Intake Balanced\",\"description\":\"Deterministic Compose intake profile\",\"category\":\"BALANCED\",\"roles\":{\"lead\":$ROLE,\"implementer\":$ROLE,\"semanticReviewer\":$ROLE},\"operations\":{\"modelRequestTimeoutSecs\":300,\"toolCallTimeoutSecs\":600,\"maxRequestBytes\":2097152,\"maxResponseBytes\":2097152,\"maxGenerationTokens\":8192,\"maxInFlightOperations\":2},\"progress\":{\"diagnoseAfterStagnantCheckpoints\":2,\"escalateAfterUnsuccessfulReplans\":1,\"observationTimeoutSecs\":300},\"auto_start\":{\"enabled\":false,\"risk_classes\":[]}}")"
 PROFILE_ID="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["id"])')"
 PROFILE_REVISION="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["revision"])')"
 PROFILE_REVISION_ID="$(printf '%s' "$PROFILE_JSON" | json 'import json,sys; print(json.load(sys.stdin)["revisionId"])')"
@@ -274,7 +244,7 @@ PLAN_HASH="$(printf '%s' "$INTAKE_ASSESSED" | json 'import json,sys; print(json.
 
 log "== approving the exact frozen plan through the operator boundary"
 INTAKE_APPROVED="$(api POST "/intake/requests/$INTAKE_ID/approve" \
-  "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\"}")"
+  "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\",\"authorized_micros\":5000000}")"
 INTAKE_CAMPAIGN_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaignId"])')"
 INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["tasks"][0]["attempt_id"])')"
 [[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["authorization"]["execution_mode"])')" == "TRUSTED_LOCAL_PROVIDER" ]] || {
@@ -366,7 +336,7 @@ done
 api GET /workers | grep -q 'compose-worker' || { log "Worker did not re-register"; exit 1; }
 PROJECTS="$(api GET /projects)"
 [[ "$PROJECTS" == *"$PROJECT_ID"* ]] || { log "project was not preserved"; exit 1; }
-GATE_AFTER="$(api GET "/quality/candidates/$CANDIDATE_ID/gate")"
+GATE_AFTER="$(api GET "/quality/candidates/$INTAKE_CANDIDATE_ID/gate")"
 [[ "$GATE_AFTER" == *'"outcome":"ACCEPTED"'* ]] || { log "gate was not preserved"; exit 1; }
 
 INTAKE_PROJECTION_AFTER="$(api GET "/intake/requests/$INTAKE_ID")"
@@ -391,20 +361,18 @@ SUMMARY="$(python3 -c '
 import json,sys
 print(json.dumps({
   "status":"PASS",
-  "legacy_candidate_id":sys.argv[1],
-  "legacy_attempt_id":sys.argv[2],
-  "intake_request_id":sys.argv[3],
-  "intake_campaign_id":sys.argv[4],
-  "intake_attempt_id":sys.argv[5],
-  "intake_candidate_id":sys.argv[6],
-  "intake_candidate_commit":sys.argv[7],
-  "intake_plan_hash":sys.argv[8],
-  "intake_profile_revision_id":sys.argv[9],
-  "intake_verifier_receipt_id":sys.argv[10],
-  "intake_reviewer_receipt_id":sys.argv[11],
+  "intake_request_id":sys.argv[1],
+  "intake_campaign_id":sys.argv[2],
+  "intake_attempt_id":sys.argv[3],
+  "intake_candidate_id":sys.argv[4],
+  "intake_candidate_commit":sys.argv[5],
+  "intake_plan_hash":sys.argv[6],
+  "intake_profile_revision_id":sys.argv[7],
+  "intake_verifier_receipt_id":sys.argv[8],
+  "intake_reviewer_receipt_id":sys.argv[9],
   "gate":"ACCEPTED",
   "model_mechanism":"DETERMINISTIC_FIXTURE",
   "restart_persistence":True,
   "paid_inference":False
-}))' "$CANDIDATE_ID" "$ATTEMPT_ID" "$INTAKE_ID" "$INTAKE_CAMPAIGN_ID" "$INTAKE_ATTEMPT_ID" "$INTAKE_CANDIDATE_ID" "$INTAKE_CANDIDATE_COMMIT" "$PLAN_HASH" "$PROFILE_REVISION_ID" "$INTAKE_VERIFIER_RECEIPT_ID" "$INTAKE_REVIEWER_RECEIPT_ID")"
+}))' "$INTAKE_ID" "$INTAKE_CAMPAIGN_ID" "$INTAKE_ATTEMPT_ID" "$INTAKE_CANDIDATE_ID" "$INTAKE_CANDIDATE_COMMIT" "$PLAN_HASH" "$PROFILE_REVISION_ID" "$INTAKE_VERIFIER_RECEIPT_ID" "$INTAKE_REVIEWER_RECEIPT_ID")"
 log "$SUMMARY"
