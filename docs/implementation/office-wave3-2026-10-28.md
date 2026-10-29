@@ -317,7 +317,7 @@ evidence record; no runtime behavior changed after `66a71bf`.
 - Wave 3 remains a development branch. No `main` merge and no product
   acceptance are claimed.
 
-## 12. Final development checkpoint — 2026-10-29
+## 13. Final development checkpoint — 2026-10-29
 
 **Code candidate:** `66a71bf99453ea507514d12cae63bdbe59758b96`.
 **Final branch head:** `1c7621d` (docs/test-only delta after the frozen code
@@ -370,7 +370,7 @@ candidate: no runtime code changed).
   no promotion or merge is authorized by this ledger.
 - #60, #51 and the remaining #62/#63/#64/#66/#67 UX slices remain open.
 
-## 8. Change log
+## 14. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
   (`MODEL_OK`, `SOL_OK`, `LUNA_OK`). Five worktrees created. P/I started; Sol
