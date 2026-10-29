@@ -1919,6 +1919,27 @@ async fn submit_progress_checkpoint(
         })
 }
 
+/// Persist the final terminal operation before the candidate is reported. The
+/// Quality Gate remains independent; an open progress hold blocks the next
+/// attempt, not the gate for this candidate.
+async fn persist_final_progress_checkpoint(
+    context: &ProviderContext<'_>,
+    progress: &mut TurnProgress,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(request) = progress.checkpoint_request() {
+        let _ = submit_progress_checkpoint(
+            context.client,
+            context.core,
+            context.session_token,
+            context.worker_id,
+            context.assignment,
+            &request,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
@@ -2301,6 +2322,7 @@ async fn run_provider_tool_loop(
                     )
                     .await?;
                 }
+                persist_final_progress_checkpoint(context, &mut progress).await?;
                 factory_native::runtime::delete_opencode_session(
                     &http,
                     context.base_url,
@@ -3304,6 +3326,7 @@ async fn run_codex_tool_loop(
                         )
                         .await?;
                     }
+                    persist_final_progress_checkpoint(context, &mut progress).await?;
                     let _ = tokio::time::timeout(
                         Duration::from_secs(5),
                         rpc.archive_thread(&thread_id),
