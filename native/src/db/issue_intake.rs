@@ -73,6 +73,37 @@ pub struct NewIssueIntakePolicy<'a> {
     pub principal_label: Option<&'a str>,
 }
 
+/// V2 issue-policy write. It deliberately has no attempt/session/turn/
+/// wall-clock inputs; the batch's finite issue/financial admission and the
+/// frozen Execution Profile provide the only bounds.
+#[derive(Debug, Clone)]
+pub struct NewIssueIntakePolicyV2<'a> {
+    pub project_id: &'a str,
+    pub repository_full_name: &'a str,
+    pub repository_github_id: i64,
+    pub required_labels: &'a [String],
+    pub excluded_labels: &'a [String],
+    pub author_ids: &'a [i64],
+    pub author_associations: &'a [String],
+    pub profile_id: &'a str,
+    pub profile_revision_id: &'a str,
+    pub profile_revision: u32,
+    pub profile_hash: &'a str,
+    pub project_config_hash: &'a str,
+    pub allowed_paths: &'a [String],
+    pub capabilities: &'a [Capability],
+    pub max_issues: u32,
+    pub max_concurrent: u32,
+    pub max_cost_micros_per_issue: u64,
+    pub max_total_cost_micros: u64,
+    pub expires_at: &'a str,
+    pub acknowledge: bool,
+    pub reason: &'a str,
+    pub idempotency_key: &'a str,
+    pub principal_id: &'a str,
+    pub principal_label: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct IssueIntakePolicyResult {
     pub policy: IssueIntakePolicyRecord,
@@ -182,6 +213,57 @@ impl Database {
         &self,
         input: NewIssueIntakePolicy<'_>,
     ) -> Result<IssueIntakePolicyResult, Error> {
+        self.create_issue_intake_policy_versioned(input, 1).await
+    }
+
+    /// Create a V2 policy revision without the obsolete campaign inputs. The
+    /// frozen 0033 NOT NULL columns receive explicit, trigger-constrained
+    /// storage placeholders; they are not execution authority.
+    pub async fn create_issue_intake_policy_v2(
+        &self,
+        input: NewIssueIntakePolicyV2<'_>,
+    ) -> Result<IssueIntakePolicyResult, Error> {
+        self.create_issue_intake_policy_versioned(
+            NewIssueIntakePolicy {
+                project_id: input.project_id,
+                repository_full_name: input.repository_full_name,
+                repository_github_id: input.repository_github_id,
+                required_labels: input.required_labels,
+                excluded_labels: input.excluded_labels,
+                author_ids: input.author_ids,
+                author_associations: input.author_associations,
+                profile_id: input.profile_id,
+                profile_revision_id: input.profile_revision_id,
+                profile_revision: input.profile_revision,
+                profile_hash: input.profile_hash,
+                project_config_hash: input.project_config_hash,
+                allowed_paths: input.allowed_paths,
+                capabilities: input.capabilities,
+                max_issues: input.max_issues,
+                max_concurrent: input.max_concurrent,
+                max_cost_micros_per_issue: input.max_cost_micros_per_issue,
+                max_total_cost_micros: input.max_total_cost_micros,
+                max_attempts: 1,
+                max_sessions: 1,
+                max_turns: 1,
+                max_wall_clock_secs: 1,
+                expires_at: input.expires_at,
+                acknowledge: input.acknowledge,
+                reason: input.reason,
+                idempotency_key: input.idempotency_key,
+                principal_id: input.principal_id,
+                principal_label: input.principal_label,
+            },
+            2,
+        )
+        .await
+    }
+
+    async fn create_issue_intake_policy_versioned(
+        &self,
+        input: NewIssueIntakePolicy<'_>,
+        schema_version: u32,
+    ) -> Result<IssueIntakePolicyResult, Error> {
         validate_new_policy(&input)?;
         let required_labels = normalize_labels(input.required_labels);
         let excluded_labels = normalize_labels(input.excluded_labels);
@@ -207,6 +289,7 @@ impl Database {
             &author_associations,
             &allowed_paths,
             &capabilities,
+            schema_version,
         );
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -352,6 +435,7 @@ impl Database {
             max_sessions: input.max_sessions,
             max_turns: input.max_turns,
             max_wall_clock_secs: input.max_wall_clock_secs,
+            schema_version,
             expires_at: input.expires_at.into(),
             acknowledged: true,
             principal_id: input.principal_id.into(),
@@ -2110,6 +2194,7 @@ fn validate_new_policy(input: &NewIssueIntakePolicy<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn policy_request_digest(
     input: &NewIssueIntakePolicy<'_>,
     required_labels: &[String],
@@ -2118,8 +2203,9 @@ fn policy_request_digest(
     author_associations: &[String],
     allowed_paths: &[String],
     capabilities: &[Capability],
+    schema_version: u32,
 ) -> String {
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "schema": "issue-intake-policy-request-v1",
         "projectId": input.project_id,
         "repositoryFullName": input.repository_full_name,
@@ -2148,6 +2234,9 @@ fn policy_request_digest(
         "principalId": input.principal_id,
         "reason": input.reason,
     });
+    if schema_version == 2 {
+        payload["schemaVersion"] = serde_json::json!(2);
+    }
     sha256_hex(payload.to_string().as_bytes())
 }
 
@@ -2781,9 +2870,9 @@ async fn insert_policy(
           max_risk_class,max_issues,max_concurrent,max_cost_micros_per_issue,
           max_total_cost_micros,max_attempts,max_sessions,max_turns,max_wall_clock_secs,
           expires_at,acknowledged,principal_id,principal_label,reason,idempotency_key,
-          content_hash,created_at)
+          content_hash,created_at,schema_version)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,
-                 'R0',?19,?20,?21,?22,?23,?24,?25,?26,?27,1,?28,?29,?30,?31,?32,?33)",
+                 'R0',?19,?20,?21,?22,?23,?24,?25,?26,?27,1,?28,?29,?30,?31,?32,?33,?34)",
     )
     .bind(&policy.id)
     .bind(&policy.project_id)
@@ -2818,6 +2907,7 @@ async fn insert_policy(
     .bind(&policy.idempotency_key)
     .bind(&policy.content_hash)
     .bind(&policy.created_at)
+    .bind(i64::from(policy.schema_version))
     .execute(&mut *connection)
     .await?;
     Ok(())
@@ -3136,6 +3226,8 @@ fn policy_from_row(row: &sqlx_sqlite::SqliteRow) -> Result<IssueIntakePolicyReco
             .map_err(|_| Error::Conflict("stored turn limit is invalid"))?,
         max_wall_clock_secs: u64::try_from(row.try_get::<i64, _>("max_wall_clock_secs")?)
             .map_err(|_| Error::Conflict("stored wall-clock limit is invalid"))?,
+        schema_version: u32::try_from(row.try_get::<i64, _>("schema_version")?)
+            .map_err(|_| Error::Conflict("stored policy schema version is invalid"))?,
         expires_at: row.try_get("expires_at")?,
         acknowledged: row.try_get::<i64, _>("acknowledged")? != 0,
         principal_id: row.try_get("principal_id")?,

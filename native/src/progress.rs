@@ -63,6 +63,10 @@ pub enum ProgressError {
     Overflow,
     #[error("progress state is invalid: {0}")]
     InvalidState(String),
+    #[error(
+        "progress work-item capacity reached ({active} active); retire gate-accepted work items"
+    )]
+    WorkItemRetirementRequired { active: usize },
 }
 
 /// A durable Core Quality Gate record for one exact candidate. Acceptance can
@@ -347,9 +351,9 @@ impl ProgressSupervisor {
         if !self.work_items.contains_key(&work_item_id)
             && self.work_items.len() >= MAX_SUPERVISED_WORK_ITEMS
         {
-            return Err(ProgressError::InvalidEvidence(
-                "too many supervised work items".into(),
-            ));
+            return Err(ProgressError::WorkItemRetirementRequired {
+                active: self.work_items.len(),
+            });
         }
         let policy = self.policy;
         let state = self
@@ -777,7 +781,13 @@ enum TestOutcome {
 /// stable command/environment identity; the outcome is the observed result.
 fn parse_test_artifact(artifact_ref: &str) -> Option<(&str, TestOutcome)> {
     let rest = artifact_ref.strip_prefix("suite:")?;
-    let (suite, outcome) = rest.rsplit_once(':')?;
+    // Worker receipts carry a Core tool-call id: suite:<suite>|PASS|call-id.
+    let (suite, outcome) = match rest.rsplit_once('|') {
+        Some((before, call_id)) if !call_id.trim().is_empty() => before.rsplit_once('|')?,
+        // Unit tests and historical receipts may omit the call id.
+        Some(_) => return None,
+        None => rest.rsplit_once(':')?,
+    };
     if suite.trim().is_empty() {
         return None;
     }
@@ -1264,6 +1274,39 @@ mod tests {
         );
         assert_eq!(replayed.classification, CheckpointClassification::Replayed);
         assert_eq!(replayed.stagnant_checkpoints, counted.stagnant_checkpoints);
+    }
+
+    #[test]
+    fn work_item_capacity_is_a_typed_retirement_requirement() {
+        let mut supervisor = supervisor();
+        for index in 0..MAX_SUPERVISED_WORK_ITEMS {
+            let work_item = format!("unit-{index}");
+            let checkpoint = ProgressCheckpoint {
+                checkpoint_id: format!("cp-{index}"),
+                work_item_id: work_item,
+                operation_id: format!("op-{index}"),
+                evidence_ids: Vec::new(),
+                outcome_sha256: sha(&format!("outcome-{index}")),
+            };
+            supervisor
+                .checkpoint("campaign", &checkpoint, &[], None)
+                .unwrap();
+        }
+        let extra = ProgressCheckpoint {
+            checkpoint_id: "cp-extra".into(),
+            work_item_id: "unit-extra".into(),
+            operation_id: "op-extra".into(),
+            evidence_ids: Vec::new(),
+            outcome_sha256: sha("outcome-extra"),
+        };
+        let error = supervisor
+            .checkpoint("campaign", &extra, &[], None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ProgressError::WorkItemRetirementRequired { active }
+                if active == MAX_SUPERVISED_WORK_ITEMS
+        ));
     }
 
     #[test]

@@ -286,6 +286,14 @@ impl Database {
             //   reserve_inference_in_tx(ReserveInferenceInput { .. })
             //   bind the returned ledger reservation id on
             //   provider_turn_reservations and settle/release it with the turn.
+            super::lead::record_blocking_progress_hold_in_tx(
+                &mut transaction,
+                &attempt_id,
+                "BLOCKED",
+                V2_PROVIDER_TURN_LEDGER_REQUIRED,
+            )
+            .await?;
+            transaction.commit().await?;
             return Err(Error::Unavailable(V2_PROVIDER_TURN_LEDGER_REQUIRED.into()));
         }
         let max_input: i64 = lease.try_get("max_input_tokens")?;
@@ -1617,6 +1625,24 @@ mod tests {
         assert!(
             matches!(error, Error::Unavailable(ref message) if message == V2_PROVIDER_TURN_LEDGER_REQUIRED),
             "{error:?}"
+        );
+        assert!(
+            db.progress_hold("campaign", "campaign")
+                .await
+                .unwrap()
+                .is_some(),
+            "a V2 ledger failure must create a durable blocking hold"
+        );
+        sqlx::query::query("UPDATE attempts SET status='QUEUED' WHERE id='attempt'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(
+            db.claim_assignment("worker-2", Utc::now().timestamp_millis(), 30_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "a V2 ledger failure must prevent repeated dispatch"
         );
         db.close().await;
     }
