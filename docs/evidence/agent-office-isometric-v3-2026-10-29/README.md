@@ -2,13 +2,13 @@
 
 ## Candidate and scope
 
-Source candidate: `e31e46298b42f13e80701913b43878336587ccb8` on
-`factory/office-isometric-v3/20261029`. This includes the V3 studio renderer
-and a follow-up fix for the 49+ participant non-terminating look assignment.
-The replacement remains stable for the same participant set and provides
-distinct palette combinations through the current 200-participant projection.
-Screenshots in this evidence commit were captured
-from that exact tracked source snapshot.
+Source candidate: `a294a43f1c837b721f3b40f4cf217294255742cb` on
+`factory/office-isometric-v3/20261029`. This
+includes the V3 studio renderer, the 49+ participant look-assignment fix, and
+staggered back/front workstation rows with perspective-scaled original vector
+figures. Avatar appearance remains deterministic for the same participant set
+and distinct through the current 200-participant projection. The Chromium
+screenshots in this update were captured from that tracked source snapshot.
 
 V3 replaces the individual flat role rooms with a continuous studio deck and
 isometric floor grid. The renderer adds wall windows, sconces and light pools,
@@ -27,13 +27,12 @@ Playwright Core 1.64.1.
 
 | Screenshot | Viewport | Fixture participants | Observed renderer result |
 | --- | ---: | ---: | --- |
-| [Desktop](desktop-1440.png) | 1440 × 1000 | 5 Implementers | 5 avatars and 5 identity controls; no document overflow or browser errors |
-| [Tablet](tablet-834.png) | 834 × 1112 | 12 mixed roles | 12 avatars and 12 identity controls; no document overflow or browser errors |
-| [Mobile](mobile-390.png) | 390 × 844 | 5 Implementers | 5 avatars and 5 identity controls; full studio centered at 35% zoom; no document overflow or browser errors |
+| [Desktop](desktop-1440.png) | 1440 × 1000 | 5 Implementers | 5 avatars in a staggered 3+2 formation; no document overflow or page errors |
+| [Tablet](tablet-834.png) | 834 × 1112 | 12 mixed roles | 12 avatars across role-specific stations; no document overflow or page errors |
+| [Mobile](mobile-390.png) | 390 × 844 | 5 Implementers | 5 avatars in the same 3+2 formation at fitted 64% zoom; no document overflow or page errors |
 
-The mobile capture exposed and then verified a camera-fit fix: the previous
-55% fit floor cropped both sides of the studio on a narrow viewport. The fit
-floor now allows 20%, while the mobile 5-participant scene fits at 35%.
+The mobile capture uses the existing responsive camera fit and keeps the full
+5-participant studio in the clipped viewport without document overflow.
 
 Reference inspected side-by-side:
 `docs/product/reference/factory-office-visual-reference-pack-20261028/01-office-isometrica-referencia-principal.png`.
@@ -41,24 +40,44 @@ The V3 renderer establishes the continuous studio and dimensional vector asset
 direction, but remains visibly less painterly and less spatially rich than the
 reference. These captures do **not** establish Product Owner visual acceptance.
 
+## Bounded visual spike
+
+The reference places people, desks and shared furniture at different apparent
+depths inside one richly illustrated studio. The previous five-person renderer
+put a small crew in one horizontal row. This slice uses two stable workstation
+rows for groups of 3–12 and scales vector figures from 0.90 in the back row to
+1.00 in front; groups up to two remain on one compact row, and larger crews
+continue to use the existing bounded multi-row layout. The five-person desktop
+capture shows the 3+2 arrangement, while the tablet capture retains all 12
+mixed-role identities.
+
+The comparison did not justify replacing SVG/DOM with PixiJS: the current
+renderer already handles the tested 0/1/5/12/30 densities and 200-record
+identity assignment, and the main remaining visual gap is the reference's
+layered illustration and material rendering. An engine change alone would not
+provide those assets. The next useful visual work remains original scene art,
+lighting and furniture composition; this bounded layout update is not a
+fidelity claim.
+
 ## Renderer assessment
 
 The current SVG/DOM renderer remains adequate for the tested 0, 1, 5, 12 and 30
 participant layouts. Automated rendering tests verify one distinct avatar per
-participant identity and stable, non-overlapping station slots. Regression
-coverage checks 200 distinct palette combinations and exercises a 200-record
-layout without collision probing. Browser captures show responsive camera
-behavior through 12 participants. No evidence currently shows that a different
-rendering engine is needed to meet the 30-agent layout requirement.
+participant identity, staggered rows, depth scale, and stable, non-overlapping
+station slots. Regression coverage checks 200 distinct palette combinations
+and exercises a 200-record layout without collision probing. Browser captures
+show responsive camera behavior through 12 participants. No evidence currently
+shows that a different rendering engine is needed to meet the 30-agent layout
+requirement.
 
-No PixiJS or alternate-engine spike was run. The visible gap against the
-reference is chiefly in illustration fidelity, material lighting and perceived
-depth. An engine migration would change scene submission and batching but would
-not supply those art assets, so it is not yet a justified visual-quality fix.
-Continue with original layered artwork, lighting and composition in SVG/DOM. If
-measured browser performance at larger agent counts becomes inadequate, run a
-bounded comparison of SVG/DOM and layered original assets in a 2D renderer
-against the same identity, accessibility and performance checks.
+No rendering-engine benchmark was run. The visual spike found the main remaining
+gap is illustration fidelity, material lighting and perceived depth. An engine
+migration would change scene submission and batching but would not supply those
+art assets, so it is not yet a justified visual-quality fix. Continue with
+original layered artwork, lighting and composition in SVG/DOM. If measured
+browser performance at larger agent counts becomes inadequate, run a bounded
+comparison of SVG/DOM and layered original assets in a 2D renderer against the
+same identity, accessibility and performance checks.
 
 ## Verification
 
@@ -79,3 +98,11 @@ controls, identity mapping and layouts at 0/1/5/12/30 participants. The
 screenshots do not exercise the authenticated Office inspector against Core.
 Independent review of the exact source candidate is pending, and no Owner visual
 approval has been given.
+
+The current canonical Compose command `cargo xtask e2e office` rebuilt the
+candidate binaries, then failed before reaching Agent Office: its deterministic
+Worker exited with status 1 at the `fixture Worker must succeed` assertion in
+`office/e2e-browser/rust-journey.mjs`. This leaves Core/Compose Agent Office
+acceptance NOT_TESTED for this run; it is separate from the passing Vite fixture
+captures. The failing journey did not reach provider-session creation, and no
+model request or live inference was attempted.

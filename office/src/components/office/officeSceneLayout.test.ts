@@ -218,6 +218,33 @@ describe("buildOfficeSceneLayout", () => {
     expect(
       zone?.slots.slice(3).every((slot) => slot.perspectiveScale === 1),
     ).toBe(true);
+    for (let left = 0; left < (zone?.slots.length ?? 0); left += 1) {
+      for (
+        let right = left + 1;
+        right < (zone?.slots.length ?? 0);
+        right += 1
+      ) {
+        const leftSlot = zone?.slots[left];
+        const rightSlot = zone?.slots[right];
+        if (!leftSlot || !rightSlot) continue;
+        expect(
+          overlaps(
+            {
+              x: leftSlot.x,
+              y: leftSlot.y,
+              width: OFFICE_AVATAR_WIDTH,
+              height: OFFICE_AVATAR_HEIGHT,
+            },
+            {
+              x: rightSlot.x,
+              y: rightSlot.y,
+              width: OFFICE_AVATAR_WIDTH,
+              height: OFFICE_AVATAR_HEIGHT,
+            },
+          ),
+        ).toBe(false);
+      }
+    }
     const looks = new Set(
       (zone?.slots ?? []).map(
         (slot) => officeAvatarLook(slot.lookIndex).signature,
