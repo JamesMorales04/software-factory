@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-29T00:50:00Z",
+  "updated_at": "2026-10-29T14:15:00Z",
   "route_base_note": "Current Office uses hash routes. The design-foundation slice moves to a stable /office browser base while preserving these logical routes.",
   "capabilities": {
     "CAP-011": {
@@ -237,6 +237,7 @@
         "office/src/views/Issues.test.tsx",
         "office/src/views/IssueIntakePanel.test.tsx",
         "office/src/views/Home.test.tsx",
+        "office/e2e-browser/office-home-fixture.mjs",
         "office/src/views/RequestWorkspace.test.tsx",
         "office/e2e-browser/intake-journey.mjs",
         "office/src/views/DecisionInbox.test.tsx",
@@ -438,10 +439,10 @@
         "PUT /settings/runtime"
       ],
       "user_actions": [
-        "inspect provider authentication status model endpoint auth modes and ChatGPT OAuth state",
+        "select a discovered provider model from a searchable selector while keeping connection details in explicit advanced configuration",
         "save or replace a provider credential without reading it back",
         "revoke a credential after explicit consequence confirmation",
-        "set the default route and advanced token cost and rate limits",
+        "set the default route and keep token cost and rate limits in explicit advanced configuration",
         "discover the real provider model catalog without claiming coding inference",
         "enable or disable semantic review policy and inspect configuration audit history"
       ],
@@ -466,9 +467,11 @@
       ],
       "acceptance": [
         "office/e2e-browser/rust-journey.mjs",
-        "office/src/views/Settings.test.tsx"
+        "office/e2e-browser/office-home-fixture.mjs",
+        "office/src/views/Settings.test.tsx",
+        "office/src/views/ExecutionProfiles.test.tsx"
       ],
-      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test and model discovery read provider metadata only and are not coding inference. `GET /settings/providers/{provider}/models` returns a typed catalog status (`AVAILABLE`, `ENDPOINT_UNSUPPORTED`, `CREDENTIAL_REJECTED`, `UNREACHABLE`, `INVALID_RESPONSE` or `UNSUPPORTED`) with source, catalog URL and observation time, a bounded model list, no proxy and no redirects. `opencode-go` reads its sibling `/inference/go/v1/models` catalog without sending the inference credential; a missing catalog is not a credential finding, and a 401/403 is only a signal for that catalog endpoint. Codex App Server discovery is `UNSUPPORTED` by design. Discovery and the last-known snapshot are an in-memory Core cache and are not persisted. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings."
+      "notes": "Credentials are encrypted at rest and never returned to the browser. A saved route is not proof of access. A connection test and model discovery read provider metadata only and are not coding inference. `GET /settings/providers/{provider}/models` returns a typed catalog status (`AVAILABLE`, `ENDPOINT_UNSUPPORTED`, `CREDENTIAL_REJECTED`, `UNREACHABLE`, `INVALID_RESPONSE` or `UNSUPPORTED`) with source, catalog URL and observation time, a bounded model list, no proxy and no redirects. `opencode-go` reads its sibling `/inference/go/v1/models` catalog without sending the inference credential; a missing catalog is not a credential finding, and a 401/403 is only a signal for that catalog endpoint. Codex App Server discovery is `UNSUPPORTED` by design. Discovery and the last-known snapshot are an in-memory Core cache and are not persisted. ChatGPT OAuth remains visibly blocked or not applicable. Provider revisions do not rewrite frozen Campaign bindings. Ordinary provider configuration uses a searchable model selector; base URL, manual model IDs, token/cost/rate limits and connection details are explicit advanced controls. Home and Execution Profiles no longer require turn, attempt, session, token, cost or deadline controls; Core V2 technical operation limits remain enforceable."
     },
     "CAP-045": {
       "name": "Container-native Compose installation",

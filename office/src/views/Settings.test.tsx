@@ -164,13 +164,15 @@ describe("Settings", () => {
     expect(
       screen.getByText(/No catalog endpoint has been evaluated/),
     ).toBeDefined();
-    await userEvent.click(screen.getByText("Advanced budget and rate limits"));
+    await userEvent.click(
+      screen.getByText("Advanced technical limits and rates"),
+    );
     expect(screen.getByLabelText("Max turns")).toBeDefined();
     await userEvent.click(screen.getByText("Configuration audit (1)"));
     expect(screen.getByText("route updated")).toBeDefined();
   });
 
-  it("discovers the real provider model catalog and can stage a model", async () => {
+  it("discovers the real provider model catalog and selects a model", async () => {
     renderSettings();
     await screen.findByRole("heading", { name: "Settings" });
     expect(screen.getByText(/No model discovery is recorded/)).toBeDefined();
@@ -187,12 +189,26 @@ describe("Settings", () => {
       screen.getByLabelText("Search catalogued models"),
       "sol",
     );
-    expect(screen.getByText("gpt-6-sol")).toBeDefined();
-    expect(screen.getAllByRole("button", { name: "Use" })).toHaveLength(1);
-    await userEvent.click(screen.getByRole("button", { name: "Use" }));
-    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe(
-      "gpt-6-sol",
-    );
+    const selector = screen.getByLabelText("Model") as HTMLSelectElement;
+    expect(
+      Array.from(selector.options).map((option) => option.value),
+    ).toContain("gpt-6-sol");
+    await userEvent.selectOptions(selector, "gpt-6-sol");
+    expect(selector.value).toBe("gpt-6-sol");
+  });
+
+  it("keeps base URL and raw model ID in explicit advanced configuration", async () => {
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+    expect(screen.getByLabelText("Model")).toBeDefined();
+    const advanced = screen
+      .getByText("Advanced manual route")
+      .closest("details");
+    expect(advanced?.open).toBe(false);
+    expect(
+      screen.getByLabelText("Advanced: manual model ID (unverified)"),
+    ).toBeDefined();
+    expect(screen.queryByText("Use")).toBeNull();
   });
 
   it("does not call a missing catalog an invalid credential", async () => {

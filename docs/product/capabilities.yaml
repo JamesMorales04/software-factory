@@ -2409,7 +2409,7 @@ capabilities:
 - id: CAP-052
   name: Provider and runtime Settings workspace
   category: Product
-  purpose: Operators can configure provider routes, credential lifecycle, limits and review policy while distinguishing configuration from tested or proven inference
+  purpose: Operators can select a discovered provider model, configure a provider route and review policy, and distinguish configuration from tested or proven inference without filling in raw model IDs, base URLs, token caps or micro-unit costs on the ordinary path
   product_objective: Coherent engineering command center
   decision_status: approved
   implementation_status: in_progress
@@ -2432,10 +2432,15 @@ capabilities:
     - docs/product/office-design-system.md
     source:
     - office/src/views/Settings.tsx
+    - office/src/views/ExecutionProfiles.tsx
+    - office/src/views/Home.tsx
     - office/src/coreApi.ts
     - native/src/bin/core.rs
     test:
     - office/src/views/Settings.test.tsx
+    - office/src/views/ExecutionProfiles.test.tsx
+    - office/src/views/Home.test.tsx
+    - office/e2e-browser/office-home-fixture.mjs
     - office/e2e-browser/rust-journey.mjs
   acceptance:
     deterministic: Settings typechecks, lints, passes component tests and builds; credential values are never returned after submission and destructive revocation requires confirmation.
@@ -2451,6 +2456,8 @@ capabilities:
   - Connection testing reads the provider model list; it does not prove coding inference or pricing.
   - ChatGPT OAuth remains blocked for Codex; no live OAuth or Codex inference is claimed.
   - The UI does not expose arbitrary provider payloads or credential values.
+  - Base URL, manual model IDs, token/cost/rate limits and connection details remain in explicit advanced configuration; the V2 technical limits are real Core safety bounds, not productivity caps.
+  - Fixture Chromium screenshots cover Home and Execution Profiles at 1440/390; real Core/Compose browser acceptance of the simplified path remains NOT_TESTED.
   blockers:
   - Real live inference and Product Owner review remain pending.
 

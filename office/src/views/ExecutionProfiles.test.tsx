@@ -6,6 +6,7 @@ import {
   type ExecutionProfile,
   type ProviderView,
 } from "../coreApi";
+import { I18nProvider } from "../i18n";
 import { ExecutionProfiles } from "./ExecutionProfiles";
 
 const mocks = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ const balanced: ExecutionProfile = {
   name: "Balanced",
   description: "Default supported routes",
   category: "BALANCED",
+  schemaVersion: 2,
   revision: 3,
   revisionId: "revision-3",
   contentHash,
@@ -57,35 +59,30 @@ const balanced: ExecutionProfile = {
       provider: "opencode-go",
       model: "deepseek-v4.1-flash",
       reasoning: "medium",
-      maxInputTokens: 128000,
-      maxOutputTokens: 8192,
-      maxCostMicros: 300000,
     },
     implementer: {
       provider: "opencode-go",
       model: "deepseek-v4.1-flash",
       reasoning: "medium",
-      maxInputTokens: 40000,
-      maxOutputTokens: 12000,
-      maxCostMicros: 500000,
     },
     semanticReviewer: {
       provider: "opencode-go",
       model: "deepseek-v4.1-flash",
       reasoning: "medium",
-      maxInputTokens: 400000,
-      maxOutputTokens: 8192,
-      maxCostMicros: 1000000,
     },
   },
-  budgets: {
-    maxAttempts: 3,
-    maxSessions: 2,
-    maxTurns: 4,
-    maxInputTokens: 40000,
-    maxOutputTokens: 12000,
-    maxCostMicros: 500000,
-    deadlineSecs: 600,
+  operations: {
+    modelRequestTimeoutSecs: 300,
+    toolCallTimeoutSecs: 600,
+    maxRequestBytes: 2097152,
+    maxResponseBytes: 2097152,
+    maxGenerationTokens: 8192,
+    maxInFlightOperations: 4,
+  },
+  progress: {
+    diagnoseAfterStagnantCheckpoints: 2,
+    escalateAfterUnsuccessfulReplans: 1,
+    observationTimeoutSecs: 300,
   },
   autoStart: { enabled: false, riskClasses: [] },
   executable: true,
@@ -119,9 +116,6 @@ const draft: ExecutionProfile = {
       provider: "codex",
       model: "gpt-6-luna",
       reasoning: "medium",
-      maxInputTokens: 400000,
-      maxOutputTokens: 8192,
-      maxCostMicros: 1000000,
     },
   },
   executable: false,
@@ -308,14 +302,18 @@ describe("ExecutionProfiles", () => {
     expect(screen.getByText("revision-3")).toBeDefined();
     expect(screen.getAllByText("EXECUTABLE").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("GLOBAL DEFAULT")).toBeDefined();
-    expect(screen.getByText("PROJECT project-")).toBeDefined();
+    expect(screen.getByText("PROJECT /repo")).toBeDefined();
+    expect(
+      screen.getAllByText("opencode-go/deepseek-v4.1-flash").length,
+    ).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByText("Campaign budgets")).toBeNull();
     await userEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
     await waitFor(() =>
       expect(screen.getByText(/Effective for \/repo/)).toBeDefined(),
     );
   });
 
-  it("creates a profile with contract-shaped snake_case auto_start", async () => {
+  it("creates a profile with V2 routes and no productivity caps", async () => {
     mockList([]);
     render(<ExecutionProfiles />);
     await screen.findByRole("heading", {
@@ -326,6 +324,13 @@ describe("ExecutionProfiles", () => {
     await userEvent.clear(name);
     await userEvent.type(name, "Budget tight");
     await userEvent.selectOptions(screen.getByLabelText("Category"), "BUDGET");
+    expect(screen.queryByLabelText(/Max attempts/)).toBeNull();
+    expect(screen.queryByLabelText(/Max sessions/)).toBeNull();
+    expect(screen.queryByLabelText(/Max turns/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max input tokens/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max output tokens/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max cost/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign deadline/)).toBeNull();
     await userEvent.click(
       screen.getByRole("button", { name: "Create profile" }),
     );
@@ -350,12 +355,22 @@ describe("ExecutionProfiles", () => {
               model: "deepseek-v4.1-flash",
             }),
           },
+          operations: expect.objectContaining({
+            modelRequestTimeoutSecs: 300,
+            toolCallTimeoutSecs: 600,
+            maxGenerationTokens: 8192,
+          }),
+          progress: expect.objectContaining({
+            diagnoseAfterStagnantCheckpoints: 2,
+          }),
         }),
       ),
     );
-    expect(
-      mocks.createExecutionProfile.mock.calls[0]?.[0]?.expected_revision,
-    ).toBeUndefined();
+    const payload = mocks.createExecutionProfile.mock.calls[0]?.[0];
+    expect(payload?.budgets).toBeUndefined();
+    expect(payload?.roles.lead).not.toHaveProperty("maxInputTokens");
+    expect(payload?.roles.lead).not.toHaveProperty("maxCostMicros");
+    expect(payload?.expected_revision).toBeUndefined();
     await screen.findByText(/Saved Budget tight revision 1/);
   });
 
@@ -565,5 +580,25 @@ describe("ExecutionProfiles", () => {
     }) as HTMLButtonElement;
     expect(globalDefault.disabled).toBe(true);
     expect(projectDefault.disabled).toBe(true);
+  });
+
+  it("renders the simplified advanced profile controls in Spanish", async () => {
+    mockList([]);
+    render(
+      <I18nProvider initialLocale="es">
+        <ExecutionProfiles />
+      </I18nProvider>,
+    );
+    await screen.findByRole("heading", {
+      name: "Perfiles de ejecución (0)",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Nuevo perfil" }));
+    expect(
+      screen.getByText("Límites técnicos avanzados de operación"),
+    ).toBeDefined();
+    expect(screen.getByLabelText("Nombre")).toBeDefined();
+    expect(screen.queryByLabelText(/Máximo de intentos/)).toBeNull();
+    expect(screen.queryByLabelText(/Máximo de turnos/)).toBeNull();
+    expect(screen.queryByLabelText(/fecha límite de la Campaña/)).toBeNull();
   });
 });

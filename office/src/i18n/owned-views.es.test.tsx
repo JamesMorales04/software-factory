@@ -594,6 +594,9 @@ describe("newly translated operational surfaces", () => {
     ).toBeDefined();
     expect(screen.getByText("credencial configurada")).toBeDefined();
     expect(screen.getByText("codex")).toBeDefined();
+    expect(screen.getByLabelText("Modelo")).toBeDefined();
+    expect(screen.getByText("Modelo actual")).toBeDefined();
+    expect(screen.getByText("Ruta manual avanzada")).toBeDefined();
   });
 
   it("renders the Spanish Execution Profiles editor chrome", async () => {

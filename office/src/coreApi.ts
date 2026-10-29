@@ -1376,19 +1376,12 @@ export interface IntakeExecutionPolicyTerms {
   riskClasses: string[];
   autonomousStart: boolean;
   validityDays: number;
-  maxRequests: number;
-  maxAttemptsPerRequest: number;
-  maxSessionsPerRequest: number;
-  maxTurnsPerRequest: number;
-  maxInputTokensPerRequest: number;
-  maxOutputTokensPerRequest: number;
-  maxCostMicrosPerRequest: number;
-  maxTimeoutSecsPerRequest: number;
-  maxWallClockSecsPerRequest: number;
-  maxRepairCycles: number;
+  /** Bounded concurrent implementation capacity, not lifetime work. */
   maxParallel: number;
-  maxCumulativeSessions: number;
-  maxCumulativeAttempts: number;
+  /** Per-operation timeout, not a universal Campaign deadline. */
+  maxTimeoutSecs: number;
+  progress: ExecutionProgressPolicy;
+  operations: ExecutionOperationLimits;
 }
 
 export interface IntakeExecutionPolicyScope {
@@ -1405,14 +1398,17 @@ export interface IntakeExecutionPolicyScope {
     id: string;
     revisionId: string;
     revision: number;
-    name: string;
+    schemaVersion: 1 | 2;
+    name: string | null;
     contentHash: string;
     executable: boolean;
     warnings: string[];
-    budgets: ExecutionProfileBudgets;
-    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] };
-    implementer: ExecutionRoleRoute;
-    grantTerms: IntakeExecutionPolicyTerms;
+    operations: ExecutionOperationLimits | null;
+    progress: ExecutionProgressPolicy | null;
+    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] } | null;
+    implementer: ExecutionRoleRoute | null;
+    grantTerms: IntakeExecutionPolicyTerms | null;
+    legacyV1?: ExecutionProfileLegacyV1 | null;
   } | null;
 }
 
@@ -1621,9 +1617,6 @@ export interface ExecutionRoleRoute {
   provider: string;
   model: string;
   reasoning?: ExecutionReasoningEffort;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
 }
 
 export interface ExecutionProfileRoles {
@@ -1632,7 +1625,41 @@ export interface ExecutionProfileRoles {
   semanticReviewer: ExecutionRoleRoute;
 }
 
-export interface ExecutionProfileBudgets {
+/** Technical per-operation bounds. Not a Campaign productivity budget. */
+export interface ExecutionOperationLimits {
+  modelRequestTimeoutSecs: number;
+  toolCallTimeoutSecs: number;
+  maxRequestBytes: number;
+  maxResponseBytes: number;
+  maxGenerationTokens: number;
+  maxInFlightOperations: number;
+}
+
+/**
+ * Deterministic progress supervision. Thresholds trigger diagnosis or
+ * escalation; they do not stop a legitimate Campaign by themselves.
+ */
+export interface ExecutionProgressPolicy {
+  diagnoseAfterStagnantCheckpoints: number;
+  escalateAfterUnsuccessfulReplans: number;
+  observationTimeoutSecs: number;
+}
+
+export interface ExecutionAutoStartPolicy {
+  enabled: boolean;
+  riskClasses: ExecutionRiskClass[];
+}
+
+export interface LegacyExecutionRoleRoute {
+  provider: string;
+  model: string;
+  reasoning?: ExecutionReasoningEffort;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+}
+
+export interface LegacyExecutionProfileBudgets {
   maxAttempts: number;
   maxSessions: number;
   maxTurns: number;
@@ -1642,9 +1669,16 @@ export interface ExecutionProfileBudgets {
   deadlineSecs: number;
 }
 
-export interface ExecutionAutoStartPolicy {
-  enabled: boolean;
-  riskClasses: ExecutionRiskClass[];
+/** Historical V1 caps. Readable provenance only; never current authority. */
+export interface ExecutionProfileLegacyV1 {
+  budgets?: LegacyExecutionProfileBudgets;
+  roles?: {
+    lead: LegacyExecutionRoleRoute;
+    implementer: LegacyExecutionRoleRoute;
+    semanticReviewer: LegacyExecutionRoleRoute;
+  };
+  autoStart?: ExecutionAutoStartPolicy;
+  historical?: boolean;
 }
 
 export interface ExecutionProfile {
@@ -1652,16 +1686,21 @@ export interface ExecutionProfile {
   name: string;
   description: string;
   category: ExecutionProfileCategory;
+  schemaVersion: 1 | 2;
   revision: number;
   revisionId: string;
   contentHash: string;
   globalDefault: boolean;
   projectDefaults: string[];
   roles: ExecutionProfileRoles;
-  budgets: ExecutionProfileBudgets;
+  /** V2 technical operation limits; null for a historical V1 revision. */
+  operations: ExecutionOperationLimits | null;
+  /** V2 progress supervision; null for a historical V1 revision. */
+  progress: ExecutionProgressPolicy | null;
   autoStart: ExecutionAutoStartPolicy;
   executable: boolean;
   warnings: string[];
+  legacyV1?: ExecutionProfileLegacyV1 | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1681,7 +1720,8 @@ export interface ExecutionProfileWrite {
   description: string;
   category: ExecutionProfileCategory;
   roles: ExecutionProfileRoles;
-  budgets: ExecutionProfileBudgets;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
   auto_start: {
     enabled: boolean;
     risk_classes: ExecutionRiskClass[];

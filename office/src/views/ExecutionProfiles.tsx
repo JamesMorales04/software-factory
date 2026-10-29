@@ -11,11 +11,12 @@ import {
 import {
   CoreApiError,
   coreApi,
+  type ExecutionOperationLimits,
   type ExecutionProfile,
-  type ExecutionProfileBudgets,
   type ExecutionProfileCategory,
   type ExecutionProfileRole,
   type ExecutionProfileWrite,
+  type ExecutionProgressPolicy,
   type ExecutionReasoningEffort,
   type ExecutionRiskClass,
   type ExecutionRoleRoute,
@@ -59,28 +60,46 @@ const CATEGORIES: ExecutionProfileCategory[] = [
 
 const RISK_CLASSES: ExecutionRiskClass[] = ["R0", "R1", "R2", "R3"];
 
+function categoryKey(category: ExecutionProfileCategory): MessageKey {
+  return `execProfiles.category.${category}` as MessageKey;
+}
+
 const REASONING: ExecutionReasoningEffort[] = ["low", "medium", "high"];
 
 interface RoleDraft {
   provider: string;
   model: string;
   reasoning: "" | ExecutionReasoningEffort;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
 }
 
 interface ProfileDraft {
   id: string | null;
   expectedRevision: number | null;
+  legacyV1: boolean;
   name: string;
   description: string;
   category: ExecutionProfileCategory;
   roles: Record<ExecutionProfileRole, RoleDraft>;
-  budgets: ExecutionProfileBudgets;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
   autoStartEnabled: boolean;
   autoStartRiskClasses: ExecutionRiskClass[];
 }
+
+const DEFAULT_OPERATIONS: ExecutionOperationLimits = {
+  modelRequestTimeoutSecs: 300,
+  toolCallTimeoutSecs: 600,
+  maxRequestBytes: 2 * 1024 * 1024,
+  maxResponseBytes: 2 * 1024 * 1024,
+  maxGenerationTokens: 8_192,
+  maxInFlightOperations: 4,
+};
+
+const DEFAULT_PROGRESS: ExecutionProgressPolicy = {
+  diagnoseAfterStagnantCheckpoints: 2,
+  escalateAfterUnsuccessfulReplans: 1,
+  observationTimeoutSecs: 300,
+};
 
 function routeDefaults(
   routes: SupportedExecutionRoute[],
@@ -95,39 +114,25 @@ function routeDefaults(
 
 function newDraft(routes: SupportedExecutionRoute[]): ProfileDraft {
   const defaultRoute = routeDefaults(routes, "opencode-go");
-  const role = (
-    route: { provider: string; model: string },
-    maxInputTokens: number,
-    maxOutputTokens: number,
-    maxCostMicros: number,
-  ): RoleDraft => ({
+  const role = (route: { provider: string; model: string }): RoleDraft => ({
     provider: route.provider,
     model: route.model,
     reasoning: "medium",
-    maxInputTokens,
-    maxOutputTokens,
-    maxCostMicros,
   });
   return {
     id: null,
     expectedRevision: null,
+    legacyV1: false,
     name: "Balanced",
     description: "Default supported routes",
     category: "BALANCED",
     roles: {
-      lead: role(defaultRoute, 128_000, 8_192, 300_000),
-      implementer: role(defaultRoute, 40_000, 12_000, 500_000),
-      semanticReviewer: role(defaultRoute, 400_000, 8_192, 1_000_000),
+      lead: role(defaultRoute),
+      implementer: role(defaultRoute),
+      semanticReviewer: role(defaultRoute),
     },
-    budgets: {
-      maxAttempts: 3,
-      maxSessions: 2,
-      maxTurns: 4,
-      maxInputTokens: 40_000,
-      maxOutputTokens: 12_000,
-      maxCostMicros: 500_000,
-      deadlineSecs: 600,
-    },
+    operations: { ...DEFAULT_OPERATIONS },
+    progress: { ...DEFAULT_PROGRESS },
     autoStartEnabled: false,
     autoStartRiskClasses: [],
   };
@@ -138,13 +143,11 @@ function draftFromProfile(profile: ExecutionProfile): ProfileDraft {
     provider: route.provider,
     model: route.model,
     reasoning: route.reasoning ?? "",
-    maxInputTokens: route.maxInputTokens,
-    maxOutputTokens: route.maxOutputTokens,
-    maxCostMicros: route.maxCostMicros,
   });
   return {
     id: profile.id,
     expectedRevision: profile.revision,
+    legacyV1: profile.schemaVersion === 1,
     name: profile.name,
     description: profile.description,
     category: profile.category,
@@ -153,7 +156,8 @@ function draftFromProfile(profile: ExecutionProfile): ProfileDraft {
       implementer: role(profile.roles.implementer),
       semanticReviewer: role(profile.roles.semanticReviewer),
     },
-    budgets: { ...profile.budgets },
+    operations: { ...(profile.operations ?? DEFAULT_OPERATIONS) },
+    progress: { ...(profile.progress ?? DEFAULT_PROGRESS) },
     autoStartEnabled: profile.autoStart.enabled,
     autoStartRiskClasses: [...profile.autoStart.riskClasses],
   };
@@ -164,9 +168,6 @@ function roleToRoute(role: RoleDraft): ExecutionRoleRoute {
     provider: role.provider,
     model: role.model,
     ...(role.reasoning === "" ? {} : { reasoning: role.reasoning }),
-    maxInputTokens: role.maxInputTokens,
-    maxOutputTokens: role.maxOutputTokens,
-    maxCostMicros: role.maxCostMicros,
   };
 }
 
@@ -180,7 +181,8 @@ function draftToWrite(draft: ProfileDraft): ExecutionProfileWrite {
       implementer: roleToRoute(draft.roles.implementer),
       semanticReviewer: roleToRoute(draft.roles.semanticReviewer),
     },
-    budgets: { ...draft.budgets },
+    operations: { ...draft.operations },
+    progress: { ...draft.progress },
     auto_start: {
       enabled: draft.autoStartEnabled,
       risk_classes: [...draft.autoStartRiskClasses].sort(),
@@ -312,43 +314,82 @@ function validateDraft(
     if (modelError) {
       return `${t(role.labelKey)}: ${modelError}`;
     }
-    if (value.maxInputTokens < 1 || value.maxInputTokens > 1_000_000) {
-      return t("execProfiles.validation.roleInputRange", {
-        role: t(role.labelKey),
+  }
+  const operationChecks: Array<[MessageKey, number, number, number]> = [
+    [
+      "execProfiles.operations.modelRequestTimeout",
+      draft.operations.modelRequestTimeoutSecs,
+      1,
+      3_600,
+    ],
+    [
+      "execProfiles.operations.toolCallTimeout",
+      draft.operations.toolCallTimeoutSecs,
+      1,
+      3_600,
+    ],
+    [
+      "execProfiles.operations.maxRequestBytes",
+      draft.operations.maxRequestBytes,
+      1,
+      64 * 1024 * 1024,
+    ],
+    [
+      "execProfiles.operations.maxResponseBytes",
+      draft.operations.maxResponseBytes,
+      1,
+      64 * 1024 * 1024,
+    ],
+    [
+      "execProfiles.operations.maxGenerationTokens",
+      draft.operations.maxGenerationTokens,
+      1,
+      1_000_000,
+    ],
+    [
+      "execProfiles.operations.maxInFlight",
+      draft.operations.maxInFlightOperations,
+      1,
+      32,
+    ],
+  ];
+  for (const [label, value, min, max] of operationChecks) {
+    if (!Number.isFinite(value) || value < min || value > max) {
+      return t("execProfiles.validation.operationRange", {
+        field: t(label),
+        min,
+        max,
       });
     }
-    if (value.maxOutputTokens < 1 || value.maxOutputTokens > 100_000) {
-      return t("execProfiles.validation.roleOutputRange", {
-        role: t(role.labelKey),
+  }
+  const progressChecks: Array<[MessageKey, number, number, number]> = [
+    [
+      "execProfiles.progress.diagnoseAfter",
+      draft.progress.diagnoseAfterStagnantCheckpoints,
+      1,
+      100,
+    ],
+    [
+      "execProfiles.progress.escalateAfter",
+      draft.progress.escalateAfterUnsuccessfulReplans,
+      1,
+      100,
+    ],
+    [
+      "execProfiles.progress.observationTimeout",
+      draft.progress.observationTimeoutSecs,
+      1,
+      3_600,
+    ],
+  ];
+  for (const [label, value, min, max] of progressChecks) {
+    if (!Number.isFinite(value) || value < min || value > max) {
+      return t("execProfiles.validation.progressRange", {
+        field: t(label),
+        min,
+        max,
       });
     }
-    if (value.maxCostMicros < 1 || value.maxCostMicros > 100_000_000) {
-      return t("execProfiles.validation.roleCostRange", {
-        role: t(role.labelKey),
-      });
-    }
-  }
-  const budgets = draft.budgets;
-  if (budgets.maxAttempts < 1 || budgets.maxAttempts > 10) {
-    return t("execProfiles.validation.maxAttempts");
-  }
-  if (budgets.maxSessions < 1 || budgets.maxSessions > 16) {
-    return t("execProfiles.validation.maxSessions");
-  }
-  if (budgets.maxTurns < 1 || budgets.maxTurns > 16) {
-    return t("execProfiles.validation.maxTurns");
-  }
-  if (budgets.maxInputTokens < 1 || budgets.maxInputTokens > 1_000_000) {
-    return t("execProfiles.validation.maxInput");
-  }
-  if (budgets.maxOutputTokens < 1 || budgets.maxOutputTokens > 100_000) {
-    return t("execProfiles.validation.maxOutput");
-  }
-  if (budgets.maxCostMicros < 1 || budgets.maxCostMicros > 100_000_000) {
-    return t("execProfiles.validation.maxCost");
-  }
-  if (budgets.deadlineSecs < 30 || budgets.deadlineSecs > 86_400) {
-    return t("execProfiles.validation.deadline");
   }
   return null;
 }
@@ -507,7 +548,7 @@ export function ExecutionProfiles() {
     if (providers.length > 0) {
       return providers.map((provider) => ({
         value: provider.provider,
-        label: `${provider.displayName} (${provider.provider})`,
+        label: provider.displayName,
       }));
     }
     return uniqueModels(routes.map((route) => route.provider)).map(
@@ -557,10 +598,18 @@ export function ExecutionProfiles() {
     });
   }
 
-  function updateBudget(patch: Partial<ExecutionProfileBudgets>) {
+  function updateOperations(patch: Partial<ExecutionOperationLimits>) {
     setDraft((current) =>
       current
-        ? { ...current, budgets: { ...current.budgets, ...patch } }
+        ? { ...current, operations: { ...current.operations, ...patch } }
+        : current,
+    );
+  }
+
+  function updateProgress(patch: Partial<ExecutionProgressPolicy>) {
+    setDraft((current) =>
+      current
+        ? { ...current, progress: { ...current.progress, ...patch } }
         : current,
     );
   }
@@ -819,22 +868,35 @@ export function ExecutionProfiles() {
                           {profile.description}
                         </span>
                       )}
+                      <span className="execution-profile-routes">
+                        {ROLES.map((role) => (
+                          <span key={role.id}>
+                            {t(role.labelKey)}:{" "}
+                            <code>
+                              {profile.roles[role.id].provider}/
+                              {profile.roles[role.id].model}
+                            </code>
+                          </span>
+                        ))}
+                      </span>
                     </th>
-                    <td>
-                      <Badge tone="neutral">{profile.category}</Badge>
+                    <td data-label={t("execProfiles.table.category")}>
+                      <Badge tone="neutral">
+                        {t(categoryKey(profile.category))}
+                      </Badge>
                     </td>
-                    <td>
+                    <td data-label={t("execProfiles.table.revision")}>
                       {profile.revision}
                       <span className="execution-profile-role-note">
                         <code>{profile.revisionId}</code>
                       </span>
                     </td>
-                    <td>
+                    <td data-label={t("execProfiles.table.hash")}>
                       <code className="execution-profile-hash">
                         {profile.contentHash}
                       </code>
                     </td>
-                    <td>
+                    <td data-label={t("execProfiles.table.executable")}>
                       <Badge
                         tone={profile.executable ? "success" : "attention"}
                       >
@@ -848,7 +910,7 @@ export function ExecutionProfiles() {
                         </span>
                       )}
                     </td>
-                    <td>
+                    <td data-label={t("execProfiles.table.defaults")}>
                       {profile.globalDefault && (
                         <Badge tone="info">
                           {t("execProfiles.table.globalDefault")}
@@ -857,7 +919,10 @@ export function ExecutionProfiles() {
                       {profile.projectDefaults.map((projectId) => (
                         <Badge key={projectId} tone="neutral">
                           {t("execProfiles.table.projectDefault", {
-                            id: projectId.slice(0, 8),
+                            id:
+                              projects.find(
+                                (project) => project.id === projectId,
+                              )?.repository ?? projectId.slice(0, 8),
                           })}
                         </Badge>
                       ))}
@@ -868,7 +933,7 @@ export function ExecutionProfiles() {
                           </span>
                         )}
                     </td>
-                    <td>
+                    <td className="execution-profile-row-action">
                       <Button size="sm" onClick={() => selectProfile(profile)}>
                         {t("execProfiles.table.edit")}
                       </Button>
@@ -917,6 +982,20 @@ export function ExecutionProfiles() {
                 </ul>
               </div>
             )}
+            <ul className="execution-profile-routes">
+              {ROLES.map((role) => {
+                const route = selectedProfile.roles[role.id];
+                return (
+                  <li key={role.id}>
+                    <strong>{t(role.labelKey)}</strong>{" "}
+                    <code>
+                      {route.provider}/{route.model}
+                    </code>
+                    {route.reasoning ? ` · ${route.reasoning}` : ""}
+                  </li>
+                );
+              })}
+            </ul>
             <div className="execution-profile-default-actions">
               <div className="row">
                 {selectedProfile.globalDefault ? (
@@ -1071,6 +1150,11 @@ export function ExecutionProfiles() {
                 </ul>
               </div>
             )}
+            {draft.legacyV1 && (
+              <p className="ui-callout ui-callout--info" role="status">
+                {t("execProfiles.editor.legacyV1")}
+              </p>
+            )}
 
             <div className="grid-2">
               <Input
@@ -1102,7 +1186,7 @@ export function ExecutionProfiles() {
               >
                 {CATEGORIES.map((category) => (
                   <option key={category} value={category}>
-                    {category}
+                    {t(categoryKey(category))}
                   </option>
                 ))}
               </Select>
@@ -1149,9 +1233,6 @@ export function ExecutionProfiles() {
                       <th scope="col">{t("execProfiles.matrix.provider")}</th>
                       <th scope="col">{t("execProfiles.matrix.model")}</th>
                       <th scope="col">{t("execProfiles.matrix.reasoning")}</th>
-                      <th scope="col">{t("execProfiles.matrix.maxInput")}</th>
-                      <th scope="col">{t("execProfiles.matrix.maxOutput")}</th>
-                      <th scope="col">{t("execProfiles.matrix.maxCost")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1335,54 +1416,6 @@ export function ExecutionProfiles() {
                               ))}
                             </Select>
                           </td>
-                          <td>
-                            <Input
-                              label={t("execProfiles.matrix.maxInputLabel", {
-                                role: t(role.labelKey),
-                              })}
-                              type="number"
-                              min={1}
-                              max={1_000_000}
-                              value={value.maxInputTokens}
-                              onChange={(event) =>
-                                updateRole(role.id, {
-                                  maxInputTokens: Number(event.target.value),
-                                })
-                              }
-                            />
-                          </td>
-                          <td>
-                            <Input
-                              label={t("execProfiles.matrix.maxOutputLabel", {
-                                role: t(role.labelKey),
-                              })}
-                              type="number"
-                              min={1}
-                              max={100_000}
-                              value={value.maxOutputTokens}
-                              onChange={(event) =>
-                                updateRole(role.id, {
-                                  maxOutputTokens: Number(event.target.value),
-                                })
-                              }
-                            />
-                          </td>
-                          <td>
-                            <Input
-                              label={t("execProfiles.matrix.maxCostLabel", {
-                                role: t(role.labelKey),
-                              })}
-                              type="number"
-                              min={1}
-                              max={100_000_000}
-                              value={value.maxCostMicros}
-                              onChange={(event) =>
-                                updateRole(role.id, {
-                                  maxCostMicros: Number(event.target.value),
-                                })
-                              }
-                            />
-                          </td>
                         </tr>
                       );
                     })}
@@ -1391,94 +1424,130 @@ export function ExecutionProfiles() {
               </div>
             </section>
 
-            <section aria-label={t("execProfiles.budgets.aria")}>
-              <div className="section-heading">
-                <h3>{t("execProfiles.budgets.title")}</h3>
-                <span className="muted">{t("execProfiles.budgets.hint")}</span>
-              </div>
+            <details className="settings-advanced execution-profile-advanced">
+              <summary>{t("execProfiles.advanced.title")}</summary>
+              <p className="muted">{t("execProfiles.advanced.hint")}</p>
               <div className="grid-2">
                 <Input
-                  label={t("execProfiles.budgets.maxAttempts")}
+                  label={t("execProfiles.operations.modelRequestTimeout")}
                   type="number"
                   min={1}
-                  max={10}
-                  value={draft.budgets.maxAttempts}
+                  max={3_600}
+                  value={draft.operations.modelRequestTimeoutSecs}
+                  help={t("execProfiles.operations.modelRequestTimeoutHelp")}
                   onChange={(event) =>
-                    updateBudget({ maxAttempts: Number(event.target.value) })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.budgets.maxSessions")}
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={draft.budgets.maxSessions}
-                  onChange={(event) =>
-                    updateBudget({ maxSessions: Number(event.target.value) })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.budgets.maxTurns")}
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={draft.budgets.maxTurns}
-                  onChange={(event) =>
-                    updateBudget({ maxTurns: Number(event.target.value) })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.budgets.maxInput")}
-                  type="number"
-                  min={1}
-                  max={1_000_000}
-                  value={draft.budgets.maxInputTokens}
-                  onChange={(event) =>
-                    updateBudget({ maxInputTokens: Number(event.target.value) })
-                  }
-                />
-                <Input
-                  label={t("execProfiles.budgets.maxOutput")}
-                  type="number"
-                  min={1}
-                  max={100_000}
-                  value={draft.budgets.maxOutputTokens}
-                  onChange={(event) =>
-                    updateBudget({
-                      maxOutputTokens: Number(event.target.value),
+                    updateOperations({
+                      modelRequestTimeoutSecs: Number(event.target.value),
                     })
                   }
                 />
                 <Input
-                  label={t("execProfiles.budgets.maxCost")}
+                  label={t("execProfiles.operations.toolCallTimeout")}
                   type="number"
                   min={1}
-                  max={100_000_000}
-                  value={draft.budgets.maxCostMicros}
+                  max={3_600}
+                  value={draft.operations.toolCallTimeoutSecs}
                   onChange={(event) =>
-                    updateBudget({ maxCostMicros: Number(event.target.value) })
+                    updateOperations({
+                      toolCallTimeoutSecs: Number(event.target.value),
+                    })
                   }
                 />
                 <Input
-                  label={t("execProfiles.budgets.deadline")}
+                  label={t("execProfiles.operations.maxRequestBytes")}
                   type="number"
-                  min={30}
-                  max={86_400}
-                  value={draft.budgets.deadlineSecs}
+                  min={1}
+                  max={64 * 1024 * 1024}
+                  value={draft.operations.maxRequestBytes}
                   onChange={(event) =>
-                    updateBudget({ deadlineSecs: Number(event.target.value) })
+                    updateOperations({
+                      maxRequestBytes: Number(event.target.value),
+                    })
+                  }
+                />
+                <Input
+                  label={t("execProfiles.operations.maxResponseBytes")}
+                  type="number"
+                  min={1}
+                  max={64 * 1024 * 1024}
+                  value={draft.operations.maxResponseBytes}
+                  onChange={(event) =>
+                    updateOperations({
+                      maxResponseBytes: Number(event.target.value),
+                    })
+                  }
+                />
+                <Input
+                  label={t("execProfiles.operations.maxGenerationTokens")}
+                  type="number"
+                  min={1}
+                  max={1_000_000}
+                  value={draft.operations.maxGenerationTokens}
+                  onChange={(event) =>
+                    updateOperations({
+                      maxGenerationTokens: Number(event.target.value),
+                    })
+                  }
+                />
+                <Input
+                  label={t("execProfiles.operations.maxInFlight")}
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={draft.operations.maxInFlightOperations}
+                  onChange={(event) =>
+                    updateOperations({
+                      maxInFlightOperations: Number(event.target.value),
+                    })
                   }
                 />
               </div>
-            </section>
-
-            <section aria-label={t("execProfiles.autoStart.aria")}>
-              <div className="section-heading">
-                <h3>{t("execProfiles.autoStart.title")}</h3>
-                <span className="muted">
-                  {t("execProfiles.autoStart.hint")}
-                </span>
+              <h4>{t("execProfiles.progress.title")}</h4>
+              <p className="muted">{t("execProfiles.progress.hint")}</p>
+              <div className="grid-2">
+                <Input
+                  label={t("execProfiles.progress.diagnoseAfter")}
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.progress.diagnoseAfterStagnantCheckpoints}
+                  onChange={(event) =>
+                    updateProgress({
+                      diagnoseAfterStagnantCheckpoints: Number(
+                        event.target.value,
+                      ),
+                    })
+                  }
+                />
+                <Input
+                  label={t("execProfiles.progress.escalateAfter")}
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={draft.progress.escalateAfterUnsuccessfulReplans}
+                  onChange={(event) =>
+                    updateProgress({
+                      escalateAfterUnsuccessfulReplans: Number(
+                        event.target.value,
+                      ),
+                    })
+                  }
+                />
+                <Input
+                  label={t("execProfiles.progress.observationTimeout")}
+                  type="number"
+                  min={1}
+                  max={3_600}
+                  value={draft.progress.observationTimeoutSecs}
+                  onChange={(event) =>
+                    updateProgress({
+                      observationTimeoutSecs: Number(event.target.value),
+                    })
+                  }
+                />
               </div>
+              <h4>{t("execProfiles.autoStart.title")}</h4>
+              <p className="muted">{t("execProfiles.autoStart.hint")}</p>
               <Checkbox
                 label={t("execProfiles.autoStart.label")}
                 checked={draft.autoStartEnabled}
@@ -1520,7 +1589,7 @@ export function ExecutionProfiles() {
                   />
                 ))}
               </div>
-            </section>
+            </details>
 
             <div className="row">
               <Button type="submit" variant="primary" disabled={busy}>
