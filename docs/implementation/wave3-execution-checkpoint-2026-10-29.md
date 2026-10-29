@@ -28,8 +28,8 @@ provenance and is not current campaign certification.
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
 | Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
-| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `abd42cd868580728174211bb0f73c332e67593b5`; fixture claim repair dirty | Luna subagent `home_conversation`; feature review PASS; browser journey repair active | Resolve missing Lead delegation selector option in canonical Compose Chromium journey, rerun and commit; keep visual sign-off pending |
-| Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; previous review BLOCK found infinite loop, corrected in source commit; exact re-review pending | Resolve inherited CAP-050/052 architecture check after #81; obtain exact-head review; Owner visual acceptance pending |
+| Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `3d394652fd3956676affbefb6c8109076ca33c77` | Luna subagent `home_conversation`; feature review PASS; fixture route fix committed; isolated Home Chromium run active | Run Home-specific fixture journey, rebind PR declarations to exact SHA; broader Lead journey requires V2 grant HTTP route, while existing fixture creates historical V1 grant; keep visual sign-off pending |
+| Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; exact independent review PASS; prior infinite loop corrected | Resolve inherited CAP-050/052 architecture check after #81; Owner visual acceptance pending |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Repair HEAD `a03dd55776fe20c15a8fac3565a40fa5b147a0b6`; clean | Luna subagent `access_security_repairs`; initial exact review BLOCK (Major Compose socket mount-policy gap); re-review queued | Collect re-review of socket allowlist/negative tests and updated remote evidence; preserve #36 → #37 → #38 order |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | `32907995c84cbe6f348be17acd61073a18f8b566` plus dirty harness/runbook/tests | Unassigned; preserve | Reconcile with subscription-only policy after funding boundary; no live inference |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
@@ -52,12 +52,13 @@ were left untouched.
   `compose-policy` passed. Dirty local changes are not yet committed or reflected
   in those remote check results.
 - #80 — conversational Home: open draft against Wave 3 at
-  `abd42cd868580728174211bb0f73c332e67593b5`. Feature review passed. The old
-  textarea selector and stale-binary issue were repaired. The canonical browser
-  journey now reaches Lead but times out because the new delegation is absent
-  from the Lead selector; a non-billable FIXTURE assignment claim also
-  incorrectly required provider route identity and is being repaired. The
-  architecture declaration must be rebound after the next commit.
+  `3d394652fd3956676affbefb6c8109076ca33c77`. Feature review passed. The
+  FIXTURE-only claim regression is repaired and focused DB, fmt and strict
+  Clippy gates passed. A full journey has an existing V1/V2 contract mismatch:
+  fixture setup creates a historical V1 delegation, but V2 Lead requires a V2
+  grant and Core exposes no HTTP V2 grant-create route. The agent is exercising
+  the isolated Home-only Chromium journey. PR architecture declaration needs
+  rebinding to this exact SHA.
 - #81 — capability evidence-reference correction: open draft against Wave 3 at
   `13adff74a8de434fd46c527ea92608b695a98d03`. Canonical container architecture
   governance and Compose policy passed after retrying with the worktree's common
@@ -149,6 +150,13 @@ completion.
   found better framing and identity variety, but the scene remains flatter and
   less painterly than the reference. Exact re-review and Owner visual acceptance
   remain pending.
+- Independent review of exact Agent Office V3 SHA `82b9ee4`: **PASS**. Reviewer
+  verified termination/uniqueness through 200 participants, Core participant
+  identity binding, keyboard/accessibility behavior and candid fixture-only
+  evidence. The palette rank assignment can change later participants' looks
+  when an earlier-sorting identity is added or removed; this is nonblocking.
+  Owner visual acceptance remains pending because the scene is materially less
+  painterly than the approved reference.
 - Access exact-SHA review of `2851345` found no credential leak, auth bypass,
   pairing resurrection or current Tailscale path to Core's control listener,
   but returned **BLOCK** for the Compose socket-mount policy gap described
@@ -178,7 +186,6 @@ completion.
    relevant deterministic gates pass. Do not merge to `main`.
 
 **Independent review:** access `2851345` BLOCK (repair `a03dd55` re-review
-pending);
-funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` and capability PR #81
-reviews pending.
+pending); funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` PASS; capability
+PR #81 review pending.
 **Campaign status:** in progress; Wave 3 is not a certified product release.
