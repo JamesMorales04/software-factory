@@ -33,6 +33,7 @@ import {
   MODEL,
   PROVIDER,
   VERIFICATION_SCHEMA,
+  readBillingSource,
   loadSubscriptionVerification,
   parseGate,
   readActualCharge,
@@ -556,6 +557,15 @@ before(async () => {
         });
         return;
       }
+      if (healthMode === "error-message-secret") {
+        send(502, { error: `upstream rejected ${PROVIDER_CREDENTIAL}` });
+        return;
+      }
+      if (healthMode === "error-plain-secret") {
+        response.writeHead(502, { "content-type": "text/plain" });
+        response.end(`upstream rejected ${PROVIDER_CREDENTIAL}`);
+        return;
+      }
       send(200, { healthy: true, version: "0.1.0" });
       return;
     }
@@ -993,14 +1003,36 @@ test("preflight refuses a provider turn budget above the authorization", async (
 test("a Core error that echoes the operator token is redacted", async () => {
   requests = [];
   healthMode = "echo-token";
-  const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
-  const result = await runDriver(["preflight"], env);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /\[REDACTED\]/, result.stderr);
-  assert.doesNotMatch(result.stderr, new RegExp(TOKEN));
-  assert.doesNotMatch(result.stdout, new RegExp(TOKEN));
-  assert.doesNotMatch(result.stderr, new RegExp(PROVIDER_CREDENTIAL));
-  healthMode = "ok";
+  try {
+    const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
+    const result = await runDriver(["preflight"], env);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /CORE_HTTP/);
+    assert.doesNotMatch(result.stderr, /rejected/);
+    assert.doesNotMatch(result.stderr, new RegExp(TOKEN));
+    assert.doesNotMatch(result.stdout, new RegExp(TOKEN));
+    assert.doesNotMatch(result.stderr, new RegExp(PROVIDER_CREDENTIAL));
+  } finally {
+    healthMode = "ok";
+  }
+});
+
+test("Core errors omit arbitrary JSON and non-JSON response bodies", async () => {
+  try {
+    for (const mode of ["error-message-secret", "error-plain-secret"]) {
+      requests = [];
+      healthMode = mode;
+      const env = baseGate(port, { FACTORY_REAL_PROVIDER_DRY_RUN: "1" });
+      const result = await runDriver(["preflight"], env);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /CORE_HTTP/);
+      assert.doesNotMatch(result.stderr, /upstream rejected/);
+      assert.doesNotMatch(result.stdout, new RegExp(PROVIDER_CREDENTIAL));
+      assert.doesNotMatch(result.stderr, new RegExp(PROVIDER_CREDENTIAL));
+    }
+  } finally {
+    healthMode = "ok";
+  }
 });
 
 test("operator token files with group/other access are refused", async () => {
@@ -1131,6 +1163,12 @@ test("a fake-Core subscription run records ACCEPTED without a USD cap", async ()
   assert.equal(evidence.subscription.extra_usage, "OFF");
   assert.equal(evidence.subscription.balance_fallback, "OFF");
   assert.equal(evidence.subscription.quota.state, "AVAILABLE");
+  assert.ok(
+    evidence.usage.provider_billing_source_observations.some(
+      (source) => source.observation === "SUBSCRIPTION_INCLUDED",
+    ),
+    "subscription route source must remain separate from actual charge",
+  );
   assert.equal(evidence.subscription.core_verifiable, false);
   assert.match(evidence.subscription.limitation, /CANNOT_VERIFY/);
   assert.equal(evidence.usage.measured.input_tokens, 1600);
@@ -1292,6 +1330,34 @@ test("list-rate and provider-reported actual charge are distinct observations", 
   assert.equal(unknown.observation, "UNKNOWN");
   assert.equal(fallback.fallbackObserved, true);
   assert.equal(
+    readActualCharge(
+      { actual_charge_known: true, actual_charge_micros: null },
+      "model_call",
+      "null-charge",
+    ).observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    readActualCharge({ billing_source: "go" }, "model_call", "go-route").observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    readActualCharge({ billing_source: "go-plus" }, "model_call", "go-plus-route").observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    readActualCharge({ billing_source: "free" }, "model_call", "free-route").observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    readBillingSource({ billing_source: "go" }, "model_call", "go-route").observation,
+    "SUBSCRIPTION_INCLUDED",
+  );
+  assert.equal(
+    readBillingSource({ billing_source: "balance" }, "model_call", "balance-route").observation,
+    "PAID_FALLBACK",
+  );
+  assert.equal(
     summarizeActualCharge([
       {
         record: { actual_charge_known: true, actual_charge_micros: 0 },
@@ -1303,6 +1369,22 @@ test("list-rate and provider-reported actual charge are distinct observations", 
   );
   assert.equal(
     summarizeActualCharge([{ record: {}, kind: "x", id: "x" }]).observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    summarizeActualCharge([
+      {
+        record: { actual_charge_known: true, actual_charge_micros: null },
+        kind: "x",
+        id: "null-charge",
+      },
+    ]).observation,
+    "UNKNOWN",
+  );
+  assert.equal(
+    summarizeActualCharge([
+      { record: { billing_source: "go" }, kind: "x", id: "go-route" },
+    ]).observation,
     "UNKNOWN",
   );
 });
