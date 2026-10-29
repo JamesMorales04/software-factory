@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import {
   type ExecutionProfile,
   type IntakeRequestProjection,
   type IntakeRequestSummary,
+  type LeadAssessmentView,
   type OfficeOverview,
   type Project,
 } from "../coreApi";
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   listProjects: vi.fn(),
   listExecutionProfiles: vi.fn(),
   listIntakeRequests: vi.fn(),
+  getIntakeRequest: vi.fn(),
   getOverview: vi.fn(),
   createIntakeRequest: vi.fn(),
   enableExecutionPolicy: vi.fn(),
@@ -138,6 +140,30 @@ const projection: IntakeRequestProjection = {
   messages: [],
 };
 
+const assessment: LeadAssessmentView = {
+  schemaRevision: 1,
+  projectId: "project-1",
+  actionId: "action-1",
+  requestId: "lead-1",
+  evidenceRefs: ["src/api.rs"],
+  intent: "Add a supported export endpoint",
+  complexity: "moderate",
+  effortEstimate: {
+    status: "estimated",
+    unit: "person-hours",
+    minPersonHours: 2,
+    maxPersonHours: 4,
+    assumptions: ["Existing API remains stable"],
+    unknownReason: "",
+  },
+  knowledgeGaps: [],
+  changeImpact: ["Adds a new endpoint"],
+  validationNeeds: ["Integration test"],
+  assumptions: ["Tests run in CI"],
+  uncertainty: [],
+  suggestedNextAction: "Review the frozen plan.",
+};
+
 const overview: OfficeOverview = {
   as_of: "2026-10-27T10:00:00Z",
   source: "Core durable snapshots",
@@ -242,6 +268,7 @@ describe("Home", () => {
       .mockReset()
       .mockResolvedValue({ profiles: [profile], supportedRoutes: [] });
     mocks.listIntakeRequests.mockReset().mockResolvedValue([summary]);
+    mocks.getIntakeRequest.mockReset().mockResolvedValue(projection);
     mocks.getOverview.mockReset().mockResolvedValue(overview);
     mocks.createIntakeRequest.mockReset().mockResolvedValue(projection);
     mocks.enableExecutionPolicy.mockReset().mockResolvedValue({
@@ -252,23 +279,33 @@ describe("Home", () => {
     });
   });
 
-  it("renders the operator-first request surface with Core-backed status", async () => {
+  it("renders the operator-first conversation surface with Core-backed status", async () => {
     renderHome();
     await screen.findByRole("heading", { name: "Home" });
     expect(
       screen.getByRole("heading", {
-        name: "What should the Factory work on?",
+        name: "What do you want to build today?",
       }),
     ).toBeDefined();
+    expect(screen.getByText("Conversation with your Lead")).toBeDefined();
     expect(screen.getByLabelText("Project")).toBeDefined();
-    expect(screen.getByLabelText("What should the Factory do?")).toBeDefined();
+    expect(screen.getByLabelText("Your instruction to the Lead")).toBeDefined();
     expect(screen.getByLabelText("Execution profile")).toBeDefined();
     expect(screen.queryByRole("radio", { name: /Autonomous/ })).toBeNull();
     expect(screen.getByText(/Explicit approval required/)).toBeDefined();
-    expect(await screen.findByText("Add a CSV export endpoint")).toBeDefined();
-    expect(screen.getByText("Awaiting approval")).toBeDefined();
+    const thread = await screen.findByTestId("home-thread");
+    expect(within(thread).getByText("Your Lead")).toBeDefined();
+    expect(
+      await within(thread).findByText("The plan is ready for your approval."),
+    ).toBeDefined();
+    expect(
+      within(thread).getByRole("link", { name: "Continue conversation" }),
+    ).toBeDefined();
+    const recent = screen.getByTestId("home-recent");
+    expect(within(recent).getByText("Add a CSV export endpoint")).toBeDefined();
+    expect(within(recent).getByText("Awaiting approval")).toBeDefined();
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
-    expect(screen.getByText("Core status")).toBeDefined();
+    expect(screen.getByText("Factory status")).toBeDefined();
   });
 
   it("does not require productivity caps or expose budget tables on Home", async () => {
@@ -289,20 +326,21 @@ describe("Home", () => {
     await screen.findByRole("heading", { name: "Inicio" });
     expect(
       screen.getByRole("heading", {
-        name: "¿En qué debe trabajar la Factory?",
+        name: "¿Qué quieres construir hoy?",
       }),
     ).toBeDefined();
     expect(screen.getByLabelText("Proyecto")).toBeDefined();
-    expect(screen.getByLabelText("¿Qué debe hacer la Factory?")).toBeDefined();
+    expect(screen.getByLabelText("Tu instrucción al Lead")).toBeDefined();
     expect(screen.getByLabelText("Perfil de ejecución")).toBeDefined();
     expect(
-      screen.getByLabelText("Gasto máximo de inferencia (USD)"),
+      screen.getByLabelText("Autorización de inferencia (USD)"),
     ).toBeDefined();
     expect(screen.getByText(/Aprobación explícita obligatoria/)).toBeDefined();
-    expect(await screen.findByText("Pendiente de aprobación")).toBeDefined();
-    expect(screen.getByText("Estado de Core")).toBeDefined();
+    const recent = await screen.findByTestId("home-recent");
+    expect(within(recent).getByText("Pendiente de aprobación")).toBeDefined();
+    expect(screen.getByText("Estado de la Factory")).toBeDefined();
     expect(
-      screen.getByRole("button", { name: "Enviar solicitud" }),
+      screen.getByRole("button", { name: "Enviar al Lead" }),
     ).toBeDefined();
   });
 
@@ -311,12 +349,10 @@ describe("Home", () => {
     await screen.findByLabelText("Project");
     await userEvent.selectOptions(screen.getByLabelText("Project"), "");
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(await screen.findByText("Select a Project.")).toBeDefined();
     expect(document.activeElement?.id).toBe("home-project");
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
@@ -325,10 +361,10 @@ describe("Home", () => {
       screen.getByLabelText("Project"),
       "project-1",
     );
-    await userEvent.clear(screen.getByLabelText("What should the Factory do?"));
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
+    await userEvent.clear(
+      screen.getByLabelText("Your instruction to the Lead"),
     );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(
       await screen.findByText("Describe the engineering outcome you want."),
     ).toBeDefined();
@@ -344,14 +380,12 @@ describe("Home", () => {
       "project-1",
     );
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
-    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    const spend = screen.getByLabelText("Inference authorization (USD)");
     await userEvent.clear(spend);
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(
       await screen.findByText(
         "Enter a positive USD amount for the inference envelope.",
@@ -361,9 +395,7 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
 
     await userEvent.type(spend, "10.50");
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
     expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
       expect.objectContaining({ authorized_micros: 10_500_000 }),
@@ -378,15 +410,13 @@ describe("Home", () => {
       "project-1",
     );
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
     await userEvent.clear(
-      screen.getByLabelText("Maximum inference spend (USD)"),
+      screen.getByLabelText("Inference authorization (USD)"),
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
   });
@@ -399,15 +429,15 @@ describe("Home", () => {
       "project-1",
     );
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
-    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    const spend = screen.getByLabelText("Inference authorization (USD)");
     for (const invalid of ["0", "-1", "999999999999999"]) {
       await userEvent.clear(spend);
       await userEvent.type(spend, invalid);
       await userEvent.click(
-        screen.getByRole("button", { name: "Submit request" }),
+        screen.getByRole("button", { name: "Send to Lead" }),
       );
       expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
       expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
@@ -422,15 +452,13 @@ describe("Home", () => {
       "project-1",
     );
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
-    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    const spend = screen.getByLabelText("Inference authorization (USD)");
     await userEvent.clear(spend);
     await userEvent.type(spend, "12.50");
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
     expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
       expect.objectContaining({ authorized_micros: 12_500_000 }),
@@ -445,15 +473,15 @@ describe("Home", () => {
       "project-1",
     );
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add an export endpoint.",
     );
-    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    const spend = screen.getByLabelText("Inference authorization (USD)");
     for (const value of ["0", "-1", "99999999999999"]) {
       await userEvent.clear(spend);
       await userEvent.type(spend, value);
       await userEvent.click(
-        screen.getByRole("button", { name: "Submit request" }),
+        screen.getByRole("button", { name: "Send to Lead" }),
       );
       expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
       expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
@@ -471,12 +499,10 @@ describe("Home", () => {
     expect(screen.getAllByText("opencode-go/")).toHaveLength(3);
     expect(screen.getAllByText("deepseek-v4.1-flash")).toHaveLength(3);
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add a CSV export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(await screen.findByText("Request workspace probe")).toBeDefined();
     expect(mocks.createIntakeRequest).toHaveBeenCalledWith({
       project_id: "project-1",
@@ -496,16 +522,14 @@ describe("Home", () => {
       }),
     );
     renderHome();
-    await screen.findByLabelText("What should the Factory do?");
+    await screen.findByLabelText("Your instruction to the Lead");
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add a CSV export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     const submitting = await screen.findByRole("button", {
-      name: "Submitting request…",
+      name: "Sending…",
     });
     expect((submitting as HTMLButtonElement).disabled).toBe(true);
     await act(async () => {
@@ -519,14 +543,12 @@ describe("Home", () => {
       new CoreApiError(404, "not found"),
     );
     renderHome();
-    await screen.findByLabelText("What should the Factory do?");
+    await screen.findByLabelText("Your instruction to the Lead");
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add a CSV export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(
       await screen.findByText(/Unified request intake is not available/),
     ).toBeDefined();
@@ -545,16 +567,14 @@ describe("Home", () => {
     ).toBeDefined();
     expect(
       screen.getByRole("option", {
-        name: "Core default (profile list unavailable)",
+        name: "Default profile (list unavailable)",
       }),
     ).toBeDefined();
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add a CSV export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
     expect(mocks.createIntakeRequest).toHaveBeenCalledWith({
       project_id: "project-1",
@@ -569,19 +589,21 @@ describe("Home", () => {
     mocks.listProjects.mockResolvedValue([]);
     renderHome();
     expect(await screen.findByText("Register a Project first")).toBeDefined();
-    expect(screen.queryByLabelText("What should the Factory do?")).toBeNull();
+    expect(screen.queryByLabelText("Your instruction to the Lead")).toBeNull();
     expect(
       screen.getByRole("link", { name: "Open Projects" }).getAttribute("href"),
     ).toBe("/projects");
   });
 
-  it("keeps the composer usable when Core status is unavailable", async () => {
+  it("keeps the composer usable when Factory status is unavailable", async () => {
     mocks.getOverview.mockRejectedValue(new Error("connection refused"));
     renderHome();
     expect(
-      await screen.findByText(/Core status is unavailable: connection refused/),
+      await screen.findByText(
+        /Factory status is unavailable: connection refused/,
+      ),
     ).toBeDefined();
-    expect(screen.getByLabelText("What should the Factory do?")).toBeDefined();
+    expect(screen.getByLabelText("Your instruction to the Lead")).toBeDefined();
   });
 
   it("does not present an empty request list when the projection is unavailable", async () => {
@@ -593,6 +615,118 @@ describe("Home", () => {
       await screen.findByText(/Unified request history is not available/),
     ).toBeDefined();
     expect(screen.queryByText("No requests yet")).toBeNull();
+  });
+
+  it("frames Home as a conversation and lets a suggestion seed the composer", async () => {
+    renderHome();
+    const instruction = await screen.findByLabelText(
+      "Your instruction to the Lead",
+    );
+    expect(screen.getByRole("group", { name: "Suggestions" })).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Improve performance" }),
+    );
+    expect(document.activeElement).toBe(instruction);
+    expect((instruction as HTMLTextAreaElement).value).toBe(
+      "Improve performance in ",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Add tests" }));
+    expect((instruction as HTMLTextAreaElement).value).toBe(
+      "Improve performance in \nAdd tests for ",
+    );
+    expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
+  });
+
+  it("submits the instruction with Ctrl+Enter without a mouse", async () => {
+    renderHome();
+    const instruction = await screen.findByLabelText(
+      "Your instruction to the Lead",
+    );
+    await userEvent.type(instruction, "Add a CSV export endpoint.");
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(mocks.createIntakeRequest).toHaveBeenCalled());
+    expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objective: "Add a CSV export endpoint.",
+      }),
+    );
+  });
+
+  it("shows the latest active Lead thread and continues it in the workspace", async () => {
+    const activeSummary: IntakeRequestSummary = {
+      ...summary,
+      id: "request-active",
+      objective: "Harden device session revocation",
+      updatedAt: "2026-10-27T10:06:00Z",
+    };
+    const completedSummary: IntakeRequestSummary = {
+      ...summary,
+      id: "request-completed",
+      objective: "Old completed work",
+      state: "COMPLETED",
+      updatedAt: "2026-10-27T09:00:00Z",
+    };
+    const activeProjection: IntakeRequestProjection = {
+      ...projection,
+      ...activeSummary,
+      assessment,
+      messages: [
+        {
+          id: "message-1",
+          role: "operator",
+          body: "Keep existing clients working.",
+          createdAt: "2026-10-27T10:04:00Z",
+        },
+      ],
+    };
+    mocks.listIntakeRequests.mockResolvedValue([
+      completedSummary,
+      activeSummary,
+    ]);
+    mocks.getIntakeRequest.mockResolvedValue(activeProjection);
+
+    renderHome();
+    const thread = await screen.findByTestId("home-thread");
+    expect(
+      await within(thread).findByText("Harden device session revocation"),
+    ).toBeDefined();
+    expect(
+      within(thread).getByText("Keep existing clients working."),
+    ).toBeDefined();
+    expect(
+      within(thread).getByText("Next: Review the frozen plan."),
+    ).toBeDefined();
+    expect(
+      within(thread)
+        .getByRole("link", { name: "Continue conversation" })
+        .getAttribute("href"),
+    ).toBe("/requests/request-active");
+    await waitFor(() =>
+      expect(mocks.getIntakeRequest).toHaveBeenCalledWith("request-active"),
+    );
+  });
+
+  it("does not invent a Lead thread when there is no request history", async () => {
+    mocks.listIntakeRequests.mockResolvedValue([]);
+    renderHome();
+    expect(await screen.findByText("No requests yet")).toBeDefined();
+    expect(screen.queryByTestId("home-thread")).toBeNull();
+    expect(mocks.getIntakeRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest thread continuation available when its preview fails", async () => {
+    mocks.getIntakeRequest.mockRejectedValue(new Error("offline"));
+    renderHome();
+    const thread = await screen.findByTestId("home-thread");
+    expect(
+      await within(thread).findByText(
+        "The conversation preview could not be loaded.",
+      ),
+    ).toBeDefined();
+    expect(
+      within(thread).getByRole("link", { name: "Continue conversation" }),
+    ).toBeDefined();
   });
 
   it("offers an explicit governed-execution grant and retries the same request", async () => {
@@ -644,14 +778,12 @@ describe("Home", () => {
       )
       .mockResolvedValueOnce(projection);
     renderHome();
-    await screen.findByLabelText("What should the Factory do?");
+    await screen.findByLabelText("Your instruction to the Lead");
     await userEvent.type(
-      screen.getByLabelText("What should the Factory do?"),
+      screen.getByLabelText("Your instruction to the Lead"),
       "Add a CSV export endpoint.",
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "Submit request" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Send to Lead" }));
     expect(
       await screen.findByRole("heading", {
         name: "Enable governed execution",

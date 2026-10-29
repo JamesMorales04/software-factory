@@ -98,12 +98,10 @@ export const es: Catalog = {
   "home.title": "Inicio",
   "home.projects.error": "No se pudieron cargar los Proyectos desde Core.",
   "home.projects.retry": "Reintentar Proyectos",
-  "home.newRequest.title": "Nueva solicitud",
-  "home.newRequest.hint":
-    "Intención del operador, no una especificación de Acción",
-  "home.composer.title": "¿En qué debe trabajar la Factory?",
+  "home.lead.kicker": "Conversación con tu Lead",
+  "home.composer.title": "¿Qué quieres construir hoy?",
   "home.composer.description":
-    "Describe el resultado en lenguaje natural. El Lead prepara un plan y tú lo apruebas antes de que empiece cualquier trabajo.",
+    "Cuéntale al Lead el resultado que quieres. Apruebas el plan antes de que empiece el trabajo.",
   "home.projects.loading": "Cargando Proyectos…",
   "home.projects.emptyTitle": "Registra primero un Proyecto",
   "home.projects.emptyDescription":
@@ -112,21 +110,20 @@ export const es: Catalog = {
   "home.projectFallback": "Proyecto {id}",
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
-  "home.objective.label": "¿Qué debe hacer la Factory?",
+  "home.objective.label": "Tu instrucción al Lead",
   "home.objective.placeholder":
-    "Añade un endpoint de exportación CSV a la API de informes, mantén la compatibilidad hacia atrás y cúbrelo con pruebas.",
+    "Describe qué quieres construir, corregir o mejorar…",
   "home.profile.label": "Perfil de ejecución",
   "home.profile.routes": "Detalle de rutas",
   "home.profile.routesHint":
     "Estas rutas forman parte de la revisión del perfil que Core congela para esta solicitud.",
   "home.profile.coreDefaultUnavailable":
-    "Predeterminado de Core (lista de perfiles no disponible)",
+    "Perfil predeterminado (lista no disponible)",
   "home.profile.loading": "Cargando perfiles…",
-  "home.profile.coreDefault":
-    "Predeterminado de Core (Proyecto y luego global)",
+  "home.profile.coreDefault": "Perfil predeterminado",
   "home.profile.unavailableSuffix": " — no disponible",
-  "home.profile.globalSuffix": " · predeterminado global",
-  "home.profile.projectSuffix": " · predeterminado del Proyecto",
+  "home.profile.globalDefault": "Predeterminado global",
+  "home.profile.projectDefault": "Predeterminado del Proyecto",
   "home.profiles.unavailable":
     "Los perfiles de ejecución no están disponibles en esta compilación de Core. Si envías sin un perfil explícito, Core resuelve su predeterminado del Proyecto o global; si no existe, Core rechaza la solicitud.",
   "home.profiles.retry": "Reintentar perfiles",
@@ -140,7 +137,7 @@ export const es: Catalog = {
     "El perfil de ejecución seleccionado no es ejecutable en esta compilación de Core. Elige otro perfil.",
   "home.approval.title": "Aprobación explícita obligatoria.",
   "home.approval.body":
-    "Core congela el plan y espera tu decisión; nada se ejecuta por sí solo.",
+    "El Lead planifica; tú apruebas antes de que empiece el trabajo.",
   "home.policy.title": "Habilitar ejecución gobernada",
   "home.policy.description":
     "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita a trabajo R0; no habilita el inicio automático.",
@@ -170,9 +167,9 @@ export const es: Catalog = {
   "home.policy.enable": "Habilitar ejecución gobernada",
   "home.policy.enabling": "Habilitando ejecución gobernada…",
   "home.validation.project": "Selecciona un Proyecto.",
-  "home.spend.label": "Gasto máximo de inferencia (USD)",
+  "home.spend.label": "Autorización de inferencia (USD)",
   "home.spend.help":
-    "Cubre la evaluación de Lead, la implementación y la revisión. Core detiene las llamadas facturables cuando se agota y solicita un aumento.",
+    "Core la exige para llamadas facturables. Se detiene cuando se agota.",
   "home.validation.authorization":
     "Introduce un importe positivo en USD para la envolvente de inferencia.",
   "home.validation.objective":
@@ -180,9 +177,20 @@ export const es: Catalog = {
   "home.request.error": "No se pudo enviar la solicitud.",
   "home.request.endpointUnavailable":
     "La entrada unificada de solicitudes no está disponible en esta compilación de Core. El cliente tipado de Office está listo, pero Core no expone /intake/requests.",
-  "home.submit": "Enviar solicitud",
-  "home.submitting": "Enviando solicitud…",
-  "home.submitHint": "Registra la intención en Core. No autoriza una Campaña.",
+  "home.submit": "Enviar al Lead",
+  "home.submitting": "Enviando…",
+  "home.keyboardHint": "Ctrl/⌘ + Intro para enviar",
+  "home.suggestions.label": "Sugerencias",
+  "home.suggestions.issue": "Corregir una incidencia de GitHub",
+  "home.suggestions.issueSeed": "Corrige la incidencia de GitHub: ",
+  "home.suggestions.performance": "Mejorar el rendimiento",
+  "home.suggestions.performanceSeed": "Mejora el rendimiento de ",
+  "home.suggestions.integration": "Añadir una integración",
+  "home.suggestions.integrationSeed": "Añade una integración para ",
+  "home.suggestions.refactor": "Refactorizar un módulo",
+  "home.suggestions.refactorSeed": "Refactoriza el módulo ",
+  "home.suggestions.tests": "Añadir pruebas",
+  "home.suggestions.testsSeed": "Añade pruebas para ",
   "home.recent.title": "Trabajo reciente",
   "home.recent.loading": "Cargando solicitudes…",
   "home.recent.unavailable":
@@ -191,22 +199,43 @@ export const es: Catalog = {
   "home.recent.retry": "Reintentar solicitudes",
   "home.recent.emptyTitle": "Aún no hay solicitudes",
   "home.recent.emptyDescription":
-    "Envía la primera solicitud arriba. Su estado y conversación aparecerán aquí.",
-  "home.status.aria": "Estado actual de la Factory",
-  "home.status.title": "Estado de Core",
-  "home.status.loading": "Comprobando Core…",
-  "home.status.error": "No se pudo actualizar el estado de Core.",
-  "home.status.unavailable": "El estado de Core no está disponible: {error}",
+    "Envía la primera instrucción arriba. Su estado y conversación aparecerán aquí.",
+  "home.thread.kicker": "Conversación",
+  "home.thread.title": "Tu Lead",
+  "home.thread.you": "Tú",
+  "home.thread.lead": "Lead",
+  "home.thread.next": "Siguiente: {action}",
+  "home.thread.loading": "Cargando conversación…",
+  "home.thread.error": "No se pudo cargar la vista previa de la conversación.",
+  "home.thread.continue": "Continuar conversación",
+  "home.thread.state.SUBMITTED":
+    "Esperando a que el Lead evalúe esta solicitud.",
+  "home.thread.state.ASSESSING": "El Lead está evaluando esta solicitud.",
+  "home.thread.state.PLAN_READY": "El Lead ha preparado un plan para revisar.",
+  "home.thread.state.AWAITING_APPROVAL":
+    "El plan está listo para tu aprobación.",
+  "home.thread.state.EXECUTING": "El Lead está coordinando el trabajo.",
+  "home.thread.state.BLOCKED":
+    "El trabajo está bloqueado y requiere tu atención.",
+  "home.thread.state.FAILED": "El último paso falló.",
+  "home.thread.state.COMPLETED": "Esta conversación ha terminado.",
+  "home.thread.state.CANCELLED": "Esta conversación se canceló.",
+  "home.side.aria": "Conversación, decisiones y estado de la Factory",
+  "home.status.title": "Estado de la Factory",
+  "home.status.healthy": "Correcto",
+  "home.status.unhealthy": "Con problemas",
+  "home.status.loading": "Comprobando el estado de la Factory…",
+  "home.status.error": "No se pudo actualizar el estado de la Factory.",
+  "home.status.unavailable":
+    "El estado de la Factory no está disponible: {error}",
   "home.status.retry": "Reintentar estado",
-  "home.status.snapshot":
-    "Instantánea {date}. Se actualiza cada 5 segundos desde Core.",
   "home.status.refreshFailed":
     "Falló la última actualización: {error}. Se muestra la última instantánea autoritativa.",
   "home.status.retryNow": "Reintentar ahora",
   "home.status.workers": "Trabajadores",
-  "home.status.runningAgents": "Agentes en ejecución",
-  "home.status.unresolvedSessions": "Sesiones sin resolver",
-  "home.status.unresolvedModelCalls": "Llamadas de modelo sin resolver",
+  "home.status.activeAgents": "Agentes activos",
+  "home.status.needsReview": "Requieren revisión: {count}",
+  "home.status.updated": "Actualizado {date}",
   "home.status.openRuntime": "Abrir Entorno",
   "home.status.openOverview": "Abrir Resumen",
   "home.active.unavailable":
