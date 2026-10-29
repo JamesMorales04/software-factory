@@ -334,7 +334,7 @@ try {
   for (const width of [1440, 834, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(
-      await page.getByLabel("What should the Factory do?").isVisible(),
+      await page.getByLabel("Your instruction to the Lead").isVisible(),
       true,
       `Home composer must remain visible at ${width}px`,
     );
