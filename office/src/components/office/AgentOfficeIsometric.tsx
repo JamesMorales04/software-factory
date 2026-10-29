@@ -23,6 +23,7 @@ import { cn } from "../ui/cn";
 import { EmptyState, Panel } from "../ui/Surface";
 import { OfficeAvatar } from "./OfficeAvatar";
 import { OfficeRoomBackdrop } from "./OfficeRoomBackdrop";
+import { OfficeStudioShell } from "./OfficeStudioShell";
 import {
   buildOfficeSceneLayout,
   cameraStyle,
@@ -275,6 +276,7 @@ export function AgentOfficeIsometric({
 
   const zoom = zoomPercent(camera);
   const overlayScale = Math.min(1.4, Math.max(1, 1 / camera.zoom));
+  const zoneScale = Math.min(1.35, Math.max(1, 1 / camera.zoom));
   const canZoomIn = camera.zoom < OFFICE_MAX_ZOOM;
   const canZoomOut = camera.zoom > OFFICE_MIN_ZOOM;
   const canPan = (deltaX: number, deltaY: number) => {
@@ -472,9 +474,11 @@ export function AgentOfficeIsometric({
               height: layout.height,
               ...cameraStyle(camera),
               "--office-overlay-scale": overlayScale.toFixed(2),
+              "--office-zone-scale": zoneScale.toFixed(2),
             } as CSSProperties
           }
         >
+          <OfficeStudioShell layout={layout} />
           {layout.zones.map((zone) => (
             <OfficeZoneStation
               key={zone.role}

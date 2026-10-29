@@ -11,23 +11,33 @@ import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
  * slots in the same role group; the next render is still deterministic.
  */
 
-export const OFFICE_AVATAR_WIDTH = 84;
-export const OFFICE_AVATAR_HEIGHT = 100;
+export const OFFICE_AVATAR_WIDTH = 92;
+export const OFFICE_AVATAR_HEIGHT = 112;
 /**
  * Pitch is deliberately larger than the avatar footprint. A slot owns its
  * complete button bounds, so two slots must never overlap even when the
  * depth painter later draws one closer to the viewer.
+ *
+ * Seats are grouped in workstation clusters of `OFFICE_CLUSTER_SIZE` columns
+ * and rows. The cluster gap is a real aisle in the floor plan, not a visual
+ * offset: the layout math below includes it in both the content size and the
+ * slot coordinates so the aisle remains empty at every density.
  */
-export const OFFICE_SLOT_COLUMN = 92;
-export const OFFICE_SLOT_ROW = 104;
-export const OFFICE_SLOT_STAGGER = 28;
-export const OFFICE_ZONE_HEADER = 50;
-export const OFFICE_ZONE_PADDING = 14;
-export const OFFICE_ZONE_GAP = 34;
-export const OFFICE_ZONE_MIN_WIDTH = 190;
-export const OFFICE_ZONE_MIN_HEIGHT = 174;
-export const OFFICE_WORLD_PADDING = 36;
+export const OFFICE_SLOT_COLUMN = 110;
+export const OFFICE_SLOT_ROW = 118;
+export const OFFICE_SLOT_STAGGER = 24;
+export const OFFICE_CLUSTER_SIZE = 3;
+export const OFFICE_CLUSTER_GAP = 26;
+export const OFFICE_ZONE_HEADER = 58;
+export const OFFICE_ZONE_PADDING = 16;
+/** Reserved floor lane for role furniture; avatars never enter it. */
+export const OFFICE_ZONE_SIDE_LANE = 64;
+export const OFFICE_ZONE_GAP = 46;
+export const OFFICE_ZONE_MIN_WIDTH = 224;
+export const OFFICE_ZONE_MIN_HEIGHT = 216;
+export const OFFICE_WORLD_PADDING = 52;
 export const OFFICE_LOOK_COUNT = 48;
+export const OFFICE_WALL_HEIGHT = 52;
 
 export const OFFICE_MIN_ZOOM = 0.45;
 export const OFFICE_MAX_ZOOM = 2;
@@ -142,21 +152,29 @@ function viewportFor(viewport: OfficeViewport): OfficeViewport {
   };
 }
 
+function clusterOffset(index: number, pitch: number): number {
+  return (
+    index * pitch +
+    Math.floor(Math.max(0, index) / OFFICE_CLUSTER_SIZE) * OFFICE_CLUSTER_GAP
+  );
+}
+
 function groupMetrics(memberCount: number): ZoneMetrics {
   const count = Math.max(1, memberCount);
   const columns = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(count))));
   const rows = Math.max(1, Math.ceil(count / columns));
   const contentWidth =
-    (columns - 1) * OFFICE_SLOT_COLUMN +
+    clusterOffset(columns - 1, OFFICE_SLOT_COLUMN) +
     (rows > 1 ? OFFICE_SLOT_STAGGER : 0) +
     OFFICE_AVATAR_WIDTH;
-  const contentHeight = (rows - 1) * OFFICE_SLOT_ROW + OFFICE_AVATAR_HEIGHT;
+  const contentHeight =
+    clusterOffset(rows - 1, OFFICE_SLOT_ROW) + OFFICE_AVATAR_HEIGHT;
   return {
     columns,
     rows,
     width: Math.max(
       OFFICE_ZONE_MIN_WIDTH,
-      contentWidth + OFFICE_ZONE_PADDING * 2,
+      contentWidth + OFFICE_ZONE_PADDING * 2 + OFFICE_ZONE_SIDE_LANE,
     ),
     height: Math.max(
       OFFICE_ZONE_MIN_HEIGHT,
@@ -170,13 +188,17 @@ function contentOffset(
   metrics: ZoneMetrics,
 ): { x: number; y: number } {
   const contentWidth =
-    (metrics.columns - 1) * OFFICE_SLOT_COLUMN +
+    clusterOffset(metrics.columns - 1, OFFICE_SLOT_COLUMN) +
     (metrics.rows > 1 ? OFFICE_SLOT_STAGGER : 0) +
     OFFICE_AVATAR_WIDTH;
   const contentHeight =
-    (metrics.rows - 1) * OFFICE_SLOT_ROW + OFFICE_AVATAR_HEIGHT;
+    clusterOffset(metrics.rows - 1, OFFICE_SLOT_ROW) + OFFICE_AVATAR_HEIGHT;
+  const seatAreaWidth = Math.max(
+    contentWidth,
+    zone.width - OFFICE_ZONE_SIDE_LANE,
+  );
   return {
-    x: zone.x + (zone.width - contentWidth) / 2,
+    x: zone.x + (seatAreaWidth - contentWidth) / 2,
     y:
       zone.y +
       OFFICE_ZONE_HEADER +
@@ -202,10 +224,11 @@ function buildZone(
     const row = Math.floor(index / metrics.columns);
     const anchorX =
       offset.x +
-      column * OFFICE_SLOT_COLUMN +
+      clusterOffset(column, OFFICE_SLOT_COLUMN) +
       (row % 2 === 1 ? OFFICE_SLOT_STAGGER : 0) +
       OFFICE_AVATAR_WIDTH / 2;
-    const anchorY = offset.y + row * OFFICE_SLOT_ROW + OFFICE_AVATAR_HEIGHT;
+    const anchorY =
+      offset.y + clusterOffset(row, OFFICE_SLOT_ROW) + OFFICE_AVATAR_HEIGHT;
     return {
       participant,
       index,

@@ -18,7 +18,8 @@ evidence.
 
 V0 uses one custom SVG/DOM scene:
 
-- SVG stations, slabs, workstations and figures.
+- SVG studio shell, corridors, rooms, wall treatments, furniture, workstations
+  and figures.
 - DOM `<button>` elements for avatars and the toolbar, so focus, names and
   activation are native browser behavior.
 - CSS transforms for pan/zoom; React state only, no per-frame game loop, no
@@ -61,10 +62,15 @@ filters. It never mixes a second client-side source of participants.
   Re-rendering, polling or receiving the same records in a different order
   cannot move an avatar. Adding or removing a participant can renumber later
   slots in the same station; the next render is still deterministic.
-- Avatar pitch is larger than the avatar bounds (92 × 104 px pitch for an
-  84 × 100 px button), so avatar buttons never overlap at any tested density.
-  Depth ordering remains only a painting concern, not a hit-target or
-  legibility dependency.
+- Avatar pitch is larger than the avatar bounds (110 × 118 px pitch for a
+  92 × 112 px button), so avatar buttons never overlap at any tested density.
+  Seats are grouped in clusters of three with an explicit aisle gap included
+  in both the room size and the slot coordinates. Depth ordering remains only
+  a painting concern, not a hit-target or legibility dependency.
+- Each room reserves a side lane for role furniture; avatar bounds are kept out
+  of that lane. The continuous studio shell, corridors, wall art, plants,
+  lamps, bookshelf, coffee station, test cart, lounge, server rack and pendant
+  lights are static original SVG/CSS geometry and carry no activity meaning.
 - Conflicting duplicate projections of one `participant_id` are resolved
   deterministically: `CURRENT` before unresolved/terminal observations, then
   the newest `last_observed_at`, then a stable lexical field tiebreak. Reversing
@@ -72,7 +78,9 @@ filters. It never mixes a second client-side source of participants.
 - Painter-order depth follows the station feet position, so nearer rows render
   in front. Selection raises only the selected avatar.
 - The world grows with the largest station (up to six columns and five rows per
-  station in the tested range) and is centered by a fitted camera.
+  station in the tested range) and is centered by a fitted camera. Room plaques
+  and avatar overlays counter-scale within a bounded factor for readability at
+  the fitted 30-person zoom.
 
 ## 3. Truthful state
 
@@ -111,6 +119,8 @@ as live activity.
 ## 5. Limitations
 
 - V0 is static. It does not animate walking, conversation, progress or tools.
+  Furniture, plants, wall art and studio lighting are static scene geometry and
+  do not imply that an agent is working.
 - There is no drag-and-drop reassignment: station assignment is Core-derived,
   not an operator action. No Core operation exists to move a participant.
 - The scene is not a second source of truth and does not stream events; the
@@ -121,6 +131,8 @@ as live activity.
 - The page projects at most 200 participants. Larger organizations require
   Campaign/project scope or a future paging design.
 - Visual regression, Storybook and a full axe/manual accessibility audit remain
-  open. Component tests are necessary but not sufficient.
+  open. Component tests are necessary but not sufficient. The 2026-10-29 visual
+  revision's Chromium fixture captures are author self-test evidence only; see
+  the [visual amendment](agent-office-visual-amendment.md).
 - Real browser acceptance against the real Core/Compose stack must be recorded
   separately and bound to the exact candidate commit.

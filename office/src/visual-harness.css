@@ -7,7 +7,7 @@ body {
 
 .harness {
   box-sizing: border-box;
-  width: min(1120px, 100%);
+  width: min(1360px, 100%);
   margin: 0 auto;
   padding: 24px;
   display: grid;
