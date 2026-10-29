@@ -27,7 +27,7 @@ provenance and is not current campaign certification.
 
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
-| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | `fe1729a70a0c065010a5bd8009dd6c3b03023833`, clean | Implemented by Luna subagent `funding_shared_admission`; exact-SHA independent review pending in `sf-wave3/funding-review` | Review; then continue with quota recovery/re-admission and request-level Home funding boundary; no paid fallback |
+| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | `fe1729a70a0c065010a5bd8009dd6c3b03023833`; follow-up repair active | Implemented by Luna subagent `funding_shared_admission`; independent review BLOCK by `review_home_523b288` | Fix missing-row legacy V1 fallthrough and Lead admission bypass with negative tests; re-review exact fix SHA |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | `6482f0c9b68f7fec3933a1b4dbe50e8f6e1e225c`, pushed | Implemented by Luna subagent `home_conversation`; exact-SHA independent review PASS from `review_home_523b288`; draft PR #80 | Await CI and real Core/Compose acceptance; Owner visual sign-off remains pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | `f7479c0c5f936d1097426dd1293ef43ea6e72fb6` plus dirty SVG/DOM renderer work and untracked `office/node_modules` | Luna subagent `agent_office_v3` | Continue preserved visual work; capture reference comparisons; Owner visual acceptance remains pending |
 | Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | `c8bf930bc34e7d7062b13821d0c84f734e394a18` plus dirty repairs | Luna subagent `access_security_repairs` | Complete negative security tests and ordered repairs; require exact-SHA independent review and Owner authorization |
@@ -50,6 +50,10 @@ were left untouched.
   reported failures for `architecture-consistency`, `rust`, and `container-dev`;
   `compose-policy` passed. Dirty local changes are not yet committed or reflected
   in those remote check results.
+- #80 — conversational Home: open draft against Wave 3 at `6482f0c`. Exact-SHA
+  independent review passed. The first two architecture-consistency runs failed
+  on missing/badly delimited PR declarations; the body is now corrected with
+  base/head-bound architecture and Office fields, and a new run is in progress.
 - #36 → #37 → #38 — open security stack; do not promote without exact-head
   independent review and required Owner authorization.
 
@@ -68,8 +72,12 @@ completion.
   reports fmt, focused funding/Core/Worker tests, `factory-native` library
   suite (498 passed, 2 ignored) and strict Clippy passed. Proposals remain
   disabled; no subscription provider route is enabled. Exact-SHA independent
-  review is pending. Quota pause/re-admission, true revocation/revision wiring,
-  and request-level Lead/Intake funding remain follow-up work.
+  independent review **BLOCKED** the slice: missing subscription-policy rows
+  still permit Legacy V1 fallback, and `ModelCallRole::Lead` bypasses the
+  campaign guard. The implementation agent is adding absent-row and Lead
+  regression coverage and correcting admission. Quota pause/re-admission, true
+  revocation/revision wiring, and request-level Lead/Intake funding remain
+  follow-up work.
 - Home conversational slice: typecheck, lint, 268 Office tests, production
   build, parity check and fixture Chromium captures passed on `523b288`. The
   production build reports an existing >500 kB chunk warning. Screenshots at
