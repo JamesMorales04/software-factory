@@ -27,10 +27,10 @@ provenance and is not current campaign certification.
 
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
-| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; quota recovery follow-up assigned | Luna subagent `funding_shared_admission`; review of `4f1ab87` BLOCK for lifecycle coverage; review of `f4e757a` queued | Collect independent review; continue quota pause/re-admission and restart fencing without provider calls |
+| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; `4f1ab87` review BLOCK for lifecycle coverage; exact review of `f4e757a` running | Collect review; quota pause/re-admission requires trusted provider exhaustion evidence and append-only observations, absent in runtime; no code invented |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `abd42cd868580728174211bb0f73c332e67593b5`; fixture claim repair dirty | Luna subagent `home_conversation`; feature review PASS; browser journey repair active | Resolve missing Lead delegation selector option in canonical Compose Chromium journey, rerun and commit; keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; previous review BLOCK found infinite loop, corrected in source commit; exact re-review pending | Resolve inherited CAP-050/052 architecture check after #81; obtain exact-head review; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Frozen at `285134583382644b76612c9cb50d480a0df2130b`, clean | Luna subagent `access_security_repairs`; exact independent review running in detached `access-review` worktree | Collect exact-SHA findings; preserve #36 → #37 → #38 order and Owner authorization requirement |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Reviewed exact SHA `285134583382644b76612c9cb50d480a0df2130b`; repair active | Luna subagent `access_security_repairs`; independent review BLOCK (Major Compose socket mount-policy gap) | Reject Office socket mounts on non-allowlisted services; add negative policy tests and clarify remote Tailscale path is NOT_TESTED; preserve #36 → #37 → #38 order |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | `32907995c84cbe6f348be17acd61073a18f8b566` plus dirty harness/runbook/tests | Unassigned; preserve | Reconcile with subscription-only policy after funding boundary; no live inference |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
@@ -70,8 +70,13 @@ were left untouched.
   unique appearances. Fixture captures and parity mapping are committed.
   Compose policy passed; Rust/container-dev remain pending; architecture check
   fails on the inherited CAP-050/052 registry entries pending #81.
-- #36 → #37 → #38 — open security stack; do not promote without exact-head
-  independent review and required Owner authorization.
+- #36 → #37 → #38 — no PRs opened from this repair branch yet. Exact review of
+  `2851345` BLOCKED on a Major Compose policy gap: the checked-in topology
+  mounts the mode-0666 Office socket only to approved services, but policy
+  allows arbitrary services to mount its named volume. An allowlist and
+  negative policy test are in progress. Tailscale authentication, Serve and
+  remote HTTPS for the new socket path remain NOT_TESTED; do not promote without
+  exact-head re-review and required Owner authorization.
 
 Historical deterministic Compose/Chromium acceptance at `40d44ec` and prior
 live OpenCode evidence at `1225bae` are candidate-bound history. They do not
@@ -89,8 +94,16 @@ completion.
   restores restart/replay, persisted egress links, idempotent settlement and
   mid-turn revocation tests. Format, diff, provider-session (32/32), ledger
   (23/23), funding-admission (3/3) and strict Clippy passed. Exact-SHA re-review
-  is queued. Quota pause/re-admission and wider revocation/revision wiring are
-  still in progress.
+  is running. Quota recovery is not safely implementable with current provider
+  evidence: migration 0041 stores immutable disabled proposals and has no
+  append-only refreshed quota observations; Worker OpenCode errors are generic,
+  Codex terminal status has no trusted quota classification, and egress does
+  not report a signed/bound exhaustion receipt to Core. There is no Campaign /
+  Attempt pause or authenticated re-admission API. The contract-aligned next
+  surface is migration 0042 with authorization-bound append-only observations,
+  plus reservation-fenced pause and authenticated re-admission after in-flight
+  reconciliation. Generic HTTP 429 remains insufficient. No live inference or
+  fabricated quota evidence was used; dispatch stays fail-closed.
 - Home conversational slice: typecheck, lint, 270 Office tests, production
   build, parity check and fixture Chromium captures passed on `6482f0c`. The
   production build reports an existing >500 kB chunk warning. Screenshots at
@@ -132,14 +145,19 @@ completion.
   found better framing and identity variety, but the scene remains flatter and
   less painterly than the reference. Exact re-review and Owner visual acceptance
   remain pending.
-- Access repairs remain in progress; no acceptance/review claim made.
+- Access exact-SHA review of `2851345` found no credential leak, auth bypass,
+  pairing resurrection or current Tailscale path to Core's control listener,
+  but returned **BLOCK** for the Compose socket-mount policy gap described
+  above. Its browser-session/pairing analysis passed; remote Tailscale access
+  and SEC-01 remain NOT_TESTED.
 - No live provider inference ran in this campaign session.
 
 ## Immediate sequence
 
-1. Collect the access review, then the exact review of funding candidate
-   `f4e757a`; continue quota/restart fencing and the separate request-level
-   subscription envelope boundary while keeping provider inference disabled.
+1. Collect exact funding review of `f4e757a`; continue the separate
+   request-level subscription envelope boundary while keeping provider
+   inference disabled. Quota recovery remains blocked until a trusted provider
+   exhaustion evidence source and append-only observation model exist.
 2. Resolve the Home Lead selector journey issue, rerun the canonical
    containerized Chromium journey, rebind PR #80 declarations to its exact
    current SHA, and clear CAP-050/CAP-052 through #81. Keep visual approval
@@ -153,6 +171,7 @@ completion.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
-**Independent review:** access exact-SHA review running; funding `f4e757a`,
-Agent Office V3 `82b9ee4`, and capability PR #81 reviews pending.
+**Independent review:** access `2851345` BLOCK (repair/re-review pending);
+funding `f4e757a` review running; Agent Office V3 `82b9ee4` and capability PR
+#81 reviews pending.
 **Campaign status:** in progress; Wave 3 is not a certified product release.
