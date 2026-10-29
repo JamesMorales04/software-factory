@@ -494,10 +494,6 @@
   opacity: 0.65;
 }
 
-.office-room-planks {
-  opacity: 0.5;
-}
-
 .office-floor-seam {
   fill: none;
   stroke: var(--office-floor-seam);
@@ -576,35 +572,6 @@
   stroke: #050b12;
   stroke-width: 4;
   opacity: 0.7;
-}
-
-.office-room-board-frame {
-  fill: #112334;
-  stroke: #2b465f;
-  stroke-width: 1;
-}
-
-.office-room-board-surface {
-  fill: #1a3045;
-}
-
-.office-room-board-line {
-  fill: none;
-  stroke: #36506a;
-  stroke-width: 1;
-}
-
-.office-board-note {
-  fill: var(--office-lamp);
-  opacity: 0.85;
-}
-
-.office-board-note:nth-of-type(2) {
-  fill: var(--office-zone-tone);
-}
-
-.office-board-note:nth-of-type(3) {
-  fill: var(--office-accent-4);
 }
 
 .office-room-window-frame {
@@ -1087,11 +1054,6 @@
 
 .office-ups-led-b {
   fill: var(--office-lamp);
-}
-
-.office-room-sconce-glow {
-  pointer-events: none;
-  mix-blend-mode: screen;
 }
 
 .office-room-sconce {
