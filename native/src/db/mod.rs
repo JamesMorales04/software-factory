@@ -46,6 +46,8 @@ pub enum Error {
     RateLimited(String),
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    #[error("subscription funding refused: {0}")]
+    SubscriptionFunding(#[from] crate::execution_policy::SubscriptionFundingRefusal),
     #[error("conflict: {0}")]
     Conflict(&'static str),
     #[error("forbidden: {0}")]
@@ -828,6 +830,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
+    SubscriptionFundingRecord,
 };
 mod delegations;
 mod device_sessions;

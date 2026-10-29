@@ -1765,34 +1765,6 @@ pub(crate) async fn settle_provider_turn_ledger_at_bounds_in_tx(
     Ok(())
 }
 
-/// Envelope lookup for a Lead request. The operator request identity may be the
-/// Lead request itself or the unified-intake request that owns it.
-pub(crate) async fn envelope_for_lead_in_tx(
-    connection: &mut SqliteConnection,
-    lead_request_id: &str,
-) -> Result<Option<String>, Error> {
-    let direct: Option<(String,)> =
-        sqlx::query_as::query_as("SELECT id FROM inference_envelopes WHERE request_id=?1")
-            .bind(lead_request_id)
-            .fetch_optional(&mut *connection)
-            .await?;
-    let intake: Option<(String,)> = sqlx::query_as::query_as(
-        "SELECT e.id FROM intake_requests ir
-         JOIN inference_envelopes e ON e.request_id=ir.id
-         WHERE ir.lead_request_id=?1",
-    )
-    .bind(lead_request_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    match (direct, intake) {
-        (Some((direct,)), Some((intake,))) if direct != intake => Err(Error::Conflict(
-            "lead request resolves to more than one inference envelope",
-        )),
-        (Some((id,)), _) | (_, Some((id,))) => Ok(Some(id)),
-        (None, None) => Ok(None),
-    }
-}
-
 pub(crate) async fn envelope_for_campaign_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
@@ -1804,15 +1776,6 @@ pub(crate) async fn envelope_for_campaign_in_tx(
     .fetch_optional(&mut *connection)
     .await?;
     Ok(row.map(|(id,)| id))
-}
-
-pub(crate) async fn envelope_for_request_in_tx(
-    connection: &mut SqliteConnection,
-    request_id: &str,
-) -> Result<Option<String>, Error> {
-    Ok(load_envelope_by_request(connection, request_id)
-        .await?
-        .map(|envelope| envelope.id))
 }
 
 async fn insert_envelope(
@@ -2186,6 +2149,34 @@ pub(crate) async fn load_ledger_mode(
             .fetch_one(&mut *connection)
             .await?;
     InferenceLedgerMode::parse(&mode).map_err(ledger_error)
+}
+
+/// Current Owner policy allows only verified subscription-included inference.
+/// V1/V2 monetary accounting remains available to the ledger for a future
+/// explicitly authorized billable mode, but it is not dispatch authority.
+pub(crate) async fn require_enabled_subscription_funding_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<(), Error> {
+    let row: Option<(String, String)> = sqlx::query_as::query_as(
+        "SELECT state,policy_sha256 FROM subscription_funding_policies WHERE campaign_id=?1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    use crate::execution_policy::SubscriptionFundingRefusal;
+    let refusal = match row {
+        Some((state, digest))
+            if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
+                || digest.len() != 64
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            SubscriptionFundingRefusal::InvalidEvidence
+        }
+        Some(_) => SubscriptionFundingRefusal::VerificationRequired,
+        None => SubscriptionFundingRefusal::BindingRequired,
+    };
+    Err(refusal.into())
 }
 
 pub(crate) async fn campaign_requirement_in_tx(
@@ -2704,6 +2695,61 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscription_funding_proposal_never_falls_through_to_v1_ledger() {
+        let path = temp_path("factory-subscription-admission-fail-closed");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('subscription-action','project','objective','opencode','model',
+                     'R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('subscription-campaign','subscription-action','BLOCKED_AUTHORIZATION',?1)",
+        )
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES ('subscription-campaign','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
+        )
+        .bind(policy_json)
+        .bind("a".repeat(64))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let mut connection = db.pool.acquire().await.unwrap();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::SubscriptionFunding(
+                    crate::execution_policy::SubscriptionFundingRefusal::VerificationRequired
+                )
+            ),
+            "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     async fn create_envelope(

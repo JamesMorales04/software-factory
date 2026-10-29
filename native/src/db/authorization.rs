@@ -17,7 +17,8 @@
 use super::*;
 
 use crate::execution_policy::{
-    ExecutionPolicyV2, FrozenExecutionPolicy, OperationLimits, ProgressPolicy,
+    ExecutionPolicyV2, ExecutionPolicyV3, FrozenExecutionPolicy, FundingPolicy, OperationLimits,
+    ProgressPolicy,
 };
 use crate::workspace::path_covered;
 
@@ -30,6 +31,16 @@ use crate::lead::validate_repository_paths;
 /// provider inference and therefore has no ledger envelope or balance. It is a
 /// URN, never a numeric zero/huge sentinel.
 pub const NO_BILLABLE_ENVELOPE: &str = "urn:factory:no-billable-inference";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SubscriptionFundingRecord {
+    pub campaign_id: String,
+    pub authorization_id: String,
+    pub policy: ExecutionPolicyV3,
+    pub state: crate::execution_policy::FundingRecoveryState,
+    pub enabled: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -113,6 +124,206 @@ pub(super) enum AuthorizationReservationPolicy {
 }
 
 impl Database {
+    /// Persist a subscription authorization proposal without enabling model
+    /// execution. Runtime admission is deliberately a later milestone.
+    pub async fn record_subscription_funding_policy(
+        &self,
+        campaign_id: &str,
+        policy: &ExecutionPolicyV3,
+        observed_at_ms: i64,
+    ) -> Result<SubscriptionFundingRecord, Error> {
+        if observed_at_ms <= 0
+            || policy.authorization_id.trim().is_empty()
+            || policy.authorization_revision <= 0
+            || policy.policy_id.trim().is_empty()
+            || policy.scope_sha256.len() != 64
+            || !policy
+                .scope_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Invalid("subscription funding policy"));
+        }
+        let FundingPolicy::Subscription {
+            grant_id,
+            binding_sha256,
+            binding,
+        } = &policy.funding
+        else {
+            return Err(Error::Forbidden(
+                "subscription policy persistence accepts only subscription funding".into(),
+            ));
+        };
+        if grant_id.trim().is_empty()
+            || binding_sha256.len() != 64
+            || !binding_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || binding.provider_account_id.trim().is_empty()
+            || binding.plan_id.trim().is_empty()
+            || binding.model_id.trim().is_empty()
+            || binding.settings_revision.trim().is_empty()
+        {
+            return Err(Error::Invalid("subscription funding provenance"));
+        }
+        let binding_json = serde_json::to_string(binding)
+            .map_err(|_| Error::Invalid("subscription binding encoding"))?;
+        if sha256_hex(binding_json.as_bytes()) != *binding_sha256 {
+            return Err(Error::Invalid("subscription binding digest mismatch"));
+        }
+        let policy_json = serde_json::to_string(policy)
+            .map_err(|_| Error::Invalid("subscription policy encoding"))?;
+        let policy_sha256 = sha256_hex(policy_json.as_bytes());
+        let _write = self.write_lock.lock().await;
+        let mut tx = self.pool.begin().await?;
+        let campaign: Option<(String,)> =
+            sqlx::query_as::query_as("SELECT status FROM campaigns WHERE id=?1")
+                .bind(campaign_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((status,)) = campaign else {
+            return Err(Error::NotFound);
+        };
+        if status != "BLOCKED_AUTHORIZATION" {
+            return Err(Error::Conflict(
+                "subscription policy requires an authorization-pending campaign",
+            ));
+        }
+        let existing: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT authorization_id FROM campaign_authorizations WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if existing.is_some() {
+            return Err(Error::Conflict(
+                "campaign already has an execution authorization",
+            ));
+        }
+        sqlx::query::query(
+            "INSERT INTO subscription_funding_policies
+             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
+              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
+             VALUES (?1,?2,?3,?4,'DISABLED',NULL,?5,NULL,?5,?5)",
+        )
+        .bind(campaign_id)
+        .bind(&policy.authorization_id)
+        .bind(&policy_json)
+        .bind(&policy_sha256)
+        .bind(observed_at_ms)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(SubscriptionFundingRecord {
+            campaign_id: campaign_id.into(),
+            authorization_id: policy.authorization_id.clone(),
+            policy: policy.clone(),
+            state: crate::execution_policy::FundingRecoveryState::Disabled {
+                recorded_at_ms: observed_at_ms,
+            },
+            enabled: false,
+        })
+    }
+
+    pub async fn subscription_funding_policy(
+        &self,
+        campaign_id: &str,
+    ) -> Result<SubscriptionFundingRecord, Error> {
+        use sqlx::row::Row;
+        let row = sqlx::query::query(
+            "SELECT authorization_id,policy_json,policy_sha256,state,reason,
+                    observed_at_ms,resets_at_ms FROM subscription_funding_policies WHERE campaign_id=?1",
+        ).bind(campaign_id).fetch_optional(&self.pool).await?.ok_or(Error::NotFound)?;
+        let policy_json: String = row.try_get("policy_json")?;
+        let digest: String = row.try_get("policy_sha256")?;
+        if sha256_hex(policy_json.as_bytes()) != digest {
+            return Err(Error::Invalid("stored subscription policy digest mismatch"));
+        }
+        let policy: ExecutionPolicyV3 = serde_json::from_str(&policy_json)
+            .map_err(|_| Error::Invalid("stored subscription policy is unsupported"))?;
+        let FundingPolicy::Subscription {
+            binding_sha256,
+            binding,
+            ..
+        } = &policy.funding
+        else {
+            return Err(Error::Invalid("stored policy is not subscription funded"));
+        };
+        let binding_json = serde_json::to_string(binding.as_ref())
+            .map_err(|_| Error::Invalid("stored subscription binding is invalid"))?;
+        if sha256_hex(binding_json.as_bytes()) != *binding_sha256 {
+            return Err(Error::Invalid(
+                "stored subscription binding digest mismatch",
+            ));
+        }
+        let authorization_id: String = row.try_get("authorization_id")?;
+        if authorization_id != policy.authorization_id {
+            return Err(Error::Invalid("funding authorization identity mismatch"));
+        }
+        let state_name: String = row.try_get("state")?;
+        let reason: Option<String> = row.try_get("reason")?;
+        let observed_at_ms: i64 = row.try_get("observed_at_ms")?;
+        let resets_at_ms: Option<i64> = row.try_get("resets_at_ms")?;
+        let state = match state_name.as_str() {
+            "DISABLED" => crate::execution_policy::FundingRecoveryState::Disabled {
+                recorded_at_ms: observed_at_ms,
+            },
+            "PAUSED_QUOTA" => crate::execution_policy::FundingRecoveryState::PausedQuota {
+                observed_at_ms,
+                resets_at_ms,
+                reason: reason.ok_or(Error::Invalid("paused funding reason is missing"))?,
+            },
+            "RECOVERABLE" => crate::execution_policy::FundingRecoveryState::Recoverable {
+                observed_at_ms,
+                reason: reason.ok_or(Error::Invalid("recovery reason is missing"))?,
+            },
+            _ => return Err(Error::Invalid("unsupported funding recovery state")),
+        };
+        Ok(SubscriptionFundingRecord {
+            campaign_id: campaign_id.into(),
+            authorization_id,
+            policy,
+            state,
+            enabled: false,
+        })
+    }
+
+    pub async fn pause_subscription_funding_for_quota(
+        &self,
+        campaign_id: &str,
+        authorization_id: &str,
+        observed_at_ms: i64,
+        resets_at_ms: Option<i64>,
+        reason: &str,
+    ) -> Result<(), Error> {
+        if observed_at_ms <= 0
+            || resets_at_ms.is_some_and(|reset| reset <= observed_at_ms)
+            || reason.trim().is_empty()
+            || reason.len() > 512
+        {
+            return Err(Error::Invalid("quota pause evidence"));
+        }
+        let _write = self.write_lock.lock().await;
+        let changed = sqlx::query::query(
+            "UPDATE subscription_funding_policies SET state='PAUSED_QUOTA',reason=?1,
+             observed_at_ms=?2,resets_at_ms=?3,updated_at_ms=?2
+             WHERE campaign_id=?4 AND authorization_id=?5 AND observed_at_ms < ?2
+               AND state IN ('DISABLED','RECOVERABLE')",
+        )
+        .bind(reason)
+        .bind(observed_at_ms)
+        .bind(resets_at_ms)
+        .bind(campaign_id)
+        .bind(authorization_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict(
+                "quota pause does not match an active funding record",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn authorize_campaign(
         &self,
         campaign_id: &str,
@@ -483,6 +694,9 @@ pub(super) fn decode_execution_policy(json: &str) -> Result<ExecutionPolicyV2, E
         FrozenExecutionPolicy::LegacyV1(_) => Err(Error::Invalid(
             "legacy V1 policy cannot be decoded as V2 execution policy",
         )),
+        FrozenExecutionPolicy::V3(_) => Err(Error::Invalid(
+            "V3 policy cannot be decoded as V2 execution policy",
+        )),
     }
 }
 
@@ -651,7 +865,7 @@ fn required_cap(row: &sqlx_sqlite::SqliteRow, column: &str) -> Result<i64, Error
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution_policy::ProgressPolicy;
+    use crate::execution_policy::{FundingPolicy, ProgressPolicy};
     use crate::lead::{
         Capability, CheckKind, ObjectiveClass, ProviderRoute, RiskClass, SpecCheck,
         StandingDelegationV2,
@@ -776,6 +990,162 @@ mod tests {
             progress: progress(),
             operations: operations(),
         }
+    }
+
+    fn subscription_policy() -> ExecutionPolicyV3 {
+        let binding = crate::execution_policy::SubscriptionBinding {
+            route: crate::execution_policy::SubscriptionRoute::OpenCodeGo,
+            entitlement: crate::execution_policy::ProviderEntitlement::Unknown {
+                reason: "not verified in milestone one".into(),
+            },
+            provider_account_id: "account".into(),
+            plan_id: "go".into(),
+            model_id: "model".into(),
+            settings_revision: "revision-1".into(),
+            entitlement_verified: false,
+            no_charge_route_verified: false,
+            extra_usage_disabled: false,
+            api_key_route_disabled: false,
+            quota: crate::execution_policy::QuotaObservation::Unknown {
+                observed_at_ms: 10,
+                reason: "not observed".into(),
+            },
+        };
+        let binding_json = serde_json::to_string(&binding).unwrap();
+        ExecutionPolicyV3 {
+            policy_id: "policy-subscription-1".into(),
+            authorization_id: "auth-subscription-1".into(),
+            authorization_revision: 1,
+            funding: FundingPolicy::Subscription {
+                grant_id: "grant".into(),
+                binding_sha256: sha256_hex(binding_json.as_bytes()),
+                binding: Box::new(binding),
+            },
+            scope_sha256: "d".repeat(64),
+            progress: progress(),
+            operations: operations(),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscription_policy_persists_without_monetary_envelope_and_pauses_across_reopen() {
+        let (path, db, _) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "subscription-campaign")
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_envelopes
+             (id,request_id,project_id,currency,state,authorized_micros,authorization_revision,created_at_ms)
+             VALUES ('legacy-envelope','legacy-request','project','USD','ACTIVE',100,1,1)",
+        ).execute(&db.pool).await.unwrap();
+        let policy = subscription_policy();
+        let record = db
+            .record_subscription_funding_policy(&campaign.id, &policy, 10)
+            .await
+            .unwrap();
+        assert!(!record.enabled);
+        assert!(matches!(
+            record.policy.funding,
+            FundingPolicy::Subscription { .. }
+        ));
+        assert!(
+            !serde_json::to_string(&record.policy)
+                .unwrap()
+                .contains("monetaryEnvelopeId")
+        );
+        db.pause_subscription_funding_for_quota(
+            &campaign.id,
+            &policy.authorization_id,
+            20,
+            Some(30),
+            "provider quota exhausted",
+        )
+        .await
+        .unwrap();
+        db.close().await;
+        let reopened = Database::open(&path).await.unwrap();
+        let loaded = reopened
+            .subscription_funding_policy(&campaign.id)
+            .await
+            .unwrap();
+        assert!(!loaded.enabled);
+        assert!(matches!(
+            loaded.state,
+            crate::execution_policy::FundingRecoveryState::PausedQuota {
+                observed_at_ms: 20,
+                resets_at_ms: Some(30),
+                ..
+            }
+        ));
+        let versions: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT (SELECT version FROM _sqlx_migrations WHERE version=41),
+                    (SELECT count(*) FROM inference_envelopes)",
+        )
+        .fetch_one(&reopened.pool)
+        .await
+        .unwrap();
+        assert_eq!(versions.0, 41);
+        assert_eq!(
+            versions.1, 1,
+            "existing monetary ledger evidence must survive migration and reopen"
+        );
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn subscription_persistence_rejects_paid_unknown_and_authorized_transitions() {
+        let (path, db, _) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "subscription-campaign-negative")
+            .await
+            .unwrap();
+        let mut paid = subscription_policy();
+        paid.funding = FundingPolicy::Billable {
+            monetary_envelope_id: "env".into(),
+        };
+        assert!(
+            db.record_subscription_funding_policy(&campaign.id, &paid, 10)
+                .await
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ExecutionPolicyV3>(serde_json::json!({
+                "policyId":"p", "authorizationId":"a", "funding":{"kind":"FUTURE_MODE"},
+                "scopeSha256":"d", "progress":{}, "operations":{}
+            }))
+            .is_err()
+        );
+        let policy = subscription_policy();
+        db.record_subscription_funding_policy(&campaign.id, &policy, 10)
+            .await
+            .unwrap();
+        let mut execution_auth = authorization();
+        execution_auth.authorization_id = "execution-after-subscription-proposal".into();
+        assert!(
+            db.authorize_campaign(&campaign.id, &execution_auth)
+                .await
+                .is_err()
+        );
+        assert!(
+            db.record_subscription_funding_policy(&campaign.id, &policy, 11)
+                .await
+                .is_err()
+        );
+        db.pause_subscription_funding_for_quota(&campaign.id, "wrong-auth", 20, None, "quota")
+            .await
+            .unwrap_err();
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

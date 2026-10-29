@@ -1740,8 +1740,19 @@ fn api_error(error: Error) -> Response {
         Error::NotFound => StatusCode::NOT_FOUND,
         Error::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
         Error::Busy | Error::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::SubscriptionFunding(
+            factory_native::execution_policy::SubscriptionFundingRefusal::InvalidEvidence,
+        ) => StatusCode::FORBIDDEN,
+        Error::SubscriptionFunding(_) => StatusCode::SERVICE_UNAVAILABLE,
         Error::Sqlx(_) | Error::Migrate(_) | Error::File(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
+    if let Error::SubscriptionFunding(refusal) = &error {
+        return (
+            status,
+            Json(json!({"error": refusal.to_string(), "code": refusal.code()})),
+        )
+            .into_response();
+    }
     if let Error::IntakeConflict { code, message } = &error {
         return (status, Json(json!({"error": message, "code": code}))).into_response();
     }
@@ -10218,6 +10229,42 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use serde_json::Value;
+
+    #[tokio::test]
+    async fn subscription_funding_refusals_have_stable_codes_without_authority() {
+        use factory_native::execution_policy::SubscriptionFundingRefusal;
+        for (refusal, status, code) in [
+            (
+                SubscriptionFundingRefusal::BindingRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_BINDING_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::VerificationRequired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SUBSCRIPTION_FUNDING_VERIFICATION_REQUIRED",
+            ),
+            (
+                SubscriptionFundingRefusal::InvalidEvidence,
+                StatusCode::FORBIDDEN,
+                "SUBSCRIPTION_FUNDING_EVIDENCE_INVALID",
+            ),
+        ] {
+            let response = api_error(refusal.into());
+            assert_eq!(response.status(), status);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], code);
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|message| !message.is_empty())
+            );
+            assert_eq!(body.as_object().unwrap().len(), 2);
+        }
+    }
 
     #[test]
     fn github_connection_projection_never_contains_credential_material() {
