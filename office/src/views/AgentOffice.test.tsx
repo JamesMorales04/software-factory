@@ -374,6 +374,20 @@ describe("AgentOffice", () => {
     expect(mocks.listToolEvents).toHaveBeenCalledWith("session-1", 0, 100);
   });
 
+  it("collapses and restores the visual-view inspector", async () => {
+    renderOffice();
+    await screen.findByRole("heading", { name: "Agent Office" });
+    expect(screen.getByText("Select a participant")).toBeDefined();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide inspector" }),
+    );
+    expect(screen.queryByText("Select a participant")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show inspector" }),
+    );
+    expect(screen.getByText("Select a participant")).toBeDefined();
+  });
+
   it("keeps selection across floor, table and timeline views", async () => {
     renderOffice("/agents/implementer%3Asession-1");
     await screen.findByTestId("participant-inspector");

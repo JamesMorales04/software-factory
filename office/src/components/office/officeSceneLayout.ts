@@ -11,17 +11,18 @@ import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
  * slots in the same role group; the next render is still deterministic.
  */
 
-export const OFFICE_AVATAR_WIDTH = 72;
-export const OFFICE_AVATAR_HEIGHT = 108;
-export const OFFICE_SLOT_COLUMN = 64;
-export const OFFICE_SLOT_ROW = 66;
-export const OFFICE_SLOT_STAGGER = 24;
-export const OFFICE_ZONE_HEADER = 34;
-export const OFFICE_ZONE_PADDING = 12;
-export const OFFICE_ZONE_GAP = 32;
-export const OFFICE_ZONE_MIN_WIDTH = 184;
-export const OFFICE_ZONE_MIN_HEIGHT = 166;
+export const OFFICE_AVATAR_WIDTH = 84;
+export const OFFICE_AVATAR_HEIGHT = 100;
+export const OFFICE_SLOT_COLUMN = 76;
+export const OFFICE_SLOT_ROW = 78;
+export const OFFICE_SLOT_STAGGER = 28;
+export const OFFICE_ZONE_HEADER = 50;
+export const OFFICE_ZONE_PADDING = 14;
+export const OFFICE_ZONE_GAP = 34;
+export const OFFICE_ZONE_MIN_WIDTH = 190;
+export const OFFICE_ZONE_MIN_HEIGHT = 174;
 export const OFFICE_WORLD_PADDING = 36;
+export const OFFICE_LOOK_COUNT = 48;
 
 export const OFFICE_MIN_ZOOM = 0.45;
 export const OFFICE_MAX_ZOOM = 2;
@@ -41,11 +42,15 @@ export const OFFICE_FALLBACK_VIEWPORT = { width: 960, height: 560 } as const;
 const VIEWPORT_PAN_SLACK = 48;
 const VIEWPORT_OVERSCROLL = 24;
 const FIT_PADDING = 28;
+const FIT_MIN_ZOOM = 0.55;
+const FIT_MAX_ZOOM = 1.25;
 
 export interface OfficeSlot {
   participant: ParticipantRecord;
   /** Stable rank inside the role group. */
   index: number;
+  /** Unique visual appearance index across the scene (0-based). */
+  lookIndex: number;
   column: number;
   row: number;
   /** Top-left of the avatar bounding box in world coordinates. */
@@ -104,6 +109,15 @@ const ZONE_IDS: Record<ParticipantRole, string> = {
   REVIEWER: "review",
   WORKER: "operations",
 };
+
+function hashIdentity(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -190,6 +204,7 @@ function buildZone(
     return {
       participant,
       index,
+      lookIndex: 0,
       column,
       row,
       x: anchorX - OFFICE_AVATAR_WIDTH / 2,
@@ -310,6 +325,20 @@ export function buildOfficeSceneLayout(
   ];
 
   const slots = zones.flatMap((zone) => zone.slots);
+  const usedLooks = new Set<number>();
+  for (const slot of [...slots].sort((left, right) =>
+    left.participant.participant_id.localeCompare(
+      right.participant.participant_id,
+    ),
+  )) {
+    let lookIndex =
+      hashIdentity(slot.participant.participant_id) % OFFICE_LOOK_COUNT;
+    while (usedLooks.has(lookIndex)) {
+      lookIndex = (lookIndex + 1) % OFFICE_LOOK_COUNT;
+    }
+    usedLooks.add(lookIndex);
+    slot.lookIndex = lookIndex;
+  }
   const ordered = [...slots].sort(
     (left, right) =>
       left.anchorY - right.anchorY ||
@@ -347,12 +376,13 @@ export function fitCamera(
   const view = viewportFor(viewport);
   const width = Math.max(1, finite(worldWidth, 1));
   const height = Math.max(1, finite(worldHeight, 1));
-  const zoom = clampZoom(
+  const zoom = clamp(
     Math.min(
-      1,
       (view.width - FIT_PADDING * 2) / width,
       (view.height - FIT_PADDING * 2) / height,
     ),
+    FIT_MIN_ZOOM,
+    FIT_MAX_ZOOM,
   );
   return {
     x: Math.round((view.width - width * zoom) / 2),

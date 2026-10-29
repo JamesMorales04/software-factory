@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ParticipantRecord, ParticipantRole } from "../../coreApi";
+import { officeAvatarLook } from "./officeAvatarAppearance";
 import {
   buildOfficeSceneLayout,
   cameraStyle,
@@ -149,6 +150,18 @@ describe("buildOfficeSceneLayout", () => {
     );
   });
 
+  it("gives five implementers five distinct visual identities", () => {
+    const layout = buildOfficeSceneLayout(implementers(5));
+    const zone = layout.zones.find((item) => item.role === "IMPLEMENTER");
+    expect(zone?.slots).toHaveLength(5);
+    const looks = new Set(
+      (zone?.slots ?? []).map(
+        (slot) => officeAvatarLook(slot.lookIndex).signature,
+      ),
+    );
+    expect(looks.size).toBe(5);
+  });
+
   it("seats 30 implementers without duplicate positions", () => {
     const layout = buildOfficeSceneLayout(implementers(30));
     const implementation = layout.zones.find(
@@ -163,6 +176,10 @@ describe("buildOfficeSceneLayout", () => {
       ),
     );
     expect(positions.size).toBe(30);
+    const looks = new Set(
+      layout.slots.map((slot) => officeAvatarLook(slot.lookIndex).signature),
+    );
+    expect(looks.size).toBe(30);
   });
 
   it("renders one avatar per participant identity and reports duplicates", () => {
@@ -197,12 +214,12 @@ describe("buildOfficeSceneLayout", () => {
 describe("office camera", () => {
   it("fits a scene inside the viewport and clamps the zoom range", () => {
     const camera = fitCamera(1000, 500, { width: 500, height: 400 });
-    expect(camera.zoom).toBe(OFFICE_MIN_ZOOM);
-    expect(camera.x).toBe(25);
-    expect(camera.y).toBe(88);
-    expect(zoomPercent(camera)).toBe(45);
+    expect(camera.zoom).toBe(0.55);
+    expect(camera.x).toBe(-25);
+    expect(camera.y).toBe(63);
+    expect(zoomPercent(camera)).toBe(55);
     expect(cameraStyle(camera).transform).toBe(
-      "translate(25px, 88px) scale(0.45)",
+      "translate(-25px, 63px) scale(0.55)",
     );
   });
 
@@ -221,8 +238,8 @@ describe("office camera", () => {
       width: 500,
       height: 400,
     });
-    expect(panned.x).toBe((500 - 100) / 2 + 48);
-    expect(panned.y).toBe((400 - 100) / 2 + 48);
+    expect(panned.x).toBe(236);
+    expect(panned.y).toBe(186);
   });
 
   it("clamps zoom-in and zoom-out around a focus point", () => {

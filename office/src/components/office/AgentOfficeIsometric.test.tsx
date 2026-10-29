@@ -143,6 +143,52 @@ describe("AgentOfficeIsometric", () => {
       implementation.querySelectorAll("[data-office-avatar]"),
     ).toHaveLength(30);
     expect(screen.getByText("30 recorded")).toBeDefined();
+    const looks = new Set(
+      [...implementation.querySelectorAll("[data-office-avatar]")].map(
+        (avatar) => (avatar as HTMLElement).dataset.look,
+      ),
+    );
+    expect(looks.size).toBe(30);
+  });
+
+  it("renders five active implementers as five distinct characters", () => {
+    const participants = Array.from({ length: 5 }, (_, index) =>
+      participant(index, "IMPLEMENTER", {
+        observation: "CURRENT",
+        status: "ACTIVE",
+        lease_state: "LIVE",
+      }),
+    );
+    renderFloor(participants);
+    const avatars = [...avatarButtons()];
+    expect(avatars).toHaveLength(5);
+    expect(new Set(avatars.map((avatar) => avatar.dataset.look)).size).toBe(5);
+    for (const avatar of avatars) {
+      expect(avatar.getAttribute("data-working")).toBe("true");
+      expect(avatar.querySelector(".office-avatar-monitor")).not.toBeNull();
+    }
+  });
+
+  it("does not present final or stale participants as workstations", () => {
+    const final = participant(0, "IMPLEMENTER", {
+      observation: "FINAL",
+      status: "COMPLETED",
+      lease_state: "RELEASED",
+    });
+    const stale = participant(1, "IMPLEMENTER", {
+      observation: "STALE",
+      status: "ACTIVE",
+      lease_state: "EXPIRED",
+    });
+    renderFloor([final, stale]);
+    for (const record of [final, stale]) {
+      const avatar = screen.getByTestId(
+        `office-avatar-${record.participant_id}`,
+      );
+      expect(avatar.getAttribute("data-working")).toBe("false");
+      expect(avatar.querySelector(".office-avatar-monitor")).toBeNull();
+      expect(avatar.querySelector(".office-avatar-idle-ring")).not.toBeNull();
+    }
   });
 
   it("keeps identity-stable station slots across re-renders and input order", () => {
@@ -334,9 +380,7 @@ describe("AgentOfficeIsometric", () => {
       screen.getByRole("heading", { name: "Planificación" }),
     ).toBeDefined();
     expect(
-      screen.getByText(
-        /La posición del puesto es determinista para este conjunto observado/,
-      ),
+      screen.getByText(/no se simula movimiento ni actividad/),
     ).toBeDefined();
   });
 });

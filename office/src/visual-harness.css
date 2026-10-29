@@ -1,0 +1,48 @@
+body {
+  margin: 0;
+  background: #07111f;
+  color: #e7eef8;
+  font-family: var(--font-sans);
+}
+
+.harness {
+  box-sizing: border-box;
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.harness-header {
+  display: grid;
+  gap: 4px;
+}
+
+.harness-kicker {
+  margin: 0;
+  color: #f2b35c;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.harness-header h1 {
+  margin: 0;
+  color: #e7eef8;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.harness-header p:last-child {
+  margin: 0;
+  max-width: 80ch;
+  color: #9fb0c7;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .harness {
+    padding: 12px;
+  }
+}

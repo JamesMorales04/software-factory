@@ -13,6 +13,7 @@ import { AgentOfficeIsometric } from "../components/office/AgentOfficeIsometric"
 import { ParticipantInspector } from "../components/office/ParticipantInspector";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Button, buttonClass } from "../components/ui/Button";
+import { cn } from "../components/ui/cn";
 import { Select } from "../components/ui/Field";
 import {
   EmptyState,
@@ -123,6 +124,7 @@ export function AgentOffice() {
   const [selectedExtra, setSelectedExtra] = useState<ParticipantRecord | null>(
     null,
   );
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [selectedMissing, setSelectedMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
@@ -247,6 +249,7 @@ export function AgentOffice() {
   };
 
   const selectParticipant = (id: string) => {
+    setInspectorOpen(true);
     navigate({
       pathname: `/agents/${encodeURIComponent(id)}`,
       search: searchParams.toString(),
@@ -254,6 +257,7 @@ export function AgentOffice() {
   };
 
   const closeInspector = () => {
+    setInspectorOpen(false);
     navigate({ pathname: "/agents", search: searchParams.toString() });
   };
 
@@ -267,6 +271,7 @@ export function AgentOffice() {
   const hasFilters = Boolean(
     role || status || provider || campaignId || projectId,
   );
+  const showInspector = view !== "floor" || inspectorOpen;
   const providers = uniqueProviders(participants);
 
   if (error && !page) {
@@ -285,7 +290,9 @@ export function AgentOffice() {
   if (!page) return <LoadingState label={t("agentOffice.loading")} />;
 
   return (
-    <div className="agent-office">
+    <div
+      className={cn("agent-office", view === "floor" && "agent-office--studio")}
+    >
       <PageHeader
         title={t("agentOffice.title")}
         description={t("agentOffice.description")}
@@ -461,15 +468,36 @@ export function AgentOffice() {
         <p className="muted">{t("agentOffice.filters.note")}</p>
       </Panel>
 
-      <div className="agent-workspace">
+      <div
+        className={cn(
+          "agent-workspace",
+          view === "floor" && !inspectorOpen && "agent-workspace--solo",
+        )}
+      >
         <div className="agent-main">
           <div className="section-heading">
             <h2>{t("agentOffice.participants.title")}</h2>
-            <span className="muted">
-              {t("agentOffice.participants.meta", {
-                count: formatNumber(participants.length),
-              })}
-            </span>
+            <div className="agent-section-actions">
+              <span className="muted">
+                {t("agentOffice.participants.meta", {
+                  count: formatNumber(participants.length),
+                })}
+              </span>
+              {view === "floor" && (
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  aria-pressed={inspectorOpen}
+                  onClick={() => setInspectorOpen((open) => !open)}
+                >
+                  {t(
+                    inspectorOpen
+                      ? "agentOffice.inspector.hide"
+                      : "agentOffice.inspector.show",
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
           <Tabs
             items={VIEW_KEYS.map((item) => ({
@@ -555,45 +583,52 @@ export function AgentOffice() {
           </details>
         </div>
 
-        <div className="agent-side">
-          {selectedMissing && !selected ? (
-            <Panel className="agent-inspector" as="aside">
-              <EmptyState
-                title={t("agentOffice.participantMissingTitle")}
-                description={t("agentOffice.participantMissingDescription")}
-                action={
-                  <Button onClick={clearFilters}>
-                    {t("agentOffice.filters.clear")}
-                  </Button>
-                }
+        {showInspector && (
+          <div
+            className={cn(
+              "agent-side",
+              view === "floor" && "agent-side--studio",
+            )}
+          >
+            {selectedMissing && !selected ? (
+              <Panel className="agent-inspector" as="aside">
+                <EmptyState
+                  title={t("agentOffice.participantMissingTitle")}
+                  description={t("agentOffice.participantMissingDescription")}
+                  action={
+                    <Button onClick={clearFilters}>
+                      {t("agentOffice.filters.clear")}
+                    </Button>
+                  }
+                />
+              </Panel>
+            ) : (
+              <ParticipantInspector
+                participant={selected}
+                onClose={closeInspector}
               />
+            )}
+            <Panel className="agent-legend">
+              <h3>{t("agentOffice.legend.title")}</h3>
+              <ul>
+                <li>
+                  <StatusBadge status="CURRENT" />{" "}
+                  {t("agentOffice.legend.current")}
+                </li>
+                <li>
+                  <StatusBadge status="STALE" /> {t("agentOffice.legend.stale")}
+                </li>
+                <li>
+                  <StatusBadge status="FINAL" /> {t("agentOffice.legend.final")}
+                </li>
+                <li>
+                  <StatusBadge status="NOT_EXPOSED" label="NOT EXPOSED" />{" "}
+                  {t("agentOffice.legend.notExposed")}
+                </li>
+              </ul>
             </Panel>
-          ) : (
-            <ParticipantInspector
-              participant={selected}
-              onClose={closeInspector}
-            />
-          )}
-          <Panel className="agent-legend">
-            <h3>{t("agentOffice.legend.title")}</h3>
-            <ul>
-              <li>
-                <StatusBadge status="CURRENT" />{" "}
-                {t("agentOffice.legend.current")}
-              </li>
-              <li>
-                <StatusBadge status="STALE" /> {t("agentOffice.legend.stale")}
-              </li>
-              <li>
-                <StatusBadge status="FINAL" /> {t("agentOffice.legend.final")}
-              </li>
-              <li>
-                <StatusBadge status="NOT_EXPOSED" label="NOT EXPOSED" />{" "}
-                {t("agentOffice.legend.notExposed")}
-              </li>
-            </ul>
-          </Panel>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

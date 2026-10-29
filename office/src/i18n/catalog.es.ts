@@ -828,7 +828,7 @@ export const es: Catalog = {
   "agentOffice.zone.recorded": "{count} registrados",
   "agentOffice.scene.label": "Planta isométrica de la Oficina",
   "agentOffice.scene.hint":
-    "Escena determinista de la misma proyección de participantes de Core. Arrastra para desplazar, usa la rueda o los controles para ampliar y selecciona un avatar para abrir su registro. La posición del puesto es determinista para este conjunto observado; no representa actividad en vivo.",
+    "Estudio isométrico determinista de la misma proyección de participantes de Core. Arrastra para desplazar; usa la rueda o los controles para ampliar. Pasa el cursor o selecciona un avatar para ver su identidad y observación registradas; al seleccionarlo se abre el inspector. La posición del puesto es determinista para este conjunto observado; no se simula movimiento ni actividad.",
   "agentOffice.scene.pan": "Desplazar la planta de la Oficina",
   "agentOffice.scene.panLeft": "Desplazar a la izquierda",
   "agentOffice.scene.panRight": "Desplazar a la derecha",
@@ -839,6 +839,8 @@ export const es: Catalog = {
   "agentOffice.scene.zoomOut": "Reducir",
   "agentOffice.scene.zoomValue": "Zoom {percent}%",
   "agentOffice.scene.fit": "Ajustar escena",
+  "agentOffice.inspector.hide": "Ocultar inspector",
+  "agentOffice.inspector.show": "Mostrar inspector",
   "agentOffice.scene.duplicatesOne":
     "Se ignoró una identidad de participante duplicada; la planta muestra un avatar por identidad registrada.",
   "agentOffice.scene.duplicatesOther":

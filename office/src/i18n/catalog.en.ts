@@ -806,7 +806,7 @@ export const en = {
   "agentOffice.zone.recorded": "{count} recorded",
   "agentOffice.scene.label": "Isometric Office floor",
   "agentOffice.scene.hint":
-    "Deterministic scene of the same Core participant projection. Drag to pan, scroll or use the controls to zoom, and select an avatar to open its record. Station position is deterministic for this observed set; it is not live activity.",
+    "Deterministic isometric studio of the same Core participant projection. Drag to pan, scroll or use the controls to zoom. Hover or select an avatar for its recorded identity and observation; selecting it opens the inspector. Station position is deterministic for this observed set; no movement or activity is simulated.",
   "agentOffice.scene.pan": "Pan the Office floor",
   "agentOffice.scene.panLeft": "Pan left",
   "agentOffice.scene.panRight": "Pan right",
@@ -817,6 +817,8 @@ export const en = {
   "agentOffice.scene.zoomOut": "Zoom out",
   "agentOffice.scene.zoomValue": "Zoom {percent}%",
   "agentOffice.scene.fit": "Fit scene",
+  "agentOffice.inspector.hide": "Hide inspector",
+  "agentOffice.inspector.show": "Show inspector",
   "agentOffice.scene.duplicatesOne":
     "One duplicate participant identity was ignored; the floor renders one avatar per recorded identity.",
   "agentOffice.scene.duplicatesOther":

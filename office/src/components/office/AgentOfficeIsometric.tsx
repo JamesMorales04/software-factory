@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
-  type KeyboardEvent,
   type PointerEvent,
   useCallback,
   useEffect,
@@ -22,18 +21,17 @@ import { type MessageKey, useI18n } from "../../i18n";
 import { Button, IconButton } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { EmptyState, Panel } from "../ui/Surface";
+import { OfficeAvatar } from "./OfficeAvatar";
+import { OfficeRoomBackdrop } from "./OfficeRoomBackdrop";
 import {
   buildOfficeSceneLayout,
   cameraStyle,
   clampCamera,
   fitCamera,
-  OFFICE_AVATAR_HEIGHT,
-  OFFICE_AVATAR_WIDTH,
   OFFICE_FALLBACK_VIEWPORT,
   OFFICE_MAX_ZOOM,
   OFFICE_MIN_ZOOM,
   OFFICE_PAN_STEP,
-  OFFICE_ZONE_HEADER,
   OFFICE_ZOOM_STEP,
   type OfficeCamera,
   type OfficeSlot,
@@ -43,7 +41,6 @@ import {
   zoomCamera,
   zoomPercent,
 } from "./officeSceneLayout";
-import { observationLabel, roleLabel } from "./participantLabels";
 
 const ZONE_META: Record<
   ParticipantRole,
@@ -70,304 +67,6 @@ const ZONE_META: Record<
     descriptionKey: "agentOffice.zone.operationsDescription",
   },
 };
-
-const OBSERVATION_GLYPH: Record<string, string> = {
-  CURRENT: "●",
-  STALE: "◐",
-  FINAL: "■",
-  NOT_EXPOSED: "◇",
-  UNKNOWN: "?",
-};
-
-interface AvatarLook {
-  skin: number;
-  hair: number;
-  shirt: number;
-}
-
-function hashIdentity(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-function identityLabel(value: string): string {
-  if (value.length <= 9) return value;
-  return `…${value.slice(-7)}`;
-}
-
-function avatarLook(participantId: string): AvatarLook {
-  const hash = hashIdentity(participantId);
-  return {
-    skin: (hash % 3) + 1,
-    hair: (Math.floor(hash / 3) % 3) + 1,
-    shirt: (Math.floor(hash / 9) % 3) + 1,
-  };
-}
-
-function figureVariables(look: AvatarLook): CSSProperties {
-  return {
-    "--office-skin": `var(--office-skin-${look.skin})`,
-    "--office-hair": `var(--office-hair-${look.hair})`,
-    "--office-shirt": `var(--office-shirt-${look.shirt})`,
-  } as CSSProperties;
-}
-
-function focusNeighbor(
-  slot: OfficeSlot,
-  key: string,
-  slots: OfficeSlot[],
-  refs: Map<string, HTMLButtonElement>,
-) {
-  const candidates = slots
-    .filter(
-      (candidate) =>
-        candidate.participant.participant_id !==
-        slot.participant.participant_id,
-    )
-    .map((candidate) => ({
-      candidate,
-      dx: candidate.anchorX - slot.anchorX,
-      dy: candidate.anchorY - slot.anchorY,
-    }))
-    .filter(({ dx, dy }) => {
-      if (key === "ArrowRight") return dx > 0 && Math.abs(dy) <= Math.abs(dx);
-      if (key === "ArrowLeft") return dx < 0 && Math.abs(dy) <= Math.abs(dx);
-      if (key === "ArrowDown") return dy > 0 && Math.abs(dx) <= Math.abs(dy);
-      if (key === "ArrowUp") return dy < 0 && Math.abs(dx) <= Math.abs(dy);
-      return false;
-    })
-    .sort(
-      (left, right) =>
-        Math.hypot(left.dx, left.dy) - Math.hypot(right.dx, right.dy),
-    );
-  const next = candidates[0]?.candidate;
-  if (next) {
-    refs.get(next.participant.participant_id)?.focus();
-  }
-}
-
-function OfficeAvatar({
-  slot,
-  offsetX,
-  offsetY,
-  selected,
-  onSelect,
-  registerRef,
-  slots,
-  refs,
-}: {
-  slot: OfficeSlot;
-  offsetX: number;
-  offsetY: number;
-  selected: boolean;
-  onSelect: (participantId: string) => void;
-  registerRef: (
-    participantId: string,
-    element: HTMLButtonElement | null,
-  ) => void;
-  slots: OfficeSlot[];
-  refs: Map<string, HTMLButtonElement>;
-}) {
-  const { t } = useI18n();
-  const { participant } = slot;
-  const observation = observationLabel(participant);
-  const glyph = OBSERVATION_GLYPH[participant.observation] ?? "?";
-  const role = roleLabel(participant.role, t);
-
-  function onKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    if (
-      ["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(event.key)
-    ) {
-      event.preventDefault();
-      focusNeighbor(slot, event.key, slots, refs);
-    }
-  }
-
-  return (
-    <button
-      ref={(element) => registerRef(participant.participant_id, element)}
-      type="button"
-      className={cn("office-avatar", selected && "is-selected")}
-      style={{
-        ...figureVariables(avatarLook(participant.participant_id)),
-        left: slot.x - offsetX,
-        top: slot.y - offsetY,
-        width: OFFICE_AVATAR_WIDTH,
-        height: OFFICE_AVATAR_HEIGHT,
-        zIndex: selected ? 200 : 10 + slot.depth,
-      }}
-      aria-pressed={selected}
-      aria-label={t("agentOffice.card.inspect", {
-        role,
-        id: participant.participant_id,
-        status: participant.status,
-        observation,
-      })}
-      onClick={() => onSelect(participant.participant_id)}
-      onKeyDown={onKeyDown}
-      data-office-avatar=""
-      data-testid={`office-avatar-${participant.participant_id}`}
-      data-participant-id={participant.participant_id}
-      data-role={participant.role}
-      data-observation={participant.observation}
-      data-slot-index={slot.index}
-      data-column={slot.column}
-      data-row={slot.row}
-      data-anchor-x={Math.round(slot.anchorX)}
-      data-anchor-y={Math.round(slot.anchorY)}
-    >
-      <span className="office-avatar-label">
-        <code title={participant.identity_id}>
-          {identityLabel(participant.identity_id)}
-        </code>
-      </span>
-      <svg
-        className="office-avatar-figure"
-        viewBox="0 0 72 84"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <ellipse
-          className="office-avatar-shadow"
-          cx="36"
-          cy="76.5"
-          rx="23"
-          ry="4.5"
-        />
-        <rect
-          className="office-avatar-chair"
-          x="26"
-          y="64"
-          width="20"
-          height="9"
-          rx="4"
-        />
-        <path
-          className="office-avatar-leg office-avatar-leg-left"
-          d="M31 54 L30 71"
-        />
-        <path
-          className="office-avatar-leg office-avatar-leg-right"
-          d="M42 54 L43 71"
-        />
-        <path className="office-avatar-shoe" d="M26 73 L34 73" />
-        <path className="office-avatar-shoe" d="M39 73 L47 73" />
-        <path
-          className="office-avatar-torso"
-          d="M25 40 q11 -7 23 0 l3 21 q-15 6 -30 0 z"
-        />
-        <path className="office-avatar-arm" d="M27 42 q-6 9 -3 20" />
-        <path className="office-avatar-arm" d="M46 42 q6 9 3 20" />
-        <circle className="office-avatar-hand" cx="24" cy="63" r="3" />
-        <circle className="office-avatar-hand" cx="49" cy="63" r="3" />
-        <rect
-          className="office-avatar-neck"
-          x="33"
-          y="31"
-          width="7"
-          height="8"
-          rx="2.5"
-        />
-        <ellipse
-          className="office-avatar-head"
-          cx="36.5"
-          cy="24"
-          rx="8.2"
-          ry="9.4"
-        />
-        <circle className="office-avatar-eye" cx="33.6" cy="24.5" r="0.9" />
-        <circle className="office-avatar-eye" cx="39.4" cy="24.5" r="0.9" />
-        <path
-          className="office-avatar-hair"
-          d="M28.2 23.6 q-0.6 -9.6 8.3 -9.6 q9 0 8.3 9.6 q-3.2 -5.2 -8.3 -5.2 q-5.1 0 -8.3 5.2 z"
-        />
-        <path
-          className="office-avatar-desk-top"
-          d="M10 72 L36 64 L62 72 L36 81 Z"
-        />
-        <path
-          className="office-avatar-desk-side"
-          d="M10 72 L36 81 L36 85 L10 76 Z"
-        />
-        <path
-          className="office-avatar-desk-side office-avatar-desk-side-right"
-          d="M36 81 L62 72 L62 76 L36 85 Z"
-        />
-        <rect
-          className="office-avatar-monitor"
-          x="19"
-          y="53"
-          width="13"
-          height="9"
-          rx="1.5"
-        />
-        <rect
-          className="office-avatar-screen"
-          x="21"
-          y="55"
-          width="9"
-          height="5"
-          rx="0.8"
-        />
-        <path className="office-avatar-monitor-stand" d="M25 62 L25 65" />
-        <circle
-          className="office-avatar-lamp"
-          cx="58"
-          cy="69"
-          r="2.6"
-          data-observation={participant.observation}
-        />
-      </svg>
-      <span
-        className="office-avatar-status"
-        data-observation={participant.observation}
-        aria-hidden="true"
-      >
-        {glyph}
-      </span>
-    </button>
-  );
-}
-
-function OfficeZonePad({ zone }: { zone: OfficeZone }) {
-  const left = 8;
-  const right = zone.width - 8;
-  const top = OFFICE_ZONE_HEADER - 2;
-  const bottom = zone.height - 6;
-  const cut = 18;
-  const topPoints = [
-    `${left + cut},${top}`,
-    `${right - cut},${top}`,
-    `${right},${top + cut}`,
-    `${right},${bottom - cut}`,
-    `${right - cut},${bottom}`,
-    `${left + cut},${bottom}`,
-    `${left},${bottom - cut}`,
-    `${left},${top + cut}`,
-  ].join(" ");
-  const sidePoints = topPoints
-    .split(" ")
-    .map((point) => {
-      const [x, y] = point.split(",");
-      return `${x},${Number(y) + 9}`;
-    })
-    .join(" ");
-  return (
-    <svg
-      className="office-zone-pad"
-      viewBox={`0 0 ${zone.width} ${zone.height}`}
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      <polygon className="office-zone-pad-side" points={sidePoints} />
-      <polygon className="office-zone-pad-top" points={topPoints} />
-    </svg>
-  );
-}
 
 function OfficeZoneStation({
   zone,
@@ -402,7 +101,7 @@ function OfficeZoneStation({
         zIndex: 2,
       }}
     >
-      <OfficeZonePad zone={zone} />
+      <OfficeRoomBackdrop zone={zone} />
       <header className="office-zone-header">
         <h3 id={headingId} title={t(meta.descriptionKey)}>
           {t(meta.labelKey)}
@@ -575,8 +274,7 @@ export function AgentOfficeIsometric({
   }
 
   const zoom = zoomPercent(camera);
-  const labelDetail = camera.zoom >= 0.7;
-  const labelScale = Math.min(1.6, Math.max(1, 1 / camera.zoom));
+  const overlayScale = Math.min(1.4, Math.max(1, 1 / camera.zoom));
   const canZoomIn = camera.zoom < OFFICE_MAX_ZOOM;
   const canZoomOut = camera.zoom > OFFICE_MIN_ZOOM;
   const canPan = (deltaX: number, deltaY: number) => {
@@ -606,9 +304,13 @@ export function AgentOfficeIsometric({
 
   return (
     <section
-      className={cn("office-scene", "agent-floor", dragging && "is-dragging")}
+      className={cn(
+        "office-scene",
+        "office-studio",
+        "agent-floor",
+        dragging && "is-dragging",
+      )}
       aria-label={t("agentOffice.scene.label")}
-      data-label-detail={labelDetail ? "true" : "false"}
       data-testid="agent-floor"
     >
       <div className="office-scene-toolbar">
@@ -769,7 +471,7 @@ export function AgentOfficeIsometric({
               width: layout.width,
               height: layout.height,
               ...cameraStyle(camera),
-              "--office-label-scale": labelScale.toFixed(2),
+              "--office-overlay-scale": overlayScale.toFixed(2),
             } as CSSProperties
           }
         >

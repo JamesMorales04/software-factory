@@ -1,10 +1,13 @@
 # Agent Office isometric floor (V0)
 
-**Status:** V0 presentation implemented in the Agent Office visual tab. It is a
-deterministic rendering of the existing participant projection, not a live
-simulation and not product acceptance. Component tests cover layout, selection
-and camera behavior; real browser acceptance against the Compose stack remains
-candidate-bound work.
+**Status:** V0 presentation implemented in the Agent Office visual tab, with a
+2026-10-28 visual amendment toward the Owner's primary isometric reference. The
+floor is a deterministic rendering of the existing participant projection, not
+a live simulation and not product acceptance. Component tests cover layout,
+visual identity, selection and camera behavior; real browser acceptance against
+the Compose stack remains candidate-bound work. See the
+[visual amendment](agent-office-visual-amendment.md) for the reference
+comparison and remaining gaps.
 
 **Product job:** let the operator read the observed engineering organization at
 a glance — who is recorded, in which role station, with which truthfully
@@ -40,7 +43,9 @@ Revisit PixiJS only when a measured requirement exists for sprite animation,
 pathfinding, large sprite atlases or sustained scenes beyond the projection's
 200-participant bound. That evaluation must include a measured bundle budget,
 a rendering performance target, an accessibility and keyboard equivalent, and
-the same Core-authority rules.
+the same Core-authority rules. The 2026-10-28 visual amendment kept the
+SVG/DOM renderer: it added room composition, lighting, furniture and individual
+avatar identities without requiring a per-frame renderer.
 
 ## 2. Scene model
 

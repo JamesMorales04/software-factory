@@ -211,11 +211,15 @@ review.
   implemented for the 1–8 unit bound, with keyboard movement and a table
   alternative. React Flow is not installed. No scheduling progress is inferred
   from graph position.
-- Agent Office floor: a custom deterministic SVG/DOM isometric scene with native
-  avatar buttons, keyboard selection, clamped pan/zoom and a table alternative,
-  implemented for the 0–30 observed-entity range. PixiJS is not installed; the
+- Agent Office floor: a custom deterministic SVG/DOM isometric studio scene with
+  native avatar buttons, keyboard selection, clamped pan/zoom and a table
+  alternative, implemented for the 0–30 observed-entity range. A 2026-10-28
+  visual amendment adds wood-floored labelled rooms, cutaway walls, practical
+  lighting, furniture, individualized avatars and compact hover/selection
+  overlays, with a dark contextual inspector. PixiJS is not installed; the
   bundle, accessibility and animation decision is recorded in
-  [Agent Office isometric floor](agent-office-isometric.md).
+  [Agent Office isometric floor](agent-office-isometric.md) and the
+  [visual amendment](agent-office-visual-amendment.md).
 - Storybook is a component workshop, not product acceptance; evaluate it in the
   design foundation or add it only when component isolation justifies the cost.
 - Playwright + axe for real browser acceptance; visual regression only when the

@@ -107,6 +107,9 @@ export function AppShell({
   const location = useLocation();
   const pathname = location.pathname;
   const search = location.search;
+  const studioView =
+    pathname.startsWith("/agents") &&
+    (new URLSearchParams(search).get("view") ?? "floor") === "floor";
   const advancedActive = isAdvancedRoute(pathname, search);
 
   useEffect(() => {
@@ -194,7 +197,7 @@ export function AppShell({
       <div
         className={`app-shell ${collapsed ? "app-shell--collapsed" : ""} ${
           mobileOpen ? "app-shell--mobile-open" : ""
-        }`}
+        } ${studioView ? "app-shell--studio" : ""}`}
       >
         <aside
           ref={sidebarRef}
