@@ -17,7 +17,7 @@ use factory_native::execution_policy::{
     ContinuationDecision, FrozenExecutionPolicy, OperationLimits, ProgressCheckpoint,
     ProgressEvidence, ProgressKind,
 };
-use factory_native::progress::{GateRecord, ProgressSupervisor};
+use factory_native::progress::ProgressCheckpointRequest;
 use factory_native::protocol::{
     DynamicToolCallParams, DynamicToolCallResult, DynamicToolContentItem, DynamicToolSpec, JsonRpc,
     RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
@@ -48,6 +48,10 @@ struct ClaimResponse {
 #[derive(Debug, Deserialize)]
 struct Assignment {
     lease: Lease,
+    #[serde(default)]
+    campaign_id: String,
+    #[serde(default)]
+    work_item_id: String,
     action_id: String,
     action_spec: ActionSpec,
     action_spec_sha256: String,
@@ -293,6 +297,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => {
                 let message = error.to_string();
+                // A deterministic progress hold or a progress-transport failure
+                // is a control state, never a generic failed attempt. Core
+                // records BLOCKED and refuses redispatch until operator or
+                // verified-change resolution.
+                let terminal_status = if error.downcast_ref::<WorkerProgressHalt>().is_some()
+                    || error.downcast_ref::<ProgressTransportError>().is_some()
+                {
+                    "BLOCKED"
+                } else {
+                    "FAILED"
+                };
                 let response = client
                     .post(core.join("worker/report")?)
                     .bearer_auth(&session_token)
@@ -302,7 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "generation": assignment.lease.generation,
                         "receipt_id": Uuid::new_v4().to_string(),
                         "result_sha256": sha256_hex(message.as_bytes()),
-                        "terminal_status": "FAILED"
+                        "terminal_status": terminal_status
                     }))
                     .send()
                     .await?;
@@ -1672,15 +1687,13 @@ impl std::fmt::Display for WorkerProgressHalt {
 
 impl std::error::Error for WorkerProgressHalt {}
 
-/// Worker-side deterministic progress supervision for one Implementer session.
+/// Worker-side evidence collection for one Implementer session.
 ///
-/// Durable evidence is derived only from actual workspace writes and frozen
-/// check results. Prose, heartbeats, elapsed time and token spend are not
-/// progress. The campaign key is the frozen Action identity and the work item
-/// is the Attempt identity; Core persistence of the same evidence is a Director
-/// integration point.
+/// The Supervisor is authoritative in Core. The Worker derives only durable
+/// observations (workspace writes and frozen-check outcomes) and submits them
+/// with the stable Campaign/work-item identity; restart and repair attempts
+/// therefore reuse the same progress counters.
 struct TurnProgress {
-    supervisor: ProgressSupervisor,
     campaign_id: String,
     work_item_id: String,
     turn: u64,
@@ -1691,28 +1704,15 @@ struct TurnProgress {
 }
 
 impl TurnProgress {
-    fn new(context: &ProviderContext<'_>) -> Result<Self, Box<dyn std::error::Error>> {
-        let policy = context
-            .assignment
-            .execution_policy
-            .as_ref()
-            .and_then(FrozenExecutionPolicy::v2)
-            .ok_or("provider assignment has no Execution Policy V2")?
-            .progress;
-        Self::from_policy(
-            policy,
-            format!("action:{}", context.assignment.action_id),
-            context.assignment.lease.attempt_id.clone(),
+    fn new(context: &ProviderContext<'_>) -> Self {
+        Self::from_identity(
+            context.assignment.campaign_id.clone(),
+            context.assignment.work_item_id.clone(),
         )
     }
 
-    fn from_policy(
-        policy: factory_native::execution_policy::ProgressPolicy,
-        campaign_id: String,
-        work_item_id: String,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            supervisor: ProgressSupervisor::new(policy)?,
+    fn from_identity(campaign_id: String, work_item_id: String) -> Self {
+        Self {
             campaign_id,
             work_item_id,
             turn: 0,
@@ -1720,7 +1720,7 @@ impl TurnProgress {
             evidence: Vec::new(),
             last_content: std::collections::BTreeMap::new(),
             last_check: std::collections::BTreeMap::new(),
-        })
+        }
     }
 
     fn begin_turn(&mut self) {
@@ -1761,39 +1761,36 @@ impl TurnProgress {
         sha256_hex(parts.join("\n").as_bytes())
     }
 
+    /// Record both PASS and FAIL outcomes. A failing receipt establishes the
+    /// suite baseline; only a later PASS for the identical suite can count as
+    /// progress. A changed receipt hash alone never earns progress.
     fn observe_check(&mut self, argv: &[String], success: bool) {
-        if !success {
-            return;
-        }
         let suite = format!("check:{}", argv.join("\u{0}"));
-        // A check receipt is candidate-bound: the same passing check against a
-        // new candidate is new evidence; replaying it against the same
-        // candidate earns nothing.
-        let result = sha256_hex(format!("{argv:?}|exit=0|{}", self.candidate_digest()).as_bytes());
-        if self.last_check.get(&suite) == Some(&result) {
+        let outcome = if success { "PASS" } else { "FAIL" };
+        let receipt =
+            sha256_hex(format!("{argv:?}|{outcome}|{}", self.candidate_digest()).as_bytes());
+        if self.last_check.get(&suite) == Some(&receipt) {
             return;
         }
-        self.last_check.insert(suite.clone(), result.clone());
+        self.last_check.insert(suite.clone(), receipt.clone());
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
             evidence_id: format!("{}-check-{sequence}", self.work_item_id),
             campaign_id: self.campaign_id.clone(),
             work_item_id: self.work_item_id.clone(),
             kind: ProgressKind::TestsImproved,
-            artifact_ref: "frozen-check".into(),
-            artifact_sha256: result,
+            artifact_ref: format!("suite:{suite}:{outcome}"),
+            artifact_sha256: receipt,
             baseline_ref: suite,
             observed_sequence: sequence,
         });
     }
 
-    /// Checkpoint the previous turn. `Some(halt)` means Core must diagnose or
-    /// escalate before any further implementation turn is dispatched.
-    fn finish_previous_turn(
-        &mut self,
-    ) -> Result<Option<WorkerProgressHalt>, Box<dyn std::error::Error>> {
+    /// Build the checkpoint for the completed turn. The evidence is cleared so
+    /// each terminal operation is submitted exactly once.
+    fn checkpoint_request(&mut self) -> Option<ProgressCheckpointRequest> {
         if self.turn == 0 {
-            return Ok(None);
+            return None;
         }
         let checkpoint_id = format!("{}-turn-{}", self.work_item_id, self.turn);
         let operation_id = checkpoint_id.clone();
@@ -1802,7 +1799,8 @@ impl TurnProgress {
                 "workItemId": self.work_item_id,
                 "turn": self.turn,
                 "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
-            }))?
+            }))
+            .ok()?
             .as_bytes(),
         );
         let checkpoint = ProgressCheckpoint {
@@ -1816,27 +1814,102 @@ impl TurnProgress {
                 .collect(),
             outcome_sha256,
         };
-        let gate: Option<GateRecord> = None;
-        let outcome = self.supervisor.checkpoint(
-            &self.campaign_id,
-            &checkpoint,
-            &self.evidence,
-            gate.as_ref(),
-        )?;
+        let request = ProgressCheckpointRequest {
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            checkpoint,
+            evidence: self.evidence.clone(),
+            gate: None,
+        };
         self.evidence.clear();
-        if matches!(
-            outcome.decision,
-            ContinuationDecision::Diagnose | ContinuationDecision::Escalate
-        ) {
-            return Ok(Some(WorkerProgressHalt {
-                decision: outcome.decision,
-                work_item_id: self.work_item_id.clone(),
-                stagnant_checkpoints: outcome.stagnant_checkpoints,
-                unsuccessful_replans: outcome.unsuccessful_replans,
-            }));
-        }
-        Ok(None)
+        Some(request)
     }
+}
+
+#[derive(Debug)]
+struct ProgressTransportError {
+    detail: String,
+}
+
+impl std::fmt::Display for ProgressTransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "PROGRESS_TRANSPORT_FAILURE: {}", self.detail)
+    }
+}
+
+impl std::error::Error for ProgressTransportError {}
+
+impl WorkerProgressHalt {
+    fn from_response(
+        work_item_id: &str,
+        response: &factory_native::progress::ProgressCheckpointResponse,
+    ) -> Option<Self> {
+        match response.decision {
+            ContinuationDecision::Diagnose
+            | ContinuationDecision::Escalate
+            | ContinuationDecision::AwaitAuthorization
+            | ContinuationDecision::AwaitReconciliation
+            | ContinuationDecision::Cancel => Some(Self {
+                decision: response.decision,
+                work_item_id: work_item_id.to_owned(),
+                stagnant_checkpoints: response.stagnant_checkpoints,
+                unsuccessful_replans: response.unsuccessful_replans,
+            }),
+            ContinuationDecision::Continue
+            | ContinuationDecision::Replan
+            | ContinuationDecision::Complete => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn submit_progress_checkpoint(
+    client: &reqwest::Client,
+    core: &reqwest::Url,
+    session_token: &str,
+    worker_id: &str,
+    assignment: &Assignment,
+    request: &factory_native::progress::ProgressCheckpointRequest,
+) -> Result<factory_native::progress::ProgressCheckpointResponse, ProgressTransportError> {
+    let response = client
+        .post(
+            core.join("worker/progress_checkpoint")
+                .map_err(|error| ProgressTransportError {
+                    detail: format!("progress endpoint URL: {error}"),
+                })?,
+        )
+        .bearer_auth(session_token)
+        .json(&serde_json::json!({
+            "attempt_id": assignment.lease.attempt_id,
+            "worker_id": worker_id,
+            "generation": assignment.lease.generation,
+            "campaign_id": assignment.campaign_id,
+            "work_item_id": assignment.work_item_id,
+            "checkpoint": request.checkpoint,
+            "evidence": request.evidence,
+            "gate": request.gate,
+        }))
+        .send()
+        .await
+        .map_err(|error| ProgressTransportError {
+            detail: format!("progress checkpoint request failed: {error}"),
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ProgressTransportError {
+            detail: format!(
+                "Core refused progress checkpoint: HTTP {status} {}",
+                body.chars().take(512).collect::<String>()
+            ),
+        });
+    }
+    response
+        .json::<factory_native::progress::ProgressCheckpointResponse>()
+        .await
+        .map_err(|error| ProgressTransportError {
+            detail: format!("progress checkpoint response: {error}"),
+        })
 }
 
 async fn run_provider_tool_loop(
@@ -1953,10 +2026,22 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
-    let mut progress = TurnProgress::new(context)?;
+    let mut progress = TurnProgress::new(context);
     loop {
-        if let Some(halt) = progress.finish_previous_turn()? {
-            return Err(Box::new(halt));
+        if let Some(request) = progress.checkpoint_request() {
+            let response = submit_progress_checkpoint(
+                context.client,
+                context.core,
+                context.session_token,
+                context.worker_id,
+                context.assignment,
+                &request,
+            )
+            .await?;
+            if let Some(halt) = WorkerProgressHalt::from_response(&progress.work_item_id, &response)
+            {
+                return Err(Box::new(halt));
+            }
         }
         progress.begin_turn();
         let turn = if context.turn_policy.is_some() {
@@ -2852,11 +2937,24 @@ async fn run_codex_tool_loop(
     };
     let mut last_turn_id = String::new();
     let mut active_reservation: Option<String> = None;
-    let mut progress = TurnProgress::new(context)?;
+    let mut progress = TurnProgress::new(context);
     let result: Result<ProviderRun, Box<dyn std::error::Error>> = async {
         loop {
-            if let Some(halt) = progress.finish_previous_turn()? {
-                return Err(Box::new(halt) as Box<dyn std::error::Error>);
+            if let Some(request) = progress.checkpoint_request() {
+                let response = submit_progress_checkpoint(
+                    context.client,
+                    context.core,
+                    context.session_token,
+                    context.worker_id,
+                    context.assignment,
+                    &request,
+                )
+                .await?;
+                if let Some(halt) =
+                    WorkerProgressHalt::from_response(&progress.work_item_id, &response)
+                {
+                    return Err(Box::new(halt) as Box<dyn std::error::Error>);
+                }
             }
             progress.begin_turn();
             let turn = if context.turn_policy.is_some() {
@@ -4369,8 +4467,9 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::{
-        ContinuationDecision, TurnProgress, opencode_first_action_instruction,
-        strict_request_digest, validate_provider_tools, validated_loopback_url,
+        ActionSpec, Assignment, ContinuationDecision, Lease, ProgressKind, TurnProgress,
+        WorkerProgressHalt, opencode_first_action_instruction, sha256_hex, strict_request_digest,
+        submit_progress_checkpoint, validate_provider_tools, validated_loopback_url,
     };
 
     #[test]
@@ -4400,89 +4499,190 @@ mod tests {
         assert!(!strict_request_digest("codex"));
     }
 
-    fn test_progress_policy() -> factory_native::execution_policy::ProgressPolicy {
-        factory_native::execution_policy::ProgressPolicy {
-            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
-            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
-            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+    fn assignment_for_progress() -> Assignment {
+        Assignment {
+            lease: Lease {
+                attempt_id: "attempt".into(),
+                generation: 1,
+            },
+            campaign_id: "campaign".into(),
+            work_item_id: "unit-1".into(),
+            action_id: "action".into(),
+            action_spec: ActionSpec {
+                schema_version: 1,
+                project_id: "project".into(),
+                repository: "/repo".into(),
+                base_commit: "a".repeat(40),
+                objective: "objective".into(),
+                objective_sha256: "b".repeat(64),
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                allowed_paths: vec!["src".into()],
+                checks: Vec::new(),
+            },
+            action_spec_sha256: "c".repeat(64),
+            repository: "/repo".into(),
+            execution_mode: "TRUSTED_LOCAL_PROVIDER".into(),
+            kind: "UNIT".into(),
+            integration_candidates: Vec::new(),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            provider_mode: "build".into(),
+            delegation_id: "grant".into(),
+            execution_policy: None,
+            allowed_tools: Vec::new(),
+            attempt_grant: String::new(),
         }
     }
 
     #[test]
-    fn implementer_continues_past_former_turn_four_with_verified_progress() {
-        let mut progress = TurnProgress::from_policy(
-            test_progress_policy(),
-            "action:fixture".into(),
-            "attempt:fixture".into(),
-        )
-        .unwrap();
-        for turn in 0..10 {
-            progress.begin_turn();
-            progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
-            progress.observe_check(&["cargo".into(), "test".into()], true);
-            let halt = progress.finish_previous_turn().unwrap();
-            assert!(halt.is_none(), "verified progress halted at turn {turn}");
-        }
-        assert_eq!(progress.turn, 10);
-    }
-
-    #[test]
-    fn two_turns_without_durable_progress_return_a_typed_diagnosis() {
-        let mut progress = TurnProgress::from_policy(
-            test_progress_policy(),
-            "action:fixture".into(),
-            "attempt:fixture".into(),
-        )
-        .unwrap();
-        progress.begin_turn();
-        assert!(progress.finish_previous_turn().unwrap().is_none());
-        progress.begin_turn();
-        let halt = progress.finish_previous_turn().unwrap().unwrap();
-        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
-        assert_eq!(halt.stagnant_checkpoints, 2);
-        assert!(halt.to_string().contains("IMPLEMENTER_PROGRESS_Diagnose"));
-    }
-
-    #[test]
-    fn duplicate_writes_and_checks_do_not_manufacture_progress() {
-        let mut progress = TurnProgress::from_policy(
-            test_progress_policy(),
-            "action:fixture".into(),
-            "attempt:fixture".into(),
-        )
-        .unwrap();
-        progress.begin_turn();
-        progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&["cargo".into(), "test".into()], true);
-        assert!(progress.finish_previous_turn().unwrap().is_none());
-        progress.begin_turn();
-        progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&["cargo".into(), "test".into()], true);
-        assert!(progress.finish_previous_turn().unwrap().is_none());
-        progress.begin_turn();
-        progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&["cargo".into(), "test".into()], true);
-        let halt = progress.finish_previous_turn().unwrap().unwrap();
-        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
-    }
-
-    #[test]
-    fn twelve_verified_turns_continue_without_a_turn_attempt_or_session_cap() {
-        // Admission has no attempt/session counter. This test drives the same
-        // deterministic supervisor across twelve turns to prove a legitimate
-        // long Implementer session is not cut at the former turn-four bound.
-        let mut progress = TurnProgress::from_policy(
-            test_progress_policy(),
-            "action:fixture".into(),
-            "attempt:twelve".into(),
-        )
-        .unwrap();
+    fn twelve_turns_build_stable_campaign_checkpoints() {
+        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
         for turn in 0..12 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
             progress.observe_check(&["cargo".into(), "test".into()], true);
-            assert!(progress.finish_previous_turn().unwrap().is_none());
+            let request = progress.checkpoint_request().expect("checkpoint request");
+            assert_eq!(request.campaign_id, "campaign");
+            assert_eq!(request.work_item_id, "unit-1");
+            assert_eq!(request.checkpoint.work_item_id, "unit-1");
+            assert!(!request.evidence.is_empty());
+            assert!(
+                request.evidence.iter().all(|item| {
+                    item.campaign_id == "campaign" && item.work_item_id == "unit-1"
+                })
+            );
         }
+        assert_eq!(progress.turn, 12);
+        assert!(progress.checkpoint_request().is_none() || progress.evidence.is_empty());
+    }
+
+    #[test]
+    fn check_observations_encode_suite_and_pass_fail_outcomes() {
+        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "candidate");
+        progress.observe_check(&["cargo".into(), "test".into()], false);
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        let request = progress.checkpoint_request().unwrap();
+        let outcomes: Vec<_> = request
+            .evidence
+            .iter()
+            .filter(|item| item.kind == ProgressKind::TestsImproved)
+            .map(|item| item.artifact_ref.as_str())
+            .collect();
+        assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+        assert!(outcomes.iter().any(|value| value.ends_with(":FAIL")));
+        assert!(outcomes.iter().any(|value| value.ends_with(":PASS")));
+        assert!(
+            outcomes
+                .iter()
+                .all(|value| value.starts_with("suite:check:"))
+        );
+    }
+
+    #[test]
+    fn duplicate_identical_checks_do_not_duplicate_evidence() {
+        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        let first = progress.checkpoint_request().unwrap();
+        let first_checks = first
+            .evidence
+            .iter()
+            .filter(|item| item.kind == ProgressKind::TestsImproved)
+            .count();
+        assert_eq!(first_checks, 1);
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        let second = progress.checkpoint_request().unwrap();
+        assert!(
+            second
+                .evidence
+                .iter()
+                .all(|item| item.kind != ProgressKind::TestsImproved),
+            "identical check replay must not create new evidence"
+        );
+    }
+
+    #[test]
+    fn progress_response_maps_to_typed_halt() {
+        let response = factory_native::progress::ProgressCheckpointResponse {
+            checkpoint_id: "checkpoint".into(),
+            decision: ContinuationDecision::Diagnose,
+            classification: factory_native::progress::CheckpointClassification::Stagnant,
+            stagnant_checkpoints: 2,
+            unsuccessful_replans: 0,
+            hold_open: true,
+        };
+        let halt = WorkerProgressHalt::from_response("unit-1", &response).unwrap();
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert!(halt.to_string().contains("IMPLEMENTER_PROGRESS_Diagnose"));
+
+        let continue_response = factory_native::progress::ProgressCheckpointResponse {
+            decision: ContinuationDecision::Continue,
+            ..response
+        };
+        assert!(WorkerProgressHalt::from_response("unit-1", &continue_response).is_none());
+    }
+
+    #[tokio::test]
+    async fn worker_submits_progress_checkpoint_to_core_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = serde_json::to_string(&factory_native::progress::ProgressCheckpointResponse {
+            checkpoint_id: "unit-1-turn-1".into(),
+            decision: ContinuationDecision::Diagnose,
+            classification: factory_native::progress::CheckpointClassification::Stagnant,
+            stagnant_checkpoints: 2,
+            unsuccessful_replans: 0,
+            hold_open: true,
+        })
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 8192];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let assignment = assignment_for_progress();
+        let request = factory_native::progress::ProgressCheckpointRequest {
+            campaign_id: assignment.campaign_id.clone(),
+            work_item_id: assignment.work_item_id.clone(),
+            checkpoint: factory_native::execution_policy::ProgressCheckpoint {
+                checkpoint_id: "unit-1-turn-1".into(),
+                work_item_id: assignment.work_item_id.clone(),
+                operation_id: "unit-1-turn-1".into(),
+                evidence_ids: Vec::new(),
+                outcome_sha256: sha256_hex(b"turn-1"),
+            },
+            evidence: Vec::new(),
+            gate: None,
+        };
+        let client = reqwest::Client::new();
+        let core = reqwest::Url::parse(&format!("http://{addr}")).unwrap();
+        let response = submit_progress_checkpoint(
+            &client,
+            &core,
+            "session-token",
+            "worker",
+            &assignment,
+            &request,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.decision, ContinuationDecision::Diagnose);
+        assert!(response.hold_open);
+        server.await.unwrap();
     }
 
     #[test]

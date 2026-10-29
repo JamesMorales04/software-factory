@@ -3278,7 +3278,9 @@ fn parse_json<T: serde::de::DeserializeOwned>(value: String) -> Result<T, Error>
 
 /// Recover leases left by a previous Core process. Called once during database
 /// open before any request can race. Committed request links are preserved;
-/// uncommitted leases return to PENDING or BLOCKED after their retry budget.
+/// uncommitted leases return to PENDING or BLOCKED after their bounded
+/// GitHub-read I/O retry budget. This budget governs reconciliation I/O only;
+/// it never limits Campaign execution or progress.
 pub(super) async fn recover_issue_intake_leases_on_open(pool: &SqlitePool) -> Result<(), Error> {
     let now = Utc::now().to_rfc3339();
     let rows = sqlx::query::query(

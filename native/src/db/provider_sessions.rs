@@ -5,6 +5,12 @@
 
 use super::*;
 
+/// Stable typed failure while V2 provider-turn reservations lack their required
+/// shared-ledger hold. The Director/Lane L wiring replaces this branch with a
+/// `reserve_inference` call bound to the Campaign envelope (migration 0035).
+pub const V2_PROVIDER_TURN_LEDGER_REQUIRED: &str =
+    "V2 provider turn authorization requires the shared inference ledger (0035)";
+
 use chrono::Utc;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
@@ -271,10 +277,16 @@ impl Database {
         if authorization_version != 1 {
             // Execution Policy V2 has no cumulative per-role token/cost ceiling.
             // Per-request reservation is the shared inference ledger's job
-            // (#73, migration 0035). Fail closed until that linkage exists.
-            return Err(Error::Forbidden(
-                "V2 provider turn authorization requires the shared inference ledger".into(),
-            ));
+            // (#73, migration 0035). Fail closed with a typed unavailable state
+            // until that linkage exists; never decode NULL V2 cap columns.
+            //
+            // Director/Lane L wiring after 0035:
+            //   campaign_requirement_in_tx(&campaign_id)
+            //   latest_pricing_quote_in_tx(&provider, &model)
+            //   reserve_inference_in_tx(ReserveInferenceInput { .. })
+            //   bind the returned ledger reservation id on
+            //   provider_turn_reservations and settle/release it with the turn.
+            return Err(Error::Unavailable(V2_PROVIDER_TURN_LEDGER_REQUIRED.into()));
         }
         let max_input: i64 = lease.try_get("max_input_tokens")?;
         let max_output: i64 = lease.try_get("max_output_tokens")?;
@@ -1596,6 +1608,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v2_provider_turn_is_typed_unavailable_without_the_ledger() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 1_000, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(ref message) if message == V2_PROVIDER_TURN_LEDGER_REQUIRED),
+            "{error:?}"
+        );
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn v2_provider_tool_events_have_no_lifetime_turn_cap() {
+        let (_path, db, session) = active_turn_fixture_v2().await;
+        for index in 0..64 {
+            db.record_provider_tool_event(&ProviderToolEventInput {
+                session_record_id: session.clone(),
+                worker_id: "worker".into(),
+                generation: 1,
+                call_id: format!("call-{index}"),
+                tool: "run_command".into(),
+                decision: "REQUEST".into(),
+                detail: "bounded tool request".into(),
+            })
+            .await
+            .unwrap();
+        }
+        let count: (i64,) = sqlx::query_as::query_as(
+            "SELECT COUNT(*) FROM provider_tool_events WHERE session_record_id=?1 AND decision='REQUEST'",
+        )
+        .bind(&session)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(count.0, 64);
+        db.close().await;
+    }
+
+    #[tokio::test]
     async fn provider_profile_requires_live_v2_assignment_and_lease_fence() {
         let (_path, db, _session) = active_turn_fixture_v2().await;
         let now_ms = Utc::now().timestamp_millis();
@@ -2196,7 +2249,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamic_tool_events_are_bounded_and_unique_per_session() {
+    async fn dynamic_tool_events_are_unique_without_a_lifetime_turn_budget() {
         let (path, db) = fixture(100).await;
         insert_session(&db, "session-tools", "attempt").await;
         db.mark_provider_active("session-tools", "worker", 1, "ses_tools", "/tmp/tools")
@@ -2215,19 +2268,20 @@ mod tests {
             .await
             .unwrap();
         }
-        assert!(matches!(
-            db.record_provider_tool_event(&ProviderToolEventInput {
-                session_record_id: "session-tools".into(),
-                worker_id: "worker".into(),
-                generation: 1,
-                call_id: "call-over-budget".into(),
-                tool: "write_file".into(),
-                decision: "REQUEST".into(),
-                detail: "requested".into(),
-            })
-            .await,
-            Err(Error::Forbidden(_))
-        ));
+        // There is no lifetime `max_turns * 8` allowance. The call beyond the
+        // former budget succeeds; per-request capacity and tool timeouts are
+        // enforced by the operation loop instead.
+        db.record_provider_tool_event(&ProviderToolEventInput {
+            session_record_id: "session-tools".into(),
+            worker_id: "worker".into(),
+            generation: 1,
+            call_id: "call-over-former-budget".into(),
+            tool: "write_file".into(),
+            decision: "REQUEST".into(),
+            detail: "requested".into(),
+        })
+        .await
+        .unwrap();
         assert!(matches!(
             db.record_provider_tool_event(&ProviderToolEventInput {
                 session_record_id: "session-tools".into(),
@@ -2481,28 +2535,9 @@ impl Database {
                     "provider dynamic tool call id was already used",
                 ));
             }
-            let (max_turns,): (i64,) = sqlx::query_as::query_as(
-                "SELECT ca.max_turns FROM provider_sessions ps
-                 JOIN attempts a ON a.id=ps.attempt_id
-                 JOIN runs r ON r.id=a.run_id
-                 JOIN campaign_authorizations ca ON ca.campaign_id=r.campaign_id
-                 WHERE ps.session_record_id=?1",
-            )
-            .bind(&input.session_record_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-            let (requests,): (i64,) = sqlx::query_as::query_as(
-                "SELECT COUNT(*) FROM provider_tool_events
-                 WHERE session_record_id=?1 AND decision='REQUEST'",
-            )
-            .bind(&input.session_record_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-            if requests >= max_turns.saturating_mul(8) {
-                return Err(Error::Forbidden(
-                    "provider dynamic tool call budget is exhausted".into(),
-                ));
-            }
+            // There is no lifetime dynamic-tool allowance tied to campaign
+            // turns. Each operation remains bounded by the per-turn client
+            // capacity, tool timeout and lease/fencing checks.
         }
         let (sequence,): (i64,) = sqlx::query_as::query_as(
             "SELECT COALESCE(MAX(sequence),0)+1 FROM provider_tool_events WHERE session_record_id=?1",

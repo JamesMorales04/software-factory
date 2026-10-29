@@ -14,8 +14,20 @@
 //! snapshot; replaying the same evidence after a restart never earns progress
 //! because evidence identity, outcome digests, candidate history, blocker keys
 //! and resolved findings are part of that snapshot.
+//!
+//! Core integration contract (Director owns `bin/core.rs` wiring):
+//! - `POST /worker/progress_checkpoint` (Worker session auth): body
+//!   `{ attempt_id, worker_id, generation, campaign_id, work_item_id,
+//!   checkpoint, evidence, gate }`; call
+//!   `Database::record_worker_progress_checkpoint` and return
+//!   [`ProgressCheckpointResponse`].
+//! - `POST /api/campaigns/{campaign_id}/progress/{work_item_id}/resolve`
+//!   (operator auth): call `Database::resolve_progress_hold`.
+//! - `GET /api/campaigns/{campaign_id}/progress` (operator projection): return
+//!   the durable snapshot and open hold from
+//!   `Database::campaign_progress_state` / `Database::progress_hold`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +45,10 @@ pub const MAX_EVIDENCE_PER_CHECKPOINT: usize = 32;
 /// Bound on remembered candidate artifacts per work item. Older entries are
 /// dropped; the digests relevant to oscillation detection are the recent ones.
 pub const MAX_TRACKED_ARTIFACTS: usize = 128;
+/// Bound on remembered evidence keys in the active projection. Older keys are
+/// evicted FIFO; durable `progress_evidence` uniqueness still rejects replays
+/// after eviction.
+pub const MAX_TRACKED_EVIDENCE: usize = 4_096;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const PROVISIONAL_VALIDATION_WINDOW: u32 = 2;
@@ -124,11 +140,15 @@ pub struct WorkItemProgressState {
     pub candidate_history: Vec<String>,
     pub test_suite: Option<String>,
     pub test_result: Option<String>,
+    #[serde(default)]
+    pub test_outcome: Option<String>,
     pub graph_revision: Option<String>,
     pub resolved_findings: BTreeSet<String>,
     pub repaired_episodes: BTreeSet<String>,
     pub accepted_units: BTreeSet<String>,
     pub seen_evidence: BTreeSet<String>,
+    #[serde(default)]
+    pub evidence_order: VecDeque<String>,
     pub blocker_keys: BTreeSet<String>,
     pub seen_outcomes: BTreeSet<String>,
 }
@@ -146,13 +166,30 @@ impl WorkItemProgressState {
             candidate_history: Vec::new(),
             test_suite: None,
             test_result: None,
+            test_outcome: None,
             graph_revision: None,
             resolved_findings: BTreeSet::new(),
             repaired_episodes: BTreeSet::new(),
             accepted_units: BTreeSet::new(),
             seen_evidence: BTreeSet::new(),
+            evidence_order: VecDeque::new(),
             blocker_keys: BTreeSet::new(),
             seen_outcomes: BTreeSet::new(),
+        }
+    }
+
+    /// Remember one evidence key, evicting the oldest key when the active
+    /// projection is full. The durable evidence table remains the authoritative
+    /// replay guard.
+    fn remember_evidence(&mut self, key: String) {
+        if !self.seen_evidence.insert(key.clone()) {
+            return;
+        }
+        self.evidence_order.push_back(key);
+        while self.evidence_order.len() > MAX_TRACKED_EVIDENCE {
+            if let Some(oldest) = self.evidence_order.pop_front() {
+                self.seen_evidence.remove(&oldest);
+            }
         }
     }
 
@@ -174,6 +211,49 @@ pub struct ProgressSupervisorState {
     pub schema_version: u32,
     pub policy: ProgressPolicy,
     pub work_items: BTreeMap<String, WorkItemProgressState>,
+}
+
+/// Worker -> Core checkpoint request. Core validates the Worker lease, loads
+/// the frozen Campaign policy and persists the decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProgressCheckpointRequest {
+    pub campaign_id: String,
+    pub work_item_id: String,
+    pub checkpoint: ProgressCheckpoint,
+    pub evidence: Vec<ProgressEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateRecord>,
+}
+
+/// Core's authoritative continuation decision for one checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProgressCheckpointResponse {
+    pub checkpoint_id: String,
+    pub decision: ContinuationDecision,
+    pub classification: CheckpointClassification,
+    pub stagnant_checkpoints: u32,
+    pub unsuccessful_replans: u32,
+    pub hold_open: bool,
+}
+
+/// A durable campaign-level continuation hold created from a deterministic
+/// Diagnose/Escalate decision. While unresolved, Core does not dispatch another
+/// attempt for the work item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ProgressHoldRecord {
+    pub hold_id: String,
+    pub campaign_id: String,
+    pub work_item_id: String,
+    pub state: String,
+    pub reason: String,
+    pub checkpoint_id: Option<String>,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub resolution: Option<String>,
+    pub resolved_by: Option<String>,
 }
 
 /// Deterministic supervisor for one Campaign.
@@ -215,6 +295,12 @@ impl ProgressSupervisor {
             return Err(ProgressError::InvalidState(
                 "stored progress snapshot has too many work items".into(),
             ));
+        }
+        let mut state = state;
+        for item in state.work_items.values_mut() {
+            if item.evidence_order.is_empty() {
+                item.evidence_order = item.seen_evidence.iter().cloned().collect::<VecDeque<_>>();
+            }
         }
         for (id, item) in &state.work_items {
             if id != &item.work_item_id {
@@ -293,28 +379,27 @@ impl ProgressSupervisor {
             match classify_evidence(&policy, state, campaign_id, checkpoint, item, gate) {
                 Ok(Classification::Verified) => {
                     verified = true;
-                    state.seen_evidence.insert(evidence_key(item));
-                    if state.seen_evidence.len() > 4_096 {
-                        return Err(ProgressError::InvalidState(
-                            "progress evidence set is unbounded".into(),
-                        ));
-                    }
+                    state.remember_evidence(evidence_key(item));
                     state.last_sequence = state.last_sequence.max(item.observed_sequence);
                 }
                 Ok(Classification::Provisional { candidate }) => {
                     provisional = Some(candidate);
-                    state.seen_evidence.insert(evidence_key(item));
+                    state.remember_evidence(evidence_key(item));
+                    state.last_sequence = state.last_sequence.max(item.observed_sequence);
+                }
+                Ok(Classification::Observed) => {
+                    state.remember_evidence(evidence_key(item));
                     state.last_sequence = state.last_sequence.max(item.observed_sequence);
                 }
                 Ok(Classification::Blocked) => {
                     blocked = true;
-                    state.seen_evidence.insert(evidence_key(item));
+                    state.remember_evidence(evidence_key(item));
                     state.last_sequence = state.last_sequence.max(item.observed_sequence);
                 }
                 Ok(Classification::Accepted { candidate }) => {
                     verified = true;
                     accepted_candidate = Some(candidate);
-                    state.seen_evidence.insert(evidence_key(item));
+                    state.remember_evidence(evidence_key(item));
                     state.last_sequence = state.last_sequence.max(item.observed_sequence);
                 }
                 Err(reason) => rejected.push(RejectedEvidence {
@@ -447,7 +532,7 @@ impl ProgressSupervisor {
             if state.seen_evidence.contains(&evidence_key(evidence)) {
                 return Ok(threshold_decision(&self.policy, state));
             }
-            state.seen_evidence.insert(evidence_key(evidence));
+            state.remember_evidence(evidence_key(evidence));
             state.last_sequence = state.last_sequence.max(evidence.observed_sequence);
             state.stagnant_checkpoints = 0;
             state.unsuccessful_replans = 0;
@@ -479,9 +564,16 @@ impl ProgressSupervisor {
 
 enum Classification {
     Verified,
-    Provisional { candidate: String },
+    /// A relevant negative observation (for example a failing frozen check).
+    /// It updates the baseline but earns no progress by itself.
+    Observed,
+    Provisional {
+        candidate: String,
+    },
     Blocked,
-    Accepted { candidate: String },
+    Accepted {
+        candidate: String,
+    },
 }
 
 fn classify_evidence(
@@ -529,23 +621,40 @@ fn classify_evidence(
             })
         }
         ProgressKind::TestsImproved => {
-            if evidence.baseline_ref.trim().is_empty() {
-                return Err("test improvement cites no suite/environment baseline".into());
+            // A changed receipt hash alone is not an improvement. The artifact
+            // must identify the same suite/environment and an explicit
+            // PASS/FAIL transition; only FAIL -> PASS under the same suite is
+            // verified progress.
+            let (suite, outcome) = parse_test_artifact(&evidence.artifact_ref)
+                .ok_or("test evidence must identify suite/environment and PASS/FAIL outcome")?;
+            if suite != evidence.baseline_ref {
+                return Err("test suite artifact and baseline identity differ".into());
             }
-            match (&state.test_suite, &state.test_result) {
-                (Some(suite), Some(result)) if suite == &evidence.baseline_ref => {
-                    if result == &evidence.artifact_sha256 {
-                        return Err("test result was replayed without improvement".into());
-                    }
-                }
-                (Some(suite), _) if suite != &evidence.baseline_ref => {
-                    return Err("test improvement changed the suite/environment".into());
-                }
-                _ => {}
+            if outcome == TestOutcome::Failed {
+                state.test_suite = Some(suite.to_owned());
+                state.test_result = Some(evidence.artifact_sha256.clone());
+                state.test_outcome = Some("FAIL".into());
+                return Ok(Classification::Observed);
             }
-            state.test_suite = Some(evidence.baseline_ref.clone());
-            state.test_result = Some(evidence.artifact_sha256.clone());
-            Ok(Classification::Verified)
+            match (
+                state.test_suite.as_deref(),
+                state.test_outcome.as_deref(),
+                state.test_result.as_deref(),
+            ) {
+                (Some(previous_suite), Some("FAIL"), Some(previous_receipt))
+                    if previous_suite == suite && previous_receipt != evidence.artifact_sha256 =>
+                {
+                    state.test_suite = Some(suite.to_owned());
+                    state.test_result = Some(evidence.artifact_sha256.clone());
+                    state.test_outcome = Some("PASS".into());
+                    Ok(Classification::Verified)
+                }
+                (Some(previous_suite), _, _) if previous_suite != suite => {
+                    Err("test improvement changed the suite/environment".into())
+                }
+                (None, _, _) => Err("test pass has no failing baseline for this suite".into()),
+                _ => Err("test pass is unchanged or not a FAIL-to-PASS transition".into()),
+            }
         }
         ProgressKind::FindingsResolved => {
             if evidence.artifact_ref.trim().is_empty() {
@@ -656,6 +765,28 @@ fn evidence_key(evidence: &ProgressEvidence) -> String {
         "{:?}|{}|{}|{}",
         evidence.kind, evidence.artifact_ref, evidence.artifact_sha256, evidence.baseline_ref
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestOutcome {
+    Passed,
+    Failed,
+}
+
+/// Test evidence identity is `suite:<suite-id>:PASS|FAIL`. The suite id is the
+/// stable command/environment identity; the outcome is the observed result.
+fn parse_test_artifact(artifact_ref: &str) -> Option<(&str, TestOutcome)> {
+    let rest = artifact_ref.strip_prefix("suite:")?;
+    let (suite, outcome) = rest.rsplit_once(':')?;
+    if suite.trim().is_empty() {
+        return None;
+    }
+    let outcome = match outcome {
+        "PASS" => TestOutcome::Passed,
+        "FAIL" => TestOutcome::Failed,
+        _ => return None,
+    };
+    Some((suite, outcome))
 }
 
 fn validate_policy(policy: &ProgressPolicy) -> Result<(), ProgressError> {
@@ -820,6 +951,19 @@ mod tests {
         }
     }
 
+    fn test_evidence(sequence: u64, suite: &str, outcome: &str) -> ProgressEvidence {
+        ProgressEvidence {
+            evidence_id: format!("ev-{sequence}-{outcome}"),
+            campaign_id: "campaign".into(),
+            work_item_id: "unit-1".into(),
+            kind: ProgressKind::TestsImproved,
+            artifact_ref: format!("suite:{suite}:{outcome}"),
+            artifact_sha256: sha(&format!("{suite}-{sequence}-{outcome}")),
+            baseline_ref: suite.into(),
+            observed_sequence: sequence,
+        }
+    }
+
     fn gate(artifact: &str) -> GateRecord {
         GateRecord {
             gate_id: "gate-1".into(),
@@ -857,14 +1001,14 @@ mod tests {
         assert_eq!(second.decision, ContinuationDecision::Diagnose);
         assert_eq!(second.stagnant_checkpoints, 2);
 
-        let verified = evidence(ProgressKind::TestsImproved, "pass", "suite-a", 3);
-        let third = run(
-            &mut supervisor,
-            "op-3",
-            std::slice::from_ref(&verified),
-            None,
+        let failed = test_evidence(3, "suite-a", "FAIL");
+        let passed = test_evidence(4, "suite-a", "PASS");
+        let third = run(&mut supervisor, "op-3", &[failed, passed], None);
+        assert_eq!(
+            third.classification,
+            CheckpointClassification::Verified,
+            "{third:?}"
         );
-        assert_eq!(third.classification, CheckpointClassification::Verified);
         assert_eq!(third.decision, ContinuationDecision::Continue);
         assert_eq!(third.stagnant_checkpoints, 0);
     }
@@ -957,34 +1101,49 @@ mod tests {
     #[test]
     fn replayed_receipts_and_changed_test_suites_are_rejected() {
         let mut supervisor = supervisor();
-        let improved = evidence(ProgressKind::TestsImproved, "pass", "suite-a", 1);
-        run(
+        let failed = test_evidence(1, "suite-a", "FAIL");
+        run(&mut supervisor, "op-1", std::slice::from_ref(&failed), None);
+        let improved = test_evidence(2, "suite-a", "PASS");
+        let verified = run(
             &mut supervisor,
-            "op-1",
+            "op-2",
             std::slice::from_ref(&improved),
             None,
         );
+        assert_eq!(verified.classification, CheckpointClassification::Verified);
+
         let replay = ProgressEvidence {
-            observed_sequence: 2,
-            evidence_id: "ev-2-replay".into(),
+            observed_sequence: 3,
+            evidence_id: "ev-3-replay".into(),
             ..improved.clone()
         };
-        let replayed = run(&mut supervisor, "op-2", std::slice::from_ref(&replay), None);
+        let replayed = run(&mut supervisor, "op-3", std::slice::from_ref(&replay), None);
         assert_eq!(replayed.rejected.len(), 1);
 
-        let other_suite = evidence(ProgressKind::TestsImproved, "pass", "suite-b", 3);
+        let other_suite = test_evidence(4, "suite-b", "PASS");
         let changed = run(
             &mut supervisor,
-            "op-3",
+            "op-4",
             std::slice::from_ref(&other_suite),
             None,
         );
         assert_eq!(changed.rejected.len(), 1);
         assert!(
-            changed.rejected[0].reason.contains("suite"),
+            changed.rejected[0].reason.contains("suite")
+                || changed.rejected[0].reason.contains("baseline"),
             "{:?}",
             changed.rejected
         );
+    }
+
+    #[test]
+    fn a_pass_without_a_failing_baseline_is_not_progress() {
+        let mut supervisor = supervisor();
+        let passed = test_evidence(1, "suite-a", "PASS");
+        let outcome = run(&mut supervisor, "op-1", std::slice::from_ref(&passed), None);
+        assert_eq!(outcome.classification, CheckpointClassification::Stagnant);
+        assert_eq!(outcome.stagnant_checkpoints, 1);
+        assert!(!outcome.rejected.is_empty());
     }
 
     #[test]
@@ -1091,19 +1250,36 @@ mod tests {
 
         // The same operation outcome is a replay after restart, not new work.
         let mut replay = ProgressSupervisor::restore(policy(), supervisor.snapshot()).unwrap();
-        let original = evidence(ProgressKind::TestsImproved, "pass", "suite-a", 2);
-        let counted = run(&mut replay, "op-3", std::slice::from_ref(&original), None);
+        let failed = test_evidence(2, "suite-a", "FAIL");
+        let passed = test_evidence(3, "suite-a", "PASS");
+        let counted = run(&mut replay, "op-3", &[failed, passed.clone()], None);
         assert_eq!(counted.classification, CheckpointClassification::Verified);
         let snapshot = replay.snapshot();
         let mut after_restart = ProgressSupervisor::restore(policy(), snapshot).unwrap();
         let replayed = run(
             &mut after_restart,
             "op-3",
-            std::slice::from_ref(&original),
+            std::slice::from_ref(&passed),
             None,
         );
         assert_eq!(replayed.classification, CheckpointClassification::Replayed);
         assert_eq!(replayed.stagnant_checkpoints, counted.stagnant_checkpoints);
+    }
+
+    #[test]
+    fn evidence_projection_is_bounded_and_evicts_oldest() {
+        let mut state = WorkItemProgressState::new("unit-1");
+        for index in 0..(MAX_TRACKED_EVIDENCE + 16) {
+            state.remember_evidence(format!("evidence-{index}"));
+        }
+        assert_eq!(state.seen_evidence.len(), MAX_TRACKED_EVIDENCE);
+        assert_eq!(state.evidence_order.len(), MAX_TRACKED_EVIDENCE);
+        assert!(!state.seen_evidence.contains("evidence-0"));
+        assert!(
+            state
+                .seen_evidence
+                .contains(&format!("evidence-{}", MAX_TRACKED_EVIDENCE + 15))
+        );
     }
 
     #[test]

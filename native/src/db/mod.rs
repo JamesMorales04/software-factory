@@ -151,6 +151,11 @@ pub struct Attempt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerAssignment {
     pub lease: WorkerLease,
+    pub campaign_id: String,
+    /// Stable identity of the work item across attempts/repair sessions. Lead
+    /// Campaigns use the frozen WorkGraph unit id; direct Campaigns use the
+    /// Campaign id.
+    pub work_item_id: String,
     pub action_id: String,
     pub action_spec: ActionSpec,
     pub action_spec_sha256: String,

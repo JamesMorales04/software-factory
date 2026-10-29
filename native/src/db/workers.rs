@@ -1,6 +1,7 @@
 use super::*;
 
 use chrono::Utc;
+use uuid::Uuid;
 
 impl Database {
     pub async fn register_worker_session(
@@ -225,7 +226,8 @@ impl Database {
         let mut connection = self.pool.acquire().await?;
         super::lead::validate_lead_attempt_lineage(&mut connection, attempt_id).await?;
         let row = sqlx::query::query(
-            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,
+                    r.campaign_id,COALESCE(lt.unit_id,c.id) AS work_item_id,p.repository,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
@@ -246,6 +248,7 @@ impl Database {
              JOIN projects p ON p.id=ac.project_id
              JOIN action_specs s ON s.action_id=ac.id
              LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN execution_policies xp ON xp.policy_id=ca.policy_id
              LEFT JOIN standing_delegations d ON d.id=ca.delegation_id
@@ -256,6 +259,8 @@ impl Database {
         .await?;
         use sqlx::row::Row;
         let action_id: String = row.try_get("action_id")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
+        let work_item_id: String = row.try_get("work_item_id")?;
         let repository: String = row.try_get("repository")?;
         let spec_json: String = row.try_get("spec_json")?;
         let spec_sha256: String = row.try_get("spec_sha256")?;
@@ -299,21 +304,9 @@ impl Database {
             ));
         }
         let policy_json: Option<String> = row.try_get("policy_json")?;
-        let policy: crate::execution_policy::FrozenExecutionPolicy = policy_json
-            .as_deref()
-            .ok_or_else(|| Error::Forbidden("V2 assignment has no frozen policy".into()))
-            .and_then(|json| {
-                serde_json::from_str(json)
-                    .map_err(|_| Error::Invalid("stored execution policy encoding"))
-            })?;
-        let execution_policy = match &policy {
-            crate::execution_policy::FrozenExecutionPolicy::V2(policy) => policy.clone(),
-            crate::execution_policy::FrozenExecutionPolicy::LegacyV1(_) => {
-                return Err(Error::Forbidden(
-                    "legacy V1 policy cannot authorize V2 execution".into(),
-                ));
-            }
-        };
+        let policy_json = policy_json
+            .ok_or_else(|| Error::Forbidden("V2 assignment has no frozen policy".into()))?;
+        let execution_policy = super::authorization::decode_execution_policy(&policy_json)?;
         if provider_mode.is_empty() || delegation_id.is_empty() {
             return Err(Error::Forbidden(
                 "provider assignment has no route identity".into(),
@@ -346,6 +339,8 @@ impl Database {
         }
         Ok(WorkerAssignment {
             lease: lease.clone(),
+            campaign_id,
+            work_item_id,
             action_id,
             action_spec: spec,
             action_spec_sha256: spec_sha256,
@@ -409,10 +404,17 @@ impl Database {
              JOIN campaigns c ON c.id=r.campaign_id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
              AND r.status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')
              AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
+             AND NOT EXISTS (
+               SELECT 1 FROM progress_holds ph
+               WHERE ph.campaign_id=c.id
+                 AND ph.work_item_id=COALESCE(lt.unit_id,c.id)
+                 AND ph.resolved_at IS NULL
+             )
              ORDER BY a.created_at,a.id LIMIT 1",
         )
         .bind(now_ms)
@@ -635,7 +637,10 @@ impl Database {
             || report.receipt_id.len() > 128
             || report.generation <= 0
             || !is_sha256(&report.result_sha256)
-            || !matches!(report.terminal_status.as_str(), "FAILED" | "CANCELLED")
+            || !matches!(
+                report.terminal_status.as_str(),
+                "FAILED" | "CANCELLED" | "BLOCKED"
+            )
         {
             return Err(Error::Invalid("worker terminal report"));
         }
@@ -708,12 +713,49 @@ impl Database {
             )
             .await?;
         }
-        super::lead::fail_lead_work(
-            &mut transaction,
-            &report.attempt_id,
-            &format!("worker terminal {}", report.terminal_status),
-        )
-        .await?;
+        if report.terminal_status == "BLOCKED" {
+            // A deterministic progress hold is a control state, not a failed
+            // campaign. Preserve Lead work and record a hold so no attempt can
+            // be redispatched until an operator decision or verified change.
+            let work_item: Option<(String, String)> = sqlx::query_as::query_as(
+                "SELECT r.campaign_id,COALESCE(lt.unit_id,r.campaign_id)
+                 FROM attempts a
+                 JOIN runs r ON r.id=a.run_id
+                 LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+                 WHERE a.id=?1",
+            )
+            .bind(&report.attempt_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some((campaign_id, work_item_id)) = work_item {
+                sqlx::query::query(
+                    "INSERT INTO progress_holds
+                     (hold_id,campaign_id,work_item_id,state,reason,checkpoint_id,created_at)
+                     SELECT ?1,?2,?3,'BLOCKED',?4,NULL,?5
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM progress_holds
+                       WHERE campaign_id=?2 AND work_item_id=?3 AND resolved_at IS NULL
+                     )",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(&campaign_id)
+                .bind(&work_item_id)
+                .bind(format!(
+                    "worker reported BLOCKED receipt={} result={}",
+                    report.receipt_id, report.result_sha256
+                ))
+                .bind(Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await?;
+            }
+        } else {
+            super::lead::fail_lead_work(
+                &mut transaction,
+                &report.attempt_id,
+                &format!("worker terminal {}", report.terminal_status),
+            )
+            .await?;
+        }
         record_event(
             &mut transaction,
             &report.attempt_id,

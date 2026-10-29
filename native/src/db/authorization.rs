@@ -16,7 +16,9 @@
 
 use super::*;
 
-use crate::execution_policy::{ExecutionPolicyV2, OperationLimits, ProgressPolicy};
+use crate::execution_policy::{
+    ExecutionPolicyV2, FrozenExecutionPolicy, OperationLimits, ProgressPolicy,
+};
 use crate::workspace::path_covered;
 
 use chrono::Utc;
@@ -374,8 +376,7 @@ pub(super) async fn authorize_campaign_in_tx(
         progress: input.progress,
         operations: input.operations,
     };
-    let policy_json =
-        serde_json::to_string(&policy).map_err(|_| Error::Invalid("execution policy encoding"))?;
+    let policy_json = encode_execution_policy(&policy)?;
     let policy_sha256 = sha256_hex(policy_json.as_bytes());
     sqlx::query::query(
         "INSERT INTO execution_policies
@@ -462,6 +463,27 @@ pub(super) async fn authorize_campaign_in_tx(
         legacy: None,
         created_at: now,
     })
+}
+
+/// One canonical persisted representation for a V2 policy. The envelope carries
+/// the explicit `version` discriminator so every Core and Worker decoder uses
+/// the same bytes.
+pub(super) fn encode_execution_policy(policy: &ExecutionPolicyV2) -> Result<String, Error> {
+    serde_json::to_string(&FrozenExecutionPolicy::V2(policy.clone()))
+        .map_err(|_| Error::Invalid("execution policy encoding"))
+}
+
+/// Decode the canonical persisted policy. A V1 envelope is historical evidence
+/// and is never reinterpreted as V2.
+pub(super) fn decode_execution_policy(json: &str) -> Result<ExecutionPolicyV2, Error> {
+    match serde_json::from_str::<FrozenExecutionPolicy>(json)
+        .map_err(|_| Error::Invalid("stored execution policy encoding"))?
+    {
+        FrozenExecutionPolicy::V2(policy) => Ok(policy),
+        FrozenExecutionPolicy::LegacyV1(_) => Err(Error::Invalid(
+            "legacy V1 policy cannot be decoded as V2 execution policy",
+        )),
+    }
 }
 
 fn scope_digest(input: &NewCampaignAuthorization) -> String {
@@ -607,8 +629,7 @@ pub(super) async fn load_authorization(
             let (Some(policy_id), Some(policy_json)) = (policy_id, policy_json) else {
                 return Err(Error::Invalid("V2 authorization has no frozen policy"));
             };
-            let policy: ExecutionPolicyV2 = serde_json::from_str(&policy_json)
-                .map_err(|_| Error::Invalid("stored execution policy encoding"))?;
+            let policy = decode_execution_policy(&policy_json)?;
             if policy.policy_id != policy_id || policy.authorization_id != base.authorization_id {
                 return Err(Error::Invalid("V2 authorization policy identity mismatch"));
             }
@@ -794,7 +815,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(caps, 7, "every obsolete cap column must be NULL for V2");
-        let decoded: ExecutionPolicyV2 = serde_json::from_str(&policy_json).unwrap();
+        let decoded = decode_execution_policy(&policy_json).unwrap();
         assert_eq!(decoded.policy_id, policy_id);
 
         let (replayed, created) = db
@@ -910,6 +931,61 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn production_authorization_round_trips_to_a_worker_assignment() {
+        let (path, db, _grant) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "assignment-campaign")
+            .await
+            .unwrap();
+        let (record, created) = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .unwrap();
+        assert!(created);
+        let (policy_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT p.policy_json FROM campaign_authorizations ca
+             JOIN execution_policies p ON p.policy_id=ca.policy_id
+             WHERE ca.campaign_id=?1",
+        )
+        .bind(&campaign.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&policy_json).unwrap();
+        assert_eq!(envelope["version"], "V2");
+        assert_eq!(
+            envelope["policyId"],
+            record.policy.as_ref().unwrap().policy_id
+        );
+
+        let run = db.create_run(&campaign.id, "assignment-run").await.unwrap();
+        db.create_attempt(&run.id, "assignment-attempt")
+            .await
+            .unwrap();
+        let assignment = db
+            .claim_assignment("assignment-worker", Utc::now().timestamp_millis(), 30_000)
+            .await
+            .unwrap()
+            .expect("V2 assignment");
+        assert_eq!(assignment.campaign_id, campaign.id);
+        assert_eq!(assignment.work_item_id, campaign.id);
+        let policy = assignment
+            .execution_policy
+            .as_ref()
+            .and_then(crate::execution_policy::FrozenExecutionPolicy::v2)
+            .expect("V2 policy");
+        assert_eq!(policy, record.policy.as_ref().unwrap());
+        assert_eq!(policy.operations, operations());
+        assert_eq!(policy.progress, progress());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
     async fn apply_migrations_up_to(pool: &sqlx_sqlite::SqlitePool, limit: &str) {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -986,15 +1062,66 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // Active V1 execution evidence must survive the rebuild.
+        sqlx::query::query(
+            "INSERT INTO runs(id,campaign_id,status,created_at)
+             VALUES ('legacy-run','campaign','RUNNING','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at)
+             VALUES ('legacy-attempt','legacy-run','LEASED','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let migration = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../migrations/0034_execution_policy_v2.sql"),
         )
         .unwrap();
+
+        // Production-shaped interruption: the migration runs in a transaction,
+        // an injected failure rolls it back, and the old schema/rows survive.
+        let mut interrupted = pool.begin().await.unwrap();
         sqlx::raw_sql::raw_sql(&migration)
-            .execute(&pool)
+            .execute(&mut *interrupted)
             .await
             .unwrap();
+        assert!(
+            sqlx::raw_sql::raw_sql("INSERT INTO missing_table VALUES (1)")
+                .execute(&mut *interrupted)
+                .await
+                .is_err()
+        );
+        interrupted.rollback().await.unwrap();
+        let (pre_id, pre_attempts): (String, i64) = sqlx::query_as::query_as(
+            "SELECT authorization_id,max_attempts FROM campaign_authorizations
+             WHERE campaign_id='campaign'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((pre_id.as_str(), pre_attempts), ("legacy-auth", 3));
+        assert!(
+            sqlx::query_as::query_as::<_, (i64,)>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='execution_policies'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0 == 0,
+            "rolled-back migration left a new table"
+        );
+
+        let mut retry = pool.begin().await.unwrap();
+        sqlx::raw_sql::raw_sql(&migration)
+            .execute(&mut *retry)
+            .await
+            .unwrap();
+        retry.commit().await.unwrap();
 
         let (authorization_id, max_attempts, max_sessions, max_cost, deadline, version, policy): (
             String,
@@ -1046,6 +1173,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(integrity.first().map(|(value,)| value.as_str()), Some("ok"));
+
+        // Reopen the production file and verify the committed rebuild.
+        let reopened = sqlx_sqlite::SqlitePool::connect(&url).await.unwrap();
+        let (reopened_auth, reopened_attempts): (String, i64) = sqlx::query_as::query_as(
+            "SELECT authorization_id,max_attempts FROM campaign_authorizations
+             WHERE campaign_id='campaign'",
+        )
+        .fetch_one(&reopened)
+        .await
+        .unwrap();
+        assert_eq!(
+            (reopened_auth.as_str(), reopened_attempts),
+            ("legacy-auth", 3)
+        );
+        for (table, id) in [("runs", "legacy-run"), ("attempts", "legacy-attempt")] {
+            let count: (i64,) =
+                sqlx::query_as::query_as(&format!("SELECT COUNT(*) FROM {table} WHERE id=?1"))
+                    .bind(id)
+                    .fetch_one(&reopened)
+                    .await
+                    .unwrap();
+            assert_eq!(count.0, 1, "{table} row was lost");
+        }
+        let reopened_violations: Vec<(String, i64, String, i64)> =
+            sqlx::query_as::query_as("PRAGMA foreign_key_check")
+                .fetch_all(&reopened)
+                .await
+                .unwrap();
+        assert!(reopened_violations.is_empty(), "{reopened_violations:?}");
+        reopened.close().await;
 
         // A V2 authorization cannot carry a legacy cap column.
         sqlx::query::query(

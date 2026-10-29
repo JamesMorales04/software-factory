@@ -164,6 +164,9 @@ pub struct IssueIntakeQueueItemRecord {
     pub lease_token: Option<String>,
     pub lease_expires_at: Option<String>,
     pub attempts: u32,
+    /// Bounded GitHub-read I/O retry budget for this reconciliation snapshot.
+    /// It is not Campaign execution progress and never caps or terminates a
+    /// Campaign.
     pub max_attempts: u32,
     pub next_attempt_at: Option<String>,
     pub reason: Option<String>,
@@ -692,6 +695,14 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     value[..end].to_owned()
 }
 
+/// Validate one issue-intake policy revision.
+///
+/// The frozen 0033 columns still store the legacy attempt/session/turn/
+/// wall-clock metadata because SQLite cannot make NOT NULL columns nullable
+/// inside SQLx's implicit migration transaction. Those values are **not**
+/// frozen into the V2 execution delegation and never bound a Campaign; only the
+/// finite issue count, concurrency and financial batch allocation are admission
+/// inputs. A future Director-owned FK-safe migration may drop the legacy inputs.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_policy_terms(
     profile: &ExecutionProfileContent,

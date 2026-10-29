@@ -254,9 +254,10 @@ CREATE TABLE campaign_authorizations_new (
   )
 );
 
+DROP TABLE IF EXISTS _campaign_authorization_assert;
 CREATE TEMP TABLE _campaign_authorization_assert (
-  rows_preserved INTEGER NOT NULL CHECK (rows_preserved = 1),
-  digest_preserved INTEGER NOT NULL CHECK (digest_preserved = 1)
+  exact_rows_preserved INTEGER NOT NULL CHECK (exact_rows_preserved = 1),
+  foreign_keys_ok INTEGER NOT NULL CHECK (foreign_keys_ok = 1)
 );
 
 INSERT INTO campaign_authorizations_new
@@ -270,33 +271,34 @@ SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
        max_cost_micros,deadline_secs,allowed_tools_json,1,NULL
 FROM campaign_authorizations;
 
-INSERT INTO _campaign_authorization_assert (rows_preserved, digest_preserved)
+INSERT INTO _campaign_authorization_assert (exact_rows_preserved, foreign_keys_ok)
 SELECT
-  CASE WHEN (SELECT COUNT(*) FROM campaign_authorizations_new)
-              = (SELECT COUNT(*) FROM campaign_authorizations)
-       THEN 1 ELSE 0 END,
-  CASE WHEN (
-        SELECT COUNT(*) || ':' ||
-               COALESCE(SUM(max_attempts), 0) || ':' ||
-               COALESCE(SUM(length(
-                 authorization_id || actor || rationale || authorized_paths_json ||
-                 created_at || provider || model || provider_mode || delegation_id ||
-                 allowed_tools_json)), 0) || ':' ||
-               COALESCE(SUM(max_sessions + max_turns + max_input_tokens +
-                            max_output_tokens + max_cost_micros + deadline_secs), 0)
-        FROM campaign_authorizations
-       ) = (
-        SELECT COUNT(*) || ':' ||
-               COALESCE(SUM(max_attempts), 0) || ':' ||
-               COALESCE(SUM(length(
-                 authorization_id || actor || rationale || authorized_paths_json ||
-                 created_at || provider || model || provider_mode || delegation_id ||
-                 allowed_tools_json)), 0) || ':' ||
-               COALESCE(SUM(max_sessions + max_turns + max_input_tokens +
-                            max_output_tokens + max_cost_micros + deadline_secs), 0)
-        FROM campaign_authorizations_new
-       )
-       THEN 1 ELSE 0 END;
+  CASE WHEN NOT EXISTS (
+    SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+           authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+           delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+           max_cost_micros,deadline_secs,allowed_tools_json,1,NULL
+    FROM campaign_authorizations
+    EXCEPT
+    SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+           authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+           delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+           max_cost_micros,deadline_secs,allowed_tools_json,schema_version,policy_id
+    FROM campaign_authorizations_new
+  ) AND NOT EXISTS (
+    SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+           authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+           delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+           max_cost_micros,deadline_secs,allowed_tools_json,schema_version,policy_id
+    FROM campaign_authorizations_new
+    EXCEPT
+    SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+           authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+           delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+           max_cost_micros,deadline_secs,allowed_tools_json,1,NULL
+    FROM campaign_authorizations
+  ) THEN 1 ELSE 0 END,
+  CASE WHEN (SELECT COUNT(*) FROM pragma_foreign_key_check) = 0 THEN 1 ELSE 0 END;
 
 DROP TABLE campaign_authorizations;
 
