@@ -1433,9 +1433,8 @@ const INTAKE_TERMINAL = new Set([
   "CANCELLED",
 ]);
 
-export async function assess(client, gate) {
+async function assess(client, gate) {
   const startedAt = new Date();
-  ensureEvidenceDir(gate);
   const pre = await preflight(client, gate);
   if (!gate.simulation) {
     throw refuse(
@@ -1443,6 +1442,7 @@ export async function assess(client, gate) {
       "Core has no read-only atomic request-admission contract; no Project, profile, policy or Request was created",
     );
   }
+  ensureEvidenceDir(gate);
   const existing = loadState(gate);
   if (existing) {
     ensureStateAuthorization(existing, gate);
@@ -2438,7 +2438,7 @@ function pauseEvidence(client, gate, error, { preDispatch = false } = {}) {
 /// Execute the approved plan. Any failure after this point preserves a
 /// minimal, redacted failure record so an accounting or gate failure is never
 /// hidden by an exception.
-export async function execute(client, gate) {
+async function execute(client, gate) {
   const state = loadState(gate);
   try {
     return await executeInner(client, gate);
@@ -2504,7 +2504,7 @@ export async function execute(client, gate) {
 /// Resume a quota-paused subscription run through an authenticated Core
 /// operation. This never re-approves the plan, changes provider/model/funding,
 /// or dispatches a replacement operation.
-export async function resume(client, gate) {
+async function resume(client, gate) {
   const state = loadState(gate);
   assert(state, "STATE_MISSING", "no paused state exists; run assess first");
   ensureStateAuthorization(state, gate);
@@ -2734,16 +2734,6 @@ async function runUat(argv, env, options = {}) {
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
   return runUat(argv, env);
-}
-
-export async function runFakeCoreSimulation(argv, env, client) {
-  if (!client || client instanceof CoreClient || client.simulationTransport !== true) {
-    throw refuse(
-      "FAKE_CORE_TRANSPORT_REQUIRED",
-      "downstream simulation requires an explicit fake-Core transport; live Core transport is forbidden",
-    );
-  }
-  return runUat(argv, env, { simulation: true, client });
 }
 
 function printSummary(result, lines, { simulation = false } = {}) {

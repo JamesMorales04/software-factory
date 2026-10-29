@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 
 import {
@@ -37,9 +38,9 @@ import {
   loadSubscriptionVerification,
   parseGate,
   readActualCharge,
-  runFakeCoreSimulation,
   summarizeActualCharge,
 } from "./real-provider-uat.mjs";
+import * as uatRuntime from "./real-provider-uat.mjs";
 
 const DRIVER = new URL("./real-provider-uat.mjs", import.meta.url);
 const TOKEN = "test-operator-token-0123456789abcdef0123456789abcdef";
@@ -123,55 +124,103 @@ function baseGate(port, overrides = {}) {
   };
 }
 
-function runDriver(args, env, { simulation = false } = {}) {
-  if (!simulation) {
-    return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
-  }
-  const source = `import { readFileSync } from "node:fs";
-import { runFakeCoreSimulation } from ${JSON.stringify(DRIVER.href)};
-const token = readFileSync(process.env.FACTORY_OPERATOR_TOKEN_FILE, "utf8").trim();
-const calls = [];
-const base = process.env.FACTORY_CORE_API_URL.replace(/\\/+$/, "");
-const client = {
-  simulationTransport: true,
-  calls,
-  secrets: new Set([token]),
-  async request(method, path, body, options = {}) {
-    let response;
-    try {
-      response = await fetch(base + path, {
-        method,
-        headers: { authorization: "Bearer " + token, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch (error) {
-      throw Object.assign(new Error("fake Core transport failed"), { code: options.ambiguousCode ?? "CORE_TRANSPORT" });
-    }
-    const text = await response.text();
-    let payload = null;
-    if (text) { try { payload = JSON.parse(text); } catch { payload = text; } }
-    calls.push({ method, path, status: response.status });
-    if (!response.ok && !(options.allowStatuses ?? []).includes(response.status)) {
-      const code = payload && typeof payload === "object" ? payload.code ?? payload.error : null;
-      throw Object.assign(new Error("fake Core response"), { code: typeof code === "string" ? code : options.statusCode ?? "CORE_HTTP" });
-    }
-    return { status: response.status, payload };
-  },
-  get(path, options) { return this.request("GET", path, undefined, options); },
-  post(path, body, options) { return this.request("POST", path, body, options); },
-  put(path, body, options) { return this.request("PUT", path, body, options); },
-};
-runFakeCoreSimulation(${JSON.stringify(args)}, process.env, client).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("FAKE_CORE_SIMULATION=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
-  return spawnAndCollect(process.execPath, ["--input-type=module", "-e", source], env);
-}
-
-function runSimulation(args, env) {
-  return runDriver(args, env, { simulation: true });
+function runDriver(args, env) {
+  return spawnAndCollect(process.execPath, [DRIVER.pathname, ...args], env);
 }
 
 function runMainWithSimulationOption(args, env) {
   const source = `import { main } from ${JSON.stringify(DRIVER.href)};\nmain(${JSON.stringify(args)}, process.env, { simulation: true }).catch((error) => { const code = error?.code ?? "UNEXPECTED"; process.stderr.write("REAL_PROVIDER_UAT=REFUSED code=" + code + " " + String(error?.message ?? error) + "\\n"); process.exitCode = error?.exitCode ?? 1; });`;
   return spawnAndCollect(process.execPath, ["--input-type=module", "-e", source], env);
+}
+
+let simulatedRuntime;
+let simulatedRuntimeDir;
+async function loadSimulatedRuntime() {
+  if (simulatedRuntime) return simulatedRuntime;
+  const productionSource = readFileSync(DRIVER, "utf8");
+  const privateEntry = "async function runUat(argv, env, options = {}) {";
+  assert.equal(productionSource.split(privateEntry).length - 1, 1);
+  const instrumented = productionSource.replace(privateEntry, "export async function runUat(argv, env, options = {}) {");
+  simulatedRuntimeDir = mkdtempSync(join(tmpdir(), "factory-uat-simulation-test-"));
+  const simulationModule = join(simulatedRuntimeDir, "runtime.mjs");
+  writeFileSync(simulationModule, instrumented, { mode: 0o600 });
+  const loaded = await import(`${pathToFileURL(simulationModule).href}?test=${Date.now()}`);
+  simulatedRuntime = loaded.runUat;
+  return simulatedRuntime;
+}
+
+class FakeCoreInMemoryTransport {
+  constructor(token) {
+    this.token = token;
+    this.calls = [];
+    this.secrets = new Set([token]);
+  }
+
+  async request(method, path, body, options = {}) {
+    const encodedBody = body === undefined ? "" : JSON.stringify(body);
+    const request = {
+      method,
+      url: `/core-api${path}`,
+      headers: { authorization: `Bearer ${this.token}` },
+      on(event, callback) {
+        if (event === "data" && encodedBody) callback(Buffer.from(encodedBody));
+        if (event === "end") callback();
+        return this;
+      },
+    };
+    let status = 200;
+    let responseText = "";
+    const response = {
+      writeHead(value) { status = value; },
+      end(value = "") { responseText = value; },
+    };
+    await handleFakeCoreRequest(request, response);
+    this.calls.push({ method, path, status });
+    let payload = null;
+    if (responseText) {
+      try { payload = JSON.parse(responseText); } catch { payload = responseText; }
+    }
+    if (status < 200 || status >= 300) {
+      if (!(options.allowStatuses ?? []).includes(status)) {
+        const code = payload && typeof payload === "object" ? payload.code ?? payload.error : null;
+        throw Object.assign(new Error("fake Core response"), {
+          code: typeof code === "string" ? code : options.statusCode ?? "CORE_HTTP",
+        });
+      }
+    }
+    return { status, payload };
+  }
+
+  get(path, options) { return this.request("GET", path, undefined, options); }
+  post(path, body, options) { return this.request("POST", path, body, options); }
+  put(path, body, options) { return this.request("PUT", path, body, options); }
+}
+
+async function runSimulation(args, env) {
+  const run = await loadSimulatedRuntime();
+  const token = readFileSync(env.FACTORY_OPERATOR_TOKEN_FILE, "utf8").trim();
+  const client = new FakeCoreInMemoryTransport(token);
+  let stdout = "";
+  let stderr = "";
+  const savedWrite = process.stdout.write;
+  const savedErrorWrite = process.stderr.write;
+  const savedExitCode = process.exitCode;
+  process.exitCode = 0;
+  process.stdout.write = (chunk) => { stdout += String(chunk); return true; };
+  process.stderr.write = (chunk) => { stderr += String(chunk); return true; };
+  try {
+    await run(args, cleanEnv(env), { simulation: true, client });
+  } catch (error) {
+    const code = error?.code ?? "UNEXPECTED";
+    stderr += `FAKE_CORE_SIMULATION=REFUSED code=${code} ${String(error?.message ?? error)}\n`;
+    process.exitCode = error?.exitCode ?? 1;
+  } finally {
+    process.stdout.write = savedWrite;
+    process.stderr.write = savedErrorWrite;
+  }
+  const status = process.exitCode ?? 0;
+  process.exitCode = savedExitCode;
+  return { status, stdout, stderr };
 }
 
 function runWrapper(args, env) {
@@ -593,8 +642,7 @@ function readBody(request) {
   });
 }
 
-before(async () => {
-  server = createServer(async (request, response) => {
+async function handleFakeCoreRequest(request, response) {
     const body = await readBody(request);
     requests.push({
       method: request.method,
@@ -863,7 +911,10 @@ before(async () => {
       return;
     }
     send(404, { error: `unexpected ${request.method} ${path}` });
-  });
+}
+
+before(async () => {
+  server = createServer(handleFakeCoreRequest);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = server.address().port;
 });
@@ -871,6 +922,7 @@ before(async () => {
 after(() => {
   server.close();
   rmSync(ROOT, { recursive: true, force: true });
+  if (simulatedRuntimeDir) rmSync(simulatedRuntimeDir, { recursive: true, force: true });
 });
 
 test("live mode refuses without FACTORY_REAL_PROVIDER_UAT=1 before any request", async () => {
@@ -1155,18 +1207,29 @@ test("a Core without subscription verification fails closed before creating a Pr
   assert.ok(requests.every((request) => !request.url.endsWith("/projects")));
 });
 
-test("fake-Core simulation requires an explicit fake transport and cannot default to CoreClient", async () => {
+test("fake-Core simulation uses an in-memory transport with no HTTP capability", async () => {
   requests = [];
+  resetFlow();
   const env = baseGate(port, {
     FACTORY_REAL_PROVIDER_UAT: "1",
-    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "simulation-needs-fake-transport"),
+    FACTORY_REAL_PROVIDER_EVIDENCE_DIR: join(ROOT, "in-memory-simulation"),
   });
-  await assert.rejects(
-    runFakeCoreSimulation(["assess"], env),
-    (error) => error.code === "FAKE_CORE_TRANSPORT_REQUIRED",
-  );
-  assert.equal(requests.length, 0);
-  assert.ok(!existsSync(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error("network access is forbidden in fake simulation"); };
+  try {
+    const result = await runSimulation(["assess"], env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /FAKE_CORE_SIMULATION=SIMULATED_AWAITING_PLAN_APPROVAL/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("production runtime exports no fake runner or resource-mutating orchestration entrypoints", () => {
+  assert.equal(uatRuntime.runFakeCoreSimulation, undefined);
+  assert.equal(uatRuntime.assess, undefined);
+  assert.equal(uatRuntime.execute, undefined);
+  assert.equal(uatRuntime.resume, undefined);
 });
 
 test("live main ignores simulation options and blocks before resource or inference calls", async () => {
@@ -1190,6 +1253,7 @@ test("live main ignores simulation options and blocks before resource or inferen
   assert.equal(flow.assessmentCalls, 0);
   assert.equal(flow.approveCalls, 0);
   assert.equal(flow.providerCalls, 0);
+  assert.ok(!existsSync(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR));
   assert.ok(!existsSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "real-provider-uat-state.json")));
   assert.ok(!existsSync(join(env.FACTORY_REAL_PROVIDER_EVIDENCE_DIR, "plan.json")));
   assert.equal(flow.intakeBody, null);
