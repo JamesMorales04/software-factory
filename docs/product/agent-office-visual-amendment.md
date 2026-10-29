@@ -134,12 +134,17 @@ from the production build. Every preview carries a permanent
 - `/visual-harness.html?count=30&mode=implementers&allActive=1`
 - `/visual-harness.html?count=12&selected=participant-03-session`
 
-Chromium 156 (Playwright 1.64.1) screenshots were captured for 0/1/5/12/30 at
-1440, 834, 390 and 320 CSS pixels, plus five all-current Implementers, 30
-all-current Implementers, hover and selection states, and Spanish labels. The
-handoff records the exact paths. The full-page screenshot used a mocked Core
-API only to exercise layout and selection; it is labelled as a fixture and is
-not live activity or acceptance evidence.
+The 2026-10-29 V2 captures are recorded in
+[`docs/evidence/office-isometric-v2-2026-10-29/`](../evidence/office-isometric-v2-2026-10-29/README.md):
+20 scene captures covering 0/1/5/12/30 at 1440/834/390/320, selected, Spanish,
+5/30 all-current Implementers, real-shell page captures and two side-by-side
+comparisons with reference 01. The page captures use a mocked Core API with a
+visible fixture badge; they are not live activity, Compose acceptance or
+independent acceptance.
+
+The earlier 2026-10-28 captures remain in
+[`docs/evidence/office-isometric-v0-2026-10-28/`](../evidence/office-isometric-v0-2026-10-28/README.md)
+as historical provenance for the V0 geometry, not as current evidence.
 
 Functional coverage remains in
 `office/src/components/office/officeSceneLayout.test.ts` and

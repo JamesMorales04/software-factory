@@ -1,0 +1,470 @@
+{
+  "schema_version": 1,
+  "capability": "CAP-011",
+  "slice": "office-isometric-v2",
+  "code_candidate": "a9f191e",
+  "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
+  "live_core": false,
+  "live_activity": false,
+  "recorded_at": "2026-10-29T15:30:00Z",
+  "statement": "Real Chromium rendered the Agent Office renderer and the real Office bundle from deterministic Playwright fixtures. The harness carries a permanent TEST FIXTURE \u2014 NOT LIVE CORE DATA banner and the app captures carry an injected TEST FIXTURE banner. This is visual renderer self-test evidence, not live agent activity, not independent acceptance, not Compose acceptance and not Owner visual approval.",
+  "browser": {
+    "engine": "Chromium",
+    "version": "156.0.8078.4",
+    "automation": "playwright-core 1.64.1",
+    "headless": true
+  },
+  "method": {
+    "server": "Vite dev server from office/ on 127.0.0.1:5173",
+    "scene_harness": "office/visual-harness.html with deterministic ParticipantRecord fixtures and a permanent TEST FIXTURE \u2014 NOT LIVE CORE DATA banner",
+    "app_page": "Factory Office hash route /#/agents with Playwright route interception of **/core-api/** and a visible injected TEST FIXTURE \u2014 NOT LIVE CORE DATA banner",
+    "interactions": "the real AgentOffice and AgentOfficeIsometric components; no static background image"
+  },
+  "scene_captures": [
+    {
+      "count": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": null,
+      "avatars": 0,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-0-1440.png",
+      "sha256": "2f94a4e2c78ed77da9d0a38854b8a8816a168aca024a31370296b03dc984e0a7"
+    },
+    {
+      "count": 1,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 93%",
+      "avatars": 1,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-1-1440.png",
+      "sha256": "63c923bdc679de48124848e76f0fa4bc05b9aa420f2c499f553499a68eaeeb6e"
+    },
+    {
+      "count": 5,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 93%",
+      "avatars": 5,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-5-1440.png",
+      "sha256": "c36cb407383440fce693bcba4afbd1cd0bf779a48dce7064c88b20ad32603f1f"
+    },
+    {
+      "count": 12,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 79%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-1440.png",
+      "sha256": "a477c0e771c7aefc83d2763224af9927ace656f019cbc71b5ab335ffad01cd7b"
+    },
+    {
+      "count": 30,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 69%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-1440.png",
+      "sha256": "7502a576a4709b2d66b658927859efe92b5580a3dc7d78182b40ba97f979df09"
+    },
+    {
+      "count": 0,
+      "viewport": {
+        "width": 834,
+        "height": 1000
+      },
+      "zoom": null,
+      "avatars": 0,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-0-834.png",
+      "sha256": "bb9073bc08b59009eb9b517c9154b52d194325b7b559bea8f2efe75349e07e10"
+    },
+    {
+      "count": 1,
+      "viewport": {
+        "width": 834,
+        "height": 1000
+      },
+      "zoom": "Zoom 82%",
+      "avatars": 1,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-1-834.png",
+      "sha256": "e99bb7ada8925e50605961e951a19fed3862c98ec5c273bc47a2f2f391728302"
+    },
+    {
+      "count": 5,
+      "viewport": {
+        "width": 834,
+        "height": 1000
+      },
+      "zoom": "Zoom 82%",
+      "avatars": 5,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-5-834.png",
+      "sha256": "ab6217fe23c6a2ff67892f82d144d01f5dcf2bf41081dc1da358212ec3985bb6"
+    },
+    {
+      "count": 12,
+      "viewport": {
+        "width": 834,
+        "height": 1000
+      },
+      "zoom": "Zoom 63%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-834.png",
+      "sha256": "62ab70878a95c27ee45cf772beedf5c7b39f575b0d76f5978e7d77aadd89cf44"
+    },
+    {
+      "count": 30,
+      "viewport": {
+        "width": 834,
+        "height": 1000
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-834.png",
+      "sha256": "24d3a71dd3d189c932614295d69e89f158c67afbfccd727ab7fa293b73f12cc7"
+    },
+    {
+      "count": 0,
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": null,
+      "avatars": 0,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-0-390.png",
+      "sha256": "2c5b00230a6bf917fe85d92ee40aac1ffa26c97882a15f611510d26e6534eccd"
+    },
+    {
+      "count": 1,
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 1,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-1-390.png",
+      "sha256": "7706703b48cc791cb27742ea74be00f3838825a4188273c2c8dff93935102717"
+    },
+    {
+      "count": 5,
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 5,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-5-390.png",
+      "sha256": "8fed3f0312f9a26cf8929e4711fc460fdfeaa34f917c46d012018cf51a1083f2"
+    },
+    {
+      "count": 12,
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-390.png",
+      "sha256": "e9acabff5a29d4dbe0c9219925f170dab58a7b995f7bd278020935f91adaa9d9"
+    },
+    {
+      "count": 30,
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-390.png",
+      "sha256": "516202bb147b09812706b1e0d9ea6c365844a96171f6cdb7907781aa8053377e"
+    },
+    {
+      "count": 0,
+      "viewport": {
+        "width": 320,
+        "height": 780
+      },
+      "zoom": null,
+      "avatars": 0,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-0-320.png",
+      "sha256": "7a2f255293b5b924c388941273afb86369094d4c0b6a2c904565cf5e5ab9322e"
+    },
+    {
+      "count": 1,
+      "viewport": {
+        "width": 320,
+        "height": 780
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 1,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-1-320.png",
+      "sha256": "469ef8beb3ee29247c81bd7ef518158e7c0fb82d77a80eac525cf13f7a6efdfb"
+    },
+    {
+      "count": 5,
+      "viewport": {
+        "width": 320,
+        "height": 780
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 5,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-5-320.png",
+      "sha256": "74d742a6596c38d27ecea5211d1a65de9a64a329e5233f42acf46552e0c73c9d"
+    },
+    {
+      "count": 12,
+      "viewport": {
+        "width": 320,
+        "height": 780
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-320.png",
+      "sha256": "e99c514492418fc960e1705f88bdc2fd6c7b4440ce16eee6ab7d5ba2431cc659"
+    },
+    {
+      "count": 30,
+      "viewport": {
+        "width": 320,
+        "height": 780
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-320.png",
+      "sha256": "3ab678fb66915a42742167f5dbdf8d5b89afdbeaa08b10f6009028b5abdfaf8f"
+    }
+  ],
+  "extra_captures": [
+    {
+      "name": "scene-5-implementers-1440",
+      "query": "count=5&mode=implementers&allActive=1",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 93%",
+      "avatars": 5,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-5-implementers-1440.png",
+      "sha256": "dd5e0cb36df4a0222e560f0c642e2d30710c71dcacc9afab675602c9a58a1dd0"
+    },
+    {
+      "name": "scene-30-implementers-1440",
+      "query": "count=30&mode=implementers&allActive=1",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 68%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-implementers-1440.png",
+      "sha256": "8b6182ab498e20e246ba1fb4492522864963cad474a7efa6ffde49656a220b14"
+    },
+    {
+      "name": "scene-30-implementers-390",
+      "query": "count=30&mode=implementers&allActive=1",
+      "viewport": {
+        "width": 390,
+        "height": 900
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 30,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-30-implementers-390.png",
+      "sha256": "5d1c2d83ba751b0535dfbde9d2163b1682a3ad9a2eca8b5b08c4d4cc60cdcbba"
+    },
+    {
+      "name": "scene-12-selected-1440",
+      "query": "count=12&mode=mixed&selected=participant-03-session",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 79%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-selected-1440.png",
+      "sha256": "1ba580c2bdfb1b9f8309f640be604ba6ddbd5316a1e207674315a598241ac3f0"
+    },
+    {
+      "name": "scene-12-es-1440",
+      "query": "count=12&mode=mixed&locale=es",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "zoom": "Zoom 79%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "scene-12-es-1440.png",
+      "sha256": "7ec55fd2fd8c5a511c87967e1e2d14a77ed53d4112b8bf9fdec81bfe35b7e2a6"
+    },
+    {
+      "name": "page-selected-1440",
+      "url": "http://127.0.0.1:5173/#/agents/lead%3Aparticipant-00-session",
+      "viewport": {
+        "width": 1440,
+        "height": 1500
+      },
+      "screenshot": "page-selected-1440.png",
+      "sha256": "44703977659dd6ad3a5bad936fd6efca520a2805b3a3a2483ef8cc892121bc5d"
+    },
+    {
+      "name": "page-scene-390",
+      "viewport": {
+        "width": 390,
+        "height": 1000
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "screenshot": "page-scene-390.png",
+      "sha256": "98accffc102fdaf91f7fc29d96c569663f221540073735d35fa57ad63553e0ed"
+    }
+  ],
+  "page_captures": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1500
+      },
+      "zoom": "Zoom 56%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-1440.png",
+      "sha256": "55d575c73d1aab2f72145aed5397864346e48944c585c3f7460f86e85459f1b4"
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 1000
+      },
+      "zoom": "Zoom 55%",
+      "avatars": 12,
+      "document_overflow_px": 0,
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-390.png",
+      "sha256": "8ab6e769a90dd3d0cf265f7b36ccbb117fd64cff5a91a923b6d807d32b03d5b6"
+    }
+  ],
+  "comparisons": [
+    {
+      "screenshot": "comparison-primary-vs-page-1440.jpg",
+      "implementation": "page-selected-1440.png",
+      "reference": "docs/product/reference/factory-office-visual-reference-pack-20261028/01-office-isometrica-referencia-principal.png",
+      "statement": "Visual-direction comparison only; not a fidelity, approval or acceptance claim."
+    },
+    {
+      "screenshot": "comparison-primary-vs-30-implementers-1440.jpg",
+      "implementation": "scene-30-implementers-1440.png",
+      "reference": "docs/product/reference/factory-office-visual-reference-pack-20261028/01-office-isometrica-referencia-principal.png",
+      "statement": "Visual-direction comparison only; not a fidelity, approval or acceptance claim."
+    }
+  ],
+  "code_checks": {
+    "typecheck": "PASS \u2014 tsc --noEmit",
+    "lint": "PASS \u2014 biome check src e2e-browser",
+    "tests": "PASS \u2014 33 files, 255 tests",
+    "build": "PASS \u2014 vite build (existing >500 kB chunk warning only)"
+  },
+  "interactions_verified": [
+    "selection opens the existing participant inspector",
+    "hover/selection identity card",
+    "role room headings and counts",
+    "zoom controls and fitted camera",
+    "Spanish room labels",
+    "30 Implementers render with 30 distinct looks"
+  ],
+  "not_tested": [
+    "live Core projection / Compose browser acceptance",
+    "independent verification or Quality Gate",
+    "owner visual approval",
+    "axe/manual accessibility audit",
+    "visual regression tooling"
+  ],
+  "product_owner_decision": "PENDING",
+  "visual_candidate": "3f13242",
+  "candidate_note": "Screenshots were captured from 3f13242; a9f191e is a test-only timeout commit with identical renderer output."
+}
