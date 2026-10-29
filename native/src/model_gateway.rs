@@ -174,6 +174,18 @@ impl ModelGateway {
             ModelCallDecision::Replayed(result) => return Ok(result),
             ModelCallDecision::Reserved(grant) => grant,
         };
+        // Dispatch intent is durable and committed before the upstream send.
+        // A replayed intent must never authorize a second send, and every send
+        // attempt owns its own reservation.
+        let provider_request_id = format!("factory-model-{}", grant.reservation_id);
+        let dispatch = database
+            .acquire_model_call_dispatch(&grant.reservation_id, &provider_request_id)
+            .await?;
+        if !dispatch.acquired {
+            return Err(ModelGatewayError::Ambiguous(
+                "model call already has a dispatch intent; refusing a second send".into(),
+            ));
+        }
         let body = json!({
             "model": self.config.model,
             "temperature": 0,
@@ -201,27 +213,18 @@ impl ModelGateway {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                if error.is_connect() {
-                    let _ = database
-                        .release_model_call(
-                            &grant.reservation_id,
-                            "model upstream connection failed before a request was sent",
-                            false,
-                        )
-                        .await;
-                    return Err(ModelGatewayError::Upstream(
-                        "connection failed before request".into(),
-                    ));
-                }
+                // The request may have reached the provider; keep the hold.
                 let _ = database
                     .release_model_call(
                         &grant.reservation_id,
-                        "model upstream transport outcome is ambiguous",
+                        &format!(
+                            "model upstream transport outcome is ambiguous after dispatch: {error}"
+                        ),
                         true,
                     )
                     .await;
                 return Err(ModelGatewayError::Ambiguous(
-                    "upstream transport outcome".into(),
+                    "upstream transport outcome after dispatch".into(),
                 ));
             }
         };
@@ -232,22 +235,12 @@ impl ModelGateway {
                 &crate::telemetry::redact(&String::from_utf8_lossy(&message)),
                 4096,
             );
-            if status.is_client_error() {
-                let _ = database
-                    .release_model_call(
-                        &grant.reservation_id,
-                        &format!("model upstream refused the request with {status}"),
-                        false,
-                    )
-                    .await;
-                return Err(ModelGatewayError::Upstream(format!(
-                    "HTTP {status}: {detail}"
-                )));
-            }
+            // A response proves the request reached the provider; it is not
+            // evidence that no charge was incurred. Retain the hold.
             let _ = database
                 .release_model_call(
                     &grant.reservation_id,
-                    &format!("model upstream returned ambiguous {status}"),
+                    &format!("model upstream returned ambiguous {status}: {detail}"),
                     true,
                 )
                 .await;
@@ -845,7 +838,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn client_error_releases_the_reservation() {
+    async fn client_error_after_dispatch_is_ambiguous_not_released() {
         let (path, database) = database().await;
         let (url, _, server) = upstream(Behavior::Reject).await;
         let gateway = gateway(&url, 5_000);
@@ -860,7 +853,7 @@ mod integration_tests {
             .await
             .unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].state, "RELEASED");
+        assert_eq!(records[0].state, "AMBIGUOUS");
         database.close().await;
         let _ = std::fs::remove_file(path);
         server.abort();
