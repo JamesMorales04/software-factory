@@ -238,12 +238,13 @@ claimed as stable evidence.
 
 | Lane | Reviewed SHA | Verdict | Remaining finding |
 |---|---|---|---|
-| C #72 | `de31135` | Sol BLOCK / Luna BLOCK | policy JSON decoder mismatch; progress not durable across attempts; fake progress from unchanged checks; V2 egress; `max_turns*8`; Core wiring |
-| L #73 | `8cba5ad` | Sol BLOCK | existing bound campaigns default to V1 on upgrade; quote token envelope does not bound the dispatched request; stale pricing remains eligible; V2 cumulative token caps |
-| I #70 | `cd0c1ef` | Luna BLOCK | inspector still uses the raw first duplicate instead of the layout winner |
+| C #72 | `f93a5cb` (repairs after `de31135`) | Sol/Luna re-review running | policy JSON decoder mismatch; progress not durable across attempts; fake progress from unchanged checks; V2 egress; `max_turns*8`; Core wiring |
+| L #73 | `1a6d7a4` (repairs after `8cba5ad`) | Sol/Luna re-review running | existing bound campaigns default to V1 on upgrade; quote token envelope does not bound the dispatched request; stale pricing remains eligible; V2 cumulative token caps |
+| I #70 | `0455b39` (repairs after `cd0c1ef`) | Luna re-review running | inspector still uses the raw first duplicate instead of the layout winner |
 | P #59 | `0ae58f4`/`278688f` | Luna APPROVE WITH CONDITIONS | resolved; live inference not authorized |
 
-Repairs are active on the same lanes. A separate Core-wiring worktree
+Repairs are committed on the same lanes and re-reviewed at the exact heads.
+A separate Core-wiring worktree
 (`factory/core-wiring/20261028`, base `a12aa38`) is implementing the
 Director-owned `bin/core.rs` envelope/authorization wiring.
 
