@@ -7,7 +7,7 @@ the code candidate). **`main` is unchanged.**
 
 ## A. Real Compose + Chromium product UAT (#60)
 
-Evidence commit: `factory/compose-browser-uat/20261029` at `b2395f1`
+Evidence branch `factory/compose-browser-uat/20261029` at `13ad56a`
 (`docs/evidence/compose-browser-uat-2026-10-29/`).
 
 **Result: `PASS_WITH_FINDINGS`.** Author-run, not independent acceptance.
@@ -18,9 +18,11 @@ Evidence commit: `factory/compose-browser-uat/20261029` at `b2395f1`
 | Chromium against `http://127.0.0.1:8898` | REAL, no `/core-api` interception |
 | Owner enrollment / project import / request / assessment / approval | PASS |
 | Worker execution (deterministic fixture provider) | PASS |
-| Independent verifier + reviewer receipts | PASS (`8574af0a…`, `1295034f…` in the passing run) |
+| Independent verifier + reviewer receipts | PASS (`2322b463-9c23-48aa-9c8f-8ee1df4242c4`, `def99d99-3c5a-415d-be0f-2c6cc0445129`) |
 | Deterministic Quality Gate | **ACCEPTED** |
-| Candidate + diff lineage | PASS (`cc46cc80…` at `5e895eb6…`) |
+| Candidate + diff lineage | PASS (`42c4b47a…` at `5b1e23e1…`) |
+| Request / Campaign | `9ddd7b88…` / `3f5f9abe…` |
+| Spend ledger | 5,000,000 µUSD authorized; 4 settled (Lead 2, Reviewer 2, Implementer 0) |
 | Agent observability | PASS, 4 participants |
 | PR projection | UNBOUND — no GitHub write attempted |
 | Live provider inference | **NOT TESTED**, no paid inference |
