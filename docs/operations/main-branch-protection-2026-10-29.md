@@ -14,9 +14,9 @@ and currently report `MERGEABLE`.
 | Setting | Value |
 |---|---|
 | Require a pull request before merging | yes |
-| Required approving reviews | 1 |
+| Required approving reviews | 0 (single-maintainer repository; see note) |
 | Dismiss stale approvals on new commits | yes |
-| Require approval of the most recent push | yes |
+| Require approval of the most recent push | no (owner cannot self-approve) |
 | Require conversation resolution | yes |
 | Require linear history | yes |
 | Require status checks to pass | yes |
@@ -26,6 +26,15 @@ and currently report `MERGEABLE`.
 | Allow deletions | no |
 | Enforce for administrators | yes |
 | Restrict who can push | no extra restriction (PR-only flow) |
+
+**Single-maintainer constraint:** GitHub does not allow an author to approve their
+own pull request, and this repository currently has only `JamesMorales04` as a
+collaborator. A required approval count of 1 with `enforce_admins: true` would
+make every legitimate merge impossible. The safe feasible policy is therefore
+**0 required GitHub approvals + strict status checks + conversation resolution +
+linear history**, with independent Sol/Luna review recorded in the PR evidence.
+If a second trusted collaborator/reviewer is added, raise the count to 1 and
+keep `enforce_admins: true`.
 
 The manual `Compose end-to-end (manual)`, `Native Rust Podman certification` and
 `Native Rust provider compatibility` workflows are release gates, not
