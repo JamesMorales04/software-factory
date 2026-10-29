@@ -17,6 +17,7 @@ pub mod model_gateway;
 pub mod model_output;
 pub mod model_routing;
 pub mod observability;
+pub mod progress;
 pub mod project_files;
 pub mod project_import;
 pub mod protocol;

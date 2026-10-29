@@ -162,12 +162,9 @@ pub struct WorkerAssignment {
     pub model: String,
     pub provider_mode: String,
     pub delegation_id: String,
-    pub max_sessions: u32,
-    pub max_turns: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
-    pub deadline_secs: u64,
+    /// Frozen Execution Policy V2. `None` and `LegacyV1` are historical evidence
+    /// only and never dispatch under V2.
+    pub execution_policy: Option<crate::execution_policy::FrozenExecutionPolicy>,
     pub allowed_tools: Vec<String>,
     /// Populated by Core immediately before returning a claim. The database
     /// layer never invents or stores this capability.

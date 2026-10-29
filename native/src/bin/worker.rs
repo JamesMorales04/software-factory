@@ -13,6 +13,11 @@ use factory_native::execution::{
     ApplyFilesRequest, ExecuteWorkspace, ExecutionResult, ToolRunRequest, WorkspaceAllocation,
     WorkspaceHandle, WorkspaceStatus, WriteFilesRequest,
 };
+use factory_native::execution_policy::{
+    ContinuationDecision, FrozenExecutionPolicy, OperationLimits, ProgressCheckpoint,
+    ProgressEvidence, ProgressKind,
+};
+use factory_native::progress::{GateRecord, ProgressSupervisor};
 use factory_native::protocol::{
     DynamicToolCallParams, DynamicToolCallResult, DynamicToolContentItem, DynamicToolSpec, JsonRpc,
     RpcEvent, ThreadStartParams, ThreadTokenUsageUpdatedParams, TurnSandboxPolicy, TurnStartParams,
@@ -59,17 +64,7 @@ struct Assignment {
     #[serde(default)]
     delegation_id: String,
     #[serde(default)]
-    max_sessions: u32,
-    #[serde(default)]
-    max_turns: u32,
-    #[serde(default)]
-    max_input_tokens: u64,
-    #[serde(default)]
-    max_output_tokens: u64,
-    #[serde(default)]
-    max_cost_micros: u64,
-    #[serde(default)]
-    deadline_secs: u64,
+    execution_policy: Option<FrozenExecutionPolicy>,
     #[serde(default)]
     allowed_tools: Vec<String>,
     #[serde(default)]
@@ -653,15 +648,13 @@ async fn execute_provider_assignment(
 ) -> Result<factory_native::workspace::CandidateRevision, Box<dyn std::error::Error>> {
     validate_provider_tools(&assignment.allowed_tools)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    if assignment.deadline_secs == 0
-        || !(1..=4).contains(&assignment.max_turns)
-        || assignment.max_sessions == 0
-        || assignment.max_input_tokens == 0
-        || assignment.max_output_tokens == 0
-        || assignment.max_cost_micros == 0
-        || assignment.delegation_id.is_empty()
-    {
-        return Err("provider assignment has an unsupported deadline or budget".into());
+    assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .ok_or("provider assignment has no Execution Policy V2")?;
+    if assignment.delegation_id.is_empty() {
+        return Err("provider assignment has no delegation identity".into());
     }
     let configured_kind = env::var("FACTORY_PROVIDER_KIND").unwrap_or_default();
     let sandbox_mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
@@ -1009,10 +1002,22 @@ async fn start_provider_runtime(
     turn_policy: &SharedTurnPolicy,
     provider_profile: Option<ProviderProfile>,
 ) -> Result<ProviderRuntime, Box<dyn std::error::Error>> {
-    let deadline_secs = assignment.deadline_secs;
     let provider = assignment.provider.as_str();
     let model = assignment.model.as_str();
-    let max_turns = assignment.max_turns;
+    let operations = assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .map(|policy| policy.operations)
+        .ok_or("provider runtime requires Execution Policy V2")?;
+    let request_timeout_secs = u64::from(operations.model_request_timeout_secs.get());
+    // A finite technical egress batch for this provider session. It does not
+    // bound Campaign lifetime: continuation is driven by durable progress and a
+    // new attempt opens a new bridge.
+    let max_requests = usize::try_from(operations.max_generation_tokens.get())
+        .unwrap_or(1)
+        .saturating_mul(4)
+        .max(64);
     let allowed_tools = assignment.allowed_tools.as_slice();
     let mode = env::var("FACTORY_PROVIDER_SANDBOX").unwrap_or_default();
     match mode.as_str() {
@@ -1128,7 +1133,7 @@ async fn start_provider_runtime(
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(64 * 1024 * 1024);
-            let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
             let (egress, egress_bridge) = match env::var("FACTORY_PROVIDER_UPSTREAM_URL") {
                 Ok(upstream) => {
                     let credential =
@@ -1147,13 +1152,6 @@ async fn start_provider_runtime(
                     )?;
                     let allow_test_upstream =
                         env::var("FACTORY_ALLOW_TEST_UPSTREAM").ok().as_deref() == Some("1");
-                    let max_requests = if opencode {
-                        max_turns as usize + 4
-                    } else if codex {
-                        (max_turns as usize).saturating_mul(8).saturating_add(1)
-                    } else {
-                        max_turns as usize + 1
-                    };
                     let mut config = factory_native::provider_egress::EgressConfig::new(
                         &upstream,
                         credential,
@@ -1377,7 +1375,7 @@ async fn start_provider_runtime(
                 let mut egress =
                     EgressConfig::new(&upstream, credential, token.clone(), allow_test_upstream)?
                         .with_model(model.to_owned())
-                        .with_max_requests(max_turns as usize + 4)
+                        .with_max_requests(max_requests)
                         .with_turn_policy(turn_policy.clone());
                 if let Some(binder) = turn_binder {
                     egress = egress.with_turn_binder(binder);
@@ -1433,7 +1431,7 @@ async fn start_provider_runtime(
                 }
                 (None, env)
             };
-            let lifetime = Duration::from_secs(deadline_secs.saturating_add(30).min(3600));
+            let lifetime = Duration::from_secs(request_timeout_secs.saturating_add(30).min(3600));
             let sandbox = ContainerProviderSandbox::start(ContainerSandboxConfig {
                 session_dir: session_dir.to_path_buf(),
                 broker_base: env::var("FACTORY_RUNTIME_BROKER_URL")
@@ -1641,13 +1639,202 @@ async fn finalize_written_provider_work(
     }))
 }
 
+fn operation_limits(context: &ProviderContext<'_>) -> OperationLimits {
+    context
+        .assignment
+        .execution_policy
+        .as_ref()
+        .and_then(FrozenExecutionPolicy::v2)
+        .map(|policy| policy.operations)
+        .expect("provider assignment is validated before the runtime loop starts")
+}
+
+/// Typed Worker outcome when deterministic progress supervision stops an
+/// Implementer. This is a diagnosis/escalation request to Core, not a new cap:
+/// Core may authorize a replan, a new observation, or a linked V2 request.
+#[derive(Debug)]
+struct WorkerProgressHalt {
+    decision: ContinuationDecision,
+    work_item_id: String,
+    stagnant_checkpoints: u32,
+    unsuccessful_replans: u32,
+}
+
+impl std::fmt::Display for WorkerProgressHalt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "IMPLEMENTER_PROGRESS_{:?}: work item {} has {} stagnant checkpoint(s) and {} unsuccessful replan(s); Core diagnosis is required",
+            self.decision, self.work_item_id, self.stagnant_checkpoints, self.unsuccessful_replans
+        )
+    }
+}
+
+impl std::error::Error for WorkerProgressHalt {}
+
+/// Worker-side deterministic progress supervision for one Implementer session.
+///
+/// Durable evidence is derived only from actual workspace writes and frozen
+/// check results. Prose, heartbeats, elapsed time and token spend are not
+/// progress. The campaign key is the frozen Action identity and the work item
+/// is the Attempt identity; Core persistence of the same evidence is a Director
+/// integration point.
+struct TurnProgress {
+    supervisor: ProgressSupervisor,
+    campaign_id: String,
+    work_item_id: String,
+    turn: u64,
+    sequence: u64,
+    evidence: Vec<ProgressEvidence>,
+    last_content: std::collections::BTreeMap<String, String>,
+    last_check: std::collections::BTreeMap<String, String>,
+}
+
+impl TurnProgress {
+    fn new(context: &ProviderContext<'_>) -> Result<Self, Box<dyn std::error::Error>> {
+        let policy = context
+            .assignment
+            .execution_policy
+            .as_ref()
+            .and_then(FrozenExecutionPolicy::v2)
+            .ok_or("provider assignment has no Execution Policy V2")?
+            .progress;
+        Self::from_policy(
+            policy,
+            format!("action:{}", context.assignment.action_id),
+            context.assignment.lease.attempt_id.clone(),
+        )
+    }
+
+    fn from_policy(
+        policy: factory_native::execution_policy::ProgressPolicy,
+        campaign_id: String,
+        work_item_id: String,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            supervisor: ProgressSupervisor::new(policy)?,
+            campaign_id,
+            work_item_id,
+            turn: 0,
+            sequence: 0,
+            evidence: Vec::new(),
+            last_content: std::collections::BTreeMap::new(),
+            last_check: std::collections::BTreeMap::new(),
+        })
+    }
+
+    fn begin_turn(&mut self) {
+        self.turn += 1;
+    }
+
+    fn next_sequence(&mut self) -> u64 {
+        self.sequence += 1;
+        self.sequence
+    }
+
+    fn observe_write(&mut self, path: &str, content: &str) {
+        let artifact = sha256_hex(content.as_bytes());
+        let baseline = self
+            .last_content
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| sha256_hex(b""));
+        self.last_content.insert(path.to_owned(), artifact.clone());
+        let sequence = self.next_sequence();
+        self.evidence.push(ProgressEvidence {
+            evidence_id: format!("{}-write-{sequence}", self.work_item_id),
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            kind: ProgressKind::CandidateChanged,
+            artifact_ref: path.to_owned(),
+            artifact_sha256: artifact,
+            baseline_ref: baseline,
+            observed_sequence: sequence,
+        });
+    }
+
+    fn observe_check(&mut self, argv: &[String], success: bool) {
+        if !success {
+            return;
+        }
+        let suite = format!("check:{}", argv.join("\u{0}"));
+        let result = sha256_hex(format!("{argv:?}|exit=0").as_bytes());
+        if self.last_check.get(&suite) == Some(&result) {
+            return;
+        }
+        self.last_check.insert(suite.clone(), result.clone());
+        let sequence = self.next_sequence();
+        self.evidence.push(ProgressEvidence {
+            evidence_id: format!("{}-check-{sequence}", self.work_item_id),
+            campaign_id: self.campaign_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            kind: ProgressKind::TestsImproved,
+            artifact_ref: "frozen-check".into(),
+            artifact_sha256: result,
+            baseline_ref: suite,
+            observed_sequence: sequence,
+        });
+    }
+
+    /// Checkpoint the previous turn. `Some(halt)` means Core must diagnose or
+    /// escalate before any further implementation turn is dispatched.
+    fn finish_previous_turn(
+        &mut self,
+    ) -> Result<Option<WorkerProgressHalt>, Box<dyn std::error::Error>> {
+        if self.turn == 0 {
+            return Ok(None);
+        }
+        let checkpoint_id = format!("{}-turn-{}", self.work_item_id, self.turn);
+        let operation_id = checkpoint_id.clone();
+        let outcome_sha256 = sha256_hex(
+            serde_json::to_string(&serde_json::json!({
+                "workItemId": self.work_item_id,
+                "turn": self.turn,
+                "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
+            }))?
+            .as_bytes(),
+        );
+        let checkpoint = ProgressCheckpoint {
+            checkpoint_id,
+            work_item_id: self.work_item_id.clone(),
+            operation_id,
+            evidence_ids: self
+                .evidence
+                .iter()
+                .map(|item| item.evidence_id.clone())
+                .collect(),
+            outcome_sha256,
+        };
+        let gate: Option<GateRecord> = None;
+        let outcome = self.supervisor.checkpoint(
+            &self.campaign_id,
+            &checkpoint,
+            &self.evidence,
+            gate.as_ref(),
+        )?;
+        self.evidence.clear();
+        if matches!(
+            outcome.decision,
+            ContinuationDecision::Diagnose | ContinuationDecision::Escalate
+        ) {
+            return Ok(Some(WorkerProgressHalt {
+                decision: outcome.decision,
+                work_item_id: self.work_item_id.clone(),
+                stagnant_checkpoints: outcome.stagnant_checkpoints,
+                unsuccessful_replans: outcome.unsuccessful_replans,
+            }));
+        }
+        Ok(None)
+    }
+}
+
 async fn run_provider_tool_loop(
     context: &ProviderContext<'_>,
 ) -> Result<ProviderRun, Box<dyn std::error::Error>> {
     let directory = context.directory.to_owned();
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(
-        context.assignment.deadline_secs,
-    ))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
+        operation_limits(context).model_request_timeout_secs.get(),
+    )))?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -1755,7 +1942,12 @@ async fn run_provider_tool_loop(
     let mut written = false;
     let mut last_message_id = String::new();
     let mut call_ids = std::collections::BTreeSet::new();
-    for _ in 0..context.assignment.max_turns {
+    let mut progress = TurnProgress::new(context)?;
+    loop {
+        if let Some(halt) = progress.finish_previous_turn()? {
+            return Err(Box::new(halt));
+        }
+        progress.begin_turn();
         let turn = if context.turn_policy.is_some() {
             Some(authorize_provider_turn(context, &prompt).await?)
         } else {
@@ -1791,7 +1983,9 @@ async fn run_provider_tool_loop(
             return Err(error.into());
         }
         let terminal = match tokio::time::timeout(
-            Duration::from_secs(context.assignment.deadline_secs),
+            Duration::from_secs(u64::from(
+                operation_limits(context).model_request_timeout_secs.get(),
+            )),
             factory_native::runtime::wait_for_opencode_prompt_terminal(
                 &mut event_stream,
                 &mut parser,
@@ -1987,9 +2181,12 @@ async fn run_provider_tool_loop(
                     }
                     let applied = files
                         .into_iter()
-                        .map(|file| factory_native::execution::AppliedFile {
-                            path: file.path,
-                            content: file.content,
+                        .map(|file| {
+                            progress.observe_write(&file.path, &file.content);
+                            factory_native::execution::AppliedFile {
+                                path: file.path,
+                                content: file.content,
+                            }
                         })
                         .collect::<Vec<_>>();
                     supervisor_write(
@@ -2056,6 +2253,7 @@ async fn run_provider_tool_loop(
                     Ok(ToolDecision::Write) => {
                         post_tool_event(context, &call_id, &tool, "ALLOW", "path authorized")
                             .await?;
+                        progress.observe_write(&path, &content);
                         let file = factory_native::execution::AppliedFile { path, content };
                         match supervisor_write(
                             context,
@@ -2118,6 +2316,7 @@ async fn run_provider_tool_loop(
                         .await
                         {
                             Ok(result) => {
+                                progress.observe_check(&argv, result.exit_code == Some(0));
                                 let status = if result.exit_code == Some(0) {
                                     "ok"
                                 } else {
@@ -2175,43 +2374,6 @@ async fn run_provider_tool_loop(
             }
         }
     }
-    if written {
-        post_tool_event(
-            context,
-            "turn-budget-exhausted",
-            "final",
-            "RESULT",
-            "provider wrote one or more files but did not emit a final response; finalizing the applied writes for independent verification",
-        )
-        .await?;
-        factory_native::runtime::delete_opencode_session(
-            &http,
-            context.base_url,
-            context.password,
-            context.api_directory,
-            &session_id,
-        )
-        .await?;
-        let candidate =
-            supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
-        cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-        return Ok(ProviderRun {
-            candidate,
-            provider_session_id: session_id,
-            turn_id: last_message_id,
-            usage,
-        });
-    }
-    let _ = factory_native::runtime::delete_opencode_session(
-        &http,
-        context.base_url,
-        context.password,
-        context.api_directory,
-        &session_id,
-    )
-    .await;
-    let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
-    Err("provider exceeded the authorized turn budget without writing a file".into())
 }
 
 fn codex_upstream_tools(allowed_tools: &[String]) -> Vec<Value> {
@@ -2372,6 +2534,7 @@ struct CodexToolState {
     written: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_codex_tool(
     context: &ProviderContext<'_>,
     handle: &WorkspaceHandle,
@@ -2379,6 +2542,7 @@ async fn execute_codex_tool(
     tool: &str,
     arguments: &Value,
     tool_state: &mut CodexToolState,
+    progress: &mut TurnProgress,
     deadline: tokio::time::Instant,
 ) -> Result<(bool, String), Box<dyn std::error::Error>> {
     if call_id.trim().is_empty() || !tool_state.call_ids.insert(call_id.to_owned()) {
@@ -2453,6 +2617,7 @@ async fn execute_codex_tool(
     match decision {
         Ok(ToolDecision::Write) => {
             post_tool_event(context, call_id, tool, "ALLOW", "path authorized").await?;
+            progress.observe_write(&path, &content);
             let file = factory_native::execution::AppliedFile { path, content };
             match supervisor_write(
                 context,
@@ -2489,6 +2654,7 @@ async fn execute_codex_tool(
             .await;
             match run {
                 Ok(Ok(result)) => {
+                    progress.observe_check(&argv, result.exit_code == Some(0));
                     post_tool_event(
                         context,
                         call_id,
@@ -2513,14 +2679,8 @@ async fn execute_codex_tool(
                     ))
                 }
                 Err(_) => {
-                    post_tool_event(
-                        context,
-                        call_id,
-                        tool,
-                        "ERROR",
-                        "provider deadline exceeded",
-                    )
-                    .await?;
+                    post_tool_event(context, call_id, tool, "ERROR", "tool operation timed out")
+                        .await?;
                     Err("provider deadline exceeded".into())
                 }
             }
@@ -2662,8 +2822,10 @@ async fn run_codex_tool_loop(
         return Err("Core did not bind the Codex provider session as ACTIVE".into());
     }
     let mut prompt = prompt_text;
-    let session_deadline =
-        tokio::time::Instant::now() + Duration::from_secs(context.assignment.deadline_secs);
+    let operations = operation_limits(context);
+    let request_timeout =
+        Duration::from_secs(u64::from(operations.model_request_timeout_secs.get()));
+    let tool_timeout = Duration::from_secs(u64::from(operations.tool_call_timeout_secs.get()));
     let mut usage = ProviderUsage::default();
     let mut usage_before = factory_native::protocol::TokenUsageBreakdown {
         cached_input_tokens: 0,
@@ -2679,8 +2841,13 @@ async fn run_codex_tool_loop(
     };
     let mut last_turn_id = String::new();
     let mut active_reservation: Option<String> = None;
+    let mut progress = TurnProgress::new(context)?;
     let result: Result<ProviderRun, Box<dyn std::error::Error>> = async {
-        for _ in 0..context.assignment.max_turns {
+        loop {
+            if let Some(halt) = progress.finish_previous_turn()? {
+                return Err(Box::new(halt) as Box<dyn std::error::Error>);
+            }
+            progress.begin_turn();
             let turn = if context.turn_policy.is_some() {
                 let turn = authorize_provider_turn(context, &json!({"text": prompt})).await?;
                 active_reservation = Some(turn.reservation_id.clone());
@@ -2694,15 +2861,9 @@ async fn run_codex_tool_loop(
                 }
                 return Err("provider cancellation was requested".into());
             }
-            let remaining = session_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                if let Some(turn) = &turn {
-                    release_provider_turn(context, &turn.reservation_id).await;
-                }
-                return Err("Codex provider deadline exceeded".into());
-            }
+            let turn_deadline = tokio::time::Instant::now() + request_timeout;
             let started = match tokio::time::timeout(
-                remaining,
+                request_timeout,
                 rpc.start_turn(TurnStartParams {
                     thread_id: thread_id.clone(),
                     input: vec![UserInput::Text { text: prompt.clone() }],
@@ -2737,7 +2898,7 @@ async fn run_codex_tool_loop(
             let mut last_state_check = tokio::time::Instant::now();
             loop {
                 let poll_at = (tokio::time::Instant::now() + Duration::from_secs(1))
-                    .min(session_deadline);
+                    .min(turn_deadline);
                 let event = match tokio::time::timeout_at(poll_at, rpc.next_event()).await {
                     Ok(Ok(event)) => event,
                     Ok(Err(error)) => {
@@ -2746,7 +2907,7 @@ async fn run_codex_tool_loop(
                         }
                         return Err(error.into());
                     }
-                    Err(_) if tokio::time::Instant::now() >= session_deadline => {
+                    Err(_) if tokio::time::Instant::now() >= turn_deadline => {
                         let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
                         if let Some(turn) = &turn {
                             release_provider_turn(context, &turn.reservation_id).await;
@@ -2764,12 +2925,12 @@ async fn run_codex_tool_loop(
                         continue;
                     }
                 };
-                if tokio::time::Instant::now() >= session_deadline {
+                if tokio::time::Instant::now() >= turn_deadline {
                     let _ = rpc.interrupt_turn(&thread_id, &turn_id).await;
                     if let Some(turn) = &turn {
                         release_provider_turn(context, &turn.reservation_id).await;
                     }
-                    return Err("Codex provider deadline exceeded".into());
+                    return Err("Codex turn operation timed out".into());
                 }
                 if last_state_check.elapsed() >= Duration::from_secs(1) {
                     last_state_check = tokio::time::Instant::now();
@@ -2802,7 +2963,8 @@ async fn run_codex_tool_loop(
                                 &call.tool,
                                 &call.arguments,
                                 &mut tool_state,
-                                session_deadline,
+                                &mut progress,
+                                tokio::time::Instant::now() + tool_timeout,
                             )
                             .await?;
                             rpc.respond(
@@ -3063,7 +3225,8 @@ async fn run_codex_tool_loop(
                         &tool,
                         &arguments,
                         &mut tool_state,
-                        session_deadline,
+                        &mut progress,
+                        tokio::time::Instant::now() + tool_timeout,
                     )
                     .await?;
                     prompt = format!(
@@ -3072,28 +3235,6 @@ async fn run_codex_tool_loop(
                 }
             }
         }
-        if tool_state.written {
-            post_tool_event(
-                context,
-                "codex-turn-budget-exhausted",
-                "final",
-                "RESULT",
-                "Codex wrote files but did not emit a final response; preserving applied writes",
-            )
-            .await?;
-            let _ = rpc.archive_thread(&thread_id).await;
-            let candidate =
-                supervisor_finalize(context, &handle.workspace_id, &handle.capability).await?;
-            cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await?;
-            return Ok(ProviderRun {
-                candidate,
-                provider_session_id: thread_id,
-                turn_id: last_turn_id,
-                usage,
-            });
-        }
-        let _ = cleanup(context.supervisor, &handle.workspace_id, &handle.capability).await;
-        Err("Codex exceeded the authorized turn budget without writing a file".into())
     }
     .await;
     if result.is_err() {
@@ -3151,7 +3292,7 @@ fn decide_tool(
                 .ok_or_else(|| "command does not match a frozen acceptance check".to_string())?;
             if timeout_secs == 0
                 || timeout_secs > u64::from(check.timeout_secs.min(300))
-                || timeout_secs > context.assignment.deadline_secs
+                || timeout_secs > u64::from(operation_limits(context).tool_call_timeout_secs.get())
             {
                 return Err("command timeout exceeds the frozen check or assignment bound".into());
             }
@@ -3562,9 +3703,9 @@ async fn run_provider_patch(
             )
         }]
     });
-    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(
-        context.assignment.deadline_secs,
-    ))?;
+    let http = factory_native::runtime::opencode_http_client(Duration::from_secs(u64::from(
+        operation_limits(context).model_request_timeout_secs.get(),
+    )))?;
     let event_response = factory_native::runtime::open_opencode_event_stream(
         &http,
         context.base_url,
@@ -3647,7 +3788,9 @@ async fn run_provider_patch(
         return Err(error.into());
     }
     let terminal = match tokio::time::timeout(
-        Duration::from_secs(context.assignment.deadline_secs),
+        Duration::from_secs(u64::from(
+            operation_limits(context).model_request_timeout_secs.get(),
+        )),
         factory_native::runtime::wait_for_opencode_prompt_terminal(
             &mut event_stream,
             &mut parser,
@@ -4215,8 +4358,8 @@ fn validated_loopback_url(
 #[cfg(test)]
 mod tests {
     use super::{
-        opencode_first_action_instruction, strict_request_digest, validate_provider_tools,
-        validated_loopback_url,
+        ContinuationDecision, TurnProgress, opencode_first_action_instruction,
+        strict_request_digest, validate_provider_tools, validated_loopback_url,
     };
 
     #[test]
@@ -4244,6 +4387,89 @@ mod tests {
         assert!(strict_request_digest("fixture"));
         assert!(!strict_request_digest("opencode"));
         assert!(!strict_request_digest("codex"));
+    }
+
+    fn test_progress_policy() -> factory_native::execution_policy::ProgressPolicy {
+        factory_native::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    #[test]
+    fn implementer_continues_past_former_turn_four_with_verified_progress() {
+        let mut progress = TurnProgress::from_policy(
+            test_progress_policy(),
+            "action:fixture".into(),
+            "attempt:fixture".into(),
+        )
+        .unwrap();
+        for turn in 0..10 {
+            progress.begin_turn();
+            progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
+            let halt = progress.finish_previous_turn().unwrap();
+            assert!(halt.is_none(), "verified progress halted at turn {turn}");
+        }
+        assert_eq!(progress.turn, 10);
+    }
+
+    #[test]
+    fn two_turns_without_durable_progress_return_a_typed_diagnosis() {
+        let mut progress = TurnProgress::from_policy(
+            test_progress_policy(),
+            "action:fixture".into(),
+            "attempt:fixture".into(),
+        )
+        .unwrap();
+        progress.begin_turn();
+        assert!(progress.finish_previous_turn().unwrap().is_none());
+        progress.begin_turn();
+        let halt = progress.finish_previous_turn().unwrap().unwrap();
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+        assert_eq!(halt.stagnant_checkpoints, 2);
+        assert!(halt.to_string().contains("IMPLEMENTER_PROGRESS_Diagnose"));
+    }
+
+    #[test]
+    fn duplicate_writes_and_checks_do_not_manufacture_progress() {
+        let mut progress = TurnProgress::from_policy(
+            test_progress_policy(),
+            "action:fixture".into(),
+            "attempt:fixture".into(),
+        )
+        .unwrap();
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        assert!(progress.finish_previous_turn().unwrap().is_none());
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        assert!(progress.finish_previous_turn().unwrap().is_none());
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "same");
+        progress.observe_check(&["cargo".into(), "test".into()], true);
+        let halt = progress.finish_previous_turn().unwrap().unwrap();
+        assert_eq!(halt.decision, ContinuationDecision::Diagnose);
+    }
+
+    #[test]
+    fn twelve_verified_turns_continue_without_a_turn_attempt_or_session_cap() {
+        // Admission has no attempt/session counter. This test drives the same
+        // deterministic supervisor across twelve turns to prove a legitimate
+        // long Implementer session is not cut at the former turn-four bound.
+        let mut progress = TurnProgress::from_policy(
+            test_progress_policy(),
+            "action:fixture".into(),
+            "attempt:twelve".into(),
+        )
+        .unwrap();
+        for turn in 0..12 {
+            progress.begin_turn();
+            progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
+            assert!(progress.finish_previous_turn().unwrap().is_none());
+        }
     }
 
     #[test]

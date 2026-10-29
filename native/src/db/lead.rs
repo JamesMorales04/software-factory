@@ -10,12 +10,14 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
+use crate::execution_policy::{ProgressCheckpoint, ProgressEvidence, ProgressPolicy};
 use crate::lead::{
     ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState,
-    ProjectConfig, StandingDelegation, plan_hash,
+    ProjectConfig, StandingDelegationV2, plan_hash_v2,
 };
+use crate::progress::{CheckpointOutcome, GateRecord, ProgressSupervisor, ProgressSupervisorState};
 
-use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
+use super::delegations::{load_delegation_v2, record_usage_v2_in_tx, release_usage_in_tx};
 use super::intake::{
     LeadExecutionContextRecord, load_execution_context, load_frozen_profile_content,
 };
@@ -363,7 +365,7 @@ pub(super) async fn create_draft_lead_request_in_tx(
             "project configuration is inactive or the supplied config hash is stale".into(),
         ));
     }
-    let grant = load_delegation(connection, input.delegation_id).await?;
+    let grant = load_delegation_v2(connection, input.delegation_id).await?;
     grant.validate(Utc::now())?;
     if grant.project_id != input.project_id {
         return Err(Error::Forbidden(
@@ -397,7 +399,7 @@ pub(super) async fn create_draft_lead_request_in_tx(
     .bind(&created_at)
     .execute(&mut *connection)
     .await?;
-    reserve_usage_in_tx(connection, &grant, 1, 1, 0).await?;
+    record_usage_v2_in_tx(connection, &grant, 1, 1, 0).await?;
     let request_hash = sha256_hex(
         serde_json::to_string(&(
             input.project_id,
@@ -525,7 +527,7 @@ impl Database {
                 "project configuration is inactive or the supplied config hash is stale".into(),
             ));
         }
-        let grant = load_delegation(&mut transaction, delegation_id).await?;
+        let grant = load_delegation_v2(&mut transaction, delegation_id).await?;
         if grant.project_id != project_id {
             return Err(Error::Forbidden(
                 "delegation belongs to another project".into(),
@@ -547,7 +549,7 @@ impl Database {
                 "action already has a lead request; use its original request",
             ));
         }
-        reserve_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
+        record_usage_v2_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
         let now = Utc::now().to_rfc3339();
         let request = LeadRequestRecord {
             id: Uuid::new_v4().to_string(),
@@ -718,8 +720,7 @@ impl Database {
                 .fetch_optional(&mut *transaction)
                 .await?;
         if assessment.is_none() && current.state == LeadRequestState::Submitted {
-            let grant = load_delegation(&mut transaction, &current.delegation_id).await?;
-            release_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
+            release_usage_in_tx(&mut transaction, &current.delegation_id, 1, 1, 0).await?;
         }
         sqlx::query::query(
             "UPDATE lead_requests SET state='BLOCKED',failure_reason=?1,updated_at=?2 WHERE id=?3",
@@ -872,7 +873,7 @@ impl Database {
         if request.state != LeadRequestState::Planned {
             return Err(Error::Conflict("lead request is not ready for a proposal"));
         }
-        let grant = load_delegation(&mut transaction, &request.delegation_id).await?;
+        let grant = load_delegation_v2(&mut transaction, &request.delegation_id).await?;
         if proposal.project_id != request.project_id
             || proposal.action_id != request.action_id
             || proposal.project_config_hash != request.project_config_hash
@@ -888,7 +889,7 @@ impl Database {
             ));
         }
         let action = load_action_binding(&mut transaction, &request.action_id).await?;
-        proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+        proposal.validate_v2(&grant, &config.binding(), &action, Utc::now())?;
         let assessment: Option<(String,)> =
             sqlx::query_as::query_as("SELECT id FROM lead_assessments WHERE request_id=?1")
                 .bind(request_id)
@@ -1426,7 +1427,7 @@ impl Database {
 struct StartIdentity {
     plan: FrozenLeadPlanRecord,
     proposal: LeadPlanProposal,
-    grant: StandingDelegation,
+    grant: StandingDelegationV2,
     action_spec: ActionSpec,
     spec_sha256: String,
     request_hash: String,
@@ -1457,7 +1458,7 @@ async fn load_start_identity(
             .await?;
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal.0)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-    let grant = load_delegation(connection, &request.delegation_id).await?;
+    let grant = load_delegation_v2(connection, &request.delegation_id).await?;
     if plan.config_hash != request.project_config_hash || plan.delegation_hash != grant.content_hash
     {
         return Err(Error::Invalid(
@@ -1494,7 +1495,7 @@ async fn load_start_identity(
     if request_hash != request.request_hash {
         return Err(Error::Invalid("Lead request hash mismatch"));
     }
-    let recomputed_plan_hash = plan_hash(&proposal, &grant, &request.project_config_hash);
+    let recomputed_plan_hash = plan_hash_v2(&proposal, &grant, &request.project_config_hash);
     if recomputed_plan_hash != plan.plan_hash {
         return Err(Error::Invalid("frozen Lead plan hash mismatch"));
     }
@@ -1524,6 +1525,29 @@ async fn load_start_identity(
         profile,
         profile_content,
     })
+}
+
+/// Technical defaults for the deterministic FIXTURE path only. They are not
+/// productivity budgets: no turns, attempts, sessions, repair cycles, Campaign
+/// deadline, cumulative role tokens or per-role money. A profile-backed V2
+/// start always freezes the profile's own values instead.
+fn fixture_progress_policy() -> crate::execution_policy::ProgressPolicy {
+    crate::execution_policy::ProgressPolicy {
+        diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).expect("non-zero"),
+        escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).expect("non-zero"),
+        observation_timeout_secs: std::num::NonZeroU32::new(300).expect("non-zero"),
+    }
+}
+
+fn fixture_operation_limits() -> crate::execution_policy::OperationLimits {
+    crate::execution_policy::OperationLimits {
+        model_request_timeout_secs: std::num::NonZeroU32::new(300).expect("non-zero"),
+        tool_call_timeout_secs: std::num::NonZeroU32::new(600).expect("non-zero"),
+        max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).expect("non-zero"),
+        max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).expect("non-zero"),
+        max_generation_tokens: std::num::NonZeroU32::new(8_192).expect("non-zero"),
+        max_in_flight_operations: std::num::NonZeroU32::new(4).expect("non-zero"),
+    }
 }
 
 fn start_submission_digest(
@@ -1568,11 +1592,22 @@ fn expected_binding_matches(expected: &ExpectedStartBinding, identity: &StartIde
         }
 }
 
+fn operation_limits_within(
+    requested: &crate::execution_policy::OperationLimits,
+    granted: &crate::execution_policy::OperationLimits,
+) -> bool {
+    requested.model_request_timeout_secs <= granted.model_request_timeout_secs
+        && requested.tool_call_timeout_secs <= granted.tool_call_timeout_secs
+        && requested.max_request_bytes <= granted.max_request_bytes
+        && requested.max_response_bytes <= granted.max_response_bytes
+        && requested.max_generation_tokens <= granted.max_generation_tokens
+        && requested.max_in_flight_operations <= granted.max_in_flight_operations
+}
+
 fn validate_profile_authorization(
     input: &NewCampaignAuthorization,
     profile: &crate::execution_profile::ExecutionProfileContent,
-    proposal: &LeadPlanProposal,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     action_spec: &ActionSpec,
     mechanism: &str,
 ) -> Result<(), Error> {
@@ -1599,12 +1634,9 @@ fn validate_profile_authorization(
     if grant.risk_classes != vec![crate::lead::RiskClass::R0]
         || grant.autonomous_start
         || !grant.autonomous_risk_classes.is_empty()
-        || grant.max_attempts > profile.budgets.max_attempts
-        || grant.max_sessions > profile.budgets.max_sessions
-        || u64::from(grant.max_timeout_secs) > profile.budgets.deadline_secs
-        || u64::from(grant.max_wall_clock_secs) > profile.budgets.deadline_secs
+        || grant.max_timeout_secs > profile.operations.tool_call_timeout_secs.get()
         || grant.max_parallel != 1
-        || grant.max_repair_cycles != 0
+        || grant.progress != profile.progress
     {
         return Err(Error::Forbidden(
             "execution policy delegation exceeds the frozen profile authority".into(),
@@ -1618,65 +1650,13 @@ fn validate_profile_authorization(
             "authorization route differs from the frozen profile implementer route".into(),
         ));
     }
-    if input.max_attempts == 0
-        || input.max_attempts > profile.budgets.max_attempts
-        || input.max_attempts > proposal.budget.max_attempts
-        || input.max_attempts > grant.max_attempts
-        || input.max_attempts > 5
+    if !operation_limits_within(&input.operations, &profile.operations)
+        || !operation_limits_within(&input.operations, &grant.operations)
+        || input.progress != profile.progress
     {
         return Err(Error::Forbidden(
-            "authorization attempt budget exceeds the frozen profile, plan or delegation".into(),
-        ));
-    }
-    if input.max_sessions == 0
-        || input.max_sessions > profile.budgets.max_sessions
-        || input.max_sessions > proposal.max_sessions.saturating_sub(1)
-        || input.max_sessions > grant.max_sessions
-        || input.max_sessions > 2
-    {
-        return Err(Error::Forbidden(
-            "authorization session budget exceeds the frozen profile, plan or delegation".into(),
-        ));
-    }
-    if input.max_turns == 0 || input.max_turns > profile.budgets.max_turns || input.max_turns > 4 {
-        return Err(Error::Forbidden(
-            "authorization turn budget exceeds the frozen profile".into(),
-        ));
-    }
-    if input.max_input_tokens == 0
-        || input.max_input_tokens > profile.budgets.max_input_tokens
-        || input.max_input_tokens > profile.roles.implementer.max_input_tokens
-    {
-        return Err(Error::Forbidden(
-            "authorization input-token budget exceeds the frozen profile or implementer route"
+            "authorization operation limits or progress policy exceed the frozen profile or delegation"
                 .into(),
-        ));
-    }
-    if input.max_output_tokens == 0
-        || input.max_output_tokens > profile.budgets.max_output_tokens
-        || input.max_output_tokens > profile.roles.implementer.max_output_tokens
-    {
-        return Err(Error::Forbidden(
-            "authorization output-token budget exceeds the frozen profile or implementer route"
-                .into(),
-        ));
-    }
-    if input.max_cost_micros == 0
-        || input.max_cost_micros > profile.budgets.max_cost_micros
-        || input.max_cost_micros > profile.roles.implementer.max_cost_micros
-    {
-        return Err(Error::Forbidden(
-            "authorization cost budget exceeds the frozen profile or implementer route".into(),
-        ));
-    }
-    if input.deadline_secs < 30
-        || input.deadline_secs > profile.budgets.deadline_secs
-        || input.deadline_secs > u64::from(proposal.max_wall_clock_secs)
-        || input.deadline_secs > u64::from(grant.max_wall_clock_secs)
-        || input.deadline_secs > 600
-    {
-        return Err(Error::Forbidden(
-            "authorization deadline exceeds the frozen profile, plan or delegation".into(),
         ));
     }
     if input.authorized_paths.is_empty()
@@ -1894,7 +1874,7 @@ async fn start_lead_campaign_in_tx(
             }
         }
     }
-    proposal.validate(grant, &config.binding(), &action, Utc::now())?;
+    proposal.validate_v2(grant, &config.binding(), &action, Utc::now())?;
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
@@ -2005,14 +1985,9 @@ async fn start_lead_campaign_in_tx(
                     "authorization route differs from the frozen proposal route".into(),
                 ));
             }
-            if input.max_attempts > proposal.budget.max_attempts {
+            if input.monetary_envelope_id == super::authorization::NO_BILLABLE_ENVELOPE {
                 return Err(Error::Forbidden(
-                    "authorization attempt budget exceeds the frozen plan".into(),
-                ));
-            }
-            if input.max_sessions > proposal.max_sessions.saturating_sub(1) {
-                return Err(Error::Forbidden(
-                    "authorization session budget exceeds the frozen plan".into(),
+                    "provider authorization requires a real monetary envelope reference".into(),
                 ));
             }
             if input.authorized_paths.iter().any(|path| {
@@ -2043,12 +2018,22 @@ async fn start_lead_campaign_in_tx(
                         identity.plan.plan_hash, grant.id
                     ),
                     authorized_paths: identity.action_spec.allowed_paths.clone(),
-                    max_attempts: proposal.budget.max_attempts,
                     provider: proposal.route.provider.clone(),
                     model: proposal.route.model.clone(),
                     provider_mode: proposal.route.mode.clone(),
                     delegation_id: grant.id.clone(),
-                    ..Default::default()
+                    allowed_tools: Vec::new(),
+                    monetary_envelope_id: super::authorization::NO_BILLABLE_ENVELOPE.to_owned(),
+                    progress: identity
+                        .profile_content
+                        .as_ref()
+                        .map(|profile| profile.progress)
+                        .unwrap_or_else(fixture_progress_policy),
+                    operations: identity
+                        .profile_content
+                        .as_ref()
+                        .map(|profile| profile.operations)
+                        .unwrap_or_else(fixture_operation_limits),
                 }
             }
         }
@@ -2058,7 +2043,6 @@ async fn start_lead_campaign_in_tx(
         validate_profile_authorization(
             &authorization_input,
             profile,
-            proposal,
             grant,
             &identity.action_spec,
             &mechanism,
@@ -2688,8 +2672,8 @@ async fn freeze_lead_plan_in_tx(
             .ok_or(Error::Conflict("lead plan requires a recorded proposal"))?;
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-    let grant = load_delegation(connection, &request.delegation_id).await?;
-    let hash = plan_hash(&proposal, &grant, &request.project_config_hash);
+    let grant = load_delegation_v2(connection, &request.delegation_id).await?;
+    let hash = plan_hash_v2(&proposal, &grant, &request.project_config_hash);
 
     // Recovery replay is resolved against the original frozen identity before
     // current state, expiry, config availability or withdrawal checks.
@@ -2722,17 +2706,13 @@ async fn freeze_lead_plan_in_tx(
         ));
     }
     let action = load_action_binding(connection, &request.action_id).await?;
-    proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+    proposal.validate_v2(&grant, &config.binding(), &action, Utc::now())?;
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
         ));
     }
     ensure_action_spec_for_frozen_plan(connection, &request, &proposal, &config, &grant).await?;
-    let extra_sessions = proposal.max_sessions.saturating_sub(1);
-    if extra_sessions > 0 {
-        reserve_usage_in_tx(connection, &grant, 0, extra_sessions, 0).await?;
-    }
     let record = FrozenLeadPlanRecord {
         id: Uuid::new_v4().to_string(),
         request_id: request.id.clone(),
@@ -2779,7 +2759,7 @@ async fn ensure_action_spec_for_frozen_plan(
     request: &LeadRequestRecord,
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
 ) -> Result<(), Error> {
     let existing: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
@@ -2846,7 +2826,7 @@ fn derive_root_action_spec(
     request: &LeadRequestRecord,
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
 ) -> Result<ActionSpec, Error> {
     let mut allowed_paths = std::collections::BTreeSet::new();
     for unit in &proposal.work_units {
@@ -3103,7 +3083,7 @@ pub(super) async fn load_frozen_plan_by_id(
 fn unit_action_spec(
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     unit: &crate::lead::LeadWorkUnit,
     base_commit: &str,
 ) -> Result<ActionSpec, Error> {
@@ -3571,7 +3551,7 @@ async fn ensure_integration(
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
     let config = load_project_config(transaction, &project_id).await?;
-    let grant = load_delegation(transaction, &delegation_id).await?;
+    let grant = load_delegation_v2(transaction, &delegation_id).await?;
     let mut allowed_paths = std::collections::BTreeSet::new();
     let checks = if purpose == "FANIN" {
         let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
@@ -3755,16 +3735,238 @@ async fn load_attempt_for_run(
     .ok_or(Error::NotFound)
 }
 
+impl Database {
+    /// Persist one deterministic progress checkpoint. Evidence, checkpoint and
+    /// decision rows are append-only; the supervisor snapshot is updated in the
+    /// same `BEGIN IMMEDIATE` transaction so a restart cannot reset counters or
+    /// replay a receipt as new progress.
+    pub async fn record_progress_checkpoint(
+        &self,
+        campaign_id: &str,
+        checkpoint: &ProgressCheckpoint,
+        evidence: &[ProgressEvidence],
+        gate: Option<&GateRecord>,
+        policy: ProgressPolicy,
+    ) -> Result<CheckpointOutcome, Error> {
+        let policy_json = serde_json::to_string(&policy)
+            .map_err(|_| Error::Invalid("progress policy encoding"))?;
+        let policy_sha256 = sha256_hex(policy_json.as_bytes());
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(gate) = gate {
+            // Acceptance can only cite an existing deterministic Core gate
+            // decision for a candidate belonging to this Campaign. A Worker,
+            // model or caller-supplied record cannot accept work.
+            let verified: Option<(String, String)> = sqlx::query_as::query_as(
+                "SELECT gd.outcome,c.commit_sha
+                 FROM gate_decisions gd
+                 JOIN candidates c ON c.id=gd.candidate_id
+                 JOIN attempts a ON a.id=c.attempt_id
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2 AND c.commit_sha=?3",
+            )
+            .bind(&gate.gate_id)
+            .bind(campaign_id)
+            .bind(&gate.candidate_sha256)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if verified.as_ref() != Some(&(gate.outcome.clone(), gate.candidate_sha256.clone()))
+                || gate.outcome != "ACCEPTED"
+            {
+                return Err(Error::Forbidden(
+                    "progress acceptance requires an existing accepted Core gate record".into(),
+                ));
+            }
+        }
+        let stored: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT policy_sha256,state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let mut supervisor = match stored {
+            Some((stored_policy, state_json)) => {
+                if stored_policy != policy_sha256 {
+                    return Err(Error::Conflict(
+                        "stored progress policy differs from the frozen policy",
+                    ));
+                }
+                let state: ProgressSupervisorState = serde_json::from_str(&state_json)
+                    .map_err(|_| Error::Invalid("stored progress state encoding"))?;
+                ProgressSupervisor::restore(policy, state)
+                    .map_err(|error| Error::Validation(error.to_string()))?
+            }
+            None => ProgressSupervisor::new(policy)
+                .map_err(|error| Error::Validation(error.to_string()))?,
+        };
+        let outcome = supervisor
+            .checkpoint(campaign_id, checkpoint, evidence, gate)
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        for item in evidence {
+            let evidence_json = serde_json::to_string(item)
+                .map_err(|_| Error::Invalid("progress evidence encoding"))?;
+            let evidence_sha256 = sha256_hex(evidence_json.as_bytes());
+            let inserted = sqlx::query::query(
+                "INSERT OR IGNORE INTO progress_evidence
+                 (evidence_id,campaign_id,work_item_id,kind,artifact_ref,artifact_sha256,
+                  baseline_ref,observed_sequence,evidence_json,evidence_sha256,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )
+            .bind(&item.evidence_id)
+            .bind(campaign_id)
+            .bind(&checkpoint.work_item_id)
+            .bind(
+                serde_json::to_value(item.kind)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| Error::Invalid("progress kind encoding"))?,
+            )
+            .bind(&item.artifact_ref)
+            .bind(&item.artifact_sha256)
+            .bind(&item.baseline_ref)
+            .bind(
+                i64::try_from(item.observed_sequence)
+                    .map_err(|_| Error::Invalid("progress sequence overflow"))?,
+            )
+            .bind(&evidence_json)
+            .bind(&evidence_sha256)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            if inserted == 0 {
+                let saved: Option<(String,)> = sqlx::query_as::query_as(
+                    "SELECT evidence_sha256 FROM progress_evidence WHERE evidence_id=?1",
+                )
+                .bind(&item.evidence_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+                if saved.map(|(hash,)| hash) != Some(evidence_sha256) {
+                    return Err(Error::Conflict(
+                        "progress evidence id was reused with different content",
+                    ));
+                }
+            }
+        }
+        let checkpoint_json = serde_json::to_string(checkpoint)
+            .map_err(|_| Error::Invalid("progress checkpoint encoding"))?;
+        let checkpoint_sha256 = sha256_hex(checkpoint_json.as_bytes());
+        let decision = serde_json::to_value(outcome.decision)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| Error::Invalid("progress decision encoding"))?;
+        let classification = serde_json::to_value(outcome.classification)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| Error::Invalid("progress classification encoding"))?;
+        let now = Utc::now().to_rfc3339();
+        let inserted = sqlx::query::query(
+            "INSERT OR IGNORE INTO progress_checkpoints
+             (checkpoint_id,campaign_id,work_item_id,operation_id,evidence_ids_json,
+              outcome_sha256,classification,decision,checkpoint_json,checkpoint_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        )
+        .bind(&checkpoint.checkpoint_id)
+        .bind(campaign_id)
+        .bind(&checkpoint.work_item_id)
+        .bind(&checkpoint.operation_id)
+        .bind(
+            serde_json::to_string(&checkpoint.evidence_ids)
+                .map_err(|_| Error::Invalid("progress evidence ids encoding"))?,
+        )
+        .bind(&checkpoint.outcome_sha256)
+        .bind(&classification)
+        .bind(&decision)
+        .bind(&checkpoint_json)
+        .bind(&checkpoint_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            let saved: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT checkpoint_sha256 FROM progress_checkpoints WHERE checkpoint_id=?1",
+            )
+            .bind(&checkpoint.checkpoint_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if saved.map(|(hash,)| hash) != Some(checkpoint_sha256) {
+                return Err(Error::Conflict(
+                    "progress checkpoint id was reused with different content",
+                ));
+            }
+        }
+        sqlx::query::query(
+            "INSERT INTO progress_decisions
+             (decision_id,campaign_id,work_item_id,checkpoint_id,decision,reason,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(campaign_id)
+        .bind(&checkpoint.work_item_id)
+        .bind(&checkpoint.checkpoint_id)
+        .bind(&decision)
+        .bind(format!(
+            "classification={classification} stagnant={} unsuccessfulReplans={}",
+            outcome.stagnant_checkpoints, outcome.unsuccessful_replans
+        ))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        let state_json = serde_json::to_string(&supervisor.snapshot())
+            .map_err(|_| Error::Invalid("progress state encoding"))?;
+        let state_sha256 = sha256_hex(state_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO campaign_progress_state
+             (campaign_id,policy_sha256,state_json,state_sha256,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?5)
+             ON CONFLICT(campaign_id) DO UPDATE SET
+               policy_sha256=excluded.policy_sha256,
+               state_json=excluded.state_json,
+               state_sha256=excluded.state_sha256,
+               updated_at=excluded.updated_at",
+        )
+        .bind(campaign_id)
+        .bind(&policy_sha256)
+        .bind(&state_json)
+        .bind(&state_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
+    /// Durable progress snapshot for diagnostics and restart verification.
+    pub async fn campaign_progress_state(
+        &self,
+        campaign_id: &str,
+    ) -> Result<Option<ProgressSupervisorState>, Error> {
+        let stored: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        stored
+            .map(|(state_json,)| {
+                serde_json::from_str(&state_json)
+                    .map_err(|_| Error::Invalid("stored progress state encoding"))
+            })
+            .transpose()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lead::{
         Capability, CheckKind, Complexity, EffortEstimate, EffortStatus, Intent, LeadRequestState,
         LeadWorkUnit, ObjectiveClass, ProjectConfig, ProviderRoute, QualityProfile, RiskClass,
-        SpecBudget, SpecCheck, StandingDelegation, WorkUnitKind,
+        SpecBudget, SpecCheck, WorkUnitKind,
     };
 
-    async fn fixture() -> (std::path::PathBuf, Database, StandingDelegation) {
+    async fn fixture() -> (std::path::PathBuf, Database, StandingDelegationV2) {
         let path = std::env::temp_dir().join(format!(
             "factory-lead-request-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -3802,35 +4004,14 @@ mod tests {
         grant.autonomous_start = true;
         grant.autonomous_risk_classes = vec![RiskClass::R0];
         grant.content_hash = grant.compute_content_hash();
-        db.create_standing_delegation(&grant, "grant-key")
+        db.create_standing_delegation_v2(&grant, "grant-key")
             .await
             .unwrap();
         (path, db, grant)
     }
 
-    fn project_config() -> ProjectConfig {
-        let mut config = ProjectConfig {
-            project_id: "project".into(),
-            revision: 1,
-            config_hash: String::new(),
-            repository: "/fixture".into(),
-            base_commit: "b".repeat(40),
-            allowed_paths: vec!["src".into()],
-            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
-            quality_profile: QualityProfile::Generic,
-            active: true,
-            updated_at: "2026-10-24T00:00:00Z".into(),
-        };
-        config.config_hash = config.compute_hash();
-        config
-    }
-
-    fn config_hash() -> String {
-        project_config().config_hash
-    }
-
-    fn grant() -> StandingDelegation {
-        let mut grant = StandingDelegation {
+    fn legacy_test_grant() -> crate::lead::StandingDelegation {
+        let mut grant = crate::lead::StandingDelegation {
             id: "grant".into(),
             principal_id: "owner".into(),
             audit_id: "audit".into(),
@@ -3857,6 +4038,76 @@ mod tests {
             max_requests: 2,
             max_cumulative_sessions: 8,
             max_cumulative_attempts: 16,
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        grant
+    }
+
+    fn project_config() -> ProjectConfig {
+        let mut config = ProjectConfig {
+            project_id: "project".into(),
+            revision: 1,
+            config_hash: String::new(),
+            repository: "/fixture".into(),
+            base_commit: "b".repeat(40),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            quality_profile: QualityProfile::Generic,
+            active: true,
+            updated_at: "2026-10-24T00:00:00Z".into(),
+        };
+        config.config_hash = config.compute_hash();
+        config
+    }
+
+    fn config_hash() -> String {
+        project_config().config_hash
+    }
+
+    fn operations() -> crate::execution_policy::OperationLimits {
+        crate::execution_policy::OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress_policy() -> crate::execution_policy::ProgressPolicy {
+        crate::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    fn grant() -> StandingDelegationV2 {
+        let mut grant = StandingDelegationV2 {
+            id: "grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: "project".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            risk_classes: vec![RiskClass::R0, RiskClass::R1],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: operations(),
+            progress: progress_policy(),
             expires_at: Utc::now() + chrono::Duration::days(1),
             revoked_at: None,
         };
@@ -4031,7 +4282,7 @@ mod tests {
             .await
             .unwrap();
         db.begin_lead_assessment(&request.id).await.unwrap();
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let binding = ActionBinding {
             id: action.id.clone(),
             project_id: "project".into(),
@@ -4079,7 +4330,7 @@ mod tests {
         ReadyLead { request, proposal }
     }
 
-    fn model_authorization(proposal: &LeadPlanProposal) -> NewCampaignAuthorization {
+    fn model_authorization(_proposal: &LeadPlanProposal) -> NewCampaignAuthorization {
         NewCampaignAuthorization {
             authorization_id: "explicit-model-lead-start".into(),
             risk_class: "R0".into(),
@@ -4087,18 +4338,14 @@ mod tests {
             actor: "test-operator".into(),
             rationale: "explicit provider authorization for a MODEL Lead plan".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            provider: proposal.route.provider.clone(),
-            model: proposal.route.model.clone(),
-            provider_mode: proposal.route.mode.clone(),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            provider_mode: "build".into(),
             delegation_id: "grant".into(),
-            max_sessions: 1,
-            max_turns: 4,
-            max_input_tokens: 1_000,
-            max_output_tokens: 1_000,
-            max_cost_micros: 10_000,
-            deadline_secs: 300,
             allowed_tools: vec!["write_file".into()],
+            monetary_envelope_id: "envelope-test".into(),
+            progress: progress_policy(),
+            operations: operations(),
         }
     }
 
@@ -4107,17 +4354,17 @@ mod tests {
         plan: FrozenLeadPlanRecord,
         spec_sha256: String,
         config_hash: String,
-        grant: StandingDelegation,
+        grant: StandingDelegationV2,
         proposal: LeadPlanProposal,
     }
 
-    async fn operator_grant(db: &Database, id: &str) -> StandingDelegation {
+    async fn operator_grant(db: &Database, id: &str) -> StandingDelegationV2 {
         let mut grant = grant();
         grant.id = id.into();
         grant.autonomous_start = false;
         grant.autonomous_risk_classes.clear();
         grant.content_hash = grant.compute_content_hash();
-        db.create_standing_delegation(&grant, &format!("{id}-key"))
+        db.create_standing_delegation_v2(&grant, &format!("{id}-key"))
             .await
             .unwrap();
         grant
@@ -4273,7 +4520,7 @@ mod tests {
 
     fn lead_model_call_authorization(
         request_id: &str,
-        grant: &StandingDelegation,
+        grant: &StandingDelegationV2,
     ) -> NewModelCallAuthorization {
         NewModelCallAuthorization {
             role: ModelCallRole::Lead,
@@ -4601,7 +4848,6 @@ mod tests {
         )
         .unwrap();
         proposal.budget.max_attempts = 1;
-        proposal.max_sessions = 3;
         proposal.work_units = vec![
             crate::lead::LeadWorkUnit {
                 id: "first".into(),
@@ -4751,7 +4997,6 @@ mod tests {
         )
         .unwrap();
         proposal.budget.max_attempts = 1;
-        proposal.max_sessions = 4;
         proposal.work_units = vec![
             crate::lead::LeadWorkUnit {
                 id: "root-a".into(),
@@ -5291,11 +5536,15 @@ mod tests {
     async fn model_lead_start_records_exact_authorization_without_double_reservation() {
         let (path, db, _) = fixture().await;
         let ready = ready_lead(&db, "MODEL").await;
-        assert_eq!(ready.proposal.budget.max_attempts, 2);
-        assert_eq!(ready.proposal.max_sessions, 3);
+        // The deterministic fixture plan carries only advisory legacy fields;
+        // no attempt/session ceiling is frozen into the V2 policy.
+        assert_eq!(ready.proposal.budget.max_attempts, 1);
+        assert_eq!(ready.proposal.max_sessions, 0);
         let usage_before = db.delegation_usage("grant").await.unwrap();
+        // Request creation records one admission activity; it is telemetry, not
+        // a ceiling. Session/attempt counters no longer reserve lifetime work.
         assert_eq!(usage_before.requests, 1);
-        assert_eq!(usage_before.sessions, 3);
+        assert_eq!(usage_before.sessions, 1);
         assert_eq!(usage_before.attempts, 0);
         let authorization = model_authorization(&ready.proposal);
         let started = db
@@ -5319,26 +5568,20 @@ mod tests {
         assert_eq!(stored.actor, authorization.actor);
         assert_eq!(stored.rationale, authorization.rationale);
         assert_eq!(stored.authorized_paths, authorization.authorized_paths);
-        assert_eq!(stored.max_attempts, authorization.max_attempts);
+        let stored_policy = stored.policy.as_ref().unwrap();
+        assert_eq!(stored_policy.progress, authorization.progress);
+        assert_eq!(stored_policy.operations, authorization.operations);
+        assert!(stored.legacy.is_none());
         assert_eq!(stored.provider, authorization.provider);
         assert_eq!(stored.model, authorization.model);
         assert_eq!(stored.provider_mode, authorization.provider_mode);
         assert_eq!(stored.delegation_id, authorization.delegation_id);
-        assert_eq!(stored.max_sessions, authorization.max_sessions);
-        assert_eq!(stored.max_turns, authorization.max_turns);
-        assert_eq!(stored.max_input_tokens, authorization.max_input_tokens);
-        assert_eq!(stored.max_output_tokens, authorization.max_output_tokens);
-        assert_eq!(stored.max_cost_micros, authorization.max_cost_micros);
-        assert_eq!(stored.deadline_secs, authorization.deadline_secs);
         assert_eq!(stored.allowed_tools, authorization.allowed_tools);
         assert_eq!(lead_start_row_counts(&db).await, (1, 1, 1, 1));
         let usage_after = db.delegation_usage("grant").await.unwrap();
         assert_eq!(usage_after.requests, usage_before.requests);
         assert_eq!(usage_after.sessions, usage_before.sessions);
-        assert_eq!(
-            usage_after.attempts,
-            usage_before.attempts + authorization.max_attempts
-        );
+        assert_eq!(usage_after.attempts, usage_before.attempts);
         assert_eq!(
             db.lead_request(&ready.request.id).await.unwrap().state,
             LeadRequestState::Running
@@ -5361,7 +5604,7 @@ mod tests {
         assert_eq!(db.delegation_usage("grant").await.unwrap(), usage_after);
 
         let mut different = authorization.clone();
-        different.max_attempts = 2;
+        different.operations.max_generation_tokens = std::num::NonZeroU32::new(4_096).unwrap();
         assert!(matches!(
             db.start_lead_campaign(
                 &ready.request.id,
@@ -5427,11 +5670,8 @@ mod tests {
         wrong_delegation.delegation_id = "another-grant".into();
         fixtures.push(("delegation", wrong_delegation));
         let mut attempts = base.clone();
-        attempts.max_attempts = base.max_attempts + 2;
-        fixtures.push(("attempts", attempts));
-        let mut sessions = base.clone();
-        sessions.max_sessions = ready.proposal.max_sessions;
-        fixtures.push(("sessions", sessions));
+        attempts.operations.tool_call_timeout_secs = std::num::NonZeroU32::new(3_600).unwrap();
+        fixtures.push(("operations", attempts));
         let mut paths = base.clone();
         paths.authorized_paths = vec!["src".into(), "tests".into()];
         fixtures.push(("paths", paths));
@@ -6147,8 +6387,14 @@ mod tests {
             actor: "forged".into(),
             rationale: "bypass attempt".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: super::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: progress_policy(),
+            operations: operations(),
         };
         let error = db
             .authorize_campaign("manual-lead-campaign", &authorization)
@@ -6202,18 +6448,14 @@ mod tests {
             actor: "forged-model-worker".into(),
             rationale: "forged worker rationale".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
             provider: ready.proposal.route.provider.clone(),
             model: ready.proposal.route.model.clone(),
             provider_mode: ready.proposal.route.mode.clone(),
             delegation_id: ready.grant.id.clone(),
-            max_sessions: 1,
-            max_turns: 4,
-            max_input_tokens: 1_000,
-            max_output_tokens: 1_000,
-            max_cost_micros: 10_000,
-            deadline_secs: 300,
             allowed_tools: vec!["write_file".into()],
+            monetary_envelope_id: "envelope-test".into(),
+            progress: progress_policy(),
+            operations: operations(),
         };
         let started = db
             .start_lead_campaign(
@@ -6391,7 +6633,7 @@ mod tests {
             LeadRequestState::Assessing
         );
 
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let input = lead_model_call_authorization(&request.id, &grant);
         let error = db.authorize_model_call(&input).await.unwrap_err();
         assert!(matches!(error, Error::Withdrawn), "{error:?}");
@@ -6443,7 +6685,7 @@ mod tests {
                 action: &binding,
                 action_spec: &action.spec,
                 objective: &request.objective,
-                grant: &grant,
+                grant: &legacy_test_grant(),
                 now: Utc::now(),
             },
         )
@@ -6482,7 +6724,7 @@ mod tests {
             .await
             .unwrap();
         db.begin_lead_assessment(&request.id).await.unwrap();
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let input = lead_model_call_authorization(&request.id, &grant);
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
         let auth_barrier = barrier.clone();
@@ -6674,6 +6916,195 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn progress_evidence(
+        campaign_id: &str,
+        kind: crate::execution_policy::ProgressKind,
+        sequence: u64,
+        artifact: &str,
+    ) -> ProgressEvidence {
+        ProgressEvidence {
+            evidence_id: format!("evidence-{sequence}"),
+            campaign_id: campaign_id.into(),
+            work_item_id: "unit-1".into(),
+            kind,
+            artifact_ref: format!("artifact-{sequence}"),
+            artifact_sha256: sha256_hex(artifact.as_bytes()),
+            baseline_ref: "suite-stable".into(),
+            observed_sequence: sequence,
+        }
+    }
+
+    fn progress_checkpoint(sequence: u64, evidence: &[ProgressEvidence]) -> ProgressCheckpoint {
+        ProgressCheckpoint {
+            checkpoint_id: format!("checkpoint-{sequence}"),
+            work_item_id: "unit-1".into(),
+            operation_id: format!("operation-{sequence}"),
+            evidence_ids: evidence
+                .iter()
+                .map(|item| item.evidence_id.clone())
+                .collect(),
+            outcome_sha256: sha256_hex(format!("outcome-{sequence}").as_bytes()),
+        }
+    }
+
+    async fn progress_campaign(db: &Database) -> String {
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('progress-project','/progress','base',?1,'')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let action = db
+            .create_action(
+                "progress-project",
+                "Observe progress.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "progress-action",
+            )
+            .await
+            .unwrap();
+        db.create_campaign(&action.id, "progress-campaign-key")
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn progress_survives_restart_and_replayed_checkpoints_earn_nothing() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        let policy = progress_policy();
+        let first = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(1, &[]),
+                &[],
+                None,
+                policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.stagnant_checkpoints, 1);
+        let second = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(2, &[]),
+                &[],
+                None,
+                policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert_eq!(second.stagnant_checkpoints, 2);
+
+        let reopened = Database::open(&path).await.unwrap();
+        let state = reopened
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.work_items.get("unit-1").unwrap().stagnant_checkpoints,
+            2
+        );
+        let replay = reopened
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(2, &[]),
+                &[],
+                None,
+                policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.classification,
+            crate::progress::CheckpointClassification::Replayed
+        );
+        assert_eq!(replay.stagnant_checkpoints, 2);
+        assert!(
+            sqlx::query::query("UPDATE progress_checkpoints SET decision='COMPLETE'")
+                .execute(&db.pool)
+                .await
+                .is_err()
+        );
+        db.close().await;
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn progress_acceptance_rejects_a_forged_gate_record() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        let evidence = progress_evidence(
+            &campaign_id,
+            crate::execution_policy::ProgressKind::UnitAccepted,
+            1,
+            "candidate",
+        );
+        let gate = crate::progress::GateRecord {
+            gate_id: "invented-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: "unit-1".into(),
+            candidate_sha256: evidence.artifact_sha256.clone(),
+            outcome: "ACCEPTED".into(),
+        };
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(1, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&gate),
+                progress_policy(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn verified_progress_continues_past_former_deadline_and_productivity_caps() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        let policy = progress_policy();
+        for sequence in 1..=10u64 {
+            let evidence = progress_evidence(
+                &campaign_id,
+                crate::execution_policy::ProgressKind::TestsImproved,
+                sequence,
+                &format!("pass-{sequence}"),
+            );
+            let outcome = db
+                .record_progress_checkpoint(
+                    &campaign_id,
+                    &progress_checkpoint(sequence, std::slice::from_ref(&evidence)),
+                    std::slice::from_ref(&evidence),
+                    None,
+                    policy,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome.decision,
+                crate::execution_policy::ContinuationDecision::Continue,
+                "verified progress must continue beyond sequence {sequence}: {outcome:?}"
+            );
+            assert_eq!(outcome.stagnant_checkpoints, 0, "{outcome:?}");
+        }
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

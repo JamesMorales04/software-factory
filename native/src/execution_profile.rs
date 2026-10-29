@@ -19,26 +19,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::execution_policy::{OperationLimits, ProgressPolicy};
 use crate::lead::RiskClass;
 use crate::provider_adapter::ProviderAdapter;
 use crate::provider_catalog;
 
 pub const MAX_NAME_CHARS: usize = 80;
 pub const MAX_DESCRIPTION_CHARS: usize = 500;
-pub const MAX_ROLE_INPUT_TOKENS: u64 = 1_000_000;
-pub const MAX_ROLE_OUTPUT_TOKENS: u64 = 100_000;
-pub const MAX_ROLE_COST_MICROS: u64 = 100_000_000;
-pub const MIN_CAMPAIGN_ATTEMPTS: u32 = 1;
-pub const MAX_CAMPAIGN_ATTEMPTS: u32 = 10;
-pub const MIN_CAMPAIGN_SESSIONS: u32 = 1;
-pub const MAX_CAMPAIGN_SESSIONS: u32 = 16;
-pub const MIN_CAMPAIGN_TURNS: u32 = 1;
-pub const MAX_CAMPAIGN_TURNS: u32 = 16;
-pub const MAX_CAMPAIGN_INPUT_TOKENS: u64 = 1_000_000;
-pub const MAX_CAMPAIGN_OUTPUT_TOKENS: u64 = 100_000;
-pub const MAX_CAMPAIGN_COST_MICROS: u64 = 100_000_000;
-pub const MIN_CAMPAIGN_DEADLINE_SECS: u64 = 30;
-pub const MAX_CAMPAIGN_DEADLINE_SECS: u64 = 86_400;
+
+/// Technical operation bounds accepted in a V2 profile. These are per-operation
+/// and capacity limits, never cumulative Campaign productivity budgets.
+pub const MAX_MODEL_REQUEST_TIMEOUT_SECS: u32 = 3_600;
+pub const MAX_TOOL_CALL_TIMEOUT_SECS: u32 = 3_600;
+pub const MAX_OPERATION_BYTES: u32 = 64 * 1024 * 1024;
+pub const MAX_GENERATION_TOKENS: u32 = 1_000_000;
+pub const MAX_IN_FLIGHT_OPERATIONS: u32 = 32;
+pub const MAX_DIAGNOSE_AFTER_CHECKPOINTS: u32 = 100;
+pub const MAX_ESCALATE_AFTER_REPLANS: u32 = 100;
+pub const MAX_OBSERVATION_TIMEOUT_SECS: u32 = 3_600;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExecutionProfileError {
@@ -135,6 +133,8 @@ pub const SUPPORTED_ROUTES: &[SupportedExecutionRoute] = &[
     },
 ];
 
+/// Route and reasoning selection for one model-backed role. Request bounds are
+/// technical operation limits on the profile, not replenishing role allowances.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionRoleRoute {
@@ -142,9 +142,6 @@ pub struct ExecutionRoleRoute {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningEffort>,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,9 +162,26 @@ impl ExecutionProfileRoles {
     }
 }
 
+/// Legacy V1 route evidence. Cumulative token and cost fields are preserved for
+/// historical decode only; they are not execution authority and are never
+/// enforced by the V2 path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct CampaignBudgets {
+pub struct LegacyExecutionRoleRouteV1 {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningEffort>,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_cost_micros: u64,
+}
+
+/// Legacy V1 Campaign budget evidence. Retained byte-compatibly so old
+/// revision hashes verify; never decoded as V2 and never enforced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LegacyCampaignBudgetsV1 {
     pub max_attempts: u32,
     pub max_sessions: u32,
     pub max_turns: u32,
@@ -179,12 +193,35 @@ pub struct CampaignBudgets {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LegacyExecutionProfileRolesV1 {
+    pub lead: LegacyExecutionRoleRouteV1,
+    pub implementer: LegacyExecutionRoleRouteV1,
+    pub semantic_reviewer: LegacyExecutionRoleRouteV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LegacyExecutionProfileContentV1 {
+    pub name: String,
+    pub description: String,
+    pub category: ExecutionProfileCategory,
+    pub roles: LegacyExecutionProfileRolesV1,
+    pub budgets: LegacyCampaignBudgetsV1,
+    pub auto_start: AutoStartPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AutoStartPolicy {
     pub enabled: bool,
     #[serde(default)]
     pub risk_classes: Vec<RiskClass>,
 }
 
+/// Execution Policy V2 profile content: routes/reasoning plus technical
+/// operation limits and deterministic progress supervision. It deliberately
+/// carries no turns, attempts, sessions, repair cycles, cumulative role tokens,
+/// per-role money or Campaign wall-clock deadline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ExecutionProfileContent {
@@ -192,8 +229,51 @@ pub struct ExecutionProfileContent {
     pub description: String,
     pub category: ExecutionProfileCategory,
     pub roles: ExecutionProfileRoles,
-    pub budgets: CampaignBudgets,
+    pub operations: OperationLimits,
+    pub progress: ProgressPolicy,
     pub auto_start: AutoStartPolicy,
+}
+
+/// Versioned profile revision content. Legacy V1 revisions are decoded with
+/// their original type and hash; they are never reinterpreted using V2
+/// defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "schemaVersion")]
+pub enum ExecutionProfileRevisionContent {
+    #[serde(rename = "1")]
+    V1(LegacyExecutionProfileContentV1),
+    #[serde(rename = "2")]
+    V2(ExecutionProfileContent),
+}
+
+impl ExecutionProfileRevisionContent {
+    pub fn schema_version(&self) -> u32 {
+        match self {
+            Self::V1(_) => 1,
+            Self::V2(_) => 2,
+        }
+    }
+
+    pub fn v2(&self) -> Option<&ExecutionProfileContent> {
+        match self {
+            Self::V2(content) => Some(content),
+            Self::V1(_) => None,
+        }
+    }
+
+    pub fn content_hash(&self) -> String {
+        match self {
+            Self::V1(content) => content.compute_content_hash(),
+            Self::V2(content) => content.compute_content_hash(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ExecutionProfileError> {
+        match self {
+            Self::V1(content) => content.validate(),
+            Self::V2(content) => content.validate(),
+        }
+    }
 }
 
 impl ExecutionProfileContent {
@@ -211,7 +291,8 @@ impl ExecutionProfileContent {
         for (role, route) in self.roles.entries() {
             validate_route(role, route)?;
         }
-        validate_budgets(&self.budgets)?;
+        validate_operation_limits(&self.operations)?;
+        validate_progress_policy(&self.progress)?;
         validate_auto_start(&self.auto_start)?;
         Ok(())
     }
@@ -416,64 +497,124 @@ fn validate_route(
             route.model
         ))
     })?;
-    if !(1..=MAX_ROLE_INPUT_TOKENS).contains(&route.max_input_tokens) {
+    Ok(())
+}
+
+fn validate_operation_limits(limits: &OperationLimits) -> Result<(), ExecutionProfileError> {
+    let checks = [
+        (
+            "operations.modelRequestTimeoutSecs",
+            limits.model_request_timeout_secs.get(),
+            MAX_MODEL_REQUEST_TIMEOUT_SECS,
+        ),
+        (
+            "operations.toolCallTimeoutSecs",
+            limits.tool_call_timeout_secs.get(),
+            MAX_TOOL_CALL_TIMEOUT_SECS,
+        ),
+        (
+            "operations.maxRequestBytes",
+            limits.max_request_bytes.get(),
+            MAX_OPERATION_BYTES,
+        ),
+        (
+            "operations.maxResponseBytes",
+            limits.max_response_bytes.get(),
+            MAX_OPERATION_BYTES,
+        ),
+        (
+            "operations.maxGenerationTokens",
+            limits.max_generation_tokens.get(),
+            MAX_GENERATION_TOKENS,
+        ),
+        (
+            "operations.maxInFlightOperations",
+            limits.max_in_flight_operations.get(),
+            MAX_IN_FLIGHT_OPERATIONS,
+        ),
+    ];
+    for (field, value, maximum) in checks {
+        if value == 0 || value > maximum {
+            return Err(ExecutionProfileError::Invalid(format!(
+                "{field} must be between 1 and {maximum}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_progress_policy(policy: &ProgressPolicy) -> Result<(), ExecutionProfileError> {
+    if !(1..=MAX_DIAGNOSE_AFTER_CHECKPOINTS)
+        .contains(&policy.diagnose_after_stagnant_checkpoints.get())
+    {
         return Err(ExecutionProfileError::Invalid(format!(
-            "{}.maxInputTokens must be between 1 and {MAX_ROLE_INPUT_TOKENS}",
-            role.as_str()
+            "progress.diagnoseAfterStagnantCheckpoints must be between 1 and {MAX_DIAGNOSE_AFTER_CHECKPOINTS}"
         )));
     }
-    if !(1..=MAX_ROLE_OUTPUT_TOKENS).contains(&route.max_output_tokens) {
+    if !(1..=MAX_ESCALATE_AFTER_REPLANS).contains(&policy.escalate_after_unsuccessful_replans.get())
+    {
         return Err(ExecutionProfileError::Invalid(format!(
-            "{}.maxOutputTokens must be between 1 and {MAX_ROLE_OUTPUT_TOKENS}",
-            role.as_str()
+            "progress.escalateAfterUnsuccessfulReplans must be between 1 and {MAX_ESCALATE_AFTER_REPLANS}"
         )));
     }
-    if !(1..=MAX_ROLE_COST_MICROS).contains(&route.max_cost_micros) {
+    if !(1..=MAX_OBSERVATION_TIMEOUT_SECS).contains(&policy.observation_timeout_secs.get()) {
         return Err(ExecutionProfileError::Invalid(format!(
-            "{}.maxCostMicros must be between 1 and {MAX_ROLE_COST_MICROS}",
-            role.as_str()
+            "progress.observationTimeoutSecs must be between 1 and {MAX_OBSERVATION_TIMEOUT_SECS}"
         )));
     }
     Ok(())
 }
 
-fn validate_budgets(budgets: &CampaignBudgets) -> Result<(), ExecutionProfileError> {
-    if !(MIN_CAMPAIGN_ATTEMPTS..=MAX_CAMPAIGN_ATTEMPTS).contains(&budgets.max_attempts) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxAttempts must be between {MIN_CAMPAIGN_ATTEMPTS} and {MAX_CAMPAIGN_ATTEMPTS}"
-        )));
-    }
-    if !(MIN_CAMPAIGN_SESSIONS..=MAX_CAMPAIGN_SESSIONS).contains(&budgets.max_sessions) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxSessions must be between {MIN_CAMPAIGN_SESSIONS} and {MAX_CAMPAIGN_SESSIONS}"
-        )));
-    }
-    if !(MIN_CAMPAIGN_TURNS..=MAX_CAMPAIGN_TURNS).contains(&budgets.max_turns) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxTurns must be between {MIN_CAMPAIGN_TURNS} and {MAX_CAMPAIGN_TURNS}"
-        )));
-    }
-    if !(1..=MAX_CAMPAIGN_INPUT_TOKENS).contains(&budgets.max_input_tokens) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxInputTokens must be between 1 and {MAX_CAMPAIGN_INPUT_TOKENS}"
-        )));
-    }
-    if !(1..=MAX_CAMPAIGN_OUTPUT_TOKENS).contains(&budgets.max_output_tokens) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxOutputTokens must be between 1 and {MAX_CAMPAIGN_OUTPUT_TOKENS}"
-        )));
-    }
-    if !(1..=MAX_CAMPAIGN_COST_MICROS).contains(&budgets.max_cost_micros) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.maxCostMicros must be between 1 and {MAX_CAMPAIGN_COST_MICROS}"
-        )));
-    }
-    if !(MIN_CAMPAIGN_DEADLINE_SECS..=MAX_CAMPAIGN_DEADLINE_SECS).contains(&budgets.deadline_secs) {
-        return Err(ExecutionProfileError::Invalid(format!(
-            "budgets.deadlineSecs must be between {MIN_CAMPAIGN_DEADLINE_SECS} and {MAX_CAMPAIGN_DEADLINE_SECS}"
-        )));
-    }
+fn validate_budgets(_budgets: &LegacyCampaignBudgetsV1) -> Result<(), ExecutionProfileError> {
     Ok(())
+}
+
+impl LegacyExecutionProfileContentV1 {
+    /// Preserve the exact V1 content-hash computation so historical evidence
+    /// keeps verifying. No cap is treated as authority by this method.
+    pub fn compute_content_hash(&self) -> String {
+        let mut canonical = self.clone();
+        canonical.auto_start.risk_classes.sort();
+        let raw = serde_json::to_vec(&canonical).expect("legacy execution profile is serializable");
+        sha256_hex(&raw)
+    }
+
+    pub fn validate(&self) -> Result<(), ExecutionProfileError> {
+        validate_text("name", &self.name, MAX_NAME_CHARS, true)?;
+        validate_text(
+            "description",
+            &self.description,
+            MAX_DESCRIPTION_CHARS,
+            false,
+        )?;
+        for (role, route) in [
+            (ExecutionRole::Lead, &self.roles.lead),
+            (ExecutionRole::Implementer, &self.roles.implementer),
+            (
+                ExecutionRole::SemanticReviewer,
+                &self.roles.semantic_reviewer,
+            ),
+        ] {
+            if provider_catalog::entry(&route.provider).is_none() {
+                return Err(ExecutionProfileError::UnsupportedRoute(format!(
+                    "{} legacy route provider {:?} is not a configured Core provider connection",
+                    role.as_str(),
+                    route.provider
+                )));
+            }
+            provider_catalog::validate_model(&route.model).map_err(|message| {
+                ExecutionProfileError::UnsupportedRoute(format!(
+                    "{} legacy route {}/{} model is invalid: {message}",
+                    role.as_str(),
+                    route.provider,
+                    route.model
+                ))
+            })?;
+        }
+        validate_budgets(&self.budgets)?;
+        validate_auto_start(&self.auto_start)?;
+        Ok(())
+    }
 }
 
 fn validate_auto_start(policy: &AutoStartPolicy) -> Result<(), ExecutionProfileError> {
@@ -509,15 +650,33 @@ fn sha256_hex(raw: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_policy::ProgressPolicy;
+    use std::num::NonZeroU32;
 
     fn route(provider: &str, model: &str) -> ExecutionRoleRoute {
         ExecutionRoleRoute {
             provider: provider.into(),
             model: model.into(),
             reasoning: Some(ReasoningEffort::Medium),
-            max_input_tokens: 128_000,
-            max_output_tokens: 8_192,
-            max_cost_micros: 300_000,
+        }
+    }
+
+    pub(super) fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    pub(super) fn progress_policy() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
         }
     }
 
@@ -531,15 +690,8 @@ mod tests {
                 implementer: route("opencode-go", "deepseek-v4.1-flash"),
                 semantic_reviewer: route("codex", "gpt-6-luna"),
             },
-            budgets: CampaignBudgets {
-                max_attempts: 3,
-                max_sessions: 2,
-                max_turns: 4,
-                max_input_tokens: 40_000,
-                max_output_tokens: 12_000,
-                max_cost_micros: 500_000,
-                deadline_secs: 600,
-            },
+            operations: operations(),
+            progress: progress_policy(),
             auto_start: AutoStartPolicy {
                 enabled: false,
                 risk_classes: Vec::new(),
@@ -619,11 +771,19 @@ mod tests {
     #[test]
     fn bounds_and_auto_start_policy_are_strict() {
         let mut content = valid_content();
-        content.budgets.max_attempts = 0;
+        // NonZeroU32 cannot represent zero; prove the maximum bound instead.
+        content.operations.max_in_flight_operations =
+            NonZeroU32::new(MAX_IN_FLIGHT_OPERATIONS + 1).unwrap();
         assert!(content.validate().is_err());
 
         let mut content = valid_content();
-        content.roles.implementer.max_output_tokens = MAX_ROLE_OUTPUT_TOKENS + 1;
+        content.operations.max_generation_tokens =
+            NonZeroU32::new(MAX_GENERATION_TOKENS + 1).unwrap();
+        assert!(content.validate().is_err());
+
+        let mut content = valid_content();
+        content.progress.diagnose_after_stagnant_checkpoints =
+            NonZeroU32::new(MAX_DIAGNOSE_AFTER_CHECKPOINTS + 1).unwrap();
         assert!(content.validate().is_err());
 
         let mut content = valid_content();
@@ -639,6 +799,72 @@ mod tests {
             risk_classes: vec![RiskClass::R0],
         };
         assert!(content.validate().is_err());
+    }
+
+    #[test]
+    fn v2_profile_content_has_no_productivity_caps() {
+        let value = serde_json::to_value(valid_content()).unwrap();
+        for forbidden in [
+            "budgets",
+            "maxTurns",
+            "maxAttempts",
+            "maxSessions",
+            "maxRepairCycles",
+            "maxWallClockSecs",
+            "maxInputTokens",
+            "maxOutputTokens",
+            "maxCostMicros",
+        ] {
+            assert!(value.get(forbidden).is_none(), "{forbidden} must be absent");
+        }
+        assert!(value["operations"]["toolCallTimeoutSecs"].is_number());
+        assert!(value["progress"]["diagnoseAfterStagnantCheckpoints"].is_number());
+        assert!(value.get("schemaVersion").is_none());
+    }
+
+    #[test]
+    fn legacy_v1_profile_keeps_its_original_hash_shape() {
+        let legacy = LegacyExecutionProfileContentV1 {
+            name: "Legacy".into(),
+            description: "historical".into(),
+            category: ExecutionProfileCategory::Balanced,
+            roles: LegacyExecutionProfileRolesV1 {
+                lead: legacy_route("opencode-go", "deepseek-v4.1-flash"),
+                implementer: legacy_route("opencode-go", "deepseek-v4.1-flash"),
+                semantic_reviewer: legacy_route("opencode-go", "deepseek-v4.1-flash"),
+            },
+            budgets: LegacyCampaignBudgetsV1 {
+                max_attempts: 3,
+                max_sessions: 2,
+                max_turns: 4,
+                max_input_tokens: 40_000,
+                max_output_tokens: 12_000,
+                max_cost_micros: 500_000,
+                deadline_secs: 600,
+            },
+            auto_start: AutoStartPolicy {
+                enabled: false,
+                risk_classes: Vec::new(),
+            },
+        };
+        legacy.validate().unwrap();
+        let hash = legacy.compute_content_hash();
+        assert_eq!(hash.len(), 64);
+        assert_eq!(
+            ExecutionProfileRevisionContent::V1(legacy).content_hash(),
+            hash
+        );
+    }
+
+    fn legacy_route(provider: &str, model: &str) -> LegacyExecutionRoleRouteV1 {
+        LegacyExecutionRoleRouteV1 {
+            provider: provider.into(),
+            model: model.into(),
+            reasoning: Some(ReasoningEffort::Medium),
+            max_input_tokens: 128_000,
+            max_output_tokens: 8_192,
+            max_cost_micros: 300_000,
+        }
     }
 
     #[test]

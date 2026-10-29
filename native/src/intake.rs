@@ -6,35 +6,29 @@
 //! remain authoritative in the Lead and Campaign records.
 //!
 //! Decision mechanisms in this module are `DETERMINISTIC`: state projection,
-//! authorization reason codes and budget intersection are mechanical facts,
-//! never model judgments.
+//! authorization reason codes and execution-scope derivation are mechanical
+//! facts, never model judgments. Approval freezes scope, tools, risk, route and
+//! technical operation limits; deterministic progress supervision decides
+//! continuation.
 
 use serde::{Deserialize, Serialize};
 
-use crate::execution_profile::{CampaignBudgets, ExecutionProfileContent};
-use crate::lead::{LeadPlanProposal, ObjectiveClass, RiskClass, StandingDelegation};
+use crate::execution_policy::{OperationLimits, ProgressPolicy};
+use crate::execution_profile::ExecutionProfileContent;
+use crate::lead::{
+    Capability, LeadPlanProposal, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegationV2,
+};
 
-/// Conservative Core ceilings used when deriving an operator Campaign
-/// authorization. These mirror the existing authorization boundary; they are
-/// not new policy and may only narrow the frozen profile/plan/delegation.
-const CORE_MAX_ATTEMPTS: u32 = 5;
-const CORE_MAX_IMPLEMENTATION_SESSIONS: u32 = 2;
-const CORE_MAX_TURNS: u32 = 4;
-const CORE_MAX_DEADLINE_SECS: u64 = 600;
-const CORE_MIN_DEADLINE_SECS: u64 = 30;
-
-/// Bounded cumulative execution-policy grant terms. These are Core policy
-/// constants, exposed in the `EXECUTION_POLICY_REQUIRED` scope so Office can
-/// show the exact grant before acknowledgement instead of duplicating policy.
-pub const EXECUTION_POLICY_REQUESTS: u32 = 4;
+/// Core-owned validity of one explicit execution-policy grant. This is a
+/// grant-lifetime bound, not a Campaign productivity deadline.
 pub const EXECUTION_POLICY_VALIDITY_DAYS: i64 = 30;
-pub const EXECUTION_POLICY_MIN_DEADLINE_SECS: u64 = 120;
-pub const EXECUTION_POLICY_MAX_REPAIR_CYCLES: u32 = 0;
+/// Bounded concurrent implementation capacity. It is not a lifetime work cap.
 pub const EXECUTION_POLICY_MAX_PARALLEL: u32 = 1;
-pub const EXECUTION_POLICY_ATTEMPTS_CAP: u32 = 5;
 
 /// Material bounds of the non-autonomous grant that an operator is
 /// acknowledging. This is a projection of Core policy, not a second authority.
+/// It contains no turns, attempts, sessions, repair cycles, universal Campaign
+/// deadline, cumulative tokens or per-role money.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntakeExecutionPolicyTerms {
@@ -42,31 +36,17 @@ pub struct IntakeExecutionPolicyTerms {
     pub risk_classes: Vec<RiskClass>,
     pub autonomous_start: bool,
     pub validity_days: i64,
-    pub max_requests: u32,
-    pub max_attempts_per_request: u32,
-    pub max_sessions_per_request: u32,
-    pub max_turns_per_request: u32,
-    pub max_input_tokens_per_request: u64,
-    pub max_output_tokens_per_request: u64,
-    pub max_cost_micros_per_request: u64,
-    pub max_timeout_secs_per_request: u64,
-    pub max_wall_clock_secs_per_request: u64,
-    pub max_repair_cycles: u32,
     pub max_parallel: u32,
-    pub max_cumulative_sessions: u32,
-    pub max_cumulative_attempts: u32,
+    /// Per-operation timeout, not a universal Campaign deadline.
+    pub max_timeout_secs: u32,
+    pub progress: ProgressPolicy,
+    pub operations: OperationLimits,
 }
 
 /// Derive the exact bounded grant terms from one profile revision. The
 /// execution-policy writer and the `EXECUTION_POLICY_REQUIRED` projection both
 /// use this function so the acknowledgement cannot disagree with the grant.
 pub fn execution_policy_terms(profile: &ExecutionProfileContent) -> IntakeExecutionPolicyTerms {
-    let implementer = &profile.roles.implementer;
-    let max_attempts = profile
-        .budgets
-        .max_attempts
-        .min(EXECUTION_POLICY_ATTEMPTS_CAP);
-    let max_sessions = profile.budgets.max_sessions;
     IntakeExecutionPolicyTerms {
         objective_classes: vec![
             ObjectiveClass::Feature,
@@ -76,35 +56,10 @@ pub fn execution_policy_terms(profile: &ExecutionProfileContent) -> IntakeExecut
         risk_classes: vec![RiskClass::R0],
         autonomous_start: false,
         validity_days: EXECUTION_POLICY_VALIDITY_DAYS,
-        max_requests: EXECUTION_POLICY_REQUESTS,
-        max_attempts_per_request: max_attempts,
-        max_sessions_per_request: max_sessions,
-        max_turns_per_request: profile.budgets.max_turns,
-        max_input_tokens_per_request: profile
-            .budgets
-            .max_input_tokens
-            .min(implementer.max_input_tokens),
-        max_output_tokens_per_request: profile
-            .budgets
-            .max_output_tokens
-            .min(implementer.max_output_tokens),
-        max_cost_micros_per_request: profile
-            .budgets
-            .max_cost_micros
-            .min(implementer.max_cost_micros),
-        max_timeout_secs_per_request: profile.budgets.deadline_secs.clamp(30, 600),
-        max_wall_clock_secs_per_request: profile
-            .budgets
-            .deadline_secs
-            .clamp(EXECUTION_POLICY_MIN_DEADLINE_SECS, 7_200),
-        max_repair_cycles: EXECUTION_POLICY_MAX_REPAIR_CYCLES,
         max_parallel: EXECUTION_POLICY_MAX_PARALLEL,
-        max_cumulative_sessions: max_sessions
-            .saturating_mul(EXECUTION_POLICY_REQUESTS)
-            .min(crate::lead::MAX_CUMULATIVE_SESSIONS),
-        max_cumulative_attempts: max_attempts
-            .saturating_mul(EXECUTION_POLICY_REQUESTS)
-            .min(crate::lead::MAX_CUMULATIVE_ATTEMPTS),
+        max_timeout_secs: profile.operations.tool_call_timeout_secs.get(),
+        progress: profile.progress,
+        operations: profile.operations,
     }
 }
 
@@ -235,102 +190,85 @@ impl IntakeAuthorizationState {
     }
 }
 
-/// Budget intersect for one operator-approved Campaign. Every value is the
-/// minimum of the frozen profile campaign budget, the frozen implementer role
-/// route, frozen plan, active delegation and the existing Core authorization
-/// ceilings. Plan and delegation do not carry token/cost/turn ceilings today,
-/// so those dimensions use the stricter of the profile campaign budget and the
-/// implementer route; this is a documented limitation, not additional
-/// authority.
+/// The exact frozen scope of an operator-approved Campaign. Productivity
+/// counters are deliberately absent: an approval grants scope, tools, risk,
+/// route and technical operation bounds, and progress supervision decides
+/// continuation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntakeCampaignBudget {
-    pub max_attempts: u32,
-    pub max_sessions: u32,
-    pub max_turns: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
-    pub deadline_secs: u64,
+pub struct IntakeExecutionScope {
+    pub risk_class: RiskClass,
+    pub route: ProviderRoute,
+    pub allowed_paths: Vec<String>,
+    pub capabilities: Vec<Capability>,
+    pub max_parallel: u32,
+    pub max_timeout_secs: u32,
+    pub progress: ProgressPolicy,
+    pub operations: OperationLimits,
 }
 
-/// Derive the conservative implementation envelope for an explicit operator
-/// approval. This never broadens the frozen plan; insufficient capacity is a
-/// typed refusal and the caller must not silently increase a limit.
-pub fn intersect_campaign_budget(
+/// Derive the implementation scope for an explicit operator approval. This
+/// never broadens the frozen plan or delegation. Insufficient scope is a typed
+/// refusal; the caller must not invent a cap or silently widen authority.
+pub fn validate_execution_scope(
     profile: &ExecutionProfileContent,
     proposal: &LeadPlanProposal,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     behavior: &IntakeMode,
-) -> Result<IntakeCampaignBudget, IntakeBudgetError> {
-    let profile_budgets: &CampaignBudgets = &profile.budgets;
-    let implementer = &profile.roles.implementer;
-    // The frozen plan's session ceiling includes the assessment session. The
-    // Campaign authorization may only use the remaining implementation part.
-    let plan_sessions = proposal.max_sessions.saturating_sub(1);
-    let max_sessions = profile_budgets
-        .max_sessions
-        .min(plan_sessions)
-        .min(grant.max_sessions)
-        .min(CORE_MAX_IMPLEMENTATION_SESSIONS);
-    if max_sessions == 0 {
-        return Err(IntakeBudgetError::NoImplementationSession);
-    }
-    let max_attempts = profile_budgets
-        .max_attempts
-        .min(proposal.budget.max_attempts)
-        .min(grant.max_attempts)
-        .min(CORE_MAX_ATTEMPTS);
-    if max_attempts == 0 {
-        return Err(IntakeBudgetError::NoAttempt);
-    }
-    let max_turns = profile_budgets.max_turns.min(CORE_MAX_TURNS);
-    let deadline_secs = profile_budgets
-        .deadline_secs
-        .min(u64::from(proposal.max_wall_clock_secs))
-        .min(u64::from(grant.max_wall_clock_secs))
-        .min(CORE_MAX_DEADLINE_SECS);
-    if deadline_secs < CORE_MIN_DEADLINE_SECS {
-        return Err(IntakeBudgetError::DeadlineTooShort);
-    }
+) -> Result<IntakeExecutionScope, IntakeScopeError> {
     // Autonomous submission mode is not a start authority. It is accepted as
     // an operator intent label only; this derivation is always the explicit
     // operator path.
     let _ = behavior;
-    if proposal.risk_class != RiskClass::R0 {
-        return Err(IntakeBudgetError::NotR0);
+    if proposal.risk_class != RiskClass::R0 || !grant.risk_classes.contains(&RiskClass::R0) {
+        return Err(IntakeScopeError::NotR0);
     }
-    Ok(IntakeCampaignBudget {
-        max_attempts,
-        max_sessions,
-        max_turns,
-        max_input_tokens: profile_budgets
-            .max_input_tokens
-            .min(implementer.max_input_tokens),
-        max_output_tokens: profile_budgets
-            .max_output_tokens
-            .min(implementer.max_output_tokens),
-        max_cost_micros: profile_budgets
-            .max_cost_micros
-            .min(implementer.max_cost_micros),
-        deadline_secs,
+    let implementer = &profile.roles.implementer;
+    if implementer.provider != grant.route.provider
+        || implementer.model != grant.route.model
+        || grant.route.mode != "build"
+        || proposal.route != grant.route
+    {
+        return Err(IntakeScopeError::RouteMismatch);
+    }
+    if proposal.max_parallel == 0
+        || proposal.max_parallel > grant.max_parallel
+        || proposal.max_parallel > EXECUTION_POLICY_MAX_PARALLEL
+    {
+        return Err(IntakeScopeError::ParallelUnavailable);
+    }
+    if proposal.budget.timeout_secs == 0
+        || proposal.budget.timeout_secs > grant.max_timeout_secs
+        || proposal.budget.timeout_secs > profile.operations.tool_call_timeout_secs.get()
+    {
+        return Err(IntakeScopeError::OperationTimeout);
+    }
+    Ok(IntakeExecutionScope {
+        risk_class: RiskClass::R0,
+        route: grant.route.clone(),
+        allowed_paths: grant.allowed_paths.clone(),
+        capabilities: grant.capabilities.clone(),
+        max_parallel: proposal.max_parallel.min(EXECUTION_POLICY_MAX_PARALLEL),
+        max_timeout_secs: proposal.budget.timeout_secs,
+        progress: profile.progress,
+        operations: profile.operations,
     })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntakeBudgetError {
-    NoImplementationSession,
-    NoAttempt,
-    DeadlineTooShort,
+pub enum IntakeScopeError {
     NotR0,
+    RouteMismatch,
+    ParallelUnavailable,
+    OperationTimeout,
 }
 
-impl IntakeBudgetError {
+impl IntakeScopeError {
     pub fn reason(self) -> &'static str {
         match self {
-            Self::NoImplementationSession => "AUTHORIZATION_UNAVAILABLE_NO_SESSION",
-            Self::NoAttempt => "AUTHORIZATION_UNAVAILABLE_NO_ATTEMPT",
-            Self::DeadlineTooShort => "AUTHORIZATION_UNAVAILABLE_DEADLINE",
             Self::NotR0 => "AUTHORIZATION_UNAVAILABLE_RISK",
+            Self::RouteMismatch => "AUTHORIZATION_UNAVAILABLE_ROUTE",
+            Self::ParallelUnavailable => "AUTHORIZATION_UNAVAILABLE_CAPACITY",
+            Self::OperationTimeout => "AUTHORIZATION_UNAVAILABLE_OPERATION_TIMEOUT",
         }
     }
 }
@@ -338,6 +276,7 @@ impl IntakeBudgetError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_policy::ProgressPolicy;
     use crate::execution_profile::{
         AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileRoles, ExecutionRoleRoute,
         ReasoningEffort,
@@ -347,15 +286,32 @@ mod tests {
         WorkUnitKind,
     };
     use chrono::Utc;
+    use std::num::NonZeroU32;
 
     fn route() -> ExecutionRoleRoute {
         ExecutionRoleRoute {
             provider: "opencode-go".into(),
             model: "deepseek-v4.1-flash".into(),
             reasoning: Some(ReasoningEffort::Medium),
-            max_input_tokens: 64_000,
-            max_output_tokens: 8_192,
-            max_cost_micros: 300_000,
+        }
+    }
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
         }
     }
 
@@ -369,15 +325,8 @@ mod tests {
                 implementer: route(),
                 semantic_reviewer: route(),
             },
-            budgets: CampaignBudgets {
-                max_attempts: 3,
-                max_sessions: 4,
-                max_turns: 4,
-                max_input_tokens: 40_000,
-                max_output_tokens: 12_000,
-                max_cost_micros: 500_000,
-                deadline_secs: 1_800,
-            },
+            operations: operations(),
+            progress: progress(),
             auto_start: AutoStartPolicy {
                 enabled: false,
                 risk_classes: Vec::new(),
@@ -436,8 +385,8 @@ mod tests {
         }
     }
 
-    fn grant() -> StandingDelegation {
-        let mut grant = StandingDelegation {
+    fn grant() -> StandingDelegationV2 {
+        let mut grant = StandingDelegationV2 {
             id: "grant".into(),
             principal_id: "operator-token".into(),
             audit_id: "audit".into(),
@@ -455,15 +404,10 @@ mod tests {
                 model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
-            max_attempts: 3,
             max_timeout_secs: 300,
-            max_repair_cycles: 0,
-            max_wall_clock_secs: 600,
             max_parallel: 1,
-            max_sessions: 3,
-            max_requests: 4,
-            max_cumulative_sessions: 12,
-            max_cumulative_attempts: 12,
+            operations: operations(),
+            progress: progress(),
             expires_at: Utc::now() + chrono::Duration::days(30),
             revoked_at: None,
         };
@@ -472,55 +416,33 @@ mod tests {
     }
 
     #[test]
-    fn budget_is_the_minimum_of_profile_plan_grant_and_core() {
-        let budget =
-            intersect_campaign_budget(&profile(), &proposal(), &grant(), &IntakeMode::ReviewPlan)
+    fn scope_is_explicit_and_has_no_productivity_counters() {
+        let scope =
+            validate_execution_scope(&profile(), &proposal(), &grant(), &IntakeMode::ReviewPlan)
                 .unwrap();
-        assert_eq!(budget.max_attempts, 2);
-        assert_eq!(budget.max_sessions, 2);
-        assert_eq!(budget.max_turns, 4);
-        assert_eq!(budget.max_input_tokens, 40_000);
-        assert_eq!(budget.max_output_tokens, 8_192);
-        assert_eq!(budget.max_cost_micros, 300_000);
-        assert_eq!(budget.deadline_secs, 600);
-    }
+        assert_eq!(scope.risk_class, RiskClass::R0);
+        assert_eq!(scope.allowed_paths, vec!["src".to_owned()]);
+        assert_eq!(scope.max_parallel, 1);
+        assert_eq!(scope.max_timeout_secs, 300);
+        assert!(scope.operations.tool_call_timeout_secs.get() >= 1);
 
-    #[test]
-    fn implementer_route_caps_bind_tokens_and_cost_independently() {
-        let mut input_capped = profile();
-        input_capped.roles.implementer.max_input_tokens = 10_000;
-        let budget = intersect_campaign_budget(
-            &input_capped,
-            &proposal(),
-            &grant(),
-            &IntakeMode::ReviewPlan,
-        )
-        .unwrap();
-        assert_eq!(budget.max_input_tokens, 10_000);
-        assert_eq!(budget.max_output_tokens, 8_192);
-        assert_eq!(budget.max_cost_micros, 300_000);
-
-        let mut output_capped = profile();
-        output_capped.roles.implementer.max_output_tokens = 1_000;
-        let budget = intersect_campaign_budget(
-            &output_capped,
-            &proposal(),
-            &grant(),
-            &IntakeMode::ReviewPlan,
-        )
-        .unwrap();
-        assert_eq!(budget.max_input_tokens, 40_000);
-        assert_eq!(budget.max_output_tokens, 1_000);
-        assert_eq!(budget.max_cost_micros, 300_000);
-
-        let mut cost_capped = profile();
-        cost_capped.roles.implementer.max_cost_micros = 100_000;
-        let budget =
-            intersect_campaign_budget(&cost_capped, &proposal(), &grant(), &IntakeMode::ReviewPlan)
-                .unwrap();
-        assert_eq!(budget.max_input_tokens, 40_000);
-        assert_eq!(budget.max_output_tokens, 8_192);
-        assert_eq!(budget.max_cost_micros, 100_000);
+        let terms = execution_policy_terms(&profile());
+        let value = serde_json::to_value(&terms).unwrap();
+        for forbidden in [
+            "maxAttemptsPerRequest",
+            "maxSessionsPerRequest",
+            "maxTurnsPerRequest",
+            "maxInputTokensPerRequest",
+            "maxOutputTokensPerRequest",
+            "maxCostMicrosPerRequest",
+            "maxWallClockSecsPerRequest",
+            "maxRepairCycles",
+            "maxRequests",
+            "maxCumulativeSessions",
+            "maxCumulativeAttempts",
+        ] {
+            assert!(value.get(forbidden).is_none(), "{forbidden} must be absent");
+        }
     }
 
     #[test]
@@ -528,18 +450,56 @@ mod tests {
         let mut proposal = proposal();
         proposal.risk_class = RiskClass::R1;
         assert_eq!(
-            intersect_campaign_budget(&profile(), &proposal, &grant(), &IntakeMode::ReviewPlan),
-            Err(IntakeBudgetError::NotR0)
+            validate_execution_scope(&profile(), &proposal, &grant(), &IntakeMode::ReviewPlan),
+            Err(IntakeScopeError::NotR0)
         );
     }
 
     #[test]
-    fn zero_implementation_sessions_fail_closed() {
-        let mut proposal = proposal();
-        proposal.max_sessions = 1;
+    fn route_mismatch_and_parallel_capacity_fail_closed() {
+        let mut mismatched = profile();
+        mismatched.roles.implementer.model = "other-model".into();
         assert_eq!(
-            intersect_campaign_budget(&profile(), &proposal, &grant(), &IntakeMode::ReviewPlan),
-            Err(IntakeBudgetError::NoImplementationSession)
+            validate_execution_scope(&mismatched, &proposal(), &grant(), &IntakeMode::ReviewPlan),
+            Err(IntakeScopeError::RouteMismatch)
         );
+
+        let mut parallel = proposal();
+        parallel.max_parallel = 2;
+        assert_eq!(
+            validate_execution_scope(&profile(), &parallel, &grant(), &IntakeMode::ReviewPlan),
+            Err(IntakeScopeError::ParallelUnavailable)
+        );
+    }
+
+    #[test]
+    fn per_operation_timeout_is_bounded_but_no_campaign_deadline_exists() {
+        let mut grant = grant();
+        grant.max_timeout_secs = 60;
+        grant.content_hash = grant.compute_content_hash();
+        assert_eq!(
+            validate_execution_scope(&profile(), &proposal(), &grant, &IntakeMode::ReviewPlan),
+            Err(IntakeScopeError::OperationTimeout)
+        );
+
+        let mut long = proposal();
+        long.max_wall_clock_secs = 8 * 24 * 60 * 60;
+        assert!(
+            validate_execution_scope(
+                &profile(),
+                &long,
+                &grant_with_timeout(600),
+                &IntakeMode::ReviewPlan
+            )
+            .is_ok(),
+            "a Campaign wall-clock hint is not authority"
+        );
+    }
+
+    fn grant_with_timeout(timeout: u32) -> StandingDelegationV2 {
+        let mut grant = grant();
+        grant.max_timeout_secs = timeout;
+        grant.content_hash = grant.compute_content_hash();
+        grant
     }
 }

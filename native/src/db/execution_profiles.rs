@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use super::{Database, Error};
 use crate::execution_profile::{
-    ExecutionProfileContent, ProviderRouteAvailability, evaluate_executability,
+    ExecutionProfileContent, ExecutionProfileRevisionContent, ProviderRouteAvailability,
+    evaluate_executability,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,11 +23,11 @@ pub struct ExecutionProfileRecord {
     pub id: String,
     pub revision: u32,
     pub revision_id: String,
+    pub schema_version: u32,
     pub content_hash: String,
     pub global_default: bool,
     pub project_defaults: Vec<String>,
-    #[serde(flatten)]
-    pub content: ExecutionProfileContent,
+    pub content: ExecutionProfileRevisionContent,
     pub executable: bool,
     pub warnings: Vec<String>,
     pub created_at: String,
@@ -78,6 +79,7 @@ struct ProfileRow {
     id: String,
     revision: u32,
     revision_id: String,
+    schema_version: u32,
     content_json: String,
     content_hash: String,
     profile_hash: String,
@@ -113,8 +115,8 @@ impl Database {
         .await?;
         sqlx::query::query(
             "INSERT INTO execution_profile_revisions
-             (revision_id,profile_id,revision,content_json,content_hash,actor,created_at)
-             VALUES (?1,?2,1,?3,?4,?5,?6)",
+             (revision_id,profile_id,revision,content_json,content_hash,actor,created_at,schema_version)
+             VALUES (?1,?2,1,?3,?4,?5,?6,2)",
         )
         .bind(&revision_id)
         .bind(&id)
@@ -175,8 +177,8 @@ impl Database {
         let revision_id = Uuid::new_v4().to_string();
         sqlx::query::query(
             "INSERT INTO execution_profile_revisions
-             (revision_id,profile_id,revision,content_json,content_hash,actor,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             (revision_id,profile_id,revision,content_json,content_hash,actor,created_at,schema_version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,2)",
         )
         .bind(&revision_id)
         .bind(id)
@@ -230,7 +232,8 @@ impl Database {
         let mut connection = self.pool.acquire().await?;
         let row = sqlx::query::query(
             "SELECT p.id,r.revision AS current_revision,r.content_hash AS profile_hash,
-                    p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash
+                    p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash,
+                    r.schema_version
              FROM execution_profiles p
              JOIN execution_profile_revisions r ON r.profile_id=p.id
              WHERE p.id=?1 AND r.revision_id=?2",
@@ -259,7 +262,8 @@ impl Database {
         let mut connection = self.pool.acquire().await?;
         let rows = sqlx::query::query(
             "SELECT p.id,p.current_revision,p.content_hash AS profile_hash,
-                    p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash
+                    p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash,
+                    r.schema_version
              FROM execution_profiles p
              JOIN execution_profile_revisions r
                ON r.profile_id=p.id AND r.revision=p.current_revision
@@ -317,7 +321,11 @@ impl Database {
         let current = load_current_content(&mut transaction, profile_id).await?;
         let availability =
             load_provider_availability(&mut transaction, &self.provider_model_cache()).await?;
-        let (executable, _) = evaluate_executability(&current.content, &availability);
+        let executable = current
+            .content
+            .v2()
+            .map(|content| evaluate_executability(content, &availability).0)
+            .unwrap_or(false);
         if !executable {
             return Err(Error::Conflict("execution profile is not executable"));
         }
@@ -498,7 +506,7 @@ impl Database {
 pub(super) struct CurrentContent {
     pub(super) revision: u32,
     pub(super) revision_id: String,
-    pub(super) content: ExecutionProfileContent,
+    pub(super) content: ExecutionProfileRevisionContent,
 }
 
 /// Immutable profile revision frozen into a Campaign at start. It is resolved
@@ -510,7 +518,7 @@ pub struct CampaignFrozenProfile {
     pub revision_id: String,
     pub revision: u32,
     pub content_hash: String,
-    pub content: ExecutionProfileContent,
+    pub content: ExecutionProfileRevisionContent,
 }
 
 impl Database {
@@ -523,7 +531,8 @@ impl Database {
     ) -> Result<Option<CampaignFrozenProfile>, Error> {
         let mut connection = self.pool.acquire().await?;
         let row = sqlx::query::query(
-            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash
+            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash,
+                r.schema_version
              FROM lead_start_evidence e
              JOIN execution_profile_revisions r ON r.revision_id=e.profile_revision_id
              WHERE e.campaign_id=?1",
@@ -544,7 +553,8 @@ impl Database {
     ) -> Result<Option<CampaignFrozenProfile>, Error> {
         let mut connection = self.pool.acquire().await?;
         let row = sqlx::query::query(
-            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash
+            "SELECT e.campaign_id,r.profile_id,r.revision_id,r.revision,r.content_json,r.content_hash,
+                r.schema_version
              FROM candidates cd
              JOIN attempts a ON a.id=cd.attempt_id
              JOIN runs ru ON ru.id=a.run_id
@@ -564,12 +574,13 @@ fn frozen_profile_from_row(row: SqliteRow) -> Result<CampaignFrozenProfile, Erro
         .map_err(|_| Error::Conflict("stored execution profile revision is invalid"))?;
     let content_json: String = row.try_get("content_json")?;
     let content_hash: String = row.try_get("content_hash")?;
-    let content: ExecutionProfileContent = serde_json::from_str(&content_json)
-        .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
+    let schema_version = u32::try_from(row.try_get::<i64, _>("schema_version")?)
+        .map_err(|_| Error::Conflict("stored execution profile schema version is invalid"))?;
+    let content = decode_profile_content(schema_version, &content_json)?;
     content
         .validate()
         .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
-    if content.compute_content_hash() != content_hash {
+    if content.content_hash() != content_hash {
         return Err(Error::Conflict(
             "stored execution profile hash is inconsistent",
         ));
@@ -591,7 +602,8 @@ async fn load_execution_profile(
 ) -> Result<ExecutionProfileRecord, Error> {
     let row = sqlx::query::query(
         "SELECT p.id,p.current_revision,p.content_hash AS profile_hash,
-                p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash
+                p.created_at,p.updated_at,r.revision_id,r.content_json,r.content_hash,
+                r.schema_version
          FROM execution_profiles p
          JOIN execution_profile_revisions r
            ON r.profile_id=p.id AND r.revision=p.current_revision
@@ -619,10 +631,13 @@ async fn load_execution_profile(
 fn profile_from_row(row: &SqliteRow) -> Result<ProfileRow, Error> {
     let revision = u32::try_from(row.try_get::<i64, _>("current_revision")?)
         .map_err(|_| Error::Conflict("stored execution profile revision is invalid"))?;
+    let schema_version = u32::try_from(row.try_get::<i64, _>("schema_version")?)
+        .map_err(|_| Error::Conflict("stored execution profile schema version is invalid"))?;
     Ok(ProfileRow {
         id: row.try_get("id")?,
         revision,
         revision_id: row.try_get("revision_id")?,
+        schema_version,
         content_json: row.try_get("content_json")?,
         content_hash: row.try_get("content_hash")?,
         profile_hash: row.try_get("profile_hash")?,
@@ -637,22 +652,31 @@ fn build_record(
     global_default: bool,
     project_defaults: Vec<String>,
 ) -> Result<ExecutionProfileRecord, Error> {
-    let content: ExecutionProfileContent = serde_json::from_str(&row.content_json)
-        .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
+    let content = decode_profile_content(row.schema_version, &row.content_json)?;
     content
         .validate()
         .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
-    let computed = content.compute_content_hash();
+    let computed = content.content_hash();
     if computed != row.content_hash || computed != row.profile_hash {
         return Err(Error::Conflict(
             "stored execution profile hash is inconsistent",
         ));
     }
-    let (executable, warnings) = evaluate_executability(&content, availability);
+    let (executable, warnings) = match content.v2() {
+        Some(content) => evaluate_executability(content, availability),
+        None => (
+            false,
+            vec![
+                "legacy V1 profile revision is historical evidence and is not executable under Execution Policy V2"
+                    .into(),
+            ],
+        ),
+    };
     Ok(ExecutionProfileRecord {
         id: row.id,
         revision: row.revision,
         revision_id: row.revision_id,
+        schema_version: row.schema_version,
         content_hash: row.content_hash,
         global_default,
         project_defaults,
@@ -664,12 +688,31 @@ fn build_record(
     })
 }
 
+/// Decode the exact revision content for its recorded version. A V1 revision is
+/// never decoded with V2 defaults and a V2 revision never accepts V1 fields.
+pub(super) fn decode_profile_content(
+    schema_version: u32,
+    content_json: &str,
+) -> Result<ExecutionProfileRevisionContent, Error> {
+    match schema_version {
+        1 => serde_json::from_str(content_json)
+            .map(ExecutionProfileRevisionContent::V1)
+            .map_err(|_| Error::Conflict("stored legacy execution profile content is invalid")),
+        2 => serde_json::from_str(content_json)
+            .map(ExecutionProfileRevisionContent::V2)
+            .map_err(|_| Error::Conflict("stored V2 execution profile content is invalid")),
+        _ => Err(Error::Conflict(
+            "stored execution profile schema version is unsupported",
+        )),
+    }
+}
+
 pub(super) async fn load_current_content(
     connection: &mut SqliteConnection,
     profile_id: &str,
 ) -> Result<CurrentContent, Error> {
     let row = sqlx::query::query(
-        "SELECT r.revision_id,r.revision,r.content_json
+        "SELECT r.revision_id,r.revision,r.content_json,r.schema_version
          FROM execution_profiles p
          JOIN execution_profile_revisions r
            ON r.profile_id=p.id AND r.revision=p.current_revision
@@ -682,8 +725,9 @@ pub(super) async fn load_current_content(
     let revision = u32::try_from(row.try_get::<i64, _>("revision")?)
         .map_err(|_| Error::Conflict("stored execution profile revision is invalid"))?;
     let content_json: String = row.try_get("content_json")?;
-    let content: ExecutionProfileContent = serde_json::from_str(&content_json)
-        .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
+    let schema_version = u32::try_from(row.try_get::<i64, _>("schema_version")?)
+        .map_err(|_| Error::Conflict("stored execution profile schema version is invalid"))?;
+    let content = decode_profile_content(schema_version, &content_json)?;
     content
         .validate()
         .map_err(|_| Error::Conflict("stored execution profile content is invalid"))?;
@@ -827,11 +871,13 @@ fn validate_project_id(project_id: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::db::ProviderSettingsWrite;
+    use crate::execution_policy::{OperationLimits, ProgressPolicy};
     use crate::execution_profile::{
-        AutoStartPolicy, CampaignBudgets, ExecutionProfileCategory, ExecutionProfileRoles,
-        ExecutionRoleRoute, ReasoningEffort,
+        AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileRoles, ExecutionRoleRoute,
+        ReasoningEffort,
     };
     use crate::lead::RiskClass;
+    use std::num::NonZeroU32;
     use std::path::PathBuf;
 
     fn temp_path(prefix: &str) -> PathBuf {
@@ -888,9 +934,25 @@ mod tests {
             provider: provider.into(),
             model: model.into(),
             reasoning: Some(ReasoningEffort::Medium),
-            max_input_tokens: 64_000,
-            max_output_tokens: 8_192,
-            max_cost_micros: 300_000,
+        }
+    }
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
         }
     }
 
@@ -904,15 +966,8 @@ mod tests {
                 implementer: route("opencode-go", "deepseek-v4.1-flash"),
                 semantic_reviewer: route("opencode-go", "deepseek-v4.1-flash"),
             },
-            budgets: CampaignBudgets {
-                max_attempts: 3,
-                max_sessions: 2,
-                max_turns: 4,
-                max_input_tokens: 40_000,
-                max_output_tokens: 12_000,
-                max_cost_micros: 500_000,
-                deadline_secs: 600,
-            },
+            operations: operations(),
+            progress: progress(),
             auto_start: AutoStartPolicy {
                 enabled: false,
                 risk_classes: Vec::new(),
@@ -942,6 +997,8 @@ mod tests {
         assert!(created.executable, "{:?}", created.warnings);
         assert!(created.warnings.is_empty());
         assert_eq!(created.content_hash.len(), 64);
+        assert_eq!(created.schema_version, 2);
+        assert!(created.content.v2().is_some());
         assert!(!created.global_default);
 
         let updated = db
@@ -1247,7 +1304,10 @@ mod tests {
             .create_execution_profile(&profile, "owner")
             .await
             .unwrap();
-        assert_eq!(created.content.auto_start.risk_classes, vec![RiskClass::R0]);
+        assert_eq!(
+            created.content.v2().unwrap().auto_start.risk_classes,
+            vec![RiskClass::R0]
+        );
         let _ = std::fs::remove_file(path);
     }
 }
