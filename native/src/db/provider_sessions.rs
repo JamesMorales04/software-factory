@@ -285,9 +285,9 @@ impl Database {
         let requirement =
             super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
                 .await?;
-        let ledger_turn_cost_bound = match requirement {
-            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => {
-                let quote = super::inference_ledger::latest_pricing_quote_in_tx(
+        let ledger_quote = match requirement {
+            crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { .. } => Some(
+                super::inference_ledger::latest_pricing_quote_in_tx(
                     &mut transaction,
                     &provider,
                     &model,
@@ -297,19 +297,22 @@ impl Database {
                     Error::Forbidden(
                         "inference-bound provider turn has no enforceable pricing quote".into(),
                     )
-                })?;
-                Some(
-                    quote
-                        .upper_bound_micros
-                        .get()
-                        .checked_mul(u64::from(max_requests))
-                        .ok_or(Error::Validation(
-                            "provider turn cost bound overflow".into(),
-                        ))?,
-                )
-            }
+                })?,
+            ),
             crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => None,
         };
+        let ledger_turn_cost_bound = ledger_quote
+            .as_ref()
+            .map(|quote| {
+                quote
+                    .upper_bound_micros
+                    .get()
+                    .checked_mul(u64::from(max_requests))
+                    .ok_or(Error::Validation(
+                        "provider turn cost bound overflow".into(),
+                    ))
+            })
+            .transpose()?;
         let max_input: i64 = lease.try_get("max_input_tokens")?;
         let max_output: i64 = lease.try_get("max_output_tokens")?;
         let max_cost: i64 = lease.try_get("max_cost_micros")?;
@@ -352,11 +355,29 @@ impl Database {
         let remaining_cost = max_cost
             .saturating_sub(used_cost)
             .saturating_sub(reserved.2);
-        let grant_output = i64::try_from(requested_output_tokens)
-            .map_err(|_| Error::Invalid("provider turn output"))?
-            .min(remaining_output)
-            .min(remaining_total);
-        if remaining_input <= 0
+        let (reservation_input, grant_output, reservation_total) =
+            if let Some(quote) = &ledger_quote {
+                // V2 grants only the frozen per-request token envelope; it does
+                // not subtract lifetime campaign token allowances.
+                let input = i64::try_from(quote.input_tokens)
+                    .map_err(|_| Error::Invalid("provider turn input quote"))?;
+                let output = i64::try_from(quote.output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output quote"))?;
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(output);
+                let total = input
+                    .checked_add(grant)
+                    .ok_or(Error::Invalid("provider turn total quote"))?;
+                (input, grant, total)
+            } else {
+                let grant = i64::try_from(requested_output_tokens)
+                    .map_err(|_| Error::Invalid("provider turn output"))?
+                    .min(remaining_output)
+                    .min(remaining_total);
+                (remaining_input, grant, remaining_total)
+            };
+        if reservation_input <= 0
             || grant_output <= 0
             || (ledger_turn_cost_bound.is_none() && remaining_cost <= 0)
         {
@@ -386,9 +407,9 @@ impl Database {
         .bind(generation)
         .bind(&provider)
         .bind(&model)
-        .bind(remaining_input)
+        .bind(reservation_input)
         .bind(grant_output)
-        .bind(remaining_total)
+        .bind(reservation_total)
         .bind(reservation_cost)
         .bind(request_sha256)
         .bind(expires_at_ms)
@@ -411,11 +432,11 @@ impl Database {
             generation,
             provider,
             model,
-            max_input_tokens: u64::try_from(remaining_input)
+            max_input_tokens: u64::try_from(reservation_input)
                 .map_err(|_| Error::Invalid("provider turn input"))?,
             max_output_tokens: u64::try_from(grant_output)
                 .map_err(|_| Error::Invalid("provider turn output"))?,
-            max_total_tokens: u64::try_from(remaining_total)
+            max_total_tokens: u64::try_from(reservation_total)
                 .map_err(|_| Error::Invalid("provider turn total"))?,
             max_cost_micros: u64::try_from(reservation_cost)
                 .map_err(|_| Error::Invalid("provider turn cost"))?,
@@ -451,7 +472,7 @@ impl Database {
         let row = sqlx::query::query(
             "SELECT ptr.session_record_id,ptr.attempt_id,ptr.generation,ptr.provider,ptr.model,
                     ptr.state,ptr.actual_request_sha256,ptr.expires_at_ms,ptr.max_requests,
-                    ptr.requests_bound,
+                    ptr.requests_bound,ptr.max_input_tokens,ptr.max_output_tokens,
                     ps.worker_id,ps.state AS session_state,
                     l.worker_id AS lease_worker,l.generation AS lease_generation,
                     l.expires_at_ms AS lease_expires, a.status AS attempt_status,
@@ -480,6 +501,8 @@ impl Database {
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
         let max_requests: i64 = row.try_get("max_requests")?;
         let requests_bound: i64 = row.try_get("requests_bound")?;
+        let reservation_input_tokens: i64 = row.try_get("max_input_tokens")?;
+        let reservation_output_tokens: i64 = row.try_get("max_output_tokens")?;
         let session_worker: String = row.try_get("worker_id")?;
         let session_state: String = row.try_get("session_state")?;
         let lease_worker: Option<String> = row.try_get("lease_worker")?;
@@ -579,6 +602,15 @@ impl Database {
                     "inference-bound provider request has no enforceable pricing quote".into(),
                 )
             })?;
+            if u64::try_from(reservation_input_tokens)
+                .map_or(true, |value| value > quote.input_tokens)
+                || u64::try_from(reservation_output_tokens)
+                    .map_or(true, |value| value > quote.output_tokens)
+            {
+                return Err(Error::Forbidden(
+                    "provider request exceeds its frozen token quote".into(),
+                ));
+            }
             let (authorization_revision, scope_sha256) =
                 super::inference_ledger::envelope_authorization_context_in_tx(
                     &mut transaction,
@@ -1309,10 +1341,17 @@ impl Database {
         let next_output = used_output.saturating_add(session_output);
         let next_total = used_total.saturating_add(session_total);
         let next_cost = used_cost.saturating_add(session_cost);
-        let over_budget = next_input > max_input
-            || next_output > max_output
-            || next_total > max_total
-            || next_cost > max_cost;
+        let v2_campaign: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT mode FROM inference_campaign_modes WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let over_budget = v2_campaign.as_ref().is_none_or(|(mode,)| mode != "V2")
+            && (next_input > max_input
+                || next_output > max_output
+                || next_total > max_total
+                || next_cost > max_cost);
         let cancel_requested = state == "CANCEL_REQUESTED";
         let stored_state = if over_budget {
             "FAILED"
@@ -2786,6 +2825,34 @@ mod ledger_link_tests {
                 .await
                 .unwrap();
         assert_eq!(count, 0);
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn v2_provider_turn_uses_quote_token_envelope_not_cumulative_campaign_tokens() {
+        let (_path, db, session) = active_turn_fixture(10).await;
+        // Provider settings author a larger per-request quote than the legacy
+        // campaign token allowance; V2 must grant the quote envelope only.
+        setup_turn_envelope(
+            &db,
+            "opencode",
+            "deepseek-v4.1-flash",
+            "request-token-quote",
+            200,
+        )
+        .await;
+        let quote = db
+            .inference_pricing_quote("opencode", "deepseek-v4.1-flash")
+            .await
+            .unwrap();
+        assert_eq!(quote.upper_bound_micros.get(), 200);
+        let turn = db
+            .authorize_provider_turn(&session, "worker", 1, 500, &"a".repeat(64), 1)
+            .await
+            .unwrap();
+        assert_eq!(turn.max_input_tokens, 100);
+        assert_eq!(turn.max_output_tokens, 100);
+        assert_eq!(turn.max_total_tokens, 200);
         db.close().await;
     }
 

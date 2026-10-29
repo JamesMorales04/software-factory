@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS inference_pricing_quotes (
   revision INTEGER NOT NULL CHECK (revision > 0),
   currency TEXT NOT NULL CHECK (currency = 'USD'),
   upper_bound_micros INTEGER NOT NULL CHECK (upper_bound_micros > 0),
+  provider_revision INTEGER NOT NULL CHECK (provider_revision > 0),
+  auth_mode TEXT NOT NULL CHECK (auth_mode IN ('api_key')),
+  input_tokens INTEGER NOT NULL CHECK (input_tokens > 0),
+  output_tokens INTEGER NOT NULL CHECK (output_tokens > 0),
   coverage_sha256 TEXT NOT NULL CHECK (length(coverage_sha256) = 64),
   coverage_json TEXT NOT NULL CHECK (length(coverage_json) > 0),
   snapshot_json TEXT NOT NULL CHECK (length(snapshot_json) > 0),
@@ -104,6 +108,14 @@ CREATE TABLE IF NOT EXISTS inference_campaign_modes (
   classified_at_ms INTEGER NOT NULL CHECK (classified_at_ms > 0),
   evidence_sha256 TEXT NOT NULL CHECK (length(evidence_sha256) = 64)
 );
+
+-- Campaigns that already had a binding in the released 0035 are V2 in fact.
+-- Classify them before any new billable call can resolve them.
+INSERT OR IGNORE INTO inference_campaign_modes
+  (campaign_id,mode,classified_at_ms,evidence_sha256)
+SELECT campaign_id,'V2',CAST(strftime('%s','now') AS INTEGER) * 1000,
+       '0000000000000000000000000000000000000000000000000000000000000000'
+FROM inference_campaign_bindings;
 
 CREATE TRIGGER IF NOT EXISTS inference_campaign_modes_one_way
 BEFORE UPDATE ON inference_campaign_modes

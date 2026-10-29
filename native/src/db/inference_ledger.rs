@@ -37,7 +37,7 @@ type WorkerDispatchLease = (
     String,
     String,
 );
-type ProviderPricingSettings = (String, String, i64, i64, i64, i64, i64, i64);
+type ProviderPricingSettings = (String, String, String, i64, i64, i64, i64, i64, i64);
 
 #[derive(Debug, Clone)]
 struct EnvelopeRow {
@@ -196,15 +196,16 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let settings: Option<ProviderPricingSettings> = sqlx::query_as::query_as(
-            "SELECT kind,model,max_input_tokens,max_output_tokens,
-                        input_micros_per_million,output_micros_per_million,enabled,revision
-                 FROM provider_settings WHERE provider=?1",
+            "SELECT kind,auth_mode,model,max_input_tokens,max_output_tokens,
+                    input_micros_per_million,output_micros_per_million,enabled,revision
+             FROM provider_settings WHERE provider=?1",
         )
         .bind(&input.provider)
         .fetch_optional(&mut *transaction)
         .await?;
         let Some((
             kind,
+            auth_mode,
             model,
             max_input_tokens,
             max_output_tokens,
@@ -223,7 +224,8 @@ impl Database {
                 "provider settings are not enabled for the requested model".into(),
             ));
         }
-        let Some(coverage) = crate::inference_ledger::adapter_billing_coverage(&kind) else {
+        let Some(coverage) = crate::inference_ledger::adapter_billing_coverage(&kind, &auth_mode)
+        else {
             return Err(Error::Unavailable(
                 "provider adapter has no enforceable billing coverage".into(),
             ));
@@ -283,6 +285,7 @@ impl Database {
             "inputMicrosPerMillion": input_rate,
             "outputMicrosPerMillion": output_rate,
             "billedRateMicrosPerMillion": billed_rate,
+            "authMode": auth_mode,
             "inputTokens": max_input_tokens,
             "outputTokens": max_output_tokens,
             "upperBoundMicros": upper_bound_micros.get(),
@@ -316,6 +319,12 @@ impl Database {
             provider: input.provider.clone(),
             model: input.model.clone(),
             revision: input.revision,
+            provider_revision,
+            auth_mode,
+            input_tokens: u64::try_from(max_input_tokens)
+                .map_err(|_| Error::Unavailable("provider input token envelope".into()))?,
+            output_tokens: u64::try_from(max_output_tokens)
+                .map_err(|_| Error::Unavailable("provider output token envelope".into()))?,
             upper_bound_micros,
             coverage_sha256,
             snapshot_json,
@@ -323,15 +332,20 @@ impl Database {
         };
         sqlx::query::query(
             "INSERT INTO inference_pricing_quotes
-             (quote_id,provider,model,revision,currency,upper_bound_micros,coverage_sha256,
-              coverage_json,snapshot_json,evidence_sha256,created_at_ms)
-             VALUES (?1,?2,?3,?4,'USD',?5,?6,?7,?8,?9,?10)",
+             (quote_id,provider,model,revision,currency,upper_bound_micros,provider_revision,
+              auth_mode,input_tokens,output_tokens,coverage_sha256,coverage_json,snapshot_json,
+              evidence_sha256,created_at_ms)
+             VALUES (?1,?2,?3,?4,'USD',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         )
         .bind(&quote.quote_id)
         .bind(&quote.provider)
         .bind(&quote.model)
         .bind(quote.revision)
         .bind(micros_to_i64(quote.upper_bound_micros)?)
+        .bind(quote.provider_revision)
+        .bind(&quote.auth_mode)
+        .bind(i64::try_from(quote.input_tokens).map_err(|_| Error::Unavailable("token".into()))?)
+        .bind(i64::try_from(quote.output_tokens).map_err(|_| Error::Unavailable("token".into()))?)
         .bind(&quote.coverage_sha256)
         .bind(&coverage_json)
         .bind(&quote.snapshot_json)
@@ -864,6 +878,26 @@ pub(crate) async fn reserve_inference_in_tx(
     .ok_or(Error::Validation(
         "inference reservation requires a frozen pricing quote".into(),
     ))?;
+    let settings: Option<(String, String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT model,auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
+    )
+    .bind(&input.provider)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((settings_model, auth_mode, enabled, settings_revision)) = settings else {
+        return Err(Error::Unavailable(
+            "pricing quote has no current provider settings".into(),
+        ));
+    };
+    if enabled != 1
+        || auth_mode != "api_key"
+        || settings_model != pricing_quote.model
+        || settings_revision != pricing_quote.provider_revision
+    {
+        return Err(Error::Unavailable(
+            "pricing quote is stale for the current provider settings".into(),
+        ));
+    }
     let snapshot: serde_json::Value = serde_json::from_str(&pricing_quote.snapshot_json)
         .map_err(|_| Error::Unavailable("frozen pricing snapshot is invalid".into()))?;
     if snapshot
@@ -874,6 +908,20 @@ pub(crate) async fn reserve_inference_in_tx(
             != Some(pricing_quote.provider.as_str())
         || snapshot.get("model").and_then(serde_json::Value::as_str)
             != Some(pricing_quote.model.as_str())
+        || snapshot
+            .get("providerRevision")
+            .and_then(serde_json::Value::as_i64)
+            != Some(pricing_quote.provider_revision)
+        || snapshot.get("authMode").and_then(serde_json::Value::as_str)
+            != Some(pricing_quote.auth_mode.as_str())
+        || snapshot
+            .get("inputTokens")
+            .and_then(serde_json::Value::as_u64)
+            != Some(pricing_quote.input_tokens)
+        || snapshot
+            .get("outputTokens")
+            .and_then(serde_json::Value::as_u64)
+            != Some(pricing_quote.output_tokens)
     {
         return Err(Error::Conflict(
             "frozen pricing snapshot does not encode its stored bound/route",
@@ -1126,6 +1174,39 @@ async fn dispatch_inference_in_tx(
         EnvelopeState::Revoked | EnvelopeState::Closed => {
             return Err(Error::Forbidden("inference envelope is not active".into()));
         }
+    }
+    // Obsolete pricing may not authorize a new dispatch. Historical quote rows
+    // remain for settlement/audit, but only the quote matching the current
+    // enabled provider settings revision and auth mode is eligible.
+    let quote = load_pricing_quote(
+        connection,
+        &reservation.pricing_revision,
+        &reservation.provider,
+        &reservation.model,
+    )
+    .await?
+    .ok_or(Error::Unavailable(
+        "dispatched reservation has no frozen pricing quote".into(),
+    ))?;
+    let settings: Option<(String, i64, i64)> = sqlx::query_as::query_as(
+        "SELECT auth_mode,enabled,revision FROM provider_settings WHERE provider=?1",
+    )
+    .bind(&reservation.provider)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((auth_mode, enabled, settings_revision)) = settings else {
+        return Err(Error::Unavailable(
+            "dispatched reservation has no current provider settings".into(),
+        ));
+    };
+    if enabled != 1
+        || auth_mode != "api_key"
+        || settings_revision != quote.provider_revision
+        || quote.auth_mode != auth_mode
+    {
+        return Err(Error::Unavailable(
+            "pricing quote is stale for dispatch".into(),
+        ));
     }
     // Frozen authorization context must still resolve to the exact durable
     // revision/scope recorded on the reservation. Append-only reauthorization
@@ -2274,8 +2355,8 @@ async fn load_pricing_quote_by_revision(
     revision: i64,
 ) -> Result<Option<InferencePricingQuote>, Error> {
     let row = sqlx::query::query(
-        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
-                snapshot_json,evidence_sha256
+        "SELECT quote_id,provider,model,revision,provider_revision,auth_mode,input_tokens,
+                output_tokens,upper_bound_micros,coverage_sha256,snapshot_json,evidence_sha256
          FROM inference_pricing_quotes
          WHERE provider=?1 AND model=?2 AND revision=?3",
     )
@@ -2294,8 +2375,8 @@ async fn load_pricing_quote(
     model: &str,
 ) -> Result<Option<InferencePricingQuote>, Error> {
     let row = sqlx::query::query(
-        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
-                snapshot_json,evidence_sha256
+        "SELECT quote_id,provider,model,revision,provider_revision,auth_mode,input_tokens,
+                output_tokens,upper_bound_micros,coverage_sha256,snapshot_json,evidence_sha256
          FROM inference_pricing_quotes
          WHERE quote_id=?1 AND provider=?2 AND model=?3",
     )
@@ -2323,11 +2404,14 @@ async fn load_latest_pricing_quote(
     model: &str,
 ) -> Result<Option<InferencePricingQuote>, Error> {
     let row = sqlx::query::query(
-        "SELECT quote_id,provider,model,revision,upper_bound_micros,coverage_sha256,
-                snapshot_json,evidence_sha256
-         FROM inference_pricing_quotes
-         WHERE provider=?1 AND model=?2
-         ORDER BY revision DESC LIMIT 1",
+        "SELECT q.quote_id,q.provider,q.model,q.revision,q.provider_revision,q.auth_mode,
+                q.input_tokens,q.output_tokens,q.upper_bound_micros,q.coverage_sha256,
+                q.snapshot_json,q.evidence_sha256
+         FROM inference_pricing_quotes q
+         JOIN provider_settings ps ON ps.provider=q.provider AND ps.model=q.model
+         WHERE q.provider=?1 AND q.model=?2 AND ps.enabled=1 AND ps.auth_mode='api_key'
+           AND q.provider_revision=ps.revision
+         ORDER BY q.revision DESC LIMIT 1",
     )
     .bind(provider)
     .bind(model)
@@ -2342,6 +2426,12 @@ fn pricing_quote_from_row(row: &sqlx_sqlite::SqliteRow) -> Result<InferencePrici
         provider: row.try_get("provider")?,
         model: row.try_get("model")?,
         revision: row.try_get("revision")?,
+        provider_revision: row.try_get("provider_revision")?,
+        auth_mode: row.try_get("auth_mode")?,
+        input_tokens: u64::try_from(row.try_get::<i64, _>("input_tokens")?)
+            .map_err(|_| Error::Validation("stored input token envelope".into()))?,
+        output_tokens: u64::try_from(row.try_get::<i64, _>("output_tokens")?)
+            .map_err(|_| Error::Validation("stored output token envelope".into()))?,
         upper_bound_micros: micros_from_i64(row.try_get("upper_bound_micros")?)?,
         coverage_sha256: row.try_get("coverage_sha256")?,
         snapshot_json: row.try_get("snapshot_json")?,
@@ -2704,7 +2794,7 @@ mod tests {
         .bind(i64::try_from(bound / 2).unwrap())
         .bind(i64::try_from(bound / 2).unwrap())
         .bind(i64::try_from(bound).unwrap())
-        .bind(revision)
+        .bind(1_i64)
         .bind(&now)
         .execute(&db.pool)
         .await
@@ -3700,14 +3790,15 @@ mod tests {
         let quote_id = "forged-quote";
         sqlx::query::query(
             "INSERT INTO inference_pricing_quotes
-             (quote_id,provider,model,revision,currency,upper_bound_micros,coverage_sha256,
-              coverage_json,snapshot_json,evidence_sha256,created_at_ms)
-             VALUES (?1,'opencode-go','deepseek-v4.1-flash',1,'USD',1,?2,?3,?4,?5,1)",
+             (quote_id,provider,model,revision,currency,upper_bound_micros,provider_revision,
+              auth_mode,input_tokens,output_tokens,coverage_sha256,coverage_json,snapshot_json,
+              evidence_sha256,created_at_ms)
+             VALUES (?1,'opencode-go','deepseek-v4.1-flash',1,'USD',1,1,'api_key',1,1,?2,?3,?4,?5,1)",
         )
         .bind(quote_id)
         .bind("a".repeat(64))
         .bind(r#"{"input":true,"output":true,"cachedInput":true,"reasoning":true,"tools":true,"retries":true,"requestOverhead":true}"#)
-        .bind(r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","upperBoundMicros":2}"#)
+        .bind(r#"{"provider":"opencode-go","model":"deepseek-v4.1-flash","providerRevision":1,"authMode":"api_key","inputTokens":1,"outputTokens":1,"upperBoundMicros":2}"#)
         .bind("b".repeat(64))
         .execute(&db.pool)
         .await
@@ -3730,6 +3821,64 @@ mod tests {
         assert!(matches!(
             db.reserve_inference(&input).await,
             Err(Error::Conflict(_))
+        ));
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn stale_provider_settings_revision_invalidates_old_quotes() {
+        let path = temp_path("factory-ledger-quote-stale");
+        let db = Database::open(&path).await.unwrap();
+        seed_project(&db, "project").await;
+        let (envelope_id, _) = create_envelope(&db, "request-stale-quote", 10_000).await;
+        let quote = test_quote(&db, 1_000).await;
+        let reservation = db
+            .reserve_inference(&reserve_input(
+                &quote,
+                &envelope_id,
+                "operation-old",
+                "idempotency-old",
+                &"a".repeat(64),
+                1_000,
+                InferenceRole::Lead,
+                future_ms(60_000),
+            ))
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "UPDATE provider_settings SET revision=revision+1,updated_at=?1
+             WHERE provider='opencode-go'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let input = reserve_input(
+            &quote,
+            &envelope_id,
+            "operation",
+            "idempotency",
+            &"a".repeat(64),
+            1_000,
+            InferenceRole::Lead,
+            future_ms(60_000),
+        );
+        assert!(matches!(
+            db.reserve_inference(&input).await,
+            Err(Error::Unavailable(_))
+        ));
+        assert!(matches!(
+            db.mark_inference_dispatched(&MarkInferenceDispatchedInput {
+                reservation_id: reservation.reservation_id,
+                worker_id: None,
+                generation: None,
+                provider_request_id: Some("request".into()),
+                attempt_id: None,
+                actor: "core:test".into(),
+            })
+            .await,
+            Err(Error::Unavailable(_))
         ));
         db.close().await;
         let _ = std::fs::remove_file(path);
@@ -3984,6 +4133,32 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query::query(
+            "INSERT INTO actions
+             (id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action-upgrade','project','objective','opencode-go',
+                     'deepseek-v4.1-flash','R0','AUTHORIZED','hash',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign-upgrade','action-upgrade','AUTHORIZED',?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO inference_campaign_bindings(campaign_id,envelope_id,bound_at_ms)
+             VALUES ('campaign-upgrade','envelope',?1)",
+        )
+        .bind(now_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
         pool.close().await;
         #[cfg(unix)]
         {
@@ -4014,6 +4189,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(reservation_state, "RESERVED");
+        assert!(matches!(
+            db.require_campaign_inference_envelope("campaign-upgrade")
+                .await
+                .unwrap(),
+            CampaignInferenceRequirement::EnvelopeBound { .. }
+        ));
+        let (mode,): (String,) = sqlx::query_as::query_as(
+            "SELECT mode FROM inference_campaign_modes WHERE campaign_id='campaign-upgrade'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(mode, "V2");
         for table in [
             "inference_ledger_policy",
             "inference_campaign_modes",
