@@ -88,6 +88,8 @@ export interface OfficeSlot {
   anchorY: number;
   /** 1-based depth order; higher values render in front. */
   depth: number;
+  /** Figure scale from the back to front row of its workstation cluster. */
+  perspectiveScale: number;
 }
 
 export interface OfficeZone {
@@ -170,11 +172,12 @@ function clusterOffset(index: number, pitch: number): number {
 
 function groupMetrics(memberCount: number): ZoneMetrics {
   const count = Math.max(1, memberCount);
-  // Small crews sit at one long bench; larger crews use a wide bullpen with
-  // at most eight columns. This keeps the composition horizontal (a studio
-  // reads across, not down) and bounded at 30 seats in four rows.
+  // One or two participants share a compact bench. Larger crews use a
+  // staggered two-row pod, then grow as a wide bullpen with at most eight
+  // columns. Row depth gives the SVG scene a back/front cue without changing
+  // deterministic identity placement.
   const rows =
-    count <= 5 ? 1 : count <= 12 ? 2 : Math.max(1, Math.ceil(count / 8));
+    count <= 2 ? 1 : count <= 12 ? 2 : Math.max(1, Math.ceil(count / 8));
   const columns = Math.min(8, count, Math.max(1, Math.ceil(count / rows)));
   const contentWidth =
     clusterOffset(columns - 1, OFFICE_SLOT_COLUMN) +
@@ -254,6 +257,8 @@ function buildZone(
       anchorX,
       anchorY,
       depth: 0,
+      perspectiveScale:
+        metrics.rows > 1 ? 0.9 + (0.1 * row) / (metrics.rows - 1) : 1,
     };
   });
   return {

@@ -209,6 +209,15 @@ describe("buildOfficeSceneLayout", () => {
     const layout = buildOfficeSceneLayout(implementers(5));
     const zone = layout.zones.find((item) => item.role === "IMPLEMENTER");
     expect(zone?.slots).toHaveLength(5);
+    expect(zone?.rows).toBe(2);
+    expect(zone?.columns).toBe(3);
+    expect(zone?.slots.map((slot) => slot.row)).toEqual([0, 0, 0, 1, 1]);
+    expect(
+      zone?.slots.slice(0, 3).every((slot) => slot.perspectiveScale === 0.9),
+    ).toBe(true);
+    expect(
+      zone?.slots.slice(3).every((slot) => slot.perspectiveScale === 1),
+    ).toBe(true);
     const looks = new Set(
       (zone?.slots ?? []).map(
         (slot) => officeAvatarLook(slot.lookIndex).signature,

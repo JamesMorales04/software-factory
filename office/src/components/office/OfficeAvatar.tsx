@@ -121,6 +121,7 @@ export function OfficeAvatar({
           top: slot.y - offsetY,
           width: OFFICE_AVATAR_WIDTH,
           height: OFFICE_AVATAR_HEIGHT,
+          "--office-perspective-scale": slot.perspectiveScale.toFixed(2),
           "--office-depth": 10 + slot.depth,
         } as CSSProperties
       }
