@@ -174,6 +174,54 @@ recorded as follow-ups, not silently dropped.
   authorization).
 - No `main` merge; access PRs #36–#38 remain unmerged.
 
+## 9. Checkpoint 2 — synchronization (2026-10-28)
+
+### Lane status
+
+| Lane | Candidate | PR | Review | Blockers |
+|---|---|---|---|---|
+| P #59 | `278688f` | #74 draft | **Luna: APPROVE WITH CONDITIONS**; condition (writable Rust tests) resolved by Director rerun; parity Low fixed | Live inference NOT_RUN_PENDING_OWNER_AUTHORIZATION; no Compose/browser acceptance |
+| I #70 | `cd0c1ef` (repairs `c06432d`) | #76 draft | Luna: **BLOCK** on `489bc48`; repair addresses overlap, duplicate determinism, candidate-bound evidence; re-review pending | Real Core/Compose/Chromium acceptance; Owner visual approval |
+| C #72 | `de31135` | not opened | Sol + Luna reviews running | `bin/core.rs` 36 Director-integration errors; one nondeterministic cross-lane test in Lane L-owned `db/model_calls.rs`; #72 OPEN |
+| L #73 | `e9a3acd` + repair in progress | #75 draft | **Sol: BLOCK; Luna: BLOCK** | Ledger optional in production; gateway releases after send; binding ownership; mutable dispatch fields; per-egress holds; estimate-as-bound; settlement helpers; ordered 0034→0035 migration |
+
+### Verified review evidence
+
+- Sol produced the V2/ledger contract (`5da9e5a`) and reviewed the shared
+  interface: **BLOCK** with two HIGH findings, fixed in `b16ee5e` (checked money
+  deserialization, authorization revision/scope/fencing context, full receipt
+  provenance, role/provider breakdowns). Sol's remaining MEDIUM items (validated
+  identity newtypes, `JsonSchema`) are explicit follow-ups.
+- Luna reviewed provider candidate `0ae58f4`: no blocking code defect; condition
+  on test execution satisfied; parity Low fixed in `278688f`.
+- Sol and Luna independently reviewed ledger `e9a3acd` and both blocked it. The
+  repair is on the same lane; no acceptance claim.
+- Luna reviewed isometric `489bc48` and blocked on overlapping avatar bounds;
+  `c06432d` fixes the geometry and duplicate determinism, with 235 Office tests
+  and refreshed 0-overlap evidence.
+
+### Contested files / duplicate writers
+
+- The provider worktree briefly had two writer sessions. The accepted candidate
+  is `0ae58f4` (sibling catalog URL). The models.dev variant `ef79f7f` is
+  preserved only as local branch `factory/provider-opencode-go-modelsdev/20261028`
+  and is not the PR.
+- The isometric worktree also had a duplicate amendment writer. The reconciled
+  branch is coherent (`cd0c1ef`); earlier variants remain under
+  `/tmp/opencode/lane-i-collision-20261028`.
+- Shared `bin/core.rs` is Director-only. Lane C's `WorkerAssignment` DTO edit in
+  `db/mod.rs` is a declared deviation that the Director must review.
+- Migrations remain disjoint: C `0034`, L `0035`; ordered chain test is a
+  Director gate.
+
+### Owner visual reference status
+
+The owner's generated pack is now repository-accessible at
+`docs/product/reference/factory-office-visual-reference-pack-20261028/` with
+`README-visual-contract.md`. The images are direction, not runtime assets. The
+isometric renderer composes original SVG/DOM geometry; no Game Dev Tycoon assets
+are used. Owner visual approval remains outstanding.
+
 ## 8. Change log
 
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
