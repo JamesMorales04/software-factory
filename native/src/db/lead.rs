@@ -10,17 +10,31 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
 
+use crate::execution_policy::{ProgressCheckpoint, ProgressEvidence};
 use crate::lead::{
     ActionBinding, AssessmentInput, LeadAssessment, LeadPlanProposal, LeadRequestState,
-    ProjectConfig, StandingDelegation, plan_hash,
+    ProjectConfig, StandingDelegationV2, plan_hash_v2,
+};
+use crate::progress::{
+    CheckpointOutcome, GateRecord, ProgressCheckpointRequest, ProgressCheckpointResponse,
+    ProgressHoldRecord, ProgressSupervisor, ProgressSupervisorState,
 };
 
-use super::delegations::{load_delegation, release_usage_in_tx, reserve_usage_in_tx};
+use super::delegations::{load_delegation_v2, record_usage_v2_in_tx, release_usage_in_tx};
 use super::intake::{
     LeadExecutionContextRecord, load_execution_context, load_frozen_profile_content,
 };
 use super::lifecycle::load_campaign;
 use super::project_configs::load_project_config;
+
+type ProgressHoldRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeadRequestRecord {
@@ -363,7 +377,7 @@ pub(super) async fn create_draft_lead_request_in_tx(
             "project configuration is inactive or the supplied config hash is stale".into(),
         ));
     }
-    let grant = load_delegation(connection, input.delegation_id).await?;
+    let grant = load_delegation_v2(connection, input.delegation_id).await?;
     grant.validate(Utc::now())?;
     if grant.project_id != input.project_id {
         return Err(Error::Forbidden(
@@ -397,7 +411,7 @@ pub(super) async fn create_draft_lead_request_in_tx(
     .bind(&created_at)
     .execute(&mut *connection)
     .await?;
-    reserve_usage_in_tx(connection, &grant, 1, 1, 0).await?;
+    record_usage_v2_in_tx(connection, &grant, 1, 1, 0).await?;
     let request_hash = sha256_hex(
         serde_json::to_string(&(
             input.project_id,
@@ -525,7 +539,7 @@ impl Database {
                 "project configuration is inactive or the supplied config hash is stale".into(),
             ));
         }
-        let grant = load_delegation(&mut transaction, delegation_id).await?;
+        let grant = load_delegation_v2(&mut transaction, delegation_id).await?;
         if grant.project_id != project_id {
             return Err(Error::Forbidden(
                 "delegation belongs to another project".into(),
@@ -547,7 +561,7 @@ impl Database {
                 "action already has a lead request; use its original request",
             ));
         }
-        reserve_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
+        record_usage_v2_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
         let now = Utc::now().to_rfc3339();
         let request = LeadRequestRecord {
             id: Uuid::new_v4().to_string(),
@@ -718,8 +732,7 @@ impl Database {
                 .fetch_optional(&mut *transaction)
                 .await?;
         if assessment.is_none() && current.state == LeadRequestState::Submitted {
-            let grant = load_delegation(&mut transaction, &current.delegation_id).await?;
-            release_usage_in_tx(&mut transaction, &grant, 1, 1, 0).await?;
+            release_usage_in_tx(&mut transaction, &current.delegation_id, 1, 1, 0).await?;
         }
         sqlx::query::query(
             "UPDATE lead_requests SET state='BLOCKED',failure_reason=?1,updated_at=?2 WHERE id=?3",
@@ -872,7 +885,7 @@ impl Database {
         if request.state != LeadRequestState::Planned {
             return Err(Error::Conflict("lead request is not ready for a proposal"));
         }
-        let grant = load_delegation(&mut transaction, &request.delegation_id).await?;
+        let grant = load_delegation_v2(&mut transaction, &request.delegation_id).await?;
         if proposal.project_id != request.project_id
             || proposal.action_id != request.action_id
             || proposal.project_config_hash != request.project_config_hash
@@ -888,7 +901,7 @@ impl Database {
             ));
         }
         let action = load_action_binding(&mut transaction, &request.action_id).await?;
-        proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+        proposal.validate_v2(&grant, &config.binding(), &action, Utc::now())?;
         let assessment: Option<(String,)> =
             sqlx::query_as::query_as("SELECT id FROM lead_assessments WHERE request_id=?1")
                 .bind(request_id)
@@ -1426,7 +1439,7 @@ impl Database {
 struct StartIdentity {
     plan: FrozenLeadPlanRecord,
     proposal: LeadPlanProposal,
-    grant: StandingDelegation,
+    grant: StandingDelegationV2,
     action_spec: ActionSpec,
     spec_sha256: String,
     request_hash: String,
@@ -1457,7 +1470,7 @@ async fn load_start_identity(
             .await?;
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal.0)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-    let grant = load_delegation(connection, &request.delegation_id).await?;
+    let grant = load_delegation_v2(connection, &request.delegation_id).await?;
     if plan.config_hash != request.project_config_hash || plan.delegation_hash != grant.content_hash
     {
         return Err(Error::Invalid(
@@ -1494,7 +1507,7 @@ async fn load_start_identity(
     if request_hash != request.request_hash {
         return Err(Error::Invalid("Lead request hash mismatch"));
     }
-    let recomputed_plan_hash = plan_hash(&proposal, &grant, &request.project_config_hash);
+    let recomputed_plan_hash = plan_hash_v2(&proposal, &grant, &request.project_config_hash);
     if recomputed_plan_hash != plan.plan_hash {
         return Err(Error::Invalid("frozen Lead plan hash mismatch"));
     }
@@ -1524,6 +1537,29 @@ async fn load_start_identity(
         profile,
         profile_content,
     })
+}
+
+/// Technical defaults for the deterministic FIXTURE path only. They are not
+/// productivity budgets: no turns, attempts, sessions, repair cycles, Campaign
+/// deadline, cumulative role tokens or per-role money. A profile-backed V2
+/// start always freezes the profile's own values instead.
+fn fixture_progress_policy() -> crate::execution_policy::ProgressPolicy {
+    crate::execution_policy::ProgressPolicy {
+        diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).expect("non-zero"),
+        escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).expect("non-zero"),
+        observation_timeout_secs: std::num::NonZeroU32::new(300).expect("non-zero"),
+    }
+}
+
+fn fixture_operation_limits() -> crate::execution_policy::OperationLimits {
+    crate::execution_policy::OperationLimits {
+        model_request_timeout_secs: std::num::NonZeroU32::new(300).expect("non-zero"),
+        tool_call_timeout_secs: std::num::NonZeroU32::new(600).expect("non-zero"),
+        max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).expect("non-zero"),
+        max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).expect("non-zero"),
+        max_generation_tokens: std::num::NonZeroU32::new(8_192).expect("non-zero"),
+        max_in_flight_operations: std::num::NonZeroU32::new(4).expect("non-zero"),
+    }
 }
 
 fn start_submission_digest(
@@ -1568,11 +1604,22 @@ fn expected_binding_matches(expected: &ExpectedStartBinding, identity: &StartIde
         }
 }
 
+fn operation_limits_within(
+    requested: &crate::execution_policy::OperationLimits,
+    granted: &crate::execution_policy::OperationLimits,
+) -> bool {
+    requested.model_request_timeout_secs <= granted.model_request_timeout_secs
+        && requested.tool_call_timeout_secs <= granted.tool_call_timeout_secs
+        && requested.max_request_bytes <= granted.max_request_bytes
+        && requested.max_response_bytes <= granted.max_response_bytes
+        && requested.max_generation_tokens <= granted.max_generation_tokens
+        && requested.max_in_flight_operations <= granted.max_in_flight_operations
+}
+
 fn validate_profile_authorization(
     input: &NewCampaignAuthorization,
     profile: &crate::execution_profile::ExecutionProfileContent,
-    proposal: &LeadPlanProposal,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     action_spec: &ActionSpec,
     mechanism: &str,
 ) -> Result<(), Error> {
@@ -1599,12 +1646,9 @@ fn validate_profile_authorization(
     if grant.risk_classes != vec![crate::lead::RiskClass::R0]
         || grant.autonomous_start
         || !grant.autonomous_risk_classes.is_empty()
-        || grant.max_attempts > profile.budgets.max_attempts
-        || grant.max_sessions > profile.budgets.max_sessions
-        || u64::from(grant.max_timeout_secs) > profile.budgets.deadline_secs
-        || u64::from(grant.max_wall_clock_secs) > profile.budgets.deadline_secs
+        || grant.max_timeout_secs > profile.operations.tool_call_timeout_secs.get()
         || grant.max_parallel != 1
-        || grant.max_repair_cycles != 0
+        || grant.progress != profile.progress
     {
         return Err(Error::Forbidden(
             "execution policy delegation exceeds the frozen profile authority".into(),
@@ -1618,65 +1662,13 @@ fn validate_profile_authorization(
             "authorization route differs from the frozen profile implementer route".into(),
         ));
     }
-    if input.max_attempts == 0
-        || input.max_attempts > profile.budgets.max_attempts
-        || input.max_attempts > proposal.budget.max_attempts
-        || input.max_attempts > grant.max_attempts
-        || input.max_attempts > 5
+    if !operation_limits_within(&input.operations, &profile.operations)
+        || !operation_limits_within(&input.operations, &grant.operations)
+        || input.progress != profile.progress
     {
         return Err(Error::Forbidden(
-            "authorization attempt budget exceeds the frozen profile, plan or delegation".into(),
-        ));
-    }
-    if input.max_sessions == 0
-        || input.max_sessions > profile.budgets.max_sessions
-        || input.max_sessions > proposal.max_sessions.saturating_sub(1)
-        || input.max_sessions > grant.max_sessions
-        || input.max_sessions > 2
-    {
-        return Err(Error::Forbidden(
-            "authorization session budget exceeds the frozen profile, plan or delegation".into(),
-        ));
-    }
-    if input.max_turns == 0 || input.max_turns > profile.budgets.max_turns || input.max_turns > 4 {
-        return Err(Error::Forbidden(
-            "authorization turn budget exceeds the frozen profile".into(),
-        ));
-    }
-    if input.max_input_tokens == 0
-        || input.max_input_tokens > profile.budgets.max_input_tokens
-        || input.max_input_tokens > profile.roles.implementer.max_input_tokens
-    {
-        return Err(Error::Forbidden(
-            "authorization input-token budget exceeds the frozen profile or implementer route"
+            "authorization operation limits or progress policy exceed the frozen profile or delegation"
                 .into(),
-        ));
-    }
-    if input.max_output_tokens == 0
-        || input.max_output_tokens > profile.budgets.max_output_tokens
-        || input.max_output_tokens > profile.roles.implementer.max_output_tokens
-    {
-        return Err(Error::Forbidden(
-            "authorization output-token budget exceeds the frozen profile or implementer route"
-                .into(),
-        ));
-    }
-    if input.max_cost_micros == 0
-        || input.max_cost_micros > profile.budgets.max_cost_micros
-        || input.max_cost_micros > profile.roles.implementer.max_cost_micros
-    {
-        return Err(Error::Forbidden(
-            "authorization cost budget exceeds the frozen profile or implementer route".into(),
-        ));
-    }
-    if input.deadline_secs < 30
-        || input.deadline_secs > profile.budgets.deadline_secs
-        || input.deadline_secs > u64::from(proposal.max_wall_clock_secs)
-        || input.deadline_secs > u64::from(grant.max_wall_clock_secs)
-        || input.deadline_secs > 600
-    {
-        return Err(Error::Forbidden(
-            "authorization deadline exceeds the frozen profile, plan or delegation".into(),
         ));
     }
     if input.authorized_paths.is_empty()
@@ -1894,7 +1886,7 @@ async fn start_lead_campaign_in_tx(
             }
         }
     }
-    proposal.validate(grant, &config.binding(), &action, Utc::now())?;
+    proposal.validate_v2(grant, &config.binding(), &action, Utc::now())?;
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
@@ -2005,14 +1997,9 @@ async fn start_lead_campaign_in_tx(
                     "authorization route differs from the frozen proposal route".into(),
                 ));
             }
-            if input.max_attempts > proposal.budget.max_attempts {
+            if input.monetary_envelope_id == super::authorization::NO_BILLABLE_ENVELOPE {
                 return Err(Error::Forbidden(
-                    "authorization attempt budget exceeds the frozen plan".into(),
-                ));
-            }
-            if input.max_sessions > proposal.max_sessions.saturating_sub(1) {
-                return Err(Error::Forbidden(
-                    "authorization session budget exceeds the frozen plan".into(),
+                    "provider authorization requires a real monetary envelope reference".into(),
                 ));
             }
             if input.authorized_paths.iter().any(|path| {
@@ -2043,12 +2030,22 @@ async fn start_lead_campaign_in_tx(
                         identity.plan.plan_hash, grant.id
                     ),
                     authorized_paths: identity.action_spec.allowed_paths.clone(),
-                    max_attempts: proposal.budget.max_attempts,
                     provider: proposal.route.provider.clone(),
                     model: proposal.route.model.clone(),
                     provider_mode: proposal.route.mode.clone(),
                     delegation_id: grant.id.clone(),
-                    ..Default::default()
+                    allowed_tools: Vec::new(),
+                    monetary_envelope_id: super::authorization::NO_BILLABLE_ENVELOPE.to_owned(),
+                    progress: identity
+                        .profile_content
+                        .as_ref()
+                        .map(|profile| profile.progress)
+                        .unwrap_or_else(fixture_progress_policy),
+                    operations: identity
+                        .profile_content
+                        .as_ref()
+                        .map(|profile| profile.operations)
+                        .unwrap_or_else(fixture_operation_limits),
                 }
             }
         }
@@ -2058,7 +2055,6 @@ async fn start_lead_campaign_in_tx(
         validate_profile_authorization(
             &authorization_input,
             profile,
-            proposal,
             grant,
             &identity.action_spec,
             &mechanism,
@@ -2688,8 +2684,8 @@ async fn freeze_lead_plan_in_tx(
             .ok_or(Error::Conflict("lead plan requires a recorded proposal"))?;
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
-    let grant = load_delegation(connection, &request.delegation_id).await?;
-    let hash = plan_hash(&proposal, &grant, &request.project_config_hash);
+    let grant = load_delegation_v2(connection, &request.delegation_id).await?;
+    let hash = plan_hash_v2(&proposal, &grant, &request.project_config_hash);
 
     // Recovery replay is resolved against the original frozen identity before
     // current state, expiry, config availability or withdrawal checks.
@@ -2722,17 +2718,13 @@ async fn freeze_lead_plan_in_tx(
         ));
     }
     let action = load_action_binding(connection, &request.action_id).await?;
-    proposal.validate(&grant, &config.binding(), &action, Utc::now())?;
+    proposal.validate_v2(&grant, &config.binding(), &action, Utc::now())?;
     if proposal.objective != request.objective {
         return Err(Error::Forbidden(
             "proposal objective differs from the original Lead request".into(),
         ));
     }
     ensure_action_spec_for_frozen_plan(connection, &request, &proposal, &config, &grant).await?;
-    let extra_sessions = proposal.max_sessions.saturating_sub(1);
-    if extra_sessions > 0 {
-        reserve_usage_in_tx(connection, &grant, 0, extra_sessions, 0).await?;
-    }
     let record = FrozenLeadPlanRecord {
         id: Uuid::new_v4().to_string(),
         request_id: request.id.clone(),
@@ -2779,7 +2771,7 @@ async fn ensure_action_spec_for_frozen_plan(
     request: &LeadRequestRecord,
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
 ) -> Result<(), Error> {
     let existing: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT spec_json,spec_sha256 FROM action_specs WHERE action_id=?1",
@@ -2846,7 +2838,7 @@ fn derive_root_action_spec(
     request: &LeadRequestRecord,
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
 ) -> Result<ActionSpec, Error> {
     let mut allowed_paths = std::collections::BTreeSet::new();
     for unit in &proposal.work_units {
@@ -3103,7 +3095,7 @@ pub(super) async fn load_frozen_plan_by_id(
 fn unit_action_spec(
     proposal: &LeadPlanProposal,
     config: &ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     unit: &crate::lead::LeadWorkUnit,
     base_commit: &str,
 ) -> Result<ActionSpec, Error> {
@@ -3571,7 +3563,7 @@ async fn ensure_integration(
     let proposal: LeadPlanProposal = serde_json::from_str(&proposal_json)
         .map_err(|_| Error::Invalid("stored proposal encoding"))?;
     let config = load_project_config(transaction, &project_id).await?;
-    let grant = load_delegation(transaction, &delegation_id).await?;
+    let grant = load_delegation_v2(transaction, &delegation_id).await?;
     let mut allowed_paths = std::collections::BTreeSet::new();
     let checks = if purpose == "FANIN" {
         let task = sqlx::query::query("SELECT spec_json FROM lead_tasks WHERE task_id=?1")
@@ -3755,16 +3747,799 @@ async fn load_attempt_for_run(
     .ok_or(Error::NotFound)
 }
 
+impl Database {
+    /// Persist one deterministic progress checkpoint. The frozen policy is
+    /// loaded from the Campaign's V2 authorization, never from the caller.
+    /// Evidence, checkpoint, decision and hold rows are durable so a restart or
+    /// a new attempt cannot reset stagnation.
+    pub async fn record_progress_checkpoint(
+        &self,
+        campaign_id: &str,
+        checkpoint: &ProgressCheckpoint,
+        evidence: &[ProgressEvidence],
+        gate: Option<&GateRecord>,
+    ) -> Result<CheckpointOutcome, Error> {
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let policy_json: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT p.policy_json
+             FROM campaign_authorizations ca
+             JOIN execution_policies p ON p.policy_id=ca.policy_id
+             WHERE ca.campaign_id=?1 AND ca.schema_version=2",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let policy_json = policy_json
+            .ok_or_else(|| {
+                Error::Forbidden("progress checkpoint requires a V2 Campaign authorization".into())
+            })?
+            .0;
+        let policy = super::authorization::decode_execution_policy(&policy_json)?;
+        let policy_sha256 = sha256_hex(policy_json.as_bytes());
+        if let Some(gate) = gate {
+            // Acceptance can only cite an existing deterministic Core gate
+            // decision for a candidate belonging to this Campaign. A Worker,
+            // model or caller-supplied record cannot accept work.
+            let verified: Option<(String, String)> = sqlx::query_as::query_as(
+                "SELECT gd.outcome,c.commit_sha
+                 FROM gate_decisions gd
+                 JOIN candidates c ON c.id=gd.candidate_id
+                 JOIN attempts a ON a.id=c.attempt_id
+                 JOIN runs r ON r.id=a.run_id
+                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2 AND c.commit_sha=?3",
+            )
+            .bind(&gate.gate_id)
+            .bind(campaign_id)
+            .bind(&gate.candidate_sha256)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if verified.as_ref() != Some(&(gate.outcome.clone(), gate.candidate_sha256.clone()))
+                || gate.outcome != "ACCEPTED"
+            {
+                return Err(Error::Forbidden(
+                    "progress acceptance requires an existing accepted Core gate record".into(),
+                ));
+            }
+        }
+        validate_progress_work_item_in_tx(&mut transaction, campaign_id, &checkpoint.work_item_id)
+            .await?;
+        verify_progress_evidence_in_tx(&mut transaction, campaign_id, evidence).await?;
+        // Durable replay guard: even if the bounded in-memory projection evicted
+        // an old key, an identical artifact/outcome cannot earn progress again.
+        let mut fresh_evidence = Vec::with_capacity(evidence.len());
+        for item in evidence {
+            let kind = serde_json::to_value(item.kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| Error::Invalid("progress kind encoding"))?;
+            let duplicate: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT evidence_id FROM progress_evidence
+                 WHERE campaign_id=?1 AND work_item_id=?2 AND kind=?3
+                   AND artifact_ref=?4 AND artifact_sha256=?5 AND baseline_ref=?6",
+            )
+            .bind(campaign_id)
+            .bind(&checkpoint.work_item_id)
+            .bind(kind)
+            .bind(&item.artifact_ref)
+            .bind(&item.artifact_sha256)
+            .bind(&item.baseline_ref)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if duplicate.is_none() {
+                fresh_evidence.push(item.clone());
+            }
+        }
+        let stored: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT policy_sha256,state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let mut supervisor = match stored {
+            Some((stored_policy, state_json)) => {
+                if stored_policy != policy_sha256 {
+                    return Err(Error::Conflict(
+                        "stored progress policy differs from the frozen policy",
+                    ));
+                }
+                let state: ProgressSupervisorState = serde_json::from_str(&state_json)
+                    .map_err(|_| Error::Invalid("stored progress state encoding"))?;
+                ProgressSupervisor::restore(policy.progress, state)
+                    .map_err(|error| Error::Validation(error.to_string()))?
+            }
+            None => ProgressSupervisor::new(policy.progress)
+                .map_err(|error| Error::Validation(error.to_string()))?,
+        };
+        let outcome = supervisor
+            .checkpoint(campaign_id, checkpoint, &fresh_evidence, gate)
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        for item in &fresh_evidence {
+            let evidence_json = serde_json::to_string(item)
+                .map_err(|_| Error::Invalid("progress evidence encoding"))?;
+            let evidence_sha256 = sha256_hex(evidence_json.as_bytes());
+            let inserted = sqlx::query::query(
+                "INSERT OR IGNORE INTO progress_evidence
+                 (evidence_id,campaign_id,work_item_id,kind,artifact_ref,artifact_sha256,
+                  baseline_ref,observed_sequence,evidence_json,evidence_sha256,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )
+            .bind(&item.evidence_id)
+            .bind(campaign_id)
+            .bind(&checkpoint.work_item_id)
+            .bind(
+                serde_json::to_value(item.kind)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| Error::Invalid("progress kind encoding"))?,
+            )
+            .bind(&item.artifact_ref)
+            .bind(&item.artifact_sha256)
+            .bind(&item.baseline_ref)
+            .bind(
+                i64::try_from(item.observed_sequence)
+                    .map_err(|_| Error::Invalid("progress sequence overflow"))?,
+            )
+            .bind(&evidence_json)
+            .bind(&evidence_sha256)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            if inserted == 0 {
+                let saved: Option<(String,)> = sqlx::query_as::query_as(
+                    "SELECT evidence_sha256 FROM progress_evidence WHERE evidence_id=?1",
+                )
+                .bind(&item.evidence_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+                if saved.map(|(hash,)| hash) != Some(evidence_sha256) {
+                    return Err(Error::Conflict(
+                        "progress evidence id was reused with different content",
+                    ));
+                }
+            }
+        }
+        let checkpoint_json = serde_json::to_string(checkpoint)
+            .map_err(|_| Error::Invalid("progress checkpoint encoding"))?;
+        let checkpoint_sha256 = sha256_hex(checkpoint_json.as_bytes());
+        let decision = serde_json::to_value(outcome.decision)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| Error::Invalid("progress decision encoding"))?;
+        let classification = serde_json::to_value(outcome.classification)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| Error::Invalid("progress classification encoding"))?;
+        let now = Utc::now().to_rfc3339();
+        let inserted = sqlx::query::query(
+            "INSERT OR IGNORE INTO progress_checkpoints
+             (checkpoint_id,campaign_id,work_item_id,operation_id,evidence_ids_json,
+              outcome_sha256,classification,decision,checkpoint_json,checkpoint_sha256,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        )
+        .bind(&checkpoint.checkpoint_id)
+        .bind(campaign_id)
+        .bind(&checkpoint.work_item_id)
+        .bind(&checkpoint.operation_id)
+        .bind(
+            serde_json::to_string(&checkpoint.evidence_ids)
+                .map_err(|_| Error::Invalid("progress evidence ids encoding"))?,
+        )
+        .bind(&checkpoint.outcome_sha256)
+        .bind(&classification)
+        .bind(&decision)
+        .bind(&checkpoint_json)
+        .bind(&checkpoint_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if inserted == 0 {
+            let saved: Option<(String,)> = sqlx::query_as::query_as(
+                "SELECT checkpoint_sha256 FROM progress_checkpoints WHERE checkpoint_id=?1",
+            )
+            .bind(&checkpoint.checkpoint_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if saved.map(|(hash,)| hash) != Some(checkpoint_sha256) {
+                return Err(Error::Conflict(
+                    "progress checkpoint id was reused with different content",
+                ));
+            }
+        }
+        sqlx::query::query(
+            "INSERT INTO progress_decisions
+             (decision_id,campaign_id,work_item_id,checkpoint_id,decision,reason,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(campaign_id)
+        .bind(&checkpoint.work_item_id)
+        .bind(&checkpoint.checkpoint_id)
+        .bind(&decision)
+        .bind(format!(
+            "classification={classification} stagnant={} unsuccessfulReplans={}",
+            outcome.stagnant_checkpoints, outcome.unsuccessful_replans
+        ))
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        match outcome.decision {
+            crate::execution_policy::ContinuationDecision::Diagnose
+            | crate::execution_policy::ContinuationDecision::Escalate => {
+                let state_name = if matches!(
+                    outcome.decision,
+                    crate::execution_policy::ContinuationDecision::Escalate
+                ) {
+                    "ESCALATE"
+                } else {
+                    "DIAGNOSE"
+                };
+                sqlx::query::query(
+                    "INSERT INTO progress_holds
+                     (hold_id,campaign_id,work_item_id,state,reason,checkpoint_id,created_at)
+                     SELECT ?1,?2,?3,?4,?5,?6,?7
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM progress_holds
+                       WHERE campaign_id=?2 AND work_item_id=?3 AND resolved_at IS NULL
+                     )",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(campaign_id)
+                .bind(&checkpoint.work_item_id)
+                .bind(state_name)
+                .bind(format!(
+                    "deterministic progress supervision: stagnant={} unsuccessfulReplans={}",
+                    outcome.stagnant_checkpoints, outcome.unsuccessful_replans
+                ))
+                .bind(&checkpoint.checkpoint_id)
+                .bind(&now)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            crate::execution_policy::ContinuationDecision::Continue
+            | crate::execution_policy::ContinuationDecision::Replan
+            | crate::execution_policy::ContinuationDecision::Complete
+                if matches!(
+                    outcome.classification,
+                    crate::progress::CheckpointClassification::Verified
+                ) =>
+            {
+                // Verified external advancement may clear a hold, but it never
+                // widens authority. An operator decision is still required for
+                // an unresolved diagnosis without verified evidence.
+                let _ = resolve_progress_hold_in_tx(
+                    &mut transaction,
+                    campaign_id,
+                    &checkpoint.work_item_id,
+                    "core:progress",
+                    "VERIFIED_CHANGE",
+                    "verified external progress",
+                    &now,
+                )
+                .await?;
+            }
+            _ => {}
+        }
+        let state_json = serde_json::to_string(&supervisor.snapshot())
+            .map_err(|_| Error::Invalid("progress state encoding"))?;
+        let state_sha256 = sha256_hex(state_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO campaign_progress_state
+             (campaign_id,policy_sha256,state_json,state_sha256,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?5)
+             ON CONFLICT(campaign_id) DO UPDATE SET
+               policy_sha256=excluded.policy_sha256,
+               state_json=excluded.state_json,
+               state_sha256=excluded.state_sha256,
+               updated_at=excluded.updated_at",
+        )
+        .bind(campaign_id)
+        .bind(&policy_sha256)
+        .bind(&state_json)
+        .bind(&state_sha256)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
+    /// Core-owned Worker checkpoint entry point. Validates the current lease,
+    /// generation, attempt state and the stable Campaign/work-item identity
+    /// before persisting the deterministic decision. The HTTP handler in
+    /// `bin/core.rs` must authenticate the Worker session and call this method;
+    /// the route is `POST /worker/progress_checkpoint`.
+    pub async fn record_worker_progress_checkpoint(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        generation: i64,
+        request: &ProgressCheckpointRequest,
+    ) -> Result<ProgressCheckpointResponse, Error> {
+        if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
+            return Err(Error::Invalid("worker progress checkpoint identity"));
+        }
+        let now_ms = Utc::now().timestamp_millis();
+        let mut connection = self.pool.acquire().await?;
+        let row: Option<(String, i64, i64, String, String, String, String)> =
+            sqlx::query_as::query_as(
+                "SELECT l.worker_id,l.generation,l.expires_at_ms,a.status,c.status,r.campaign_id,
+                    COALESCE(lt.unit_id,li.integration_id,c.id)
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             JOIN campaigns c ON c.id=r.campaign_id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+             JOIN worker_leases l ON l.attempt_id=a.id
+             WHERE a.id=?1",
+            )
+            .bind(attempt_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+        let Some((
+            owner,
+            saved_generation,
+            expires_at,
+            attempt_status,
+            campaign_status,
+            campaign_id,
+            work_item_id,
+        )) = row
+        else {
+            return Err(Error::NotFound);
+        };
+        if owner != worker_id
+            || saved_generation != generation
+            || expires_at <= now_ms
+            || attempt_status != "LEASED"
+            || campaign_status != "AUTHORIZED"
+        {
+            return Err(Error::Forbidden(
+                "worker progress checkpoint is not authorized by the current lease".into(),
+            ));
+        }
+        if request.campaign_id != campaign_id
+            || request.work_item_id != work_item_id
+            || request.checkpoint.work_item_id != work_item_id
+            || request
+                .evidence
+                .iter()
+                .any(|item| item.work_item_id != work_item_id)
+        {
+            return Err(Error::Forbidden(
+                "worker progress checkpoint identity differs from the assignment".into(),
+            ));
+        }
+        drop(connection);
+        let outcome = self
+            .record_progress_checkpoint(
+                &campaign_id,
+                &request.checkpoint,
+                &request.evidence,
+                request.gate.as_ref(),
+            )
+            .await?;
+        let hold_open = self
+            .progress_hold(&campaign_id, &work_item_id)
+            .await?
+            .is_some();
+        Ok(ProgressCheckpointResponse {
+            checkpoint_id: outcome.checkpoint_id,
+            decision: outcome.decision,
+            classification: outcome.classification,
+            stagnant_checkpoints: outcome.stagnant_checkpoints,
+            unsuccessful_replans: outcome.unsuccessful_replans,
+            hold_open,
+        })
+    }
+
+    /// The open deterministic hold for a work item, if any.
+    pub async fn progress_hold(
+        &self,
+        campaign_id: &str,
+        work_item_id: &str,
+    ) -> Result<Option<ProgressHoldRecord>, Error> {
+        let row: Option<ProgressHoldRow> = sqlx::query_as::query_as(
+            "SELECT hold_id,state,reason,checkpoint_id,created_at,resolved_at
+                 FROM progress_holds
+                 WHERE campaign_id=?1 AND work_item_id=?2 AND resolved_at IS NULL",
+        )
+        .bind(campaign_id)
+        .bind(work_item_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(hold_id, state, reason, checkpoint_id, created_at, resolved_at)| ProgressHoldRecord {
+                hold_id,
+                campaign_id: campaign_id.into(),
+                work_item_id: work_item_id.into(),
+                state,
+                reason,
+                checkpoint_id,
+                created_at,
+                resolved_at,
+                resolution: None,
+                resolved_by: None,
+            },
+        ))
+    }
+
+    /// Resolve a progress hold. `OPERATOR` and `VERIFIED_CHANGE` requeue the
+    /// latest blocked attempt for the work item; `CANCELLED` leaves it blocked.
+    pub async fn resolve_progress_hold(
+        &self,
+        campaign_id: &str,
+        work_item_id: &str,
+        actor: &str,
+        resolution: &str,
+        reason: &str,
+    ) -> Result<ProgressHoldRecord, Error> {
+        if actor.trim().is_empty()
+            || actor.len() > 200
+            || reason.trim().is_empty()
+            || reason.len() > 2_000
+            || !matches!(resolution, "OPERATOR" | "VERIFIED_CHANGE" | "CANCELLED")
+        {
+            return Err(Error::Invalid("progress hold resolution"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = Utc::now().to_rfc3339();
+        if !resolve_progress_hold_in_tx(
+            &mut transaction,
+            campaign_id,
+            work_item_id,
+            actor,
+            resolution,
+            reason,
+            &now,
+        )
+        .await?
+        {
+            return Err(Error::NotFound);
+        }
+        record_event(
+            &mut transaction,
+            campaign_id,
+            "lead.state_changed",
+            &format!(
+                "progress hold resolved work_item={work_item_id} resolution={resolution} actor={actor}"
+            ),
+        )
+        .await?;
+        let row: (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = sqlx::query_as::query_as(
+            "SELECT hold_id,state,reason,checkpoint_id,created_at,resolved_at
+                 FROM progress_holds
+                 WHERE campaign_id=?1 AND work_item_id=?2
+                 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(campaign_id)
+        .bind(work_item_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(ProgressHoldRecord {
+            hold_id: row.0,
+            campaign_id: campaign_id.into(),
+            work_item_id: work_item_id.into(),
+            state: row.1,
+            reason: row.2,
+            checkpoint_id: row.3,
+            created_at: row.4,
+            resolved_at: row.5,
+            resolution: Some(resolution.into()),
+            resolved_by: Some(actor.into()),
+        })
+    }
+
+    /// Retire a completed work item from the active progress projection. Its
+    /// durable evidence and checkpoints are retained, and a retired item can
+    /// never earn progress again without a new validated WorkGraph item.
+    pub async fn retire_progress_work_item(
+        &self,
+        campaign_id: &str,
+        work_item_id: &str,
+        reason: &str,
+    ) -> Result<(), Error> {
+        if reason.trim().is_empty() || reason.len() > 500 {
+            return Err(Error::Invalid("progress retirement reason"));
+        }
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let stored: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((state_json,)) = stored else {
+            return Err(Error::NotFound);
+        };
+        let mut state: ProgressSupervisorState = serde_json::from_str(&state_json)
+            .map_err(|_| Error::Invalid("stored progress state encoding"))?;
+        let Some(item) = state.work_items.get(work_item_id) else {
+            return Err(Error::NotFound);
+        };
+        if item.accepted_units.is_empty() {
+            return Err(Error::Forbidden(
+                "only a gate-accepted work item can be retired".into(),
+            ));
+        }
+        let now = Utc::now().to_rfc3339();
+        sqlx::query::query(
+            "INSERT INTO progress_retired_work_items(campaign_id,work_item_id,reason,retired_at)
+             VALUES (?1,?2,?3,?4)",
+        )
+        .bind(campaign_id)
+        .bind(work_item_id)
+        .bind(reason)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        state.work_items.remove(work_item_id);
+        let state_json =
+            serde_json::to_string(&state).map_err(|_| Error::Invalid("progress state encoding"))?;
+        let state_sha256 = sha256_hex(state_json.as_bytes());
+        sqlx::query::query(
+            "UPDATE campaign_progress_state
+             SET state_json=?1,state_sha256=?2,updated_at=?3 WHERE campaign_id=?4",
+        )
+        .bind(&state_json)
+        .bind(&state_sha256)
+        .bind(&now)
+        .bind(campaign_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Durable progress snapshot for diagnostics and restart verification.
+    pub async fn campaign_progress_state(
+        &self,
+        campaign_id: &str,
+    ) -> Result<Option<ProgressSupervisorState>, Error> {
+        let stored: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(campaign_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        stored
+            .map(|(state_json,)| {
+                serde_json::from_str(&state_json)
+                    .map_err(|_| Error::Invalid("stored progress state encoding"))
+            })
+            .transpose()
+    }
+}
+
+async fn validate_progress_work_item_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    work_item_id: &str,
+) -> Result<(), Error> {
+    let retired: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT work_item_id FROM progress_retired_work_items
+         WHERE campaign_id=?1 AND work_item_id=?2",
+    )
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if retired.is_some() {
+        return Err(Error::Conflict(
+            "progress work item is retired; a validated new WorkGraph item is required",
+        ));
+    }
+    let belongs: Option<(String,)> = sqlx::query_as::query_as(
+        "SELECT ?2 WHERE ?2=?1
+         UNION ALL
+         SELECT unit_id FROM lead_tasks WHERE campaign_id=?1 AND unit_id=?2
+         UNION ALL
+         SELECT integration_id FROM lead_integrations WHERE campaign_id=?1 AND integration_id=?2
+         LIMIT 1",
+    )
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if belongs.is_none() {
+        return Err(Error::Forbidden(
+            "progress work item does not belong to the Campaign".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn findings_contain(raw: &str, finding_id: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .is_some_and(|findings| {
+            findings.iter().any(|finding| {
+                finding.get("id").and_then(serde_json::Value::as_str) == Some(finding_id)
+            })
+        })
+}
+
+/// Bind evidence kinds that represent reviewed/advanced work to durable Core
+/// records. Worker-observed candidate/test observations are validated by the
+/// caller's fencing and the deterministic supervisor; findings, graph and
+/// repair claims may never be manufactured from caller-supplied references.
+async fn verify_progress_evidence_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    evidence: &[ProgressEvidence],
+) -> Result<(), Error> {
+    for item in evidence {
+        match item.kind {
+            crate::execution_policy::ProgressKind::FindingsResolved => {
+                let receipts: Vec<(String, String)> = sqlx::query_as::query_as(
+                    "SELECT c.commit_sha,qr.findings_json
+                     FROM quality_receipts qr
+                     JOIN candidates c ON c.id=qr.candidate_id
+                     JOIN attempts a ON a.id=c.attempt_id
+                     JOIN runs r ON r.id=a.run_id
+                     WHERE r.campaign_id=?1",
+                )
+                .bind(campaign_id)
+                .fetch_all(&mut *connection)
+                .await?;
+                let recorded = receipts.iter().any(|(commit, findings)| {
+                    commit == &item.artifact_sha256
+                        && findings_contain(findings, &item.artifact_ref)
+                });
+                if !recorded {
+                    return Err(Error::Forbidden(
+                        "resolved finding is not recorded in a Core quality receipt for this Campaign"
+                            .into(),
+                    ));
+                }
+            }
+            crate::execution_policy::ProgressKind::WorkGraphAdvanced => {
+                let baseline: Option<(String,)> = sqlx::query_as::query_as(
+                    "SELECT e.plan_hash
+                     FROM lead_start_evidence e
+                     WHERE e.campaign_id=?1",
+                )
+                .bind(campaign_id)
+                .fetch_optional(&mut *connection)
+                .await?;
+                let advanced: Option<(String,)> = sqlx::query_as::query_as(
+                    "SELECT f.plan_hash
+                     FROM frozen_lead_plans f
+                     JOIN lead_requests lr ON lr.id=f.request_id
+                     JOIN campaigns c ON c.id=lr.campaign_id
+                     WHERE c.id=?1 AND f.plan_hash=?2",
+                )
+                .bind(campaign_id)
+                .bind(&item.artifact_ref)
+                .fetch_optional(&mut *connection)
+                .await?;
+                if baseline.as_ref().map(|(hash,)| hash.as_str())
+                    != Some(item.baseline_ref.as_str())
+                    || advanced.is_none()
+                    || item.artifact_ref == item.baseline_ref
+                {
+                    return Err(Error::Forbidden(
+                        "work graph advancement is not a validated Core plan transition".into(),
+                    ));
+                }
+            }
+            crate::execution_policy::ProgressKind::RepairValidated => {
+                let repair: Option<(String, String)> = sqlx::query_as::query_as(
+                    "SELECT gd.outcome,c.commit_sha
+                     FROM gate_decisions gd
+                     JOIN candidates c ON c.id=gd.candidate_id
+                     JOIN attempts a ON a.id=c.attempt_id
+                     JOIN runs r ON r.id=a.run_id
+                     WHERE gd.candidate_id=?1 AND r.campaign_id=?2",
+                )
+                .bind(&item.artifact_ref)
+                .bind(campaign_id)
+                .fetch_optional(&mut *connection)
+                .await?;
+                if repair.as_ref()
+                    != Some(&("REPAIR_REQUIRED".to_string(), item.artifact_sha256.clone()))
+                {
+                    return Err(Error::Forbidden(
+                        "repair validation is not backed by a Core REPAIR_REQUIRED gate".into(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_progress_hold_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    work_item_id: &str,
+    actor: &str,
+    resolution: &str,
+    reason: &str,
+    now: &str,
+) -> Result<bool, Error> {
+    let changed = sqlx::query::query(
+        "UPDATE progress_holds
+         SET resolved_at=?1,resolution=?2,resolved_by=?3
+         WHERE campaign_id=?4 AND work_item_id=?5 AND resolved_at IS NULL",
+    )
+    .bind(now)
+    .bind(resolution)
+    .bind(actor)
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .execute(&mut *connection)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Ok(false);
+    }
+    if resolution != "CANCELLED" {
+        let blocked: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT a.id,a.run_id
+             FROM attempts a
+             JOIN runs r ON r.id=a.run_id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+             WHERE r.campaign_id=?1 AND a.status='BLOCKED'
+               AND COALESCE(lt.unit_id,li.integration_id,r.campaign_id)=?2
+             ORDER BY a.created_at DESC LIMIT 1",
+        )
+        .bind(campaign_id)
+        .bind(work_item_id)
+        .fetch_optional(&mut *connection)
+        .await?;
+        if let Some((attempt_id, run_id)) = blocked {
+            sqlx::query::query(
+                "UPDATE attempts SET status='QUEUED' WHERE id=?1 AND status='BLOCKED'",
+            )
+            .bind(&attempt_id)
+            .execute(&mut *connection)
+            .await?;
+            sqlx::query::query("DELETE FROM worker_leases WHERE attempt_id=?1")
+                .bind(&attempt_id)
+                .execute(&mut *connection)
+                .await?;
+            sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1 AND status='BLOCKED'")
+                .bind(&run_id)
+                .execute(&mut *connection)
+                .await?;
+            record_event(
+                connection,
+                &attempt_id,
+                "lead.state_changed",
+                &format!("progress hold requeued attempt resolution={resolution} reason={reason}"),
+            )
+            .await?;
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lead::{
         Capability, CheckKind, Complexity, EffortEstimate, EffortStatus, Intent, LeadRequestState,
         LeadWorkUnit, ObjectiveClass, ProjectConfig, ProviderRoute, QualityProfile, RiskClass,
-        SpecBudget, SpecCheck, StandingDelegation, WorkUnitKind,
+        SpecBudget, SpecCheck, WorkUnitKind,
     };
 
-    async fn fixture() -> (std::path::PathBuf, Database, StandingDelegation) {
+    async fn fixture() -> (std::path::PathBuf, Database, StandingDelegationV2) {
         let path = std::env::temp_dir().join(format!(
             "factory-lead-request-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -3802,35 +4577,14 @@ mod tests {
         grant.autonomous_start = true;
         grant.autonomous_risk_classes = vec![RiskClass::R0];
         grant.content_hash = grant.compute_content_hash();
-        db.create_standing_delegation(&grant, "grant-key")
+        db.create_standing_delegation_v2(&grant, "grant-key")
             .await
             .unwrap();
         (path, db, grant)
     }
 
-    fn project_config() -> ProjectConfig {
-        let mut config = ProjectConfig {
-            project_id: "project".into(),
-            revision: 1,
-            config_hash: String::new(),
-            repository: "/fixture".into(),
-            base_commit: "b".repeat(40),
-            allowed_paths: vec!["src".into()],
-            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
-            quality_profile: QualityProfile::Generic,
-            active: true,
-            updated_at: "2026-10-24T00:00:00Z".into(),
-        };
-        config.config_hash = config.compute_hash();
-        config
-    }
-
-    fn config_hash() -> String {
-        project_config().config_hash
-    }
-
-    fn grant() -> StandingDelegation {
-        let mut grant = StandingDelegation {
+    fn legacy_test_grant() -> crate::lead::StandingDelegation {
+        let mut grant = crate::lead::StandingDelegation {
             id: "grant".into(),
             principal_id: "owner".into(),
             audit_id: "audit".into(),
@@ -3857,6 +4611,76 @@ mod tests {
             max_requests: 2,
             max_cumulative_sessions: 8,
             max_cumulative_attempts: 16,
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        grant
+    }
+
+    fn project_config() -> ProjectConfig {
+        let mut config = ProjectConfig {
+            project_id: "project".into(),
+            revision: 1,
+            config_hash: String::new(),
+            repository: "/fixture".into(),
+            base_commit: "b".repeat(40),
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            quality_profile: QualityProfile::Generic,
+            active: true,
+            updated_at: "2026-10-24T00:00:00Z".into(),
+        };
+        config.config_hash = config.compute_hash();
+        config
+    }
+
+    fn config_hash() -> String {
+        project_config().config_hash
+    }
+
+    fn operations() -> crate::execution_policy::OperationLimits {
+        crate::execution_policy::OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress_policy() -> crate::execution_policy::ProgressPolicy {
+        crate::execution_policy::ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    fn grant() -> StandingDelegationV2 {
+        let mut grant = StandingDelegationV2 {
+            id: "grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: "project".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            risk_classes: vec![RiskClass::R0, RiskClass::R1],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 1,
+            operations: operations(),
+            progress: progress_policy(),
             expires_at: Utc::now() + chrono::Duration::days(1),
             revoked_at: None,
         };
@@ -4031,7 +4855,7 @@ mod tests {
             .await
             .unwrap();
         db.begin_lead_assessment(&request.id).await.unwrap();
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let binding = ActionBinding {
             id: action.id.clone(),
             project_id: "project".into(),
@@ -4079,7 +4903,7 @@ mod tests {
         ReadyLead { request, proposal }
     }
 
-    fn model_authorization(proposal: &LeadPlanProposal) -> NewCampaignAuthorization {
+    fn model_authorization(_proposal: &LeadPlanProposal) -> NewCampaignAuthorization {
         NewCampaignAuthorization {
             authorization_id: "explicit-model-lead-start".into(),
             risk_class: "R0".into(),
@@ -4087,18 +4911,14 @@ mod tests {
             actor: "test-operator".into(),
             rationale: "explicit provider authorization for a MODEL Lead plan".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            provider: proposal.route.provider.clone(),
-            model: proposal.route.model.clone(),
-            provider_mode: proposal.route.mode.clone(),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            provider_mode: "build".into(),
             delegation_id: "grant".into(),
-            max_sessions: 1,
-            max_turns: 4,
-            max_input_tokens: 1_000,
-            max_output_tokens: 1_000,
-            max_cost_micros: 10_000,
-            deadline_secs: 300,
             allowed_tools: vec!["write_file".into()],
+            monetary_envelope_id: "envelope-test".into(),
+            progress: progress_policy(),
+            operations: operations(),
         }
     }
 
@@ -4107,17 +4927,17 @@ mod tests {
         plan: FrozenLeadPlanRecord,
         spec_sha256: String,
         config_hash: String,
-        grant: StandingDelegation,
+        grant: StandingDelegationV2,
         proposal: LeadPlanProposal,
     }
 
-    async fn operator_grant(db: &Database, id: &str) -> StandingDelegation {
+    async fn operator_grant(db: &Database, id: &str) -> StandingDelegationV2 {
         let mut grant = grant();
         grant.id = id.into();
         grant.autonomous_start = false;
         grant.autonomous_risk_classes.clear();
         grant.content_hash = grant.compute_content_hash();
-        db.create_standing_delegation(&grant, &format!("{id}-key"))
+        db.create_standing_delegation_v2(&grant, &format!("{id}-key"))
             .await
             .unwrap();
         grant
@@ -4273,7 +5093,7 @@ mod tests {
 
     fn lead_model_call_authorization(
         request_id: &str,
-        grant: &StandingDelegation,
+        grant: &StandingDelegationV2,
     ) -> NewModelCallAuthorization {
         NewModelCallAuthorization {
             role: ModelCallRole::Lead,
@@ -4601,7 +5421,6 @@ mod tests {
         )
         .unwrap();
         proposal.budget.max_attempts = 1;
-        proposal.max_sessions = 3;
         proposal.work_units = vec![
             crate::lead::LeadWorkUnit {
                 id: "first".into(),
@@ -4751,7 +5570,6 @@ mod tests {
         )
         .unwrap();
         proposal.budget.max_attempts = 1;
-        proposal.max_sessions = 4;
         proposal.work_units = vec![
             crate::lead::LeadWorkUnit {
                 id: "root-a".into(),
@@ -5291,11 +6109,15 @@ mod tests {
     async fn model_lead_start_records_exact_authorization_without_double_reservation() {
         let (path, db, _) = fixture().await;
         let ready = ready_lead(&db, "MODEL").await;
-        assert_eq!(ready.proposal.budget.max_attempts, 2);
-        assert_eq!(ready.proposal.max_sessions, 3);
+        // The deterministic fixture plan carries only advisory legacy fields;
+        // no attempt/session ceiling is frozen into the V2 policy.
+        assert_eq!(ready.proposal.budget.max_attempts, 1);
+        assert_eq!(ready.proposal.max_sessions, 0);
         let usage_before = db.delegation_usage("grant").await.unwrap();
+        // Request creation records one admission activity; it is telemetry, not
+        // a ceiling. Session/attempt counters no longer reserve lifetime work.
         assert_eq!(usage_before.requests, 1);
-        assert_eq!(usage_before.sessions, 3);
+        assert_eq!(usage_before.sessions, 1);
         assert_eq!(usage_before.attempts, 0);
         let authorization = model_authorization(&ready.proposal);
         let started = db
@@ -5319,26 +6141,20 @@ mod tests {
         assert_eq!(stored.actor, authorization.actor);
         assert_eq!(stored.rationale, authorization.rationale);
         assert_eq!(stored.authorized_paths, authorization.authorized_paths);
-        assert_eq!(stored.max_attempts, authorization.max_attempts);
+        let stored_policy = stored.policy.as_ref().unwrap();
+        assert_eq!(stored_policy.progress, authorization.progress);
+        assert_eq!(stored_policy.operations, authorization.operations);
+        assert!(stored.legacy.is_none());
         assert_eq!(stored.provider, authorization.provider);
         assert_eq!(stored.model, authorization.model);
         assert_eq!(stored.provider_mode, authorization.provider_mode);
         assert_eq!(stored.delegation_id, authorization.delegation_id);
-        assert_eq!(stored.max_sessions, authorization.max_sessions);
-        assert_eq!(stored.max_turns, authorization.max_turns);
-        assert_eq!(stored.max_input_tokens, authorization.max_input_tokens);
-        assert_eq!(stored.max_output_tokens, authorization.max_output_tokens);
-        assert_eq!(stored.max_cost_micros, authorization.max_cost_micros);
-        assert_eq!(stored.deadline_secs, authorization.deadline_secs);
         assert_eq!(stored.allowed_tools, authorization.allowed_tools);
         assert_eq!(lead_start_row_counts(&db).await, (1, 1, 1, 1));
         let usage_after = db.delegation_usage("grant").await.unwrap();
         assert_eq!(usage_after.requests, usage_before.requests);
         assert_eq!(usage_after.sessions, usage_before.sessions);
-        assert_eq!(
-            usage_after.attempts,
-            usage_before.attempts + authorization.max_attempts
-        );
+        assert_eq!(usage_after.attempts, usage_before.attempts);
         assert_eq!(
             db.lead_request(&ready.request.id).await.unwrap().state,
             LeadRequestState::Running
@@ -5361,7 +6177,7 @@ mod tests {
         assert_eq!(db.delegation_usage("grant").await.unwrap(), usage_after);
 
         let mut different = authorization.clone();
-        different.max_attempts = 2;
+        different.operations.max_generation_tokens = std::num::NonZeroU32::new(4_096).unwrap();
         assert!(matches!(
             db.start_lead_campaign(
                 &ready.request.id,
@@ -5427,11 +6243,8 @@ mod tests {
         wrong_delegation.delegation_id = "another-grant".into();
         fixtures.push(("delegation", wrong_delegation));
         let mut attempts = base.clone();
-        attempts.max_attempts = base.max_attempts + 2;
-        fixtures.push(("attempts", attempts));
-        let mut sessions = base.clone();
-        sessions.max_sessions = ready.proposal.max_sessions;
-        fixtures.push(("sessions", sessions));
+        attempts.operations.tool_call_timeout_secs = std::num::NonZeroU32::new(3_600).unwrap();
+        fixtures.push(("operations", attempts));
         let mut paths = base.clone();
         paths.authorized_paths = vec!["src".into(), "tests".into()];
         fixtures.push(("paths", paths));
@@ -6147,8 +6960,14 @@ mod tests {
             actor: "forged".into(),
             rationale: "bypass attempt".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
-            ..Default::default()
+            provider: String::new(),
+            model: String::new(),
+            provider_mode: String::new(),
+            delegation_id: String::new(),
+            allowed_tools: Vec::new(),
+            monetary_envelope_id: super::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: progress_policy(),
+            operations: operations(),
         };
         let error = db
             .authorize_campaign("manual-lead-campaign", &authorization)
@@ -6202,18 +7021,14 @@ mod tests {
             actor: "forged-model-worker".into(),
             rationale: "forged worker rationale".into(),
             authorized_paths: vec!["src".into()],
-            max_attempts: 1,
             provider: ready.proposal.route.provider.clone(),
             model: ready.proposal.route.model.clone(),
             provider_mode: ready.proposal.route.mode.clone(),
             delegation_id: ready.grant.id.clone(),
-            max_sessions: 1,
-            max_turns: 4,
-            max_input_tokens: 1_000,
-            max_output_tokens: 1_000,
-            max_cost_micros: 10_000,
-            deadline_secs: 300,
             allowed_tools: vec!["write_file".into()],
+            monetary_envelope_id: "envelope-test".into(),
+            progress: progress_policy(),
+            operations: operations(),
         };
         let started = db
             .start_lead_campaign(
@@ -6391,7 +7206,7 @@ mod tests {
             LeadRequestState::Assessing
         );
 
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let input = lead_model_call_authorization(&request.id, &grant);
         let error = db.authorize_model_call(&input).await.unwrap_err();
         assert!(matches!(error, Error::Withdrawn), "{error:?}");
@@ -6443,7 +7258,7 @@ mod tests {
                 action: &binding,
                 action_spec: &action.spec,
                 objective: &request.objective,
-                grant: &grant,
+                grant: &legacy_test_grant(),
                 now: Utc::now(),
             },
         )
@@ -6482,7 +7297,7 @@ mod tests {
             .await
             .unwrap();
         db.begin_lead_assessment(&request.id).await.unwrap();
-        let grant = db.standing_delegation("grant").await.unwrap();
+        let grant = db.standing_delegation_v2("grant").await.unwrap();
         let input = lead_model_call_authorization(&request.id, &grant);
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
         let auth_barrier = barrier.clone();
@@ -6674,6 +7489,655 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn progress_evidence(
+        campaign_id: &str,
+        work_item_id: &str,
+        kind: crate::execution_policy::ProgressKind,
+        sequence: u64,
+        artifact: &str,
+    ) -> ProgressEvidence {
+        ProgressEvidence {
+            evidence_id: format!("evidence-{sequence}"),
+            campaign_id: campaign_id.into(),
+            work_item_id: work_item_id.into(),
+            kind,
+            artifact_ref: format!("artifact-{sequence}"),
+            artifact_sha256: sha256_hex(artifact.as_bytes()),
+            baseline_ref: "suite-stable".into(),
+            observed_sequence: sequence,
+        }
+    }
+
+    fn test_evidence(
+        campaign_id: &str,
+        work_item_id: &str,
+        sequence: u64,
+        suite: &str,
+        outcome: &str,
+    ) -> ProgressEvidence {
+        ProgressEvidence {
+            evidence_id: format!("test-{sequence}-{outcome}"),
+            campaign_id: campaign_id.into(),
+            work_item_id: work_item_id.into(),
+            kind: crate::execution_policy::ProgressKind::TestsImproved,
+            artifact_ref: format!("suite:{suite}:{outcome}"),
+            artifact_sha256: sha256_hex(format!("{suite}-{sequence}-{outcome}").as_bytes()),
+            baseline_ref: suite.into(),
+            observed_sequence: sequence,
+        }
+    }
+
+    fn progress_checkpoint(
+        work_item_id: &str,
+        sequence: u64,
+        evidence: &[ProgressEvidence],
+    ) -> ProgressCheckpoint {
+        ProgressCheckpoint {
+            checkpoint_id: format!("checkpoint-{sequence}"),
+            work_item_id: work_item_id.into(),
+            operation_id: format!("operation-{sequence}"),
+            evidence_ids: evidence
+                .iter()
+                .map(|item| item.evidence_id.clone())
+                .collect(),
+            outcome_sha256: sha256_hex(format!("outcome-{sequence}").as_bytes()),
+        }
+    }
+
+    async fn progress_campaign(db: &Database) -> String {
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('progress-project','/progress','base',?1,'')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let allowed_paths = vec!["src".to_string()];
+        let action = db
+            .create_action_with_spec(
+                "progress-project",
+                "Observe progress.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "progress-action",
+                crate::db::ActionSpecInput {
+                    allowed_paths: &allowed_paths,
+                    checks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action.id, "progress-campaign-key")
+            .await
+            .unwrap();
+        let policy = crate::execution_policy::ExecutionPolicyV2 {
+            policy_id: "progress-policy".into(),
+            authorization_id: "progress-auth".into(),
+            monetary_envelope_id: crate::db::authorization::NO_BILLABLE_ENVELOPE.into(),
+            scope_sha256: "a".repeat(64),
+            progress: progress_policy(),
+            operations: operations(),
+        };
+        let policy_json = super::super::authorization::encode_execution_policy(&policy).unwrap();
+        let policy_sha256 = sha256_hex(policy_json.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO execution_policies
+             (policy_id,schema_version,authorization_id,monetary_envelope_id,scope_sha256,
+              progress_policy_json,operation_limits_json,policy_json,policy_sha256,created_at)
+             VALUES ('progress-policy',2,'progress-auth',?1,?2,?3,?4,?5,?6,?7)",
+        )
+        .bind(&policy.monetary_envelope_id)
+        .bind(&policy.scope_sha256)
+        .bind(serde_json::to_string(&policy.progress).unwrap())
+        .bind(serde_json::to_string(&policy.operations).unwrap())
+        .bind(&policy_json)
+        .bind(&policy_sha256)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaign_authorizations
+             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+              authorized_paths_json,created_at,provider,model,provider_mode,delegation_id,
+              allowed_tools_json,schema_version,policy_id)
+             VALUES (?1,'progress-auth','R0','FIXTURE','test','progress','[\"src\"]',?2,
+                     'opencode','deepseek-v4.1-flash','build','grant','[]',2,'progress-policy')",
+        )
+        .bind(&campaign.id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
+            .bind(&campaign.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        campaign.id
+    }
+
+    #[tokio::test]
+    async fn progress_survives_restart_and_replayed_checkpoints_earn_nothing() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        let first = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.stagnant_checkpoints, 1);
+        let second = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert_eq!(second.stagnant_checkpoints, 2);
+
+        let reopened = Database::open(&path).await.unwrap();
+        let state = reopened
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state
+                .work_items
+                .get(&campaign_id)
+                .unwrap()
+                .stagnant_checkpoints,
+            2
+        );
+        let replay = reopened
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.classification,
+            crate::progress::CheckpointClassification::Replayed
+        );
+        assert_eq!(replay.stagnant_checkpoints, 2);
+        assert!(
+            sqlx::query::query("UPDATE progress_checkpoints SET decision='COMPLETE'")
+                .execute(&db.pool)
+                .await
+                .is_err()
+        );
+        db.close().await;
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn progress_acceptance_rejects_a_forged_gate_record() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        let evidence = progress_evidence(
+            &campaign_id,
+            &campaign_id,
+            crate::execution_policy::ProgressKind::UnitAccepted,
+            1,
+            "candidate",
+        );
+        let gate = crate::progress::GateRecord {
+            gate_id: "invented-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: "unit-1".into(),
+            candidate_sha256: evidence.artifact_sha256.clone(),
+            outcome: "ACCEPTED".into(),
+        };
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&gate),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn progress_attempt_campaign(db: &Database) -> (String, String, String) {
+        let campaign_id = progress_campaign(db).await;
+        let run = db.create_run(&campaign_id, "progress-run").await.unwrap();
+        let attempt = db
+            .create_attempt(&run.id, "progress-attempt")
+            .await
+            .unwrap();
+        (campaign_id, run.id, attempt.id)
+    }
+
+    #[tokio::test]
+    async fn diagnose_hold_blocks_redispatch_across_restart_until_resolved() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let now_ms = Utc::now().timestamp_millis();
+        let lease = db
+            .claim_assignment("progress-worker", now_ms, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 1, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        let diagnose = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            diagnose.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert!(
+            db.progress_hold(&campaign_id, &campaign_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db.claim_assignment("progress-worker", now_ms, 30_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "a diagnosed work item must not be redispatched"
+        );
+
+        // The Worker reports the typed control state as BLOCKED, not FAILED.
+        db.report_terminal(
+            &crate::db::WorkerReport {
+                attempt_id: attempt_id.clone(),
+                worker_id: "progress-worker".into(),
+                generation: lease.lease.generation,
+                receipt_id: "progress-blocked-receipt".into(),
+                result_sha256: sha256_hex(b"blocked"),
+                terminal_status: "BLOCKED".into(),
+            },
+            now_ms,
+        )
+        .await
+        .unwrap();
+        let (attempt_status,): (String,) =
+            sqlx::query_as::query_as("SELECT status FROM attempts WHERE id=?1")
+                .bind(&attempt_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(attempt_status, "BLOCKED");
+
+        let reopened = Database::open(&path).await.unwrap();
+        assert!(
+            reopened
+                .claim_assignment("progress-worker", now_ms, 30_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "restart must not reset a durable diagnosis hold"
+        );
+        reopened
+            .resolve_progress_hold(
+                &campaign_id,
+                &campaign_id,
+                "device:operator",
+                "OPERATOR",
+                "operator requested one bounded retry",
+            )
+            .await
+            .unwrap();
+        assert!(
+            reopened
+                .progress_hold(&campaign_id, &campaign_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let claim = reopened
+            .claim_assignment("progress-worker", now_ms, 30_000)
+            .await
+            .unwrap();
+        assert!(
+            claim.is_some(),
+            "resolution must requeue the blocked attempt"
+        );
+        assert_eq!(claim.unwrap().work_item_id, campaign_id);
+        db.close().await;
+        reopened.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn worker_checkpoint_entry_point_is_fenced_and_returns_durable_decisions() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let lease = db
+            .claim_assignment("progress-worker", Utc::now().timestamp_millis(), 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let request = ProgressCheckpointRequest {
+            campaign_id: campaign_id.clone(),
+            work_item_id: lease.work_item_id.clone(),
+            checkpoint: progress_checkpoint(&campaign_id, 1, &[]),
+            evidence: Vec::new(),
+            gate: None,
+        };
+        let first = db
+            .record_worker_progress_checkpoint(
+                "progress-worker",
+                &attempt_id,
+                lease.lease.generation,
+                &request,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first.decision,
+            crate::execution_policy::ContinuationDecision::Continue
+        );
+        assert!(!first.hold_open);
+
+        let second_request = ProgressCheckpointRequest {
+            checkpoint: progress_checkpoint(&campaign_id, 2, &[]),
+            ..request.clone()
+        };
+        let second = db
+            .record_worker_progress_checkpoint(
+                "progress-worker",
+                &attempt_id,
+                lease.lease.generation,
+                &second_request,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert!(second.hold_open);
+
+        let stale = db
+            .record_worker_progress_checkpoint(
+                "progress-worker",
+                &attempt_id,
+                lease.lease.generation + 1,
+                &request,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(stale, Error::Forbidden(_)), "{stale:?}");
+        let mismatched = ProgressCheckpointRequest {
+            campaign_id: "another-campaign".into(),
+            ..request
+        };
+        let rejected = db
+            .record_worker_progress_checkpoint(
+                "progress-worker",
+                &attempt_id,
+                lease.lease.generation,
+                &mismatched,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn two_stagnant_attempts_accumulate_to_one_durable_diagnosis() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, first_attempt) = progress_attempt_campaign(&db).await;
+        let now_ms = Utc::now().timestamp_millis();
+        db.claim_assignment("worker-1", now_ms, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let first = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first.decision,
+            crate::execution_policy::ContinuationDecision::Continue
+        );
+        // End the first attempt without a diagnosis, then create a repair
+        // attempt for the same stable work item.
+        sqlx::query::query("UPDATE attempts SET status='FAILED' WHERE id=?1")
+            .bind(&first_attempt)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.create_attempt(&run_id, "progress-attempt-2")
+            .await
+            .unwrap();
+        db.claim_assignment("worker-2", now_ms, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert_eq!(second.stagnant_checkpoints, 2);
+        assert!(
+            db.progress_hold(&campaign_id, &campaign_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn retired_work_item_cannot_earn_progress_again() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let commit = "b".repeat(64);
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('progress-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&attempt_id)
+        .bind("a".repeat(64))
+        .bind(&commit)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('progress-candidate','ACCEPTED','[]',?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let evidence = ProgressEvidence {
+            evidence_id: "accepted-1".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::UnitAccepted,
+            artifact_ref: "progress-candidate".into(),
+            artifact_sha256: commit.clone(),
+            baseline_ref: "unit".into(),
+            observed_sequence: 1,
+        };
+        let gate = crate::progress::GateRecord {
+            gate_id: "progress-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            candidate_sha256: commit,
+            outcome: "ACCEPTED".into(),
+        };
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&gate),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.decision,
+            crate::execution_policy::ContinuationDecision::Complete
+        );
+        db.retire_progress_work_item(&campaign_id, &campaign_id, "accepted unit archived")
+            .await
+            .unwrap();
+        let state = db
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.work_items.contains_key(&campaign_id));
+        let error = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn reviewed_progress_kinds_require_core_artifacts() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, _attempt_id) = progress_attempt_campaign(&db).await;
+        for (kind, artifact_ref, artifact_sha256) in [
+            (
+                crate::execution_policy::ProgressKind::FindingsResolved,
+                "invented-finding",
+                "d".repeat(64),
+            ),
+            (
+                crate::execution_policy::ProgressKind::WorkGraphAdvanced,
+                "invented-plan",
+                "d".repeat(64),
+            ),
+            (
+                crate::execution_policy::ProgressKind::RepairValidated,
+                "invented-candidate",
+                "d".repeat(64),
+            ),
+        ] {
+            let evidence = ProgressEvidence {
+                evidence_id: format!("forged-{kind:?}"),
+                campaign_id: campaign_id.clone(),
+                work_item_id: campaign_id.clone(),
+                kind,
+                artifact_ref: artifact_ref.into(),
+                artifact_sha256,
+                baseline_ref: "invented-baseline".into(),
+                observed_sequence: 1,
+            };
+            let error = db
+                .record_progress_checkpoint(
+                    &campaign_id,
+                    &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+                    std::slice::from_ref(&evidence),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Forbidden(_)), "{kind:?}: {error:?}");
+        }
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn verified_progress_continues_past_former_deadline_and_productivity_caps() {
+        let (path, db, _) = fixture().await;
+        let campaign_id = progress_campaign(&db).await;
+        for zone in 0..5u64 {
+            let sequence = zone * 2 + 1;
+            let failed =
+                test_evidence(&campaign_id, &campaign_id, sequence, "suite-stable", "FAIL");
+            let passed = test_evidence(
+                &campaign_id,
+                &campaign_id,
+                sequence + 1,
+                "suite-stable",
+                "PASS",
+            );
+            let evidence = [failed, passed];
+            let outcome = db
+                .record_progress_checkpoint(
+                    &campaign_id,
+                    &progress_checkpoint(&campaign_id, sequence, &evidence),
+                    &evidence,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome.decision,
+                crate::execution_policy::ContinuationDecision::Continue,
+                "verified FAIL-to-PASS progress must continue beyond sequence {sequence}: {outcome:?}"
+            );
+        }
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -16,12 +16,14 @@ use uuid::Uuid;
 
 use crate::execution_profile::{ExecutionProfileContent, evaluate_executability};
 use crate::intake::{
-    EXECUTION_POLICY_MIN_DEADLINE_SECS, IntakeAuthorizationReason, IntakeAuthorizationState,
-    IntakeCampaignBudget, IntakeMode, execution_policy_terms, intersect_campaign_budget,
+    IntakeAuthorizationReason, IntakeAuthorizationState, IntakeExecutionScope, IntakeMode,
+    execution_policy_terms, validate_execution_scope,
 };
-use crate::lead::{ActionStatus, LeadPlanProposal, RiskClass, StandingDelegation, plan_hash};
+use crate::lead::{ActionStatus, LeadPlanProposal, RiskClass, StandingDelegationV2, plan_hash_v2};
 
-use super::delegations::{DelegationUsage, create_standing_delegation_in_tx, load_delegation};
+use super::delegations::{
+    DelegationUsage, create_standing_delegation_v2_in_tx, load_delegation_v2,
+};
 use super::execution_profiles::{
     insert_audit, load_bound_profile, load_current_content, load_provider_availability,
 };
@@ -113,7 +115,7 @@ pub struct NewExecutionPolicyGrant<'a> {
 #[derive(Debug, Clone)]
 pub struct ExecutionPolicyGrantResult {
     pub grant: ExecutionPolicyGrantRecord,
-    pub delegation: StandingDelegation,
+    pub delegation: StandingDelegationV2,
     pub usage: DelegationUsage,
     pub created: bool,
 }
@@ -130,13 +132,13 @@ pub struct IntakeApprovalContext {
     pub proposal: LeadPlanProposal,
     pub context: LeadExecutionContextRecord,
     pub profile: ExecutionProfileContent,
-    pub grant: StandingDelegation,
+    pub grant: StandingDelegationV2,
     pub usage: DelegationUsage,
     pub config: crate::lead::ProjectConfig,
     pub action_spec: ActionSpec,
     pub spec_sha256: String,
     pub mechanism: String,
-    pub budget: IntakeCampaignBudget,
+    pub scope: IntakeExecutionScope,
 }
 
 pub(super) struct ResolvedIntakeProfile {
@@ -428,7 +430,7 @@ impl Database {
         .await?
         {
             let grant = load_execution_policy_grant(&mut transaction, &delegation_id).await?;
-            let delegation = load_delegation(&mut transaction, &delegation_id).await?;
+            let delegation = load_delegation_v2(&mut transaction, &delegation_id).await?;
             let usage = load_delegation_usage(&mut transaction, &delegation_id).await?;
             transaction.commit().await?;
             return Ok(ExecutionPolicyGrantResult {
@@ -447,6 +449,14 @@ impl Database {
             });
         }
         let current = load_current_content(&mut transaction, input.profile_id).await?;
+        let Some(profile) = current.content.v2().cloned() else {
+            return Err(Error::IntakeConflict {
+                code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+                message:
+                    "a legacy V1 execution profile is historical evidence and cannot authorize new work"
+                        .into(),
+            });
+        };
         if current.revision != input.expected_revision {
             return Err(Error::IntakeConflict {
                 code: "EXECUTION_PROFILE_STALE",
@@ -462,7 +472,7 @@ impl Database {
         .bind(&current.revision_id)
         .fetch_one(&mut *transaction)
         .await?;
-        if current.content.compute_content_hash() != profile_hash.0
+        if current.content.content_hash() != profile_hash.0
             || profile_hash.0 != input.expected_revision_hash
         {
             return Err(Error::IntakeConflict {
@@ -472,7 +482,7 @@ impl Database {
         }
         let availability =
             load_provider_availability(&mut transaction, &self.provider_model_cache()).await?;
-        let (executable, warnings) = evaluate_executability(&current.content, &availability);
+        let (executable, warnings) = evaluate_executability(&profile, &availability);
         if !executable {
             return Err(Error::IntakeConflict {
                 code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
@@ -507,25 +517,8 @@ impl Database {
                         .into(),
             });
         }
-        if current.content.budgets.deadline_secs < EXECUTION_POLICY_MIN_DEADLINE_SECS {
-            return Err(Error::IntakeConflict {
-                code: "EXECUTION_PROFILE_DEADLINE_TOO_SHORT",
-                message: format!(
-                    "the profile deadline of {}s is too short for a bounded Campaign",
-                    current.content.budgets.deadline_secs
-                ),
-            });
-        }
-        if current.content.budgets.max_sessions < 2 {
-            return Err(Error::IntakeConflict {
-                code: "EXECUTION_PROFILE_SESSIONS_TOO_LOW",
-                message:
-                    "the profile needs at least two sessions for assessment and implementation"
-                        .into(),
-            });
-        }
-        let terms = execution_policy_terms(&current.content);
-        let mut delegation = StandingDelegation {
+        let terms = execution_policy_terms(&profile);
+        let mut delegation = StandingDelegationV2 {
             id: Uuid::new_v4().to_string(),
             principal_id: input.principal_id.into(),
             audit_id: format!("execution-policy:{}", Uuid::new_v4()),
@@ -539,19 +532,14 @@ impl Database {
             autonomous_start: terms.autonomous_start,
             autonomous_risk_classes: Vec::new(),
             route: crate::lead::ProviderRoute {
-                provider: current.content.roles.implementer.provider.clone(),
-                model: current.content.roles.implementer.model.clone(),
+                provider: profile.roles.implementer.provider.clone(),
+                model: profile.roles.implementer.model.clone(),
                 mode: "build".into(),
             },
-            max_attempts: terms.max_attempts_per_request,
-            max_timeout_secs: terms.max_timeout_secs_per_request as u32,
-            max_repair_cycles: terms.max_repair_cycles,
-            max_wall_clock_secs: terms.max_wall_clock_secs_per_request as u32,
+            max_timeout_secs: terms.max_timeout_secs,
             max_parallel: terms.max_parallel,
-            max_sessions: terms.max_sessions_per_request,
-            max_requests: terms.max_requests,
-            max_cumulative_sessions: terms.max_cumulative_sessions,
-            max_cumulative_attempts: terms.max_cumulative_attempts,
+            operations: terms.operations,
+            progress: terms.progress,
             expires_at: Utc::now() + chrono::Duration::days(terms.validity_days),
             revoked_at: None,
         };
@@ -561,7 +549,7 @@ impl Database {
             sha256_hex(input.idempotency_key.as_bytes())
         );
         let (delegation, _) =
-            create_standing_delegation_in_tx(&mut transaction, &delegation, &delegation_key)
+            create_standing_delegation_v2_in_tx(&mut transaction, &delegation, &delegation_key)
                 .await?;
         let now = Utc::now().to_rfc3339();
         let grant = ExecutionPolicyGrantRecord {
@@ -580,8 +568,9 @@ impl Database {
         sqlx::query::query(
             "INSERT INTO execution_policy_grants
              (delegation_id,project_id,principal_id,profile_id,profile_revision_id,
-              profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10)",
+              profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,created_at,
+              schema_version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,2)",
         )
         .bind(&grant.delegation_id)
         .bind(&grant.project_id)
@@ -760,7 +749,7 @@ pub(super) async fn create_intake_request_in_tx(
     idempotency_key: &str,
     profile: ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     prepared: PreparedIntakeRequest,
 ) -> Result<IntakeRequestRecord, Error> {
     let draft = NewDraftLeadRequest {
@@ -966,13 +955,21 @@ async fn resolve_intake_profile_in_tx(
     .bind(&current.revision_id)
     .fetch_one(&mut *connection)
     .await?;
-    if current.content.compute_content_hash() != content_hash.0 {
+    if current.content.content_hash() != content_hash.0 {
         return Err(Error::Conflict(
             "stored execution profile hash is inconsistent",
         ));
     }
+    let Some(content) = current.content.v2().cloned() else {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message:
+                "a legacy V1 execution profile is historical evidence and cannot authorize new work"
+                    .into(),
+        });
+    };
     let availability = load_provider_availability(connection, cache).await?;
-    let (executable, warnings) = evaluate_executability(&current.content, &availability);
+    let (executable, warnings) = evaluate_executability(&content, &availability);
     if !executable {
         return Err(Error::IntakeConflict {
             code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
@@ -987,7 +984,7 @@ async fn resolve_intake_profile_in_tx(
         revision_id: current.revision_id,
         revision: current.revision,
         content_hash: content_hash.0,
-        content: current.content,
+        content,
     })
 }
 
@@ -1004,7 +1001,7 @@ pub(super) async fn load_exact_intake_profile_in_tx(
     content_hash: &str,
 ) -> Result<ResolvedIntakeProfile, Error> {
     let row = sqlx::query::query(
-        "SELECT content_json,content_hash,revision FROM execution_profile_revisions
+        "SELECT content_json,content_hash,revision,schema_version FROM execution_profile_revisions
          WHERE revision_id=?1 AND profile_id=?2",
     )
     .bind(revision_id)
@@ -1024,15 +1021,26 @@ pub(super) async fn load_exact_intake_profile_in_tx(
             message: "the acknowledged execution profile revision hash is stale".into(),
         });
     }
-    let content: ExecutionProfileContent =
-        serde_json::from_str(&row.try_get::<String, _>("content_json")?)
-            .map_err(|_| Error::Invalid("stored execution profile content encoding"))?;
-    if content.compute_content_hash() != content_hash {
+    let schema_version = u32::try_from(row.try_get::<i64, _>("schema_version")?)
+        .map_err(|_| Error::Invalid("stored execution profile schema version"))?;
+    let decoded = super::execution_profiles::decode_profile_content(
+        schema_version,
+        &row.try_get::<String, _>("content_json")?,
+    )?;
+    if decoded.content_hash() != content_hash {
         return Err(Error::IntakeConflict {
             code: "EXECUTION_PROFILE_STALE",
             message: "stored execution profile content does not match its hash".into(),
         });
     }
+    let Some(content) = decoded.v2().cloned() else {
+        return Err(Error::IntakeConflict {
+            code: "EXECUTION_PROFILE_NOT_EXECUTABLE",
+            message:
+                "a legacy V1 execution profile is historical evidence and cannot authorize new work"
+                    .into(),
+        });
+    };
     let availability = load_provider_availability(connection, cache).await?;
     let (executable, warnings) = evaluate_executability(&content, &availability);
     if !executable {
@@ -1059,7 +1067,7 @@ async fn find_matching_execution_policy_grant_in_tx(
     principal_id: &str,
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
-) -> Result<StandingDelegation, Error> {
+) -> Result<StandingDelegationV2, Error> {
     let rows = sqlx::query::query(
         "SELECT delegation_id FROM execution_policy_grants
          WHERE project_id=?1 AND principal_id=?2 AND profile_revision_id=?3
@@ -1075,22 +1083,15 @@ async fn find_matching_execution_policy_grant_in_tx(
     .await?;
     for row in rows {
         let delegation_id: String = row.try_get("delegation_id")?;
-        let grant = load_delegation(connection, &delegation_id).await?;
+        let grant = load_delegation_v2(connection, &delegation_id).await?;
         if grant.revoked_at.is_some() || grant.expires_at <= Utc::now() {
             continue;
         }
         if !delegation_matches_policy_scope(&grant, profile, config) {
             continue;
         }
-        let usage = load_delegation_usage(connection, &grant.id).await?;
-        let sessions = u64::from(profile.content.budgets.max_sessions);
-        let attempts = u64::from(grant.max_attempts);
-        if u64::from(usage.requests) + 1 > u64::from(grant.max_requests)
-            || u64::from(usage.sessions) + sessions > u64::from(grant.max_cumulative_sessions)
-            || u64::from(usage.attempts) + attempts > u64::from(grant.max_cumulative_attempts)
-        {
-            continue;
-        }
+        // Cumulative usage is diagnosis telemetry, never an admission ceiling.
+        let _usage = load_delegation_usage(connection, &grant.id).await?;
         return Ok(grant);
     }
     Err(Error::IntakeConflict {
@@ -1102,7 +1103,7 @@ async fn find_matching_execution_policy_grant_in_tx(
 }
 
 fn delegation_matches_policy_scope(
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     profile: &ResolvedIntakeProfile,
     config: &crate::lead::ProjectConfig,
 ) -> bool {
@@ -1114,12 +1115,9 @@ fn delegation_matches_policy_scope(
         && grant.route.mode == "build"
         && grant.allowed_paths == config.allowed_paths
         && grant.capabilities == config.capabilities
-        && grant.max_attempts <= profile.content.budgets.max_attempts
-        && grant.max_sessions <= profile.content.budgets.max_sessions
-        && u64::from(grant.max_timeout_secs) <= profile.content.budgets.deadline_secs
-        && u64::from(grant.max_wall_clock_secs) <= profile.content.budgets.deadline_secs
+        && grant.max_timeout_secs <= profile.content.operations.tool_call_timeout_secs.get()
         && grant.max_parallel == 1
-        && grant.max_repair_cycles == 0
+        && grant.progress == profile.content.progress
 }
 
 async fn find_reusable_execution_policy_grant_in_tx(
@@ -1127,7 +1125,7 @@ async fn find_reusable_execution_policy_grant_in_tx(
     input: &NewExecutionPolicyGrant<'_>,
     revision_id: &str,
     profile_hash: &str,
-) -> Result<Option<(StandingDelegation, ExecutionPolicyGrantRecord)>, Error> {
+) -> Result<Option<(StandingDelegationV2, ExecutionPolicyGrantRecord)>, Error> {
     let rows = sqlx::query::query(
         "SELECT delegation_id FROM execution_policy_grants
          WHERE project_id=?1 AND principal_id=?2 AND profile_id=?3
@@ -1144,19 +1142,12 @@ async fn find_reusable_execution_policy_grant_in_tx(
     .await?;
     for row in rows {
         let delegation_id: String = row.try_get("delegation_id")?;
-        let delegation = load_delegation(connection, &delegation_id).await?;
+        let delegation = load_delegation_v2(connection, &delegation_id).await?;
         if delegation.revoked_at.is_some() || delegation.expires_at <= Utc::now() {
             continue;
         }
-        let usage = load_delegation_usage(connection, &delegation.id).await?;
-        if u64::from(usage.requests) + 1 > u64::from(delegation.max_requests)
-            || u64::from(usage.sessions) + u64::from(delegation.max_sessions)
-                > u64::from(delegation.max_cumulative_sessions)
-            || u64::from(usage.attempts) + u64::from(delegation.max_attempts)
-                > u64::from(delegation.max_cumulative_attempts)
-        {
-            continue;
-        }
+        // Historical usage counts are exposed for diagnosis only.
+        let _usage = load_delegation_usage(connection, &delegation.id).await?;
         let grant = load_execution_policy_grant(connection, &delegation.id).await?;
         return Ok(Some((delegation, grant)));
     }
@@ -1215,7 +1206,7 @@ async fn load_intake_approval_context(
             code: "INTAKE_PROFILE_CONTEXT_MISSING",
             message: "the Lead request has no frozen execution profile context".into(),
         })?;
-    let grant = load_delegation(connection, &intake.delegation_id).await?;
+    let grant = load_delegation_v2(connection, &intake.delegation_id).await?;
     if context.project_id != intake.project_id
         || context.profile_id != intake.profile_id
         || context.profile_revision_id != intake.profile_revision_id
@@ -1319,7 +1310,7 @@ async fn load_intake_approval_context(
     if request_hash != lead.request_hash {
         return Err(Error::Invalid("Lead request hash mismatch"));
     }
-    let recomputed_plan_hash = plan_hash(&proposal, &grant, &lead.project_config_hash);
+    let recomputed_plan_hash = plan_hash_v2(&proposal, &grant, &lead.project_config_hash);
     if recomputed_plan_hash != plan.plan_hash
         || plan.config_hash != lead.project_config_hash
         || plan.delegation_hash != grant.content_hash
@@ -1346,7 +1337,7 @@ async fn load_intake_approval_context(
         if action.status != ActionStatus::Pending {
             return Err(Error::Forbidden("action is not startable".into()));
         }
-        proposal.validate(&grant, &config.binding(), &action, now)?;
+        proposal.validate_v2(&grant, &config.binding(), &action, now)?;
     }
     let (action_spec, spec_sha256) = load_action_spec(connection, &lead.action_id).await?;
     if action_spec.allowed_paths.is_empty()
@@ -1385,22 +1376,13 @@ async fn load_intake_approval_context(
         }
     }
     let usage = load_delegation_usage(connection, &grant.id).await?;
-    let budget =
-        intersect_campaign_budget(&profile, &proposal, &grant, &intake.mode).map_err(|error| {
+    let scope =
+        validate_execution_scope(&profile, &proposal, &grant, &intake.mode).map_err(|error| {
             Error::IntakeConflict {
                 code: error.reason(),
-                message: "the frozen plan cannot be bounded for implementation".into(),
+                message: "the frozen plan cannot be bound to the execution scope".into(),
             }
         })?;
-    if !allow_started
-        && u64::from(usage.attempts) + u64::from(budget.max_attempts)
-            > u64::from(grant.max_cumulative_attempts)
-    {
-        return Err(Error::IntakeConflict {
-            code: IntakeAuthorizationReason::DelegationCapacityExhausted.as_str(),
-            message: "the execution policy has no remaining attempt capacity".into(),
-        });
-    }
     Ok(IntakeApprovalContext {
         intake,
         lead,
@@ -1414,12 +1396,12 @@ async fn load_intake_approval_context(
         action_spec,
         spec_sha256,
         mechanism: mechanism.0,
-        budget,
+        scope,
     })
 }
 
 fn delegation_matches_frozen_profile(
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     profile: &ExecutionProfileContent,
 ) -> bool {
     grant.risk_classes == vec![RiskClass::R0]
@@ -1428,20 +1410,17 @@ fn delegation_matches_frozen_profile(
         && grant.route.provider == profile.roles.implementer.provider
         && grant.route.model == profile.roles.implementer.model
         && grant.route.mode == "build"
-        && grant.max_attempts <= profile.budgets.max_attempts
-        && grant.max_sessions <= profile.budgets.max_sessions
-        && u64::from(grant.max_timeout_secs) <= profile.budgets.deadline_secs
-        && u64::from(grant.max_wall_clock_secs) <= profile.budgets.deadline_secs
+        && grant.max_timeout_secs <= profile.operations.tool_call_timeout_secs.get()
         && grant.max_parallel == 1
-        && grant.max_repair_cycles == 0
+        && grant.progress == profile.progress
 }
 
 pub(super) async fn load_frozen_profile_content(
     connection: &mut SqliteConnection,
     context: &LeadExecutionContextRecord,
 ) -> Result<ExecutionProfileContent, Error> {
-    let row: (String, String, i64) = sqlx::query_as::query_as(
-        "SELECT content_json,content_hash,revision FROM execution_profile_revisions WHERE revision_id=?1",
+    let row: (String, String, i64, i64) = sqlx::query_as::query_as(
+        "SELECT content_json,content_hash,revision,schema_version FROM execution_profile_revisions WHERE revision_id=?1",
     )
     .bind(&context.profile_revision_id)
     .fetch_optional(&mut *connection)
@@ -1455,6 +1434,14 @@ pub(super) async fn load_frozen_profile_content(
         return Err(Error::IntakeConflict {
             code: "INTAKE_PROFILE_CONTEXT_MISMATCH",
             message: "the frozen profile revision hash or number changed".into(),
+        });
+    }
+    let schema_version = u32::try_from(row.3)
+        .map_err(|_| Error::Invalid("stored execution profile schema version"))?;
+    if schema_version != 2 {
+        return Err(Error::IntakeConflict {
+            code: "INTAKE_PROFILE_CONTEXT_MISMATCH",
+            message: "a legacy V1 profile cannot authorize a V2 Campaign".into(),
         });
     }
     let content: ExecutionProfileContent = serde_json::from_str(&row.0)
@@ -1723,14 +1710,16 @@ mod tests {
         AuthenticatedOperatorApproval, ExpectedStartBinding, NewProjectConfig,
         ProviderSettingsWrite, StartAuthority,
     };
+    use crate::execution_policy::{OperationLimits, ProgressPolicy};
     use crate::execution_profile::{
-        AutoStartPolicy, CampaignBudgets, ExecutionProfileCategory, ExecutionProfileRoles,
-        ExecutionRoleRoute, ReasoningEffort,
+        AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileRoles, ExecutionRoleRoute,
+        ReasoningEffort,
     };
     use crate::lead::{
         ActionBinding, AssessmentInput, Capability, CheckKind, LeadRequestState, QualityProfile,
         SpecCheck,
     };
+    use std::num::NonZeroU32;
     use std::path::PathBuf;
 
     fn temp_path(prefix: &str) -> PathBuf {
@@ -1742,9 +1731,25 @@ mod tests {
             provider: "opencode-go".into(),
             model: "deepseek-v4.1-flash".into(),
             reasoning: Some(ReasoningEffort::Medium),
-            max_input_tokens: 64_000,
-            max_output_tokens: 8_192,
-            max_cost_micros: 300_000,
+        }
+    }
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
         }
     }
 
@@ -1758,15 +1763,8 @@ mod tests {
                 implementer: route(),
                 semantic_reviewer: route(),
             },
-            budgets: CampaignBudgets {
-                max_attempts: 2,
-                max_sessions: 3,
-                max_turns: 4,
-                max_input_tokens: 40_000,
-                max_output_tokens: 12_000,
-                max_cost_micros: 500_000,
-                deadline_secs: 600,
-            },
+            operations: operations(),
+            progress: progress(),
             auto_start: AutoStartPolicy {
                 enabled: false,
                 risk_classes: Vec::new(),
@@ -1927,7 +1925,7 @@ mod tests {
         let lead = db.lead_request(&request.lead_request_id).await.unwrap();
         let config = db.project_config(&request.project_id).await.unwrap();
         let grant = db
-            .standing_delegation(&request.delegation_id)
+            .standing_delegation_v2(&request.delegation_id)
             .await
             .unwrap();
         db.begin_lead_assessment(&lead.id).await.unwrap();
@@ -1984,13 +1982,6 @@ mod tests {
     }
 
     fn authorization(context: &IntakeApprovalContext) -> NewCampaignAuthorization {
-        let budget = intersect_campaign_budget(
-            &context.profile,
-            &context.proposal,
-            &context.grant,
-            &context.intake.mode,
-        )
-        .unwrap();
         NewCampaignAuthorization {
             authorization_id: format!("intake-{}", context.intake.id),
             risk_class: "R0".into(),
@@ -1998,18 +1989,14 @@ mod tests {
             actor: "operator-token".into(),
             rationale: "reviewed".into(),
             authorized_paths: context.action_spec.allowed_paths.clone(),
-            max_attempts: budget.max_attempts,
             provider: context.profile.roles.implementer.provider.clone(),
             model: context.profile.roles.implementer.model.clone(),
             provider_mode: "build".into(),
             delegation_id: context.grant.id.clone(),
-            max_sessions: budget.max_sessions,
-            max_turns: budget.max_turns,
-            max_input_tokens: budget.max_input_tokens,
-            max_output_tokens: budget.max_output_tokens,
-            max_cost_micros: budget.max_cost_micros,
-            deadline_secs: budget.deadline_secs,
             allowed_tools: Vec::new(),
+            monetary_envelope_id: super::authorization::NO_BILLABLE_ENVELOPE.into(),
+            progress: context.profile.progress,
+            operations: context.profile.operations,
         }
     }
 
@@ -2053,7 +2040,8 @@ mod tests {
         assert!(!policy.delegation.autonomous_start);
         assert_eq!(policy.delegation.risk_classes, vec![RiskClass::R0]);
         assert_eq!(policy.delegation.route.provider, "opencode-go");
-        assert_eq!(policy.delegation.max_requests, 4);
+        assert!(policy.delegation.operations.tool_call_timeout_secs.get() >= 1);
+        assert_eq!(policy.delegation.progress, progress());
         assert!(policy.delegation.expires_at > Utc::now());
 
         let (request, created) = db
@@ -2371,14 +2359,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_budget_and_start_enforce_implementer_route_caps() {
+    async fn approval_scope_and_start_enforce_frozen_operation_limits() {
         let (path, db, _base_profile, config) = fixture().await;
-        let mut route_capped = profile_content("Route capped");
-        route_capped.roles.implementer.max_input_tokens = 10_000;
-        route_capped.roles.implementer.max_output_tokens = 1_000;
-        route_capped.roles.implementer.max_cost_micros = 100_000;
+        let mut limited = profile_content("Operation limited");
+        limited.operations.max_generation_tokens = std::num::NonZeroU32::new(4_096).unwrap();
+        limited.operations.tool_call_timeout_secs = std::num::NonZeroU32::new(120).unwrap();
         let profile = db
-            .create_execution_profile(&route_capped, "owner")
+            .create_execution_profile(&limited, "owner")
             .await
             .unwrap();
         db.create_execution_policy_grant(NewExecutionPolicyGrant {
@@ -2388,58 +2375,48 @@ mod tests {
             expected_revision_hash: &profile.content_hash,
             project_config_hash: &config.config_hash,
             acknowledge: true,
-            idempotency_key: "policy-route-capped",
+            idempotency_key: "policy-operation-limited",
             principal_id: "operator-token",
             principal_label: None,
         })
         .await
         .unwrap();
-        let request = create_request(&db, &profile, "request-route-capped").await;
+        let request = create_request(&db, &profile, "request-operation-limited").await;
         let context = record_fixture_plan(&db, &request).await;
-        assert_eq!(context.budget.max_input_tokens, 10_000);
-        assert_eq!(context.budget.max_output_tokens, 1_000);
-        assert_eq!(context.budget.max_cost_micros, 100_000);
+        // The approval scope carries the profile's frozen technical operation
+        // limits and no attempts/sessions/turns/tokens/cost counters.
+        assert_eq!(context.scope.operations, limited.operations);
+        assert_eq!(context.scope.progress, limited.progress);
+        assert_eq!(context.scope.max_parallel, 1);
 
         let approval = |rationale: &'static str| {
             AuthenticatedOperatorApproval::new("operator-token", None, rationale).unwrap()
         };
-        let mut inflated_input = authorization(&context);
-        inflated_input.max_input_tokens = 10_001;
+        let mut inflated_timeout = authorization(&context);
+        inflated_timeout.operations.tool_call_timeout_secs =
+            std::num::NonZeroU32::new(121).unwrap();
         let error = db
             .start_lead_campaign(
                 &context.lead.id,
-                "route-input",
-                StartAuthority::Operator(approval("input")),
+                "operation-timeout",
+                StartAuthority::Operator(approval("timeout")),
                 Some(&binding(&context)),
-                Some(&inflated_input),
+                Some(&inflated_timeout),
             )
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
 
-        let mut inflated_output = authorization(&context);
-        inflated_output.max_output_tokens = 1_001;
+        let mut inflated_tokens = authorization(&context);
+        inflated_tokens.operations.max_generation_tokens =
+            std::num::NonZeroU32::new(4_097).unwrap();
         let error = db
             .start_lead_campaign(
                 &context.lead.id,
-                "route-output",
-                StartAuthority::Operator(approval("output")),
+                "operation-tokens",
+                StartAuthority::Operator(approval("tokens")),
                 Some(&binding(&context)),
-                Some(&inflated_output),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Forbidden(_)), "{error:?}");
-
-        let mut inflated_cost = authorization(&context);
-        inflated_cost.max_cost_micros = 100_001;
-        let error = db
-            .start_lead_campaign(
-                &context.lead.id,
-                "route-cost",
-                StartAuthority::Operator(approval("cost")),
-                Some(&binding(&context)),
-                Some(&inflated_cost),
+                Some(&inflated_tokens),
             )
             .await
             .unwrap_err();
@@ -2448,7 +2425,7 @@ mod tests {
         let result = db
             .start_lead_campaign(
                 &context.lead.id,
-                "route-ok",
+                "operation-ok",
                 StartAuthority::Operator(approval("ok")),
                 Some(&binding(&context)),
                 Some(&authorization(&context)),
@@ -2581,7 +2558,7 @@ mod tests {
         let request = create_request(&db, &profile, "request-stale-config").await;
         let lead = db.lead_request(&request.lead_request_id).await.unwrap();
         let grant = db
-            .standing_delegation(&request.delegation_id)
+            .standing_delegation_v2(&request.delegation_id)
             .await
             .unwrap();
         db.begin_lead_assessment(&lead.id).await.unwrap();

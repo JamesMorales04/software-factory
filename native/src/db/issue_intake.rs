@@ -22,12 +22,9 @@ use crate::issue_intake::{
     evaluate_issue_intake_eligibility, expiry_within_policy, issue_objective, policy_content_hash,
     queue_item_id_for_batch_item, validate_policy_terms,
 };
-use crate::lead::{
-    Capability, MAX_CUMULATIVE_ATTEMPTS, MAX_CUMULATIVE_SESSIONS, ProjectConfig, RiskClass,
-    StandingDelegation,
-};
+use crate::lead::{Capability, ProjectConfig, RiskClass, StandingDelegationV2};
 
-use super::delegations::{create_standing_delegation_in_tx, load_delegation};
+use super::delegations::{create_standing_delegation_v2_in_tx, load_delegation_v2};
 use super::execution_profiles::load_current_content;
 use super::intake::{
     create_intake_request_in_tx, load_exact_intake_profile_in_tx, load_intake_request,
@@ -803,7 +800,12 @@ impl Database {
             .map(|value| value.with_timezone(&Utc))
             .map_err(|_| Error::Invalid("issue batch expiry"))?;
         let batch_expiry = batch_expiry.min(deadline);
-        let mut delegation = StandingDelegation {
+        // The batch admits a finite set of issues and a finite financial
+        // allocation. The execution delegation itself is Execution Policy V2:
+        // it freezes scope, route, technical operation limits and progress
+        // supervision, not attempts/sessions/turns/repair cycles or a universal
+        // Campaign deadline.
+        let mut delegation = StandingDelegationV2 {
             id: Uuid::new_v4().to_string(),
             principal_id: input.principal_id.into(),
             audit_id: format!("issue-intake-batch:{batch_id}"),
@@ -825,21 +827,10 @@ impl Database {
                 model: profile.content.roles.implementer.model.clone(),
                 mode: "build".into(),
             },
-            max_attempts: policy.max_attempts,
-            max_timeout_secs: u32::try_from(policy.max_wall_clock_secs.min(600)).unwrap_or(600),
-            max_repair_cycles: 0,
-            max_wall_clock_secs: u32::try_from(policy.max_wall_clock_secs).unwrap_or(u32::MAX),
+            max_timeout_secs: profile.content.operations.tool_call_timeout_secs.get(),
             max_parallel: 1,
-            max_sessions: policy.max_sessions,
-            max_requests: selected,
-            max_cumulative_sessions: policy
-                .max_sessions
-                .saturating_mul(selected)
-                .min(MAX_CUMULATIVE_SESSIONS),
-            max_cumulative_attempts: policy
-                .max_attempts
-                .saturating_mul(selected)
-                .min(MAX_CUMULATIVE_ATTEMPTS),
+            operations: profile.content.operations,
+            progress: profile.content.progress,
             expires_at: batch_expiry,
             revoked_at: None,
         };
@@ -849,12 +840,12 @@ impl Database {
             sha256_hex(input.idempotency_key.as_bytes())
         );
         let (delegation, _) =
-            create_standing_delegation_in_tx(&mut transaction, &delegation, &delegation_key)
+            create_standing_delegation_v2_in_tx(&mut transaction, &delegation, &delegation_key)
                 .await?;
         insert_batch_policy_grant(
             &mut transaction,
             &policy,
-            &delegation,
+            &delegation.id,
             input.principal_id,
             input.idempotency_key,
             &now.to_rfc3339(),
@@ -1482,7 +1473,28 @@ impl Database {
                 intake: None,
             });
         }
-        let delegation = load_delegation(&mut transaction, &batch.delegation_id).await?;
+        let delegation = match load_delegation_v2(&mut transaction, &batch.delegation_id).await {
+            Ok(delegation) => delegation,
+            Err(Error::Forbidden(_)) => {
+                mark_queue_terminal_in_tx(
+                    &mut transaction,
+                    &queue,
+                    "BLOCKED",
+                    &["LEGACY_V1_DELEGATION_REQUIRES_NEW_POLICY".to_string()],
+                    "the batch was authorized under legacy V1 evidence; acknowledge a new execution policy to create a linked V2 request",
+                    &now.to_rfc3339(),
+                )
+                .await?;
+                transaction.commit().await?;
+                return Ok(IssueIntakeReconcileResult {
+                    status: "BLOCKED".into(),
+                    reasons: vec!["LEGACY_V1_DELEGATION_REQUIRES_NEW_POLICY".into()],
+                    queue: load_queue_item_pool(&self.pool, project_id, queue_id).await?,
+                    intake: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
         if delegation.revoked_at.is_some()
             || delegation.expires_at <= now
             || delegation.autonomous_start
@@ -2933,7 +2945,7 @@ async fn insert_queue_item_for_batch_item(
 async fn insert_batch_policy_grant(
     connection: &mut SqliteConnection,
     policy: &IssueIntakePolicyRecord,
-    delegation: &StandingDelegation,
+    delegation_id: &str,
     principal_id: &str,
     idempotency_key: &str,
     created_at: &str,
@@ -2946,10 +2958,10 @@ async fn insert_batch_policy_grant(
         "INSERT INTO execution_policy_grants
          (delegation_id,project_id,principal_id,profile_id,profile_revision_id,
           profile_revision,profile_hash,project_config_hash,acknowledged,idempotency_key,
-          created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10)",
+          created_at,schema_version)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,2)",
     )
-    .bind(&delegation.id)
+    .bind(delegation_id)
     .bind(&policy.project_id)
     .bind(principal_id)
     .bind(&policy.profile_id)
@@ -3266,7 +3278,9 @@ fn parse_json<T: serde::de::DeserializeOwned>(value: String) -> Result<T, Error>
 
 /// Recover leases left by a previous Core process. Called once during database
 /// open before any request can race. Committed request links are preserved;
-/// uncommitted leases return to PENDING or BLOCKED after their retry budget.
+/// uncommitted leases return to PENDING or BLOCKED after their bounded
+/// GitHub-read I/O retry budget. This budget governs reconciliation I/O only;
+/// it never limits Campaign execution or progress.
 pub(super) async fn recover_issue_intake_leases_on_open(pool: &SqlitePool) -> Result<(), Error> {
     let now = Utc::now().to_rfc3339();
     let rows = sqlx::query::query(

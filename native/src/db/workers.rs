@@ -1,22 +1,7 @@
 use super::*;
 
 use chrono::Utc;
-
-fn provider_authorization_expired(
-    authorized_at: &str,
-    deadline_secs: i64,
-    now_ms: i64,
-) -> Result<bool, Error> {
-    if deadline_secs <= 0 {
-        return Ok(false);
-    }
-    let authorized_at = chrono::DateTime::parse_from_rfc3339(authorized_at)
-        .map_err(|_| Error::Invalid("provider authorization deadline"))?;
-    let deadline_ms = authorized_at
-        .timestamp_millis()
-        .saturating_add(deadline_secs.saturating_mul(1000));
-    Ok(now_ms > deadline_ms)
-}
+use uuid::Uuid;
 
 impl Database {
     pub async fn register_worker_session(
@@ -134,15 +119,18 @@ impl Database {
         if worker_id.trim().is_empty() || attempt_id.trim().is_empty() || generation <= 0 {
             return Err(Error::Invalid("provider assignment identity"));
         }
-        let row: Option<(String, String, String, i64)> = sqlx::query_as::query_as(
-            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,''),ca.created_at,ca.deadline_secs
+        let row: Option<(String, String)> = sqlx::query_as::query_as(
+            "SELECT COALESCE(ca.provider,''),COALESCE(ca.model,'')
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
              JOIN campaigns c ON c.id=r.campaign_id
              JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+             JOIN execution_policies p ON p.policy_id=ca.policy_id
+             JOIN standing_delegations d ON d.id=ca.delegation_id
              JOIN worker_leases wl ON wl.attempt_id=a.id
              WHERE a.id=?1 AND wl.worker_id=?2 AND wl.generation=?3
                AND wl.expires_at_ms>?4 AND a.status='LEASED' AND c.status='AUTHORIZED'
+               AND ca.schema_version=2 AND d.schema_version=2 AND d.revoked_at IS NULL
                AND ca.execution_mode='TRUSTED_LOCAL_PROVIDER'",
         )
         .bind(attempt_id)
@@ -151,19 +139,14 @@ impl Database {
         .bind(now_ms)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((provider, model, authorized_at, deadline_secs)) = row else {
+        let Some((provider, model)) = row else {
             return Err(Error::Forbidden(
-                "no live authorized provider assignment for this Worker attempt".into(),
+                "no live V2 authorized provider assignment for this Worker attempt".into(),
             ));
         };
         if provider.is_empty() || model.is_empty() {
             return Err(Error::Forbidden(
                 "provider assignment has no authorized route".into(),
-            ));
-        }
-        if provider_authorization_expired(&authorized_at, deadline_secs, now_ms)? {
-            return Err(Error::Forbidden(
-                "provider assignment authorization deadline expired".into(),
             ));
         }
         Ok((provider, model))
@@ -243,7 +226,9 @@ impl Database {
         let mut connection = self.pool.acquire().await?;
         super::lead::validate_lead_attempt_lineage(&mut connection, attempt_id).await?;
         let row = sqlx::query::query(
-            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,p.repository,
+            "SELECT COALESCE(aps.action_id,c.action_id) AS action_id,
+                    r.campaign_id,COALESCE(lt.unit_id,li.integration_id,c.id) AS work_item_id,
+                    p.repository,
                     COALESCE(aps.spec_json,s.spec_json) AS spec_json,
                     COALESCE(aps.spec_sha256,s.spec_sha256) AS spec_sha256,
                     COALESCE(aps.base_commit,p.base_commit) AS base_commit,
@@ -252,12 +237,10 @@ impl Database {
                     ca.execution_mode,COALESCE(ca.provider,'') AS provider,
                     COALESCE(ca.model,'') AS model,COALESCE(ca.provider_mode,'') AS provider_mode,
                     COALESCE(ca.delegation_id,'') AS delegation_id,
-                    COALESCE(ca.max_sessions,0) AS max_sessions,
-                    COALESCE(ca.max_turns,0) AS max_turns,
-                    COALESCE(ca.max_input_tokens,0) AS max_input_tokens,
-                    COALESCE(ca.max_output_tokens,0) AS max_output_tokens,
-                    COALESCE(ca.max_cost_micros,0) AS max_cost_micros,
-                    COALESCE(ca.deadline_secs,0) AS deadline_secs,
+                    ca.schema_version AS authorization_version,
+                    ca.policy_id AS policy_id,
+                    xp.policy_json AS policy_json,
+                    d.revoked_at AS delegation_revoked_at,
                     COALESCE(ca.allowed_tools_json,'[]') AS allowed_tools
              FROM attempts a
              JOIN runs r ON r.id=a.run_id
@@ -266,7 +249,11 @@ impl Database {
              JOIN projects p ON p.id=ac.project_id
              JOIN action_specs s ON s.action_id=ac.id
              LEFT JOIN attempt_specs aps ON aps.attempt_id=a.id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
+             LEFT JOIN execution_policies xp ON xp.policy_id=ca.policy_id
+             LEFT JOIN standing_delegations d ON d.id=ca.delegation_id
              WHERE a.id=?1",
         )
         .bind(attempt_id)
@@ -274,6 +261,8 @@ impl Database {
         .await?;
         use sqlx::row::Row;
         let action_id: String = row.try_get("action_id")?;
+        let campaign_id: String = row.try_get("campaign_id")?;
+        let work_item_id: String = row.try_get("work_item_id")?;
         let repository: String = row.try_get("repository")?;
         let spec_json: String = row.try_get("spec_json")?;
         let spec_sha256: String = row.try_get("spec_sha256")?;
@@ -307,28 +296,38 @@ impl Database {
         let model: String = row.try_get("model")?;
         let provider_mode: String = row.try_get("provider_mode")?;
         let delegation_id: String = row.try_get("delegation_id")?;
-        let max_sessions: i64 = row.try_get("max_sessions")?;
-        let max_turns: i64 = row.try_get("max_turns")?;
-        let max_input_tokens: i64 = row.try_get("max_input_tokens")?;
-        let max_output_tokens: i64 = row.try_get("max_output_tokens")?;
-        let max_cost_micros: i64 = row.try_get("max_cost_micros")?;
-        let deadline_secs: i64 = row.try_get("deadline_secs")?;
         let allowed_tools: String = row.try_get("allowed_tools")?;
-        if execution_mode == "TRUSTED_LOCAL_PROVIDER"
-            && (provider.is_empty()
-                || model.is_empty()
-                || provider_mode.is_empty()
-                || delegation_id.is_empty()
-                || max_sessions < 1
-                || !(1..=4).contains(&max_turns)
-                || max_input_tokens < 1
-                || max_output_tokens < 1
-                || max_cost_micros < 1
-                || deadline_secs < 1)
-        {
+        let revocation: Option<String> = row.try_get("delegation_revoked_at")?;
+        let authorization_version: Option<i64> = row.try_get("authorization_version")?;
+        if authorization_version != Some(2) {
             return Err(Error::Forbidden(
-                "provider assignment has incomplete authorization".into(),
+                "legacy V1 authorization is historical evidence and cannot be resumed; create a linked V2 request"
+                    .into(),
             ));
+        }
+        let policy_json: Option<String> = row.try_get("policy_json")?;
+        let policy_json = policy_json
+            .ok_or_else(|| Error::Forbidden("V2 assignment has no frozen policy".into()))?;
+        let execution_policy = super::authorization::decode_execution_policy(&policy_json)?;
+        if provider_mode.is_empty() || delegation_id.is_empty() {
+            return Err(Error::Forbidden(
+                "provider assignment has no route identity".into(),
+            ));
+        }
+        if revocation.is_some() {
+            return Err(Error::Forbidden(
+                "delegation was revoked; assignment is no longer authorized".into(),
+            ));
+        }
+        if execution_mode == "TRUSTED_LOCAL_PROVIDER" && (provider.is_empty() || model.is_empty()) {
+            return Err(Error::Forbidden(
+                "provider assignment has no authorized route".into(),
+            ));
+        }
+        if let Option::<String>::Some(policy_id) = row.try_get("policy_id")?
+            && policy_id != execution_policy.policy_id
+        {
+            return Err(Error::Invalid("assignment policy identity mismatch"));
         }
         let spec: ActionSpec = serde_json::from_str(&spec_json)
             .map_err(|_| Error::Invalid("stored ActionSpec encoding"))?;
@@ -342,6 +341,8 @@ impl Database {
         }
         Ok(WorkerAssignment {
             lease: lease.clone(),
+            campaign_id,
+            work_item_id,
             action_id,
             action_spec: spec,
             action_spec_sha256: spec_sha256,
@@ -353,18 +354,9 @@ impl Database {
             model,
             provider_mode,
             delegation_id,
-            max_sessions: u32::try_from(max_sessions)
-                .map_err(|_| Error::Invalid("stored provider session budget"))?,
-            max_turns: u32::try_from(max_turns)
-                .map_err(|_| Error::Invalid("stored provider turn budget"))?,
-            max_input_tokens: u64::try_from(max_input_tokens)
-                .map_err(|_| Error::Invalid("stored provider input budget"))?,
-            max_output_tokens: u64::try_from(max_output_tokens)
-                .map_err(|_| Error::Invalid("stored provider output budget"))?,
-            max_cost_micros: u64::try_from(max_cost_micros)
-                .map_err(|_| Error::Invalid("stored provider cost budget"))?,
-            deadline_secs: u64::try_from(deadline_secs)
-                .map_err(|_| Error::Invalid("stored provider deadline"))?,
+            execution_policy: Some(crate::execution_policy::FrozenExecutionPolicy::V2(
+                execution_policy,
+            )),
             allowed_tools: serde_json::from_str(&allowed_tools)
                 .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
             attempt_grant: String::new(),
@@ -414,10 +406,18 @@ impl Database {
              JOIN campaigns c ON c.id=r.campaign_id
              LEFT JOIN campaign_authorizations ca ON ca.campaign_id=c.id
              LEFT JOIN worker_leases l ON l.attempt_id=a.id
+             LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+             LEFT JOIN lead_integrations li ON li.attempt_id=a.id
              WHERE a.status IN ('QUEUED','LEASED') AND c.status='AUTHORIZED'
              AND r.status IN ('QUEUED','RUNNING','REPAIR_REQUIRED')
              AND ca.execution_mode IN ('FIXTURE','TRUSTED_LOCAL_PROVIDER')
              AND (l.attempt_id IS NULL OR l.expires_at_ms<=?1)
+             AND NOT EXISTS (
+               SELECT 1 FROM progress_holds ph
+               WHERE ph.campaign_id=c.id
+                 AND ph.work_item_id=COALESCE(lt.unit_id,li.integration_id,c.id)
+                 AND ph.resolved_at IS NULL
+             )
              ORDER BY a.created_at,a.id LIMIT 1",
         )
         .bind(now_ms)
@@ -640,7 +640,10 @@ impl Database {
             || report.receipt_id.len() > 128
             || report.generation <= 0
             || !is_sha256(&report.result_sha256)
-            || !matches!(report.terminal_status.as_str(), "FAILED" | "CANCELLED")
+            || !matches!(
+                report.terminal_status.as_str(),
+                "FAILED" | "CANCELLED" | "BLOCKED"
+            )
         {
             return Err(Error::Invalid("worker terminal report"));
         }
@@ -713,12 +716,49 @@ impl Database {
             )
             .await?;
         }
-        super::lead::fail_lead_work(
-            &mut transaction,
-            &report.attempt_id,
-            &format!("worker terminal {}", report.terminal_status),
-        )
-        .await?;
+        if report.terminal_status == "BLOCKED" {
+            // A deterministic progress hold is a control state, not a failed
+            // campaign. Preserve Lead work and record a hold so no attempt can
+            // be redispatched until an operator decision or verified change.
+            let work_item: Option<(String, String)> = sqlx::query_as::query_as(
+                "SELECT r.campaign_id,COALESCE(lt.unit_id,r.campaign_id)
+                 FROM attempts a
+                 JOIN runs r ON r.id=a.run_id
+                 LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+                 WHERE a.id=?1",
+            )
+            .bind(&report.attempt_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some((campaign_id, work_item_id)) = work_item {
+                sqlx::query::query(
+                    "INSERT INTO progress_holds
+                     (hold_id,campaign_id,work_item_id,state,reason,checkpoint_id,created_at)
+                     SELECT ?1,?2,?3,'BLOCKED',?4,NULL,?5
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM progress_holds
+                       WHERE campaign_id=?2 AND work_item_id=?3 AND resolved_at IS NULL
+                     )",
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(&campaign_id)
+                .bind(&work_item_id)
+                .bind(format!(
+                    "worker reported BLOCKED receipt={} result={}",
+                    report.receipt_id, report.result_sha256
+                ))
+                .bind(Utc::now().to_rfc3339())
+                .execute(&mut *transaction)
+                .await?;
+            }
+        } else {
+            super::lead::fail_lead_work(
+                &mut transaction,
+                &report.attempt_id,
+                &format!("worker terminal {}", report.terminal_status),
+            )
+            .await?;
+        }
         record_event(
             &mut transaction,
             &report.attempt_id,
@@ -728,26 +768,5 @@ impl Database {
         .await?;
         transaction.commit().await?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::provider_authorization_expired;
-
-    #[test]
-    fn provider_authorization_deadline_is_absolute() {
-        let authorized_at = "2026-10-27T00:00:00Z";
-        let authorized_ms = chrono::DateTime::parse_from_rfc3339(authorized_at)
-            .unwrap()
-            .timestamp_millis();
-        assert!(
-            !provider_authorization_expired(authorized_at, 30, authorized_ms + 29_999).unwrap()
-        );
-        assert!(provider_authorization_expired(authorized_at, 30, authorized_ms + 30_001).unwrap());
-        assert!(
-            !provider_authorization_expired(authorized_at, 0, authorized_ms + 999_999).unwrap()
-        );
-        assert!(provider_authorization_expired("not-a-date", 30, authorized_ms).is_err());
     }
 }

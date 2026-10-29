@@ -18,22 +18,27 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::db::ActionSpec;
+use crate::execution_policy::{OperationLimits, ProgressPolicy};
 
 pub const MAX_WORK_UNITS: usize = 8;
 pub const MAX_PREDECESSORS: usize = 8;
 pub const MAX_UNIT_ID_CHARS: usize = 32;
 pub const MAX_UNIT_DESCRIPTION_CHARS: usize = 2_000;
 pub const MAX_GRAPH_TASKS: usize = 32;
-pub const MAX_CAMPAIGN_IMPLEMENTER_RUNS: usize = 64;
-pub const MAX_DELEGATION_REQUESTS: u32 = 16;
-pub const MAX_CUMULATIVE_SESSIONS: u32 = 256;
-pub const MAX_CUMULATIVE_ATTEMPTS: u32 = 512;
-pub const MAX_LEAD_SESSIONS: u32 = (MAX_GRAPH_TASKS * MAX_CAMPAIGN_IMPLEMENTER_RUNS) as u32;
 pub const MAX_CHECK_TIMEOUT_SECS: u32 = 600;
 pub const MAX_ASSUMPTIONS: usize = 16;
 pub const MAX_NOTE_CHARS: usize = 500;
 pub const MAX_EVIDENCE_REFS: usize = 32;
 pub const MAX_EFFORT_PERSON_HOURS: u32 = 10_000;
+
+/// Legacy V1 evidence bounds. They remain only to validate the exact bytes of
+/// historical grants; no V2 admission path uses them.
+pub const LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS: usize = 64;
+pub const LEGACY_MAX_DELEGATION_REQUESTS: u32 = 16;
+pub const LEGACY_MAX_CUMULATIVE_SESSIONS: u32 = 256;
+pub const LEGACY_MAX_CUMULATIVE_ATTEMPTS: u32 = 512;
+pub const LEGACY_MAX_LEAD_SESSIONS: u32 =
+    (MAX_GRAPH_TASKS * LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS) as u32;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LeadError {
@@ -359,16 +364,16 @@ impl StandingDelegation {
             || self.max_repair_cycles > 3
             || !(120..=7_200).contains(&self.max_wall_clock_secs)
             || !(1..=2).contains(&self.max_parallel)
-            || !(1..=MAX_LEAD_SESSIONS).contains(&self.max_sessions)
+            || !(1..=LEGACY_MAX_LEAD_SESSIONS).contains(&self.max_sessions)
         {
             return Err(LeadError::Budget(
                 "per-Campaign limits are not explicit or within supported bounds".into(),
             ));
         }
-        if !(1..=MAX_DELEGATION_REQUESTS).contains(&self.max_requests)
-            || !(self.max_sessions..=MAX_CUMULATIVE_SESSIONS)
+        if !(1..=LEGACY_MAX_DELEGATION_REQUESTS).contains(&self.max_requests)
+            || !(self.max_sessions..=LEGACY_MAX_CUMULATIVE_SESSIONS)
                 .contains(&self.max_cumulative_sessions)
-            || !(self.max_attempts..=MAX_CUMULATIVE_ATTEMPTS)
+            || !(self.max_attempts..=LEGACY_MAX_CUMULATIVE_ATTEMPTS)
                 .contains(&self.max_cumulative_attempts)
         {
             return Err(LeadError::Budget(
@@ -381,6 +386,195 @@ impl StandingDelegation {
     pub fn is_active(&self, now: DateTime<Utc>) -> bool {
         self.revoked_at.is_none() && self.expires_at > now
     }
+}
+
+/// Execution Policy V2 standing delegation authority.
+///
+/// Scope, tools, risk, route, expiry, revocation, per-operation timeouts and
+/// bounded parallel capacity are the whole grant. It deliberately carries no
+/// attempts, sessions, repair cycles, cumulative requests or universal
+/// wall-clock deadline. Monetary authority lives in the shared inference ledger
+/// (`#73`), not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StandingDelegationV2 {
+    pub id: String,
+    pub principal_id: String,
+    pub audit_id: String,
+    pub project_id: String,
+    pub revision: u32,
+    #[serde(default)]
+    pub content_hash: String,
+    pub objective_classes: Vec<ObjectiveClass>,
+    pub allowed_paths: Vec<String>,
+    pub capabilities: Vec<Capability>,
+    pub risk_classes: Vec<RiskClass>,
+    pub autonomous_start: bool,
+    pub autonomous_risk_classes: Vec<RiskClass>,
+    pub route: ProviderRoute,
+    /// Per-operation timeout ceiling. It is not a Campaign deadline.
+    pub max_timeout_secs: u32,
+    /// Bounded concurrent capacity, never a lifetime work count.
+    pub max_parallel: u32,
+    pub operations: OperationLimits,
+    pub progress: ProgressPolicy,
+    pub expires_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegationContentV2<'a> {
+    id: &'a str,
+    principal_id: &'a str,
+    audit_id: &'a str,
+    project_id: &'a str,
+    revision: u32,
+    objective_classes: &'a [ObjectiveClass],
+    allowed_paths: &'a [String],
+    capabilities: &'a [Capability],
+    risk_classes: &'a [RiskClass],
+    autonomous_start: bool,
+    autonomous_risk_classes: &'a [RiskClass],
+    route: &'a ProviderRoute,
+    max_timeout_secs: u32,
+    max_parallel: u32,
+    operations: &'a OperationLimits,
+    progress: &'a ProgressPolicy,
+    expires_at: &'a DateTime<Utc>,
+}
+
+impl StandingDelegationV2 {
+    pub fn compute_content_hash(&self) -> String {
+        let content = DelegationContentV2 {
+            id: &self.id,
+            principal_id: &self.principal_id,
+            audit_id: &self.audit_id,
+            project_id: &self.project_id,
+            revision: self.revision,
+            objective_classes: &self.objective_classes,
+            allowed_paths: &self.allowed_paths,
+            capabilities: &self.capabilities,
+            risk_classes: &self.risk_classes,
+            autonomous_start: self.autonomous_start,
+            autonomous_risk_classes: &self.autonomous_risk_classes,
+            route: &self.route,
+            max_timeout_secs: self.max_timeout_secs,
+            max_parallel: self.max_parallel,
+            operations: &self.operations,
+            progress: &self.progress,
+            expires_at: &self.expires_at,
+        };
+        let raw = serde_json::to_vec(&content).expect("delegation content is serializable");
+        sha256_hex(&raw)
+    }
+
+    /// Validate an issued V2 grant without applying defaults or broadening it.
+    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), LeadError> {
+        for (name, value) in [
+            ("id", self.id.as_str()),
+            ("principalId", self.principal_id.as_str()),
+            ("auditId", self.audit_id.as_str()),
+            ("projectId", self.project_id.as_str()),
+        ] {
+            if value.trim().is_empty() || value.len() > 200 {
+                return Err(LeadError::Delegation(format!(
+                    "{name} is required and bounded"
+                )));
+            }
+        }
+        if self.revision == 0 {
+            return Err(LeadError::Delegation("revision must be positive".into()));
+        }
+        if !is_hex(&self.content_hash, 64) || self.content_hash != self.compute_content_hash() {
+            return Err(LeadError::Delegation(
+                "contentHash must identify the immutable grant content".into(),
+            ));
+        }
+        if self.revoked_at.is_some() {
+            return Err(LeadError::Delegation("delegation is revoked".into()));
+        }
+        if self.expires_at <= now {
+            return Err(LeadError::Delegation(
+                "delegation is expired or has no future expiry".into(),
+            ));
+        }
+        if self.objective_classes.is_empty()
+            || self.allowed_paths.is_empty()
+            || self.capabilities.is_empty()
+            || self.risk_classes.is_empty()
+        {
+            return Err(LeadError::Delegation(
+                "objective classes, paths, capabilities and risk classes must be explicit".into(),
+            ));
+        }
+        unique_values("objectiveClasses", &self.objective_classes)?;
+        unique_values("riskClasses", &self.risk_classes)?;
+        unique_values("capabilities", &self.capabilities)?;
+        unique_values("autonomousRiskClasses", &self.autonomous_risk_classes)?;
+        validate_paths("delegation allowedPaths", &self.allowed_paths)?;
+        for risk in &self.autonomous_risk_classes {
+            if !self.risk_classes.contains(risk) {
+                return Err(LeadError::Delegation(format!(
+                    "autonomous risk class {risk:?} is outside the delegation"
+                )));
+            }
+            if !matches!(risk, RiskClass::R0 | RiskClass::R1) {
+                return Err(LeadError::Delegation(format!(
+                    "autonomous risk class {risk:?} is not permitted"
+                )));
+            }
+        }
+        let has_autonomous = !self.autonomous_risk_classes.is_empty();
+        if self.autonomous_start != has_autonomous {
+            return Err(LeadError::Delegation(
+                "autonomousStart must exactly match a nonempty autonomous risk-class list".into(),
+            ));
+        }
+        self.route.validate()?;
+        if !(1..=MAX_CHECK_TIMEOUT_SECS).contains(&self.max_timeout_secs)
+            || !(1..=2).contains(&self.max_parallel)
+        {
+            return Err(LeadError::Budget(
+                "per-operation timeout or parallel capacity is outside supported bounds".into(),
+            ));
+        }
+        validate_operation_limits(&self.operations)?;
+        validate_progress_policy(&self.progress)?;
+        Ok(())
+    }
+
+    pub fn is_active(&self, now: DateTime<Utc>) -> bool {
+        self.revoked_at.is_none() && self.expires_at > now
+    }
+}
+
+fn validate_operation_limits(limits: &OperationLimits) -> Result<(), LeadError> {
+    if limits.model_request_timeout_secs.get() == 0
+        || limits.tool_call_timeout_secs.get() == 0
+        || limits.max_request_bytes.get() == 0
+        || limits.max_response_bytes.get() == 0
+        || limits.max_generation_tokens.get() == 0
+        || limits.max_in_flight_operations.get() == 0
+    {
+        return Err(LeadError::Budget(
+            "technical operation limits must be positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_progress_policy(policy: &ProgressPolicy) -> Result<(), LeadError> {
+    if policy.diagnose_after_stagnant_checkpoints.get() == 0
+        || policy.escalate_after_unsuccessful_replans.get() == 0
+        || policy.observation_timeout_secs.get() == 0
+    {
+        return Err(LeadError::Budget(
+            "progress supervision thresholds must be positive".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -684,7 +878,7 @@ impl LeadPlanProposal {
             || self.max_parallel > 2
             || self.max_sessions == 0
             || self.max_sessions > grant.max_sessions
-            || self.max_sessions > MAX_LEAD_SESSIONS
+            || self.max_sessions > LEGACY_MAX_LEAD_SESSIONS
         {
             return Err(LeadError::Budget(
                 "Campaign budgets exceed the delegation or supported bounds".into(),
@@ -700,7 +894,7 @@ impl LeadPlanProposal {
             .implementer_task_count()
             .checked_mul(self.budget.max_attempts as usize)
             .ok_or_else(|| LeadError::Budget("implementer attempt count overflow".into()))?;
-        if implementer_attempts > MAX_CAMPAIGN_IMPLEMENTER_RUNS {
+        if implementer_attempts > LEGACY_MAX_CAMPAIGN_IMPLEMENTER_RUNS {
             return Err(LeadError::Budget(
                 "work graph implementer attempts exceed the supported Campaign ceiling".into(),
             ));
@@ -717,9 +911,135 @@ impl LeadPlanProposal {
         Ok(())
     }
 
+    /// Execution Policy V2 validation. Scope, tools, risk, route, per-operation
+    /// timeout integrity and the bounded WorkGraph representation are enforced.
+    /// `budget.maxAttempts`, `maxRepairCycles`, `maxWallClockSecs` and
+    /// `maxSessions` are legacy advisory fields in the plan schema; they grant
+    /// no authority and are never frozen into a V2 policy.
+    pub fn validate_v2(
+        &self,
+        grant: &StandingDelegationV2,
+        project: &ProjectBinding,
+        action: &ActionBinding,
+        now: DateTime<Utc>,
+    ) -> Result<(), LeadError> {
+        grant.validate(now)?;
+        if !project.active {
+            return Err(LeadError::Proposal(
+                "planning requires an active registered project".into(),
+            ));
+        }
+        if !is_hex(&project.config_hash, 64) {
+            return Err(LeadError::Proposal(
+                "project configuration hash is invalid".into(),
+            ));
+        }
+        if self.project_id != project.id
+            || grant.project_id != project.id
+            || action.project_id != project.id
+        {
+            return Err(LeadError::Proposal(
+                "proposal, delegation, action and project identities must match".into(),
+            ));
+        }
+        if self.action_id != action.id {
+            return Err(LeadError::Proposal(
+                "proposal actionId must identify the bound Action".into(),
+            ));
+        }
+        if !matches!(
+            action.status,
+            ActionStatus::Pending | ActionStatus::InProgress
+        ) {
+            return Err(LeadError::Proposal(
+                "planning requires a nonterminal Action".into(),
+            ));
+        }
+        if self.project_config_hash != project.config_hash {
+            return Err(LeadError::Proposal(
+                "proposal projectConfigHash is stale or mismatched".into(),
+            ));
+        }
+        if !is_git_object_id(&self.base_revision) {
+            return Err(LeadError::Proposal(
+                "baseRevision must be a full Git object id".into(),
+            ));
+        }
+        if self.objective.trim().is_empty() || self.objective.chars().count() > 4_000 {
+            return Err(LeadError::Proposal(
+                "objective is required and bounded".into(),
+            ));
+        }
+        if !grant.objective_classes.contains(&self.class) {
+            return Err(LeadError::Proposal(
+                "objective class is outside the delegation".into(),
+            ));
+        }
+        validate_notes("assumptions", &self.assumptions)?;
+        validate_notes("risks", &self.risks)?;
+        if self.quality_profile != project.quality_profile {
+            return Err(LeadError::Proposal(
+                "proposal quality profile differs from the registered project".into(),
+            ));
+        }
+        validate_checks(&self.acceptance_criteria, false)?;
+        validate_checks(&self.negative_cases, true)?;
+        if self.acceptance_criteria.is_empty() || self.negative_cases.is_empty() {
+            return Err(LeadError::Proposal(
+                "at least one acceptance criterion and one negative case are required".into(),
+            ));
+        }
+        require_check_kinds(
+            self.acceptance_criteria
+                .iter()
+                .chain(self.negative_cases.iter()),
+            self.quality_profile.required_check_kinds(),
+        )?;
+        if !grant.risk_classes.contains(&self.risk_class) {
+            return Err(LeadError::Proposal(
+                "risk class is outside the delegation".into(),
+            ));
+        }
+        if self.budget.timeout_secs == 0
+            || self.budget.timeout_secs > MAX_CHECK_TIMEOUT_SECS
+            || self.budget.timeout_secs > grant.max_timeout_secs
+        {
+            return Err(LeadError::Budget(
+                "spec timeout exceeds the per-operation delegation bound".into(),
+            ));
+        }
+        if self.route != grant.route {
+            return Err(LeadError::Route(
+                "provider route must exactly match the delegation".into(),
+            ));
+        }
+        if self.max_parallel == 0 || self.max_parallel > grant.max_parallel || self.max_parallel > 2
+        {
+            return Err(LeadError::Budget(
+                "Campaign parallel capacity exceeds the delegation or supported bounds".into(),
+            ));
+        }
+        if self.work_units.is_empty() || self.work_units.len() > MAX_WORK_UNITS {
+            return Err(LeadError::WorkGraph(format!(
+                "work graph requires 1..={MAX_WORK_UNITS} implementation units"
+            )));
+        }
+        self.validate_work_units_against(&grant.allowed_paths, &grant.capabilities, project)?;
+        Ok(())
+    }
+
     fn validate_work_units(
         &self,
         grant: &StandingDelegation,
+        project: &ProjectBinding,
+    ) -> Result<(), LeadError> {
+        self.validate_work_units_against(&grant.allowed_paths, &grant.capabilities, project)
+    }
+
+    fn validate_work_units_against(
+        &self,
+        grant_paths: &[String],
+        grant_capabilities: &[Capability],
         project: &ProjectBinding,
     ) -> Result<(), LeadError> {
         let mut by_id: HashMap<&str, &LeadWorkUnit> = HashMap::new();
@@ -764,7 +1084,7 @@ impl LeadPlanProposal {
                 && !unit
                     .allowed_paths
                     .iter()
-                    .all(|path| covered_by(path, &grant.allowed_paths))
+                    .all(|path| covered_by(path, grant_paths))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} paths are outside the delegation",
@@ -785,7 +1105,7 @@ impl LeadPlanProposal {
             if !unit
                 .capabilities
                 .iter()
-                .all(|capability| grant.capabilities.contains(capability))
+                .all(|capability| grant_capabilities.contains(capability))
             {
                 return Err(LeadError::WorkGraph(format!(
                     "WorkUnit {} capabilities exceed the delegation",
@@ -1128,7 +1448,7 @@ pub fn fixture_lead_assessment(
     action: &ActionBinding,
     action_spec: &ActionSpec,
     objective: &str,
-    grant: &StandingDelegation,
+    grant: &StandingDelegationV2,
     now: DateTime<Utc>,
 ) -> Result<(LeadAssessment, LeadPlanProposal), LeadError> {
     if action_spec.checks.is_empty() {
@@ -1173,14 +1493,14 @@ pub fn fixture_lead_assessment(
         quality_profile: project_config.quality_profile,
         risk_class,
         budget: SpecBudget {
-            max_attempts: grant.max_attempts,
+            max_attempts: 1,
             timeout_secs: grant.max_timeout_secs,
         },
         route: grant.route.clone(),
         max_repair_cycles: 0,
-        max_wall_clock_secs: grant.max_wall_clock_secs,
+        max_wall_clock_secs: 0,
         max_parallel: 1,
-        max_sessions: 3,
+        max_sessions: 0,
         work_units: vec![LeadWorkUnit {
             id: "implementation".into(),
             kind: WorkUnitKind::Implementation,
@@ -1192,7 +1512,7 @@ pub fn fixture_lead_assessment(
             negative_cases: Vec::new(),
         }],
     };
-    proposal.validate(grant, &project_config.binding(), action, now)?;
+    proposal.validate_v2(grant, &project_config.binding(), action, now)?;
     let returned_proposal = proposal.clone();
     let assessment = LeadAssessment {
         schema_revision: 1,
@@ -1324,6 +1644,23 @@ pub fn plan_hash(
 ) -> String {
     let envelope = serde_json::json!({
         "schema": "s4d-plan-v1",
+        "proposal": proposal.content_hash(),
+        "delegation": grant.content_hash,
+        "projectConfig": config_hash,
+    });
+    let raw = serde_json::to_vec(&envelope).expect("plan envelope is serializable");
+    sha256_hex(&raw)
+}
+
+/// V2 plan binding. The envelope version is explicit so a V1 plan hash can
+/// never be interpreted as a V2 plan binding.
+pub fn plan_hash_v2(
+    proposal: &LeadPlanProposal,
+    grant: &StandingDelegationV2,
+    config_hash: &str,
+) -> String {
+    let envelope = serde_json::json!({
+        "schema": "s4d-plan-v2",
         "proposal": proposal.content_hash(),
         "delegation": grant.content_hash,
         "projectConfig": config_hash,
@@ -1633,6 +1970,55 @@ mod tests {
             max_requests: 4,
             max_cumulative_sessions: 32,
             max_cumulative_attempts: 32,
+            expires_at: now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        grant
+    }
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress_policy() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    fn grant_v2() -> StandingDelegationV2 {
+        let mut grant = StandingDelegationV2 {
+            id: "grant-1".into(),
+            principal_id: "owner-1".into(),
+            audit_id: "audit-1".into(),
+            project_id: "project-1".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Feature, ObjectiveClass::Maintenance],
+            allowed_paths: vec!["src".into(), "docs".into()],
+            capabilities: vec![Capability::RepositoryEdit, Capability::GenericToolchain],
+            risk_classes: vec![RiskClass::R0, RiskClass::R1, RiskClass::R2],
+            autonomous_start: true,
+            autonomous_risk_classes: vec![RiskClass::R0],
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 300,
+            max_parallel: 2,
+            operations: operations(),
+            progress: progress_policy(),
             expires_at: now() + chrono::Duration::days(1),
             revoked_at: None,
         };
@@ -2102,7 +2488,7 @@ mod tests {
             &action,
             &spec,
             "Implement the feature.",
-            &grant(),
+            &grant_v2(),
             now(),
         )
         .unwrap();

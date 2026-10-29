@@ -1,12 +1,24 @@
 //! Explicit Campaign execution authorization.
 //!
-//! Fixture and trusted-local provider execution are explicit modes. Provider
-//! mode requires an active delegation, exact route, paths, budgets, deadline
-//! and tool subset; isolated mode remains fail-closed. Authorization never
-//! moves risk, delivery or quality policy to a model, Worker or container label.
+//! Fixture and trusted-local provider execution are explicit modes. A V2
+//! authorization freezes an [`ExecutionPolicyV2`]: exact scope, risk, tools,
+//! route, delegation identity, monetary envelope reference, technical operation
+//! limits and deterministic progress supervision. It deliberately freezes no
+//! attempts, sessions, turns, repair cycles, cumulative tokens, per-role money
+//! or universal Campaign deadline.
+//!
+//! Legacy V1 rows remain immutable historical evidence. They are decoded for
+//! display only and are never reinterpreted as V2; continuing a V1 Campaign
+//! requires a new linked V2 request.
+//!
+//! Authorization never moves risk, delivery or quality policy to a model,
+//! Worker or container label.
 
 use super::*;
 
+use crate::execution_policy::{
+    ExecutionPolicyV2, FrozenExecutionPolicy, OperationLimits, ProgressPolicy,
+};
 use crate::workspace::path_covered;
 
 use chrono::Utc;
@@ -14,7 +26,12 @@ use sqlx_sqlite::SqliteConnection;
 
 use crate::lead::validate_repository_paths;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Semantic reference used by FIXTURE execution, which performs no billable
+/// provider inference and therefore has no ledger envelope or balance. It is a
+/// URN, never a numeric zero/huge sentinel.
+pub const NO_BILLABLE_ENVELOPE: &str = "urn:factory:no-billable-inference";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NewCampaignAuthorization {
     pub authorization_id: String,
@@ -23,7 +40,6 @@ pub struct NewCampaignAuthorization {
     pub actor: String,
     pub rationale: String,
     pub authorized_paths: Vec<String>,
-    pub max_attempts: u32,
     #[serde(default)]
     pub provider: String,
     #[serde(default)]
@@ -33,22 +49,28 @@ pub struct NewCampaignAuthorization {
     #[serde(default)]
     pub delegation_id: String,
     #[serde(default)]
-    pub max_sessions: u32,
-    #[serde(default)]
-    pub max_turns: u32,
-    #[serde(default)]
-    pub max_input_tokens: u64,
-    #[serde(default)]
-    pub max_output_tokens: u64,
-    #[serde(default)]
-    pub max_cost_micros: u64,
-    #[serde(default)]
-    pub deadline_secs: u64,
-    #[serde(default)]
     pub allowed_tools: Vec<String>,
+    pub monetary_envelope_id: String,
+    pub progress: ProgressPolicy,
+    pub operations: OperationLimits,
+}
+
+/// Legacy V1 cap evidence. Present only on historical rows and never used for
+/// admissions, continuation or spend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LegacyCampaignAuthorizationCaps {
+    pub max_attempts: u32,
+    pub max_sessions: u32,
+    pub max_turns: u32,
+    pub max_input_tokens: u64,
+    pub max_output_tokens: u64,
+    pub max_cost_micros: u64,
+    pub deadline_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CampaignAuthorizationRecord {
     pub campaign_id: String,
     pub authorization_id: String,
@@ -57,25 +79,33 @@ pub struct CampaignAuthorizationRecord {
     pub actor: String,
     pub rationale: String,
     pub authorized_paths: Vec<String>,
-    pub max_attempts: u32,
     pub provider: String,
     pub model: String,
     pub provider_mode: String,
     pub delegation_id: String,
-    pub max_sessions: u32,
-    pub max_turns: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
-    pub deadline_secs: u64,
     pub allowed_tools: Vec<String>,
+    pub schema_version: u32,
+    /// Present exactly for V2 rows.
+    pub policy: Option<ExecutionPolicyV2>,
+    /// Present exactly for V1 historical rows.
+    pub legacy: Option<LegacyCampaignAuthorizationCaps>,
     pub created_at: String,
 }
 
-/// Which delegation units an authorization consumes. A regular Campaign
-/// authorization reserves its own request, sessions and attempts. A Lead start
-/// already reserved one request and the frozen plan's sessions at request and
-/// freeze time, so it may only add the newly authorized attempts.
+impl CampaignAuthorizationRecord {
+    pub fn is_legacy(&self) -> bool {
+        self.schema_version == 1
+    }
+
+    pub fn v2_policy(&self) -> Result<&ExecutionPolicyV2, Error> {
+        self.policy.as_ref().ok_or(Error::Forbidden(
+            "legacy V1 authorization cannot authorize V2 execution".into(),
+        ))
+    }
+}
+
+/// Which delegation units an authorization records for diagnosis. A V2 grant
+/// has no cumulative ceiling; the counters are telemetry only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AuthorizationReservationPolicy {
     Campaign,
@@ -91,25 +121,12 @@ impl Database {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
         if let Some(existing) = load_authorization(&mut transaction, campaign_id).await? {
-            if existing.authorization_id == input.authorization_id
-                && existing.risk_class == input.risk_class
-                && existing.execution_mode == input.execution_mode
-                && existing.actor == input.actor
-                && existing.rationale == input.rationale
-                && existing.authorized_paths == input.authorized_paths
-                && existing.max_attempts == input.max_attempts
-                && existing.provider == input.provider
-                && existing.model == input.model
-                && existing.provider_mode == input.provider_mode
-                && existing.delegation_id == input.delegation_id
-                && existing.max_sessions == input.max_sessions
-                && existing.max_turns == input.max_turns
-                && existing.max_input_tokens == input.max_input_tokens
-                && existing.max_output_tokens == input.max_output_tokens
-                && existing.max_cost_micros == input.max_cost_micros
-                && existing.deadline_secs == input.deadline_secs
-                && existing.allowed_tools == input.allowed_tools
-            {
+            if existing.is_legacy() {
+                return Err(Error::Conflict(
+                    "campaign already has a legacy V1 authorization; create a new linked V2 request instead of reinterpreting it",
+                ));
+            }
+            if authorization_matches(&existing, input)? {
                 transaction.commit().await?;
                 return Ok((existing, false));
             }
@@ -139,11 +156,33 @@ impl Database {
     }
 }
 
+fn authorization_matches(
+    existing: &CampaignAuthorizationRecord,
+    input: &NewCampaignAuthorization,
+) -> Result<bool, Error> {
+    let Some(policy) = &existing.policy else {
+        return Ok(false);
+    };
+    Ok(existing.authorization_id == input.authorization_id
+        && existing.risk_class == input.risk_class
+        && existing.execution_mode == input.execution_mode
+        && existing.actor == input.actor
+        && existing.rationale == input.rationale
+        && existing.authorized_paths == input.authorized_paths
+        && existing.provider == input.provider
+        && existing.model == input.model
+        && existing.provider_mode == input.provider_mode
+        && existing.delegation_id == input.delegation_id
+        && existing.allowed_tools == input.allowed_tools
+        && policy.progress == input.progress
+        && policy.operations == input.operations
+        && policy.monetary_envelope_id == input.monetary_envelope_id)
+}
+
 /// Validate and insert a Campaign authorization inside the caller's
 /// transaction. This is shared by the operator authorization route and Lead
-/// start so both enforce exactly the same route, path, delegation, budget and
-/// tool policy. Any failure rolls the surrounding transaction back, so a
-/// rejected Lead start leaves no Campaign, Run or Attempt rows.
+/// start so both enforce exactly the same scope, path, delegation, risk, route
+/// and tool policy. Any failure rolls the surrounding transaction back.
 pub(super) async fn authorize_campaign_in_tx(
     transaction: &mut SqliteConnection,
     campaign_id: &str,
@@ -156,10 +195,12 @@ pub(super) async fn authorize_campaign_in_tx(
         || input.actor.len() > 128
         || input.rationale.trim().is_empty()
         || input.rationale.len() > 2_000
-        || !(1..=5).contains(&input.max_attempts)
+        || input.monetary_envelope_id.trim().is_empty()
+        || input.monetary_envelope_id.len() > 256
     {
         return Err(Error::Invalid("campaign authorization input"));
     }
+    validate_operation_limits(&input.operations)?;
     if input.risk_class != "R0" {
         return Err(Error::Forbidden(
             "only R0 execution is enabled; R1-R3 require protected approval".into(),
@@ -257,18 +298,11 @@ pub(super) async fn authorize_campaign_in_tx(
             || input.delegation_id.is_empty()
             || input.provider != action_spec.provider
             || input.model != action_spec.model
-            || input.max_sessions == 0
-            || input.max_sessions > 2
-            || !(1..=4).contains(&input.max_turns)
-            || input.max_input_tokens == 0
-            || input.max_output_tokens == 0
-            || input.max_cost_micros == 0
-            || !(30..=600).contains(&input.deadline_secs)
         {
-            return Err(Error::Invalid("provider authorization bounds"));
+            return Err(Error::Invalid("provider authorization route identity"));
         }
         let grant =
-            super::delegations::load_delegation(&mut *transaction, &input.delegation_id).await?;
+            super::delegations::load_delegation_v2(&mut *transaction, &input.delegation_id).await?;
         grant.validate(Utc::now())?;
         if grant.project_id != project_id {
             return Err(Error::Forbidden(
@@ -297,19 +331,23 @@ pub(super) async fn authorize_campaign_in_tx(
                 "ActionSpec paths exceed the standing delegation".into(),
             ));
         }
-        if input.max_sessions > grant.max_sessions
-            || input.max_attempts > grant.max_attempts
-            || input.deadline_secs > u64::from(grant.max_timeout_secs)
-        {
+        // Per-operation and capacity bounds must stay inside the grant. There is
+        // no attempt/session/turn/wall-clock intersection to perform.
+        if !operation_limits_within(&input.operations, &grant.operations) {
             return Err(Error::Forbidden(
-                "provider budget exceeds the standing delegation".into(),
+                "operation limits exceed the standing delegation".into(),
+            ));
+        }
+        if input.progress != grant.progress {
+            return Err(Error::Forbidden(
+                "progress policy differs from the standing delegation".into(),
             ));
         }
         let (requests, sessions, attempts) = match reservation_policy {
-            AuthorizationReservationPolicy::Campaign => (1, input.max_sessions, input.max_attempts),
-            AuthorizationReservationPolicy::LeadStart => (0, 0, input.max_attempts),
+            AuthorizationReservationPolicy::Campaign => (1, 0, 0),
+            AuthorizationReservationPolicy::LeadStart => (0, 0, 0),
         };
-        super::delegations::reserve_usage_in_tx(
+        super::delegations::record_usage_v2_in_tx(
             &mut *transaction,
             &grant,
             requests,
@@ -323,69 +361,70 @@ pub(super) async fn authorize_campaign_in_tx(
             "fixture authorization cannot grant provider tools".into(),
         ));
     }
+    if fixture && input.monetary_envelope_id != NO_BILLABLE_ENVELOPE {
+        return Err(Error::Forbidden(format!(
+            "fixture authorization uses {NO_BILLABLE_ENVELOPE:?}, not a billable envelope"
+        )));
+    }
     let now = Utc::now().to_rfc3339();
-    let record = CampaignAuthorizationRecord {
-        campaign_id: campaign_id.into(),
+    let scope_sha256 = scope_digest(input);
+    let policy = ExecutionPolicyV2 {
+        policy_id: format!("policy:{}", input.authorization_id),
         authorization_id: input.authorization_id.clone(),
-        risk_class: input.risk_class.clone(),
-        execution_mode: input.execution_mode.clone(),
-        actor: input.actor.clone(),
-        rationale: input.rationale.clone(),
-        authorized_paths: input.authorized_paths.clone(),
-        max_attempts: input.max_attempts,
-        provider: input.provider.clone(),
-        model: input.model.clone(),
-        provider_mode: input.provider_mode.clone(),
-        delegation_id: input.delegation_id.clone(),
-        max_sessions: input.max_sessions,
-        max_turns: input.max_turns,
-        max_input_tokens: input.max_input_tokens,
-        max_output_tokens: input.max_output_tokens,
-        max_cost_micros: input.max_cost_micros,
-        deadline_secs: input.deadline_secs,
-        allowed_tools: input.allowed_tools.clone(),
-        created_at: now,
+        monetary_envelope_id: input.monetary_envelope_id.clone(),
+        scope_sha256,
+        progress: input.progress,
+        operations: input.operations,
     };
+    let policy_json = encode_execution_policy(&policy)?;
+    let policy_sha256 = sha256_hex(policy_json.as_bytes());
+    sqlx::query::query(
+        "INSERT INTO execution_policies
+         (policy_id,schema_version,authorization_id,monetary_envelope_id,scope_sha256,
+          progress_policy_json,operation_limits_json,policy_json,policy_sha256,created_at)
+         VALUES (?1,2,?2,?3,?4,?5,?6,?7,?8,?9)",
+    )
+    .bind(&policy.policy_id)
+    .bind(&policy.authorization_id)
+    .bind(&policy.monetary_envelope_id)
+    .bind(&policy.scope_sha256)
+    .bind(
+        serde_json::to_string(&policy.progress)
+            .map_err(|_| Error::Invalid("progress policy encoding"))?,
+    )
+    .bind(
+        serde_json::to_string(&policy.operations)
+            .map_err(|_| Error::Invalid("operation limits encoding"))?,
+    )
+    .bind(&policy_json)
+    .bind(&policy_sha256)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await?;
     sqlx::query::query(
         "INSERT INTO campaign_authorizations
          (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
-          authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
-          max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
-          deadline_secs,allowed_tools_json,created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+          authorized_paths_json,created_at,provider,model,provider_mode,delegation_id,
+          allowed_tools_json,schema_version,policy_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,2,?14)",
     )
-    .bind(&record.campaign_id)
-    .bind(&record.authorization_id)
-    .bind(&record.risk_class)
-    .bind(&record.execution_mode)
-    .bind(&record.actor)
-    .bind(&record.rationale)
+    .bind(campaign_id)
+    .bind(&input.authorization_id)
+    .bind(&input.risk_class)
+    .bind(&input.execution_mode)
+    .bind(&input.actor)
+    .bind(&input.rationale)
     .bind(paths_json)
-    .bind(record.max_attempts)
-    .bind(&record.provider)
-    .bind(&record.model)
-    .bind(&record.provider_mode)
-    .bind(&record.delegation_id)
-    .bind(record.max_sessions)
-    .bind(record.max_turns)
+    .bind(&now)
+    .bind(&input.provider)
+    .bind(&input.model)
+    .bind(&input.provider_mode)
+    .bind(&input.delegation_id)
     .bind(
-        i64::try_from(record.max_input_tokens)
-            .map_err(|_| Error::Invalid("provider input budget"))?,
-    )
-    .bind(
-        i64::try_from(record.max_output_tokens)
-            .map_err(|_| Error::Invalid("provider output budget"))?,
-    )
-    .bind(
-        i64::try_from(record.max_cost_micros)
-            .map_err(|_| Error::Invalid("provider cost budget"))?,
-    )
-    .bind(i64::try_from(record.deadline_secs).map_err(|_| Error::Invalid("provider deadline"))?)
-    .bind(
-        serde_json::to_string(&record.allowed_tools)
+        serde_json::to_string(&input.allowed_tools)
             .map_err(|_| Error::Invalid("allowed tools encoding"))?,
     )
-    .bind(&record.created_at)
+    .bind(&policy.policy_id)
     .execute(&mut *transaction)
     .await?;
     sqlx::query::query("UPDATE campaigns SET status='AUTHORIZED' WHERE id=?1")
@@ -401,12 +440,90 @@ pub(super) async fn authorize_campaign_in_tx(
         campaign_id,
         "campaign.authorized",
         &format!(
-            "authorization={} risk=R0 mode={} attempts={}",
-            record.authorization_id, record.execution_mode, record.max_attempts
+            "authorization={} policy={} risk=R0 mode={}",
+            input.authorization_id, policy.policy_id, input.execution_mode
         ),
     )
     .await?;
-    Ok(record)
+    Ok(CampaignAuthorizationRecord {
+        campaign_id: campaign_id.into(),
+        authorization_id: input.authorization_id.clone(),
+        risk_class: input.risk_class.clone(),
+        execution_mode: input.execution_mode.clone(),
+        actor: input.actor.clone(),
+        rationale: input.rationale.clone(),
+        authorized_paths: input.authorized_paths.clone(),
+        provider: input.provider.clone(),
+        model: input.model.clone(),
+        provider_mode: input.provider_mode.clone(),
+        delegation_id: input.delegation_id.clone(),
+        allowed_tools: input.allowed_tools.clone(),
+        schema_version: 2,
+        policy: Some(policy),
+        legacy: None,
+        created_at: now,
+    })
+}
+
+/// One canonical persisted representation for a V2 policy. The envelope carries
+/// the explicit `version` discriminator so every Core and Worker decoder uses
+/// the same bytes.
+pub(super) fn encode_execution_policy(policy: &ExecutionPolicyV2) -> Result<String, Error> {
+    serde_json::to_string(&FrozenExecutionPolicy::V2(policy.clone()))
+        .map_err(|_| Error::Invalid("execution policy encoding"))
+}
+
+/// Decode the canonical persisted policy. A V1 envelope is historical evidence
+/// and is never reinterpreted as V2.
+pub(super) fn decode_execution_policy(json: &str) -> Result<ExecutionPolicyV2, Error> {
+    match serde_json::from_str::<FrozenExecutionPolicy>(json)
+        .map_err(|_| Error::Invalid("stored execution policy encoding"))?
+    {
+        FrozenExecutionPolicy::V2(policy) => Ok(policy),
+        FrozenExecutionPolicy::LegacyV1(_) => Err(Error::Invalid(
+            "legacy V1 policy cannot be decoded as V2 execution policy",
+        )),
+    }
+}
+
+fn scope_digest(input: &NewCampaignAuthorization) -> String {
+    let canonical = serde_json::json!({
+        "authorizedPaths": input.authorized_paths,
+        "provider": input.provider,
+        "model": input.model,
+        "providerMode": input.provider_mode,
+        "delegationId": input.delegation_id,
+        "allowedTools": input.allowed_tools,
+        "executionMode": input.execution_mode,
+    });
+    sha256_hex(
+        serde_json::to_vec(&canonical)
+            .expect("authorization scope serializes")
+            .as_slice(),
+    )
+}
+
+fn validate_operation_limits(limits: &OperationLimits) -> Result<(), Error> {
+    if limits.model_request_timeout_secs.get() == 0
+        || limits.tool_call_timeout_secs.get() == 0
+        || limits.max_request_bytes.get() == 0
+        || limits.max_response_bytes.get() == 0
+        || limits.max_generation_tokens.get() == 0
+        || limits.max_in_flight_operations.get() == 0
+        || limits.max_in_flight_operations.get() > 32
+    {
+        return Err(Error::Invalid("campaign authorization operation limits"));
+    }
+    Ok(())
+}
+
+fn operation_limits_within(requested: &OperationLimits, granted: &OperationLimits) -> bool {
+    requested.model_request_timeout_secs <= granted.model_request_timeout_secs
+        && requested.tool_call_timeout_secs <= granted.tool_call_timeout_secs
+        && requested.max_request_bytes <= granted.max_request_bytes
+        && requested.max_response_bytes <= granted.max_response_bytes
+        && requested.max_generation_tokens <= granted.max_generation_tokens
+        && requested.max_in_flight_operations <= granted.max_in_flight_operations
 }
 
 pub(super) async fn load_authorization(
@@ -416,11 +533,15 @@ pub(super) async fn load_authorization(
     use sqlx::row::Row;
 
     let row = sqlx::query::query(
-        "SELECT campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
-                authorized_paths_json,max_attempts,provider,model,provider_mode,delegation_id,
-                max_sessions,max_turns,max_input_tokens,max_output_tokens,max_cost_micros,
-                deadline_secs,allowed_tools_json,created_at
-         FROM campaign_authorizations WHERE campaign_id=?1",
+        "SELECT ca.campaign_id,ca.authorization_id,ca.risk_class,ca.execution_mode,ca.actor,
+                ca.rationale,ca.authorized_paths_json,ca.created_at,ca.provider,ca.model,
+                ca.provider_mode,ca.delegation_id,ca.allowed_tools_json,ca.schema_version,
+                ca.max_attempts,ca.max_sessions,ca.max_turns,ca.max_input_tokens,
+                ca.max_output_tokens,ca.max_cost_micros,ca.deadline_secs,ca.policy_id,
+                p.policy_json
+         FROM campaign_authorizations ca
+         LEFT JOIN execution_policies p ON p.policy_id=ca.policy_id
+         WHERE ca.campaign_id=?1",
     )
     .bind(campaign_id)
     .fetch_optional(connection)
@@ -429,15 +550,9 @@ pub(super) async fn load_authorization(
         return Ok(None);
     };
     let paths: String = row.try_get("authorized_paths_json")?;
-    let max_attempts: i64 = row.try_get("max_attempts")?;
-    let max_sessions: i64 = row.try_get("max_sessions")?;
-    let max_turns: i64 = row.try_get("max_turns")?;
-    let max_input_tokens: i64 = row.try_get("max_input_tokens")?;
-    let max_output_tokens: i64 = row.try_get("max_output_tokens")?;
-    let max_cost_micros: i64 = row.try_get("max_cost_micros")?;
-    let deadline_secs: i64 = row.try_get("deadline_secs")?;
     let allowed_tools: String = row.try_get("allowed_tools_json")?;
-    Ok(Some(CampaignAuthorizationRecord {
+    let schema_version: i64 = row.try_get("schema_version")?;
+    let base = CampaignAuthorizationRecord {
         campaign_id: row.try_get("campaign_id")?,
         authorization_id: row.try_get("authorization_id")?,
         risk_class: row.try_get("risk_class")?,
@@ -446,25 +561,678 @@ pub(super) async fn load_authorization(
         rationale: row.try_get("rationale")?,
         authorized_paths: serde_json::from_str(&paths)
             .map_err(|_| Error::Invalid("stored authorized paths encoding"))?,
-        max_attempts: u32::try_from(max_attempts)
-            .map_err(|_| Error::Invalid("stored max attempts"))?,
         provider: row.try_get("provider")?,
         model: row.try_get("model")?,
         provider_mode: row.try_get("provider_mode")?,
         delegation_id: row.try_get("delegation_id")?,
-        max_sessions: u32::try_from(max_sessions)
-            .map_err(|_| Error::Invalid("stored session budget"))?,
-        max_turns: u32::try_from(max_turns).map_err(|_| Error::Invalid("stored turn budget"))?,
-        max_input_tokens: u64::try_from(max_input_tokens)
-            .map_err(|_| Error::Invalid("stored input budget"))?,
-        max_output_tokens: u64::try_from(max_output_tokens)
-            .map_err(|_| Error::Invalid("stored output budget"))?,
-        max_cost_micros: u64::try_from(max_cost_micros)
-            .map_err(|_| Error::Invalid("stored cost budget"))?,
-        deadline_secs: u64::try_from(deadline_secs)
-            .map_err(|_| Error::Invalid("stored provider deadline"))?,
         allowed_tools: serde_json::from_str(&allowed_tools)
             .map_err(|_| Error::Invalid("stored allowed tools encoding"))?,
+        schema_version: u32::try_from(schema_version)
+            .map_err(|_| Error::Invalid("stored authorization version"))?,
+        policy: None,
+        legacy: None,
         created_at: row.try_get("created_at")?,
-    }))
+    };
+    match base.schema_version {
+        1 => {
+            let max_attempts: i64 = required_cap(&row, "max_attempts")?;
+            let max_sessions: i64 = required_cap(&row, "max_sessions")?;
+            let max_turns: i64 = required_cap(&row, "max_turns")?;
+            let max_input_tokens: i64 = required_cap(&row, "max_input_tokens")?;
+            let max_output_tokens: i64 = required_cap(&row, "max_output_tokens")?;
+            let max_cost_micros: i64 = required_cap(&row, "max_cost_micros")?;
+            let deadline_secs: i64 = required_cap(&row, "deadline_secs")?;
+            let policy_id: Option<String> = row.try_get("policy_id")?;
+            if policy_id.is_some() {
+                return Err(Error::Invalid(
+                    "legacy authorization unexpectedly references a V2 policy",
+                ));
+            }
+            Ok(Some(CampaignAuthorizationRecord {
+                legacy: Some(LegacyCampaignAuthorizationCaps {
+                    max_attempts: u32::try_from(max_attempts)
+                        .map_err(|_| Error::Invalid("stored max attempts"))?,
+                    max_sessions: u32::try_from(max_sessions)
+                        .map_err(|_| Error::Invalid("stored session budget"))?,
+                    max_turns: u32::try_from(max_turns)
+                        .map_err(|_| Error::Invalid("stored turn budget"))?,
+                    max_input_tokens: u64::try_from(max_input_tokens)
+                        .map_err(|_| Error::Invalid("stored input budget"))?,
+                    max_output_tokens: u64::try_from(max_output_tokens)
+                        .map_err(|_| Error::Invalid("stored output budget"))?,
+                    max_cost_micros: u64::try_from(max_cost_micros)
+                        .map_err(|_| Error::Invalid("stored cost budget"))?,
+                    deadline_secs: u64::try_from(deadline_secs)
+                        .map_err(|_| Error::Invalid("stored provider deadline"))?,
+                }),
+                ..base
+            }))
+        }
+        2 => {
+            for column in [
+                "max_attempts",
+                "max_sessions",
+                "max_turns",
+                "max_input_tokens",
+                "max_output_tokens",
+                "max_cost_micros",
+                "deadline_secs",
+            ] {
+                if row.try_get::<Option<i64>, _>(column)?.is_some() {
+                    return Err(Error::Invalid(
+                        "V2 authorization carries an obsolete cap column",
+                    ));
+                }
+            }
+            let policy_id: Option<String> = row.try_get("policy_id")?;
+            let policy_json: Option<String> = row.try_get("policy_json")?;
+            let (Some(policy_id), Some(policy_json)) = (policy_id, policy_json) else {
+                return Err(Error::Invalid("V2 authorization has no frozen policy"));
+            };
+            let policy = decode_execution_policy(&policy_json)?;
+            if policy.policy_id != policy_id || policy.authorization_id != base.authorization_id {
+                return Err(Error::Invalid("V2 authorization policy identity mismatch"));
+            }
+            Ok(Some(CampaignAuthorizationRecord {
+                policy: Some(policy),
+                ..base
+            }))
+        }
+        _ => Err(Error::Invalid("unsupported authorization schema version")),
+    }
+}
+
+fn required_cap(row: &sqlx_sqlite::SqliteRow, column: &str) -> Result<i64, Error> {
+    use sqlx::row::Row;
+    row.try_get::<Option<i64>, _>(column)?
+        .ok_or_else(|| Error::Invalid("legacy authorization is missing a cap column"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_policy::ProgressPolicy;
+    use crate::lead::{
+        Capability, CheckKind, ObjectiveClass, ProviderRoute, RiskClass, SpecCheck,
+        StandingDelegationV2,
+    };
+    use std::num::NonZeroU32;
+    use std::path::{Path, PathBuf};
+
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}.sqlite", uuid::Uuid::new_v4()))
+    }
+
+    async fn fixture() -> (PathBuf, Database, StandingDelegationV2) {
+        let path = temp_path("factory-authorization-v2");
+        let db = Database::open(&path).await.unwrap();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture',?1,?2,'')",
+        )
+        .bind("a".repeat(40))
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let spec = ActionSpec {
+            schema_version: 1,
+            project_id: "project".into(),
+            repository: "/fixture".into(),
+            base_commit: "a".repeat(40),
+            objective: "Implement the feature.".into(),
+            objective_sha256: "b".repeat(64),
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            allowed_paths: vec!["src".into()],
+            checks: vec![SpecCheck {
+                id: "test".into(),
+                kind: CheckKind::Test,
+                description: "test".into(),
+                command: vec!["cargo".into(), "test".into()],
+                expect_exit: 0,
+                timeout_secs: 60,
+            }],
+        };
+        let _action = db
+            .create_action_with_spec(
+                "project",
+                "Implement the feature.",
+                "opencode",
+                "deepseek-v4.1-flash",
+                "action-key",
+                ActionSpecInput {
+                    allowed_paths: &spec.allowed_paths,
+                    checks: &spec.checks,
+                },
+            )
+            .await
+            .unwrap();
+        let mut grant = StandingDelegationV2 {
+            id: "grant".into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: "project".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit],
+            risk_classes: vec![RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_timeout_secs: 600,
+            max_parallel: 1,
+            operations: operations(),
+            progress: progress(),
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        db.create_standing_delegation_v2(&grant, "grant-key")
+            .await
+            .unwrap();
+        (path, db, grant)
+    }
+
+    fn authorization() -> NewCampaignAuthorization {
+        NewCampaignAuthorization {
+            authorization_id: "auth-v2".into(),
+            risk_class: "R0".into(),
+            execution_mode: "TRUSTED_LOCAL_PROVIDER".into(),
+            actor: "owner".into(),
+            rationale: "explicit R0 execution approval".into(),
+            authorized_paths: vec!["src".into()],
+            provider: "opencode".into(),
+            model: "deepseek-v4.1-flash".into(),
+            provider_mode: "build".into(),
+            delegation_id: "grant".into(),
+            allowed_tools: vec!["write_file".into()],
+            monetary_envelope_id: "envelope-1".into(),
+            progress: progress(),
+            operations: operations(),
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_authorization_freezes_policy_without_legacy_caps() {
+        let (path, db, _grant) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "campaign-key")
+            .await
+            .unwrap();
+        let (record, created) = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(record.schema_version, 2);
+        assert!(record.legacy.is_none());
+        let policy = record.policy.as_ref().unwrap();
+        assert_eq!(policy.authorization_id, "auth-v2");
+        assert_eq!(policy.monetary_envelope_id, "envelope-1");
+        assert_eq!(policy.progress, progress());
+        assert_eq!(policy.operations, operations());
+
+        let (caps, policy_id, policy_json): (i64, String, String) =
+            sqlx::query_as::query_as(
+                "SELECT (max_attempts IS NULL) + (max_sessions IS NULL) + (max_turns IS NULL)
+                      + (max_input_tokens IS NULL) + (max_output_tokens IS NULL)
+                      + (max_cost_micros IS NULL) + (deadline_secs IS NULL),
+                        policy_id, (SELECT policy_json FROM execution_policies WHERE policy_id=ca.policy_id)
+                 FROM campaign_authorizations ca WHERE ca.campaign_id=?1",
+            )
+            .bind(&campaign.id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(caps, 7, "every obsolete cap column must be NULL for V2");
+        let decoded = decode_execution_policy(&policy_json).unwrap();
+        assert_eq!(decoded.policy_id, policy_id);
+
+        let (replayed, created) = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(replayed.policy, record.policy);
+        let loaded = db.campaign_authorization(&campaign.id).await.unwrap();
+        assert_eq!(loaded, record);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn v2_authorization_keeps_scope_tools_risk_and_operation_identity() {
+        let (path, db, _grant) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let action_id = action_id.0;
+        let mut attempts = Vec::new();
+
+        let mut risk = authorization();
+        risk.risk_class = "R1".into();
+        attempts.push(("risk", risk, "R0"));
+        let mut path_escape = authorization();
+        path_escape.authorized_paths = vec!["docs".into()];
+        attempts.push(("paths", path_escape, "path"));
+        let mut tool = authorization();
+        tool.allowed_tools = vec!["read_file".into()];
+        attempts.push(("tools", tool, "tool"));
+        let mut operations = authorization();
+        operations.operations.max_generation_tokens = NonZeroU32::new(16_384).unwrap();
+        attempts.push(("operations", operations, "limit"));
+        let mut envelope = authorization();
+        envelope.monetary_envelope_id = String::new();
+        attempts.push(("envelope", envelope, "input"));
+
+        for (index, (label, input, _)) in attempts.into_iter().enumerate() {
+            let campaign = db
+                .create_campaign(&action_id, &format!("campaign-{index}"))
+                .await
+                .unwrap();
+            let error = db
+                .authorize_campaign(&campaign.id, &input)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::Forbidden(_) | Error::Invalid(_) | Error::Validation(_)
+                ),
+                "{label} accepted: {error:?}"
+            );
+            assert!(
+                sqlx::query_as::query_as::<_, (i64,)>(
+                    "SELECT COUNT(*) FROM campaign_authorizations WHERE campaign_id=?1"
+                )
+                .bind(&campaign.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+                .0 == 0,
+                "{label} left an authorization row"
+            );
+        }
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn legacy_rows_keep_their_original_values_and_are_never_reinterpreted() {
+        let (path, db, _grant) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "legacy-campaign")
+            .await
+            .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaign_authorizations
+             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+              authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+              delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+              max_cost_micros,deadline_secs,allowed_tools_json,schema_version)
+             VALUES (?1,'legacy-auth','R0','FIXTURE','owner','historical','[\"src\"]',3,
+                     ?2,'','','','',0,0,0,0,0,0,'[]',1)",
+        )
+        .bind(&campaign.id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let loaded = db.campaign_authorization(&campaign.id).await.unwrap();
+        assert!(loaded.is_legacy());
+        assert!(loaded.policy.is_none());
+        let legacy = loaded.legacy.as_ref().unwrap();
+        assert_eq!(legacy.max_attempts, 3);
+        assert_eq!(legacy.max_sessions, 0);
+        assert_eq!(legacy.deadline_secs, 0);
+        assert!(loaded.v2_policy().is_err());
+
+        let error = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn production_authorization_round_trips_to_a_worker_assignment() {
+        let (path, db, _grant) = fixture().await;
+        let action_id: (String,) = sqlx::query_as::query_as("SELECT id FROM actions LIMIT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let campaign = db
+            .create_campaign(&action_id.0, "assignment-campaign")
+            .await
+            .unwrap();
+        let (record, created) = db
+            .authorize_campaign(&campaign.id, &authorization())
+            .await
+            .unwrap();
+        assert!(created);
+        let (policy_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT p.policy_json FROM campaign_authorizations ca
+             JOIN execution_policies p ON p.policy_id=ca.policy_id
+             WHERE ca.campaign_id=?1",
+        )
+        .bind(&campaign.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&policy_json).unwrap();
+        assert_eq!(envelope["version"], "V2");
+        assert_eq!(
+            envelope["policyId"],
+            record.policy.as_ref().unwrap().policy_id
+        );
+
+        let run = db.create_run(&campaign.id, "assignment-run").await.unwrap();
+        db.create_attempt(&run.id, "assignment-attempt")
+            .await
+            .unwrap();
+        let assignment = db
+            .claim_assignment("assignment-worker", Utc::now().timestamp_millis(), 30_000)
+            .await
+            .unwrap()
+            .expect("V2 assignment");
+        assert_eq!(assignment.campaign_id, campaign.id);
+        assert_eq!(assignment.work_item_id, campaign.id);
+        let policy = assignment
+            .execution_policy
+            .as_ref()
+            .and_then(crate::execution_policy::FrozenExecutionPolicy::v2)
+            .expect("V2 policy");
+        assert_eq!(policy, record.policy.as_ref().unwrap());
+        assert_eq!(policy.operations, operations());
+        assert_eq!(policy.progress, progress());
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn apply_migrations_up_to(pool: &sqlx_sqlite::SqlitePool, limit: &str) {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../migrations");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension().and_then(|ext| ext.to_str()) == Some("sql")
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name <= limit)
+            })
+            .collect();
+        files.sort();
+        for file in files {
+            let sql = std::fs::read_to_string(&file).unwrap();
+            sqlx::raw_sql::raw_sql(&sql)
+                .execute(pool)
+                .await
+                .unwrap_or_else(|error| panic!("migration {:?} failed: {error}", file));
+        }
+    }
+
+    #[tokio::test]
+    async fn populated_legacy_migration_rebuild_preserves_rows_and_fk_integrity() {
+        let path = temp_path("factory-authorization-migration");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let pool = sqlx_sqlite::SqlitePool::connect(&url).await.unwrap();
+        sqlx::query::query("PRAGMA foreign_keys=ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        apply_migrations_up_to(&pool, "0033").await;
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture','base','2026-10-28T00:00:00Z','')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO actions(id,project_id,objective,provider,model,risk,status,objective_sha256,created_at)
+             VALUES ('action','project','obj','opencode','deepseek-v4.1-flash','R0','PENDING','h','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaigns(id,action_id,status,created_at)
+             VALUES ('campaign','action','AUTHORIZED','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO standing_delegations(id,principal_id,audit_id,project_id,revision,
+               content_hash,content_json,revoked_at,created_at)
+             VALUES ('grant','owner','audit','project',1,'hash','{\"legacy\":true}',NULL,
+                     '2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO campaign_authorizations
+             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+              authorized_paths_json,max_attempts,created_at,provider,model,provider_mode,
+              delegation_id,max_sessions,max_turns,max_input_tokens,max_output_tokens,
+              max_cost_micros,deadline_secs,allowed_tools_json)
+             VALUES ('campaign','legacy-auth','R0','TRUSTED_LOCAL_PROVIDER','owner','why',
+                     '[\"src\"]',3,'2026-10-28T00:00:00Z','opencode','deepseek-v4.1-flash',
+                     'build','grant',2,4,40000,12000,500000,600,'[\"write_file\"]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Active V1 execution evidence must survive the rebuild.
+        sqlx::query::query(
+            "INSERT INTO runs(id,campaign_id,status,created_at)
+             VALUES ('legacy-run','campaign','RUNNING','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO attempts(id,run_id,status,created_at)
+             VALUES ('legacy-attempt','legacy-run','LEASED','2026-10-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let migration = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../migrations/0034_execution_policy_v2.sql"),
+        )
+        .unwrap();
+
+        // Production-shaped interruption: the migration runs in a transaction,
+        // an injected failure rolls it back, and the old schema/rows survive.
+        let mut interrupted = pool.begin().await.unwrap();
+        sqlx::raw_sql::raw_sql(&migration)
+            .execute(&mut *interrupted)
+            .await
+            .unwrap();
+        assert!(
+            sqlx::raw_sql::raw_sql("INSERT INTO missing_table VALUES (1)")
+                .execute(&mut *interrupted)
+                .await
+                .is_err()
+        );
+        interrupted.rollback().await.unwrap();
+        let (pre_id, pre_attempts): (String, i64) = sqlx::query_as::query_as(
+            "SELECT authorization_id,max_attempts FROM campaign_authorizations
+             WHERE campaign_id='campaign'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((pre_id.as_str(), pre_attempts), ("legacy-auth", 3));
+        assert!(
+            sqlx::query_as::query_as::<_, (i64,)>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='execution_policies'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .0 == 0,
+            "rolled-back migration left a new table"
+        );
+
+        let mut retry = pool.begin().await.unwrap();
+        sqlx::raw_sql::raw_sql(&migration)
+            .execute(&mut *retry)
+            .await
+            .unwrap();
+        retry.commit().await.unwrap();
+
+        let (authorization_id, max_attempts, max_sessions, max_cost, deadline, version, policy): (
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<String>,
+        ) = sqlx::query_as::query_as(
+            "SELECT authorization_id,max_attempts,max_sessions,max_cost_micros,deadline_secs,
+                    schema_version,policy_id
+             FROM campaign_authorizations WHERE campaign_id='campaign'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(authorization_id, "legacy-auth");
+        assert_eq!(
+            (max_attempts, max_sessions, max_cost, deadline),
+            (3, 2, 500_000, 600)
+        );
+        assert_eq!(version, 1);
+        assert_eq!(policy, None);
+
+        let (delegation_version, content_json, authority): (i64, String, Option<String>) =
+            sqlx::query_as::query_as(
+                "SELECT schema_version,content_json,authority_json
+                 FROM standing_delegations WHERE id='grant'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(delegation_version, 1);
+        assert_eq!(content_json, "{\"legacy\":true}");
+        assert_eq!(authority, None);
+
+        let violations: Vec<(String, i64, String, i64)> =
+            sqlx::query_as::query_as("PRAGMA foreign_key_check")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            violations.is_empty(),
+            "foreign key violations: {violations:?}"
+        );
+        let integrity: Vec<(String,)> = sqlx::query_as::query_as("PRAGMA integrity_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(integrity.first().map(|(value,)| value.as_str()), Some("ok"));
+
+        // Reopen the production file and verify the committed rebuild.
+        let reopened = sqlx_sqlite::SqlitePool::connect(&url).await.unwrap();
+        let (reopened_auth, reopened_attempts): (String, i64) = sqlx::query_as::query_as(
+            "SELECT authorization_id,max_attempts FROM campaign_authorizations
+             WHERE campaign_id='campaign'",
+        )
+        .fetch_one(&reopened)
+        .await
+        .unwrap();
+        assert_eq!(
+            (reopened_auth.as_str(), reopened_attempts),
+            ("legacy-auth", 3)
+        );
+        for (table, id) in [("runs", "legacy-run"), ("attempts", "legacy-attempt")] {
+            let count: (i64,) =
+                sqlx::query_as::query_as(&format!("SELECT COUNT(*) FROM {table} WHERE id=?1"))
+                    .bind(id)
+                    .fetch_one(&reopened)
+                    .await
+                    .unwrap();
+            assert_eq!(count.0, 1, "{table} row was lost");
+        }
+        let reopened_violations: Vec<(String, i64, String, i64)> =
+            sqlx::query_as::query_as("PRAGMA foreign_key_check")
+                .fetch_all(&reopened)
+                .await
+                .unwrap();
+        assert!(reopened_violations.is_empty(), "{reopened_violations:?}");
+        reopened.close().await;
+
+        // A V2 authorization cannot carry a legacy cap column.
+        sqlx::query::query(
+            "INSERT INTO execution_policies(policy_id,schema_version,authorization_id,
+               monetary_envelope_id,scope_sha256,progress_policy_json,operation_limits_json,
+               policy_json,policy_sha256,created_at)
+             VALUES ('policy-v2',2,'auth-v2','envelope',?1,'{}','{}','{}',?2,
+                     '2026-10-28T00:00:00Z')",
+        )
+        .bind("c".repeat(64))
+        .bind("d".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let rejected = sqlx::query::query(
+            "INSERT INTO campaign_authorizations
+             (campaign_id,authorization_id,risk_class,execution_mode,actor,rationale,
+              authorized_paths_json,max_turns,created_at,provider,model,provider_mode,
+              delegation_id,allowed_tools_json,schema_version,policy_id)
+             VALUES ('campaign','auth-v2','R0','TRUSTED_LOCAL_PROVIDER','owner','why',
+                     '[\"src\"]',4,'2026-10-28T00:00:00Z','opencode','deepseek-v4.1-flash',
+                     'build','grant','[]',2,'policy-v2')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(rejected.is_err(), "V2 row with a cap must fail");
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[allow(dead_code)]
+    fn _assert_policy_type(_policy: &ExecutionPolicyV2) {}
 }

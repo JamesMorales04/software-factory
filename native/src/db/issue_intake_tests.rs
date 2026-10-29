@@ -3,9 +3,10 @@ use super::*;
 use chrono::{Duration, Utc};
 use std::path::PathBuf;
 
+use crate::execution_policy::{OperationLimits, ProgressPolicy};
 use crate::execution_profile::{
-    AutoStartPolicy, CampaignBudgets, ExecutionProfileCategory, ExecutionProfileContent,
-    ExecutionProfileRoles, ExecutionRoleRoute, ReasoningEffort,
+    AutoStartPolicy, ExecutionProfileCategory, ExecutionProfileContent, ExecutionProfileRoles,
+    ExecutionRoleRoute, ReasoningEffort,
 };
 use crate::github::{GitHubIssue, GitHubLabel};
 use crate::lead::{Capability, QualityProfile};
@@ -19,9 +20,6 @@ fn route() -> ExecutionRoleRoute {
         provider: "opencode-go".into(),
         model: "deepseek-v4.1-flash".into(),
         reasoning: Some(ReasoningEffort::Medium),
-        max_input_tokens: 64_000,
-        max_output_tokens: 8_192,
-        max_cost_micros: 300_000,
     }
 }
 
@@ -35,14 +33,18 @@ fn profile_content(auto_start: bool) -> ExecutionProfileContent {
             implementer: route(),
             semantic_reviewer: route(),
         },
-        budgets: CampaignBudgets {
-            max_attempts: 3,
-            max_sessions: 4,
-            max_turns: 4,
-            max_input_tokens: 40_000,
-            max_output_tokens: 12_000,
-            max_cost_micros: 500_000,
-            deadline_secs: 1_800,
+        operations: OperationLimits {
+            model_request_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: std::num::NonZeroU32::new(600).unwrap(),
+            max_request_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: std::num::NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: std::num::NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: std::num::NonZeroU32::new(4).unwrap(),
+        },
+        progress: ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: std::num::NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: std::num::NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: std::num::NonZeroU32::new(300).unwrap(),
         },
         auto_start: AutoStartPolicy {
             enabled: auto_start,
@@ -386,11 +388,19 @@ async fn batch_requires_acknowledgement_and_exact_snapshot_then_creates_finite_q
     assert_eq!(queue.0, 1);
     let delegation = fixture
         .db
-        .standing_delegation(&result.batch.delegation_id)
+        .standing_delegation_v2(&result.batch.delegation_id)
         .await
         .unwrap();
     assert!(!delegation.autonomous_start);
-    assert_eq!(delegation.max_requests, 1);
+    assert_eq!(
+        delegation
+            .progress
+            .diagnose_after_stagnant_checkpoints
+            .get(),
+        2
+    );
+    assert_eq!(delegation.operations.max_generation_tokens.get(), 8_192);
+    assert_eq!(delegation.max_parallel, 1);
     fixture.db.close().await;
     let _ = std::fs::remove_file(fixture.path);
 }
@@ -635,7 +645,7 @@ async fn policy_edit_revokes_old_batch_and_is_cross_project_isolated() {
     assert_eq!(revoked.batch.status, "REVOKED");
     let delegation = fixture
         .db
-        .standing_delegation(&batch.batch.delegation_id)
+        .standing_delegation_v2(&batch.batch.delegation_id)
         .await
         .unwrap();
     assert!(delegation.revoked_at.is_some());
@@ -716,7 +726,7 @@ async fn reconcile_creates_review_plan_proposal_without_campaign_or_provider_cal
     assert_eq!(claim.queue.status, "LEASED");
     let claim_delegation = fixture
         .db
-        .standing_delegation(&claim.batch.delegation_id)
+        .standing_delegation_v2(&claim.batch.delegation_id)
         .await
         .unwrap();
     assert!(!claim_delegation.autonomous_start);

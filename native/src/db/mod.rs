@@ -151,6 +151,11 @@ pub struct Attempt {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerAssignment {
     pub lease: WorkerLease,
+    pub campaign_id: String,
+    /// Stable identity of the work item across attempts/repair sessions. Lead
+    /// Campaigns use the frozen WorkGraph unit id; direct Campaigns use the
+    /// Campaign id.
+    pub work_item_id: String,
     pub action_id: String,
     pub action_spec: ActionSpec,
     pub action_spec_sha256: String,
@@ -162,12 +167,9 @@ pub struct WorkerAssignment {
     pub model: String,
     pub provider_mode: String,
     pub delegation_id: String,
-    pub max_sessions: u32,
-    pub max_turns: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_cost_micros: u64,
-    pub deadline_secs: u64,
+    /// Frozen Execution Policy V2. `None` and `LegacyV1` are historical evidence
+    /// only and never dispatch under V2.
+    pub execution_policy: Option<crate::execution_policy::FrozenExecutionPolicy>,
     pub allowed_tools: Vec<String>,
     /// Populated by Core immediately before returning a claim. The database
     /// layer never invents or stores this capability.

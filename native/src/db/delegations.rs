@@ -1,15 +1,29 @@
-//! Durable standing-delegation snapshots and cumulative reservations.
+//! Durable standing-delegation snapshots and usage telemetry.
 //!
 //! Issuance records a proposed grant; it does not activate autonomous start,
 //! grant paid-provider spend or bypass protected risk approval. Core policy
 //! remains the sole authority that may act on a valid grant.
+//!
+//! Cumulative request/session/attempt counts are diagnosis telemetry. They are
+//! never admission ceilings: a legitimate Campaign is not terminated because a
+//! historical counter is large. Revocation, expiry, scope, route and lease
+//! fencing remain authoritative.
 
 use super::*;
 
 use chrono::{DateTime, Utc};
 use sqlx_sqlite::SqliteConnection;
 
-use crate::lead::StandingDelegation;
+use crate::lead::{StandingDelegation, StandingDelegationV2};
+
+/// Version-neutral revocation receipt. It never decodes or reinterprets the
+/// immutable grant content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegationRevocation {
+    pub id: String,
+    pub schema_version: u32,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationUsage {
@@ -63,19 +77,62 @@ impl Database {
         load_delegation(&mut connection, id).await
     }
 
+    /// Record an Execution Policy V2 authority. Replaying the same idempotency
+    /// key and content returns the existing grant.
+    pub async fn create_standing_delegation_v2(
+        &self,
+        grant: &StandingDelegationV2,
+        idempotency_key: &str,
+    ) -> Result<(StandingDelegationV2, bool), Error> {
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
+            return Err(Error::Invalid("delegation idempotency key"));
+        }
+        let mut sealed = grant.clone();
+        if sealed.content_hash.is_empty() {
+            sealed.content_hash = sealed.compute_content_hash();
+        }
+        sealed.validate(Utc::now())?;
+        let _write = self.write_lock.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        let result =
+            create_standing_delegation_v2_in_tx(&mut transaction, &sealed, idempotency_key).await?;
+        transaction.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn standing_delegation_v2(&self, id: &str) -> Result<StandingDelegationV2, Error> {
+        let mut connection = self.pool.acquire().await?;
+        load_delegation_v2(&mut connection, id).await
+    }
+
     /// Revocation is one-way and leaves immutable grant content untouched.
     /// Repeated revocation returns the current state.
     pub async fn revoke_standing_delegation(
         &self,
         id: &str,
         at: DateTime<Utc>,
-    ) -> Result<StandingDelegation, Error> {
+    ) -> Result<DelegationRevocation, Error> {
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let current = load_delegation(&mut transaction, id).await?;
-        if current.revoked_at.is_some() {
+        let current: Option<(i64, Option<String>)> = sqlx::query_as::query_as(
+            "SELECT schema_version,revoked_at FROM standing_delegations WHERE id=?1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let (schema_version, revoked_at) = current.ok_or(Error::NotFound)?;
+        let schema_version = u32::try_from(schema_version)
+            .map_err(|_| Error::Invalid("stored delegation schema version"))?;
+        if let Some(revoked_at) = revoked_at {
+            let revoked_at = DateTime::parse_from_rfc3339(&revoked_at)
+                .map_err(|_| Error::Invalid("stored delegation revocation encoding"))?
+                .with_timezone(&Utc);
             transaction.commit().await?;
-            return Ok(current);
+            return Ok(DelegationRevocation {
+                id: id.to_owned(),
+                schema_version,
+                revoked_at: Some(revoked_at),
+            });
         }
         let changed = sqlx::query::query(
             "UPDATE standing_delegations SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL",
@@ -191,9 +248,12 @@ impl Database {
             "one-way revocation recorded; open Lead work blocked and Campaign work fenced",
         )
         .await?;
-        let revoked = load_delegation(&mut transaction, id).await?;
         transaction.commit().await?;
-        Ok(revoked)
+        Ok(DelegationRevocation {
+            id: id.to_owned(),
+            schema_version,
+            revoked_at: Some(at),
+        })
     }
 
     pub async fn delegation_usage(&self, id: &str) -> Result<DelegationUsage, Error> {
@@ -215,11 +275,10 @@ impl Database {
         })
     }
 
-    /// Atomically reserve cumulative request/session/attempt units. The grant
-    /// must be active; ceilings are checked with checked arithmetic and the
-    /// update is serialized with other Core writes. This is Core authority,
-    /// not a side ledger.
-    pub async fn reserve_delegation(
+    /// Atomically record cumulative request/session/attempt activity. The
+    /// grant must remain active, but the counters never refuse legitimate work.
+    /// Monetary authority lives in the shared inference ledger, not here.
+    pub async fn record_delegation_usage(
         &self,
         id: &str,
         requests: u32,
@@ -228,11 +287,11 @@ impl Database {
         now: DateTime<Utc>,
     ) -> Result<DelegationUsage, Error> {
         if requests == 0 && sessions == 0 && attempts == 0 {
-            return Err(Error::Invalid("delegation reservation is empty"));
+            return Err(Error::Invalid("delegation usage record is empty"));
         }
         let _write = self.write_lock.lock().await;
         let mut transaction = self.pool.begin().await?;
-        let grant = load_delegation(&mut transaction, id).await?;
+        let grant = load_delegation_v2(&mut transaction, id).await?;
         if grant.revoked_at.is_some() {
             return Err(Error::Forbidden("delegation is revoked".into()));
         }
@@ -240,7 +299,7 @@ impl Database {
             return Err(Error::Forbidden("delegation is expired".into()));
         }
         let usage =
-            reserve_usage_in_tx(&mut transaction, &grant, requests, sessions, attempts).await?;
+            record_usage_in_tx(&mut transaction, &grant.id, requests, sessions, attempts).await?;
         record_event(
             &mut transaction,
             id,
@@ -340,9 +399,161 @@ pub(super) async fn create_standing_delegation_in_tx(
     Ok((sealed.clone(), true))
 }
 
-pub(super) async fn reserve_usage_in_tx(
+/// Store an Execution Policy V2 authority. The legacy `content_json` column is
+/// intentionally empty for a V2 row so the V1 decoder fails closed instead of
+/// reinterpreting V2 bytes. The V2 authority JSON and hash live in dedicated
+/// columns and are immutable.
+pub(super) async fn create_standing_delegation_v2_in_tx(
     connection: &mut SqliteConnection,
-    grant: &StandingDelegation,
+    sealed: &StandingDelegationV2,
+    idempotency_key: &str,
+) -> Result<(StandingDelegationV2, bool), Error> {
+    if idempotency_key.trim().is_empty() || idempotency_key.len() > 256 {
+        return Err(Error::Invalid("delegation idempotency key"));
+    }
+    sealed.validate(Utc::now())?;
+    if let Some(id) = replay(
+        connection,
+        idempotency_key,
+        "create_standing_delegation_v2",
+        &sealed.content_hash,
+    )
+    .await?
+    {
+        if id == sealed.id {
+            let existing = load_delegation_v2(connection, &sealed.id).await?;
+            return Ok((existing, false));
+        }
+        return Err(Error::Conflict(
+            "idempotency key belongs to another delegation",
+        ));
+    }
+    let project: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM projects WHERE id=?1")
+            .bind(&sealed.project_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if project.is_none() {
+        return Err(Error::NotFound);
+    }
+    let existing: Option<(String,)> =
+        sqlx::query_as::query_as("SELECT id FROM standing_delegations WHERE id=?1")
+            .bind(&sealed.id)
+            .fetch_optional(&mut *connection)
+            .await?;
+    if existing.is_some() {
+        return Err(Error::Conflict(
+            "delegation id already exists with immutable content",
+        ));
+    }
+    let authority_json =
+        serde_json::to_string(sealed).map_err(|_| Error::Invalid("delegation encoding"))?;
+    let authority_sha256 = sha256_hex(authority_json.as_bytes());
+    sqlx::query::query(
+        "INSERT INTO standing_delegations
+         (id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at,
+          created_at,schema_version,authority_json,authority_sha256)
+         VALUES (?1,?2,?3,?4,?5,?6,'',NULL,?7,2,?8,?9)",
+    )
+    .bind(&sealed.id)
+    .bind(&sealed.principal_id)
+    .bind(&sealed.audit_id)
+    .bind(&sealed.project_id)
+    .bind(sealed.revision)
+    .bind(&sealed.content_hash)
+    .bind(Utc::now().to_rfc3339())
+    .bind(&authority_json)
+    .bind(&authority_sha256)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query(
+        "INSERT INTO delegation_usage (delegation_id,requests,sessions,attempts)
+         VALUES (?1,0,0,0)",
+    )
+    .bind(&sealed.id)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query::query("INSERT INTO idempotency VALUES (?1,?2,?3,?4)")
+        .bind(idempotency_key)
+        .bind("create_standing_delegation_v2")
+        .bind(&sealed.content_hash)
+        .bind(&sealed.id)
+        .execute(&mut *connection)
+        .await?;
+    record_event(
+        connection,
+        &sealed.id,
+        "delegation.recorded",
+        "V2 authority recorded; non-autonomous scope with technical operation limits",
+    )
+    .await?;
+    Ok((sealed.clone(), true))
+}
+
+pub(super) async fn load_delegation_v2(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<StandingDelegationV2, Error> {
+    use sqlx::row::Row;
+
+    let row = sqlx::query::query(
+        "SELECT id,principal_id,audit_id,project_id,revision,content_hash,authority_json,
+                authority_sha256,revoked_at,schema_version
+         FROM standing_delegations WHERE id=?1",
+    )
+    .bind(id)
+    .fetch_optional(connection)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let schema_version: i64 = row.try_get("schema_version")?;
+    if schema_version != 2 {
+        return Err(Error::Forbidden(
+            "legacy V1 delegation is historical evidence; create a linked V2 request instead"
+                .into(),
+        ));
+    }
+    let id: String = row.try_get("id")?;
+    let principal_id: String = row.try_get("principal_id")?;
+    let audit_id: String = row.try_get("audit_id")?;
+    let project_id: String = row.try_get("project_id")?;
+    let revision: i64 = row.try_get("revision")?;
+    let content_hash: String = row.try_get("content_hash")?;
+    let authority_json: String = row.try_get("authority_json")?;
+    let authority_sha256: String = row.try_get("authority_sha256")?;
+    let revoked_at: Option<String> = row.try_get("revoked_at")?;
+    if sha256_hex(authority_json.as_bytes()) != authority_sha256 {
+        return Err(Error::Invalid(
+            "stored V2 delegation authority digest mismatch",
+        ));
+    }
+    let mut grant: StandingDelegationV2 = serde_json::from_str(&authority_json)
+        .map_err(|_| Error::Invalid("stored V2 delegation encoding"))?;
+    if grant.id != id
+        || grant.principal_id != principal_id
+        || grant.audit_id != audit_id
+        || grant.project_id != project_id
+        || i64::from(grant.revision) != revision
+        || grant.content_hash != content_hash
+        || grant.compute_content_hash() != content_hash
+    {
+        return Err(Error::Invalid(
+            "stored V2 delegation does not match its identity",
+        ));
+    }
+    grant.revoked_at = revoked_at
+        .as_deref()
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|_| Error::Invalid("stored delegation revocation encoding"))?
+        .map(|value| value.with_timezone(&Utc));
+    Ok(grant)
+}
+
+/// Record usage without a ceiling. This is telemetry and diagnosis, never an
+/// admission decision.
+pub(super) async fn record_usage_in_tx(
+    connection: &mut SqliteConnection,
+    delegation_id: &str,
     requests: u32,
     sessions: u32,
     attempts: u32,
@@ -351,20 +562,12 @@ pub(super) async fn reserve_usage_in_tx(
         sqlx::query_as::query_as(
             "SELECT requests,sessions,attempts FROM delegation_usage WHERE delegation_id=?1",
         )
-        .bind(&grant.id)
+        .bind(delegation_id)
         .fetch_one(&mut *connection)
         .await?;
     let next_requests = checked_usage(current_requests, requests)?;
     let next_sessions = checked_usage(current_sessions, sessions)?;
     let next_attempts = checked_usage(current_attempts, attempts)?;
-    if next_requests > i64::from(grant.max_requests)
-        || next_sessions > i64::from(grant.max_cumulative_sessions)
-        || next_attempts > i64::from(grant.max_cumulative_attempts)
-    {
-        return Err(Error::Forbidden(
-            "delegation cumulative ceiling is exhausted".into(),
-        ));
-    }
     sqlx::query::query(
         "UPDATE delegation_usage
          SET requests=?1,sessions=?2,attempts=?3 WHERE delegation_id=?4",
@@ -372,11 +575,11 @@ pub(super) async fn reserve_usage_in_tx(
     .bind(next_requests)
     .bind(next_sessions)
     .bind(next_attempts)
-    .bind(&grant.id)
+    .bind(delegation_id)
     .execute(&mut *connection)
     .await?;
     Ok(DelegationUsage {
-        delegation_id: grant.id.clone(),
+        delegation_id: delegation_id.to_owned(),
         requests: u32::try_from(next_requests)
             .map_err(|_| Error::Constraint("usage overflow".into()))?,
         sessions: u32::try_from(next_sessions)
@@ -384,6 +587,16 @@ pub(super) async fn reserve_usage_in_tx(
         attempts: u32::try_from(next_attempts)
             .map_err(|_| Error::Constraint("usage overflow".into()))?,
     })
+}
+
+pub(super) async fn record_usage_v2_in_tx(
+    connection: &mut SqliteConnection,
+    grant: &StandingDelegationV2,
+    requests: u32,
+    sessions: u32,
+    attempts: u32,
+) -> Result<DelegationUsage, Error> {
+    record_usage_in_tx(connection, &grant.id, requests, sessions, attempts).await
 }
 
 fn checked_usage(current: i64, added: u32) -> Result<i64, Error> {
@@ -394,7 +607,7 @@ fn checked_usage(current: i64, added: u32) -> Result<i64, Error> {
 
 pub(super) async fn release_usage_in_tx(
     transaction: &mut sqlx_sqlite::SqliteConnection,
-    grant: &StandingDelegation,
+    delegation_id: &str,
     requests: u32,
     sessions: u32,
     attempts: u32,
@@ -405,7 +618,7 @@ pub(super) async fn release_usage_in_tx(
     let row: Option<(i64, i64, i64)> = sqlx::query_as::query_as(
         "SELECT requests,sessions,attempts FROM delegation_usage WHERE delegation_id=?1",
     )
-    .bind(&grant.id)
+    .bind(delegation_id)
     .fetch_optional(&mut *transaction)
     .await?;
     let (saved_requests, saved_sessions, saved_attempts) = row.ok_or(Error::NotFound)?;
@@ -433,12 +646,12 @@ pub(super) async fn release_usage_in_tx(
     .bind(requests)
     .bind(sessions)
     .bind(attempts)
-    .bind(&grant.id)
+    .bind(delegation_id)
     .execute(&mut *transaction)
     .await?;
     record_event(
         transaction,
-        &grant.id,
+        delegation_id,
         "delegation.released",
         &format!("requests={requests} sessions={sessions} attempts={attempts}"),
     )
@@ -453,13 +666,20 @@ pub(super) async fn load_delegation(
     use sqlx::row::Row;
 
     let row = sqlx::query::query(
-        "SELECT id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at
+        "SELECT id,principal_id,audit_id,project_id,revision,content_hash,content_json,revoked_at,
+                schema_version
          FROM standing_delegations WHERE id=?1",
     )
     .bind(id)
     .fetch_optional(connection)
     .await?
     .ok_or(Error::NotFound)?;
+    let schema_version: i64 = row.try_get("schema_version")?;
+    if schema_version != 1 {
+        return Err(Error::Forbidden(
+            "V2 delegation cannot be decoded through the legacy V1 evidence path".into(),
+        ));
+    }
     let id: String = row.try_get("id")?;
     let principal_id: String = row.try_get("principal_id")?;
     let audit_id: String = row.try_get("audit_id")?;
@@ -494,7 +714,12 @@ pub(super) async fn load_delegation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lead::{Capability, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegation};
+    use crate::execution_policy::{OperationLimits, ProgressPolicy};
+    use crate::lead::{
+        Capability, ObjectiveClass, ProviderRoute, RiskClass, StandingDelegation,
+        StandingDelegationV2,
+    };
+    use std::num::NonZeroU32;
 
     async fn fixture_db() -> (std::path::PathBuf, Database) {
         let path = std::env::temp_dir().join(format!(
@@ -513,8 +738,27 @@ mod tests {
         (path, db)
     }
 
-    fn grant(id: &str, requests: u32) -> StandingDelegation {
-        let mut grant = StandingDelegation {
+    fn operations() -> OperationLimits {
+        OperationLimits {
+            model_request_timeout_secs: NonZeroU32::new(300).unwrap(),
+            tool_call_timeout_secs: NonZeroU32::new(600).unwrap(),
+            max_request_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_response_bytes: NonZeroU32::new(2 * 1024 * 1024).unwrap(),
+            max_generation_tokens: NonZeroU32::new(8_192).unwrap(),
+            max_in_flight_operations: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    fn progress() -> ProgressPolicy {
+        ProgressPolicy {
+            diagnose_after_stagnant_checkpoints: NonZeroU32::new(2).unwrap(),
+            escalate_after_unsuccessful_replans: NonZeroU32::new(1).unwrap(),
+            observation_timeout_secs: NonZeroU32::new(300).unwrap(),
+        }
+    }
+
+    fn grant_v2(id: &str) -> StandingDelegationV2 {
+        let mut grant = StandingDelegationV2 {
             id: id.into(),
             principal_id: "owner".into(),
             audit_id: "audit".into(),
@@ -532,13 +776,43 @@ mod tests {
                 model: "deepseek-v4.1-flash".into(),
                 mode: "build".into(),
             },
+            max_timeout_secs: 300,
+            max_parallel: 2,
+            operations: operations(),
+            progress: progress(),
+            expires_at: Utc::now() + chrono::Duration::days(1),
+            revoked_at: None,
+        };
+        grant.content_hash = grant.compute_content_hash();
+        grant
+    }
+
+    fn legacy_grant(id: &str) -> StandingDelegation {
+        let mut grant = StandingDelegation {
+            id: id.into(),
+            principal_id: "owner".into(),
+            audit_id: "audit".into(),
+            project_id: "project".into(),
+            revision: 1,
+            content_hash: String::new(),
+            objective_classes: vec![ObjectiveClass::Feature],
+            allowed_paths: vec!["src".into()],
+            capabilities: vec![Capability::RepositoryEdit],
+            risk_classes: vec![RiskClass::R0],
+            autonomous_start: false,
+            autonomous_risk_classes: Vec::new(),
+            route: ProviderRoute {
+                provider: "opencode".into(),
+                model: "deepseek-v4.1-flash".into(),
+                mode: "build".into(),
+            },
+            max_requests: 2,
             max_attempts: 2,
             max_timeout_secs: 300,
             max_repair_cycles: 1,
             max_wall_clock_secs: 1_800,
             max_parallel: 1,
             max_sessions: 4,
-            max_requests: requests,
             max_cumulative_sessions: 8,
             max_cumulative_attempts: 16,
             expires_at: Utc::now() + chrono::Duration::days(1),
@@ -549,31 +823,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn issuance_is_idempotent_immutable_and_revocation_is_one_way() {
+    async fn v2_issuance_is_idempotent_immutable_and_revocation_is_one_way() {
         let (path, db) = fixture_db().await;
-        let value = grant("grant-a", 2);
+        let value = grant_v2("grant-a");
         let (created, inserted) = db
-            .create_standing_delegation(&value, "grant-key")
+            .create_standing_delegation_v2(&value, "grant-key")
             .await
             .unwrap();
         assert!(inserted);
         assert_eq!(created.content_hash, value.content_hash);
         let (replayed, inserted) = db
-            .create_standing_delegation(&value, "grant-key")
+            .create_standing_delegation_v2(&value, "grant-key")
             .await
             .unwrap();
         assert!(!inserted);
         assert_eq!(replayed.id, value.id);
         let mut changed = value.clone();
-        changed.max_requests = 3;
+        changed.max_parallel = 1;
         changed.content_hash = changed.compute_content_hash();
         assert!(matches!(
-            db.create_standing_delegation(&changed, "grant-key").await,
+            db.create_standing_delegation_v2(&changed, "grant-key")
+                .await,
             Err(Error::Conflict(_))
         ));
         assert!(
             sqlx::query::query(
-                "UPDATE standing_delegations SET content_hash='tampered' WHERE id=?1"
+                "UPDATE standing_delegations SET authority_sha256='tampered' WHERE id=?1"
             )
             .bind(&value.id)
             .execute(&db.pool)
@@ -591,7 +866,8 @@ mod tests {
             .unwrap();
         assert_eq!(again.revoked_at, revoked.revoked_at);
         assert!(matches!(
-            db.reserve_delegation(&value.id, 1, 1, 1, Utc::now()).await,
+            db.record_delegation_usage(&value.id, 1, 1, 1, Utc::now())
+                .await,
             Err(Error::Forbidden(_))
         ));
         db.close().await;
@@ -599,38 +875,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reservations_respect_each_cumulative_ceiling_atomically() {
+    async fn usage_counters_are_telemetry_and_never_terminate_work() {
         let (path, db) = fixture_db().await;
-        let value = grant("grant-b", 2);
-        db.create_standing_delegation(&value, "grant-key")
+        let value = grant_v2("grant-b");
+        db.create_standing_delegation_v2(&value, "grant-key")
             .await
             .unwrap();
-        let usage = db
-            .reserve_delegation(&value.id, 1, 2, 2, Utc::now())
+        for _ in 0..50 {
+            db.record_delegation_usage(&value.id, 1, 1, 1, Utc::now())
+                .await
+                .unwrap();
+        }
+        let usage = db.delegation_usage(&value.id).await.unwrap();
+        assert_eq!(
+            (usage.requests, usage.sessions, usage.attempts),
+            (50, 50, 50)
+        );
+        assert_eq!(db.standing_delegation_v2(&value.id).await.unwrap(), value);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn legacy_v1_bytes_round_trip_and_never_decode_as_v2() {
+        let (path, db) = fixture_db().await;
+        let legacy = legacy_grant("grant-v1");
+        db.create_standing_delegation(&legacy, "legacy-key")
             .await
             .unwrap();
-        assert_eq!((usage.requests, usage.sessions, usage.attempts), (1, 2, 2));
+        let loaded = db.standing_delegation(&legacy.id).await.unwrap();
+        assert_eq!(loaded.content_hash, legacy.content_hash);
+        assert_eq!(loaded.max_attempts, legacy.max_attempts);
         assert!(matches!(
-            db.reserve_delegation(&value.id, 2, 1, 1, Utc::now()).await,
+            db.standing_delegation_v2(&legacy.id).await,
             Err(Error::Forbidden(_))
         ));
-        assert_eq!(db.delegation_usage(&value.id).await.unwrap().requests, 1);
-
-        let left = db.clone();
-        let right = db.clone();
-        let (a, b) = tokio::join!(
-            async move {
-                left.reserve_delegation("grant-b", 1, 1, 1, Utc::now())
-                    .await
-            },
-            async move {
-                right
-                    .reserve_delegation("grant-b", 1, 1, 1, Utc::now())
-                    .await
-            }
-        );
-        assert!(a.is_ok() ^ b.is_ok(), "exactly one reservation wins");
-        assert_eq!(db.delegation_usage(&value.id).await.unwrap().requests, 2);
+        let value = grant_v2("grant-v2");
+        db.create_standing_delegation_v2(&value, "v2-key")
+            .await
+            .unwrap();
+        assert!(matches!(
+            db.standing_delegation(&value.id).await,
+            Err(Error::Forbidden(_))
+        ));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -638,23 +925,26 @@ mod tests {
     #[tokio::test]
     async fn expired_and_unknown_grants_fail_closed() {
         let (path, db) = fixture_db().await;
-        let mut expired = grant("grant-expired", 1);
+        let mut expired = grant_v2("grant-expired");
         expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
         expired.content_hash = expired.compute_content_hash();
         assert!(matches!(
-            db.create_standing_delegation(&expired, "expired-key").await,
+            db.create_standing_delegation_v2(&expired, "expired-key")
+                .await,
             Err(Error::Forbidden(_))
         ));
         assert!(matches!(
-            db.reserve_delegation("missing", 1, 1, 1, Utc::now()).await,
+            db.record_delegation_usage("missing", 1, 1, 1, Utc::now())
+                .await,
             Err(Error::NotFound)
         ));
-        let value = grant("grant-c", 1);
-        db.create_standing_delegation(&value, "valid-key")
+        let value = grant_v2("grant-c");
+        db.create_standing_delegation_v2(&value, "valid-key")
             .await
             .unwrap();
         assert!(matches!(
-            db.reserve_delegation(&value.id, 0, 0, 0, Utc::now()).await,
+            db.record_delegation_usage(&value.id, 0, 0, 0, Utc::now())
+                .await,
             Err(Error::Invalid(_))
         ));
         db.close().await;
