@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "capability": "CAP-011",
+  "slice": "office-isometric-v0",
+  "candidate": "bba85f36ae619eb5d11eb86bd8fd8ac283992d7a",
+  "code_candidate": "6bb5cde8f3b3ba386180976532aff963ceec8666",
+  "candidate_tree": "cbef6367814c5281ce7c2cbd70855f9408118fcf",
+  "recorded_at": "2026-10-29T00:16:00Z",
+  "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
+  "live_core": false,
+  "live_activity": false,
+  "statement": "Real Chromium rendered the real Office bundle at four viewports and exercised selection, filtering, zoom and pan. Core API responses were deterministic Playwright route fixtures. This is renderer and interaction self-test evidence, not live agent activity, not independent acceptance and not Compose acceptance.",
+  "browser": {
+    "engine": "Chromium",
+    "product": "Google Chrome for Testing 156.0.8078.4",
+    "executable": "/home/james/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
+    "automation": "playwright-core 1.64.1",
+    "headless": true
+  },
+  "method": {
+    "server": "Vite dev server from office/ on 127.0.0.1:4173",
+    "app": "Factory Office hash route /#/agents",
+    "fixtures": "Playwright page.route interception of **/core-api/** with 12 deterministic ParticipantRecord fixtures, 2 Campaigns and 1 Project",
+    "scene_harness": "Developer-only visual-harness.html (removed before commit) rendering the same AgentOfficeIsometric component; the page screenshots use the real AgentOffice route, sidebar, filters and ParticipantInspector"
+  },
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 1000,
+      "avatars": 12,
+      "page_overflow_px": 0,
+      "zoom": "Zoom 84%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-1440.png"
+    },
+    {
+      "width": 834,
+      "height": 1000,
+      "avatars": 12,
+      "page_overflow_px": 0,
+      "zoom": "Zoom 92%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-834.png"
+    },
+    {
+      "width": 390,
+      "height": 900,
+      "avatars": 12,
+      "page_overflow_px": 0,
+      "zoom": "Zoom 45%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-390.png"
+    },
+    {
+      "width": 320,
+      "height": 780,
+      "avatars": 12,
+      "page_overflow_px": 0,
+      "zoom": "Zoom 45%",
+      "console_errors": 0,
+      "failed_requests": 0,
+      "screenshot": "page-320.png"
+    }
+  ],
+  "interactions": {
+    "keyboard_selection": {
+      "action": "focus first avatar, press Enter",
+      "url": "#/agents/lead:participant-00",
+      "inspector": "Lead lead-019919",
+      "screenshot": "page-selected-1440.png"
+    },
+    "filter": {
+      "action": "select Role = IMPLEMENTER",
+      "url": "#/agents?role=IMPLEMENTER",
+      "avatars": 3,
+      "zoom": "Zoom 96%",
+      "screenshot": "page-filtered-1440.png"
+    },
+    "scene_density": {
+      "fixture": "30 implementers",
+      "viewports": [1440, 390, 320],
+      "result": "30 avatars in the Implementation station; no page overflow; viewport pans when the fitted scene is wider than the floor",
+      "screenshot": "scene-30-1440.png"
+    },
+    "empty": {
+      "fixture": "0 participants",
+      "result": "No recorded participants empty state, zero avatars, no fabricated entity",
+      "screenshot": "scene-0-1440.png"
+    }
+  },
+  "not_tested": [
+    "Real Core /office/participants projection against a running Core process",
+    "Compose stack (Core, Worker, Supervisor, nested Podman, broker)",
+    "Independent verification or Quality Gate acceptance",
+    "Live provider sessions or model inference",
+    "Automated axe audit and full manual screen-reader review",
+    "Visual regression baseline"
+  ],
+  "artifacts_note": "Screenshots are bounded renderer-review artifacts. The scene screenshots carry a visible 'not live activity' fixture header; the page screenshots were captured against intercepted fixtures and must not be read as live agent activity."
+}
