@@ -2,10 +2,10 @@
   "schema_version": 1,
   "capability": "CAP-011",
   "slice": "office-isometric-v0",
-  "candidate": "8af44f7172b3ae0a4a7f0a2e3871aacde86eafdb",
-  "code_candidate": "8af44f7172b3ae0a4a7f0a2e3871aacde86eafdb",
-  "candidate_tree": "e27cd5d6c0cc2966ba0d72c04efa21a902993da7",
-  "recorded_at": "2026-10-29T00:48:00Z",
+  "candidate": "c06432d",
+  "code_candidate": "c06432d",
+  "candidate_tree": "dfa09c0372f60272d67f7fce853cf40469dd5ef7",
+  "recorded_at": "2026-10-29T01:15:00Z",
   "evidence_level": "AUTHOR_SELF_TEST_FIXTURE_ONLY",
   "live_core": false,
   "live_activity": false,
@@ -21,7 +21,7 @@
     "server": "Vite dev server from office/ on 127.0.0.1:4173",
     "app": "Factory Office hash route /#/agents",
     "fixtures": "Playwright page.route interception of **/core-api/** with 12 deterministic ParticipantRecord fixtures, 2 Campaigns and 1 Project; a visible MOCK CORE FIXTURE banner was injected before capture",
-    "scene_harness": "office/visual-harness.html, served only by the Vite dev server, excluded from the production build, with a permanent TEST FIXTURE — NOT LIVE CORE DATA banner. It renders the same AgentOfficeIsometric component with deterministic fixtures."
+    "scene_harness": "office/visual-harness.html, served only by the Vite dev server, excluded from the production build, with a permanent TEST FIXTURE \u2014 NOT LIVE CORE DATA banner. It renders the same AgentOfficeIsometric component with deterministic fixtures."
   },
   "viewports": [
     {
@@ -29,7 +29,7 @@
       "height": 1000,
       "avatars": 12,
       "document_overflow_px": 0,
-      "zoom": "Zoom 83%",
+      "zoom": "Zoom 78%",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-1440.png"
@@ -39,7 +39,7 @@
       "height": 1000,
       "avatars": 12,
       "document_overflow_px": 0,
-      "zoom": "Zoom 89%",
+      "zoom": "Zoom 84%",
       "console_errors": 0,
       "failed_requests": 0,
       "screenshot": "page-834.png"
@@ -87,11 +87,27 @@
       "component_test": "office/src/views/AgentOffice.test.tsx"
     },
     "scene_density": {
-      "fixtures": ["5 all-current Implementers", "30 all-current Implementers", "12 mixed observations"],
-      "viewports": [1440, 834, 390, 320],
+      "fixtures": [
+        "5 all-current Implementers",
+        "30 all-current Implementers",
+        "12 mixed observations"
+      ],
+      "viewports": [
+        1440,
+        834,
+        390,
+        320
+      ],
       "result": "one unique avatar appearance per participant, non-working poses for STALE/FINAL/UNKNOWN, no document overflow; narrow widths use a pannable crop",
       "screenshots": [
+        "scene-0-1440.png",
+        "scene-0-390.png",
+        "scene-1-1440.png",
+        "scene-1-390.png",
         "scene-5-implementers-1440.png",
+        "scene-5-implementers-390.png",
+        "scene-12-1440.png",
+        "scene-12-390.png",
         "scene-30-1440.png",
         "scene-30-390.png",
         "scene-30-320.png",
@@ -102,6 +118,15 @@
       "fixture": "0 participants",
       "result": "No recorded participants empty state, zero avatars, no fabricated entity",
       "screenshot": "scene-0-1440.png"
+    },
+    "avatar_bounds": {
+      "result": "Every pair of 84x100 avatar bounds is non-overlapping for 0/1/5/12/30 mixed and 30 Implementers.",
+      "test": "office/src/components/office/officeSceneLayout.test.ts",
+      "slot_pitch": "92x104"
+    },
+    "duplicate_identity": {
+      "result": "CURRENT wins over STALE/FINAL/UNKNOWN; newest last_observed_at; lexical field tiebreak. Reversed input yields the same station, state and appearance.",
+      "test": "office/src/components/office/officeSceneLayout.test.ts"
     }
   },
   "not_tested": [
@@ -113,5 +138,14 @@
     "Visual regression baseline",
     "Owner visual approval of the studio amendment"
   ],
-  "artifacts_note": "Screenshots are bounded renderer-review artifacts. Page captures carry a visible MOCK CORE FIXTURE banner and scene captures carry a TEST FIXTURE — NOT LIVE CORE DATA header. They must never be read as live agent activity or Core acceptance."
+  "artifacts_note": "Screenshots are bounded renderer-review artifacts. Page captures carry a visible MOCK CORE FIXTURE banner and scene captures carry a TEST FIXTURE \u2014 NOT LIVE CORE DATA header. They must never be read as live agent activity or Core acceptance.",
+  "visual_comparison": {
+    "primary_reference": "factory-office-visual-reference-pack-20261028/01-office-isometrica-referencia-principal.png",
+    "artifacts": [
+      "comparison-primary-vs-full-page.jpg",
+      "comparison-primary-vs-30-active.jpg"
+    ],
+    "assessment": "dark studio shell/rooms/avatars aligned in direction; simpler flat room geometry, smaller front-facing characters, less volumetric lighting and no animation remain.",
+    "approval": false
+  }
 }
