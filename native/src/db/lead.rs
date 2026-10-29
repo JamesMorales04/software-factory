@@ -7914,6 +7914,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_stagnant_attempts_accumulate_to_one_durable_diagnosis() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, first_attempt) = progress_attempt_campaign(&db).await;
+        let now_ms = Utc::now().timestamp_millis();
+        db.claim_assignment("worker-1", now_ms, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let first = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first.decision,
+            crate::execution_policy::ContinuationDecision::Continue
+        );
+        // End the first attempt without a diagnosis, then create a repair
+        // attempt for the same stable work item.
+        sqlx::query::query("UPDATE attempts SET status='FAILED' WHERE id=?1")
+            .bind(&first_attempt)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.create_attempt(&run_id, "progress-attempt-2")
+            .await
+            .unwrap();
+        db.claim_assignment("worker-2", now_ms, 30_000)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, &[]),
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second.decision,
+            crate::execution_policy::ContinuationDecision::Diagnose
+        );
+        assert_eq!(second.stagnant_checkpoints, 2);
+        assert!(
+            db.progress_hold(&campaign_id, &campaign_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn retired_work_item_cannot_earn_progress_again() {
         let (path, db, _) = fixture().await;
         let (campaign_id, _run_id, attempt_id) = progress_attempt_campaign(&db).await;

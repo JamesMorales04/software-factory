@@ -1696,6 +1696,9 @@ impl std::error::Error for WorkerProgressHalt {}
 struct TurnProgress {
     campaign_id: String,
     work_item_id: String,
+    /// Attempt-scoped prefix keeps checkpoint/operation ids unique across
+    /// repair attempts while progress counters remain work-item scoped.
+    operation_prefix: String,
     turn: u64,
     sequence: u64,
     evidence: Vec<ProgressEvidence>,
@@ -1708,13 +1711,16 @@ impl TurnProgress {
         Self::from_identity(
             context.assignment.campaign_id.clone(),
             context.assignment.work_item_id.clone(),
+            context.assignment.lease.attempt_id.clone(),
         )
     }
 
-    fn from_identity(campaign_id: String, work_item_id: String) -> Self {
+    fn from_identity(campaign_id: String, work_item_id: String, attempt_id: String) -> Self {
+        let operation_prefix = format!("{work_item_id}/{attempt_id}");
         Self {
             campaign_id,
             work_item_id,
+            operation_prefix,
             turn: 0,
             sequence: 0,
             evidence: Vec::new(),
@@ -1792,11 +1798,12 @@ impl TurnProgress {
         if self.turn == 0 {
             return None;
         }
-        let checkpoint_id = format!("{}-turn-{}", self.work_item_id, self.turn);
+        let checkpoint_id = format!("{}-turn-{}", self.operation_prefix, self.turn);
         let operation_id = checkpoint_id.clone();
         let outcome_sha256 = sha256_hex(
             serde_json::to_string(&serde_json::json!({
                 "workItemId": self.work_item_id,
+                "operation": self.operation_prefix,
                 "turn": self.turn,
                 "evidence": self.evidence.iter().map(|item| item.evidence_id.clone()).collect::<Vec<_>>(),
             }))
@@ -4537,7 +4544,8 @@ mod tests {
 
     #[test]
     fn twelve_turns_build_stable_campaign_checkpoints() {
-        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
+        let mut progress =
+            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
         for turn in 0..12 {
             progress.begin_turn();
             progress.observe_write("src/lib.rs", &format!("candidate-{turn}"));
@@ -4559,7 +4567,8 @@ mod tests {
 
     #[test]
     fn check_observations_encode_suite_and_pass_fail_outcomes() {
-        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
+        let mut progress =
+            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "candidate");
         progress.observe_check(&["cargo".into(), "test".into()], false);
@@ -4583,7 +4592,8 @@ mod tests {
 
     #[test]
     fn duplicate_identical_checks_do_not_duplicate_evidence() {
-        let mut progress = TurnProgress::from_identity("campaign".into(), "unit-1".into());
+        let mut progress =
+            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
         progress.observe_check(&["cargo".into(), "test".into()], true);
@@ -4604,6 +4614,24 @@ mod tests {
                 .iter()
                 .all(|item| item.kind != ProgressKind::TestsImproved),
             "identical check replay must not create new evidence"
+        );
+    }
+
+    #[test]
+    fn repair_attempts_share_work_item_but_not_checkpoint_ids() {
+        let mut first =
+            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-1".into());
+        first.begin_turn();
+        let first_request = first.checkpoint_request().unwrap();
+        let mut second =
+            TurnProgress::from_identity("campaign".into(), "unit-1".into(), "attempt-2".into());
+        second.begin_turn();
+        let second_request = second.checkpoint_request().unwrap();
+        assert_eq!(first_request.work_item_id, second_request.work_item_id);
+        assert_eq!(first_request.campaign_id, second_request.campaign_id);
+        assert_ne!(
+            first_request.checkpoint.checkpoint_id, second_request.checkpoint.checkpoint_id,
+            "a repair attempt must not reuse the prior attempt's operation identity"
         );
     }
 
