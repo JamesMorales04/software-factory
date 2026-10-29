@@ -1895,7 +1895,14 @@ mod tests {
             max_log_bytes: 4096,
         })
         .await;
-        assert!(matches!(result, Err(BrowserError::Invalid(_))));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("in-repository log directory was accepted"),
+        };
+        assert!(
+            matches!(error, BrowserError::Invalid(_)),
+            "unexpected browser error: {error:?}"
+        );
         assert!(!log_dir.exists(), "in-repository log directory was created");
         let _ = std::fs::remove_dir_all(root);
     }
