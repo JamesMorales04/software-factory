@@ -9,8 +9,12 @@ import {
   fitCamera,
   OFFICE_AVATAR_HEIGHT,
   OFFICE_AVATAR_WIDTH,
+  OFFICE_CLUSTER_GAP,
+  OFFICE_CLUSTER_SIZE,
   OFFICE_MAX_ZOOM,
   OFFICE_MIN_ZOOM,
+  OFFICE_SLOT_COLUMN,
+  OFFICE_ZONE_SIDE_LANE,
   panCamera,
   zoomCamera,
   zoomPercent,
@@ -232,6 +236,55 @@ describe("buildOfficeSceneLayout", () => {
     expect(looks.size).toBe(30);
   });
 
+  it("groups workstation clusters around real aisles", () => {
+    const layout = buildOfficeSceneLayout(implementers(30));
+    const implementation = layout.zones.find(
+      (zone) => zone.role === "IMPLEMENTER",
+    );
+    const anchors = implementation?.slots ?? [];
+    const columns = [...new Set(anchors.map((slot) => slot.column))].sort(
+      (left, right) => left - right,
+    );
+    const rows = [...new Set(anchors.map((slot) => slot.row))].sort(
+      (left, right) => left - right,
+    );
+    expect(columns).toHaveLength(6);
+    expect(rows).toHaveLength(5);
+    const columnAnchors = columns.map(
+      (column) => anchors.find((slot) => slot.column === column)?.anchorX ?? 0,
+    );
+    const rowAnchors = rows.map(
+      (row) => anchors.find((slot) => slot.row === row)?.anchorY ?? 0,
+    );
+    const clusteredColumn =
+      columnAnchors[OFFICE_CLUSTER_SIZE] -
+      columnAnchors[OFFICE_CLUSTER_SIZE - 1];
+    const plainColumn = columnAnchors[1] - columnAnchors[0];
+    expect(clusteredColumn).toBeGreaterThan(
+      plainColumn + OFFICE_CLUSTER_GAP - 1,
+    );
+    expect(rowAnchors.at(-1)).toBeGreaterThan(rowAnchors[0] ?? 0);
+    expect(new Set(columnAnchors).size).toBe(6);
+    expect(new Set(rowAnchors).size).toBe(5);
+    expect(OFFICE_SLOT_COLUMN).toBeGreaterThan(OFFICE_AVATAR_WIDTH);
+  });
+
+  it("reserves a furniture lane that avatars never occupy", () => {
+    const layout = buildOfficeSceneLayout(implementers(30));
+    const implementation = layout.zones.find(
+      (zone) => zone.role === "IMPLEMENTER",
+    );
+    expect(implementation).toBeDefined();
+    for (const slot of implementation?.slots ?? []) {
+      expect(slot.x + OFFICE_AVATAR_WIDTH).toBeLessThanOrEqual(
+        (implementation?.x ?? 0) +
+          (implementation?.width ?? 0) -
+          OFFICE_ZONE_SIDE_LANE +
+          1,
+      );
+    }
+  });
+
   it("renders one avatar per participant identity and reports duplicates", () => {
     const first = participant(0, "IMPLEMENTER");
     const duplicate = {
@@ -327,6 +380,13 @@ describe("office camera", () => {
     });
     expect(camera.x).toBe(24);
     expect(camera.y).toBe(400 - 1000 - 24);
+  });
+
+  it("anchors a scene taller than the viewport below the studio wall", () => {
+    const camera = fitCamera(220, 1800, { width: 420, height: 320 });
+    expect(camera.zoom).toBe(0.55);
+    expect(camera.x).toBe(Math.round((420 - 220 * 0.55) / 2));
+    expect(camera.y).toBe(8);
   });
 
   it("limits panning of a scene that already fits", () => {

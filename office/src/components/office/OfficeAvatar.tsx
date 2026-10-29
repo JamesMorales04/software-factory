@@ -1,6 +1,7 @@
 import type { CSSProperties, KeyboardEvent } from "react";
 import { useI18n } from "../../i18n";
 import { cn } from "../ui/cn";
+import { SeatedFigure, StandingFigure } from "./OfficeAvatarFigure";
 import {
   type OfficeAvatarLook,
   officeAvatarLook,
@@ -63,355 +64,9 @@ function lookVariables(look: OfficeAvatarLook): CSSProperties {
     "--office-hair": `var(--office-hair-${look.hairColor})`,
     "--office-shirt": `var(--office-shirt-${look.clothing})`,
     "--office-accent": `var(--office-accent-${look.accent})`,
+    "--office-trouser": `var(--office-trouser-${look.trouser})`,
+    "--office-jacket-colour": `var(--office-jacket-${look.jacket})`,
   } as CSSProperties;
-}
-
-function Hair({ look }: { look: OfficeAvatarLook }) {
-  switch (look.hairStyle) {
-    case 1:
-      return (
-        <path
-          className="office-avatar-hair"
-          d="M33.4 26 Q33 13 42 13 Q51 13 50.6 26 Q47 18 42 19 Q36.6 20 33.4 26 Z"
-        />
-      );
-    case 2:
-      return (
-        <path
-          className="office-avatar-hair"
-          d="M32.8 28 Q32 13 42 13 Q52 13 51.2 28 L50 39 Q47 37 47 30 Q42 33 37 30 Q37 37 34 39 Z"
-        />
-      );
-    case 3:
-      return (
-        <>
-          <path
-            className="office-avatar-hair"
-            d="M34 26 Q34 13 42 13 Q50 13 50 26 Q47 19 42 19 Q37 19 34 26 Z"
-          />
-          <circle className="office-avatar-hair" cx="42" cy="12.5" r="4.3" />
-          <circle className="office-avatar-hair-tie" cx="42" cy="16" r="1.2" />
-        </>
-      );
-    case 4:
-      return (
-        <>
-          <path
-            className="office-avatar-hair"
-            d="M33 27 Q33 13 42 13 Q51 13 51 27 Q47 19 42 19 Q37 19 33 27 Z"
-          />
-          <circle className="office-avatar-hair" cx="34" cy="22" r="3.2" />
-          <circle className="office-avatar-hair" cx="50" cy="22" r="3.2" />
-          <circle className="office-avatar-hair" cx="37" cy="16" r="3" />
-          <circle className="office-avatar-hair" cx="47" cy="16" r="3" />
-        </>
-      );
-    case 5:
-      return (
-        <>
-          <path
-            className="office-avatar-hair"
-            d="M33.4 27 Q33 13 42 13 Q51 13 50.6 27 Q47 19 42 19 Q36.8 20 33.4 27 Z"
-          />
-          <path
-            className="office-avatar-hair"
-            d="M49 19 Q56 23 53 35 Q51 39 48 37 Q52 30 48 22 Z"
-          />
-        </>
-      );
-    default:
-      return (
-        <path
-          className="office-avatar-hair"
-          d="M34 27 Q34 13 42 13 Q50 13 50 27 Q47 19 42 19 Q37 19 34 27 Z"
-        />
-      );
-  }
-}
-
-function Accessory({ look }: { look: OfficeAvatarLook }) {
-  if (look.accessory === 1) {
-    return (
-      <g className="office-avatar-glasses">
-        <rect x="36.4" y="26.6" width="4.4" height="3.4" rx="1.2" />
-        <rect x="43.2" y="26.6" width="4.4" height="3.4" rx="1.2" />
-        <path d="M40.8 27.8 H43.2" />
-      </g>
-    );
-  }
-  if (look.accessory === 2) {
-    return (
-      <g className="office-avatar-headphones">
-        <path d="M33.4 28 Q33 15 42 14 Q51 15 50.6 28" />
-        <rect x="31.2" y="25.6" width="3.4" height="6.2" rx="1.6" />
-        <rect x="49.4" y="25.6" width="3.4" height="6.2" rx="1.6" />
-      </g>
-    );
-  }
-  return null;
-}
-
-function Face() {
-  return (
-    <g className="office-avatar-face">
-      <ellipse
-        className="office-avatar-ear"
-        cx="34.6"
-        cy="29"
-        rx="1.5"
-        ry="2"
-      />
-      <ellipse
-        className="office-avatar-ear"
-        cx="49.4"
-        cy="29"
-        rx="1.5"
-        ry="2"
-      />
-      <path className="office-avatar-brow" d="M37.4 26.2 q2 -1 3.8 0" />
-      <path className="office-avatar-brow" d="M42.8 26.2 q2 -1 3.8 0" />
-      <circle className="office-avatar-eye" cx="39.2" cy="28" r="0.8" />
-      <circle className="office-avatar-eye" cx="44.8" cy="28" r="0.8" />
-      <path className="office-avatar-nose" d="M42 29.2 v2.2" />
-      <path className="office-avatar-mouth" d="M40.4 33.2 q1.6 1.2 3.2 0" />
-    </g>
-  );
-}
-
-function SeatedFigure({ look }: { look: OfficeAvatarLook }) {
-  return (
-    <>
-      <ellipse
-        className="office-avatar-shadow"
-        cx="42"
-        cy="93"
-        rx="30"
-        ry="4"
-      />
-      <rect
-        className="office-avatar-chair"
-        x="27"
-        y="48"
-        width="30"
-        height="34"
-        rx="8"
-      />
-      <path
-        className="office-avatar-leg office-avatar-leg-left"
-        d="M36 71 L34 91"
-      />
-      <path
-        className="office-avatar-leg office-avatar-leg-right"
-        d="M48 71 L50 91"
-      />
-      <path className="office-avatar-shoe" d="M29 92 H38" />
-      <path className="office-avatar-shoe" d="M46 92 H55" />
-      <path
-        className="office-avatar-torso"
-        d="M27 49 Q42 41 57 49 L60 72 Q42 79 24 72 Z"
-      />
-      <path
-        className="office-avatar-shirt-detail"
-        d="M42 47 L39 63 L42 69 L45 63 Z"
-      />
-      <path
-        className="office-avatar-arm office-avatar-arm-left"
-        d="M28 53 Q22 62 27 71"
-      />
-      <path
-        className="office-avatar-arm office-avatar-arm-right"
-        d="M56 53 Q62 62 57 71"
-      />
-      <circle className="office-avatar-hand" cx="27" cy="72" r="3" />
-      <circle className="office-avatar-hand" cx="57" cy="72" r="3" />
-      <rect
-        className="office-avatar-neck"
-        x="39"
-        y="38"
-        width="6"
-        height="8"
-        rx="2.5"
-      />
-      <ellipse
-        className="office-avatar-head"
-        cx="42"
-        cy="27"
-        rx="7.2"
-        ry="8.7"
-      />
-      <Hair look={look} />
-      <Face />
-      <Accessory look={look} />
-      <path className="office-avatar-lanyard" d="M39 47 Q42 55 45 47" />
-      <rect
-        className="office-avatar-badge"
-        x="45.5"
-        y="55"
-        width="3.2"
-        height="4"
-        rx="0.6"
-      />
-      <g className="office-avatar-workstation">
-        <ellipse
-          className="office-avatar-monitor-glow"
-          cx="21"
-          cy="63"
-          rx="11"
-          ry="8"
-        />
-        <ellipse
-          className="office-avatar-monitor-glow"
-          cx="63"
-          cy="63"
-          rx="11"
-          ry="8"
-        />
-        <rect
-          className="office-avatar-monitor"
-          x="12"
-          y="54"
-          width="18"
-          height="12"
-          rx="1.5"
-        />
-        <rect
-          className="office-avatar-screen"
-          x="14"
-          y="56"
-          width="14"
-          height="8"
-          rx="0.8"
-        />
-        <path className="office-avatar-screen-line" d="M16 58 H24 M16 60 H22" />
-        <rect
-          className="office-avatar-monitor"
-          x="54"
-          y="54"
-          width="18"
-          height="12"
-          rx="1.5"
-        />
-        <rect
-          className="office-avatar-screen"
-          x="56"
-          y="56"
-          width="14"
-          height="8"
-          rx="0.8"
-        />
-        <path className="office-avatar-screen-line" d="M58 58 H66 M58 60 H64" />
-        <path
-          className="office-avatar-monitor-stand"
-          d="M21 66 V71 M63 66 V71"
-        />
-        <path
-          className="office-avatar-desk-top"
-          d="M5 78 L42 68 L79 78 L42 91 Z"
-        />
-        <path
-          className="office-avatar-desk-side"
-          d="M5 78 L42 91 L42 97 L5 84 Z"
-        />
-        <path
-          className="office-avatar-desk-side office-avatar-desk-side-right"
-          d="M42 91 L79 78 L79 84 L42 97 Z"
-        />
-        <rect
-          className="office-avatar-keyboard"
-          x="33"
-          y="79"
-          width="18"
-          height="3"
-          rx="1"
-        />
-        <rect
-          className="office-avatar-mug"
-          x="68"
-          y="76"
-          width="4"
-          height="4"
-          rx="1"
-        />
-      </g>
-    </>
-  );
-}
-
-function StandingFigure({
-  look,
-  observation,
-}: {
-  look: OfficeAvatarLook;
-  observation: string;
-}) {
-  return (
-    <>
-      <ellipse
-        className="office-avatar-shadow"
-        cx="42"
-        cy="94"
-        rx="18"
-        ry="3.5"
-      />
-      <ellipse
-        className="office-avatar-idle-ring"
-        data-observation={observation}
-        cx="42"
-        cy="93"
-        rx="23"
-        ry="7"
-      />
-      <path
-        className="office-avatar-leg office-avatar-leg-left"
-        d="M37 67 L35 91"
-      />
-      <path
-        className="office-avatar-leg office-avatar-leg-right"
-        d="M47 67 L49 91"
-      />
-      <path className="office-avatar-shoe" d="M30 92 H38" />
-      <path className="office-avatar-shoe" d="M46 92 H54" />
-      <path
-        className="office-avatar-torso"
-        d="M29 43 Q42 38 55 43 L57 68 Q42 73 27 68 Z"
-      />
-      <path
-        className="office-avatar-shirt-detail"
-        d="M42 41 L39 55 L42 61 L45 55 Z"
-      />
-      <path className="office-avatar-arm" d="M29 47 Q25 57 27 66" />
-      <path className="office-avatar-arm" d="M55 47 Q59 57 57 66" />
-      <circle className="office-avatar-hand" cx="27" cy="67" r="3" />
-      <circle className="office-avatar-hand" cx="57" cy="67" r="3" />
-      <rect
-        className="office-avatar-neck"
-        x="39"
-        y="38"
-        width="6"
-        height="8"
-        rx="2.5"
-      />
-      <ellipse
-        className="office-avatar-head"
-        cx="42"
-        cy="27"
-        rx="7.2"
-        ry="8.7"
-      />
-      <Hair look={look} />
-      <Face />
-      <Accessory look={look} />
-      <path className="office-avatar-lanyard" d="M39 42 Q42 50 45 42" />
-      <rect
-        className="office-avatar-badge"
-        x="45.5"
-        y="50"
-        width="3.2"
-        height="4"
-        rx="0.6"
-      />
-    </>
-  );
 }
 
 export function OfficeAvatar({
@@ -484,6 +139,7 @@ export function OfficeAvatar({
       data-observation={participant.observation}
       data-working={working ? "true" : "false"}
       data-look={look.signature}
+      data-build={look.build}
       data-slot-index={slot.index}
       data-column={slot.column}
       data-row={slot.row}
@@ -503,9 +159,10 @@ export function OfficeAvatar({
           {participant.status} · {observation}
         </span>
       </span>
+      <span className="office-avatar-selected-ring" aria-hidden="true" />
       <svg
         className="office-avatar-figure"
-        viewBox="0 0 84 100"
+        viewBox={`0 0 ${OFFICE_AVATAR_WIDTH} ${OFFICE_AVATAR_HEIGHT}`}
         aria-hidden="true"
         focusable="false"
       >
@@ -517,9 +174,9 @@ export function OfficeAvatar({
         <circle
           className="office-avatar-status-lamp"
           data-observation={participant.observation}
-          cx="74"
-          cy="90"
-          r="2.6"
+          cx={OFFICE_AVATAR_WIDTH - 11}
+          cy={OFFICE_AVATAR_HEIGHT - 12}
+          r="2.8"
         />
       </svg>
     </button>

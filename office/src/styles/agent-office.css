@@ -92,15 +92,26 @@
   --office-line-soft: rgb(173 201 228 / 0.16);
   --office-text: #e8eff8;
   --office-text-muted: #9db1c8;
-  --office-floor: #3c2e23;
-  --office-floor-deep: #241a14;
-  --office-floor-seam: #6a523b;
-  --office-wall: #0d1b2b;
+  --office-floor: #5a402c;
+  --office-floor-deep: #2d2017;
+  --office-floor-seam: #8a6a4b;
+  --office-floor-plank: rgb(255 221 176 / 0.08);
+  --office-wall: #102134;
   --office-wall-edge: #29445e;
+  --office-wall-panel: #122338;
+  --office-wall-panel-edge: #1d364f;
+  --office-window: #071827;
+  --office-window-glow: rgb(70 158 190 / 0.35);
+  --office-stone: #1c2a37;
+  --office-stone-light: #263847;
+  --office-stone-deep: #0b141d;
+  --office-fabric: #2c3f52;
+  --office-fabric-light: #3d546b;
   --office-wood: #9b6b43;
   --office-wood-light: #c08a58;
   --office-wood-dark: #5d402a;
   --office-metal: #35495e;
+  --office-metal-light: #5f7b94;
   --office-screen: #63e6d4;
   --office-screen-glow: rgb(99 230 212 / 0.55);
   --office-lamp: #ffbd78;
@@ -108,7 +119,6 @@
   --office-leaf: #3f7d5e;
   --office-leaf-light: #67a980;
   --office-pot: #8a5238;
-  --office-trouser: #253447;
   --office-shoe: #0b1119;
   --office-chair: #203548;
   --office-skin-1: #f0c9a8;
@@ -116,6 +126,7 @@
   --office-skin-3: #c38a62;
   --office-skin-4: #9a6545;
   --office-skin-5: #744a32;
+  --office-skin-6: #5a3726;
   --office-hair-1: #1e1b19;
   --office-hair-2: #3a2a21;
   --office-hair-3: #5b3b28;
@@ -123,6 +134,7 @@
   --office-hair-5: #b58a55;
   --office-hair-6: #6f6f75;
   --office-hair-7: #c7b7a3;
+  --office-hair-8: #8c3f2f;
   --office-shirt-1: #3f7b76;
   --office-shirt-2: #4c6c9a;
   --office-shirt-3: #76558d;
@@ -135,6 +147,15 @@
   --office-accent-2: #f2b35c;
   --office-accent-3: #7aa7ff;
   --office-accent-4: #e28397;
+  --office-accent-5: #a7e07a;
+  --office-trouser-1: #253447;
+  --office-trouser-2: #33404e;
+  --office-trouser-3: #2c3340;
+  --office-trouser-4: #41474f;
+  --office-jacket-0: transparent;
+  --office-jacket-1: #26394d;
+  --office-jacket-2: #55402f;
+  --office-jacket-3: #3b3b52;
   display: grid;
   gap: var(--space-2);
   min-width: 0;
@@ -211,7 +232,12 @@
   overflow: hidden;
   border: 1px solid var(--office-line);
   border-radius: var(--radius-lg);
-  background: var(--office-navy-950);
+  background: radial-gradient(
+    ellipse at 50% 34%,
+    #10263a 0%,
+    #071422 58%,
+    #040b13 100%
+  );
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -279,6 +305,168 @@
   pointer-events: none;
 }
 
+.office-studio-shell {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.office-studio-platform {
+  stroke: #2f4354;
+  stroke-width: 1;
+}
+
+.office-studio-platform-side {
+  fill: #0a131c;
+  stroke: #050b11;
+  stroke-width: 1;
+}
+
+.office-studio-platform-side-right {
+  fill: #101d29;
+  opacity: 0.72;
+}
+
+.office-studio-platform-tile {
+  opacity: 0.55;
+}
+
+.office-shell-tile-line {
+  fill: none;
+  stroke: rgb(164 197 224 / 0.055);
+  stroke-width: 1;
+}
+
+.office-studio-wall-face {
+  stroke: #22384d;
+  stroke-width: 1;
+}
+
+.office-studio-wall-panel {
+  fill: none;
+  stroke: #1b3248;
+  stroke-width: 2;
+}
+
+.office-studio-wall-seam {
+  fill: none;
+  stroke: rgb(80 119 150 / 0.22);
+  stroke-width: 1;
+}
+
+.office-studio-wall-trim {
+  fill: none;
+  stroke: #3f6a86;
+  stroke-width: 2;
+  opacity: 0.55;
+}
+
+.office-studio-window-frame {
+  fill: #13283a;
+  stroke: #32526c;
+  stroke-width: 1;
+}
+
+.office-studio-window-glass {
+  fill: var(--office-window);
+}
+
+.office-studio-window-city {
+  fill: #0f2a3b;
+}
+
+.office-studio-window-stars {
+  fill: none;
+  stroke: #b9dff0;
+  stroke-width: 1;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+.office-studio-window-mullion {
+  fill: none;
+  stroke: #2f4a60;
+  stroke-width: 1.4;
+}
+
+.office-studio-sign rect {
+  fill: #0b1e2e;
+  stroke: #2e5872;
+  stroke-width: 1;
+}
+
+.office-studio-sign path {
+  fill: var(--office-screen);
+  opacity: 0.85;
+}
+
+.office-studio-sign .office-studio-sign-mark {
+  fill: none;
+  stroke: #5e819a;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.office-studio-sign .office-studio-sign-lamp {
+  fill: var(--office-lamp);
+  opacity: 0.9;
+}
+
+.office-hallway-floor {
+  fill: #1b2c3b;
+  stroke: #33516a;
+  stroke-width: 1;
+}
+
+.office-hallway-inlay {
+  fill: rgb(153 193 222 / 0.07);
+  stroke: rgb(148 184 210 / 0.14);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.office-hallway-mark {
+  fill: none;
+  stroke: var(--office-zone-tone, #5f7f97);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
+  opacity: 0.55;
+}
+
+.office-studio-ambient {
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.9;
+}
+
+.office-studio-emblem-ring {
+  fill: rgb(48 82 104 / 0.18);
+  stroke: #31576d;
+  stroke-width: 1.2;
+}
+
+.office-studio-emblem-inner {
+  fill: none;
+  stroke: #24485c;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.office-studio-emblem-core {
+  fill: var(--office-screen);
+  opacity: 0.55;
+}
+
+.office-studio-emblem-tick {
+  fill: none;
+  stroke: #3f6a80;
+  stroke-width: 1.4;
+  opacity: 0.7;
+}
+
 .office-room-floor-side {
   fill: var(--office-floor-deep);
   stroke: #0b0a08;
@@ -291,8 +479,19 @@
   stroke-width: 1;
 }
 
-.office-room-planks {
-  opacity: 0.5;
+.office-room-floor-planks {
+  pointer-events: none;
+}
+
+.office-room-plank-line,
+.office-room-plank-seam {
+  fill: none;
+  stroke: var(--office-floor-plank);
+  stroke-width: 1;
+}
+
+.office-room-plank-seam {
+  opacity: 0.65;
 }
 
 .office-floor-seam {
@@ -302,9 +501,32 @@
 }
 
 .office-room-rug {
-  fill: color-mix(in srgb, var(--office-zone-tone) 14%, #171c22);
+  fill: color-mix(in srgb, var(--office-zone-tone) 10%, #38291d);
   stroke: color-mix(in srgb, var(--office-zone-tone) 34%, transparent);
   stroke-width: 1;
+}
+
+.office-room-rug-inner {
+  fill: none;
+  stroke: color-mix(in srgb, var(--office-zone-tone) 22%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 6 4;
+}
+
+.office-room-wall-cap {
+  fill: #0a1520;
+  stroke: #263f54;
+  stroke-width: 1;
+}
+
+.office-room-wall-return {
+  fill: #08121c;
+  stroke: #1e3549;
+  stroke-width: 0.8;
+}
+
+.office-room-wall-return-right {
+  opacity: 0.85;
 }
 
 .office-room-wall-face {
@@ -313,23 +535,30 @@
   stroke-width: 1;
 }
 
+.office-room-wall-panel {
+  fill: none;
+  stroke: var(--office-wall-panel-edge);
+  stroke-width: 2;
+  opacity: 0.7;
+}
+
 .office-room-floor-shine {
   fill: var(--office-wood-light);
-  opacity: 0.05;
+  opacity: 0.08;
   pointer-events: none;
 }
 
 .office-room-light {
   pointer-events: none;
   mix-blend-mode: screen;
-  opacity: 0.95;
+  opacity: 1;
 }
 
 .office-room-wall-seam {
   fill: none;
   stroke: var(--office-wall-edge);
   stroke-width: 1;
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
 .office-room-wall-trim {
@@ -338,41 +567,502 @@
   stroke-width: 2;
 }
 
-.office-room-board-frame {
-  fill: #112334;
-  stroke: #2b465f;
-  stroke-width: 1;
-}
-
-.office-room-board-surface {
-  fill: #1a3045;
-}
-
-.office-room-board-line {
+.office-room-skirting {
   fill: none;
-  stroke: #36506a;
+  stroke: #050b12;
+  stroke-width: 4;
+  opacity: 0.7;
+}
+
+.office-room-window-frame {
+  fill: #153048;
+  stroke: #3d6783;
   stroke-width: 1;
 }
 
-.office-board-note {
+.office-room-window-glass {
+  fill: var(--office-window);
+}
+
+.office-room-window-city {
+  fill: #0e293a;
+}
+
+.office-room-window-stars {
+  fill: none;
+  stroke: #c4e6f5;
+  stroke-width: 1;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.office-room-window-mullion {
+  fill: none;
+  stroke: #35566f;
+  stroke-width: 1.2;
+}
+
+.office-room-window-glow {
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+.office-whiteboard-frame,
+.office-pinboard-frame,
+.office-toolboard-frame {
+  fill: #1d354a;
+  stroke: #3f637e;
+  stroke-width: 1;
+}
+
+.office-whiteboard-surface {
+  fill: #dfe9ee;
+}
+
+.office-whiteboard-note {
+  fill: #e8b86c;
+}
+
+.office-whiteboard-note-b {
+  fill: #77cfc4;
+}
+
+.office-whiteboard-note-c {
+  fill: #8fb2e8;
+}
+
+.office-whiteboard-link {
+  fill: none;
+  stroke: #53718a;
+  stroke-width: 1;
+}
+
+.office-whiteboard-line {
+  fill: none;
+  stroke: #7991a4;
+  stroke-width: 1;
+}
+
+.office-whiteboard-node {
+  fill: #2f7182;
+}
+
+.office-whiteboard-node-b {
+  fill: #b57a35;
+}
+
+.office-pinboard-cork {
+  fill: #6b4b33;
+}
+
+.office-pinboard-note-a {
+  fill: #e8c46c;
+}
+
+.office-pinboard-note-b {
+  fill: #8bd0c4;
+}
+
+.office-pinboard-note-c {
+  fill: #d595a4;
+}
+
+.office-pinboard-string {
+  fill: none;
+  stroke: #d7c3a8;
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2;
+}
+
+.office-pinboard-pin {
+  fill: #e8eff8;
+}
+
+.office-toolboard-face {
+  fill: #24313a;
+}
+
+.office-toolboard-hook,
+.office-toolboard-gauge-line {
+  fill: none;
+  stroke: #8aa3b6;
+  stroke-width: 1;
+}
+
+.office-toolboard-tool {
+  fill: #8f9ba3;
+}
+
+.office-toolboard-tool-b {
+  fill: #b47e49;
+}
+
+.office-toolboard-wrench {
+  fill: none;
+  stroke: #b9c6d1;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.office-toolboard-gauge {
+  fill: #162b3a;
+  stroke: #6e94a9;
+  stroke-width: 1;
+}
+
+.office-wall-shelf-board {
+  fill: #754f33;
+  stroke: #9d7148;
+  stroke-width: 0.8;
+}
+
+.office-wall-shelf-bracket {
+  fill: none;
+  stroke: #3d5265;
+  stroke-width: 1.4;
+}
+
+.office-wall-shelf-book {
+  fill: var(--office-zone-tone);
+  opacity: 0.85;
+}
+
+.office-wall-shelf-book.office-book-a {
+  fill: #9a5344;
+}
+
+.office-wall-shelf-book.office-book-c {
+  fill: #6f8db0;
+}
+
+.office-wall-shelf-book.office-book-d {
+  fill: #b7a071;
+}
+
+.office-wall-shelf-orb {
   fill: var(--office-lamp);
   opacity: 0.85;
 }
 
-.office-board-note:nth-of-type(2) {
-  fill: var(--office-zone-tone);
+.office-wall-clock-face {
+  fill: #1b3042;
+  stroke: #4b6b83;
+  stroke-width: 1;
 }
 
-.office-board-note:nth-of-type(3) {
-  fill: var(--office-accent-4);
+.office-wall-clock-inner {
+  fill: #dce7ee;
+  opacity: 0.86;
 }
 
-.office-room-sconce-glow {
+.office-wall-clock-hours {
+  fill: none;
+  stroke: #1c2a37;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+
+.office-wall-clock-pin {
+  fill: #1c2a37;
+}
+
+.office-pendant-cord {
+  fill: none;
+  stroke: #1c2c3a;
+  stroke-width: 1.4;
+}
+
+.office-pendant-shade {
+  fill: #3c4f60;
+  stroke: #60798c;
+  stroke-width: 0.8;
+}
+
+.office-pendant-light {
+  fill: #ffe0b0;
+}
+
+.office-pendant-glow {
   pointer-events: none;
   mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+.office-bookshelf-frame {
+  fill: #4d3624;
+  stroke: #7a583c;
+  stroke-width: 1;
+}
+
+.office-bookshelf-back {
+  fill: #1e2831;
+  stroke: #2c3944;
+  stroke-width: 0.8;
+}
+
+.office-bookshelf-shelf {
+  fill: none;
+  stroke: #7a583c;
+  stroke-width: 1.4;
+}
+
+.office-book {
+  opacity: 0.92;
+}
+
+.office-book-a {
+  fill: #9a5344;
+}
+
+.office-book-b {
+  fill: #4f8a8a;
+}
+
+.office-book-c {
+  fill: #6f86b0;
+}
+
+.office-book-d {
+  fill: #b7945c;
+}
+
+.office-bookshelf-box {
+  fill: #6c7a86;
+  stroke: #9babb6;
+  stroke-width: 0.6;
+}
+
+.office-bookshelf-plant {
+  fill: var(--office-leaf);
+}
+
+.office-bookshelf-plant-leaf {
+  fill: none;
+  stroke: var(--office-leaf-light);
+  stroke-width: 1;
+}
+
+.office-coffee-body {
+  fill: #4a382a;
+  stroke: #7c603f;
+  stroke-width: 1;
+}
+
+.office-coffee-top {
+  fill: #8d6a48;
+  stroke: #b38b60;
+  stroke-width: 0.8;
+}
+
+.office-coffee-machine {
+  fill: #1c2a36;
+  stroke: #455d70;
+  stroke-width: 0.8;
+}
+
+.office-coffee-screen {
+  fill: #6fd6c7;
+  opacity: 0.75;
+}
+
+.office-coffee-button {
+  fill: #e7b46a;
+}
+
+.office-coffee-spout {
+  fill: none;
+  stroke: #8fa4b4;
+  stroke-width: 1.4;
+}
+
+.office-coffee-cup {
+  fill: #d9e2e8;
+}
+
+.office-coffee-jar {
+  fill: #7a5a3f;
+  stroke: #b08a63;
+  stroke-width: 0.6;
+}
+
+.office-server-body {
+  fill: #182633;
+  stroke: #3e5a6e;
+  stroke-width: 1;
+}
+
+.office-server-face {
+  fill: #0c151d;
+  stroke: #2b4356;
+  stroke-width: 0.8;
+}
+
+.office-server-unit {
+  fill: #182a38;
+  stroke: #2f4a5d;
+  stroke-width: 0.5;
+}
+
+.office-server-led {
+  fill: #6fe3bc;
+}
+
+.office-server-led[data-tone="1"] {
+  fill: var(--office-lamp);
+}
+
+.office-server-led[data-tone="2"] {
+  fill: #5f8fb8;
+}
+
+.office-server-vent {
+  fill: none;
+  stroke: #3e586c;
+  stroke-width: 1;
+}
+
+.office-server-feet {
+  fill: none;
+  stroke: #0a1118;
+  stroke-width: 3;
+}
+
+.office-test-cart-body {
+  fill: #34495a;
+  stroke: #5e7e93;
+  stroke-width: 1;
+}
+
+.office-test-cart-drawer {
+  fill: none;
+  stroke: #69869a;
+  stroke-width: 1;
+}
+
+.office-test-cart-wheel {
+  fill: #0b1119;
+}
+
+.office-test-cart-monitor {
+  fill: #0b141e;
+  stroke: #3b586d;
+  stroke-width: 0.8;
+}
+
+.office-test-cart-screen {
+  fill: #14313c;
+  stroke: #4b8f95;
+  stroke-width: 0.6;
+}
+
+.office-test-cart-trace {
+  fill: none;
+  stroke: var(--office-screen);
+  stroke-width: 0.9;
+  opacity: 0.8;
+}
+
+.office-test-cart-stand {
+  fill: none;
+  stroke: #40596a;
+  stroke-width: 1.6;
+}
+
+.office-test-cart-toolbox {
+  fill: #8a5a3c;
+  stroke: #b38256;
+  stroke-width: 0.7;
+}
+
+.office-lounge-back,
+.office-lounge-seat {
+  fill: var(--office-fabric);
+  stroke: #4b647c;
+  stroke-width: 0.9;
+}
+
+.office-lounge-cushion {
+  fill: #34495d;
+}
+
+.office-lounge-cushion-light {
+  fill: #405a70;
+}
+
+.office-lounge-arm {
+  fill: #263b4e;
+  stroke: #48647c;
+  stroke-width: 0.7;
+}
+
+.office-lounge-leg {
+  fill: none;
+  stroke: #0b1119;
+  stroke-width: 2.4;
+}
+
+.office-lounge-table {
+  fill: #251c15;
+  opacity: 0.6;
+}
+
+.office-lounge-table-top {
+  fill: #755338;
+  stroke: #a47c54;
+  stroke-width: 0.7;
+}
+
+.office-lounge-book {
+  fill: #8a5344;
+}
+
+.office-lounge-cup {
+  fill: #d9e2e8;
+}
+
+.office-bin-body {
+  fill: #35505f;
+  stroke: #58758a;
+  stroke-width: 0.8;
+}
+
+.office-bin-lid {
+  fill: #415f70;
+}
+
+.office-bin-line {
+  fill: none;
+  stroke: #7d97a8;
+  stroke-width: 0.8;
+}
+
+.office-ups-body {
+  fill: #1e2b36;
+  stroke: #4a6172;
+  stroke-width: 1;
+}
+
+.office-ups-screen {
+  fill: #213c46;
+  stroke: #4d7f86;
+  stroke-width: 0.6;
+}
+
+.office-ups-led {
+  fill: #6fe3bc;
+}
+
+.office-ups-led-b {
+  fill: var(--office-lamp);
 }
 
 .office-room-sconce {
+  fill: #3c5061;
+  stroke: #6d8799;
+  stroke-width: 0.7;
+}
+
+.office-room-sconce-bulb {
   fill: var(--office-lamp);
   filter: drop-shadow(0 0 5px rgb(255 190 122 / 0.8));
 }
@@ -404,18 +1094,31 @@
   stroke-width: 0.7;
 }
 
+.office-plant-leaf-light {
+  fill: var(--office-leaf-light);
+}
+
 .office-lamp-glow {
   pointer-events: none;
   mix-blend-mode: screen;
 }
 
-.office-lamp-base,
-.office-lamp-pole {
+.office-lamp-base {
   fill: var(--office-metal);
+  stroke: #526a7e;
+  stroke-width: 0.8;
 }
 
 .office-lamp-pole {
-  width: 2px;
+  fill: var(--office-metal);
+  stroke: #526a7e;
+  stroke-width: 0.4;
+}
+
+.office-lamp-arm {
+  fill: none;
+  stroke: var(--office-metal);
+  stroke-width: 2;
 }
 
 .office-lamp-shade {
@@ -431,34 +1134,37 @@
 .office-zone-header {
   position: absolute;
   left: 14px;
-  top: 8px;
+  top: 7px;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 22px;
-  padding: 2px var(--space-2);
-  border: 1px solid var(--office-wall-edge);
+  height: 24px;
+  padding: 2px 10px;
+  border: 1px solid #31536d;
   border-left: 3px solid var(--office-zone-tone);
   border-radius: 3px;
-  background: rgb(5 13 23 / 0.8);
+  background: linear-gradient(180deg, #081725 0%, #050f1a 100%);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 0.35);
   pointer-events: none;
   white-space: nowrap;
+  transform: scale(var(--office-zone-scale, 1));
+  transform-origin: top left;
 }
 
 .office-zone-header h3 {
   margin: 0;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.11em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #e6eff8;
+  color: #edf4fb;
 }
 
 .office-zone-count {
   flex: none;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.4;
-  color: var(--office-text-muted);
+  color: #a9bed2;
   font-variant-numeric: tabular-nums;
 }
 
@@ -504,9 +1210,24 @@
 
 .office-avatar-figure {
   display: block;
-  width: 84px;
-  height: 100px;
+  width: 92px;
+  height: 112px;
   overflow: visible;
+}
+
+.office-avatar-selected-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: calc(var(--radius-md) + 2px);
+  pointer-events: none;
+  opacity: 0;
+}
+
+.office-avatar.is-selected .office-avatar-selected-ring {
+  opacity: 1;
+  box-shadow:
+    inset 0 0 0 1px rgb(99 230 212 / 0.35),
+    0 0 0 1px rgb(99 230 212 / 0.18);
 }
 
 .office-avatar[data-working="false"] .office-avatar-figure {
@@ -516,18 +1237,20 @@
 .office-avatar-card {
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 2px);
+  bottom: calc(100% + 4px);
   z-index: 1000;
   display: grid;
-  gap: 1px;
-  min-width: 154px;
-  max-width: 200px;
-  padding: 5px 8px;
-  border: 1px solid var(--office-line);
+  gap: 2px;
+  min-width: 164px;
+  max-width: 214px;
+  padding: 6px 9px;
+  border: 1px solid #2d465f;
   border-left: 3px solid var(--office-zone-tone);
   border-radius: 4px;
-  background: rgb(5 13 23 / 0.95);
-  box-shadow: 0 8px 20px rgb(0 0 0 / 0.35);
+  background: linear-gradient(180deg, #0a1a29 0%, #07131f 100%);
+  box-shadow:
+    0 10px 24px rgb(0 0 0 / 0.44),
+    inset 0 1px 0 rgb(255 255 255 / 0.04);
   color: var(--office-text);
   text-align: left;
   white-space: nowrap;
@@ -591,26 +1314,82 @@
 }
 
 .office-avatar-shadow {
-  fill: rgb(0 0 0 / 0.35);
+  fill: rgb(0 0 0 / 0.38);
+  filter: blur(0.3px);
 }
 
 .office-avatar-chair {
   fill: var(--office-chair);
-  stroke: #2f4a60;
-  stroke-width: 0.7;
+  stroke: #33526b;
+  stroke-width: 0.8;
+}
+
+.office-avatar-chair-seam {
+  fill: none;
+  stroke: #172736;
+  stroke-width: 0.8;
+  opacity: 0.85;
+}
+
+.office-avatar-chair-post {
+  fill: none;
+  stroke: #22384b;
+  stroke-width: 3;
+}
+
+.office-avatar-chair-base {
+  fill: none;
+  stroke: #2b4258;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.office-avatar-wheel {
+  fill: #0a1119;
+  stroke: #40596c;
+  stroke-width: 0.6;
+}
+
+.office-avatar-chair-arm {
+  fill: none;
+  stroke: #2c455a;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.office-avatar-chair-arm-cap {
+  fill: #3b566c;
+}
+
+.office-avatar-chair-stem-colour {
+  fill: none;
+  stroke: #3c5a72;
+  stroke-width: 1.6;
+}
+
+.office-avatar-chair-logo {
+  fill: var(--office-zone-tone);
+  opacity: 0.7;
+}
+
+.office-avatar-chair-accent {
+  fill: none;
+  stroke: var(--office-jacket-colour);
+  stroke-width: 1.2;
+  opacity: 0.7;
 }
 
 .office-avatar-leg {
   fill: none;
   stroke: var(--office-trouser);
-  stroke-width: 7;
+  stroke-width: 8;
   stroke-linecap: round;
 }
 
 .office-avatar-shoe {
   fill: none;
   stroke: var(--office-shoe);
-  stroke-width: 4;
+  stroke-width: 4.4;
   stroke-linecap: round;
 }
 
@@ -620,6 +1399,12 @@
   stroke-width: 0.7;
 }
 
+.office-avatar-jacket path {
+  fill: var(--office-jacket-colour);
+  stroke: color-mix(in srgb, var(--office-jacket-colour) 64%, #07111d);
+  stroke-width: 0.6;
+}
+
 .office-avatar-shirt-detail {
   fill: color-mix(in srgb, var(--office-shirt) 72%, #07111d);
 }
@@ -627,17 +1412,26 @@
 .office-avatar-lanyard {
   fill: none;
   stroke: var(--office-accent);
-  stroke-width: 1.1;
+  stroke-width: 1.2;
 }
 
 .office-avatar-badge {
   fill: var(--office-accent);
+  stroke: color-mix(in srgb, var(--office-accent) 52%, #07111d);
+  stroke-width: 0.3;
 }
 
 .office-avatar-arm {
   fill: none;
   stroke: var(--office-shirt);
-  stroke-width: 5.5;
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+
+.office-avatar-cuff {
+  fill: none;
+  stroke: color-mix(in srgb, var(--office-shirt) 72%, #07111d);
+  stroke-width: 2;
   stroke-linecap: round;
 }
 
@@ -647,13 +1441,29 @@
   fill: var(--office-skin);
 }
 
+.office-avatar-neck {
+  stroke: color-mix(in srgb, var(--office-skin) 70%, #2a140b);
+  stroke-width: 0.4;
+}
+
 .office-avatar-head {
-  stroke: color-mix(in srgb, var(--office-skin) 65%, #2a140b);
-  stroke-width: 0.5;
+  stroke: color-mix(in srgb, var(--office-skin) 62%, #2a140b);
+  stroke-width: 0.6;
+}
+
+.office-avatar-jaw-shade {
+  fill: color-mix(in srgb, var(--office-skin) 76%, #5a3320);
+  opacity: 0.4;
 }
 
 .office-avatar-ear {
   fill: var(--office-skin);
+  stroke: color-mix(in srgb, var(--office-skin) 66%, #2a140b);
+  stroke-width: 0.4;
+}
+
+.office-avatar-ear-far {
+  opacity: 0.82;
 }
 
 .office-avatar-eye {
@@ -664,8 +1474,8 @@
 .office-avatar-nose,
 .office-avatar-mouth {
   fill: none;
-  stroke: color-mix(in srgb, var(--office-skin) 35%, #2a140b);
-  stroke-width: 0.7;
+  stroke: color-mix(in srgb, var(--office-skin) 32%, #2a140b);
+  stroke-width: 0.8;
   stroke-linecap: round;
 }
 
@@ -675,12 +1485,27 @@
   stroke-width: 0.4;
 }
 
+.office-avatar-hair-back {
+  opacity: 0.95;
+}
+
 .office-avatar-hair-tie {
   fill: var(--office-accent);
 }
 
+.office-avatar-facial-hair {
+  fill: var(--office-hair);
+  stroke: color-mix(in srgb, var(--office-hair) 58%, #07111d);
+  stroke-width: 0.3;
+}
+
+.office-avatar-stubble {
+  fill: var(--office-hair);
+  opacity: 0.24;
+}
+
 .office-avatar-glasses {
-  fill: rgb(157 226 239 / 0.12);
+  fill: rgb(157 226 239 / 0.14);
   stroke: #dff7fa;
   stroke-width: 0.9;
 }
@@ -697,14 +1522,21 @@
   stroke-width: 0.8;
 }
 
+.office-avatar-headphones-cord {
+  fill: none;
+  stroke: #aec3d4;
+  stroke-width: 0.8;
+  opacity: 0.8;
+}
+
 .office-avatar-monitor {
   fill: #0b141e;
-  stroke: #2a4055;
-  stroke-width: 0.7;
+  stroke: #31506a;
+  stroke-width: 0.8;
 }
 
 .office-avatar-screen {
-  fill: color-mix(in srgb, var(--office-screen) 26%, #07111d);
+  fill: color-mix(in srgb, var(--office-screen) 24%, #07111d);
   stroke: color-mix(in srgb, var(--office-screen) 58%, transparent);
   stroke-width: 0.5;
 }
@@ -712,25 +1544,25 @@
 .office-avatar-screen-line {
   fill: none;
   stroke: var(--office-screen);
-  stroke-width: 0.5;
-  opacity: 0.65;
+  stroke-width: 0.6;
+  opacity: 0.7;
 }
 
 .office-avatar-monitor-glow {
   fill: var(--office-screen-glow);
-  filter: blur(1.5px);
-  opacity: 0.42;
+  filter: blur(2px);
+  opacity: 0.5;
 }
 
 .office-avatar-monitor-stand {
   stroke: var(--office-metal);
-  stroke-width: 1.4;
+  stroke-width: 1.6;
 }
 
 .office-avatar-desk-top {
   fill: var(--office-wood);
   stroke: var(--office-wood-light);
-  stroke-width: 0.7;
+  stroke-width: 0.8;
 }
 
 .office-avatar-desk-side {
@@ -740,17 +1572,49 @@
 }
 
 .office-avatar-desk-side-right {
-  opacity: 0.85;
+  opacity: 0.82;
+}
+
+.office-avatar-desk-edge {
+  fill: none;
+  stroke: var(--office-wood-light);
+  stroke-width: 0.7;
+  opacity: 0.6;
 }
 
 .office-avatar-keyboard {
   fill: #172635;
-  stroke: #36536c;
+  stroke: #3a5b74;
   stroke-width: 0.5;
+}
+
+.office-avatar-keyboard-keys {
+  fill: none;
+  stroke: #52738b;
+  stroke-width: 0.7;
+  stroke-dasharray: 1.2 1.2;
 }
 
 .office-avatar-mug {
   fill: var(--office-lamp);
+}
+
+.office-avatar-mug-handle {
+  fill: none;
+  stroke: var(--office-lamp);
+  stroke-width: 0.9;
+}
+
+.office-avatar-notebook {
+  fill: #d9d2bf;
+  stroke: #9d9480;
+  stroke-width: 0.4;
+}
+
+.office-avatar-desk-cable {
+  fill: none;
+  stroke: #1b2a36;
+  stroke-width: 0.7;
 }
 
 .office-avatar-idle-ring {
@@ -836,6 +1700,12 @@
 
   .office-scene-zoom-value {
     min-width: 54px;
+  }
+
+  .office-zone-header {
+    left: 50%;
+    transform: translateX(-50%) scale(var(--office-zone-scale, 1));
+    transform-origin: top center;
   }
 }
 

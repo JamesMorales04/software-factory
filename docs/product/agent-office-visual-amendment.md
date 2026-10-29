@@ -5,6 +5,58 @@
 independent acceptance. The Product Owner's generated reference is visual
 direction only.
 
+## 2026-10-29 visual revision
+
+A second, still author-run revision turns the five separate room slabs into one
+continuous studio and increases the amount of original scene art. It keeps the
+same participant projection, layout invariants, filters, selection, keyboard
+model, inspector, table and timeline.
+
+- **Continuous studio shell.** A single clipped studio platform, tile
+  corridors, a continuous back wall with windows, a compact studio sign and
+  static ambient light pools now sit behind the role rooms. The room floors are
+  inlays on that deck rather than isolated floating cards.
+- **Modular rooms.** Every room has a cutaway wall return, panel seams,
+  skirting, wall sconces, pendant lights and a role-specific wall treatment:
+  planning board, implementation and review pinboards, verification and
+  operations toolboards, shelves and a wall clock where space allows. Decor is
+  omitted rather than overlapped on narrow rooms.
+- **More furniture.** Floor furniture is role-specific and lives in a reserved
+  side lane: bookshelf for Planning, coffee station and recycling bin for
+  Implementation, mobile test cart for Verification, lounge and coffee table
+  for Review, server rack and UPS for Operations. Plants, floor lamps, rugs and
+  desk accessories remain static scene geometry.
+- **Workstation clusters.** Seats are grouped three-by-three with a real aisle
+  (`OFFICE_CLUSTER_SIZE` / `OFFICE_CLUSTER_GAP`) included in both the zone size
+  and the slot coordinates. A 30-Implementer floor becomes a six-column,
+  five-row bullpen with two visible aisles instead of a uniform grid. The
+  reserved furniture lane is excluded from avatar bounds.
+- **More dimensional people.** Avatars are now 92 × 112 with a 3/4 head,
+  visible ear, jaw shading, varied build, optional beard/goatee/moustache/
+  stubble, jacket or overshirt layers, cuffs, trouser palette and reworked hair
+  silhouettes. Seated CURRENT figures have a chair with a wheeled base and
+  armrests, a desk in perspective, two angled monitors and a keyboard. The
+  appearance still derives only from the stable `lookIndex`.
+- **Readable overlays at a distance.** Room plaques and hover/selection cards
+  counter-scale within a bounded factor so they remain legible when the
+  clamped fit camera shrinks a 30-person floor. The scene still has no
+  animation, movement, progress or fabricated activity.
+
+The Studio Inspector remains the ordinary participant inspector with the dark
+studio token set, and the Table/Timeline alternatives are untouched.
+
+Remaining visual gaps after this revision:
+
+- characters are still illustrated SVG figures, not fully modelled 3/4
+  sprites, and a 30-person fit view depends on zoom for facial detail;
+- rooms are modular 2D/isometric compositions, not a fully modelled 3D set
+  with ceiling, windows through walls or independent prop physics;
+- at 320/390 px the default fit remains a pannable crop; document overflow is
+  still zero and the crop is intentional;
+- there is no motion, pathfinding or decorative animation by design;
+- Owner visual approval, independent acceptance and real Core/Compose browser
+  acceptance remain outstanding.
+
 ## Reference context
 
 The Product Owner supplied `01-office-isometrica-referencia-principal.png` as
@@ -82,12 +134,17 @@ from the production build. Every preview carries a permanent
 - `/visual-harness.html?count=30&mode=implementers&allActive=1`
 - `/visual-harness.html?count=12&selected=participant-03-session`
 
-Chromium 156 (Playwright 1.64.1) screenshots were captured for 0/1/5/12/30 at
-1440, 834, 390 and 320 CSS pixels, plus five all-current Implementers, 30
-all-current Implementers, hover and selection states, and Spanish labels. The
-handoff records the exact paths. The full-page screenshot used a mocked Core
-API only to exercise layout and selection; it is labelled as a fixture and is
-not live activity or acceptance evidence.
+The 2026-10-29 V2 captures are recorded in
+[`docs/evidence/office-isometric-v2-2026-10-29/`](../evidence/office-isometric-v2-2026-10-29/README.md):
+20 scene captures covering 0/1/5/12/30 at 1440/834/390/320, selected, Spanish,
+5/30 all-current Implementers, real-shell page captures and two side-by-side
+comparisons with reference 01. The page captures use a mocked Core API with a
+visible fixture badge; they are not live activity, Compose acceptance or
+independent acceptance.
+
+The earlier 2026-10-28 captures remain in
+[`docs/evidence/office-isometric-v0-2026-10-28/`](../evidence/office-isometric-v0-2026-10-28/README.md)
+as historical provenance for the V0 geometry, not as current evidence.
 
 Functional coverage remains in
 `office/src/components/office/officeSceneLayout.test.ts` and

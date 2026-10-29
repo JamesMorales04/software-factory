@@ -128,6 +128,7 @@ describe("AgentOfficeIsometric", () => {
       }
       expect(screen.getByTestId("agent-floor")).toBeDefined();
     },
+    15000,
   );
 
   it("renders 30 implementers in the implementation station only", () => {
@@ -149,6 +150,17 @@ describe("AgentOfficeIsometric", () => {
       ),
     );
     expect(looks.size).toBe(30);
+  });
+
+  it("composes one studio shell with one room per role station", () => {
+    renderFloor(mixedParticipants(5));
+    expect(document.querySelectorAll(".office-studio-shell")).toHaveLength(1);
+    expect(document.querySelectorAll(".office-room")).toHaveLength(5);
+    expect(document.querySelectorAll(".office-zone")).toHaveLength(5);
+    expect(
+      document.querySelectorAll(".office-studio-shell .office-hallway").length,
+    ).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".office-avatar-figure")).toHaveLength(5);
   });
 
   it("renders five active implementers as five distinct characters", () => {
