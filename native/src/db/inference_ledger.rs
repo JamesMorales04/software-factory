@@ -1765,34 +1765,6 @@ pub(crate) async fn settle_provider_turn_ledger_at_bounds_in_tx(
     Ok(())
 }
 
-/// Envelope lookup for a Lead request. The operator request identity may be the
-/// Lead request itself or the unified-intake request that owns it.
-pub(crate) async fn envelope_for_lead_in_tx(
-    connection: &mut SqliteConnection,
-    lead_request_id: &str,
-) -> Result<Option<String>, Error> {
-    let direct: Option<(String,)> =
-        sqlx::query_as::query_as("SELECT id FROM inference_envelopes WHERE request_id=?1")
-            .bind(lead_request_id)
-            .fetch_optional(&mut *connection)
-            .await?;
-    let intake: Option<(String,)> = sqlx::query_as::query_as(
-        "SELECT e.id FROM intake_requests ir
-         JOIN inference_envelopes e ON e.request_id=ir.id
-         WHERE ir.lead_request_id=?1",
-    )
-    .bind(lead_request_id)
-    .fetch_optional(&mut *connection)
-    .await?;
-    match (direct, intake) {
-        (Some((direct,)), Some((intake,))) if direct != intake => Err(Error::Conflict(
-            "lead request resolves to more than one inference envelope",
-        )),
-        (Some((id,)), _) | (_, Some((id,))) => Ok(Some(id)),
-        (None, None) => Ok(None),
-    }
-}
-
 pub(crate) async fn envelope_for_campaign_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
@@ -1804,15 +1776,6 @@ pub(crate) async fn envelope_for_campaign_in_tx(
     .fetch_optional(&mut *connection)
     .await?;
     Ok(row.map(|(id,)| id))
-}
-
-pub(crate) async fn envelope_for_request_in_tx(
-    connection: &mut SqliteConnection,
-    request_id: &str,
-) -> Result<Option<String>, Error> {
-    Ok(load_envelope_by_request(connection, request_id)
-        .await?
-        .map(|envelope| envelope.id))
 }
 
 async fn insert_envelope(
@@ -2188,35 +2151,43 @@ pub(crate) async fn load_ledger_mode(
     InferenceLedgerMode::parse(&mode).map_err(ledger_error)
 }
 
-pub(crate) async fn campaign_requirement_in_tx(
+/// Current Owner policy allows only verified subscription-included inference.
+/// V1/V2 monetary accounting remains available to the ledger for a future
+/// explicitly authorized billable mode, but it is not dispatch authority.
+pub(crate) async fn require_enabled_subscription_funding_in_tx(
     connection: &mut SqliteConnection,
     campaign_id: &str,
-) -> Result<CampaignInferenceRequirement, Error> {
-    // Milestone 1 subscription rows are durable proposals only. Do not let a
-    // legacy/V1 inference path interpret their presence as permission to use
-    // the monetary ledger or provider balance. This shared check is reached
-    // by Core model-call and Worker turn admission (and their request binding
-    // paths) before an upstream effect.
-    let subscription_policy: Option<(String, String)> = sqlx::query_as::query_as(
+) -> Result<(), Error> {
+    let row: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT state,policy_sha256 FROM subscription_funding_policies WHERE campaign_id=?1",
     )
     .bind(campaign_id)
     .fetch_optional(&mut *connection)
     .await?;
-    if let Some((state, policy_sha256)) = subscription_policy {
-        if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
-            || policy_sha256.len() != 64
-            || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    match row {
+        Some((state, digest))
+            if !matches!(state.as_str(), "DISABLED" | "PAUSED_QUOTA" | "RECOVERABLE")
+                || digest.len() != 64
+                || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
         {
-            return Err(Error::Forbidden(
+            Err(Error::Forbidden(
                 "subscription funding evidence is invalid; provider dispatch is disabled".into(),
-            ));
+            ))
         }
-        return Err(Error::Unavailable(
-            "subscription-funded provider admission is not enabled; dispatch remains fail-closed"
+        Some(_) => Err(Error::Unavailable(
+            "subscription funding execution is not enabled by verified provider evidence".into(),
+        )),
+        None => Err(Error::Unavailable(
+            "Campaign has no verified subscription funding evidence; provider dispatch is NOT_VERIFIED"
                 .into(),
-        ));
+        )),
     }
+}
+
+pub(crate) async fn campaign_requirement_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+) -> Result<CampaignInferenceRequirement, Error> {
     let quarantined: Option<(String, String)> = sqlx::query_as::query_as(
         "SELECT reason,detail_json FROM inference_campaign_binding_quarantine
          WHERE campaign_id=?1",
@@ -2769,9 +2740,10 @@ mod tests {
         .unwrap();
 
         let mut connection = db.pool.acquire().await.unwrap();
-        let error = campaign_requirement_in_tx(&mut connection, "subscription-campaign")
-            .await
-            .unwrap_err();
+        let error =
+            require_enabled_subscription_funding_in_tx(&mut connection, "subscription-campaign")
+                .await
+                .unwrap_err();
         assert!(
             matches!(error, Error::Unavailable(_)),
             "a disabled subscription proposal must not fall through to legacy/billable inference: {error:?}"

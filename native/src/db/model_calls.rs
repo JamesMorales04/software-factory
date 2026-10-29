@@ -42,9 +42,9 @@ fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
     }
 }
 
-/// Resolve the explicit billing requirement for a Core model call. V1 keeps
-/// legacy accounting only when the global policy and Campaign are both V1. V2
-/// requires a bound active envelope and never falls back silently.
+/// Resolve the ledger requirement only after current Owner funding policy has
+/// admitted the provider route. The ledger continues to retain V1/V2 billing
+/// protections for a future explicitly authorized billable mode.
 async fn model_call_ledger_requirement(
     connection: &mut SqliteConnection,
     role: ModelCallRole,
@@ -52,19 +52,10 @@ async fn model_call_ledger_requirement(
 ) -> Result<Option<String>, Error> {
     match role {
         ModelCallRole::Lead => {
-            if let Some(envelope_id) =
-                super::inference_ledger::envelope_for_lead_in_tx(connection, objective_id).await?
-            {
-                return Ok(Some(envelope_id));
-            }
-            if super::inference_ledger::load_ledger_mode(connection).await?
-                == crate::inference_ledger::InferenceLedgerMode::V2
-            {
-                return Err(Error::Forbidden(
-                    "V2 request has no inference envelope before a billable model call".into(),
-                ));
-            }
-            Ok(None)
+            let _ = (connection, objective_id);
+            Err(Error::Unavailable(
+                "Lead assessment has no verified request-level subscription funding binding".into(),
+            ))
         }
         ModelCallRole::SemanticReviewer => {
             let campaign: Option<(String,)> = sqlx::query_as::query_as(
@@ -94,20 +85,9 @@ async fn model_call_ledger_requirement(
             if let Some((campaign_id,)) = campaign {
                 return campaign_requirement_to_envelope(connection, &campaign_id).await;
             }
-            if let Some(envelope_id) =
-                super::inference_ledger::envelope_for_request_in_tx(connection, objective_id)
-                    .await?
-            {
-                return Ok(Some(envelope_id));
-            }
-            if super::inference_ledger::load_ledger_mode(connection).await?
-                == crate::inference_ledger::InferenceLedgerMode::V2
-            {
-                return Err(Error::Forbidden(
-                    "V2 evaluation has no bound inference envelope".into(),
-                ));
-            }
-            Ok(None)
+            Err(Error::Unavailable(
+                "evaluation inference has no campaign-bound, verified subscription funding".into(),
+            ))
         }
     }
 }
@@ -116,6 +96,8 @@ async fn campaign_requirement_to_envelope(
     connection: &mut SqliteConnection,
     campaign_id: &str,
 ) -> Result<Option<String>, Error> {
+    super::inference_ledger::require_enabled_subscription_funding_in_tx(connection, campaign_id)
+        .await?;
     match super::inference_ledger::campaign_requirement_in_tx(connection, campaign_id).await? {
         crate::inference_ledger::CampaignInferenceRequirement::LegacyV1 => Ok(None),
         crate::inference_ledger::CampaignInferenceRequirement::EnvelopeBound { envelope_id } => {
@@ -299,8 +281,7 @@ type ReplayRow = (
     i64,
     i64,
 );
-type DispatchReservationRow = (String, Option<i64>, Option<String>, String, String);
-
+type DispatchReservationRow = (String, String, Option<i64>, Option<String>, String, String);
 const MAX_CALL_OUTPUT_TOKENS: u64 = 8192;
 const RESERVATION_LIFETIME_MS: i64 = 120_000;
 
@@ -589,14 +570,20 @@ impl Database {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let now_ms = Utc::now().timestamp_millis();
         let row: Option<DispatchReservationRow> = sqlx::query_as::query_as(
-            "SELECT state,dispatched_at_ms,ledger_reservation_id,request_sha256,objective_id
+            "SELECT role,state,dispatched_at_ms,ledger_reservation_id,request_sha256,objective_id
                  FROM model_call_reservations WHERE reservation_id=?1",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((state, dispatched_at_ms, ledger_reservation_id, _request_sha256, objective_id)) =
-            row
+        let Some((
+            role,
+            state,
+            dispatched_at_ms,
+            ledger_reservation_id,
+            _request_sha256,
+            objective_id,
+        )) = row
         else {
             return Err(Error::NotFound);
         };
@@ -612,8 +599,21 @@ impl Database {
         .fetch_optional(&mut *transaction)
         .await?
         {
-            super::inference_ledger::campaign_requirement_in_tx(&mut transaction, &campaign_id)
-                .await?;
+            super::inference_ledger::require_enabled_subscription_funding_in_tx(
+                &mut transaction,
+                &campaign_id,
+            )
+            .await?;
+        } else {
+            let reason = match role.as_str() {
+                "LEAD" => "Lead dispatch has no request-level subscription funding binding",
+                "SEMANTIC_REVIEWER" => {
+                    "reviewer dispatch has no campaign-bound subscription funding"
+                }
+                "EVALUATION" => "evaluation dispatch has no campaign-bound subscription funding",
+                _ => "model dispatch role is invalid",
+            };
+            return Err(Error::Unavailable(reason.into()));
         }
         if dispatched_at_ms.is_some() {
             if let Some(ledger_id) = &ledger_reservation_id {
@@ -1864,109 +1864,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_intent_precedes_send_and_release_is_refused_after_it() {
+    async fn model_call_cannot_reach_dispatch_without_subscription_funding() {
         let (path, db) = project_db("factory-model-call-dispatch").await;
         quote(&db).await;
-
-        let released_scope = "evaluation-release-before";
-        envelope_for(&db, released_scope).await;
-        let ModelCallDecision::Reserved(grant) = db
-            .authorize_model_call(&evaluation_input(released_scope))
-            .await
-            .unwrap()
-        else {
-            panic!("expected reservation");
-        };
-        db.release_model_call(&grant.reservation_id, "never sent", false)
-            .await
-            .unwrap();
-
         let scope = "evaluation-dispatch";
         envelope_for(&db, scope).await;
-        let ModelCallDecision::Reserved(grant) = db
-            .authorize_model_call(&evaluation_input(scope))
-            .await
-            .unwrap()
-        else {
-            panic!("expected reservation");
-        };
-        let first = db
-            .acquire_model_call_dispatch(&grant.reservation_id, "provider-request-1")
-            .await
-            .unwrap();
-        assert!(first.acquired);
-        let replay = db
-            .acquire_model_call_dispatch(&grant.reservation_id, "provider-request-1")
-            .await
-            .unwrap();
-        assert!(!replay.acquired);
         assert!(matches!(
-            db.release_model_call(&grant.reservation_id, "claimed not sent", false)
-                .await,
-            Err(Error::Conflict(_))
+            db.authorize_model_call(&evaluation_input(scope)).await,
+            Err(Error::Unavailable(_))
         ));
-        db.release_model_call(&grant.reservation_id, "transport uncertain", true)
-            .await
-            .unwrap();
-        db.settle_late_model_call(
-            &ModelCallUsage {
-                reservation_id: grant.reservation_id.clone(),
-                input_tokens: 10,
-                output_tokens: 20,
-                total_tokens: 30,
-                cost_micros: 300,
-                usage_known: true,
-                content: "{\"ok\":true}".into(),
-            },
-            "operator",
-            "provider-usage-export",
-        )
-        .await
-        .unwrap();
-        let (state,): (String,) = sqlx::query_as::query_as(
-            "SELECT state FROM model_call_reservations WHERE reservation_id=?1",
-        )
-        .bind(&grant.reservation_id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(state, "SETTLED");
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0, "no dispatch reservation may be created");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn dispatch_after_revocation_is_refused() {
+    async fn existing_monetary_envelope_does_not_substitute_for_subscription_evidence() {
         let (path, db) = project_db("factory-model-call-dispatch-revoke").await;
         quote(&db).await;
         let scope = "evaluation-revoked";
-        let envelope_id = envelope_for(&db, scope).await;
-        let ModelCallDecision::Reserved(grant) = db
-            .authorize_model_call(&evaluation_input(scope))
-            .await
-            .unwrap()
-        else {
-            panic!("expected reservation");
-        };
-        db.revoke_inference_envelope(&crate::inference_ledger::RevokeInferenceEnvelopeInput {
-            envelope_id,
-            actor: "operator".into(),
-            evidence_ref: "revoke".into(),
-            evidence_sha256: "c".repeat(64),
-        })
-        .await
-        .unwrap();
+        envelope_for(&db, scope).await;
         assert!(matches!(
-            db.acquire_model_call_dispatch(&grant.reservation_id, "request")
-                .await,
-            Err(Error::Forbidden(_))
+            db.authorize_model_call(&evaluation_input(scope)).await,
+            Err(Error::Unavailable(_))
         ));
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn core_dispatch_rechecks_subscription_funding_after_reservation() {
+    async fn core_dispatch_refuses_missing_subscription_funding_after_reservation() {
         let (path, db) = project_db("factory-model-call-subscription-fence").await;
         let now = Utc::now().to_rfc3339();
         sqlx::query::query(
@@ -2030,37 +1968,13 @@ mod tests {
         .await
         .unwrap();
 
-        // Model a proposal appearing after the call was reserved. Normal
-        // migration triggers make this inconsistent state unreachable, while
-        // the dispatch boundary still rechecks against stale reservations.
-        sqlx::query::query("DROP TRIGGER subscription_funding_policy_requires_unapproved_campaign")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        sqlx::query::query("DROP TRIGGER campaign_authorization_excludes_subscription_proposal")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        let policy_json = r#"{"funding":{"kind":"SUBSCRIPTION"}}"#;
-        sqlx::query::query(
-            "INSERT INTO subscription_funding_policies
-             (campaign_id,authorization_id,policy_json,policy_sha256,state,reason,
-              observed_at_ms,resets_at_ms,created_at_ms,updated_at_ms)
-             VALUES ('campaign-subscription','subscription-auth',?1,?2,'DISABLED',NULL,1,NULL,1,1)",
-        )
-        .bind(policy_json)
-        .bind("a".repeat(64))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-
         let error = db
             .acquire_model_call_dispatch("reservation-subscription", "provider-request")
             .await
             .unwrap_err();
         assert!(
             matches!(error, Error::Unavailable(_)),
-            "Core dispatch must recheck funding before writing dispatch intent: {error:?}"
+            "Core dispatch must refuse missing funding before writing dispatch intent: {error:?}"
         );
         let dispatched: (Option<i64>,) = sqlx::query_as::query_as(
             "SELECT dispatched_at_ms FROM model_call_reservations
@@ -2078,7 +1992,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_quote_token_envelope_bounds_the_request() {
+    async fn lead_model_call_refuses_without_request_level_subscription_evidence() {
+        let (path, db) = project_db("factory-lead-subscription-funding").await;
+        let mut connection = db.pool.acquire().await.unwrap();
+        let error = model_call_ledger_requirement(
+            &mut connection,
+            ModelCallRole::Lead,
+            "lead-request-without-subscription-binding",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "Lead inference must not use a monetary request envelope under subscription-only policy: {error:?}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn core_campaign_model_admission_refuses_missing_subscription_binding() {
+        let (path, db) = project_db("factory-core-subscription-funding-missing").await;
+        let mut connection = db.pool.acquire().await.unwrap();
+        let error = campaign_requirement_to_envelope(&mut connection, "campaign-without-funding")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "Core campaign inference must refuse before reservation without subscription evidence: {error:?}"
+        );
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn v2_monetary_quote_does_not_bypass_subscription_only_policy() {
         let (path, db) = project_db("factory-model-call-token-quote").await;
         quote_with(&db, 50, 25).await;
         let scope = "evaluation-token-bound";
@@ -2087,18 +2035,27 @@ mod tests {
         input.estimated_input_tokens = 100;
         assert!(matches!(
             db.authorize_model_call(&input).await,
-            Err(Error::Forbidden(_))
+            Err(Error::Unavailable(_))
         ));
         let mut fitting = evaluation_input(scope);
         fitting.estimated_input_tokens = 40;
         fitting.requested_output_tokens = 20;
-        assert!(db.authorize_model_call(&fitting).await.is_ok());
+        assert!(matches!(
+            db.authorize_model_call(&fitting).await,
+            Err(Error::Unavailable(_))
+        ));
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn v2_ignores_historical_cumulative_token_usage() {
+    async fn historical_usage_does_not_substitute_for_subscription_evidence() {
         let (path, db) = project_db("factory-model-call-history").await;
         quote(&db).await;
         let scope = "evaluation-history";
@@ -2121,11 +2078,10 @@ mod tests {
             .await
             .unwrap();
         }
-        assert!(
-            db.authorize_model_call(&evaluation_input(scope))
-                .await
-                .is_ok()
-        );
+        assert!(matches!(
+            db.authorize_model_call(&evaluation_input(scope)).await,
+            Err(Error::Unavailable(_))
+        ));
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -2139,7 +2095,7 @@ mod tests {
         assert!(matches!(
             db.authorize_model_call(&evaluation_input("evaluation-v2"))
                 .await,
-            Err(Error::Forbidden(_))
+            Err(Error::Unavailable(_))
         ));
         let (count,): (i64,) =
             sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
@@ -2152,126 +2108,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v1_without_envelope_remains_legacy_evidence() {
+    async fn v1_without_subscription_binding_is_not_legacy_dispatch_authority() {
         let (path, db) = project_db("factory-model-call-v1").await;
-        let decision = db
-            .authorize_model_call(&evaluation_input("evaluation-v1"))
-            .await
-            .unwrap();
-        let ModelCallDecision::Reserved(grant) = decision else {
-            panic!("expected a legacy reservation");
-        };
-        let (ledger_link,): (Option<String>,) = sqlx::query_as::query_as(
-            "SELECT ledger_reservation_id FROM model_call_reservations WHERE reservation_id=?1",
-        )
-        .bind(&grant.reservation_id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert!(ledger_link.is_none());
-        db.settle_model_call(&ModelCallUsage {
-            reservation_id: grant.reservation_id,
-            input_tokens: 10,
-            output_tokens: 20,
-            total_tokens: 30,
-            cost_micros: 300,
-            usage_known: true,
-            content: "{\"ok\":true}".into(),
-        })
-        .await
-        .unwrap();
-        let (state,): (String,) = sqlx::query_as::query_as(
-            "SELECT state FROM model_call_reservations WHERE role='EVALUATION'",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(state, "SETTLED");
+        assert!(matches!(
+            db.authorize_model_call(&evaluation_input("evaluation-v1"))
+                .await,
+            Err(Error::Unavailable(_))
+        ));
+        let (count,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn envelope_bound_model_call_uses_the_shared_ledger() {
-        let path = std::env::temp_dir().join(format!(
-            "factory-model-call-ledger-{}.sqlite",
-            Uuid::new_v4()
+    async fn envelope_bound_model_call_cannot_use_billable_fallback() {
+        let (path, db) = project_db("factory-model-call-ledger").await;
+        let scope = "evaluation-ledger";
+        envelope_for(&db, scope).await;
+        assert!(matches!(
+            db.authorize_model_call(&evaluation_input(scope)).await,
+            Err(Error::Unavailable(_))
         ));
-        let db = Database::open(&path).await.unwrap();
-        sqlx::query::query(
-            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
-             VALUES ('project','/fixture','base',?1,'')",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        quote(&db).await;
-        let envelope = db
-            .create_inference_envelope(&NewInferenceEnvelope {
-                request_id: "evaluation-1".into(),
-                project_id: "project".into(),
-                authorized_micros: UsdMicros::new(5_000).unwrap(),
-                actor: "operator".into(),
-                scope_sha256: "a".repeat(64),
-                evidence_sha256: "b".repeat(64),
-                idempotency_key: "evaluation-envelope".into(),
-            })
-            .await
-            .unwrap();
-        let decision = db
-            .authorize_model_call(&NewModelCallAuthorization {
-                role: ModelCallRole::Evaluation,
-                principal_id: "evaluator".into(),
-                project_id: "project".into(),
-                objective_id: "evaluation-1".into(),
-                scope_id: "evaluation-1".into(),
-                provider: "opencode-go".into(),
-                model: "deepseek-v4.1-flash".into(),
-                purpose: "evaluate".into(),
-                request_sha256: "c".repeat(64),
-                estimated_input_tokens: 100,
-                requested_output_tokens: 50,
-                estimated_cost_micros: 500,
-                policy: ModelCallPolicy {
-                    max_input_tokens: 1_000,
-                    max_output_tokens: 1_000,
-                    max_cost_micros: 1_000,
-                },
-                global_policy: None,
-            })
-            .await
-            .unwrap();
-        let ModelCallDecision::Reserved(grant) = decision else {
-            panic!("expected a fresh model-call reservation");
-        };
-        let (ledger_reservation_id, max_cost): (Option<String>, i64) = sqlx::query_as::query_as(
-            "SELECT ledger_reservation_id,max_cost_micros FROM model_call_reservations
-             WHERE reservation_id=?1",
-        )
-        .bind(&grant.reservation_id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert!(ledger_reservation_id.is_some());
-        assert_eq!(max_cost, 500);
-        db.settle_model_call(&ModelCallUsage {
-            reservation_id: grant.reservation_id,
-            input_tokens: 10,
-            output_tokens: 20,
-            total_tokens: 30,
-            cost_micros: 300,
-            usage_known: true,
-            content: "{\"ok\":true}".into(),
-        })
-        .await
-        .unwrap();
-        let status = db
-            .inference_spending_status(&envelope.envelope_id)
-            .await
-            .unwrap();
-        assert_eq!(status.settled_micros.get(), 300);
-        assert_eq!(status.reserved_micros.get(), 0);
+        let (reservations,): (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM model_call_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations, 0);
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -291,6 +291,11 @@ impl Database {
         }
         let campaign_id: String = lease.try_get("campaign_id")?;
         let authorization_version: i64 = lease.try_get("schema_version")?;
+        super::inference_ledger::require_enabled_subscription_funding_in_tx(
+            &mut transaction,
+            &campaign_id,
+        )
+        .await?;
         // V1 may use legacy accounting; V2 (or a global V2 cutover) must have a
         // bound active envelope before this billable turn is even reserved.
         let requirement =
@@ -613,6 +618,11 @@ impl Database {
         let attempt_status: String = row.try_get("attempt_status")?;
         let campaign_status: String = row.try_get("campaign_status")?;
         let campaign_id: String = row.try_get("campaign_id")?;
+        super::inference_ledger::require_enabled_subscription_funding_in_tx(
+            &mut transaction,
+            &campaign_id,
+        )
+        .await?;
         let now_ms = Utc::now().timestamp_millis();
         if session_record_id != input.session_record_id
             || generation != input.generation
@@ -1995,6 +2005,76 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(reservations.0, 0, "refusal must precede reservation");
+    }
+
+    #[tokio::test]
+    async fn provider_turn_refuses_when_subscription_funding_evidence_is_absent() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let error = db
+            .authorize_provider_turn(&session, "worker", 1, 50, &"a".repeat(64), 1)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "missing subscription evidence must not fall through to legacy billing: {error:?}"
+        );
+        let reservations: (i64,) =
+            sqlx::query_as::query_as("SELECT COUNT(*) FROM provider_turn_reservations")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(reservations.0, 0, "refusal must precede reservation");
+    }
+
+    #[tokio::test]
+    async fn provider_egress_binding_refuses_missing_subscription_evidence() {
+        let (_path, db, session) = active_turn_fixture(100).await;
+        let now = Utc::now().to_rfc3339();
+        let now_ms = Utc::now().timestamp_millis();
+        sqlx::query::query(
+            "INSERT INTO provider_turn_reservations
+             (reservation_id,session_record_id,attempt_id,generation,provider,model,
+              max_input_tokens,max_output_tokens,max_total_tokens,max_cost_micros,
+              request_sha256,state,expires_at_ms,created_at,updated_at)
+             VALUES ('stale-subscription-turn',?1,'attempt',1,'opencode',
+                     'deepseek-v4.1-flash',100,50,150,1000,?2,'RESERVED',?3,?4,?4)",
+        )
+        .bind(&session)
+        .bind("a".repeat(64))
+        .bind(now_ms + 60_000)
+        .bind(&now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let error = db
+            .bind_provider_turn(&ProviderTurnBindingInput {
+                reservation_id: "stale-subscription-turn".into(),
+                session_record_id: session,
+                worker_id: "worker".into(),
+                generation: 1,
+                request_sha256: "b".repeat(64),
+                model: "deepseek-v4.1-flash".into(),
+                path: "/v1/chat/completions".into(),
+                body_bytes: 100,
+                sequence: 0,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Unavailable(_)),
+            "Worker egress must recheck funding before binding an external request: {error:?}"
+        );
+        let bound: (i64, i64) = sqlx::query_as::query_as(
+            "SELECT requests_bound,
+                    (SELECT COUNT(*) FROM provider_turn_egress_requests
+                     WHERE reservation_id='stale-subscription-turn')
+             FROM provider_turn_reservations WHERE reservation_id='stale-subscription-turn'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(bound, (0, 0), "refusal must precede egress binding");
     }
 
     #[tokio::test]
