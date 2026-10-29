@@ -135,3 +135,15 @@ Director owns shared files: `native/src/bin/core.rs`, `native/src/lib.rs`,
 - 2026-10-28: Wave 3 opened at `4e0a43e`. Model routes verified
   (`MODEL_OK`, `SOL_OK`, `LUNA_OK`). Five worktrees created. P/I started; Sol
   contract requested for C/L.
+- 2026-10-28: Verified the OpenCode Go catalog root cause: the catalog is at
+  `/inference/go/v1/models` (200, 30 models), while Factory composed
+  `{inference_base}/models` (`/openai/v1/models`, 404). Lane P corrected toward
+  a per-provider catalog URL.
+- 2026-10-28: Sol delivered the Execution Policy V2 and shared-ledger contract
+  (`docs/implementation/office-execution-policy-v2-contract-2026-10-28.md`,
+  commit `5da9e5a`).
+- 2026-10-28: Director froze the shared interface
+  (`native/src/execution_policy.rs`, commit `5937d6b`) with checked `UsdMicros`,
+  `FrozenExecutionPolicy`, V2 operation/progress types, continuation decisions,
+  inference roles and ledger DTOs; five interface tests pass. Lanes C and L
+  started from that commit.
