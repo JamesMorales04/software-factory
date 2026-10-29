@@ -366,6 +366,29 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
   });
 
+  it("rejects zero, negative and unsafe inference spend amounts", async () => {
+    renderHome();
+    await screen.findByLabelText("Project");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      "project-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add an export endpoint.",
+    );
+    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    for (const invalid of ["0", "-1", "999999999999999"]) {
+      await userEvent.clear(spend);
+      await userEvent.type(spend, invalid);
+      await userEvent.click(
+        screen.getByRole("button", { name: "Submit request" }),
+      );
+      expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
+      expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
+    }
+  });
+
   it("submits an edited spend authorization in integer micros", async () => {
     renderHome();
     await screen.findByLabelText("Project");
@@ -387,6 +410,29 @@ describe("Home", () => {
     expect(mocks.createIntakeRequest).toHaveBeenCalledWith(
       expect.objectContaining({ authorized_micros: 12_500_000 }),
     );
+  });
+
+  it("rejects zero, negative and over-limit spend authorizations", async () => {
+    renderHome();
+    await screen.findByLabelText("Project");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      "project-1",
+    );
+    await userEvent.type(
+      screen.getByLabelText("What should the Factory do?"),
+      "Add an export endpoint.",
+    );
+    const spend = screen.getByLabelText("Maximum inference spend (USD)");
+    for (const value of ["0", "-1", "99999999999999"]) {
+      await userEvent.clear(spend);
+      await userEvent.type(spend, value);
+      await userEvent.click(
+        screen.getByRole("button", { name: "Submit request" }),
+      );
+      expect(await screen.findByText(/positive USD amount/i)).toBeDefined();
+      expect(mocks.createIntakeRequest).not.toHaveBeenCalled();
+    }
   });
 
   it("submits the selected Project and profile with explicit review-plan intent", async () => {
