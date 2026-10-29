@@ -1801,8 +1801,10 @@ impl TurnProgress {
         sha256_hex(parts.join("\n").as_bytes())
     }
 
-    /// Record both PASS and FAIL outcomes from the immutable Core execution
-    /// receipt. The receipt supplies the exact suite, outcome and result digest;
+    /// Record FAIL observations and genuine FAIL -> PASS transitions from the
+    /// immutable Core execution receipt. A first-time PASS is recorded in Core
+    /// but is not `TestsImproved`: without a failing baseline it is not
+    /// progress. The receipt binds the exact suite, candidate and result digest;
     /// the Worker cannot relabel a check by choosing its own identity.
     fn observe_check(&mut self, receipt: &ExecutionCheckReceiptRecord) {
         if self.last_check.get(&receipt.suite) == Some(&receipt.result_sha256) {
@@ -1810,6 +1812,9 @@ impl TurnProgress {
         }
         self.last_check
             .insert(receipt.suite.clone(), receipt.result_sha256.clone());
+        if receipt.outcome != "FAIL" && !receipt.fail_to_pass {
+            return;
+        }
         let sequence = self.next_sequence();
         self.evidence.push(ProgressEvidence {
             evidence_id: format!("{}-check-{sequence}", self.run_identity),
@@ -4575,7 +4580,12 @@ mod tests {
     };
     use factory_native::db::ExecutionCheckReceiptRecord;
 
-    fn check_receipt(call_id: &str, outcome: &str, result: &str) -> ExecutionCheckReceiptRecord {
+    fn check_receipt(
+        call_id: &str,
+        outcome: &str,
+        result: &str,
+        fail_to_pass: bool,
+    ) -> ExecutionCheckReceiptRecord {
         ExecutionCheckReceiptRecord {
             receipt_id: format!("receipt-{call_id}"),
             campaign_id: "campaign".into(),
@@ -4590,6 +4600,7 @@ mod tests {
             expected_exit: 0,
             outcome: outcome.into(),
             result_sha256: sha256_hex(result.as_bytes()),
+            fail_to_pass,
         }
     }
 
@@ -4674,6 +4685,7 @@ mod tests {
                 &format!("call-{turn}"),
                 "PASS",
                 &format!("pass-{turn}"),
+                true,
             ));
             let request = progress.checkpoint_request().expect("checkpoint request");
             assert_eq!(request.campaign_id, "campaign");
@@ -4691,6 +4703,41 @@ mod tests {
     }
 
     #[test]
+    fn first_time_pass_does_not_emit_tests_improved() {
+        let mut progress = TurnProgress::from_identity(
+            "campaign".into(),
+            "unit-1".into(),
+            "attempt-1".into(),
+            1,
+            "run-1".into(),
+            0,
+        );
+        progress.begin_turn();
+        progress.observe_write("src/lib.rs", "candidate");
+        progress.observe_check(&check_receipt(
+            "call-first-pass",
+            "PASS",
+            "first-pass",
+            false,
+        ));
+        let request = progress.checkpoint_request().expect("checkpoint request");
+        assert!(
+            request
+                .evidence
+                .iter()
+                .any(|item| item.kind == ProgressKind::CandidateChanged),
+            "candidate-change evidence must still carry a first-time PASS turn"
+        );
+        assert!(
+            request
+                .evidence
+                .iter()
+                .all(|item| item.kind != ProgressKind::TestsImproved),
+            "a first-time PASS is not a FAIL-to-PASS improvement"
+        );
+    }
+
+    #[test]
     fn check_observations_encode_suite_and_pass_fail_outcomes() {
         let mut progress = TurnProgress::from_identity(
             "campaign".into(),
@@ -4702,8 +4749,8 @@ mod tests {
         );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "candidate");
-        progress.observe_check(&check_receipt("call-fail", "FAIL", "fail-result"));
-        progress.observe_check(&check_receipt("call-pass", "PASS", "pass-result"));
+        progress.observe_check(&check_receipt("call-fail", "FAIL", "fail-result", false));
+        progress.observe_check(&check_receipt("call-pass", "PASS", "pass-result", true));
         let request = progress.checkpoint_request().unwrap();
         let outcomes: Vec<_> = request
             .evidence
@@ -4733,7 +4780,7 @@ mod tests {
         );
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&check_receipt("call-1", "PASS", "same-pass"));
+        progress.observe_check(&check_receipt("call-1", "PASS", "same-pass", true));
         let first = progress.checkpoint_request().unwrap();
         let first_checks = first
             .evidence
@@ -4743,7 +4790,7 @@ mod tests {
         assert_eq!(first_checks, 1);
         progress.begin_turn();
         progress.observe_write("src/lib.rs", "same");
-        progress.observe_check(&check_receipt("call-2", "PASS", "same-pass"));
+        progress.observe_check(&check_receipt("call-2", "PASS", "same-pass", true));
         let second = progress.checkpoint_request().unwrap();
         assert!(
             second
