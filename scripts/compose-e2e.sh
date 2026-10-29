@@ -247,7 +247,7 @@ INTAKE_APPROVED="$(api POST "/intake/requests/$INTAKE_ID/approve" \
   "{\"expected_plan_hash\":\"$PLAN_HASH\",\"rationale\":\"Reviewed the exact frozen Compose intake plan.\",\"idempotency_key\":\"e2e-intake-approve\",\"authorized_micros\":5000000}")"
 INTAKE_CAMPAIGN_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaignId"])')"
 INTAKE_ATTEMPT_ID="$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["campaign"]["tasks"][0]["attempt_id"])')"
-[[ -n "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin).get("campaign",{}).get("id",""))')" ]] || {
+[[ -n "$INTAKE_CAMPAIGN_ID" && "$INTAKE_CAMPAIGN_ID" != "None" ]] || {
   log "intake approval returned no Campaign"; exit 1;
 }
 [[ "$(printf '%s' "$INTAKE_APPROVED" | json 'import json,sys; print(json.load(sys.stdin)["profile"]["revisionId"])')" == "$PROFILE_REVISION_ID" ]] || {
