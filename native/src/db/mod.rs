@@ -828,6 +828,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod authorization;
 pub use authorization::{
     CampaignAuthorizationRecord, NO_BILLABLE_ENVELOPE, NewCampaignAuthorization,
+    SubscriptionFundingRecord,
 };
 mod delegations;
 mod device_sessions;

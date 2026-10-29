@@ -91,6 +91,10 @@ pub enum FrozenExecutionPolicy {
     LegacyV1(LegacyExecutionPolicy),
     #[serde(rename = "V2")]
     V2(ExecutionPolicyV2),
+    /// Subscription-funded execution has no monetary envelope. This is a new
+    /// frozen contract; V1/V2 rows retain their original decoding semantics.
+    #[serde(rename = "V3")]
+    V3(Box<ExecutionPolicyV3>),
 }
 
 impl FrozenExecutionPolicy {
@@ -101,9 +105,153 @@ impl FrozenExecutionPolicy {
     pub fn v2(&self) -> Option<&ExecutionPolicyV2> {
         match self {
             Self::V2(policy) => Some(policy),
-            Self::LegacyV1(_) => None,
+            Self::LegacyV1(_) | Self::V3(_) => None,
         }
     }
+
+    pub fn v3(&self) -> Option<&ExecutionPolicyV3> {
+        match self {
+            Self::V3(policy) => Some(policy.as_ref()),
+            Self::LegacyV1(_) | Self::V2(_) => None,
+        }
+    }
+}
+
+/// Funding classification frozen into an authorization. Subscription
+/// admission is based on verified entitlement and no-charge route evidence,
+/// never on a synthetic USD envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE", deny_unknown_fields)]
+pub enum FundingPolicy {
+    Subscription {
+        grant_id: String,
+        binding_sha256: String,
+        binding: Box<SubscriptionBinding>,
+    },
+    Billable {
+        monetary_envelope_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "status",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    deny_unknown_fields
+)]
+pub enum ProviderEntitlement {
+    Verified {
+        plan_id: String,
+        provider_account_id: String,
+    },
+    Unknown {
+        reason: String,
+    },
+    Revoked {
+        observed_at_ms: i64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    deny_unknown_fields
+)]
+pub enum FundingRecoveryState {
+    Disabled {
+        recorded_at_ms: i64,
+    },
+    PausedQuota {
+        observed_at_ms: i64,
+        resets_at_ms: Option<i64>,
+        reason: String,
+    },
+    Recoverable {
+        observed_at_ms: i64,
+        reason: String,
+    },
+}
+
+/// Exact route types currently admitted by the subscription-only policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SubscriptionRoute {
+    OpenCodeGo,
+    CodexChatGpt,
+}
+
+/// Provider-reported quota is an observation; unknown is not unlimited.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    deny_unknown_fields
+)]
+pub enum QuotaObservation {
+    Available {
+        observed_at_ms: i64,
+        valid_until_ms: i64,
+        remaining: Option<u64>,
+    },
+    Exhausted {
+        observed_at_ms: i64,
+        resets_at_ms: Option<i64>,
+    },
+    Unknown {
+        observed_at_ms: i64,
+        reason: String,
+    },
+}
+
+/// Evidence that subscription routing cannot fall through to a paid balance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SubscriptionBinding {
+    pub route: SubscriptionRoute,
+    pub entitlement: ProviderEntitlement,
+    pub provider_account_id: String,
+    pub plan_id: String,
+    pub model_id: String,
+    pub settings_revision: String,
+    pub entitlement_verified: bool,
+    pub no_charge_route_verified: bool,
+    pub extra_usage_disabled: bool,
+    pub api_key_route_disabled: bool,
+    pub quota: QuotaObservation,
+}
+
+impl SubscriptionBinding {
+    pub fn is_verified_no_charge_route(&self) -> bool {
+        let entitlement_matches = matches!(
+            &self.entitlement,
+            ProviderEntitlement::Verified { plan_id, provider_account_id }
+                if plan_id == &self.plan_id && provider_account_id == &self.provider_account_id
+        );
+        let quota_available = matches!(
+            self.quota,
+            QuotaObservation::Available { observed_at_ms, valid_until_ms, .. }
+                if observed_at_ms > 0 && valid_until_ms > observed_at_ms
+        );
+        entitlement_matches
+            && self.entitlement_verified
+            && self.no_charge_route_verified
+            && self.extra_usage_disabled
+            && self.api_key_route_disabled
+            && quota_available
+    }
+}
+
+/// V3 replaces V2's mandatory envelope with an explicit funding policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExecutionPolicyV3 {
+    pub policy_id: String,
+    pub authorization_id: String,
+    pub funding: FundingPolicy,
+    pub scope_sha256: String,
+    pub progress: ProgressPolicy,
+    pub operations: OperationLimits,
 }
 
 /// Technical operation bounds. These are per-operation and capacity limits,
@@ -610,5 +758,99 @@ mod tests {
     fn all_inference_roles_are_attributed() {
         assert_eq!(InferenceRole::ALL.len(), 5);
         assert_eq!(InferenceRole::Auxiliary.as_str(), "AUXILIARY");
+    }
+}
+
+#[cfg(test)]
+mod subscription_funding_tests {
+    use super::*;
+
+    #[test]
+    fn subscription_funding_policy_round_trips_without_usd_envelope() {
+        let policy = FundingPolicy::Subscription {
+            grant_id: "grant-1".into(),
+            binding_sha256: "a".repeat(64),
+            binding: Box::new(SubscriptionBinding {
+                route: SubscriptionRoute::OpenCodeGo,
+                entitlement: ProviderEntitlement::Verified {
+                    plan_id: "go".into(),
+                    provider_account_id: "account".into(),
+                },
+                provider_account_id: "account".into(),
+                plan_id: "go".into(),
+                model_id: "model".into(),
+                settings_revision: "r1".into(),
+                entitlement_verified: true,
+                no_charge_route_verified: true,
+                extra_usage_disabled: true,
+                api_key_route_disabled: true,
+                quota: QuotaObservation::Available {
+                    observed_at_ms: 1,
+                    valid_until_ms: 2,
+                    remaining: None,
+                },
+            }),
+        };
+        let encoded = serde_json::to_string(&policy).unwrap();
+        let decoded: FundingPolicy = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, policy);
+        assert!(!encoded.contains("usd"));
+        assert!(!encoded.contains("envelope"));
+    }
+
+    #[test]
+    fn subscription_quota_unknown_is_not_treated_as_available() {
+        let quota = QuotaObservation::Unknown {
+            observed_at_ms: 1,
+            reason: "provider did not expose quota".into(),
+        };
+        let encoded = serde_json::to_string(&quota).unwrap();
+        assert!(encoded.contains("UNKNOWN"));
+        assert!(!matches!(quota, QuotaObservation::Available { .. }));
+    }
+
+    #[test]
+    fn no_charge_admission_requires_matching_verified_entitlement_and_fresh_quota() {
+        let binding = SubscriptionBinding {
+            route: SubscriptionRoute::OpenCodeGo,
+            entitlement: ProviderEntitlement::Verified {
+                plan_id: "go".into(),
+                provider_account_id: "account".into(),
+            },
+            provider_account_id: "account".into(),
+            plan_id: "go".into(),
+            model_id: "model".into(),
+            settings_revision: "revision-1".into(),
+            entitlement_verified: true,
+            no_charge_route_verified: true,
+            extra_usage_disabled: true,
+            api_key_route_disabled: true,
+            quota: QuotaObservation::Available {
+                observed_at_ms: 10,
+                valid_until_ms: 20,
+                remaining: None,
+            },
+        };
+        assert!(binding.is_verified_no_charge_route());
+        let mut mismatched = binding;
+        mismatched.plan_id = "other-plan".into();
+        assert!(!mismatched.is_verified_no_charge_route());
+    }
+
+    #[test]
+    fn subscription_binding_rejects_unrecognized_fields() {
+        let value = serde_json::json!({
+            "providerAccountId": "acct",
+            "planId": "go",
+            "modelId": "model",
+            "settingsRevision": "r1",
+            "entitlementVerified": true,
+            "noChargeRouteVerified": true,
+            "extraUsageDisabled": true,
+            "apiKeyRouteDisabled": true,
+            "quota": { "state": "UNKNOWN", "observed_at_ms": 1, "reason": "missing" },
+            "paidFallback": true
+        });
+        assert!(serde_json::from_value::<SubscriptionBinding>(value).is_err());
     }
 }
