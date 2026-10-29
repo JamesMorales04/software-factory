@@ -3841,28 +3841,37 @@ impl Database {
         if let Some(gate) = gate {
             // Acceptance can only cite an existing deterministic Core gate
             // decision for a candidate belonging to this Campaign. A Worker,
-            // model or caller-supplied record cannot accept work.
-            let verified: Option<(String, String)> = sqlx::query_as::query_as(
-                "SELECT gd.outcome,c.commit_sha
+            // model or caller-supplied record cannot accept work. Candidate
+            // identity is normalized after the fetch: a Core gate may carry a
+            // raw 40-character Git commit while progress evidence carries its
+            // 64-character SHA-256 digest, so SQL equality here would hide
+            // every real candidate.
+            let verified: Option<(String, String, String)> = sqlx::query_as::query_as(
+                "SELECT gd.outcome,c.commit_sha,
+                        COALESCE(lt.unit_id,li.integration_id,r.campaign_id)
                  FROM gate_decisions gd
                  JOIN candidates c ON c.id=gd.candidate_id
                  JOIN attempts a ON a.id=c.attempt_id
                  JOIN runs r ON r.id=a.run_id
-                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2 AND c.commit_sha=?3",
+                 LEFT JOIN lead_tasks lt ON lt.attempt_id=a.id
+                 LEFT JOIN lead_integrations li ON li.attempt_id=a.id
+                 WHERE gd.candidate_id=?1 AND r.campaign_id=?2",
             )
             .bind(&gate.gate_id)
             .bind(campaign_id)
-            .bind(&gate.candidate_sha256)
             .fetch_optional(&mut *transaction)
             .await?;
-            if verified
-                .as_ref()
-                .is_none_or(|(_, commit)| !commit_artifact_matches(commit, &gate.candidate_sha256))
-                || verified.as_ref().map(|(outcome, _)| outcome.as_str()) != Some("ACCEPTED")
-                || gate.outcome != "ACCEPTED"
-            {
+            let verified = verified.is_some_and(|(outcome, commit, work_item)| {
+                outcome == "ACCEPTED"
+                    && gate.outcome == "ACCEPTED"
+                    && gate.campaign_id == campaign_id
+                    && gate.work_item_id == checkpoint.work_item_id
+                    && work_item == checkpoint.work_item_id
+                    && commit_artifact_matches(&commit, &gate.candidate_sha256)
+            });
+            if !verified {
                 return Err(Error::Forbidden(
-                    "progress acceptance requires an existing accepted Core gate record".into(),
+                    "progress acceptance requires an existing accepted Core gate record for the exact campaign, work item and candidate".into(),
                 ));
             }
         }
@@ -3915,14 +3924,32 @@ impl Database {
             None => ProgressSupervisor::new(policy.progress)
                 .map_err(|error| Error::Validation(error.to_string()))?,
         };
+        let mut retired_work_items: Vec<(String, &'static str)> = supervisor
+            .retire_accepted_work_items_at_capacity(&checkpoint.work_item_id)
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    "accepted work item retired to admit a new WorkGraph item",
+                )
+            })
+            .collect();
         let outcome = supervisor
             .checkpoint(campaign_id, checkpoint, &fresh_evidence, gate)
             .map_err(|error| match error {
                 ProgressError::WorkItemRetirementRequired { active: _ } => Error::Conflict(
-                    "progress work-item capacity reached; retire gate-accepted work items",
+                    "progress work-item capacity reached and no accepted work item can be retired; archive an active unit or complete and validate one",
                 ),
                 other => Error::Validation(other.to_string()),
             })?;
+        if outcome.decision == crate::execution_policy::ContinuationDecision::Complete
+            && supervisor.retire_accepted_work_item(&checkpoint.work_item_id)
+        {
+            retired_work_items.push((
+                checkpoint.work_item_id.clone(),
+                "gate-accepted work item retired from the active progress projection",
+            ));
+        }
         for item in &fresh_evidence {
             let evidence_json = serde_json::to_string(item)
                 .map_err(|_| Error::Invalid("progress evidence encoding"))?;
@@ -4090,6 +4117,16 @@ impl Database {
                 .await?;
             }
             _ => {}
+        }
+        for (retired_id, reason) in &retired_work_items {
+            record_progress_retirement_in_tx(
+                &mut transaction,
+                campaign_id,
+                retired_id,
+                reason,
+                &now,
+            )
+            .await?;
         }
         let state_json = serde_json::to_string(&supervisor.snapshot())
             .map_err(|_| Error::Invalid("progress state encoding"))?;
@@ -4308,16 +4345,8 @@ impl Database {
             ));
         }
         let now = Utc::now().to_rfc3339();
-        sqlx::query::query(
-            "INSERT INTO progress_retired_work_items(campaign_id,work_item_id,reason,retired_at)
-             VALUES (?1,?2,?3,?4)",
-        )
-        .bind(campaign_id)
-        .bind(work_item_id)
-        .bind(reason)
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
+        record_progress_retirement_in_tx(&mut transaction, campaign_id, work_item_id, reason, &now)
+            .await?;
         state.work_items.remove(work_item_id);
         let state_json =
             serde_json::to_string(&state).map_err(|_| Error::Invalid("progress state encoding"))?;
@@ -4354,6 +4383,26 @@ impl Database {
             })
             .transpose()
     }
+}
+
+async fn record_progress_retirement_in_tx(
+    connection: &mut SqliteConnection,
+    campaign_id: &str,
+    work_item_id: &str,
+    reason: &str,
+    retired_at: &str,
+) -> Result<(), Error> {
+    sqlx::query::query(
+        "INSERT INTO progress_retired_work_items(campaign_id,work_item_id,reason,retired_at)
+         VALUES (?1,?2,?3,?4)",
+    )
+    .bind(campaign_id)
+    .bind(work_item_id)
+    .bind(reason)
+    .bind(retired_at)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
 }
 
 async fn validate_progress_work_item_in_tx(
@@ -4398,7 +4447,8 @@ async fn validate_progress_work_item_in_tx(
 /// progress artifacts are lower-case SHA-256. Accept either the exact commit
 /// (for 64-character test doubles) or the SHA-256 of the commit id.
 fn commit_artifact_matches(commit: &str, artifact_sha256: &str) -> bool {
-    commit == artifact_sha256 || sha256_hex(commit.as_bytes()) == artifact_sha256
+    commit.eq_ignore_ascii_case(artifact_sha256)
+        || sha256_hex(commit.to_ascii_lowercase().as_bytes()) == artifact_sha256
 }
 
 fn parse_test_receipt_ref(artifact_ref: &str) -> Option<(&str, &str, &str)> {
@@ -8458,15 +8508,25 @@ mod tests {
             outcome.decision,
             crate::execution_policy::ContinuationDecision::Complete
         );
-        db.retire_progress_work_item(&campaign_id, &campaign_id, "accepted unit archived")
-            .await
-            .unwrap();
         let state = db
             .campaign_progress_state(&campaign_id)
             .await
             .unwrap()
             .unwrap();
-        assert!(!state.work_items.contains_key(&campaign_id));
+        assert!(
+            !state.work_items.contains_key(&campaign_id),
+            "a gate-accepted completed work item is retired from the active projection"
+        );
+        let retired: Option<(String,)> = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items
+             WHERE campaign_id=?1 AND work_item_id=?2",
+        )
+        .bind(&campaign_id)
+        .bind(&campaign_id)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap();
+        assert!(retired.is_some());
         let error = db
             .record_progress_checkpoint(
                 &campaign_id,
@@ -8477,6 +8537,224 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn forty_character_gate_candidate_accepts_and_retires() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, run_id, attempt_id) = progress_attempt_campaign(&db).await;
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let digest = sha256_hex(commit.as_bytes());
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('raw-commit-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&attempt_id)
+        .bind("a".repeat(64))
+        .bind(commit)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('raw-commit-candidate','ACCEPTED','[]',?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let evidence = ProgressEvidence {
+            evidence_id: "raw-commit-accepted".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            kind: crate::execution_policy::ProgressKind::UnitAccepted,
+            artifact_ref: "raw-commit-candidate".into(),
+            artifact_sha256: digest.clone(),
+            baseline_ref: "unit".into(),
+            observed_sequence: 1,
+        };
+        let gate = crate::progress::GateRecord {
+            gate_id: "raw-commit-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            // Core may hand the raw Git commit, not just its SHA-256 digest.
+            candidate_sha256: commit.into(),
+            outcome: "ACCEPTED".into(),
+        };
+
+        let wrong = crate::progress::GateRecord {
+            candidate_sha256: "f".repeat(40),
+            ..gate.clone()
+        };
+        let rejected = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 1, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&wrong),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
+        let repair_commit = "2".repeat(40);
+        sqlx::query::query("UPDATE runs SET status='QUEUED' WHERE id=?1")
+            .bind(&run_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let repair_attempt = db.create_attempt(&run_id, "repair-attempt").await.unwrap();
+        sqlx::query::query(
+            "INSERT INTO candidates
+             (id,attempt_id,action_spec_sha256,commit_sha,tree_sha,implementer_id,created_at)
+             VALUES ('repair-candidate',?1,?2,?3,?2,'worker',?4)",
+        )
+        .bind(&repair_attempt.id)
+        .bind("a".repeat(64))
+        .bind(&repair_commit)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query::query(
+            "INSERT INTO gate_decisions(candidate_id,outcome,reasons_json,decided_at)
+             VALUES ('repair-candidate','REPAIR_REQUIRED','[]',?1)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let repair_gate = crate::progress::GateRecord {
+            gate_id: "repair-candidate".into(),
+            campaign_id: campaign_id.clone(),
+            work_item_id: campaign_id.clone(),
+            candidate_sha256: repair_commit,
+            outcome: "ACCEPTED".into(),
+        };
+        let rejected = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 2, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&repair_gate),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(rejected, Error::Forbidden(_)), "{rejected:?}");
+
+        let outcome = db
+            .record_progress_checkpoint(
+                &campaign_id,
+                &progress_checkpoint(&campaign_id, 3, std::slice::from_ref(&evidence)),
+                std::slice::from_ref(&evidence),
+                Some(&gate),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.decision,
+            crate::execution_policy::ContinuationDecision::Complete
+        );
+        assert_eq!(
+            outcome.classification,
+            crate::progress::CheckpointClassification::Verified
+        );
+        let state = db
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !state.work_items.contains_key(&campaign_id),
+            "the accepted work item must be retired from the active projection"
+        );
+        let retired: (String,) = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items
+             WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(retired.0, campaign_id);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn accepted_work_item_is_retired_so_item_513_is_admitted() {
+        let (path, db, _) = fixture().await;
+        let (campaign_id, _run_id, _attempt_id) = progress_attempt_campaign(&db).await;
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 1, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        let (state_json,): (String,) = sqlx::query_as::query_as(
+            "SELECT state_json FROM campaign_progress_state WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let mut state: ProgressSupervisorState = serde_json::from_str(&state_json).unwrap();
+        state.work_items.clear();
+        for index in 0..crate::progress::MAX_SUPERVISED_WORK_ITEMS {
+            let id = format!("active-unit-{index}");
+            let mut item = crate::progress::WorkItemProgressState::new(&id);
+            if index == 0 {
+                item.accepted_units.insert("c".repeat(64));
+            }
+            state.work_items.insert(id, item);
+        }
+        let seeded = serde_json::to_string(&state).unwrap();
+        let seeded_sha256 = sha256_hex(seeded.as_bytes());
+        sqlx::query::query(
+            "UPDATE campaign_progress_state
+             SET state_json=?1,state_sha256=?2,updated_at=?3 WHERE campaign_id=?4",
+        )
+        .bind(&seeded)
+        .bind(&seeded_sha256)
+        .bind(Utc::now().to_rfc3339())
+        .bind(&campaign_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        db.record_progress_checkpoint(
+            &campaign_id,
+            &progress_checkpoint(&campaign_id, 2, &[]),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+        let state = db
+            .campaign_progress_state(&campaign_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.work_items.len(),
+            crate::progress::MAX_SUPERVISED_WORK_ITEMS
+        );
+        assert!(state.work_items.contains_key(&campaign_id));
+        let retired: (String,) = sqlx::query_as::query_as(
+            "SELECT work_item_id FROM progress_retired_work_items WHERE campaign_id=?1",
+        )
+        .bind(&campaign_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(retired.0, "active-unit-0");
         db.close().await;
         let _ = std::fs::remove_file(path);
     }

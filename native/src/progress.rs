@@ -30,6 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::execution_policy::{
@@ -90,8 +91,22 @@ impl GateRecord {
             && !self.gate_id.trim().is_empty()
             && self.campaign_id == campaign_id
             && self.work_item_id == work_item_id
-            && self.candidate_sha256 == candidate_sha256
+            && candidate_identity_matches(&self.candidate_sha256, candidate_sha256)
     }
+}
+
+/// Progress evidence always carries the 64-character SHA-256 digest. A Core
+/// gate may carry either that digest or the raw Git commit id (40 characters
+/// for SHA-1 object ids, 64 for SHA-256 object ids), so both forms are
+/// accepted without weakening the evidence digest check.
+fn candidate_identity_matches(candidate: &str, progress_digest: &str) -> bool {
+    let candidate = candidate.to_ascii_lowercase();
+    candidate == progress_digest || sha256_hex(candidate.as_bytes()) == progress_digest
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +173,7 @@ pub struct WorkItemProgressState {
 }
 
 impl WorkItemProgressState {
-    fn new(work_item_id: &str) -> Self {
+    pub(crate) fn new(work_item_id: &str) -> Self {
         Self {
             work_item_id: work_item_id.to_owned(),
             stagnant_checkpoints: 0,
@@ -335,6 +350,41 @@ impl ProgressSupervisor {
 
     pub fn work_item(&self, work_item_id: &str) -> Option<&WorkItemProgressState> {
         self.work_items.get(work_item_id)
+    }
+
+    /// Remove one gate-accepted work item from the active projection. Durable
+    /// evidence and checkpoint rows remain the replay authority.
+    pub fn retire_accepted_work_item(&mut self, work_item_id: &str) -> bool {
+        let accepted = self
+            .work_items
+            .get(work_item_id)
+            .is_some_and(|item| !item.accepted_units.is_empty());
+        if accepted {
+            self.work_items.remove(work_item_id);
+        }
+        accepted
+    }
+
+    /// Retire gate-accepted work items when admitting a new WorkGraph unit
+    /// would otherwise exceed the active representation bound. Durable
+    /// evidence and checkpoint rows remain authoritative in Core; only the
+    /// active projection makes room for the next unit.
+    pub fn retire_accepted_work_items_at_capacity(&mut self, admitting: &str) -> Vec<String> {
+        if self.work_items.contains_key(admitting)
+            || self.work_items.len() < MAX_SUPERVISED_WORK_ITEMS
+        {
+            return Vec::new();
+        }
+        let retired: Vec<String> = self
+            .work_items
+            .iter()
+            .filter(|(_, item)| !item.accepted_units.is_empty())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &retired {
+            self.work_items.remove(id);
+        }
+        retired
     }
 
     /// Evaluate one terminal operation. Repeated calls with the same outcome
@@ -1240,6 +1290,28 @@ mod tests {
             Some(&gate("candidate")),
         );
         assert_eq!(complete.decision, ContinuationDecision::Complete);
+    }
+
+    #[test]
+    fn gate_accepts_a_raw_git_commit_against_the_progress_digest() {
+        let mut supervisor = supervisor();
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let accepted = ProgressEvidence {
+            artifact_sha256: sha256_hex(commit.as_bytes()),
+            ..evidence(ProgressKind::UnitAccepted, "candidate", "unit-1", 1)
+        };
+        let raw_gate = GateRecord {
+            candidate_sha256: commit.into(),
+            ..gate("candidate")
+        };
+        let outcome = run(
+            &mut supervisor,
+            "op-1",
+            std::slice::from_ref(&accepted),
+            Some(&raw_gate),
+        );
+        assert_eq!(outcome.decision, ContinuationDecision::Complete);
+        assert_eq!(outcome.classification, CheckpointClassification::Verified);
     }
 
     #[test]
