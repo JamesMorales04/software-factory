@@ -27,10 +27,10 @@ provenance and is not current campaign certification.
 
 | Lane | Worktree / branch | Base / current state | Owner | Next deliverable |
 |---|---|---|---|---|
-| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; `4f1ab87` review BLOCK for lifecycle coverage; exact review of `f4e757a` running | Collect review; quota pause/re-admission requires trusted provider exhaustion evidence and append-only observations, absent in runtime; no code invented |
+| Subscription funding V3 | `sf-wave3/subscription-funding` / `factory/subscription-funding/20261029` | Latest `f4e757a755e43ded4f9cb3ac17117952466def49`; worktree clean | Luna subagent `funding_shared_admission`; independent review APPROVE for `f4e757a` | Continue request-level subscription admission only after defining its separate boundary; quota pause/re-admission still needs trusted provider exhaustion evidence and append-only observations |
 | Conversational Home (#62) | `sf-wave3/ux-conversation` / `factory/office-conversation/20261029` | PR #80 at `abd42cd868580728174211bb0f73c332e67593b5`; fixture claim repair dirty | Luna subagent `home_conversation`; feature review PASS; browser journey repair active | Resolve missing Lead delegation selector option in canonical Compose Chromium journey, rerun and commit; keep visual sign-off pending |
 | Agent Office V3 (#65/#70) | `sf-wave3/isometric-v3` / `factory/office-isometric-v3/20261029` | PR #82 at `82b9ee4703326947a9a3c78153d9bf1994a3a960`; source `e31e46298b42f13e80701913b43878336587ccb8`, captures `782b5d9dbe484f41afa12120667a07f248703bb0` | Luna subagent `agent_office_v3`; previous review BLOCK found infinite loop, corrected in source commit; exact re-review pending | Resolve inherited CAP-050/052 architecture check after #81; obtain exact-head review; Owner visual acceptance pending |
-| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Reviewed exact SHA `285134583382644b76612c9cb50d480a0df2130b`; repair active | Luna subagent `access_security_repairs`; independent review BLOCK (Major Compose socket mount-policy gap) | Reject Office socket mounts on non-allowlisted services; add negative policy tests and clarify remote Tailscale path is NOT_TESTED; preserve #36 → #37 → #38 order |
+| Access repairs (#36–#38) | `sf-wave3/access-repairs` / `factory/access-repairs/20261029` | Repair HEAD `a03dd55776fe20c15a8fac3565a40fa5b147a0b6`; clean | Luna subagent `access_security_repairs`; initial exact review BLOCK (Major Compose socket mount-policy gap); re-review queued | Collect re-review of socket allowlist/negative tests and updated remote evidence; preserve #36 → #37 → #38 order |
 | Provider acceptance / PR #79 | `sf-wave3/provider-acceptance` / `factory/provider-acceptance/20261029` | `32907995c84cbe6f348be17acd61073a18f8b566` plus dirty harness/runbook/tests | Unassigned; preserve | Reconcile with subscription-only policy after funding boundary; no live inference |
 | Capability evidence shape | `sf-wave3/capability-evidence-shape` / `factory/capability-evidence-shape/20261029` | `13adff74a8de434fd46c527ea92608b695a98d03`; draft PR #81 | Director | Collect CI and exact-SHA independent review; integrate only after gates pass |
 
@@ -71,12 +71,15 @@ were left untouched.
   Compose policy passed; Rust/container-dev remain pending; architecture check
   fails on the inherited CAP-050/052 registry entries pending #81.
 - #36 → #37 → #38 — no PRs opened from this repair branch yet. Exact review of
-  `2851345` BLOCKED on a Major Compose policy gap: the checked-in topology
-  mounts the mode-0666 Office socket only to approved services, but policy
-  allows arbitrary services to mount its named volume. An allowlist and
-  negative policy test are in progress. Tailscale authentication, Serve and
-  remote HTTPS for the new socket path remain NOT_TESTED; do not promote without
-  exact-head re-review and required Owner authorization.
+  `2851345` BLOCKED on a Major Compose policy gap, now addressed in
+  `d2fa767`/`a03dd55`: the checked-in topology
+  mounted the mode-0666 Office socket only to approved services, but policy
+  allowed arbitrary services to mount its named volume. Policy tests now reject
+  such mounts on Supervisor, Worker, Verifier, Reviewer and Runtime; the
+  checker allows only Core/init writable and Tailscale read-only at
+  `/office-socket`. Compose policy plus overlay/base tests passed. Current
+  Tailscale authentication, Serve and remote HTTPS remain NOT_TESTED; exact
+  re-review and Owner authorization are pending.
 
 Historical deterministic Compose/Chromium acceptance at `40d44ec` and prior
 live OpenCode evidence at `1225bae` are candidate-bound history. They do not
@@ -93,8 +96,9 @@ completion.
   **BLOCKED** for lost Worker-to-ledger lifecycle coverage. Commit `f4e757a`
   restores restart/replay, persisted egress links, idempotent settlement and
   mid-turn revocation tests. Format, diff, provider-session (32/32), ledger
-  (23/23), funding-admission (3/3) and strict Clippy passed. Exact-SHA re-review
-  is running. Quota recovery is not safely implementable with current provider
+  (23/23), funding-admission (3/3) and strict Clippy passed. Independent review
+  **APPROVED** `f4e757a` for lifecycle coverage (focused review command 9/9).
+  Quota recovery is not safely implementable with current provider
   evidence: migration 0041 stores immutable disabled proposals and has no
   append-only refreshed quota observations; Worker OpenCode errors are generic,
   Codex terminal status has no trusted quota classification, and egress does
@@ -148,8 +152,10 @@ completion.
 - Access exact-SHA review of `2851345` found no credential leak, auth bypass,
   pairing resurrection or current Tailscale path to Core's control listener,
   but returned **BLOCK** for the Compose socket-mount policy gap described
-  above. Its browser-session/pairing analysis passed; remote Tailscale access
-  and SEC-01 remain NOT_TESTED.
+  above. Commit `d2fa767` adds the service allowlist and negative test coverage;
+  `a03dd55` corrects evidence to mark the current Unix-socket Serve/HTTPS path
+  NOT_TESTED. Re-review is pending. Remote Tailscale access and SEC-01 remain
+  NOT_TESTED.
 - No live provider inference ran in this campaign session.
 
 ## Immediate sequence
@@ -171,7 +177,8 @@ completion.
 6. Integrate only coherent, reviewed slices into this Wave 3 branch after their
    relevant deterministic gates pass. Do not merge to `main`.
 
-**Independent review:** access `2851345` BLOCK (repair/re-review pending);
-funding `f4e757a` review running; Agent Office V3 `82b9ee4` and capability PR
-#81 reviews pending.
+**Independent review:** access `2851345` BLOCK (repair `a03dd55` re-review
+pending);
+funding `f4e757a` APPROVE; Agent Office V3 `82b9ee4` and capability PR #81
+reviews pending.
 **Campaign status:** in progress; Wave 3 is not a certified product release.
