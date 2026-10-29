@@ -267,3 +267,12 @@ session browser regression); PR #82 `9534673` APPROVE; PR #38 `ad04aca` PASS.
 4. Collect exact review for PR #82 and remaining PR #38 hosted checks; repair any finding while preserving #37/#38 ancestry. Keep access stack Draft and unpromoted.
 5. Continue provider-route verification in the existing provider worktree using official docs and offline tests only; keep all inference disabled.
 6. Resolve #81’s inherited evidence references and cross-PR fixture failure before any integration candidate; preserve Owner visual acceptance as pending.
+
+## Director update — 2026-10-29 19:45 UTC
+
+- Hosted gates refreshed: PR #79 `compose-policy` passes; architecture-consistency still fails on CAP-050/CAP-052 from the unfixed integration base; Rust/container-dev are pending. PR #83 has the same inherited architecture failure; other checks remain pending.
+- PR #80 exact head `f310192c33a02d9191fd9cfbcaf90264c2c6e8cf` fails container-dev after Office E2E **ACCEPTED** at candidate `3a6256969353725e52e21e24ee5cfbc869c6b31c`: the following intake journey gets `EACCES` creating `/tmp/opencode/f-bcb0318a/repo` at `office/e2e-browser/intake-journey.mjs:119`. Home implementation lane has this concrete failure and the previously reviewed expiry/provider-session findings; it must fix without weakening provider authorization.
+- PR #81 exact head `13adff74a8de434fd46c527ea92608b695a98d03` clears architecture, Rust and Compose-policy, but container-dev fails earlier in the Office journey at `rust-journey.mjs:395` (`fixture Worker must succeed`). This is distinct from PR #80’s intake `EACCES`; independent read-only diagnosis is in progress.
+- PR #82 exact head `95346734a4c3d99384388f84c15c7cb2996e2efa` has an exact independent **APPROVE**, but hosted architecture-consistency fails because `office_impact` is null. A bounded declaration-only repair is assigned in its exclusive worktree; visual code and Owner sign-off remain untouched.
+- PR #79 has an exact independent **APPROVE** at `73664882316acfc18928ab697ec04da435187dd8`; latest hosted Rust/container-dev checks are pending and compose-policy passes. PR #83 exact head `c0eb767d84d774362c7bed27fc5a7834fbbc2436` remains independently approved with hosted checks in progress. No product PR has been integrated; remote Wave 3 remains `f7479c0c5f936d1097426dd1293ef43ea6e72fb6` and `main` is unchanged.
+- Home browser repair, isometric declaration repair and offline subscription-route verification are active in isolated worktrees. No live inference, provider setting change or billing event occurred.
