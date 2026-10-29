@@ -7,9 +7,9 @@
 // the Owner stores it in Office/Core, and the Worker obtains it from Core.
 //
 // Modes:
-//   preflight  read-only readiness check (`FACTORY_REAL_PROVIDER_DRY_RUN=1`)
-//   assess     create Project/Request and run the real MODEL assessment
-//   execute    approve one exact frozen plan and wait for the Gate
+//   preflight  read-only diagnostic (`FACTORY_REAL_PROVIDER_DRY_RUN=1`)
+//   assess     blocked until Core proves atomic request admission
+//   execute    blocked until Core proves atomic request admission
 //
 // Evidence is written as JSON with credentials and operator tokens redacted.
 // No GitHub write is ever attempted.
@@ -1060,7 +1060,7 @@ export function summarizeActualCharge(records) {
     return {
       observation: "VERIFIED_ZERO",
       micros: 0,
-      provenance: "PROVIDER_REPORTED_OR_BILLING_SOURCE_VALUE",
+      provenance: "EXPLICIT_PROVIDER_REPORTED_ACTUAL_CHARGE",
       fallback_observed: false,
       observations,
     };
@@ -1304,6 +1304,10 @@ export async function preflight(client, gate) {
       core_subscription: coreSubscription,
       limitation: verification.limitation,
     },
+    request_admission: {
+      status: "NOT_VERIFIED",
+      reason: "CORE_HAS_NO_READ_ONLY_ATOMIC_REQUEST_ADMISSION_CONTRACT",
+    },
   };
 }
 
@@ -1368,6 +1372,11 @@ function ensureStateAuthorization(state, gate) {
     "the existing state belongs to a different authorization id; use a new evidence directory or a new authorization",
   );
   assert(
+    state.evidence_kind === (gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT"),
+    "STATE_EVIDENCE_KIND_MISMATCH",
+    "simulation state cannot be resumed or executed as real-provider evidence",
+  );
+  assert(
     state.funding?.policy === gate.fundingPolicy &&
       state.funding?.mode === gate.mode,
     "STATE_FUNDING_MISMATCH",
@@ -1388,6 +1397,8 @@ function safePlan(projection, gate) {
   const proposal = projection.proposal ?? {};
   return {
     schema: "factory.real-provider-uat.plan.v1",
+    evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
+    request_admission: "NOT_VERIFIED",
     intake_request_id: projection.id,
     plan_hash: projection.plan?.plan_hash ?? null,
     objective: proposal.objective ?? projection.objective,
@@ -1426,6 +1437,12 @@ export async function assess(client, gate) {
   const startedAt = new Date();
   ensureEvidenceDir(gate);
   const pre = await preflight(client, gate);
+  if (!gate.simulation) {
+    throw refuse(
+      "REQUEST_ADMISSION_NOT_VERIFIED",
+      "Core has no read-only atomic request-admission contract; no Project, profile, policy or Request was created",
+    );
+  }
   const existing = loadState(gate);
   if (existing) {
     ensureStateAuthorization(existing, gate);
@@ -1433,7 +1450,7 @@ export async function assess(client, gate) {
       const current = await client.get(`/intake/requests/${existing.intake_request_id}`);
       if (current.payload?.state === "AWAITING_APPROVAL") {
         return {
-          result: "AWAITING_PLAN_APPROVAL",
+          result: gate.simulation ? "SIMULATED_AWAITING_PLAN_APPROVAL" : "AWAITING_PLAN_APPROVAL",
           resumed: true,
           preflight: pre,
           state: existing,
@@ -1521,6 +1538,8 @@ export async function assess(client, gate) {
 
     state = {
       schema: STATE_SCHEMA,
+      evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
+      request_admission: "NOT_VERIFIED",
       phase: "REQUEST_CREATED",
       authorization: gate.authorization,
       funding: {
@@ -1645,7 +1664,7 @@ export async function assess(client, gate) {
   writeJson(planPath(gate), plan);
 
   return {
-    result: "AWAITING_PLAN_APPROVAL",
+    result: gate.simulation ? "SIMULATED_AWAITING_PLAN_APPROVAL" : "AWAITING_PLAN_APPROVAL",
     resumed: Boolean(existing),
     preflight: pre,
     state,
@@ -2149,16 +2168,23 @@ async function finishExecution(client, gate, state, pre, startedAt, projection) 
   const evidence = redactDeep(
     {
       schema: "factory.real-provider-uat.evidence.v2",
-      result: gateDecision.outcome === "ACCEPTED" ? "ACCEPTED" : `GATE_${gateDecision.outcome}`,
+      result: gate.simulation
+        ? `SIMULATED_${gateDecision.outcome}`
+        : gateDecision.outcome === "ACCEPTED"
+          ? "ACCEPTED"
+          : `GATE_${gateDecision.outcome}`,
+      evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
+      request_admission: "NOT_VERIFIED",
       phase: "COMPLETE",
       started_at: startedAt.toISOString(),
       finished_at: nowIso(),
       peak_window_at_start: isDeepSeekPeak(startedAt),
       peak_window_at_finish: isDeepSeekPeak(new Date()),
       runtime: {
-        candidate_sha: gate.candidateSha || null,
-        compose_project: gate.composeProject || null,
-        compose_files: gate.composeFiles.split(/\s+/).filter(Boolean),
+        candidate_sha: gate.simulation ? null : gate.candidateSha || null,
+        compose_project: gate.simulation ? null : gate.composeProject || null,
+        compose_files: gate.simulation ? [] : gate.composeFiles.split(/\s+/).filter(Boolean),
+        evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
       },
       preflight: pre,
       gate: {
@@ -2293,9 +2319,9 @@ async function finishExecution(client, gate, state, pre, startedAt, projection) 
       },
       pr_preparation: prPreparation,
       boundary: {
-        real_core_http_api: true,
-        real_compose_stack: true,
-        live_provider_inference: "CALLS_MADE",
+        real_core_http_api: !gate.simulation,
+        real_compose_stack: !gate.simulation,
+        live_provider_inference: gate.simulation ? "NOT_PERFORMED_FAKE_CORE" : "CALLS_MADE",
         deterministic_model_fixture: false,
         funding_policy: SUBSCRIPTION_POLICY,
         paid_fallback: "NONE",
@@ -2369,7 +2395,9 @@ function pauseEvidence(client, gate, error, { preDispatch = false } = {}) {
   const evidence = redactDeep(
     {
       schema: "factory.real-provider-uat.paused.v1",
-      result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+      result: `${gate.simulation ? "SIMULATED_" : ""}PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED`,
+      evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
+      request_admission: "NOT_VERIFIED",
       phase: "PAUSED",
       paused_at: nowIso(),
       recoverable: true,
@@ -2419,7 +2447,7 @@ export async function execute(client, gate) {
     if (error?.paused === true) {
       const evidence = pauseEvidence(client, gate, error);
       return {
-        result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+        result: evidence.result,
         paused: true,
         evidence,
         pausePath: pausePath(gate),
@@ -2430,7 +2458,9 @@ export async function execute(client, gate) {
     const failure = redactDeep(
       {
         schema: "factory.real-provider-uat.evidence.v2",
-        result: `FAILED_${error?.code ?? "UNEXPECTED"}`,
+        result: `${gate.simulation ? "SIMULATED_" : ""}FAILED_${error?.code ?? "UNEXPECTED"}`,
+        evidence_kind: gate.simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT",
+        request_admission: "NOT_VERIFIED",
         phase: "FAILED",
         finished_at: nowIso(),
         gate: {
@@ -2445,8 +2475,8 @@ export async function execute(client, gate) {
         },
         ...(error?.fundingUsage ?? {}),
         boundary: {
-          real_core_http_api: true,
-          live_provider_inference: "CALLS_MAY_HAVE_BEEN_MADE",
+          real_core_http_api: !gate.simulation,
+          live_provider_inference: gate.simulation ? "NOT_PERFORMED_FAKE_CORE" : "CALLS_MAY_HAVE_BEEN_MADE",
           funding_policy: SUBSCRIPTION_POLICY,
           paid_fallback: "NONE",
           provider_or_model_fallback: "NONE",
@@ -2503,7 +2533,7 @@ export async function resume(client, gate) {
       ),
     );
     return {
-      result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+      result: evidence.result,
       paused: true,
       evidence,
       pausePath: pausePath(gate),
@@ -2518,7 +2548,7 @@ export async function resume(client, gate) {
     if (error?.paused === true) {
       const evidence = pauseEvidence(client, gate, error);
       return {
-        result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+        result: evidence.result,
         paused: true,
         evidence,
         pausePath: pausePath(gate),
@@ -2566,7 +2596,7 @@ export async function resume(client, gate) {
           ),
         );
         return {
-          result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+          result: evidence.result,
           paused: true,
           evidence,
           pausePath: pausePath(gate),
@@ -2586,8 +2616,11 @@ export async function resume(client, gate) {
   return finishExecution(client, gate, state, pre, new Date(), projection);
 }
 
-export async function main(argv = process.argv.slice(2), env = process.env) {
+export async function main(argv = process.argv.slice(2), env = process.env, options = {}) {
   const gate = parseGate(env, argv);
+  // This dependency injection is used only by the separate test simulation
+  // runner. The executable CLI never accepts a simulation flag or env var.
+  gate.simulation = options.simulation === true;
   try {
     gate.verification = loadSubscriptionVerification(gate);
   } catch (error) {
@@ -2599,13 +2632,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         "Refresh the Owner Console quota/entitlement evidence, then re-run assess.",
       ]);
       process.exitCode = EXIT_PAUSED;
-      return { result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED", paused: true, evidence };
+      return { result: evidence.result, paused: true, evidence };
     }
     throw error;
   }
   const token = loadOperatorToken(env);
   activeSecrets.add(token);
-  const client = new CoreClient({ baseUrl: gate.coreApiUrl, token });
+  const client = options.client ?? new CoreClient({ baseUrl: gate.coreApiUrl, token });
   try {
     if (gate.command === "preflight") {
       ensureEvidenceDir(gate);
@@ -2614,6 +2647,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         {
           schema: "factory.real-provider-uat.dry-run.v1",
           result: "DRY_RUN_READY",
+          uat_status: "BLOCKED",
           mode: "preflight",
           started_at: nowIso(),
           finished_at: nowIso(),
@@ -2633,7 +2667,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       printSummary("DRY_RUN_READY", [
         `Evidence: ${join(gate.evidenceDir, "real-provider-uat-preflight.json")}`,
         "No inference, Project, Request, Campaign or provider session was created.",
-      ]);
+        "Request admission is NOT_VERIFIED; live UAT remains BLOCKED.",
+      ], { simulation: gate.simulation });
       return { result: "DRY_RUN_READY", evidence };
     }
     if (gate.command === "assess") {
@@ -2647,24 +2682,30 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
             "Assessment hit a quota pause; no retry or fallback was attempted.",
             `Paused evidence: ${pausePath(gate)}`,
             "A new authorization is required to re-assess after refresh.",
-          ]);
+          ], { simulation: gate.simulation });
           process.exitCode = EXIT_PAUSED;
           return {
-            result: "PAUSED_SUBSCRIPTION_QUOTA_EXHAUSTED",
+            result: evidence.result,
             paused: true,
             evidence,
           };
         }
         throw classifySubscriptionAdmissionError(error);
       }
-      printSummary("AWAITING_PLAN_APPROVAL", [
+      printSummary(gate.simulation ? "SIMULATED_AWAITING_PLAN_APPROVAL" : "AWAITING_PLAN_APPROVAL", [
         `Project: ${assessed.state.project_id}`,
         `Request: ${assessed.state.intake_request_id}`,
         `Plan hash: ${assessed.plan.plan_hash}`,
         `Plan file: ${planPath(gate)}`,
         `Next: review plan.json, then run execute --plan-hash ${assessed.plan.plan_hash}`,
-      ]);
+      ], { simulation: gate.simulation });
       return assessed;
+    }
+    if (!gate.simulation) {
+      throw refuse(
+        "REQUEST_ADMISSION_NOT_VERIFIED",
+        "Core has no atomic request-admission contract; execution and recovery are blocked",
+      );
     }
     const executed =
       gate.command === "resume"
@@ -2675,7 +2716,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         "Recoverable pause; no provider/model/funding fallback and no redispatch.",
         `Paused evidence: ${executed.pausePath}`,
         "Refresh the Owner Console quota/entitlement evidence, then run resume.",
-      ]);
+      ], { simulation: gate.simulation });
       process.exitCode = EXIT_PAUSED;
       return executed;
     }
@@ -2683,8 +2724,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       `Gate: ${executed.gateDecision.outcome}`,
       `Candidate: ${executed.evidence.ids.candidate_commit}`,
       `Evidence: ${executed.evidencePath}`,
-    ]);
-    if (executed.result !== "ACCEPTED") {
+    ], { simulation: gate.simulation });
+    if (executed.result !== (gate.simulation ? "SIMULATED_ACCEPTED" : "ACCEPTED")) {
       process.exitCode = 1;
     }
     return executed;
@@ -2693,8 +2734,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
 }
 
-function printSummary(result, lines) {
-  process.stdout.write(`REAL_PROVIDER_UAT=${result}\n`);
+function printSummary(result, lines, { simulation = false } = {}) {
+  process.stdout.write(`${simulation ? "FAKE_CORE_SIMULATION" : "REAL_PROVIDER_UAT"}=${result}\n`);
   for (const line of lines) process.stdout.write(`${line}\n`);
 }
 
