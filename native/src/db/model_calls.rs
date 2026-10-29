@@ -8,10 +8,60 @@
 
 use super::*;
 
+use crate::execution_policy::{
+    InferenceRole, InferenceSettlement, ReserveInferenceInput, UsdMicros,
+};
 use chrono::Utc;
 use sqlx::row::Row;
 use sqlx_sqlite::SqliteConnection;
 use uuid::Uuid;
+
+/// Deterministic settlement evidence for a model call. The same stored usage
+/// always produces the same digest, so an identical settlement replays.
+fn model_call_settlement_digest(
+    reservation_id: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cost_micros: u64,
+    usage_known: bool,
+) -> String {
+    sha256_hex(
+        format!(
+            "model-call-settlement:v1:{reservation_id}:{input_tokens}:{output_tokens}:{total_tokens}:{cost_micros}:{usage_known}"
+        )
+        .as_bytes(),
+    )
+}
+
+fn model_call_ledger_role(role: ModelCallRole) -> InferenceRole {
+    match role {
+        ModelCallRole::Lead => InferenceRole::Lead,
+        ModelCallRole::SemanticReviewer => InferenceRole::SemanticReviewer,
+        ModelCallRole::Evaluation => InferenceRole::Evaluation,
+    }
+}
+
+/// Resolve the request envelope a Core model call inherits. A Caller without an
+/// envelope remains on the legacy evidence path; a bound campaign always uses
+/// the shared ledger.
+async fn linked_envelope_for_model_call(
+    connection: &mut SqliteConnection,
+    role: ModelCallRole,
+    objective_id: &str,
+) -> Result<Option<String>, Error> {
+    match role {
+        ModelCallRole::Lead => {
+            super::inference_ledger::envelope_for_lead_in_tx(connection, objective_id).await
+        }
+        ModelCallRole::SemanticReviewer => {
+            super::inference_ledger::envelope_for_candidate_in_tx(connection, objective_id).await
+        }
+        ModelCallRole::Evaluation => {
+            super::inference_ledger::envelope_for_request_in_tx(connection, objective_id).await
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +198,7 @@ type SettleRow = (
     i64,
     String,
     String,
+    Option<String>,
 );
 type IdentityRow = (
     String,
@@ -218,6 +269,12 @@ impl Database {
                 _ => return Err(Error::Invalid("stored model call state")),
             }
         }
+        // A campaign-bound call inherits the request envelope. The envelope is
+        // the single monetary authority for this operation; the legacy scope
+        // and role columns below remain evidence projections.
+        let ledger_envelope_id =
+            linked_envelope_for_model_call(&mut transaction, input.role, &input.objective_id)
+                .await?;
         let (used_input, used_output, used_cost) =
             model_call_usage(&mut transaction, &input.scope_id).await?;
         let (reserved_input, reserved_output, reserved_cost) =
@@ -270,13 +327,14 @@ impl Database {
                 scope_remaining_cost,
             ),
         };
-        // Reserve the whole remaining input/cost envelope rather than a
-        // tokenizer estimate. A measured response therefore cannot exceed the
-        // reservation merely because the estimate was low.
+        // Reserve the whole remaining input envelope rather than a tokenizer
+        // estimate. For a ledger-bound call the gateway supplies a conservative
+        // monetary bound; the shared ledger is the only money authority and the
+        // legacy cumulative cost columns are not intersected again.
         if input.estimated_input_tokens > remaining_input
-            || input.estimated_cost_micros > remaining_cost
+            || (ledger_envelope_id.is_none() && input.estimated_cost_micros > remaining_cost)
             || remaining_input == 0
-            || remaining_cost == 0
+            || (ledger_envelope_id.is_none() && remaining_cost == 0)
         {
             return Err(Error::Forbidden("model call budget is exhausted".into()));
         }
@@ -286,17 +344,58 @@ impl Database {
             return Err(Error::Forbidden("model call budget is exhausted".into()));
         }
         let max_total = max_input.saturating_add(max_output);
-        let max_cost = remaining_cost;
+        let max_cost = if ledger_envelope_id.is_some() {
+            input.estimated_cost_micros
+        } else {
+            remaining_cost
+        };
         let request_sha256 = input.request_sha256.to_ascii_lowercase();
         let reservation_id = Uuid::new_v4().to_string();
         let expires_at_ms = now_ms.saturating_add(RESERVATION_LIFETIME_MS);
         let now_text = now.to_rfc3339();
+        let ledger_reservation_id = if let Some(envelope_id) = &ledger_envelope_id {
+            let pricing_snapshot_json = serde_json::json!({
+                "basis": "conservative-model-call-bound",
+                "estimatedInputTokens": input.estimated_input_tokens,
+                "requestedOutputTokens": input.requested_output_tokens,
+                "upperBoundMicros": input.estimated_cost_micros,
+            })
+            .to_string();
+            let ledger_input = ReserveInferenceInput {
+                envelope_id: envelope_id.clone(),
+                operation_id: reservation_id.clone(),
+                // The legacy reservation id is the operation identity. A
+                // released attempt legitimately creates a new operation; an
+                // identical replay keeps this key and returns the durable row.
+                idempotency_key: format!("model_call:{reservation_id}"),
+                request_sha256: request_sha256.clone(),
+                role: model_call_ledger_role(input.role),
+                principal_id: input.principal_id.clone(),
+                parent_operation_id: None,
+                provider: input.provider.clone(),
+                model: input.model.clone(),
+                pricing_revision: "model-gateway-bound-v1".into(),
+                pricing_snapshot_json,
+                upper_bound_micros: UsdMicros::new(max_cost)
+                    .map_err(|_| Error::Invalid("model call ledger bound"))?,
+                expires_at_ms,
+            };
+            let reserved = super::inference_ledger::reserve_inference_in_tx(
+                &mut transaction,
+                &ledger_input,
+                now_ms,
+            )
+            .await?;
+            Some(reserved.reservation_id)
+        } else {
+            None
+        };
         sqlx::query::query(
             "INSERT INTO model_call_reservations
              (reservation_id,role,principal_id,project_id,objective_id,scope_id,provider,model,
               purpose,request_sha256,max_input_tokens,max_output_tokens,max_total_tokens,
-              max_cost_micros,state,expires_at_ms,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'RESERVED',?15,?16,?16)",
+              max_cost_micros,state,expires_at_ms,created_at,updated_at,ledger_reservation_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,'RESERVED',?15,?16,?16,?17)",
         )
         .bind(&reservation_id)
         .bind(input.role.as_str())
@@ -323,6 +422,7 @@ impl Database {
         .bind(i64::try_from(max_cost).map_err(|_| Error::Invalid("model call cost reservation"))?)
         .bind(expires_at_ms)
         .bind(&now_text)
+        .bind(&ledger_reservation_id)
         .execute(&mut *transaction)
         .await?;
         record_event(
@@ -358,11 +458,11 @@ impl Database {
             return Err(Error::Invalid("model call response is too large"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row: Option<SettleRow> = sqlx::query_as::query_as(
             "SELECT state,role,provider,model,request_sha256,max_input_tokens,
                     max_output_tokens,max_total_tokens,max_cost_micros,
-                    COALESCE(response_text,''),COALESCE(error,'')
+                    COALESCE(response_text,''),COALESCE(error,''),ledger_reservation_id
              FROM model_call_reservations WHERE reservation_id=?1",
         )
         .bind(&usage.reservation_id)
@@ -380,6 +480,7 @@ impl Database {
             max_cost,
             prior_content,
             _,
+            ledger_reservation_id,
         )) = row
         else {
             return Err(Error::NotFound);
@@ -394,6 +495,27 @@ impl Database {
                 && result.usage_known == usage.usage_known
                 && prior_content == usage.content
             {
+                if let Some(ledger_id) = &ledger_reservation_id {
+                    let digest = model_call_settlement_digest(
+                        ledger_id,
+                        result.input_tokens,
+                        result.output_tokens,
+                        result.total_tokens,
+                        result.cost_micros,
+                        result.usage_known,
+                    );
+                    super::inference_ledger::settle_inference_in_tx(
+                        &mut transaction,
+                        &InferenceSettlement {
+                            reservation_id: ledger_id.clone(),
+                            settled_micros: UsdMicros::new(result.cost_micros)
+                                .map_err(|_| Error::Invalid("stored model call cost"))?,
+                            usage_evidence_sha256: digest,
+                        },
+                        Utc::now().timestamp_millis(),
+                    )
+                    .await?;
+                }
                 transaction.commit().await?;
                 return Ok(result);
             }
@@ -452,6 +574,40 @@ impl Database {
         .bind(&usage.reservation_id)
         .execute(&mut *transaction)
         .await?;
+        if let Some(ledger_id) = &ledger_reservation_id {
+            let ledger_now_ms = Utc::now().timestamp_millis();
+            if usage.usage_known {
+                let digest = model_call_settlement_digest(
+                    ledger_id,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.total_tokens,
+                    usage.cost_micros,
+                    usage.usage_known,
+                );
+                super::inference_ledger::settle_inference_in_tx(
+                    &mut transaction,
+                    &InferenceSettlement {
+                        reservation_id: ledger_id.clone(),
+                        settled_micros: UsdMicros::new(usage.cost_micros)
+                            .map_err(|_| Error::Invalid("model call cost usage"))?,
+                        usage_evidence_sha256: digest,
+                    },
+                    ledger_now_ms,
+                )
+                .await?;
+            } else {
+                super::inference_ledger::mark_inference_ambiguous_in_tx(
+                    &mut transaction,
+                    ledger_id,
+                    "core:model_call",
+                    &format!("model_call:{}:ambiguous", usage.reservation_id),
+                    &request_sha256,
+                    ledger_now_ms,
+                )
+                .await?;
+            }
+        }
         let objective_id: String = sqlx::query::query(
             "SELECT objective_id FROM model_call_reservations WHERE reservation_id=?1",
         )
@@ -499,16 +655,17 @@ impl Database {
             return Err(Error::Invalid("model call release reason"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let state = if ambiguous { "AMBIGUOUS" } else { "RELEASED" };
         let now = Utc::now().to_rfc3339();
-        let objective_id: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT objective_id FROM model_call_reservations WHERE reservation_id=?1 AND state='RESERVED'",
+        let objective_id: Option<(String, Option<String>, String)> = sqlx::query_as::query_as(
+            "SELECT objective_id,ledger_reservation_id,request_sha256
+             FROM model_call_reservations WHERE reservation_id=?1 AND state='RESERVED'",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((objective_id,)) = objective_id else {
+        let Some((objective_id, ledger_reservation_id, request_sha256)) = objective_id else {
             return Err(Error::Conflict("model call is not reserved"));
         };
         sqlx::query::query(
@@ -521,6 +678,29 @@ impl Database {
         .bind(reservation_id)
         .execute(&mut *transaction)
         .await?;
+        if let Some(ledger_id) = &ledger_reservation_id {
+            let ledger_now_ms = Utc::now().timestamp_millis();
+            if ambiguous {
+                super::inference_ledger::mark_inference_ambiguous_in_tx(
+                    &mut transaction,
+                    ledger_id,
+                    "core:model_call",
+                    &format!("model_call:{reservation_id}:release"),
+                    &request_sha256,
+                    ledger_now_ms,
+                )
+                .await?;
+            } else {
+                super::inference_ledger::release_inference_in_tx(
+                    &mut transaction,
+                    ledger_id,
+                    "core:model_call",
+                    &format!("model_call:{reservation_id}:release"),
+                    ledger_now_ms,
+                )
+                .await?;
+            }
+        }
         record_event(
             &mut transaction,
             &objective_id,
@@ -546,15 +726,15 @@ impl Database {
             return Err(Error::Invalid("model call resolution identity"));
         }
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
-        let objective_id: Option<(String,)> = sqlx::query_as::query_as(
-            "SELECT objective_id FROM model_call_reservations
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let objective_id: Option<(String, Option<String>)> = sqlx::query_as::query_as(
+            "SELECT objective_id,ledger_reservation_id FROM model_call_reservations
              WHERE reservation_id=?1 AND state IN ('AMBIGUOUS','UNKNOWN')",
         )
         .bind(reservation_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((objective_id,)) = objective_id else {
+        let Some((objective_id, ledger_reservation_id)) = objective_id else {
             return Err(Error::Conflict("model call is not ambiguous"));
         };
         sqlx::query::query(
@@ -566,6 +746,20 @@ impl Database {
         .bind(reservation_id)
         .execute(&mut *transaction)
         .await?;
+        if let Some(ledger_id) = &ledger_reservation_id {
+            let evidence_sha256 = sha256_hex(
+                format!("model-call-resolution:v1:{reservation_id}:{actor}:{reason}").as_bytes(),
+            );
+            super::inference_ledger::release_or_reconcile_in_tx(
+                &mut transaction,
+                ledger_id,
+                actor,
+                &format!("model_call:{reservation_id}:resolve"),
+                &evidence_sha256,
+                Utc::now().timestamp_millis(),
+            )
+            .await?;
+        }
         record_event(
             &mut transaction,
             &objective_id,
@@ -621,7 +815,7 @@ impl Database {
     /// unresolved ledger, so an expired-but-unswept reservation cannot hide.
     pub async fn expire_model_calls(&self, now_ms: i64) -> Result<(), Error> {
         let _write = self.write_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         expire_reserved_model_calls(&mut transaction, now_ms).await?;
         transaction.commit().await?;
         Ok(())
@@ -905,14 +1099,15 @@ async fn expire_reserved_model_calls(
     connection: &mut SqliteConnection,
     now_ms: i64,
 ) -> Result<(), Error> {
-    let expired: Vec<(String, String)> = sqlx::query_as::query_as(
-        "SELECT reservation_id,objective_id FROM model_call_reservations
+    let expired: Vec<(String, String, String, Option<String>)> = sqlx::query_as::query_as(
+        "SELECT reservation_id,objective_id,request_sha256,ledger_reservation_id
+         FROM model_call_reservations
          WHERE state='RESERVED' AND expires_at_ms<=?1",
     )
     .bind(now_ms)
     .fetch_all(&mut *connection)
     .await?;
-    for (reservation_id, objective_id) in expired {
+    for (reservation_id, objective_id, request_sha256, ledger_reservation_id) in expired {
         sqlx::query::query(
             "UPDATE model_call_reservations
              SET state='AMBIGUOUS',error='reservation expired before settlement',updated_at=?1
@@ -922,6 +1117,17 @@ async fn expire_reserved_model_calls(
         .bind(&reservation_id)
         .execute(&mut *connection)
         .await?;
+        if let Some(ledger_id) = &ledger_reservation_id {
+            super::inference_ledger::mark_inference_ambiguous_in_tx(
+                connection,
+                ledger_id,
+                "core:expiry",
+                &format!("model_call:{reservation_id}:expiry"),
+                &request_sha256,
+                now_ms,
+            )
+            .await?;
+        }
         record_event(
             connection,
             &objective_id,
@@ -1173,4 +1379,94 @@ async fn model_call_reservations(
         u64::try_from(row.1).map_err(|_| Error::Invalid("model reservation"))?,
         u64::try_from(row.2).map_err(|_| Error::Invalid("model reservation"))?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference_ledger::NewInferenceEnvelope;
+
+    #[tokio::test]
+    async fn envelope_bound_model_call_uses_the_shared_ledger() {
+        let path = std::env::temp_dir().join(format!(
+            "factory-model-call-ledger-{}.sqlite",
+            Uuid::new_v4()
+        ));
+        let db = Database::open(&path).await.unwrap();
+        sqlx::query::query(
+            "INSERT INTO projects(id,repository,base_commit,created_at,identity)
+             VALUES ('project','/fixture','base',?1,'')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let envelope = db
+            .create_inference_envelope(&NewInferenceEnvelope {
+                request_id: "evaluation-1".into(),
+                project_id: "project".into(),
+                authorized_micros: UsdMicros::new(5_000).unwrap(),
+                actor: "operator".into(),
+                scope_sha256: "a".repeat(64),
+                evidence_sha256: "b".repeat(64),
+                idempotency_key: "evaluation-envelope".into(),
+            })
+            .await
+            .unwrap();
+        let decision = db
+            .authorize_model_call(&NewModelCallAuthorization {
+                role: ModelCallRole::Evaluation,
+                principal_id: "evaluator".into(),
+                project_id: "project".into(),
+                objective_id: "evaluation-1".into(),
+                scope_id: "evaluation-1".into(),
+                provider: "opencode-go".into(),
+                model: "deepseek-v4.1-flash".into(),
+                purpose: "evaluate".into(),
+                request_sha256: "c".repeat(64),
+                estimated_input_tokens: 100,
+                requested_output_tokens: 50,
+                estimated_cost_micros: 500,
+                policy: ModelCallPolicy {
+                    max_input_tokens: 1_000,
+                    max_output_tokens: 1_000,
+                    max_cost_micros: 1_000,
+                },
+                global_policy: None,
+            })
+            .await
+            .unwrap();
+        let ModelCallDecision::Reserved(grant) = decision else {
+            panic!("expected a fresh model-call reservation");
+        };
+        let (ledger_reservation_id, max_cost): (Option<String>, i64) = sqlx::query_as::query_as(
+            "SELECT ledger_reservation_id,max_cost_micros FROM model_call_reservations
+             WHERE reservation_id=?1",
+        )
+        .bind(&grant.reservation_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(ledger_reservation_id.is_some());
+        assert_eq!(max_cost, 500);
+        db.settle_model_call(&ModelCallUsage {
+            reservation_id: grant.reservation_id,
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+            cost_micros: 300,
+            usage_known: true,
+            content: "{\"ok\":true}".into(),
+        })
+        .await
+        .unwrap();
+        let status = db
+            .inference_spending_status(&envelope.envelope_id)
+            .await
+            .unwrap();
+        assert_eq!(status.settled_micros.get(), 300);
+        assert_eq!(status.reserved_micros.get(), 0);
+        db.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 }

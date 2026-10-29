@@ -836,8 +836,15 @@ pub use github::{
     GitHubIssueList, GitHubIssueSummary, GitHubSyncFailureWrite, GitHubSyncResultWrite,
     GitHubSyncStateRecord, NewProjectGitHubBinding, ProjectGitHubBinding,
 };
+mod inference_ledger;
 mod lead;
 mod model_calls;
+pub use crate::inference_ledger::{
+    CampaignEnvelopeBindingInput, InferenceEnvelopeRecord, InferenceProviderSpending,
+    InferenceReservationRecord, InferenceRoleSpending, InferenceSpendingBreakdown,
+    MarkInferenceDispatchedInput, NewInferenceAuthorization, NewInferenceEnvelope,
+    ReconcileInferenceInput, ReconciliationOutcome, RevokeInferenceEnvelopeInput,
+};
 pub use lead::{
     ActionDraftRecord, AuthenticatedOperatorApproval, CampaignExecutionBindingRecord,
     ExpectedStartBinding, LeadRequestRecord, LeadStartEvidenceRecord, LeadStartResult,

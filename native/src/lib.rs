@@ -9,6 +9,7 @@ pub mod execution_policy;
 pub mod execution_profile;
 pub mod github;
 pub mod github_sync;
+pub mod inference_ledger;
 pub mod intake;
 pub mod issue_intake;
 pub mod lead;
