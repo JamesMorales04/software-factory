@@ -96,14 +96,17 @@ export const es: Catalog = {
 
   "home.title": "Inicio",
   "home.description":
-    "Describe el resultado de ingeniería. Core deriva la Acción, la solicitud de Lead, el plan y la autorización de la Campaña; Office nunca concede esa autoridad.",
-  "home.meta.flow": "Proyecto → solicitud → perfil → modo",
-  "home.meta.durable": "Las solicitudes son registros duraderos de Core",
+    "Describe el resultado que quieres. La Factory lo evalúa, propone un plan y espera tu aprobación antes de empezar cualquier trabajo.",
+  "home.meta.flow": "Proyecto → resultado → perfil → autorización",
+  "home.meta.durable": "Las solicitudes son registros durables de Core",
   "home.projects.error": "No se pudieron cargar los Proyectos desde Core.",
   "home.projects.retry": "Reintentar Proyectos",
   "home.newRequest.title": "Nueva solicitud",
   "home.newRequest.hint":
     "Intención del operador, no una especificación de Acción",
+  "home.composer.title": "¿En qué debe trabajar la Factory?",
+  "home.composer.description":
+    "Escribe el resultado de ingeniería en lenguaje natural. Elige un Proyecto y un perfil de ejecución, autoriza un importe de inferencia y envía la solicitud. Core congela el plan; nada se ejecuta hasta que lo apruebes.",
   "home.projects.loading": "Cargando Proyectos…",
   "home.projects.emptyTitle": "Registra primero un Proyecto",
   "home.projects.emptyDescription":
@@ -113,15 +116,17 @@ export const es: Catalog = {
   "home.project.label": "Proyecto",
   "home.project.select": "Selecciona un Proyecto",
   "home.project.help":
-    "Core aplica la configuración del Proyecto, las rutas permitidas y la revisión de la política.",
+    "Core aplica la configuración del Proyecto, las rutas permitidas y la revisión de política.",
   "home.objective.label": "¿Qué debe hacer la Factory?",
   "home.objective.placeholder":
-    "Añade un endpoint de exportación CSV a la API de informes, mantén la compatibilidad hacia atrás de la API existente y cúbrelo con pruebas.",
+    "Añade un endpoint de exportación CSV a la API de informes, mantén la compatibilidad hacia atrás y cúbrelo con pruebas.",
   "home.objective.help":
-    "Basta con lenguaje natural. Core congela el plan concreto y las comprobaciones tras la evaluación.",
+    "El lenguaje natural es suficiente. Core congela el plan concreto y las comprobaciones tras la evaluación.",
   "home.profile.label": "Perfil de ejecución",
   "home.profile.help":
-    "Los perfiles vinculan rutas de proveedor/modelo, presupuestos y límites. Core congela la revisión exacta; cada admisión sigue exigiendo aprobación explícita del operador.",
+    "Elige cómo trabajan Lead, Implementador y Revisor semántico. Los límites técnicos de operación permanecen en la configuración avanzada del perfil.",
+  "home.profile.routesHint":
+    "Estas rutas forman parte de la revisión del perfil que Core congela para esta solicitud.",
   "home.profile.coreDefaultUnavailable":
     "Predeterminado de Core (lista de perfiles no disponible)",
   "home.profile.loading": "Cargando perfiles…",
@@ -129,14 +134,14 @@ export const es: Catalog = {
     "Predeterminado de Core (Proyecto y luego global)",
   "home.profile.unavailableSuffix": " — no disponible",
   "home.profile.globalSuffix": " · predeterminado global",
-  "home.profile.projectSuffix": " · predeterminado del proyecto",
+  "home.profile.projectSuffix": " · predeterminado del Proyecto",
   "home.profiles.unavailable":
-    "Los perfiles de ejecución no están disponibles en esta compilación de Core. Si envías sin un perfil explícito, Core resuelve su predeterminado de Proyecto o global; si no existe ninguno, Core rechaza la solicitud.",
+    "Los perfiles de ejecución no están disponibles en esta compilación de Core. Si envías sin un perfil explícito, Core resuelve su predeterminado del Proyecto o global; si no existe, Core rechaza la solicitud.",
   "home.profiles.retry": "Reintentar perfiles",
   "home.profiles.error": "No se pudieron cargar los perfiles de ejecución.",
   "home.profiles.empty":
     "No hay perfiles de ejecución configurados. Core resuelve un predeterminado cuando existe; de lo contrario, rechaza la solicitud.",
-  "home.profile.warnings": "Core informa de advertencias para {name}:",
+  "home.profile.warnings": "Core informa advertencias para {name}:",
   "home.profile.notExecutable":
     "Este perfil está declarado pero no es ejecutable. Elige un perfil ejecutable o el predeterminado de Core.",
   "home.profile.notExecutableError":
@@ -144,46 +149,50 @@ export const es: Catalog = {
   "home.approval.title":
     "Cada solicitud se detiene para la aprobación explícita del operador.",
   "home.approval.body":
-    "Core evalúa la solicitud, congela un plan y espera tu aprobación antes de iniciar cualquier Campaña. Esta compilación no inicia automáticamente las solicitudes de admisión.",
-  "home.policy.title": "Habilitar la ejecución gobernada",
+    "Core evalúa la solicitud, congela un plan y espera tu aprobación antes de iniciar cualquier Campaña. Esta compilación no inicia solicitudes automáticamente.",
+  "home.policy.title": "Habilitar ejecución gobernada",
   "home.policy.description":
-    "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita al trabajo R0; no habilita el inicio automático.",
+    "Core exige una política de ejecución explícita y acotada para este Proyecto y la revisión exacta del perfil antes de crear la solicitud de Lead. Esta concesión no es autónoma y se limita a trabajo R0; no habilita el inicio automático.",
   "home.policy.profile": "Perfil",
   "home.policy.project": "Proyecto",
   "home.policy.allowedPaths": "Rutas permitidas",
   "home.policy.capabilities": "Capacidades",
-  "home.policy.implementerRoute": "Ruta del implementador",
+  "home.policy.implementerRoute": "Ruta del Implementador",
   "home.policy.objectiveScope": "Alcance del objetivo",
   "home.policy.none": "Ninguna",
   "home.policy.risk": "riesgo {classes}",
   "home.policy.autonomous": "inicio autónomo habilitado",
-  "home.policy.nonAutonomous": "no autónoma; se requiere aprobación explícita",
-  "home.policy.perRequest": "Límites por solicitud",
-  "home.policy.perRequestValue":
-    "{attempts} intentos · {sessions} sesiones · {turns} turnos · {inputTokens} tokens de entrada · {outputTokens} tokens de salida · {costMicros} microcostes · {timeout}s de tiempo límite · {wallClock}s de tiempo real",
-  "home.policy.cumulative": "Límites acumulados de la concesión",
-  "home.policy.cumulativeValue":
-    "{requests} solicitudes · {sessions} sesiones · {attempts} intentos · válida {days} días · {repairCycles} ciclos de reparación · {parallel} en paralelo",
+  "home.policy.nonAutonomous": "no autónomo; requiere aprobación explícita",
+  "home.policy.grantLifetime": "Vigencia de la concesión",
+  "home.policy.grantLifetimeValue":
+    "Válida {days} días · {parallel} operación de implementación concurrente",
+  "home.policy.inferenceEnvelope": "Envolvente de inferencia",
+  "home.policy.inferenceEnvelopeValue":
+    "{amount} USD para evaluación, implementación y revisión",
+  "home.policy.technical":
+    "Core también aplica tiempos máximos por operación, límites de solicitud y respuesta, límites de generación y supervisión determinista del progreso. Son límites técnicos de seguridad, no turnos, intentos, sesiones ni fechas límite de Campaña.",
   "home.policy.scopeMissing":
-    "Core exigió una política de ejecución pero no devolvió el perfil y el alcance exactos del Proyecto. Recarga la página e inténtalo de nuevo.",
+    "Core exigió una política de ejecución pero no devolvió el perfil y el alcance exactos del Proyecto. Actualiza la página e inténtalo de nuevo.",
   "home.policy.acknowledge":
-    "Autorizo esta política de ejecución R0 acotada y no autónoma para la configuración exacta del Proyecto y la revisión del perfil mostradas.",
+    "Autorizo esta política de ejecución R0 no autónoma y acotada para la configuración exacta del Proyecto y la revisión del perfil mostradas.",
   "home.policy.error": "No se pudo habilitar la política de ejecución.",
-  "home.policy.enable": "Habilitar la ejecución gobernada",
-  "home.policy.enabling": "Habilitando la ejecución gobernada…",
+  "home.policy.enable": "Habilitar ejecución gobernada",
+  "home.policy.enabling": "Habilitando ejecución gobernada…",
   "home.validation.project": "Selecciona un Proyecto.",
   "home.spend.label": "Gasto máximo de inferencia (USD)",
   "home.spend.help":
-    "Un importe explícito cubre la evaluación del Lead, la implementación y la revisión. Core detiene las llamadas facturables al agotarse y solicita un incremento.",
+    "Un importe explícito cubre la evaluación de Lead, la implementación y la revisión. Core detiene las llamadas facturables cuando se agota y solicita un aumento.",
+  "home.spend.note":
+    "Este es el único importe de gasto obligatorio. Los límites avanzados de coste y tokens permanecen en la configuración técnica del perfil de ejecución.",
   "home.validation.authorization":
-    "Introduce un importe positivo en USD para el sobre de inferencia.",
+    "Introduce un importe positivo en USD para la envolvente de inferencia.",
   "home.validation.objective":
-    "Describe el resultado de ingeniería que deseas.",
+    "Describe el resultado de ingeniería que quieres.",
   "home.request.error": "No se pudo enviar la solicitud.",
   "home.request.endpointUnavailable":
-    "La admisión unificada de solicitudes no está disponible en esta compilación de Core. El cliente tipado de Office está listo, pero Core no ha expuesto /intake/requests.",
+    "La entrada unificada de solicitudes no está disponible en esta compilación de Core. El cliente tipado de Office está listo, pero Core no expone /intake/requests.",
   "home.submit": "Enviar solicitud",
-  "home.submitting": "Enviando la solicitud…",
+  "home.submitting": "Enviando solicitud…",
   "home.submitHint":
     "Enviar registra la intención del operador. No autoriza una Campaña.",
   "home.recent.title": "Solicitudes recientes",
@@ -208,23 +217,18 @@ export const es: Catalog = {
     "Falló la última actualización: {error}. Se muestra la última instantánea autoritativa.",
   "home.status.retryNow": "Reintentar ahora",
   "home.status.workers": "Trabajadores",
+  "home.status.runningAgents": "Agentes en ejecución",
   "home.status.unresolvedSessions": "Sesiones sin resolver",
   "home.status.unresolvedModelCalls": "Llamadas de modelo sin resolver",
-  "home.status.telemetry": "Exportación de telemetría",
-  "home.active.title": "Trabajo activo",
+  "home.status.openRuntime": "Abrir Entorno",
+  "home.status.openOverview": "Abrir Resumen",
   "home.active.unavailable":
     "No disponible hasta que cargue el estado de Core.",
-  "home.active.authorized": "Campañas autorizadas",
-  "home.active.awaiting": "Pendientes de autorización",
-  "home.active.running": "Agentes en ejecución",
-  "home.active.blocked": "Señales bloqueadas",
-  "home.active.events": "Eventos recientes",
-  "home.active.noEvents": "No hay eventos registrados.",
-  "home.decisions.title": "Decisiones pendientes",
+  "home.decisions.title": "Requiere tu atención",
   "home.decisions.open": "Abrir Decisiones",
   "home.decisions.noneTitle": "Nada requiere una decisión",
   "home.decisions.noneDescription":
-    "Las aprobaciones, las reparaciones de Gate y el uso sin resolver aparecen cuando Core los registra.",
+    "Las aprobaciones, reparaciones de la Puerta y el uso sin resolver aparecen cuando Core los registra.",
 
   "request.state.SUBMITTED": "Enviada",
   "request.state.ASSESSING": "Evaluando",
@@ -591,14 +595,6 @@ export const es: Catalog = {
   "lead.error.pathsEmpty": "Las rutas autorizadas no deben estar vacías.",
   "lead.error.authorizationIncomplete":
     "La autorización explícita está incompleta.",
-  "lead.validation.positiveInteger": "{name} debe ser un entero positivo.",
-  "lead.validation.attempts": "Intentos",
-  "lead.validation.sessions": "Sesiones",
-  "lead.validation.turns": "Turnos",
-  "lead.validation.inputTokens": "Tokens de entrada",
-  "lead.validation.outputTokens": "Tokens de salida",
-  "lead.validation.cost": "Coste",
-  "lead.validation.deadline": "Plazo",
   "lead.notice.submitted": "Solicitud de Lead {id} enviada.",
   "lead.notice.assessed": "Evaluación determinista del fixture registrada.",
   "lead.notice.frozen":
@@ -717,13 +713,8 @@ export const es: Catalog = {
   "lead.start.paths": "Rutas autorizadas (separadas por comas)",
   "lead.start.routeNote": "Ruta {route} · Delegación {delegation} · Riesgo R0",
   "lead.start.risk": "Riesgo",
-  "lead.start.attempts": "Intentos",
-  "lead.start.sessions": "Sesiones",
-  "lead.start.turns": "Turnos",
-  "lead.start.maxInputTokens": "Máx. tokens de entrada",
-  "lead.start.maxOutputTokens": "Máx. tokens de salida",
-  "lead.start.maxCost": "Coste máx. (microcostes)",
-  "lead.start.deadline": "Plazo (segundos)",
+  "lead.start.technicalLimits":
+    "Core aplica límites técnicos de operación V2 y supervisión determinista del progreso. No son topes de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña; la envolvente de la solicitud sigue siendo autoritativa para el gasto.",
   "lead.start.tools": "Herramientas permitidas (separadas por comas)",
   "lead.start.authorize": "Autorizar e iniciar Campaña",
   "lead.start.authorizing": "Autorizando…",
@@ -2237,7 +2228,7 @@ export const es: Catalog = {
     "Una decisión de Puerta requiere un Candidato y ambos recibos independientes.",
   "campaignDetail.budget.title": "Autorización, presupuesto y uso observado",
   "campaignDetail.budget.hint":
-    "Medido, no medido y autorizado son hechos distintos",
+    "Los límites V2 son por operación; los topes V1 son evidencia histórica",
   "campaignDetail.budget.actor": "actor {actor}",
   "campaignDetail.budget.execution": "Ejecución",
   "campaignDetail.budget.route": "Ruta",
@@ -2252,6 +2243,44 @@ export const es: Catalog = {
   "campaignDetail.budget.delegation": "Delegación",
   "campaignDetail.budget.authorizedPaths": "Rutas autorizadas",
   "campaignDetail.budget.allowedTools": "Herramientas permitidas",
+  "campaignDetail.budget.schemaVersion": "Versión de esquema",
+  "campaignDetail.budget.policyId": "Política",
+  "campaignDetail.budget.monetaryEnvelope": "Envolvente monetaria",
+  "campaignDetail.budget.scopeHash": "Hash del alcance",
+  "campaignDetail.budget.observedAttempts": "{count} observados",
+  "campaignDetail.budget.observedSessions": "{count} observadas",
+  "campaignDetail.budget.turnRecordsObserved":
+    "{count} registros con id de turno",
+  "campaignDetail.budget.tokensMeasured": "{count} medidos",
+  "campaignDetail.budget.costMeasured": "{amount} medido",
+  "campaignDetail.budget.operationsAria": "Límites técnicos de operación V2",
+  "campaignDetail.budget.operationsTitle": "Límites técnicos de operación (V2)",
+  "campaignDetail.budget.modelRequestTimeout":
+    "Tiempo máximo de solicitud de modelo",
+  "campaignDetail.budget.toolCallTimeout":
+    "Tiempo máximo de llamada a herramienta",
+  "campaignDetail.budget.maxRequestBytes": "Bytes máximos de solicitud",
+  "campaignDetail.budget.maxResponseBytes": "Bytes máximos de respuesta",
+  "campaignDetail.budget.maxGenerationTokens": "Tokens máximos de generación",
+  "campaignDetail.budget.maxInFlight": "Operaciones simultáneas máximas",
+  "campaignDetail.budget.progressTitle": "Supervisión del progreso",
+  "campaignDetail.budget.diagnoseAfter":
+    "Diagnosticar tras puntos de control estancados",
+  "campaignDetail.budget.escalateAfter":
+    "Escalar tras replanteamientos fallidos",
+  "campaignDetail.budget.observationTimeout": "Tiempo máximo de observación",
+  "campaignDetail.budget.seconds": "{count} s",
+  "campaignDetail.budget.bytes": "{count} bytes",
+  "campaignDetail.budget.legacyAria": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyTitle": "Evidencia histórica de topes V1",
+  "campaignDetail.budget.legacyHint":
+    "Estos campos son procedencia histórica de una autorización V1. La política de ejecución V2 no los aplica y Office no puede ampliarlos.",
+  "campaignDetail.budget.legacyTurns": "Máximo de turnos (V1)",
+  "campaignDetail.budget.legacyInputTokens": "Tokens máximos de entrada (V1)",
+  "campaignDetail.budget.legacyOutputTokens": "Tokens máximos de salida (V1)",
+  "campaignDetail.budget.legacyCost": "Coste máximo (V1)",
+  "campaignDetail.budget.missingPolicy":
+    "Esta autorización V2 no contiene su política de ejecución. Los datos de Core están incompletos; Office no inventará límites de operación.",
   "campaignDetail.budget.attempts": "Intentos",
   "campaignDetail.budget.sessions": "Sesiones",
   "campaignDetail.budget.observedAuthorized":
@@ -2273,7 +2302,7 @@ export const es: Catalog = {
     "{amount} techo de sesiones observadas, no gasto observado",
   "campaignDetail.budget.deadline": "Fecha límite",
   "campaignDetail.budget.note":
-    "Los totales medidos excluyen las sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Son registros de Core, no una factura.",
+    "Los totales medidos excluyen sesiones con uso desconocido. Las sesiones no medidas aportan un importe de reserva acotado, nunca un total observado de tokens o coste. Los límites de operación y umbrales de progreso V2 no son topes de productividad de la Campaña. Son registros de Core, no una factura.",
   "campaignDetail.budget.overBudget":
     "El uso medido supera la autorización registrada para {items}.",
   "campaignDetail.budget.noAuthorization":
@@ -2769,6 +2798,11 @@ export const es: Catalog = {
   "settings.provider.disabled": "deshabilitado",
   "settings.provider.defaultRoute": "ruta predeterminada",
   "settings.provider.model": "Modelo",
+  "settings.provider.currentModel": "Modelo actual",
+  "settings.provider.modelSelector": "Modelo",
+  "settings.provider.modelSelectorHelp":
+    "El selector muestra el modelo actual, el predeterminado del proveedor y los modelos descubiertos. Busca para acotar la lista.",
+  "settings.provider.modelCurrentSuffix": " (actual)",
   "settings.provider.endpoint": "Endpoint",
   "settings.provider.authModes": "Modos de autenticación",
   "settings.provider.chatgptOauth": "ChatGPT OAuth",
@@ -2807,8 +2841,6 @@ export const es: Catalog = {
     "No hay ningún descubrimiento de modelos registrado en este proceso de Core. Ejecuta el descubrimiento para leer el catálogo del proveedor.",
   "settings.provider.catalog.emptyUnconfigured":
     "No hay ningún descubrimiento de modelos registrado en este proceso de Core. Configura primero la conexión.",
-  "settings.provider.catalog.use": "Usar",
-  "settings.provider.catalog.selected": "seleccionado",
   "settings.provider.catalog.search": "Buscar modelos catalogados",
   "settings.provider.catalog.searchPlaceholder": "Filtrar por ID de modelo",
   "settings.provider.catalog.filtered":
@@ -2830,10 +2862,15 @@ export const es: Catalog = {
   "settings.provider.credentialPlaceholder": "clave API del proveedor",
   "settings.provider.credentialHelp":
     "Core cifra las credenciales, nunca las devuelve al navegador ni las muestra en las filas de auditoría.",
-  "settings.provider.advancedRoute": "Modelo y endpoint avanzados",
+  "settings.provider.advancedRoute": "Ruta manual avanzada",
   "settings.provider.advancedRouteHint":
-    "Usa un ID de modelo o endpoint manual solo cuando el proveedor no publique catálogo. Un modelo manual permanece sin verificar hasta que un catálogo del proveedor lo respalde.",
-  "settings.provider.advanced": "Límites avanzados de presupuesto y tarifas",
+    "Usa estos controles solo cuando el proveedor no publique catálogo o documente un endpoint obligatorio. Un modelo manual permanece sin verificar hasta que un catálogo del proveedor lo respalde.",
+  "settings.provider.manualModel":
+    "Avanzado: ID de modelo manual (sin verificar)",
+  "settings.provider.manualModelHelp":
+    "Core mantiene esta ruta sin verificar hasta que el proveedor anuncie el modelo exacto. Los usuarios normales pueden seleccionar arriba un modelo descubierto.",
+  "settings.provider.connectionDetails": "Detalles de conexión",
+  "settings.provider.advanced": "Límites técnicos y tarifas avanzados",
   "settings.provider.maxTurns": "Máximo de turnos",
   "settings.provider.maxCost": "Coste máximo (micros)",
   "settings.provider.maxInput": "Máximo de tokens de entrada",
@@ -2841,7 +2878,7 @@ export const es: Catalog = {
   "settings.provider.inputRate": "Micros de entrada / millón",
   "settings.provider.outputRate": "Micros de salida / millón",
   "settings.provider.advancedHint":
-    "Estos son valores predeterminados de la ruta del proveedor y límites de llamadas a modelo de Core. La autorización explícita de la Campaña sigue siendo autoritativa para las sesiones de proveedor; estos límites no la amplían. Una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
+    "Valores técnicos opcionales para esta ruta de proveedor. La autorización explícita de la Campaña sigue siendo autoritativa para las sesiones de proveedor; estos límites no la amplían. Una revisión de configuración del proveedor no reescribe los vínculos congelados de Campaña.",
   "settings.provider.enabledLabel": "Habilitado",
   "settings.provider.defaultLabel":
     "Ruta predeterminada para las llamadas a modelo de Core",
@@ -2916,7 +2953,7 @@ export const es: Catalog = {
 
   "execProfiles.title": "Perfiles de ejecución ({count})",
   "execProfiles.description":
-    "Configuración versionada del operador para los roles respaldados por modelos. Un perfil no es una autorización ni una concesión de capacidades.",
+    "Configuración versionada del operador para los roles respaldados por modelos. Elige un perfil, revisa sus rutas y mantén los límites técnicos de operación en Avanzado. Un perfil no es una autorización ni una concesión de capacidades.",
   "execProfiles.newProfile": "Nuevo perfil",
   "execProfiles.refresh": "Actualizar",
   "execProfiles.meta":
@@ -2964,6 +3001,10 @@ export const es: Catalog = {
   "execProfiles.notice.globalDefaultCleared": "Predeterminado global borrado.",
   "execProfiles.notice.projectDefaultCleared":
     "Predeterminado del Proyecto borrado.",
+  "execProfiles.category.BUDGET": "Económico",
+  "execProfiles.category.BALANCED": "Equilibrado",
+  "execProfiles.category.QUALITY": "Máxima calidad",
+  "execProfiles.category.CUSTOM": "Personalizado",
   "execProfiles.role.lead": "Lead",
   "execProfiles.role.leadResponsibility":
     "Evaluación semántica y propuesta de plan",
@@ -2987,26 +3028,10 @@ export const es: Catalog = {
     "El ID de modelo debe tener como máximo 128 caracteres.",
   "execProfiles.validation.modelWhitespace":
     "El ID de modelo no debe contener espacios en blanco.",
-  "execProfiles.validation.roleInputRange":
-    "El máximo de tokens de entrada de {role} debe estar entre 1 y 1.000.000.",
-  "execProfiles.validation.roleOutputRange":
-    "El máximo de tokens de salida de {role} debe estar entre 1 y 100.000.",
-  "execProfiles.validation.roleCostRange":
-    "El coste máximo en micros de {role} debe estar entre 1 y 100.000.000.",
-  "execProfiles.validation.maxAttempts":
-    "El máximo de intentos debe estar entre 1 y 10.",
-  "execProfiles.validation.maxSessions":
-    "El máximo de sesiones debe estar entre 1 y 16.",
-  "execProfiles.validation.maxTurns":
-    "El máximo de turnos debe estar entre 1 y 16.",
-  "execProfiles.validation.maxInput":
-    "El máximo de tokens de entrada de la Campaña debe estar entre 1 y 1.000.000.",
-  "execProfiles.validation.maxOutput":
-    "El máximo de tokens de salida de la Campaña debe estar entre 1 y 100.000.",
-  "execProfiles.validation.maxCost":
-    "El coste máximo en micros de la Campaña debe estar entre 1 y 100.000.000.",
-  "execProfiles.validation.deadline":
-    "Los segundos de fecha límite de la Campaña deben estar entre 30 y 86.400.",
+  "execProfiles.validation.operationRange":
+    "{field} debe estar entre {min} y {max}.",
+  "execProfiles.validation.progressRange":
+    "{field} debe estar entre {min} y {max}.",
   "execProfiles.warning.unknownProvider":
     "El proveedor de {role} no es una conexión configurada de Core; este perfil sigue siendo un borrador no ejecutable.",
   "execProfiles.warning.unconfiguredProvider":
@@ -3050,21 +3075,20 @@ export const es: Catalog = {
   "execProfiles.editor.reload": "Recargar revisión actual",
   "execProfiles.editor.draftWarning":
     "Este borrador no es ejecutable. Core rechaza vincular o usar un perfil hasta que se sustente cada ruta de rol.",
+  "execProfiles.editor.legacyV1":
+    "Esta es una revisión V1 histórica. Al guardarla se escribe una nueva revisión V2 con los valores técnicos predeterminados de Avanzado; los antiguos topes de turnos, intentos, sesiones, tokens, coste y fecha límite no se trasladan.",
   "execProfiles.editor.name": "Nombre",
   "execProfiles.editor.category": "Categoría",
   "execProfiles.editor.profileDescription": "Descripción",
   "execProfiles.matrix.aria": "Matriz de roles",
   "execProfiles.matrix.title": "Matriz de roles",
   "execProfiles.matrix.hint":
-    "Cada rol resuelve su propia conexión de proveedor y modelo. El Verificador determinista no es un rol del perfil.",
+    "Cada rol resuelve su propia conexión de proveedor, modelo y razonamiento. Estas rutas son la configuración normal; el Verificador determinista no es un rol del perfil.",
   "execProfiles.matrix.refresh": "Actualizar catálogo de modelos",
   "execProfiles.matrix.role": "Rol",
   "execProfiles.matrix.provider": "Proveedor",
   "execProfiles.matrix.model": "Modelo",
   "execProfiles.matrix.reasoning": "Razonamiento",
-  "execProfiles.matrix.maxInput": "Entrada máx.",
-  "execProfiles.matrix.maxOutput": "Salida máx.",
-  "execProfiles.matrix.maxCost": "Coste máx. µ",
   "execProfiles.matrix.providerLabel": "Proveedor de {role}",
   "execProfiles.matrix.notConfigured": "{provider} (no configurado)",
   "execProfiles.matrix.discovering": "Descubriendo modelos…",
@@ -3089,20 +3113,28 @@ export const es: Catalog = {
     "Avanzado: ID de modelo manual de {role} (sin verificar)",
   "execProfiles.matrix.reasoningLabel": "Razonamiento de {role}",
   "execProfiles.matrix.providerDefault": "Predeterminado del proveedor",
-  "execProfiles.matrix.maxInputLabel": "Máximo de tokens de entrada de {role}",
-  "execProfiles.matrix.maxOutputLabel": "Máximo de tokens de salida de {role}",
-  "execProfiles.matrix.maxCostLabel": "Coste máximo en micros de {role}",
-  "execProfiles.budgets.aria": "Presupuestos de Campaña",
-  "execProfiles.budgets.title": "Presupuestos de Campaña",
-  "execProfiles.budgets.hint":
-    "Se congelan en la autorización de una Campaña; un modelo no puede ampliarlos.",
-  "execProfiles.budgets.maxAttempts": "Máximo de intentos",
-  "execProfiles.budgets.maxSessions": "Máximo de sesiones",
-  "execProfiles.budgets.maxTurns": "Máximo de turnos",
-  "execProfiles.budgets.maxInput": "Máximo de tokens de entrada de la Campaña",
-  "execProfiles.budgets.maxOutput": "Máximo de tokens de salida de la Campaña",
-  "execProfiles.budgets.maxCost": "Coste máximo en micros de la Campaña",
-  "execProfiles.budgets.deadline": "Segundos de fecha límite de la Campaña",
+  "execProfiles.advanced.title": "Límites técnicos avanzados de operación",
+  "execProfiles.advanced.hint":
+    "Opcional. Estos límites por operación y umbrales de progreso no son presupuestos de turnos, intentos, sesiones, tokens, coste ni fecha límite de Campaña. Core los aplica por seguridad.",
+  "execProfiles.operations.modelRequestTimeout":
+    "Tiempo máximo de solicitud de modelo (s)",
+  "execProfiles.operations.modelRequestTimeoutHelp":
+    "Duración máxima de una solicitud de modelo, no una fecha límite de Campaña.",
+  "execProfiles.operations.toolCallTimeout":
+    "Tiempo máximo de llamada a herramienta (s)",
+  "execProfiles.operations.maxRequestBytes": "Bytes máximos de solicitud",
+  "execProfiles.operations.maxResponseBytes": "Bytes máximos de respuesta",
+  "execProfiles.operations.maxGenerationTokens": "Tokens máximos de generación",
+  "execProfiles.operations.maxInFlight": "Operaciones simultáneas máximas",
+  "execProfiles.progress.title": "Supervisión del progreso",
+  "execProfiles.progress.hint":
+    "Estos umbrales activan diagnóstico o escalado. No detienen trabajo legítimo por sí solos.",
+  "execProfiles.progress.diagnoseAfter":
+    "Diagnosticar tras puntos de control estancados",
+  "execProfiles.progress.escalateAfter":
+    "Escalar tras replanteamientos fallidos",
+  "execProfiles.progress.observationTimeout":
+    "Tiempo máximo de observación (s)",
   "execProfiles.autoStart.aria": "Política de inicio autónomo",
   "execProfiles.autoStart.title": "Política de inicio autónomo",
   "execProfiles.autoStart.hint":

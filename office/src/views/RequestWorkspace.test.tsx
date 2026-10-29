@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  type CampaignAuthorization,
   CoreApiError,
   type FrozenLeadPlanRecord,
   type IntakeRequestProjection,
@@ -492,5 +493,70 @@ describe("RequestWorkspace", () => {
     expect(
       screen.getByRole("link", { name: "Back to Home" }).getAttribute("href"),
     ).toBe("/");
+  });
+
+  it("renders the camelCase V2 authorization risk, mode and route", async () => {
+    const authorization: CampaignAuthorization = {
+      campaignId: "campaign-1",
+      authorizationId: "authorization-1",
+      riskClass: "R0",
+      executionMode: "TRUSTED_LOCAL_PROVIDER",
+      actor: "fixture-owner",
+      rationale: "Fixture V2 authorization.",
+      authorizedPaths: ["src"],
+      provider: "opencode-go",
+      model: "deepseek-v4.1-flash",
+      providerMode: "build",
+      delegationId: "delegation-1",
+      allowedTools: [],
+      schemaVersion: 2,
+      policy: {
+        policyId: "policy-1",
+        authorizationId: "authorization-1",
+        monetaryEnvelopeId: "envelope-1",
+        scopeSha256: "a".repeat(64),
+        operations: {
+          modelRequestTimeoutSecs: 300,
+          toolCallTimeoutSecs: 600,
+          maxRequestBytes: 2097152,
+          maxResponseBytes: 2097152,
+          maxGenerationTokens: 8192,
+          maxInFlightOperations: 4,
+        },
+        progress: {
+          diagnoseAfterStagnantCheckpoints: 2,
+          escalateAfterUnsuccessfulReplans: 1,
+          observationTimeoutSecs: 300,
+        },
+      },
+      legacy: null,
+      createdAt: "2026-10-29T10:00:00Z",
+    };
+    mocks.getIntakeRequest.mockResolvedValue(
+      makeProjection({
+        campaignId: "campaign-1",
+        campaign: {
+          campaign: {
+            id: "campaign-1",
+            action_id: "action-1",
+            status: "AUTHORIZED",
+            created_at: "2026-10-29T10:00:00Z",
+          },
+          authorization,
+          tasks: [],
+          runs: [],
+          attempts: [],
+          candidates: [],
+          events: [],
+        },
+      }),
+    );
+    renderRequest();
+    expect(
+      await screen.findByText(
+        "R0 · TRUSTED_LOCAL_PROVIDER · opencode-go/deepseek-v4.1-flash",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText(/undefined/)).toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Button } from "../components/ui/Button";
-import { Checkbox, Input } from "../components/ui/Field";
+import { Checkbox, Input, Select } from "../components/ui/Field";
 import {
   EmptyState,
   ErrorState,
@@ -31,6 +31,18 @@ function resolveTab(value: string | null): SettingsTab {
   return TABS.includes(value as SettingsTab)
     ? (value as SettingsTab)
     : "providers";
+}
+
+function uniqueModels(models: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of models) {
+    if (model !== "" && !seen.has(model)) {
+      seen.add(model);
+      result.push(model);
+    }
+  }
+  return result;
 }
 
 function VerificationStep({
@@ -190,12 +202,20 @@ function ProviderCard({
     }
   }
 
+  const catalogModels = catalog?.status === "AVAILABLE" ? catalog.models : [];
+  const search = modelFilter.trim().toLowerCase();
   const filteredModels =
-    catalog?.status === "AVAILABLE"
-      ? catalog.models.filter((candidate) =>
-          candidate.toLowerCase().includes(modelFilter.trim().toLowerCase()),
-        )
-      : [];
+    search === ""
+      ? catalogModels
+      : catalogModels.filter((candidate) =>
+          candidate.toLowerCase().includes(search),
+        );
+  const selectableModels = uniqueModels([
+    model,
+    ...(search === ""
+      ? [provider.model, provider.defaultModel, ...catalogModels]
+      : filteredModels),
+  ]);
   const credentialStatus = !provider.configured
     ? "NOT_CONFIGURED"
     : catalog?.status === "CREDENTIAL_REJECTED"
@@ -238,36 +258,10 @@ function ProviderCard({
         </div>
       </div>
 
-      <dl className="overview-facts">
-        <div>
-          <dt>{t("settings.provider.model")}</dt>
-          <dd>{provider.model}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.provider.endpoint")}</dt>
-          <dd>
-            <code>{provider.baseUrl}</code>
-          </dd>
-        </div>
-        <div>
-          <dt>{t("settings.provider.authModes")}</dt>
-          <dd>{provider.authModes.join(", ")}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.provider.chatgptOauth")}</dt>
-          <dd>
-            <StatusBadge status={provider.chatgptOauth} />
-          </dd>
-        </div>
-        <div>
-          <dt>{t("settings.provider.revision")}</dt>
-          <dd>{provider.revision}</dd>
-        </div>
-        <div>
-          <dt>{t("settings.provider.updated")}</dt>
-          <dd>{formatTimestamp(provider.updatedAt)}</dd>
-        </div>
-      </dl>
+      <p className="settings-provider-current">
+        <span className="muted">{t("settings.provider.currentModel")}</span>{" "}
+        <code>{provider.model}</code>
+      </p>
 
       <section
         className="verification-path"
@@ -324,6 +318,40 @@ function ProviderCard({
             {discoveryError}
           </p>
         )}
+        {catalog?.status === "AVAILABLE" && catalog.models.length > 0 && (
+          <>
+            <Input
+              label={t("settings.provider.catalog.search")}
+              value={modelFilter}
+              onChange={(event) => setModelFilter(event.target.value)}
+              placeholder={t("settings.provider.catalog.searchPlaceholder")}
+            />
+            <p className="muted">
+              {t("settings.provider.catalog.filtered", {
+                shown: filteredModels.length,
+                total: catalog.models.length,
+              })}
+            </p>
+          </>
+        )}
+        <Select
+          label={t("settings.provider.modelSelector")}
+          value={model}
+          onChange={(event) => setModel(event.target.value)}
+          help={t("settings.provider.modelSelectorHelp")}
+        >
+          {selectableModels.map((candidate) => (
+            <option key={candidate} value={candidate}>
+              {candidate}
+              {candidate === provider.model
+                ? t("settings.provider.modelCurrentSuffix")
+                : ""}
+            </option>
+          ))}
+        </Select>
+        {search !== "" && filteredModels.length === 0 && (
+          <p className="muted">{t("settings.provider.catalog.noMatches")}</p>
+        )}
         {catalog === null ? (
           <p className="muted">
             {provider.configured
@@ -354,61 +382,8 @@ function ProviderCard({
                 <p>{t("settings.provider.catalog.endpointUnsupported")}</p>
               </div>
             )}
-            {catalog.status === "AVAILABLE" ? (
-              catalog.models.length > 0 ? (
-                <>
-                  <Input
-                    label={t("settings.provider.catalog.search")}
-                    value={modelFilter}
-                    onChange={(event) => setModelFilter(event.target.value)}
-                    placeholder={t(
-                      "settings.provider.catalog.searchPlaceholder",
-                    )}
-                  />
-                  <p className="muted">
-                    {t("settings.provider.catalog.filtered", {
-                      shown: filteredModels.length,
-                      total: catalog.models.length,
-                    })}
-                  </p>
-                  {filteredModels.length === 0 ? (
-                    <p className="muted">
-                      {t("settings.provider.catalog.noMatches")}
-                    </p>
-                  ) : (
-                    <ul className="settings-model-catalog">
-                      {filteredModels.map((discovered) => (
-                        <li key={discovered}>
-                          <code>{discovered}</code>
-                          {model === discovered && (
-                            <StatusBadge
-                              status="CURRENT"
-                              label={t("settings.provider.catalog.selected")}
-                            />
-                          )}
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => setModel(discovered)}
-                          >
-                            {t("settings.provider.catalog.use")}
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </>
-              ) : (
-                <p className="muted">
-                  {t("settings.provider.catalog.noModels")}
-                </p>
-              )
-            ) : (
-              catalog.status !== "ENDPOINT_UNSUPPORTED" && (
-                <p className="muted">
-                  {t("settings.provider.catalog.noModels")}
-                </p>
-              )
+            {catalog.status === "AVAILABLE" && catalog.models.length === 0 && (
+              <p className="muted">{t("settings.provider.catalog.noModels")}</p>
             )}
             {catalog.lastKnown && (
               <p className="muted">
@@ -453,18 +428,52 @@ function ProviderCard({
           <p className="muted">{t("settings.provider.advancedRouteHint")}</p>
           <div className="grid-2">
             <Input
-              label={t("settings.provider.model")}
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              required
-            />
-            <Input
               label={t("settings.provider.baseUrl")}
               value={baseUrl}
               onChange={(event) => setBaseUrl(event.target.value)}
               required
             />
+            <Input
+              label={t("settings.provider.manualModel")}
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              help={t("settings.provider.manualModelHelp")}
+              required
+            />
           </div>
+        </details>
+        <details className="settings-advanced">
+          <summary>{t("settings.provider.connectionDetails")}</summary>
+          <dl className="overview-facts">
+            <div>
+              <dt>{t("settings.provider.model")}</dt>
+              <dd>{provider.model}</dd>
+            </div>
+            <div>
+              <dt>{t("settings.provider.endpoint")}</dt>
+              <dd>
+                <code>{provider.baseUrl}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>{t("settings.provider.authModes")}</dt>
+              <dd>{provider.authModes.join(", ")}</dd>
+            </div>
+            <div>
+              <dt>{t("settings.provider.chatgptOauth")}</dt>
+              <dd>
+                <StatusBadge status={provider.chatgptOauth} />
+              </dd>
+            </div>
+            <div>
+              <dt>{t("settings.provider.revision")}</dt>
+              <dd>{provider.revision}</dd>
+            </div>
+            <div>
+              <dt>{t("settings.provider.updated")}</dt>
+              <dd>{formatTimestamp(provider.updatedAt)}</dd>
+            </div>
+          </dl>
         </details>
         <details className="settings-advanced">
           <summary>{t("settings.provider.advanced")}</summary>

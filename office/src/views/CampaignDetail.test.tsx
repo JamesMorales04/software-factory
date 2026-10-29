@@ -2,7 +2,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Action, CampaignDetail as CampaignDetailData } from "../coreApi";
+import type {
+  Action,
+  CampaignAuthorization,
+  CampaignDetail as CampaignDetailData,
+} from "../coreApi";
 import { CampaignDetail } from "./CampaignDetail";
 
 const mocks = vi.hoisted(() => ({
@@ -48,6 +52,60 @@ const action: Action = {
     allowed_paths: ["src"],
     checks: [],
   },
+};
+
+const v2Authorization: CampaignAuthorization = {
+  campaignId: "c1",
+  authorizationId: "authorization-1",
+  riskClass: "R0",
+  executionMode: "TRUSTED_LOCAL_PROVIDER",
+  actor: "Wave 3 fixture owner",
+  rationale: "Fixture-only V2 authorization evidence.",
+  authorizedPaths: [],
+  provider: "opencode-go",
+  model: "deepseek-v4.1-flash",
+  providerMode: "build",
+  delegationId: "delegation-1",
+  allowedTools: [],
+  schemaVersion: 2,
+  policy: {
+    policyId: "policy-1",
+    authorizationId: "authorization-1",
+    monetaryEnvelopeId: "envelope-1",
+    scopeSha256: "a".repeat(64),
+    operations: {
+      modelRequestTimeoutSecs: 300,
+      toolCallTimeoutSecs: 600,
+      maxRequestBytes: 2097152,
+      maxResponseBytes: 2097152,
+      maxGenerationTokens: 8192,
+      maxInFlightOperations: 4,
+    },
+    progress: {
+      diagnoseAfterStagnantCheckpoints: 2,
+      escalateAfterUnsuccessfulReplans: 1,
+      observationTimeoutSecs: 300,
+    },
+  },
+  legacy: null,
+  createdAt: "2026-10-29T10:00:00Z",
+};
+
+const legacyAuthorization: CampaignAuthorization = {
+  ...v2Authorization,
+  authorizationId: "legacy-authorization-1",
+  schemaVersion: 1,
+  policy: null,
+  legacy: {
+    maxAttempts: 2,
+    maxSessions: 4,
+    maxTurns: 6,
+    maxInputTokens: 40000,
+    maxOutputTokens: 12000,
+    maxCostMicros: 500000,
+    deadlineSecs: 600,
+  },
+  createdAt: "2026-10-27T10:00:00Z",
 };
 
 const detail: CampaignDetailData = {
@@ -276,5 +334,65 @@ describe("CampaignDetail", () => {
     await screen.findByTestId("candidate-diff");
     expect(screen.getByTestId("candidate-pr")).toBeDefined();
     expect(screen.getByText(/not bound to a GitHub repository/)).toBeDefined();
+  });
+
+  it("renders the V2 policy operations and progress without legacy joins crashing", async () => {
+    mocks.getCampaignDetail.mockResolvedValue({
+      ...detail,
+      authorization: v2Authorization,
+    });
+    renderCampaign("/campaigns/c1?tab=budget");
+    await screen.findByRole("heading", {
+      name: "Authorization, budget and observed usage",
+    });
+    expect(screen.getByText("Schema version")).toBeDefined();
+    expect(screen.getByText("policy-1")).toBeDefined();
+    expect(screen.getByText("envelope-1")).toBeDefined();
+    expect(screen.getByText("Model request timeout")).toBeDefined();
+    expect(screen.getAllByText("300 s").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("2,097,152 bytes").length).toBe(2);
+    expect(screen.getByText("Progress supervision")).toBeDefined();
+    expect(
+      screen.getByText("Diagnose after stagnant checkpoints"),
+    ).toBeDefined();
+    expect(screen.queryByText("Historical V1 cap evidence")).toBeNull();
+    expect(screen.getAllByText("none").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders only the legacy V1 cap evidence when the authorization is historical", async () => {
+    mocks.getCampaignDetail.mockResolvedValue({
+      ...detail,
+      authorization: legacyAuthorization,
+    });
+    renderCampaign("/campaigns/c1?tab=budget");
+    await screen.findByRole("heading", {
+      name: "Authorization, budget and observed usage",
+    });
+    expect(screen.getByText("Historical V1 cap evidence")).toBeDefined();
+    expect(screen.getByText("Max turns (V1)")).toBeDefined();
+    expect(screen.getByText("6")).toBeDefined();
+    expect(screen.queryByText("Technical operation limits (V2)")).toBeNull();
+  });
+
+  it("does not call join on missing V2 arrays or synthesize a missing policy", async () => {
+    mocks.getCampaignDetail.mockResolvedValue({
+      ...detail,
+      authorization: {
+        ...v2Authorization,
+        authorizedPaths: undefined as unknown as string[],
+        allowedTools: undefined as unknown as string[],
+        policy: null,
+      },
+    });
+    renderCampaign("/campaigns/c1?tab=budget");
+    await screen.findByRole("heading", {
+      name: "Authorization, budget and observed usage",
+    });
+    expect(
+      screen.getByText(
+        "This V2 authorization does not contain its execution policy. Core data is incomplete; Office will not invent operation limits.",
+      ),
+    ).toBeDefined();
+    expect(screen.getAllByText("none").length).toBeGreaterThanOrEqual(2);
   });
 });

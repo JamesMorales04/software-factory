@@ -93,13 +93,16 @@ export const en = {
 
   "home.title": "Home",
   "home.description":
-    "Describe the engineering outcome. Core derives the Action, Lead request, plan and Campaign authorization; Office never grants that authority.",
-  "home.meta.flow": "Project → request → profile → mode",
+    "Describe the outcome you want. The Factory assesses it, proposes a plan and waits for your approval before any work starts.",
+  "home.meta.flow": "Project → outcome → profile → authorization",
   "home.meta.durable": "Requests are durable Core records",
   "home.projects.error": "Projects could not be loaded from Core.",
   "home.projects.retry": "Retry projects",
   "home.newRequest.title": "New request",
   "home.newRequest.hint": "Operator intent, not an Action spec",
+  "home.composer.title": "What should the Factory work on?",
+  "home.composer.description":
+    "Write the engineering outcome in plain language. Pick a Project and an execution profile, authorize an inference amount and submit the request. Core freezes the plan; nothing executes until you approve it.",
   "home.projects.loading": "Loading Projects…",
   "home.projects.emptyTitle": "Register a Project first",
   "home.projects.emptyDescription":
@@ -117,7 +120,9 @@ export const en = {
     "Plain language is enough. Core freezes the concrete plan and checks after assessment.",
   "home.profile.label": "Execution profile",
   "home.profile.help":
-    "Profiles bind provider/model routes, budgets and limits. Core freezes the exact revision; every intake still requires explicit operator approval.",
+    "Choose how Lead, Implementer and Semantic Reviewer work. Technical operation limits stay in the profile's advanced settings.",
+  "home.profile.routesHint":
+    "These routes are part of the profile revision Core freezes for this request.",
   "home.profile.coreDefaultUnavailable":
     "Core default (profile list unavailable)",
   "home.profile.loading": "Loading profiles…",
@@ -152,12 +157,14 @@ export const en = {
   "home.policy.risk": "risk {classes}",
   "home.policy.autonomous": "autonomous start enabled",
   "home.policy.nonAutonomous": "non-autonomous; explicit approval required",
-  "home.policy.perRequest": "Per-request limits",
-  "home.policy.perRequestValue":
-    "{attempts} attempts · {sessions} sessions · {turns} turns · {inputTokens} input tokens · {outputTokens} output tokens · {costMicros} cost micros · {timeout}s timeout · {wallClock}s wall clock",
-  "home.policy.cumulative": "Cumulative grant limits",
-  "home.policy.cumulativeValue":
-    "{requests} requests · {sessions} sessions · {attempts} attempts · valid {days} days · {repairCycles} repair cycles · {parallel} parallel",
+  "home.policy.grantLifetime": "Grant lifetime",
+  "home.policy.grantLifetimeValue":
+    "Valid {days} days · {parallel} concurrent implementation operation",
+  "home.policy.inferenceEnvelope": "Inference envelope",
+  "home.policy.inferenceEnvelopeValue":
+    "USD {amount} for assessment, implementation and review",
+  "home.policy.technical":
+    "Core also enforces per-operation timeouts, request/response bounds, generation limits and deterministic progress supervision. These are technical safety limits, not turn, attempt, session or campaign deadlines.",
   "home.policy.scopeMissing":
     "Core required an execution policy but did not return the exact profile and Project scope. Refresh the page and try again.",
   "home.policy.acknowledge":
@@ -169,6 +176,8 @@ export const en = {
   "home.spend.label": "Maximum inference spend (USD)",
   "home.spend.help":
     "One explicit amount covers the Lead assessment, implementation and review. Core stops billable calls when it is exhausted and asks for an increase.",
+  "home.spend.note":
+    "This is the only spend amount required. Advanced cost and token limits stay in the execution profile's technical settings.",
   "home.validation.authorization":
     "Enter a positive USD amount for the inference envelope.",
   "home.validation.objective": "Describe the engineering outcome you want.",
@@ -201,18 +210,13 @@ export const en = {
     "Latest refresh failed: {error}. Showing the last authoritative snapshot.",
   "home.status.retryNow": "Retry now",
   "home.status.workers": "Workers",
+  "home.status.runningAgents": "Running agents",
   "home.status.unresolvedSessions": "Unresolved sessions",
   "home.status.unresolvedModelCalls": "Unresolved model calls",
-  "home.status.telemetry": "Telemetry export",
-  "home.active.title": "Active work",
+  "home.status.openRuntime": "Open Runtime",
+  "home.status.openOverview": "Open Overview",
   "home.active.unavailable": "Unavailable until Core status loads.",
-  "home.active.authorized": "Authorized campaigns",
-  "home.active.awaiting": "Awaiting authorization",
-  "home.active.running": "Running agents",
-  "home.active.blocked": "Blocked signals",
-  "home.active.events": "Recent events",
-  "home.active.noEvents": "No events recorded.",
-  "home.decisions.title": "Pending decisions",
+  "home.decisions.title": "Needs your attention",
   "home.decisions.open": "Open Decisions",
   "home.decisions.noneTitle": "Nothing needs a decision",
   "home.decisions.noneDescription":
@@ -575,14 +579,6 @@ export const en = {
   "lead.error.proposalUnavailable": "The frozen proposal is unavailable.",
   "lead.error.pathsEmpty": "Authorized paths must not be empty.",
   "lead.error.authorizationIncomplete": "Explicit authorization is incomplete.",
-  "lead.validation.positiveInteger": "{name} must be a positive integer.",
-  "lead.validation.attempts": "Attempts",
-  "lead.validation.sessions": "Sessions",
-  "lead.validation.turns": "Turns",
-  "lead.validation.inputTokens": "Input tokens",
-  "lead.validation.outputTokens": "Output tokens",
-  "lead.validation.cost": "Cost",
-  "lead.validation.deadline": "Deadline",
   "lead.notice.submitted": "Lead request {id} submitted.",
   "lead.notice.assessed": "Deterministic fixture assessment recorded.",
   "lead.notice.frozen":
@@ -699,13 +695,8 @@ export const en = {
   "lead.start.paths": "Authorized paths (comma separated)",
   "lead.start.routeNote": "Route {route} · Delegation {delegation} · Risk R0",
   "lead.start.risk": "Risk",
-  "lead.start.attempts": "Attempts",
-  "lead.start.sessions": "Sessions",
-  "lead.start.turns": "Turns",
-  "lead.start.maxInputTokens": "Max input tokens",
-  "lead.start.maxOutputTokens": "Max output tokens",
-  "lead.start.maxCost": "Max cost (micros)",
-  "lead.start.deadline": "Deadline (seconds)",
+  "lead.start.technicalLimits":
+    "Core enforces V2 technical operation limits and deterministic progress supervision. These are not turn, attempt, session, token, cost or Campaign deadline caps; the request envelope remains authoritative for spend.",
   "lead.start.tools": "Allowed tools (comma separated)",
   "lead.start.authorize": "Authorize and start Campaign",
   "lead.start.authorizing": "Authorizing…",
@@ -2159,7 +2150,7 @@ export const en = {
     "A Gate decision requires a Candidate and both independent receipts.",
   "campaignDetail.budget.title": "Authorization, budget and observed usage",
   "campaignDetail.budget.hint":
-    "Measured, unmeasured and authorized are separate facts",
+    "V2 policy bounds are per-operation; V1 ceilings are historical evidence",
   "campaignDetail.budget.actor": "actor {actor}",
   "campaignDetail.budget.execution": "Execution",
   "campaignDetail.budget.route": "Route",
@@ -2174,6 +2165,39 @@ export const en = {
   "campaignDetail.budget.delegation": "Delegation",
   "campaignDetail.budget.authorizedPaths": "Authorized paths",
   "campaignDetail.budget.allowedTools": "Allowed tools",
+  "campaignDetail.budget.schemaVersion": "Schema version",
+  "campaignDetail.budget.policyId": "Policy",
+  "campaignDetail.budget.monetaryEnvelope": "Monetary envelope",
+  "campaignDetail.budget.scopeHash": "Scope hash",
+  "campaignDetail.budget.observedAttempts": "{count} observed",
+  "campaignDetail.budget.observedSessions": "{count} observed",
+  "campaignDetail.budget.turnRecordsObserved": "{count} records with a turn id",
+  "campaignDetail.budget.tokensMeasured": "{count} measured",
+  "campaignDetail.budget.costMeasured": "{amount} measured",
+  "campaignDetail.budget.operationsAria": "V2 technical operation limits",
+  "campaignDetail.budget.operationsTitle": "Technical operation limits (V2)",
+  "campaignDetail.budget.modelRequestTimeout": "Model request timeout",
+  "campaignDetail.budget.toolCallTimeout": "Tool call timeout",
+  "campaignDetail.budget.maxRequestBytes": "Max request bytes",
+  "campaignDetail.budget.maxResponseBytes": "Max response bytes",
+  "campaignDetail.budget.maxGenerationTokens": "Max generation tokens",
+  "campaignDetail.budget.maxInFlight": "Max in-flight operations",
+  "campaignDetail.budget.progressTitle": "Progress supervision",
+  "campaignDetail.budget.diagnoseAfter": "Diagnose after stagnant checkpoints",
+  "campaignDetail.budget.escalateAfter": "Escalate after unsuccessful replans",
+  "campaignDetail.budget.observationTimeout": "Observation timeout",
+  "campaignDetail.budget.seconds": "{count} s",
+  "campaignDetail.budget.bytes": "{count} bytes",
+  "campaignDetail.budget.legacyAria": "Historical V1 cap evidence",
+  "campaignDetail.budget.legacyTitle": "Historical V1 cap evidence",
+  "campaignDetail.budget.legacyHint":
+    "These fields are historical provenance from a V1 authorization. They are not enforced by the V2 execution policy and cannot be widened by Office.",
+  "campaignDetail.budget.legacyTurns": "Max turns (V1)",
+  "campaignDetail.budget.legacyInputTokens": "Max input tokens (V1)",
+  "campaignDetail.budget.legacyOutputTokens": "Max output tokens (V1)",
+  "campaignDetail.budget.legacyCost": "Max cost (V1)",
+  "campaignDetail.budget.missingPolicy":
+    "This V2 authorization does not contain its execution policy. Core data is incomplete; Office will not invent operation limits.",
   "campaignDetail.budget.attempts": "Attempts",
   "campaignDetail.budget.sessions": "Sessions",
   "campaignDetail.budget.observedAuthorized":
@@ -2195,7 +2219,7 @@ export const en = {
     "{amount} observed-session ceiling, not observed spend",
   "campaignDetail.budget.deadline": "Deadline",
   "campaignDetail.budget.note":
-    "Measured totals exclude usage-unknown sessions. Unmeasured sessions contribute a bounded reservation amount, never an observed token or cost total. These are Core records, not a billing statement.",
+    "Measured totals exclude usage-unknown sessions. Unmeasured sessions contribute a bounded reservation amount, never an observed token or cost total. V2 operation limits and progress thresholds are not Campaign productivity caps. These are Core records, not a billing statement.",
   "campaignDetail.budget.overBudget":
     "Measured usage exceeds the recorded authorization for {items}.",
   "campaignDetail.budget.noAuthorization":
@@ -2669,6 +2693,11 @@ export const en = {
   "settings.provider.disabled": "disabled",
   "settings.provider.defaultRoute": "default route",
   "settings.provider.model": "Model",
+  "settings.provider.currentModel": "Current model",
+  "settings.provider.modelSelector": "Model",
+  "settings.provider.modelSelectorHelp":
+    "The selector lists the current model, the provider default and models discovered from the provider. Search to narrow the list.",
+  "settings.provider.modelCurrentSuffix": " (current)",
   "settings.provider.endpoint": "Endpoint",
   "settings.provider.authModes": "Auth modes",
   "settings.provider.chatgptOauth": "ChatGPT OAuth",
@@ -2707,8 +2736,6 @@ export const en = {
     "No model discovery is recorded in this Core process. Run discovery to read the provider catalog.",
   "settings.provider.catalog.emptyUnconfigured":
     "No model discovery is recorded in this Core process. Configure the connection first.",
-  "settings.provider.catalog.use": "Use",
-  "settings.provider.catalog.selected": "selected",
   "settings.provider.catalog.search": "Search catalogued models",
   "settings.provider.catalog.searchPlaceholder": "Filter by model ID",
   "settings.provider.catalog.filtered":
@@ -2730,10 +2757,14 @@ export const en = {
   "settings.provider.credentialPlaceholder": "provider API key",
   "settings.provider.credentialHelp":
     "Credentials are encrypted by Core, never returned to the browser and never rendered in audit rows.",
-  "settings.provider.advancedRoute": "Advanced model and endpoint",
+  "settings.provider.advancedRoute": "Advanced manual route",
   "settings.provider.advancedRouteHint":
-    "Use a raw model ID or endpoint only when the provider publishes no catalog. A manual model stays unverified until the provider catalog substantiates it.",
-  "settings.provider.advanced": "Advanced budget and rate limits",
+    "Use these controls only when the provider publishes no catalog or documents a required endpoint. A manual model stays unverified until the provider catalog substantiates it.",
+  "settings.provider.manualModel": "Advanced: manual model ID (unverified)",
+  "settings.provider.manualModelHelp":
+    "Core keeps this route unverified until the provider advertises the exact model. Ordinary users can select a discovered model above instead.",
+  "settings.provider.connectionDetails": "Connection details",
+  "settings.provider.advanced": "Advanced technical limits and rates",
   "settings.provider.maxTurns": "Max turns",
   "settings.provider.maxCost": "Max cost (micros)",
   "settings.provider.maxInput": "Max input tokens",
@@ -2741,7 +2772,7 @@ export const en = {
   "settings.provider.inputRate": "Input micros / million",
   "settings.provider.outputRate": "Output micros / million",
   "settings.provider.advancedHint":
-    "These are provider-route defaults and Core model-call caps. The explicit Campaign authorization remains authoritative for provider sessions; these limits do not widen it. Frozen Campaign bindings are not rewritten by a provider settings revision.",
+    "Optional technical defaults for this provider route. The explicit Campaign authorization remains authoritative for provider sessions; these limits do not widen it. Frozen Campaign bindings are not rewritten by a provider settings revision.",
   "settings.provider.enabledLabel": "Enabled",
   "settings.provider.defaultLabel": "Default route for Core model calls",
   "settings.provider.saving": "Saving…",
@@ -2812,7 +2843,7 @@ export const en = {
 
   "execProfiles.title": "Execution profiles ({count})",
   "execProfiles.description":
-    "Versioned operator configuration for the model-backed roles. A profile is not an authorization or a capability grant.",
+    "Versioned operator configuration for the model-backed roles. Pick a profile, inspect its routes and keep technical operation limits in Advanced. A profile is not an authorization or a capability grant.",
   "execProfiles.newProfile": "New profile",
   "execProfiles.refresh": "Refresh",
   "execProfiles.meta":
@@ -2852,6 +2883,10 @@ export const en = {
   "execProfiles.notice.projectDefaultSet": "Project default set to {name}.",
   "execProfiles.notice.globalDefaultCleared": "Global default cleared.",
   "execProfiles.notice.projectDefaultCleared": "Project default cleared.",
+  "execProfiles.category.BUDGET": "Economical",
+  "execProfiles.category.BALANCED": "Balanced",
+  "execProfiles.category.QUALITY": "Maximum quality",
+  "execProfiles.category.CUSTOM": "Custom",
   "execProfiles.role.lead": "Lead",
   "execProfiles.role.leadResponsibility":
     "Semantic assessment and plan proposal",
@@ -2874,25 +2909,10 @@ export const en = {
     "Model ID must be at most 128 characters.",
   "execProfiles.validation.modelWhitespace":
     "Model ID must not contain whitespace.",
-  "execProfiles.validation.roleInputRange":
-    "{role} max input tokens must be between 1 and 1,000,000.",
-  "execProfiles.validation.roleOutputRange":
-    "{role} max output tokens must be between 1 and 100,000.",
-  "execProfiles.validation.roleCostRange":
-    "{role} max cost micros must be between 1 and 100,000,000.",
-  "execProfiles.validation.maxAttempts":
-    "Max attempts must be between 1 and 10.",
-  "execProfiles.validation.maxSessions":
-    "Max sessions must be between 1 and 16.",
-  "execProfiles.validation.maxTurns": "Max turns must be between 1 and 16.",
-  "execProfiles.validation.maxInput":
-    "Campaign max input tokens must be between 1 and 1,000,000.",
-  "execProfiles.validation.maxOutput":
-    "Campaign max output tokens must be between 1 and 100,000.",
-  "execProfiles.validation.maxCost":
-    "Campaign max cost micros must be between 1 and 100,000,000.",
-  "execProfiles.validation.deadline":
-    "Campaign deadline seconds must be between 30 and 86,400.",
+  "execProfiles.validation.operationRange":
+    "{field} must be between {min} and {max}.",
+  "execProfiles.validation.progressRange":
+    "{field} must be between {min} and {max}.",
   "execProfiles.warning.unknownProvider":
     "The {role} provider is not a configured Core connection; this profile stays a non-executable draft.",
   "execProfiles.warning.unconfiguredProvider":
@@ -2935,21 +2955,20 @@ export const en = {
   "execProfiles.editor.reload": "Reload current revision",
   "execProfiles.editor.draftWarning":
     "This draft is not executable. Core refuses to bind or use a profile until every role route is substantiated.",
+  "execProfiles.editor.legacyV1":
+    "This is a historical V1 revision. Saving it writes a new V2 revision with the technical defaults shown in Advanced; the old turn, attempt, session, token, cost and deadline caps are not carried forward.",
   "execProfiles.editor.name": "Name",
   "execProfiles.editor.category": "Category",
   "execProfiles.editor.profileDescription": "Description",
   "execProfiles.matrix.aria": "Role matrix",
   "execProfiles.matrix.title": "Role matrix",
   "execProfiles.matrix.hint":
-    "Each role resolves its own provider connection and model. The deterministic Verifier is not a profile role.",
+    "Each role resolves its own provider connection, model and reasoning. These routes are the normal configuration; the deterministic Verifier is not a profile role.",
   "execProfiles.matrix.refresh": "Refresh model catalog",
   "execProfiles.matrix.role": "Role",
   "execProfiles.matrix.provider": "Provider",
   "execProfiles.matrix.model": "Model",
   "execProfiles.matrix.reasoning": "Reasoning",
-  "execProfiles.matrix.maxInput": "Max input",
-  "execProfiles.matrix.maxOutput": "Max output",
-  "execProfiles.matrix.maxCost": "Max cost µ",
   "execProfiles.matrix.providerLabel": "{role} provider",
   "execProfiles.matrix.notConfigured": "{provider} (not configured)",
   "execProfiles.matrix.discovering": "Discovering models…",
@@ -2971,20 +2990,23 @@ export const en = {
     "Advanced: manual {role} model ID (unverified)",
   "execProfiles.matrix.reasoningLabel": "{role} reasoning",
   "execProfiles.matrix.providerDefault": "Provider default",
-  "execProfiles.matrix.maxInputLabel": "{role} max input tokens",
-  "execProfiles.matrix.maxOutputLabel": "{role} max output tokens",
-  "execProfiles.matrix.maxCostLabel": "{role} max cost micros",
-  "execProfiles.budgets.aria": "Campaign budgets",
-  "execProfiles.budgets.title": "Campaign budgets",
-  "execProfiles.budgets.hint":
-    "Frozen into a Campaign authorization; a model cannot widen them.",
-  "execProfiles.budgets.maxAttempts": "Max attempts",
-  "execProfiles.budgets.maxSessions": "Max sessions",
-  "execProfiles.budgets.maxTurns": "Max turns",
-  "execProfiles.budgets.maxInput": "Campaign max input tokens",
-  "execProfiles.budgets.maxOutput": "Campaign max output tokens",
-  "execProfiles.budgets.maxCost": "Campaign max cost micros",
-  "execProfiles.budgets.deadline": "Campaign deadline seconds",
+  "execProfiles.advanced.title": "Advanced technical operation limits",
+  "execProfiles.advanced.hint":
+    "Optional. These per-operation bounds and progress thresholds are not turn, attempt, session, token, cost or Campaign deadline budgets. Core enforces them for safety.",
+  "execProfiles.operations.modelRequestTimeout": "Model request timeout (s)",
+  "execProfiles.operations.modelRequestTimeoutHelp":
+    "Maximum duration of one model request, not a Campaign deadline.",
+  "execProfiles.operations.toolCallTimeout": "Tool call timeout (s)",
+  "execProfiles.operations.maxRequestBytes": "Max request bytes",
+  "execProfiles.operations.maxResponseBytes": "Max response bytes",
+  "execProfiles.operations.maxGenerationTokens": "Max generation tokens",
+  "execProfiles.operations.maxInFlight": "Max in-flight operations",
+  "execProfiles.progress.title": "Progress supervision",
+  "execProfiles.progress.hint":
+    "These thresholds trigger diagnosis or escalation. They do not stop legitimate work by themselves.",
+  "execProfiles.progress.diagnoseAfter": "Diagnose after stagnant checkpoints",
+  "execProfiles.progress.escalateAfter": "Escalate after unsuccessful replans",
+  "execProfiles.progress.observationTimeout": "Observation timeout (s)",
   "execProfiles.autoStart.aria": "Autonomous start policy",
   "execProfiles.autoStart.title": "Autonomous start policy",
   "execProfiles.autoStart.hint":

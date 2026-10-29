@@ -14,6 +14,10 @@ import {
   type Project,
   type StandingDelegation,
 } from "../coreApi";
+import {
+  DEFAULT_OPERATION_LIMITS,
+  DEFAULT_PROGRESS_POLICY,
+} from "../executionDefaults";
 import { shortId } from "../format";
 import { useI18n } from "../i18n";
 
@@ -57,26 +61,7 @@ interface StartAuthorizationDraft {
   actor: string;
   rationale: string;
   paths: string;
-  maxAttempts: string;
-  maxSessions: string;
-  maxTurns: string;
-  maxInputTokens: string;
-  maxOutputTokens: string;
-  maxCostMicros: string;
-  deadlineSecs: string;
   tools: string;
-}
-
-function positiveInteger(
-  name: string,
-  value: string,
-  t: ReturnType<typeof useI18n>["t"],
-): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(t("lead.validation.positiveInteger", { name }));
-  }
-  return parsed;
 }
 
 function buildAuthorizationDraft(
@@ -95,13 +80,6 @@ function buildAuthorizationDraft(
     actor: "office-operator",
     rationale: "explicit TRUSTED_LOCAL_PROVIDER start from Office",
     paths: joinValues(paths),
-    maxAttempts: String(proposal.budget.maxAttempts),
-    maxSessions: String(Math.min(2, Math.max(1, proposal.maxSessions - 1))),
-    maxTurns: "4",
-    maxInputTokens: "40000",
-    maxOutputTokens: "12000",
-    maxCostMicros: "500000",
-    deadlineSecs: "300",
     tools: "write_file, run_command",
   };
 }
@@ -269,54 +247,21 @@ export function Lead() {
         throw new Error(t("lead.error.proposalUnavailable"));
       }
       const authorization: NewCampaignAuthorization = {
-        authorization_id: draft.authorizationId.trim(),
-        risk_class: "R0",
-        execution_mode: "TRUSTED_LOCAL_PROVIDER",
+        authorizationId: draft.authorizationId.trim(),
+        riskClass: "R0",
+        executionMode: "TRUSTED_LOCAL_PROVIDER",
         actor: draft.actor.trim(),
         rationale: draft.rationale.trim(),
-        authorized_paths: splitValues(draft.paths),
-        max_attempts: positiveInteger(
-          t("lead.validation.attempts"),
-          draft.maxAttempts,
-          t,
-        ),
+        authorizedPaths: splitValues(draft.paths),
         provider: selectedProposal?.route.provider ?? "",
         model: selectedProposal?.route.model ?? "",
-        provider_mode: selectedProposal?.route.mode ?? "",
-        delegation_id: selected.request.delegation_id,
-        max_sessions: positiveInteger(
-          t("lead.validation.sessions"),
-          draft.maxSessions,
-          t,
-        ),
-        max_turns: positiveInteger(
-          t("lead.validation.turns"),
-          draft.maxTurns,
-          t,
-        ),
-        max_input_tokens: positiveInteger(
-          t("lead.validation.inputTokens"),
-          draft.maxInputTokens,
-          t,
-        ),
-        max_output_tokens: positiveInteger(
-          t("lead.validation.outputTokens"),
-          draft.maxOutputTokens,
-          t,
-        ),
-        max_cost_micros: positiveInteger(
-          t("lead.validation.cost"),
-          draft.maxCostMicros,
-          t,
-        ),
-        deadline_secs: positiveInteger(
-          t("lead.validation.deadline"),
-          draft.deadlineSecs,
-          t,
-        ),
-        allowed_tools: splitValues(draft.tools),
+        providerMode: selectedProposal?.route.mode ?? "",
+        delegationId: selected.request.delegation_id,
+        allowedTools: splitValues(draft.tools),
+        operations: { ...DEFAULT_OPERATION_LIMITS },
+        progress: { ...DEFAULT_PROGRESS_POLICY },
       };
-      if (authorization.authorized_paths.length === 0) {
+      if (authorization.authorizedPaths.length === 0) {
         throw new Error(t("lead.error.pathsEmpty"));
       }
       await start(draft.requestId, authorization);
@@ -956,94 +901,7 @@ export function Lead() {
                       <code>{selected.request.delegation_id}</code> ·{" "}
                       {t("lead.start.risk")} R0
                     </p>
-                    <label>
-                      {t("lead.start.attempts")}
-                      <input
-                        type="number"
-                        min="1"
-                        max="5"
-                        value={authorizationDraft.maxAttempts}
-                        onChange={(event) =>
-                          updateDraft({ maxAttempts: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.sessions")}
-                      <input
-                        type="number"
-                        min="1"
-                        max="2"
-                        value={authorizationDraft.maxSessions}
-                        onChange={(event) =>
-                          updateDraft({ maxSessions: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.turns")}
-                      <input
-                        type="number"
-                        min="1"
-                        max="4"
-                        value={authorizationDraft.maxTurns}
-                        onChange={(event) =>
-                          updateDraft({ maxTurns: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.maxInputTokens")}
-                      <input
-                        type="number"
-                        min="1"
-                        value={authorizationDraft.maxInputTokens}
-                        onChange={(event) =>
-                          updateDraft({ maxInputTokens: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.maxOutputTokens")}
-                      <input
-                        type="number"
-                        min="1"
-                        value={authorizationDraft.maxOutputTokens}
-                        onChange={(event) =>
-                          updateDraft({ maxOutputTokens: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.maxCost")}
-                      <input
-                        type="number"
-                        min="1"
-                        value={authorizationDraft.maxCostMicros}
-                        onChange={(event) =>
-                          updateDraft({ maxCostMicros: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {t("lead.start.deadline")}
-                      <input
-                        type="number"
-                        min="30"
-                        max="600"
-                        value={authorizationDraft.deadlineSecs}
-                        onChange={(event) =>
-                          updateDraft({ deadlineSecs: event.target.value })
-                        }
-                        required
-                      />
-                    </label>
+                    <p className="muted">{t("lead.start.technicalLimits")}</p>
                     <label>
                       {t("lead.start.tools")}
                       <input

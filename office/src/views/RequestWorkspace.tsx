@@ -643,7 +643,12 @@ export function RequestWorkspace() {
                   <dt>{t("request.campaign.authorization")}</dt>
                   <dd>
                     {data.campaign?.authorization
-                      ? `${data.campaign.authorization.risk_class} · ${data.campaign.authorization.execution_mode}`
+                      ? `${data.campaign.authorization.riskClass} · ${data.campaign.authorization.executionMode}${
+                          data.campaign.authorization.provider ||
+                          data.campaign.authorization.model
+                            ? ` · ${data.campaign.authorization.provider}/${data.campaign.authorization.model}`
+                            : ""
+                        }`
                       : t("request.notExposed")}
                   </dd>
                 </div>

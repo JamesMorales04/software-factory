@@ -1,3 +1,8 @@
+import {
+  DEFAULT_OPERATION_LIMITS,
+  DEFAULT_PROGRESS_POLICY,
+} from "./executionDefaults";
+
 export type CheckKind =
   | "format"
   | "lint"
@@ -789,27 +794,45 @@ export interface CampaignDetail {
   events: FactoryEvent[];
 }
 
+export interface ExecutionPolicyV2 {
+  policyId: string;
+  authorizationId: string;
+  monetaryEnvelopeId: string;
+  scopeSha256: string;
+  progress: ExecutionProgressPolicy;
+  operations: ExecutionOperationLimits;
+}
+
+/** Historical V1 caps. Readable provenance only; never current authority. */
+export interface LegacyCampaignAuthorizationCaps {
+  maxAttempts: number;
+  maxSessions: number;
+  maxTurns: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+  deadlineSecs: number;
+}
+
 export interface CampaignAuthorization {
-  campaign_id: string;
-  authorization_id: string;
-  risk_class: string;
-  execution_mode: string;
+  campaignId: string;
+  authorizationId: string;
+  riskClass: string;
+  executionMode: string;
   actor: string;
   rationale: string;
-  authorized_paths: string[];
-  max_attempts: number;
+  authorizedPaths: string[];
   provider: string;
   model: string;
-  provider_mode: string;
-  delegation_id: string;
-  max_sessions: number;
-  max_turns: number;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  max_cost_micros: number;
-  deadline_secs: number;
-  allowed_tools: string[];
-  created_at: string;
+  providerMode: string;
+  delegationId: string;
+  allowedTools: string[];
+  schemaVersion: 1 | 2;
+  /** Present for V2 revisions; never synthesized for a legacy V1 row. */
+  policy: ExecutionPolicyV2 | null;
+  /** Present only for historical V1 rows. */
+  legacy: LegacyCampaignAuthorizationCaps | null;
+  createdAt: string;
 }
 
 export type ReceiptResult =
@@ -1376,19 +1399,12 @@ export interface IntakeExecutionPolicyTerms {
   riskClasses: string[];
   autonomousStart: boolean;
   validityDays: number;
-  maxRequests: number;
-  maxAttemptsPerRequest: number;
-  maxSessionsPerRequest: number;
-  maxTurnsPerRequest: number;
-  maxInputTokensPerRequest: number;
-  maxOutputTokensPerRequest: number;
-  maxCostMicrosPerRequest: number;
-  maxTimeoutSecsPerRequest: number;
-  maxWallClockSecsPerRequest: number;
-  maxRepairCycles: number;
+  /** Bounded concurrent implementation capacity, not lifetime work. */
   maxParallel: number;
-  maxCumulativeSessions: number;
-  maxCumulativeAttempts: number;
+  /** Per-operation timeout, not a universal Campaign deadline. */
+  maxTimeoutSecs: number;
+  progress: ExecutionProgressPolicy;
+  operations: ExecutionOperationLimits;
 }
 
 export interface IntakeExecutionPolicyScope {
@@ -1405,14 +1421,17 @@ export interface IntakeExecutionPolicyScope {
     id: string;
     revisionId: string;
     revision: number;
-    name: string;
+    schemaVersion: 1 | 2;
+    name: string | null;
     contentHash: string;
     executable: boolean;
     warnings: string[];
-    budgets: ExecutionProfileBudgets;
-    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] };
-    implementer: ExecutionRoleRoute;
-    grantTerms: IntakeExecutionPolicyTerms;
+    operations: ExecutionOperationLimits | null;
+    progress: ExecutionProgressPolicy | null;
+    autoStart: { enabled: boolean; riskClasses: ExecutionRiskClass[] } | null;
+    implementer: ExecutionRoleRoute | null;
+    grantTerms: IntakeExecutionPolicyTerms | null;
+    legacyV1?: ExecutionProfileLegacyV1 | null;
   } | null;
 }
 
@@ -1456,31 +1475,62 @@ export interface NewCampaignRequest {
   idempotency_key: string;
 }
 
+/**
+ * Operator write shape for a Campaign/Lead start. Core's HTTP endpoint still
+ * decodes snake_case fields (it predates the V2 projection), so
+ * `startLeadRequest` and `authorizeFixtureCampaign` adapt these camelCase
+ * fields at the wire boundary. The policy payload is V2: operations/progress,
+ * never legacy turn/session/attempt/deadline caps.
+ */
 export interface NewCampaignAuthorization {
-  authorization_id: string;
-  risk_class: string;
-  execution_mode: string;
+  authorizationId: string;
+  riskClass: string;
+  executionMode: string;
   actor: string;
   rationale: string;
-  authorized_paths: string[];
-  max_attempts: number;
+  authorizedPaths: string[];
   provider: string;
   model: string;
-  provider_mode: string;
-  delegation_id: string;
-  max_sessions: number;
-  max_turns: number;
-  max_input_tokens: number;
-  max_output_tokens: number;
-  max_cost_micros: number;
-  deadline_secs: number;
-  allowed_tools: string[];
+  providerMode: string;
+  delegationId: string;
+  allowedTools: string[];
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
+  /** Explicit amount only for a direct Campaign; request-scoped Lead start omits it. */
+  authorizedMicros?: number;
+  monetaryEnvelopeId?: string;
 }
 
 export interface StartLeadCampaignResult {
   campaign: Campaign;
   run: Run;
   attempt: Attempt;
+}
+
+function campaignAuthorizationWire(
+  input: NewCampaignAuthorization,
+): Record<string, unknown> {
+  return {
+    authorization_id: input.authorizationId,
+    risk_class: input.riskClass,
+    execution_mode: input.executionMode,
+    actor: input.actor,
+    rationale: input.rationale,
+    authorized_paths: input.authorizedPaths,
+    provider: input.provider,
+    model: input.model,
+    provider_mode: input.providerMode,
+    delegation_id: input.delegationId,
+    allowed_tools: input.allowedTools,
+    operations: input.operations,
+    progress: input.progress,
+    ...(input.authorizedMicros === undefined
+      ? {}
+      : { authorized_micros: input.authorizedMicros }),
+    ...(input.monetaryEnvelopeId === undefined
+      ? {}
+      : { monetary_envelope_id: input.monetaryEnvelopeId }),
+  };
 }
 
 export type ProviderDiscoveryStatus =
@@ -1621,9 +1671,6 @@ export interface ExecutionRoleRoute {
   provider: string;
   model: string;
   reasoning?: ExecutionReasoningEffort;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  maxCostMicros: number;
 }
 
 export interface ExecutionProfileRoles {
@@ -1632,7 +1679,41 @@ export interface ExecutionProfileRoles {
   semanticReviewer: ExecutionRoleRoute;
 }
 
-export interface ExecutionProfileBudgets {
+/** Technical per-operation bounds. Not a Campaign productivity budget. */
+export interface ExecutionOperationLimits {
+  modelRequestTimeoutSecs: number;
+  toolCallTimeoutSecs: number;
+  maxRequestBytes: number;
+  maxResponseBytes: number;
+  maxGenerationTokens: number;
+  maxInFlightOperations: number;
+}
+
+/**
+ * Deterministic progress supervision. Thresholds trigger diagnosis or
+ * escalation; they do not stop a legitimate Campaign by themselves.
+ */
+export interface ExecutionProgressPolicy {
+  diagnoseAfterStagnantCheckpoints: number;
+  escalateAfterUnsuccessfulReplans: number;
+  observationTimeoutSecs: number;
+}
+
+export interface ExecutionAutoStartPolicy {
+  enabled: boolean;
+  riskClasses: ExecutionRiskClass[];
+}
+
+export interface LegacyExecutionRoleRoute {
+  provider: string;
+  model: string;
+  reasoning?: ExecutionReasoningEffort;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostMicros: number;
+}
+
+export interface LegacyExecutionProfileBudgets {
   maxAttempts: number;
   maxSessions: number;
   maxTurns: number;
@@ -1642,9 +1723,16 @@ export interface ExecutionProfileBudgets {
   deadlineSecs: number;
 }
 
-export interface ExecutionAutoStartPolicy {
-  enabled: boolean;
-  riskClasses: ExecutionRiskClass[];
+/** Historical V1 caps. Readable provenance only; never current authority. */
+export interface ExecutionProfileLegacyV1 {
+  budgets?: LegacyExecutionProfileBudgets;
+  roles?: {
+    lead: LegacyExecutionRoleRoute;
+    implementer: LegacyExecutionRoleRoute;
+    semanticReviewer: LegacyExecutionRoleRoute;
+  };
+  autoStart?: ExecutionAutoStartPolicy;
+  historical?: boolean;
 }
 
 export interface ExecutionProfile {
@@ -1652,16 +1740,21 @@ export interface ExecutionProfile {
   name: string;
   description: string;
   category: ExecutionProfileCategory;
+  schemaVersion: 1 | 2;
   revision: number;
   revisionId: string;
   contentHash: string;
   globalDefault: boolean;
   projectDefaults: string[];
   roles: ExecutionProfileRoles;
-  budgets: ExecutionProfileBudgets;
+  /** V2 technical operation limits; null for a historical V1 revision. */
+  operations: ExecutionOperationLimits | null;
+  /** V2 progress supervision; null for a historical V1 revision. */
+  progress: ExecutionProgressPolicy | null;
   autoStart: ExecutionAutoStartPolicy;
   executable: boolean;
   warnings: string[];
+  legacyV1?: ExecutionProfileLegacyV1 | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1681,7 +1774,8 @@ export interface ExecutionProfileWrite {
   description: string;
   category: ExecutionProfileCategory;
   roles: ExecutionProfileRoles;
-  budgets: ExecutionProfileBudgets;
+  operations: ExecutionOperationLimits;
+  progress: ExecutionProgressPolicy;
   auto_start: {
     enabled: boolean;
     risk_classes: ExecutionRiskClass[];
@@ -2643,7 +2737,7 @@ export const coreApi = {
         method: "POST",
         ...(authorization === undefined
           ? {}
-          : { body: JSON.stringify(authorization) }),
+          : { body: JSON.stringify(campaignAuthorizationWire(authorization)) }),
       },
     ),
   withdrawLeadRequest: (id: string, reason: string) =>
@@ -2824,22 +2918,30 @@ export const coreApi = {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
-  authorizeFixtureCampaign: (campaignId: string) =>
-    request<CampaignAuthorization>(
+  authorizeFixtureCampaign: (campaignId: string) => {
+    const authorization: NewCampaignAuthorization = {
+      authorizationId: `office-${campaignId}`,
+      riskClass: "R0",
+      executionMode: "FIXTURE",
+      actor: "office-operator",
+      rationale: "deterministic fixture journey from Office",
+      authorizedPaths: ["src"],
+      provider: "",
+      model: "",
+      providerMode: "",
+      delegationId: "",
+      allowedTools: [],
+      operations: { ...DEFAULT_OPERATION_LIMITS },
+      progress: { ...DEFAULT_PROGRESS_POLICY },
+    };
+    return request<CampaignAuthorization>(
       `/campaigns/${encodeURIComponent(campaignId)}/authorize`,
       {
         method: "POST",
-        body: JSON.stringify({
-          authorization_id: `office-${campaignId}`,
-          risk_class: "R0",
-          execution_mode: "FIXTURE",
-          actor: "office-operator",
-          rationale: "deterministic fixture journey from Office",
-          authorized_paths: ["src"],
-          max_attempts: 1,
-        }),
+        body: JSON.stringify(campaignAuthorizationWire(authorization)),
       },
-    ),
+    );
+  },
   createCampaignRun: (campaignId: string) =>
     request<Run>(`/campaigns/${encodeURIComponent(campaignId)}/runs`, {
       method: "POST",

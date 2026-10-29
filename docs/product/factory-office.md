@@ -82,7 +82,10 @@ available limitation instead of inventing a mutation. Action Detail shows the fr
 checks and related Core records. Campaign Detail is a tabbed operational
 workspace with separate lifecycle, WorkGraph, execution/participant,
 candidate-revision, evidence, Quality Gate, budget/usage and events/recovery
-views. Candidate revisions expose a bounded Core file diff from the exact
+views. Campaign authorization is read from the camelCase V2 record
+(`schemaVersion`, `policy.operations`, `policy.progress`,
+`monetaryEnvelopeId`, route, risk and execution mode); V1 ceilings appear only
+as separate historical evidence when `legacy` is present. Candidate revisions expose a bounded Core file diff from the exact
 frozen base to the exact candidate commit/tree, including per-file status,
 additions/deletions and unified patches with explicit binary, large, non-file,
 truncated and unavailable states. The same workspace can read a bound GitHub
@@ -112,13 +115,16 @@ Core summary, exact base revision, connection and issue-sync health, active
 Campaigns, pending decisions and persisted discovery evidence. GitHub App/OAuth
 installation onboarding is not implemented; fine-grained tokens do not report
 OAuth scopes, and Office does not imply installation-wide access. Home is now a
-unified intake composer: a Project-scoped objective and
-exact execution profile revision create a durable intake request. Every request
-stops for explicit operator approval; the composer does not offer or imply
-automatic start. A 409 `EXECUTION_POLICY_REQUIRED` surfaces an explicit
-"Enable governed execution" acknowledgement that shows the exact objective
-scope, per-request limits and cumulative grant bounds, then creates a bounded,
-non-autonomous R0 policy before retrying the same request. The Request
+conversation-first unified intake composer: one Project, one natural-language
+objective, one execution profile (with a readable route preview), one explicit
+USD inference authorization and one submit action create a durable intake
+request. Ordinary Home does not ask for turn, attempt, session, token,
+cost-micro or Campaign-deadline controls. Every request stops for explicit
+operator approval; the composer does not offer or imply automatic start. A 409
+`EXECUTION_POLICY_REQUIRED` surfaces an explicit "Enable governed execution"
+acknowledgement that shows the exact objective scope, grant lifetime and
+inference envelope, then creates a bounded, non-autonomous R0 policy before
+retrying the same request. The Request
 workspace derives its state from the authoritative Lead request, shows the
 frozen profile revision and plan hash, runs the bounded assessment, approves
 the exact frozen plan, appends pre-freeze operator messages and withdraws
@@ -126,10 +132,13 @@ through the authoritative Lead boundary. It does not expose an intake-only
 terminal flag. Execution profiles resolve each model-backed role independently:
 the frozen Lead route runs intake assessment, the frozen Semantic Reviewer
 route runs candidate review, and the implementer route remains the Campaign
-authorization route. The profile editor and Provider Settings expose
-authenticated provider model discovery; an unavailable or unsupported catalog
-is shown as a typed state, and manual model IDs are labelled unverified
-non-executable drafts. A Codex App Server connection can implement a Campaign
+authorization route. The profile editor keeps provider/model/reasoning routes
+on the normal path; technical per-operation limits and progress supervision
+are optional advanced settings, and historical V1 caps are not carried into a
+new revision. Provider Settings expose authenticated provider model discovery
+through a searchable selector; base URL, manual model IDs, token/cost/rate
+limits and connection details are explicit advanced configuration, and an
+unavailable or unsupported catalog is shown as a typed state. A Codex App Server connection can implement a Campaign
 but cannot execute one-shot assessment or semantic review in this build. Docs
 and a stable `/office` deep-link base remain unimplemented.
 

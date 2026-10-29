@@ -64,9 +64,21 @@ const roleRoute = {
   provider: "opencode-go",
   model: "deepseek-v4.1-flash",
   reasoning: "medium" as const,
-  maxInputTokens: 40000,
-  maxOutputTokens: 12000,
-  maxCostMicros: 500000,
+};
+
+const operations = {
+  modelRequestTimeoutSecs: 300,
+  toolCallTimeoutSecs: 600,
+  maxRequestBytes: 2097152,
+  maxResponseBytes: 2097152,
+  maxGenerationTokens: 8192,
+  maxInFlightOperations: 4,
+};
+
+const progress = {
+  diagnoseAfterStagnantCheckpoints: 2,
+  escalateAfterUnsuccessfulReplans: 1,
+  observationTimeoutSecs: 300,
 };
 
 const profile: ExecutionProfile = {
@@ -74,6 +86,7 @@ const profile: ExecutionProfile = {
   name: "Balanced",
   description: "Default supported routes",
   category: "BALANCED",
+  schemaVersion: 2,
   revision: 3,
   revisionId: "revision-1",
   contentHash: "profile-hash",
@@ -84,15 +97,8 @@ const profile: ExecutionProfile = {
     implementer: roleRoute,
     semanticReviewer: roleRoute,
   },
-  budgets: {
-    maxAttempts: 3,
-    maxSessions: 2,
-    maxTurns: 4,
-    maxInputTokens: 40000,
-    maxOutputTokens: 12000,
-    maxCostMicros: 500000,
-    deadlineSecs: 600,
-  },
+  operations,
+  progress,
   autoStart: { enabled: false, riskClasses: [] },
   executable: true,
   warnings: [],
@@ -249,6 +255,11 @@ describe("Home", () => {
   it("renders the operator-first request surface with Core-backed status", async () => {
     renderHome();
     await screen.findByRole("heading", { name: "Home" });
+    expect(
+      screen.getByRole("heading", {
+        name: "What should the Factory work on?",
+      }),
+    ).toBeDefined();
     expect(screen.getByLabelText("Project")).toBeDefined();
     expect(screen.getByLabelText("What should the Factory do?")).toBeDefined();
     expect(screen.getByLabelText("Execution profile")).toBeDefined();
@@ -259,16 +270,36 @@ describe("Home", () => {
     expect(await screen.findByText("Add a CSV export endpoint")).toBeDefined();
     expect(screen.getByText("Awaiting approval")).toBeDefined();
     expect(screen.getByText("Unresolved model usage")).toBeDefined();
-    expect(screen.getByText("ActionCreated")).toBeDefined();
     expect(screen.getByText("Core status")).toBeDefined();
+  });
+
+  it("does not require productivity caps or expose budget tables on Home", async () => {
+    renderHome();
+    await screen.findByLabelText("Execution profile");
+    expect(screen.queryByLabelText(/Max turns/)).toBeNull();
+    expect(screen.queryByLabelText(/Max attempts/)).toBeNull();
+    expect(screen.queryByLabelText(/Max sessions/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max input tokens/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max output tokens/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign max cost/)).toBeNull();
+    expect(screen.queryByLabelText(/Campaign deadline/)).toBeNull();
+    expect(screen.queryByText("Campaign budgets")).toBeNull();
   });
 
   it("renders the operator request surface in Spanish", async () => {
     renderHome("es");
     await screen.findByRole("heading", { name: "Inicio" });
+    expect(
+      screen.getByRole("heading", {
+        name: "¿En qué debe trabajar la Factory?",
+      }),
+    ).toBeDefined();
     expect(screen.getByLabelText("Proyecto")).toBeDefined();
     expect(screen.getByLabelText("¿Qué debe hacer la Factory?")).toBeDefined();
     expect(screen.getByLabelText("Perfil de ejecución")).toBeDefined();
+    expect(
+      screen.getByLabelText("Gasto máximo de inferencia (USD)"),
+    ).toBeDefined();
     expect(
       screen.getByText(
         /Cada solicitud se detiene para la aprobación explícita del operador/,
@@ -443,6 +474,8 @@ describe("Home", () => {
       "profile-1",
     );
     expect(screen.queryByRole("radio", { name: /Autonomous/ })).toBeNull();
+    expect(screen.getAllByText("opencode-go/")).toHaveLength(3);
+    expect(screen.getAllByText("deepseek-v4.1-flash")).toHaveLength(3);
     await userEvent.type(
       screen.getByLabelText("What should the Factory do?"),
       "Add a CSV export endpoint.",
@@ -594,9 +627,11 @@ describe("Home", () => {
               revision: 3,
               name: "Balanced",
               contentHash: "profile-hash",
+              schemaVersion: 2,
               executable: true,
               warnings: [],
-              budgets: profile.budgets,
+              operations,
+              progress,
               autoStart: { enabled: false, riskClasses: [] },
               implementer: roleRoute,
               grantTerms: {
@@ -604,19 +639,10 @@ describe("Home", () => {
                 riskClasses: ["R0"],
                 autonomousStart: false,
                 validityDays: 30,
-                maxRequests: 4,
-                maxAttemptsPerRequest: 3,
-                maxSessionsPerRequest: 2,
-                maxTurnsPerRequest: 4,
-                maxInputTokensPerRequest: 40000,
-                maxOutputTokensPerRequest: 12000,
-                maxCostMicrosPerRequest: 500000,
-                maxTimeoutSecsPerRequest: 600,
-                maxWallClockSecsPerRequest: 600,
-                maxRepairCycles: 0,
                 maxParallel: 1,
-                maxCumulativeSessions: 8,
-                maxCumulativeAttempts: 12,
+                maxTimeoutSecs: 600,
+                progress,
+                operations,
               },
             },
           },
@@ -637,11 +663,10 @@ describe("Home", () => {
         name: "Enable governed execution",
       }),
     ).toBeDefined();
-    expect(screen.getByText(/Balanced r3/)).toBeDefined();
+    expect(screen.getAllByText(/Balanced r3/).length).toBeGreaterThan(0);
     expect(screen.getByText(/repository-edit/)).toBeDefined();
     expect(screen.getByText(/feature, maintenance, refactor/)).toBeDefined();
-    expect(screen.getByText(/4 requests/)).toBeDefined();
-    expect(screen.getByText(/valid 30 days/)).toBeDefined();
+    expect(screen.getByText(/Valid 30 days/)).toBeDefined();
     expect(
       screen.getByText(/non-autonomous; explicit approval required/),
     ).toBeDefined();

@@ -32,12 +32,14 @@ The provider catalog is typed:
 
 Each provider card exposes:
 
-- installed/configured status and masked credential fingerprint;
-- model, endpoint, enabled/default route;
-- provider-route token/cost limits and per-million rates; these cap Core model
-  calls but never widen or replace the explicit Campaign authorization that
-  bounds provider sessions. The turn limit is stored as an operator default but
-  is not enforced in this iteration;
+- installed/configured status, enabled/default route and the current model;
+- a searchable model selector built from the current model, provider default
+  and real model discovery;
+- explicit advanced configuration for base URL, manual model IDs, connection
+  details, provider-route token/cost limits and per-million rates. These limits
+  cap Core model calls but never widen or replace the explicit Campaign
+  authorization that bounds provider sessions. The turn limit is stored as an
+  operator default but is not enforced in this iteration;
 - test connection (model list only), configuration revision and audit;
 - credential replacement and revocation.
 
@@ -46,6 +48,17 @@ returned. Saving or testing does not start inference. The base Compose stack
 defaults to the live OpenCode adapter and fails closed without matching provider
 settings; the deterministic fixture is enabled only by the explicit E2E
 override, never as a silent fallback.
+
+## Execution profiles
+
+Execution profiles keep the normal path readable: name, category and one
+provider/model/reasoning route each for Lead, Implementer and Semantic Reviewer.
+Technical per-operation timeouts, request/response bounds, generation limits,
+in-flight capacity and deterministic progress supervision are optional
+advanced settings. A profile revision carries no turn, attempt, session, token,
+cost or Campaign-deadline budget; Core still enforces its real operation limits
+and the separate explicit inference envelope. A historical V1 revision is
+readable, but saving it writes a V2 revision without carrying the old caps.
 
 ## Review & runtime policy
 
@@ -141,3 +154,6 @@ Create/revoke scoped grants with:
 - Live Codex configuration is visible but container inference remains blocked.
 - Browser onboarding and the deterministic full journey are author-run; an
   independent browser acceptance remains open.
+- The simplified Home and Execution Profiles surfaces have component and
+  fixture-Chromium evidence only; real Core/Compose browser acceptance remains
+  not tested.
