@@ -804,9 +804,25 @@ export const en = {
   "agentOffice.zone.operationsDescription":
     "Worker registration identity. Core does not expose heartbeat liveness in this projection.",
   "agentOffice.zone.recorded": "{count} recorded",
-  "agentOffice.zone.emptyTitle": "No recorded {role}",
-  "agentOffice.zone.emptyDescription":
-    "Core has no participant record for this role in the current projection.",
+  "agentOffice.scene.label": "Isometric Office floor",
+  "agentOffice.scene.hint":
+    "Deterministic isometric studio of the same Core participant projection. Drag to pan, scroll or use the controls to zoom. Hover or select an avatar for its recorded identity and observation; selecting it opens the inspector. Station position is deterministic for this observed set; no movement or activity is simulated.",
+  "agentOffice.scene.pan": "Pan the Office floor",
+  "agentOffice.scene.panLeft": "Pan left",
+  "agentOffice.scene.panRight": "Pan right",
+  "agentOffice.scene.panUp": "Pan up",
+  "agentOffice.scene.panDown": "Pan down",
+  "agentOffice.scene.zoom": "Zoom the Office floor",
+  "agentOffice.scene.zoomIn": "Zoom in",
+  "agentOffice.scene.zoomOut": "Zoom out",
+  "agentOffice.scene.zoomValue": "Zoom {percent}%",
+  "agentOffice.scene.fit": "Fit scene",
+  "agentOffice.inspector.hide": "Hide inspector",
+  "agentOffice.inspector.show": "Show inspector",
+  "agentOffice.scene.duplicatesOne":
+    "One duplicate participant identity was ignored; the floor renders one avatar per recorded identity.",
+  "agentOffice.scene.duplicatesOther":
+    "{count} duplicate participant identities were ignored; the floor renders one avatar per recorded identity.",
   "agentOffice.route.notExposed": "Route not exposed",
   "agentOffice.route.requested": "requested",
   "agentOffice.route.observed": "observed",
@@ -835,7 +851,6 @@ export const en = {
   "agentOffice.timeline.note":
     "This view orders the same participant records by their last recorded observation. It is not an event stream and does not invent activity between observations.",
   "agentOffice.timeline.recorded": "Recorded at {date} · source {source}",
-
   "inspector.title": "Participant inspector",
   "inspector.close": "Close participant inspector",
   "inspector.assignment": "Assignment and identity",

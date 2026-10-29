@@ -424,10 +424,6 @@
     min-height: 44px;
   }
 
-  .agent-zone-header {
-    flex-direction: column;
-  }
-
   .issues-detail-meta {
     flex-direction: column;
     gap: var(--space-1);

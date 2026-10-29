@@ -6,7 +6,9 @@ application shell, shared button/field/badge/surface/tooltip/dialog primitives,
 command navigation and component tests. Operational Overview, Decision Inbox,
 Action detail, the tabbed Campaign workspace, the Runtime console, the
 provider Settings workspace, Agent Office and the interactive WorkGraph are
-implemented against Core projections. Storybook, visual regression, the full
+implemented against Core projections. Agent Office now defaults to a
+deterministic isometric SVG/DOM floor over the same participant projection; it
+adds no simulated activity. Storybook, visual regression, the full
 accessibility audit, Issues and Docs remain later slices. The Campaign
 workspace now exposes a bounded candidate file diff and GitHub PR inspection;
 real browser and live GitHub acceptance remain open. Nothing here says those modules exist beyond their documented
@@ -209,6 +211,15 @@ review.
   implemented for the 1–8 unit bound, with keyboard movement and a table
   alternative. React Flow is not installed. No scheduling progress is inferred
   from graph position.
+- Agent Office floor: a custom deterministic SVG/DOM isometric studio scene with
+  native avatar buttons, keyboard selection, clamped pan/zoom and a table
+  alternative, implemented for the 0–30 observed-entity range. A 2026-10-28
+  visual amendment adds wood-floored labelled rooms, cutaway walls, practical
+  lighting, furniture, individualized avatars and compact hover/selection
+  overlays, with a dark contextual inspector. PixiJS is not installed; the
+  bundle, accessibility and animation decision is recorded in
+  [Agent Office isometric floor](agent-office-isometric.md) and the
+  [visual amendment](agent-office-visual-amendment.md).
 - Storybook is a component workshop, not product acceptance; evaluate it in the
   design foundation or add it only when component isolation justifies the cost.
 - Playwright + axe for real browser acceptance; visual regression only when the
