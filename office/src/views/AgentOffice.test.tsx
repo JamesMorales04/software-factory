@@ -328,7 +328,8 @@ describe("AgentOffice", () => {
     expect(
       screen.getByRole("button", { name: /Inspect Lead lead:lead-1/ }),
     ).toBeDefined();
-    expect(screen.getByText(/No recorded verifier/)).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Verification" })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Review" })).toBeDefined();
     expect(screen.getByTestId("location").textContent).toBe("/agents");
   });
 
@@ -347,9 +348,7 @@ describe("AgentOffice", () => {
         name: /Inspeccionar Implementador implementer:session-1/,
       }),
     ).toBeDefined();
-    expect(
-      screen.getByText(/No hay participantes con el rol verificador/),
-    ).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Verificación" })).toBeDefined();
     expect(screen.getByText("Estado veraz")).toBeDefined();
   });
 
@@ -406,6 +405,41 @@ describe("AgentOffice", () => {
       "IMPLEMENTER",
     );
     expect(screen.getByText(/Projection scope only/)).toBeDefined();
+  });
+
+  it("renders only participants returned for the active project and campaign scope", async () => {
+    mocks.listParticipants.mockImplementation(
+      (filters: { projectId?: string; campaignId?: string }) =>
+        Promise.resolve(
+          filters.projectId === "project-1" &&
+            filters.campaignId === "campaign-1"
+            ? {
+                ...page,
+                participants: [implementer],
+                page: { ...page.page, returned: 1 },
+              }
+            : page,
+        ),
+    );
+    renderOffice("/agents?project=project-1&campaign=campaign-1");
+    await screen.findByRole("heading", { name: "Agent Office" });
+    await waitFor(() =>
+      expect(mocks.listParticipants).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          campaignId: "campaign-1",
+        }),
+      ),
+    );
+    expect(
+      screen.getByTestId(`office-avatar-${implementer.participant_id}`),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId(`office-avatar-${lead.participant_id}`),
+    ).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Inspect / })).toHaveLength(
+      1,
+    );
   });
 
   it("preserves the last snapshot and surfaces a disconnected refresh", async () => {

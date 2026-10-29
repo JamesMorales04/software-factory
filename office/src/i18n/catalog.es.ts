@@ -826,9 +826,23 @@ export const es: Catalog = {
   "agentOffice.zone.operationsDescription":
     "Identidad de registro del Trabajador. Core no expone la actividad del heartbeat en esta proyección.",
   "agentOffice.zone.recorded": "{count} registrados",
-  "agentOffice.zone.emptyTitle": "No hay participantes con el rol {role}",
-  "agentOffice.zone.emptyDescription":
-    "Core no tiene ningún registro de participante para este rol en la proyección actual.",
+  "agentOffice.scene.label": "Planta isométrica de la Oficina",
+  "agentOffice.scene.hint":
+    "Escena determinista de la misma proyección de participantes de Core. Arrastra para desplazar, usa la rueda o los controles para ampliar y selecciona un avatar para abrir su registro. La posición del puesto es determinista para este conjunto observado; no representa actividad en vivo.",
+  "agentOffice.scene.pan": "Desplazar la planta de la Oficina",
+  "agentOffice.scene.panLeft": "Desplazar a la izquierda",
+  "agentOffice.scene.panRight": "Desplazar a la derecha",
+  "agentOffice.scene.panUp": "Desplazar hacia arriba",
+  "agentOffice.scene.panDown": "Desplazar hacia abajo",
+  "agentOffice.scene.zoom": "Ampliar la planta de la Oficina",
+  "agentOffice.scene.zoomIn": "Ampliar",
+  "agentOffice.scene.zoomOut": "Reducir",
+  "agentOffice.scene.zoomValue": "Zoom {percent}%",
+  "agentOffice.scene.fit": "Ajustar escena",
+  "agentOffice.scene.duplicatesOne":
+    "Se ignoró una identidad de participante duplicada; la planta muestra un avatar por identidad registrada.",
+  "agentOffice.scene.duplicatesOther":
+    "Se ignoraron {count} identidades de participante duplicadas; la planta muestra un avatar por identidad registrada.",
   "agentOffice.route.notExposed": "Ruta no expuesta",
   "agentOffice.route.requested": "solicitada",
   "agentOffice.route.observed": "observada",
@@ -857,7 +871,6 @@ export const es: Catalog = {
   "agentOffice.timeline.note":
     "Esta vista ordena los mismos registros de participantes por su última observación registrada. No es un flujo de eventos y no inventa actividad entre observaciones.",
   "agentOffice.timeline.recorded": "Registrado {date} · fuente {source}",
-
   "inspector.title": "Inspector de participantes",
   "inspector.close": "Cerrar el inspector de participantes",
   "inspector.assignment": "Asignación e identidad",

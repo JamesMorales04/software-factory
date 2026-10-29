@@ -6,10 +6,10 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import {
-  AgentOfficeFloor,
   AgentOfficeTable,
   AgentOfficeTimeline,
 } from "../components/office/AgentOfficeFloor";
+import { AgentOfficeIsometric } from "../components/office/AgentOfficeIsometric";
 import { ParticipantInspector } from "../components/office/ParticipantInspector";
 import { StatusBadge } from "../components/office/StatusBadge";
 import { Button, buttonClass } from "../components/ui/Button";
@@ -518,7 +518,7 @@ export function AgentOffice() {
                 />
               </Panel>
             ) : view === "floor" ? (
-              <AgentOfficeFloor
+              <AgentOfficeIsometric
                 participants={participants}
                 selectedId={participantId ?? null}
                 onSelect={selectParticipant}

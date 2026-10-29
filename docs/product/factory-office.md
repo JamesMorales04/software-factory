@@ -194,9 +194,12 @@ Known gaps:
 - Browser traces/screenshots are candidate-bound, redacted and retention-aware.
 - A visual/aesthetic pass does not replace Core-backed functional acceptance.
 
-An animated/pixel office may come later; it must reuse the same authoritative
-records and must never create a parallel agent state. The first Agent Office is
-a useful 2D operational visualization, not an expensive simulation.
+The Agent Office visual view is a deterministic isometric SVG/DOM floor over
+the same authoritative records; it is a 2D operational visualization, not a
+simulation. An animated or sprite-based office may come later only if it reuses
+the same records, never creates a parallel agent state and passes a measured
+bundle/performance and accessibility decision. See
+[Agent Office isometric floor](agent-office-isometric.md).
 
 ## Design and parity
 
