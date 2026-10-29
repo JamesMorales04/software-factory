@@ -187,6 +187,45 @@ class ComposePolicyTests(unittest.TestCase):
                     "Office socket volume is restricted to init, core, and tailscale",
                 )
 
+    def test_rejects_named_alias_to_office_socket_volume(self):
+        def mount_named_alias(config):
+            config["volumes"]["shared-bits"] = {
+                "name": "software-factory_factory-office-socket"
+            }
+            config["services"]["worker"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "shared-bits",
+                    "target": "/office-socket",
+                    "read_only": True,
+                }
+            )
+
+        self.assert_rejected(
+            mount_named_alias,
+            "Office socket volume is restricted to init, core, and tailscale",
+        )
+
+    def test_rejects_external_named_alias_to_office_socket_volume(self):
+        def mount_external_alias(config):
+            config["volumes"]["external-office"] = {
+                "external": True,
+                "name": "software-factory_factory-office-socket",
+            }
+            config["services"]["worker"]["volumes"].append(
+                {
+                    "type": "volume",
+                    "source": "external-office",
+                    "target": "/office-socket",
+                    "read_only": True,
+                }
+            )
+
+        self.assert_rejected(
+            mount_external_alias,
+            "Office socket volume is restricted to init, core, and tailscale",
+        )
+
 
     def test_tailscale_serve_config_is_private_https_only(self):
         if "tailscale" not in base_config()["services"]:
