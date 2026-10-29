@@ -173,7 +173,7 @@
     {
       "kind": "ui-contract-mismatch",
       "component": "RequestWorkspace Campaign panel",
-      "observed": "Authorization undefined · undefined",
+      "observed": "Authorization undefined \u00b7 undefined",
       "expected": "the Core V2 authorization risk class and execution mode",
       "cause": "office/src/coreApi.ts CampaignAuthorization declares snake_case legacy fields while Core serializes CampaignAuthorizationRecord as camelCase V2",
       "impact": "an operator cannot read the authorization class/route from the completed request workspace",
@@ -192,9 +192,10 @@
     }
   ],
   "commands": [
+    "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose FACTORY_UAT_KEEP=1 CHROMIUM_EXE=<chromium> ./scripts/compose-browser-uat.sh",
     "podman compose -p software-factory-uat60 -f compose.yaml -f compose.e2e.yaml up -d --build",
-    "podman exec <core> /usr/local/bin/factory-core issue-bootstrap-code",
-    "FACTORY_OFFICE_URL=http://127.0.0.1:8898 node scripts/compose-product-browser-uat.mjs"
+    "podman exec software-factory-uat60_core_1 /usr/local/bin/factory-core issue-bootstrap-code",
+    "FACTORY_OFFICE_URL=http://127.0.0.1:8898 FACTORY_BOOTSTRAP_CODE=<one-time-code> CHROMIUM_EXE=<chromium> FACTORY_EVIDENCE_DIR=<evidence-dir> FACTORY_MODEL_CONTEXT=<run-root>/model/context.json node scripts/compose-product-browser-uat.mjs"
   ],
   "boundary": {
     "real_core_http_api": true,

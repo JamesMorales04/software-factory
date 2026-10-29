@@ -88,9 +88,10 @@ const record = {
   console: { errors: [], page_errors: [], failed_requests: [], http_404: [] },
   findings: [],
   commands: [
+    "PODMAN_COMPOSE_PROVIDER=/usr/bin/podman-compose FACTORY_UAT_KEEP=1 CHROMIUM_EXE=<chromium> ./scripts/compose-browser-uat.sh",
     `podman compose -p ${composeProject} -f compose.yaml -f compose.e2e.yaml up -d --build`,
-    `podman exec <core> /usr/local/bin/factory-core issue-bootstrap-code`,
-    `FACTORY_OFFICE_URL=${base} node scripts/compose-product-browser-uat.mjs`,
+    `podman exec ${composeProject}_core_1 /usr/local/bin/factory-core issue-bootstrap-code`,
+    `FACTORY_OFFICE_URL=${base} FACTORY_BOOTSTRAP_CODE=<one-time-code> CHROMIUM_EXE=<chromium> FACTORY_EVIDENCE_DIR=<evidence-dir> FACTORY_MODEL_CONTEXT=<run-root>/model/context.json node scripts/compose-product-browser-uat.mjs`,
   ],
   boundary: {
     real_core_http_api: true,
